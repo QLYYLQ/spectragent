@@ -7,13 +7,15 @@ Both helpers resolve against the capability's **focused tab**
 (``BrowserCapability.default_session_id``, moved by ``switch_tab``).
 Actions take no session argument: the CDP session id is a browser
 concept, and the framework Protocols an action sits behind must not
-carry one. Concentrating the ``_scopes`` / ``_selector_maps`` reach here
-also keeps that private surface out of the twelve action modules.
+carry one. The capability exposes the focused scope and its read-only selector map
+through public queries; actions never reach into its storage.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, NamedTuple
+
+from agent_cdp import Participation
 
 if TYPE_CHECKING:
     from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -38,7 +40,7 @@ def focused_scope(capability: BrowserCapability) -> Any:
         RuntimeError: If no tab is attached (``setup()`` has not run).
         KeyError: If the focused tab has no scope — a torn-down session.
     """
-    return capability._scopes[capability.default_session_id]
+    return capability.action_scope
 
 
 def resolve_index(
@@ -54,26 +56,11 @@ def resolve_index(
     Raises:
         ValueError: If the element is missing from the selector_map.
     """
-    selector_map = capability._selector_maps.get(capability.default_session_id, {})
+    selector_map = capability.selector_map
     node = selector_map.get(index)
     if node is None or node.backend_node_id is None:
         raise ValueError(f"Element {index} not found in selector_map")
     return ElementRef(node.backend_node_id, node.session_id)
-
-
-def handler_error(event: Any) -> str | None:
-    """The ``error`` a watchdog handler answered ``event`` with, if any.
-
-    Element handlers (click, type) reply with a dict, and a dict carrying
-    ``error`` means the action did not happen — the element was gone, or
-    could not be reached where the last observation saw it. Reading it is
-    what keeps an action from reporting success for a click it never sent.
-    """
-    for outcome in event.event_results.values():
-        value = getattr(outcome, "result", None)
-        if isinstance(value, dict) and value.get("error"):
-            return str(value["error"])
-    return None
 
 
 def handler_field(event: Any, key: str) -> Any:
@@ -83,8 +70,13 @@ def handler_field(event: Any, key: str) -> Any:
     handler's ``sensitive`` verdict, for instance, which a run whose handler
     could not judge the field leaves out or sets to ``None``.
     """
-    for outcome in event.event_results.values():
-        value = getattr(outcome, "result", None)
+    for outcome in event.results.values():
+        if (
+            outcome.participation is not Participation.HANDLER
+            or outcome.receiver_key != "browser.action"
+        ):
+            continue
+        value = outcome.result
         if isinstance(value, dict) and key in value:
             return value[key]
     return None

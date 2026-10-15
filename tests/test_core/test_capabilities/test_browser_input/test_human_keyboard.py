@@ -17,6 +17,8 @@ The schedule runs on the same virtual clock as the mouse's (``conftest``), so
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from spectragent.core.capabilities.browser.input import (
@@ -58,8 +60,14 @@ class _VersionCDP(RecordCDP):
         super().__init__(clock, cost_ms)
         self.user_agent = user_agent
 
-    async def send(self, method, params=None, session_id=None):  # type: ignore[no-untyped-def]
-        result = await super().send(method, params, session_id)
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        result = await super().send(method, params, session_id, timeout)
         if method == "Browser.getVersion":
             return {"userAgent": self.user_agent}
         return result
@@ -102,9 +110,15 @@ class TestInstantRhythmEquivalence:
         sessions: list[str | None] = []
 
         class _SessionCDP(RecordCDP):
-            async def send(self, method, params=None, session_id=None):  # type: ignore[no-untyped-def]
+            async def send(
+                self,
+                method: str,
+                params: dict[str, Any] | None = None,
+                session_id: str | None = None,
+                timeout: float | None = None,
+            ) -> dict[str, Any]:
                 sessions.append(session_id)
-                return await super().send(method, params, session_id)
+                return await super().send(method, params, session_id, timeout)
 
         cdp = _SessionCDP()
         await HumanKeyboard(cdp, input_platform="linux", rhythm=rhythm).type_text(
@@ -199,10 +213,16 @@ class TestClearFocused:
                 super().__init__("Chrome (Macintosh)", clock, cost_ms=17.0)
                 self.key_times: list[float] = []
 
-            async def send(self, method, params=None, session_id=None):  # type: ignore[no-untyped-def]
+            async def send(
+                self,
+                method: str,
+                params: dict[str, Any] | None = None,
+                session_id: str | None = None,
+                timeout: float | None = None,
+            ) -> dict[str, Any]:
                 if method == "Input.dispatchKeyEvent":
                     self.key_times.append(clock.now)
-                return await super().send(method, params, session_id)
+                return await super().send(method, params, session_id, timeout)
 
         cdp = _TimedCDP()
         await HumanKeyboard(cdp, input_platform="linux", rhythm=_ClearRhythm()).clear_focused()  # type: ignore[arg-type]

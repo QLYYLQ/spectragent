@@ -15,6 +15,7 @@ from spectragent.core.capabilities.browser.actions._common import (
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     SelectDropdownEvent,
 )
@@ -63,8 +64,7 @@ class SelectDropdownAction(SettleableAction, ActionBase):
                 text=params.get("text"),
                 index=params.get("option_index"),
             )
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
             await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:

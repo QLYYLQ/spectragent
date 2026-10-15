@@ -16,7 +16,7 @@ dependency, Apache-2.0), one gzip member per record:
   decoded), and the original values go into the index instead;
 - a ``revisit`` record (profile ``identical-payload-digest``, pointing at the
   first response) instead, when a non-empty payload was already written
-  earlier in the run — :class:`PayloadIndex` is run-scoped.
+  earlier in this collection — every batch is independently readable.
 
 The request and response records are linked by ``WARC-Concurrent-To``. An
 exchange whose body is not known (``too_large``, ``streamed_later``,
@@ -44,7 +44,7 @@ IDENTICAL_PAYLOAD_PROFILE = "http://netpreserve.org/warc/1.1/revisit/identical-p
 
 @dataclass(frozen=True)
 class FirstPayload:
-    """Where a payload was first written in this run (what a revisit points at)."""
+    """Where a payload was first written in this collection (what a revisit points at)."""
 
     record_id: str
     uri: str
@@ -54,7 +54,7 @@ class FirstPayload:
 
 
 class PayloadIndex:
-    """Payload sha256 → its first response record, for the whole run."""
+    """Payload sha256 → its first response record, for one collection."""
 
     def __init__(self) -> None:
         self._first: dict[str, FirstPayload] = {}

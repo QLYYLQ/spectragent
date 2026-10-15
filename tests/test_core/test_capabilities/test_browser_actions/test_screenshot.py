@@ -6,6 +6,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+from agent_cdp import ConnectionType
+
 from spectragent.core.capabilities.browser.actions.screenshot import (
     ScreenshotAction,
 )
@@ -21,20 +23,13 @@ _PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-screenshot-payload"
 
 
 def _stub_screenshot_handler(scope: FakeScope, payload: bytes = _PNG_BYTES) -> None:
-    """Patch ``scope.emit`` so ScreenshotRequestEvent records ``payload`` once."""
-
-    original_emit = scope.emit
-
-    def emit(event):  # type: ignore[no-untyped-def]
-        original_emit(event)
-        if isinstance(event, ScreenshotRequestEvent):
-            event.record_result(
-                connection_id="fake",
-                handler_name="ScreenshotWatchdog",
-                result=payload,
-            )
-
-    scope.emit = emit  # type: ignore[assignment]
+    """Bind an explicit screenshot executor on the real fixture scope."""
+    scope.connect(
+        ScreenshotRequestEvent,
+        lambda event: payload,
+        mode=ConnectionType.DIRECT,
+        receiver_key="browser.action",
+    )
 
 
 class TestScreenshotExecute:
@@ -143,6 +138,6 @@ class TestScreenshotExecute:
         )
         assert result.success is False
         assert result.error is not None
-        assert "no bytes" in result.error
+        assert "receiver contract failed" in result.error
         # No file should have been written when capture fails.
         assert list(tmp_path.iterdir()) == []

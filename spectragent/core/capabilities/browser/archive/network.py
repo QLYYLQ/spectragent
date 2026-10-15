@@ -379,7 +379,6 @@ class NetworkSession(BrowserArchiveSession):
         #: event's id, until that event is handled (§4.14: bytes never travel
         #: in events).
         self._held: dict[str, HeldBytes] = {}
-        self._payloads = PayloadIndex()
         #: Body reads in flight (one per pause being handled).
         self._reads: set[asyncio.Future[None]] = set()
         #: Bodies streaming while the page reads them, by network request id.
@@ -787,7 +786,7 @@ class NetworkSession(BrowserArchiveSession):
             return []
         now = self.ctx.clock()
         archiver_id = self.archiver.archiver_id
-        warc = StepWarc(self._payloads)
+        warc = StepWarc(PayloadIndex())
         lines: list[dict[str, Any]] = [
             self._exchange_line(warc, exchange) for exchange in exchanges
         ]

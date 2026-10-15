@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import cast
 
 import httpx
 import pytest
@@ -124,6 +125,22 @@ class TestWaitForCdp:
     def _install(self, monkeypatch, outcomes: list) -> dict:
         record: dict = {}
 
+        class _Probe:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                pass
+
+            async def send(self, method):
+                assert method == "SystemInfo.getProcessInfo"
+                return {"processInfo": [{"type": "browser", "id": _FakeProcess.pid}]}
+
+        monkeypatch.setattr(local_chrome, "CDPClient", _Probe)
+
         def _factory(**kwargs):
             record["kwargs"] = kwargs
             return _ScriptedClient(outcomes, record)
@@ -137,7 +154,9 @@ class TestWaitForCdp:
         mechanism that turned a closed port into a stall."""
         record = self._install(monkeypatch, [_OkResponse()])
 
-        await self._provider()._wait_for_cdp(9222)
+        await self._provider()._wait_for_cdp(
+            9222, cast(asyncio.subprocess.Process, _FakeProcess()), "/profile"
+        )
 
         assert record["kwargs"].get("trust_env") is False
 
@@ -152,7 +171,9 @@ class TestWaitForCdp:
             ],
         )
 
-        ws = await self._provider()._wait_for_cdp(9222)
+        ws = await self._provider()._wait_for_cdp(
+            9222, cast(asyncio.subprocess.Process, _FakeProcess()), "/profile"
+        )
 
         assert ws.startswith("ws://127.0.0.1:9222/")
         assert record["polls"] == 3
@@ -164,7 +185,9 @@ class TestWaitForCdp:
             [httpx.ConnectError("connection refused"), _OkResponse()],
         )
 
-        assert await self._provider()._wait_for_cdp(9222)
+        assert await self._provider()._wait_for_cdp(
+            9222, cast(asyncio.subprocess.Process, _FakeProcess()), "/profile"
+        )
 
     async def test_torn_json_body_is_treated_as_not_ready(self, monkeypatch) -> None:
         """Chrome can answer /json/version mid-write while it boots."""
@@ -177,7 +200,9 @@ class TestWaitForCdp:
 
         self._install(monkeypatch, [_TornResponse(), _OkResponse()])
 
-        assert await self._provider()._wait_for_cdp(9222)
+        assert await self._provider()._wait_for_cdp(
+            9222, cast(asyncio.subprocess.Process, _FakeProcess()), "/profile"
+        )
 
     async def test_exhausting_the_budget_still_raises(self, monkeypatch) -> None:
         """Retrying forever would hang a benchmark run instead of failing it."""
@@ -186,7 +211,9 @@ class TestWaitForCdp:
         provider.cdp_wait_timeout = 0.0
 
         with pytest.raises(TimeoutError, match="did not become ready"):
-            await provider._wait_for_cdp(9222)
+            await provider._wait_for_cdp(
+                9222, cast(asyncio.subprocess.Process, _FakeProcess()), "/profile"
+            )
 
 
 # ── Child stdio ───────────────────────────────────────────────────
@@ -211,7 +238,7 @@ class TestLaunchStdio:
             record["kwargs"] = kwargs
             return _FakeProcess()
 
-        async def _fake_wait(_self, _port):
+        async def _fake_wait(_self, _port, _process, _profile):
             return "ws://127.0.0.1:9222/devtools/browser/x"
 
         monkeypatch.setattr(local_chrome.asyncio, "create_subprocess_exec", _fake_exec)

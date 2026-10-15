@@ -292,7 +292,6 @@ class CDPClient:
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
-        *,
         timeout: float | None = None,
     ) -> Any:
         """Send a CDP command and return the result: :meth:`post`, then :meth:`PendingReply.wait`.

@@ -202,7 +202,9 @@ async def _extract(markup: str, selector_map: dict[int, DOMElementNode], backend
 class TestTheExtractHandler:
     async def test_an_element_comes_back_withheld(self) -> None:
         markup = f'<input type="password" id="pw" value="{SECRET}">'
-        extracted = await _extract(markup, {}, backend_id=7)
+        extracted = await _extract(
+            markup, {7: DOMElementNode(tag_name="input", backend_node_id=7)}, backend_id=7
+        )
         assert extracted == '<input type="password" id="pw" value="&lt;redacted&gt;">'
 
     async def test_an_option_of_a_sensitive_select(self) -> None:

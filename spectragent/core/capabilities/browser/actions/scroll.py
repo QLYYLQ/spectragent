@@ -16,6 +16,7 @@ from spectragent.core.capabilities.browser.actions._common import (
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import ScrollEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -94,8 +95,7 @@ class ScrollAction(SettleableAction, ActionBase):
                 backend_node_id=element.backend_node_id if element else None,
                 session_id=element.session_id if element else None,
             )
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
             await self.settle()
             return ActionResult(success=True)
         except ValueError as exc:

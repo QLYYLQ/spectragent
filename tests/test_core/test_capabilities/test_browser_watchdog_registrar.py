@@ -124,7 +124,7 @@ async def _observe_once(
     cap._cdp = cdp  # type: ignore[assignment]
     cap._input_platform = "macos"  # this helper starts after the setup measurement
     group = ScopeGroup("test")
-    scope: EventScope = await group.create_scope("tab1", target_id="tab1")
+    scope: EventScope = await group.create_scope("tab1", metadata={"target_id": "tab1"})
     for wd in cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid1"):
         wd.attach(scope)
     cap._scopes["sid1"] = scope

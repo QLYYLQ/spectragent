@@ -332,6 +332,25 @@ the move is to ask, not to ship a compromise.
 > solves this by hand-writing `__init__` (`capability.py:258-269`); an action receptor
 > must do the same.
 
+## Browser event execution contracts
+
+A browser action dispatches through `watchdogs.contracts.dispatch_request` and
+requires its actual executor's receiver key. Connect executors as `HANDLER` with
+an explicit `ResultContract`; connect guards, logging and archive observers as
+`OBSERVER`. Waiting only settles deliveries: use `raise_for_status()` and a
+business result that proves the operation happened. Allow `None` only for a
+handler whose successful return itself establishes completion. Missing receivers,
+JS exception details and unmatched dropdown choices are failures. When the action
+initiator stops waiting, withdraw queued work with
+`cancel_execution(include_running=False)`; never claim running side effects rolled
+back. Use the capability's public `action_scope` and focused selector-map query,
+not its private dictionaries.
+
+`build_guarded_act` returns an `ActionSpace` and the executor. Preserve the raw
+filter (`None` differs from `[]`), final descriptors, allowed names and bindings.
+Prompt construction and recording receive independent deep snapshots; mutating a
+prompt-side descriptor cannot alter experiment identity or guard execution.
+
 ## 6. Before you call it done
 
 ```bash

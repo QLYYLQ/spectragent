@@ -2,8 +2,8 @@
 
 Every archive here is recorded by M29's own ``browser.network`` session and
 committed by the real WAL (``tests/_helpers/replay_archive.py``), then read
-back only through ``open_archive``. Covered: each ``body_status``, a revisit
-across steps, a late streamed body, records that match but cannot be served,
+back only through ``open_archive``. Covered: each ``body_status``, repeated
+payloads stored independently across steps, a late streamed body, records that match but cannot be served,
 keys recomputed at load, the byte-range map, the recording order, and what
 makes a load fail — a malformed line (the trace layer's schema error), a line
 whose WARC record is not what it says (``ReplayArchiveError``) — and that
@@ -74,7 +74,7 @@ async def recorded(tmp_path: Path) -> RecordedArchive:
     )
     await recording.streamed_later(f"{SHOP}/now.js", b"n" * 5000)
     await recording.commit(0)
-    await recording.exchange(f"{SHOP}/b", body=b"shared payload")  # a revisit of /a
+    await recording.exchange(f"{SHOP}/b", body=b"shared payload")  # its own batch owns the body
     await recording.exchange(
         f"{SHOP}/video.mp4",
         status=206,
@@ -117,15 +117,30 @@ class TestEachKindOfRecord:
         assert record.content_type == "application/x-www-form-urlencoded"
         assert record.keys.body_key is not None and "%3Credacted%3E" in record.keys.body_key
 
-    async def test_a_revisit_serves_the_first_payload_from_an_earlier_step(
+    async def test_a_repeated_payload_in_a_later_step_is_served_from_its_own_response(
         self, recorded: RecordedArchive
     ) -> None:
-        first, revisit = by_url(recorded)[f"{SHOP}/a?x=1"], by_url(recorded)[f"{SHOP}/b"]
-        assert isinstance(revisit.payload, WarcPayload) and isinstance(first.payload, WarcPayload)
-        assert revisit.payload == first.payload, "the payload is the first response's record"
+        first, later = by_url(recorded)[f"{SHOP}/a?x=1"], by_url(recorded)[f"{SHOP}/b"]
+        assert isinstance(later.payload, WarcPayload) and isinstance(first.payload, WarcPayload)
+        assert later.payload != first.payload, "each collection owns a complete response"
         assert "/000/" in first.payload.path
-        assert recorded.body(revisit) == b"shared payload"
-        assert ("Set-Cookie", "s=1") not in revisit.response_headers, "its own HTTP head"
+        assert "/001/" in later.payload.path
+        assert recorded.body(first) == recorded.body(later) == b"shared payload"
+        assert ("Set-Cookie", "s=1") not in later.response_headers, "its own HTTP head"
+
+    async def test_a_discarded_collection_does_not_leave_later_replay_payloads_dangling(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        recording = RecordingScript(tmp_path)
+        await recording.exchange(f"{SHOP}/discarded", body=b"same payload")
+        assert await recording.session.collect()  # this batch never reaches a successful commit
+        await recording.exchange(f"{SHOP}/committed", body=b"same payload")
+        await recording.commit(0)
+        recorded = load_archive(open_archive(recording.finish()))
+        (record,) = recorded.index.records
+        assert record.url == f"{SHOP}/committed"
+        assert recorded.body(record) == b"same payload"
 
     async def test_streamed_later_is_served_from_its_blob_same_commit_or_later(
         self, recorded: RecordedArchive

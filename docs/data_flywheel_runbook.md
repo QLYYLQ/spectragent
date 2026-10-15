@@ -71,7 +71,7 @@ hook:
 
 | 路径 | 内容 |
 |---|---|
-| `env/steps/NNN/browser.network/exchanges.warc.gz` | 第 NNN 步的提交收集到的交换，WARC/1.1，body 是解码后的字节；同一 run 里重复的 payload 写成 revisit 记录 |
+| `env/steps/NNN/browser.network/exchanges.warc.gz` | 第 NNN 步的提交收集到的交换，WARC/1.1，body 是解码后的字节；同一收集批次里重复的 payload 写成 revisit 记录 |
 | `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`），`kind: body`（边下边收的大 body 收完时一行，指向它的 blob），`kind: pending`（收集时还在途） |
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
 | `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |

@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from agent_cdp import EventScope
+
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     ActionWatchdog,
 )
@@ -134,12 +136,14 @@ class TestHandlersAreConnected:
     def test_attach_registers_both_new_events(self) -> None:
         """A handler nothing routes to is a verb the run silently rejects."""
 
-        class _Scope:
+        class _Scope(EventScope):
             def __init__(self) -> None:
+                super().__init__("test-tab")
                 self.connected: list[type] = []
 
-            def connect(self, event_type: type, handler: Any, **_kw: Any) -> None:
+            def connect(self, event_type: type, handler: Any, **_kw: Any) -> Any:
                 self.connected.append(event_type)
+                return super().connect(event_type, handler, **_kw)
 
         scope = _Scope()
         _watchdog(_FakeCDP()).attach(scope)  # type: ignore[arg-type]

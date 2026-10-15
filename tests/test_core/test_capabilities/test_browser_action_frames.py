@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from agent_cdp import EventScope
 
 from spectragent.core.capabilities.browser.actions.click import ClickAction
 from spectragent.core.capabilities.browser.actions.extract_content import ExtractContentAction
@@ -134,6 +135,14 @@ class FrameCDP:
             return {"model": plain_frame(*self.owner_content[key])}
         if method == "DOM.resolveNode":
             return {"object": {"objectId": f"{session_id}|{params['backendNodeId']}"}}
+        if method == "DOM.getOuterHTML":
+            return {"outerHTML": "<div>frame</div>"}
+        if method == "Runtime.evaluate":
+            return {"result": {"value": "fixture text"}}
+        if method == "Runtime.callFunctionOn" and "this.options" in params.get(
+            "functionDeclaration", ""
+        ):
+            return {"result": {"value": True}}
         if method == "Runtime.callFunctionOn" and params.get("returnByValue"):
             session, backend_id = params["objectId"].split("|")
             x, y, w, h = self.rects[(session, int(backend_id))]
@@ -165,9 +174,9 @@ RECTS: dict[tuple[str, int], Box] = {
 }
 
 
-class _Scope:
-    def connect(self, *_a: Any, **_k: Any) -> None:
-        return None
+class _Scope(EventScope):
+    def __init__(self) -> None:
+        super().__init__("test-tab")
 
 
 def watchdog(cdp: FrameCDP, selector_map: DOMSelectorMap, **kwargs: Any) -> ActionWatchdog:
@@ -504,9 +513,10 @@ class TestFramesUnderATransform:
         model["content"][4] += 60.0
         cdp = FrameCDP(owner_models={("tab", 15): model})
 
-        await watchdog(cdp, selector_map)._on_scroll(
-            ScrollEvent(direction="down", amount=120, backend_node_id=10, session_id="cross")
-        )
+        with pytest.raises(RuntimeError, match="perspective transform"):
+            await watchdog(cdp, selector_map)._on_scroll(
+                ScrollEvent(direction="down", amount=120, backend_node_id=10, session_id="cross")
+            )
         assert cdp.mouse() == []
 
 
@@ -556,9 +566,10 @@ class TestAFrameThatChangedIsNotClickedBlind:
 
     async def test_nor_scrolled_at_blind(self, selector_map: DOMSelectorMap) -> None:
         cdp = FrameCDP(raise_on={("DOM.getBoxModel", "tab")})
-        await watchdog(cdp, selector_map)._on_scroll(
-            ScrollEvent(direction="down", amount=120, backend_node_id=10, session_id="cross")
-        )
+        with pytest.raises(RuntimeError):
+            await watchdog(cdp, selector_map)._on_scroll(
+                ScrollEvent(direction="down", amount=120, backend_node_id=10, session_id="cross")
+            )
         assert cdp.mouse() == []
 
 
@@ -641,9 +652,8 @@ class _AnsweringScope(FakeScope):
         super().__init__()
         self.answer = answer
 
-    def emit(self, event: Any) -> None:
-        super().emit(event)
-        event.record_result(connection_id="c1", handler_name="ActionWatchdog", result=self.answer)
+    def respond(self, event: Any) -> Any:
+        return self.answer
 
 
 def _capability(scope: FakeScope) -> FakeCapability:

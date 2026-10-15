@@ -19,16 +19,14 @@ Consequence: adding an observation fragment is **one class**. Register a
 watchdog, declare ``provides``, implement ``build``. ``BrowserCapability``
 never names a watchdog and does not change.
 
-``detach()`` is also declared here rather than probed for with
-``getattr``: ``agent_cdp``'s ``WatchdogProtocol`` only requires
-``attach``, and a watchdog that opens its own ``CDPEventBridge`` must be
-able to release it on ``close_tab`` / ``teardown``.
+``agent_cdp.WatchdogBase`` owns per-scope/session bindings. Every attachment
+tracks its connections and cleanup, so detach never tears down another tab.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
@@ -36,6 +34,7 @@ from agent_cdp import EventScope, WatchdogBase, WatchdogRegistrar
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
 from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.sessions import TabSessions
 
 if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
@@ -87,6 +86,10 @@ async def _no_tabs() -> list[dict[str, Any]]:
     return []
 
 
+def _no_target_sessions() -> Mapping[str, str]:
+    return {}
+
+
 def _no_selector_map() -> DOMSelectorMap:
     return {}
 
@@ -132,6 +135,9 @@ class WatchdogContext:
     #: The tab's separate JS execution domain.  Only present while building
     #: tab watchdogs; it is paired with the observation scope at attach time.
     js_scope: EventScope | None = None
+
+    #: Browser-owned live tab/frame session mapping.
+    tab_sessions: TabSessions | None = None
 
     debug_highlight: bool = False
     #: The configured trajectory *instance* — already carrying its own
@@ -185,6 +191,9 @@ class WatchdogContext:
     #: it and lends it to whichever watchdog reports tab metadata.
     tabs_getter: Callable[[], Awaitable[list[dict[str, Any]]]] = field(default=_no_tabs)
 
+    #: Control-session → target ownership, read when a browser-level event arrives.
+    target_sessions_getter: Callable[[], Mapping[str, str]] = field(default=_no_target_sessions)
+
     #: The browser-level archive channel (§4.14): present only while the
     #: recorder connection is open *and* archivers are bound. Its presence is
     #: what installs ``ArchiveWatchdog`` (see :meth:`BrowserWatchdog.should_install`).
@@ -235,15 +244,6 @@ class BrowserWatchdog(WatchdogBase):
             f"not implement build(ctx). Every watchdog must be "
             f"constructible from a WatchdogContext alone."
         )
-
-    def detach(self) -> None:
-        """Release CDP callbacks this watchdog opened. Idempotent.
-
-        No-op by default — only watchdogs that open their own
-        ``CDPEventBridge`` need to override it. Declared here so
-        ``close_tab`` / ``teardown`` can call it unconditionally.
-        """
-        return None
 
     def bind_tab_scopes(
         self,

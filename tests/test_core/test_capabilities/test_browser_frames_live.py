@@ -390,6 +390,16 @@ async def test_type_and_select_reach_the_out_of_process_frame(site: Site) -> Non
             assert (
                 await evaluate(cap, frame, "document.getElementById('cross-select').value") == "b"
             )
+            missing = await run(
+                cap,
+                "browser.select_dropdown",
+                index=element(state, "cross-select")[0],
+                text="missing",
+            )
+            assert not missing.success and "no enabled option" in (missing.error or "")
+            assert (
+                await evaluate(cap, frame, "document.getElementById('cross-select').value") == "b"
+            )
             assert (
                 await evaluate(
                     cap,
@@ -400,6 +410,21 @@ async def test_type_and_select_reach_the_out_of_process_frame(site: Site) -> Non
             )
 
     await asyncio.wait_for(body(), _TIMEOUT_S)
+
+
+async def test_history_actions_navigate_real_chrome_and_refuse_an_empty_direction(
+    site: Site,
+) -> None:
+    site.main.routes["/first.html"] = "<html><body>first</body></html>"
+    site.main.routes["/second.html"] = "<html><body>second</body></html>"
+    async with browser(f"{site.main_origin}/first.html") as cap:
+        empty_forward = await run(cap, "browser.go_forward")
+        assert not empty_forward.success
+        await act(cap, "browser.navigate", url=f"{site.main_origin}/second.html")
+        await act(cap, "browser.go_back")
+        assert await evaluate(cap, None, "location.pathname") == "/first.html"
+        await act(cap, "browser.go_forward")
+        assert await evaluate(cap, None, "location.pathname") == "/second.html"
 
 
 async def test_humanized_click_in_a_nested_frame(site: Site) -> None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from agent_cdp import ScopeGroup
 
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.schemas.action import Action
@@ -67,31 +68,6 @@ class _MultiTabCDP:
         return [p["targetId"] for m, p, _ in self.sent if m == "Target.activateTarget"]
 
 
-class _Scope:
-    def __init__(self, scope_id: str = "scope") -> None:
-        self.scope_id = scope_id
-
-    def connect(self, *_a: Any, **_k: Any) -> Any:
-        return None
-
-    def emit(self, _event: Any) -> None:
-        return None
-
-
-class _ScopeGroup:
-    def __init__(self, _name: str = "test") -> None:
-        pass
-
-    async def create_scope(self, scope_id: str, **_k: Any) -> _Scope:
-        return _Scope(scope_id)
-
-    async def close_scope(self, _scope_id: str) -> None:
-        return None
-
-    async def close_all(self) -> None:
-        return None
-
-
 async def _make_cap(
     target_ids: list[str], attached: list[str]
 ) -> tuple[BrowserCapability, _MultiTabCDP]:
@@ -102,7 +78,7 @@ async def _make_cap(
     cdp = _MultiTabCDP(target_ids)
     cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
     cap._cdp = cdp  # type: ignore[assignment]
-    cap._scope_group = _ScopeGroup()  # type: ignore[assignment]
+    cap._scope_group = ScopeGroup("test")  # type: ignore[assignment]
     cap._resolved_profile = resolve_profile("standard")
     cap._create_watchdogs_for_scope = (  # type: ignore[method-assign]
         lambda level="tab", cdp_session_id=None: []

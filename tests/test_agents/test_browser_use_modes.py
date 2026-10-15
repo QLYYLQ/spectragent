@@ -166,12 +166,13 @@ class _Run:
             active_actions=self.actions.active_actions,
             fragments=self.obs.active_fragments,
         )
-        self.descriptors, self.guard = build_guarded_act(
+        action_space, self.guard = build_guarded_act(
             self.env.act,
             descriptors,
             None,
             bindings=self.actions.action_bindings,
         )
+        self.descriptors = action_space.descriptors
         self.agent.prepare(task="t", action_descriptors=self.descriptors)
 
     @property

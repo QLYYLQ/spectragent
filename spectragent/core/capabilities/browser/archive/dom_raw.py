@@ -110,9 +110,15 @@ class _RecorderCommands:
         return True
 
     async def send(
-        self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        return await self._send(method, params, session_id, timeout=self._timeout)
+        return await self._send(
+            method, params, session_id, timeout=self._timeout if timeout is None else timeout
+        )
 
     def on_event(self, method: str, callback: Callable[..., Any]) -> None:
         raise NotImplementedError("a dom_raw self-capture subscribes to no event")
@@ -145,10 +151,13 @@ class DomRawSession(BrowserArchiveSession):
             capture, dpr = await asyncio.wait_for(
                 self._self_capture(session), self.archiver.self_capture_timeout_s
             )
+        except asyncio.CancelledError:
+            self._failures.append(f"self-capture of tab {cycle.target_id!r} was cancelled")
+            raise
         except Exception as exc:
             self._failures.append(f"self-capture of tab {cycle.target_id!r} failed: {exc!r}")
             return
-        self.ctx.park_raw(cycle.control_session_id, capture, dpr)
+        self.ctx.park_raw(cycle.control_session_id, capture, dpr, cycle.request_id)
 
     async def _self_capture(self, session: str) -> tuple[TargetCapture, float]:
         cdp = _RecorderCommands(self.ctx.recorder.send, self.archiver.self_capture_timeout_s)

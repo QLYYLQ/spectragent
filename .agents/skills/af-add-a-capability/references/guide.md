@@ -439,6 +439,24 @@ fails your harness if `resolve_fragment` returns after `break_capture()`.
 
 ## Step 4 — lifecycle and backends
 
+For the browser, use the agent-cdp 0.5 public lifecycle: explicit scope `metadata`,
+`queue_maxsize`, and `max_history_size`; `track_binding` and
+`detach(scope, session_id)` for each attachment; native `flush()` and public
+`stats` for archive completion. Archive capacity is 65536; browser observation,
+JS, and archive scopes retain no payload history. A shared watchdog closing one
+tab must leave its other bindings usable. Browser `TabSessions` owns live tab
+and iframe ancestry; scheduler scopes are not browser permission boundaries.
+
+Local Chrome proves a candidate endpoint's browser PID is the process it just
+created before using it. Own the process handle and temporary profile together;
+never delete a caller's persistent profile. Explicit external `cdp_url` owns only
+AF connections and subscriptions. Cleanup attempts every resource even after a
+failure, preserves cancellation, and keeps unfinished ownership reachable.
+Recorder capture failures are archive health; do not turn them into action errors.
+A recorder also enforcing replay or fixed target configuration has a separate
+execution contract, which a lost connection can invalidate.
+
+
 ```python
 async def setup(self, *, negotiation: Any = None, image: str = "", timeout: int = 600) -> None:
     await super().setup(negotiation=negotiation)   # records the negotiation result

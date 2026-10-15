@@ -62,9 +62,13 @@ class InterruptedCDP(RecordCDP):
         self.interrupted = False
 
     async def send(
-        self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
-    ):
-        await super().send(method, params, session_id)
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        await super().send(method, params, session_id, timeout)
         params = params or {}
         if params.get("type") == "mouseReleased" and self.release_fails:
             raise RuntimeError("release failed")
@@ -104,14 +108,20 @@ async def test_cancellation_during_release_waits_for_release_to_finish(release_f
     started, finish = asyncio.Event(), asyncio.Event()
 
     class SlowRelease(RecordCDP):
-        async def send(self, method, params=None, session_id=None):
+        async def send(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            session_id: str | None = None,
+            timeout: float | None = None,
+        ) -> dict[str, Any]:
             if (params or {}).get("type") == "mouseReleased":
                 started.set()
                 await finish.wait()
                 if release_fails:
-                    await super().send(method, params, session_id)
+                    await super().send(method, params, session_id, timeout)
                     raise RuntimeError("release failed")
-            return await super().send(method, params, session_id)
+            return await super().send(method, params, session_id, timeout)
 
     cdp = SlowRelease()
     mouse = HumanMouse(cdp, session_id_getter=lambda: "sid")
@@ -132,8 +142,14 @@ async def test_an_unanswered_release_has_a_real_deadline(monkeypatch, interrupti
     started, stopped = asyncio.Event(), asyncio.Event()
 
     class UnansweredRelease(RecordCDP):
-        async def send(self, method, params=None, session_id=None):
-            await super().send(method, params, session_id)
+        async def send(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            session_id: str | None = None,
+            timeout: float | None = None,
+        ) -> dict[str, Any]:
+            await super().send(method, params, session_id, timeout)
             params = params or {}
             if (
                 interruption.startswith("move_error")

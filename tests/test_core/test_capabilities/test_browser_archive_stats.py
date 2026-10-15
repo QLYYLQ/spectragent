@@ -110,9 +110,8 @@ async def test_a_revisit_saves_the_full_record_less_its_own(tmp_path: Path) -> N
     payload = b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(200))
     recording = RecordingScript(tmp_path)
     await recording.exchange(f"{SHOP}/first", body=payload)
-    await recording.commit(0)
     await recording.exchange(f"{SHOP}/again", body=payload)
-    await recording.commit(1)
+    await recording.commit(0)
     lines = _lines(recording.finish())
     exchanges = {line.url: line for line in lines if isinstance(line, ExchangeLine)}
     first, again = exchanges[f"{SHOP}/first"], exchanges[f"{SHOP}/again"]

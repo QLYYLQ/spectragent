@@ -99,7 +99,7 @@ class _Scripted:
 async def _cap_with(scripted: _Scripted) -> tuple[BrowserCapability, ScopeGroup]:
     cap = BrowserCapability()
     group = ScopeGroup("t")
-    scope = await group.create_scope("T1", target_id="T1")
+    scope = await group.create_scope("T1", metadata={"target_id": "T1"})
     cap._default_session_id = "sid"
     cap._scopes["sid"] = scope
     cap.apply_negotiation({"browser.dom", "browser.screenshot", "browser.browser_meta"})

@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
+from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -41,34 +42,31 @@ class JavaScriptExecutionWatchdog(BrowserWatchdog):
     level: ClassVar[WatchdogLevel] = "shared"
     provides: ClassVar[frozenset[str]] = frozenset()
 
-    def __init__(self, cdp: CDPCommandProtocol) -> None:
+    def __init__(self, cdp: CDPCommandProtocol, *, sessions: TabSessions | None = None) -> None:
         self._cdp = cdp
         self._tracking = False
-        self._tabs: set[str] = set()
-        self._owner_by_child: dict[str, str] = {}
-        self._parent_by_child: dict[str, str] = {}
+        self._sessions = sessions if sessions is not None else TabSessions()
 
     @classmethod
     def build(cls, ctx: WatchdogContext) -> JavaScriptExecutionWatchdog:
-        return cls(ctx.cdp)
+        return cls(ctx.cdp, sessions=ctx.tab_sessions)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         """Watch CDP frame-session attachments for all bound tabs."""
         if self._tracking:
             return
-        self._cdp.on_event("Target.attachedToTarget", self._on_attached)
-        self._cdp.on_event("Target.detachedFromTarget", self._on_detached)
+        self._cdp.on_event("Target.attachedToTarget", self._sessions.attached)
+        self._cdp.on_event("Target.detachedFromTarget", self._sessions.detached)
         self._tracking = True
+        self.track_binding(scope, session_id, close_callbacks=[self._stop_tracking])
 
-    def detach(self) -> None:
+    def _stop_tracking(self) -> None:
         """Remove CDP callbacks and all tab/frame ownership records."""
         if self._tracking:
-            self._cdp.off_event("Target.attachedToTarget", self._on_attached)
-            self._cdp.off_event("Target.detachedFromTarget", self._on_detached)
+            self._cdp.off_event("Target.attachedToTarget", self._sessions.attached)
+            self._cdp.off_event("Target.detachedFromTarget", self._sessions.detached)
             self._tracking = False
-        self._tabs.clear()
-        self._owner_by_child.clear()
-        self._parent_by_child.clear()
+        self._sessions.clear()
 
     def bind_tab_scopes(
         self,
@@ -78,7 +76,7 @@ class JavaScriptExecutionWatchdog(BrowserWatchdog):
         session_id: str,
     ) -> None:
         """Route this tab's JS requests to its independent execution queue."""
-        self._tabs.add(session_id)
+        self._sessions.bind(session_id)
 
         async def execute_for_tab(event: ExecuteJavaScriptEvent) -> dict[str, Any]:
             if event.session_id != session_id:
@@ -87,71 +85,30 @@ class JavaScriptExecutionWatchdog(BrowserWatchdog):
                     f"event names {event.session_id!r}, connection serves {session_id!r}"
                 )
             target = event.target_session_id or session_id
-            if session_id not in self._tabs or (
-                target != session_id and self._owner_by_child.get(target) != session_id
-            ):
+            if not self._sessions.owns(session_id, target):
                 raise ValueError(
                     f"JS target session {target!r} does not belong to tab {session_id!r}"
                 )
             return await self._execute(event, session_id=target)
 
-        observation_scope.connect(
+        connection = observation_scope.connect(
             ExecuteJavaScriptEvent,
             execute_for_tab,
             mode=ConnectionType.QUEUED,
             target_scope=js_scope,
+            participation=Participation.HANDLER,
+            receiver_key="browser.javascript",
+            result_contract=ResultContract(lambda value: isinstance(value, dict)),
         )
-
-    def unbind_tab(self, session_id: str) -> None:
-        """Revoke a closed tab and every child session before its scopes close."""
-        self._tabs.discard(session_id)
-        for child, owner in list(self._owner_by_child.items()):
-            if owner == session_id:
-                self._owner_by_child.pop(child, None)
-                self._parent_by_child.pop(child, None)
-
-    def _on_attached(self, params: dict[str, Any], parent_session_id: str | None) -> None:
-        """Accept only iframe sessions descended from a currently bound tab."""
-        if parent_session_id is None:
-            return
-        owner = (
-            parent_session_id
-            if parent_session_id in self._tabs
-            else self._owner_by_child.get(parent_session_id)
+        binding = self.track_binding(
+            observation_scope,
+            session_id,
+            connections=[connection],
+            close_callbacks=[lambda: self._sessions.unbind(session_id)],
         )
-        if owner is None:
-            return
-        info = params.get("targetInfo") or {}
-        child = params.get("sessionId")
-        if info.get("type") != "iframe" or not isinstance(child, str) or not child:
-            return
-        if child in self._tabs:
-            return
-        if child in self._owner_by_child:
-            self._revoke_subtree(child)
-        self._owner_by_child[child] = owner
-        self._parent_by_child[child] = parent_session_id
-
-    def _on_detached(self, params: dict[str, Any], _parent_session_id: str | None) -> None:
-        child = params.get("sessionId")
-        if isinstance(child, str):
-            if child in self._tabs:
-                self.unbind_tab(child)
-            else:
-                self._revoke_subtree(child)
-
-    def _revoke_subtree(self, child: str) -> None:
-        """Forget a detached frame even if nested detach events arrive late."""
-        pending = [child]
-        while pending:
-            session = pending.pop()
-            pending.extend(
-                candidate
-                for candidate, parent in self._parent_by_child.items()
-                if parent == session
-            )
-            self._owner_by_child.pop(session, None)
-            self._parent_by_child.pop(session, None)
+        # Either half closing revokes the pair, without affecting another tab.
+        js_scope.add_close_callback(binding.close)
+        observation_scope.add_close_callback(lambda: js_scope.remove_close_callback(binding.close))
 
     async def _execute(self, event: ExecuteJavaScriptEvent, *, session_id: str) -> dict[str, Any]:
         if event.method not in _ALLOWED_METHODS:

@@ -117,6 +117,14 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
 
+### 本地 Chrome 与外部端点的所有权
+
+本地 provider 连接前验证本次启动进程、CDP 端点与 profile；端口占用、启动退出或 profile 转交旧实例时明确拒绝，不接管旧 Chrome。正常结束、失败和取消均只清理本次进程与临时 profile。手工设置的持久 profile 不会删除。显式 `cdp_url` 仍可连接现有浏览器，结束时只清理 AF 的连接、订阅、bridge 和 scope，已有 tab、外部进程与 profile 保留；归档/pinned/replay 的协作限制照常检查。
+
+浏览器事件接口依赖发布版 `agent-cdp==0.5.0`。归档队列容量为 65536，观测、JS 和归档 scope 不保留事件历史；收集用原生前缀 flush 并检查公开完成/失败/取消/拒收统计。动作要求实际执行处理者及合法业务结果，排队动作在发起者退出等待时撤销；已执行的浏览器副作用没有自动回滚承诺。DOM 自抓或归档失败按记录缺口报告，不改写实际动作结果。WARC revisit 只引用当前收集批次，前批记录失败不会破坏后批的引用。
+
+`action_filter=None` 表示未额外过滤，`[]` 表示不允许动作；trace 的 `action_space` 同时保存原输入、最终 prompt 描述、guard 全限定集合及绑定，参与实验配置摘要及 source 历史分叉兼容检查。
+
 ## 选择 agent
 
 | 想运行的 agent | 现成 YAML | 页面输入与动作 | 单任务命令 |

@@ -90,11 +90,8 @@ class TestDomCapture:
         monkeypatch.setattr(dom_watchdog, "_DOM_CAPTURE_TIMEOUT_S", 0.1)
         watchdog = DOMWatchdog(_StuckCDP("DOM.getDocument"))  # type: ignore[arg-type]
         started = time.monotonic()
-        with caplog.at_level(logging.ERROR):
-            summary = await asyncio.wait_for(
-                watchdog._on_browser_state_request(_event("browser.dom")), 5.0
-            )
-        assert summary is None
+        with caplog.at_level(logging.ERROR), pytest.raises(TimeoutError, match="DOM capture"):
+            await asyncio.wait_for(watchdog._on_browser_state_request(_event("browser.dom")), 5.0)
         assert 0.1 <= time.monotonic() - started < 2.0
         assert "the DOM capture got no reply within 0.1s" in caplog.text
 

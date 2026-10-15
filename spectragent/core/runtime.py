@@ -495,12 +495,14 @@ class AgentRuntime:
                 fragments=negotiated_obs.active_fragments,
             )
             execute_action = wrapped_env.act
-        active_descriptors, act_fn = build_guarded_act(
+        action_space, act_fn = build_guarded_act(
             execute_action,
             narrowed_descriptors,
             action_filter,
             bindings=negotiated_actions.action_bindings,
         )
+
+        active_descriptors = action_space.descriptors
 
         # Step 5: Loop weaving — patches wrapped_agent.run. A Loop with
         # assembly checks of its own makes them here (``BranchLoop`` checks

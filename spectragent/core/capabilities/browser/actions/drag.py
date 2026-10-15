@@ -14,8 +14,9 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.capabilities.browser.actions._common import focused_scope, handler_error
+from spectragent.core.capabilities.browser.actions._common import focused_scope
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import DragEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -61,13 +62,9 @@ class DragAction(SettleableAction, ActionBase):
                 end_x=int(params["end_x"]),
                 end_y=int(params["end_y"]),
             )
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
             # The handler answers with an ``error`` when the press, the travel or
             # the release was not sent: the drag did not happen, so it failed.
-            error = handler_error(event)
-            if error is not None:
-                return ActionResult(success=False, error=error)
             await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:

@@ -482,6 +482,7 @@ class _PageCDP:
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
         if method == "DOM.getDocument":
             return self._capture.raw_dom
@@ -503,7 +504,7 @@ class _PageCDP:
 async def _resolve_dom(**kwargs: Any) -> Any:
     watchdog = DOMWatchdog(_PageCDP(_page()), viewport=_VIEWPORT, **kwargs)
     summary = await watchdog._on_browser_state_request(
-        BrowserStateRequestEvent(fragments={"browser.dom"})
+        BrowserStateRequestEvent(fragments=frozenset({"browser.dom"}))
     )
     assert summary is not None
     return summary.fragments["browser.dom"]
@@ -548,7 +549,7 @@ class TestTheFragmentCarriesTheBudget:
         watchdog = DOMWatchdog(
             _PageCDP(_page()), viewport=_VIEWPORT, budget=DOMBudget(max_elements=1)
         )
-        event = BrowserStateRequestEvent(fragments={"browser.dom"})
+        event = BrowserStateRequestEvent(fragments=frozenset({"browser.dom"}))
 
         first = await watchdog._on_browser_state_request(event)
         assert first is not None and len(first.fragments["browser.dom"].selector_map) == 1

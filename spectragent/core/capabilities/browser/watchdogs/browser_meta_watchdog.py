@@ -32,7 +32,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -76,12 +76,20 @@ class BrowserMetaWatchdog(BrowserWatchdog):
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._session_id = session_id
-        scope.connect(
+        connection = scope.connect(
             BrowserStateRequestEvent,
             self._on_browser_state_request,
             mode=ConnectionType.QUEUED,
             priority=LAST,
+            participation=Participation.HANDLER,
+            filter=lambda event: (
+                isinstance(event, BrowserStateRequestEvent)
+                and bool(event.fragments & self.provides)
+            ),
+            receiver_key="browser.browser_meta",
+            result_contract=ResultContract(lambda value: isinstance(value, BrowserStateSummary)),
         )
+        self.track_binding(scope, session_id, connections=[connection])
 
     async def _on_browser_state_request(
         self, event: BrowserStateRequestEvent

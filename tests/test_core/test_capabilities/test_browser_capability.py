@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_cdp import EventScope
+
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.actions import (
@@ -363,34 +365,13 @@ class TestBackendIoC:
                     return platform
                 return {"targetInfos": [{"type": "page", "targetId": "t0", "url": ""}]}
 
-        class _StubScopeGroup:
-            """Drop-in replacement for agent_cdp ``ScopeGroup``.
-
-            Real ScopeGroup spawns an asyncio Task tied to the running
-            event loop; replaying it across two ``asyncio.run()`` calls
-            (setup + teardown) raises CancelledError. The stub just
-            records calls so we can verify lifecycle behaviour without
-            crossing event loops.
-            """
-
-            def __init__(self, _name: str) -> None:
-                self.created: list[str] = []
-                self.closed = False
-
-            async def create_scope(self, scope_id, **_kwargs):
-                self.created.append(scope_id)
-                return object()
-
-            async def close_all(self) -> None:
-                self.closed = True
-
         monkeypatch.setattr(
             "spectragent.core.capabilities.browser.capability.CDPClient",
             _StubCDPClient,
         )
         monkeypatch.setattr(
             "spectragent.core.capabilities.browser.capability.ScopeGroup",
-            _StubScopeGroup,
+            _RecordingScopeGroup,
         )
 
         async def _fake_attach_tab(_self, _tid, _url=""):
@@ -601,42 +582,42 @@ class _RecordingCDPClient:
             cbs.remove(callback)
 
 
-class _RecordingScope:
-    """Stand-in for agent_cdp.EventScope — captures connect() registrations."""
-
-    def __init__(self, scope_id: str = "scope") -> None:
-        self.scope_id = scope_id
-        self.connections: list[tuple[type, Any]] = []
-        self.metadata: dict[str, Any] = {}
-
-    def connect(self, event_type: type, handler: Any, **_: Any) -> Any:
-        self.connections.append((event_type, handler))
-
-        class _Conn:
-            def disconnect(self) -> None:
-                pass
-
-        return _Conn()
-
-    def emit(self, _event: Any) -> None:
-        pass
-
-
 class _RecordingScopeGroup:
+    """Real idle scopes, without queue tasks tied to separate asyncio.run loops."""
+
     def __init__(self, _name: str) -> None:
-        self.scopes: list[_RecordingScope] = []
+        self.scopes: dict[str, EventScope] = {}
         self.closed = False
 
-    async def create_scope(self, scope_id: str, **_: Any) -> _RecordingScope:
-        scope = _RecordingScope(scope_id)
-        self.scopes.append(scope)
+    @property
+    def scope_ids(self) -> list[str]:
+        return list(self.scopes)
+
+    @property
+    def scope_count(self) -> int:
+        return len(self.scopes)
+
+    def get_scope(self, scope_id: str) -> EventScope:
+        return self.scopes[scope_id]
+
+    async def create_scope(self, scope_id: str, **options: Any) -> EventScope:
+        scope = EventScope(scope_id, **options)
+        self.scopes[scope_id] = scope
         return scope
 
-    async def close_scope(self, _scope_id: str) -> None:
-        return None
+    async def close_scope(self, scope_id: str) -> Any:
+        scope = self.scopes[scope_id]
+        result = await scope.close()
+        if scope.is_closed:
+            self.scopes.pop(scope_id)
+        return result
 
-    async def close_all(self) -> None:
+    async def close_all(self) -> dict[str, Any]:
+        results = {}
+        for scope_id in tuple(self.scopes):
+            results[scope_id] = await self.close_scope(scope_id)
         self.closed = True
+        return results
 
 
 class TestPageLifecycleWiring:

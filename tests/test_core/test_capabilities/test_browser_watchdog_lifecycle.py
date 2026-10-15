@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from agent_cdp import EventScope, ScopeGroup
 
 # Concrete DOM strategies register on import. Production gets these via the
 # composer's recursive ``discover()`` pass (composer.py:177-188); these tests
@@ -72,38 +73,13 @@ class _CDP:
         return {m: len(c) for m, c in self.event_callbacks.items() if c}
 
 
-class _Scope:
-    def __init__(self, scope_id: str = "scope") -> None:
-        self.scope_id = scope_id
-
-    def connect(self, *_a: Any, **_k: Any) -> Any:
-        return None
-
-    def emit(self, _event: Any) -> None:
-        return None
-
-
-class _ScopeGroup:
-    def __init__(self, _name: str = "test") -> None:
-        self.closed = False
-
-    async def create_scope(self, scope_id: str, **_k: Any) -> _Scope:
-        return _Scope(scope_id)
-
-    async def close_scope(self, _scope_id: str) -> None:
-        return None
-
-    async def close_all(self) -> None:
-        self.closed = True
-
-
 def _make_cap(profile: str = "standard") -> tuple[BrowserCapability, _CDP]:
     cap = BrowserCapability(profile=profile)
     cdp = _CDP()
     cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
     cap._cdp = cdp  # type: ignore[assignment]
     cap._input_platform = "macos"  # lifecycle fixture begins after platform measurement
-    cap._scope_group = _ScopeGroup()  # type: ignore[assignment]
+    cap._scope_group = ScopeGroup("test")  # type: ignore[assignment]
     cap._resolved_profile = resolve_profile(profile)
     return cap, cdp
 
@@ -227,7 +203,7 @@ class TestWatchdogBridgesAreClosed:
 
     async def test_teardown_releases_watchdog_callbacks(self) -> None:
         cap, cdp = _make_cap("standard")
-        cap._global_scope = _Scope("__browser__")  # type: ignore[assignment]
+        cap._global_scope = await cap._scope_group.create_scope("__browser__")  # type: ignore[assignment]
         cap._attach_browser_level_watchdogs(cap._global_scope)  # type: ignore[arg-type]
         await cap._attach_tab("T1")
         cap._default_session_id = "cdp-sid-1"
@@ -247,7 +223,8 @@ class TestWatchdogBridgesAreClosed:
 
         cdp = _CDP()
         wd = PopupsWatchdog(cdp)  # type: ignore[arg-type]
-        wd.attach(_Scope(), session_id="s1")  # type: ignore[arg-type]
-        wd.detach()
-        wd.detach()  # must not raise
+        scope = EventScope("test")
+        wd.attach(scope, session_id="s1")  # type: ignore[arg-type]
+        wd.detach(scope, "s1")
+        wd.detach(scope, "s1")  # must not raise
         assert cdp.live_callbacks() == {}

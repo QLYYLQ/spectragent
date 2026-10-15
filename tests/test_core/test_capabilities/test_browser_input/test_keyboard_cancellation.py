@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from typing import Any
 
 import pytest
 
@@ -21,8 +22,14 @@ async def test_cancelled_keydown_still_attempts_bounded_keyup(
     down_started, up_started, up_stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     class ControlledCDP(RecordCDP):
-        async def send(self, method, params=None, session_id=None):
-            await super().send(method, params, session_id)
+        async def send(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            session_id: str | None = None,
+            timeout: float | None = None,
+        ) -> dict[str, Any]:
+            await super().send(method, params, session_id, timeout)
             if (params or {}).get("type") == "keyDown":
                 down_started.set()
                 if keydown_fails:

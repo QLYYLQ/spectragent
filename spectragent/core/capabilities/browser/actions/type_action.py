@@ -17,11 +17,11 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
-    handler_error,
     handler_field,
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import TypeTextEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -86,11 +86,7 @@ class TypeAction(SettleableAction, ActionBase):
                 text=text,
                 clear=clear,
             )
-            scope.emit(event)
-            await event
-            error = handler_error(event)
-            if error is not None:
-                return ActionResult(success=False, error=error)
+            await dispatch_request(scope, event)
             await self.settle()
             return ActionResult(
                 success=True, typed_into_sensitive_field=handler_field(event, "sensitive")

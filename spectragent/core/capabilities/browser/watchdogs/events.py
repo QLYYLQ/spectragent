@@ -105,11 +105,9 @@ class NavigateToUrlEvent(BaseEvent[dict[str, Any] | None]):
 
     The handler answers ``{"error": ...}`` when the navigation failed and
     ``None`` otherwise. ``event_timeout`` — how long ``await event`` waits, and
-    agent-cdp's own bound on the handler — is derived from the two waits when
-    it is not given: both plus :data:`NAVIGATION_EVENT_MARGIN_S`. Its clock
-    starts when the event is emitted, before ``Page.navigate`` is even sent,
-    so with the two equal (30 s each, as they once were) it always ended
-    first and the carry-on above was never reached.
+    ``execution_timeout`` — the separate handler budget — both default to
+    the two waits plus :data:`NAVIGATION_EVENT_MARGIN_S`. The caller's wait
+    includes queue time; the execution budget starts when its handler starts.
     """
 
     url: str
@@ -143,6 +141,10 @@ class NavigateToUrlEvent(BaseEvent[dict[str, Any] | None]):
             self.event_timeout = (
                 self.commit_timeout_s + self.lifecycle_timeout_s + NAVIGATION_EVENT_MARGIN_S
             )
+        if "execution_timeout" not in self.model_fields_set:
+            self.execution_timeout = (
+                self.commit_timeout_s + self.lifecycle_timeout_s + NAVIGATION_EVENT_MARGIN_S
+            )
         return self
 
 
@@ -155,6 +157,7 @@ class ClickElementEvent(BaseEvent[dict[str, Any] | None]):
     button: str = "left"
     click_count: int = 1
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 class ClickCoordinateEvent(BaseEvent[dict[str, Any] | None]):
@@ -165,6 +168,7 @@ class ClickCoordinateEvent(BaseEvent[dict[str, Any] | None]):
     button: str = "left"
     click_count: int = 1
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 class TypeTextEvent(BaseEvent[dict[str, Any] | None]):
@@ -176,6 +180,7 @@ class TypeTextEvent(BaseEvent[dict[str, Any] | None]):
     text: str
     clear: bool = True
     event_timeout: float = 60.0
+    execution_timeout: float = 60.0
 
 
 class TypeAtCoordinateEvent(BaseEvent[dict[str, Any] | None]):
@@ -194,6 +199,7 @@ class TypeAtCoordinateEvent(BaseEvent[dict[str, Any] | None]):
     text: str
     clear: bool = True
     event_timeout: float = 60.0
+    execution_timeout: float = 60.0
 
 
 class DragEvent(BaseEvent[dict[str, Any] | None]):
@@ -205,6 +211,7 @@ class DragEvent(BaseEvent[dict[str, Any] | None]):
     end_y: int
     button: str = "left"
     event_timeout: float = 30.0
+    execution_timeout: float = 30.0
 
 
 class ScrollEvent(BaseEvent[None]):
@@ -216,6 +223,7 @@ class ScrollEvent(BaseEvent[None]):
     #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
     session_id: str | None = None
     event_timeout: float = 8.0
+    execution_timeout: float = 8.0
 
 
 class SendKeysEvent(BaseEvent[None]):
@@ -223,24 +231,28 @@ class SendKeysEvent(BaseEvent[None]):
 
     keys: str
     event_timeout: float = 60.0
+    execution_timeout: float = 60.0
 
 
 class GoBackEvent(BaseEvent[None]):
     """Navigate back in browser history."""
 
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 class GoForwardEvent(BaseEvent[None]):
     """Navigate forward in browser history."""
 
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 class RefreshEvent(BaseEvent[None]):
     """Refresh the current page."""
 
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 class SelectDropdownEvent(BaseEvent[None]):
@@ -253,6 +265,7 @@ class SelectDropdownEvent(BaseEvent[None]):
     text: str | None = None
     index: int | None = None
     event_timeout: float = 10.0
+    execution_timeout: float = 10.0
 
 
 class ExtractContentEvent(BaseEvent[str | None]):
@@ -270,6 +283,7 @@ class ExtractContentEvent(BaseEvent[str | None]):
     #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
     session_id: str | None = None
     event_timeout: float = 30.0
+    execution_timeout: float = 30.0
 
 
 class DoneEvent(BaseEvent[None]):
@@ -277,6 +291,7 @@ class DoneEvent(BaseEvent[None]):
 
     extracted_content: str | None = None
     event_timeout: float = 5.0
+    execution_timeout: float = 5.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -303,6 +318,7 @@ class ScreenshotRequestEvent(BaseEvent[bytes]):
     format: str = "png"  # "png" | "jpeg" | "webp"
     quality: int | None = None  # jpeg/webp quality 0-100
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
@@ -322,6 +338,7 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
 
     fragments: frozenset[str] = frozenset()
     event_timeout: float = 30.0
+    execution_timeout: float = 30.0
 
 
 class ExecuteJavaScriptEvent(BaseEvent[dict[str, Any]]):
@@ -341,6 +358,7 @@ class ExecuteJavaScriptEvent(BaseEvent[dict[str, Any]]):
     #: OOP iframe target discovered under this tab, if different.
     target_session_id: str | None = None
     event_timeout: float = 15.0
+    execution_timeout: float = 15.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

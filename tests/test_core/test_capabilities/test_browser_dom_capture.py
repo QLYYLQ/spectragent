@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from agent_cdp import EventScope
 
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
 from spectragent.core.capabilities.browser.dom import capture as capture_module
@@ -325,22 +326,24 @@ class TestFrameTable:
     async def test_dom_watchdog_detach_releases_the_callbacks(self) -> None:
         cdp = tree()
         wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=True)  # type: ignore[arg-type]
-        wd.attach(_Scope(), session_id="tab")  # type: ignore[arg-type]
+        scope = _Scope()
+        wd.attach(scope, session_id="tab")  # type: ignore[arg-type]
         assert cdp.callbacks["Target.attachedToTarget"]
-        wd.detach()
+        wd.detach(scope, "tab")
         assert not any(cdp.callbacks.values())
 
 
-class _Scope:
-    def connect(self, *_a: Any, **_k: Any) -> None:
-        return None
+class _Scope(EventScope):
+    def __init__(self) -> None:
+        super().__init__("test-tab")
 
 
 class TestTheProfileDecides:
     async def test_off_no_frame_is_discovered_or_listened_for(self) -> None:
         cdp = tree()
         wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=False)  # type: ignore[arg-type]
-        wd.attach(_Scope(), session_id="tab")  # type: ignore[arg-type]
+        scope = _Scope()
+        wd.attach(scope, session_id="tab")  # type: ignore[arg-type]
         wd._session_id = "tab"
         captured, _dpr = await wd._capture_cdp_data()
 
@@ -348,16 +351,17 @@ class TestTheProfileDecides:
         assert cdp.sent_to("Target.setAutoAttach") == []
         assert captured.frames == {}
         assert sorted(s or "" for s in cdp.sent_to("DOM.getDocument")) == ["tab"]
-        wd.detach()
+        wd.detach(scope, "tab")
 
     async def test_on_every_frame_target_is_captured(self) -> None:
         cdp = tree()
         wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=True)  # type: ignore[arg-type]
-        wd.attach(_Scope(), session_id="tab")  # type: ignore[arg-type]
+        scope = _Scope()
+        wd.attach(scope, session_id="tab")  # type: ignore[arg-type]
         captured, _dpr = await wd._capture_cdp_data()
         assert set(captured.frames) == {"CROSS"}
         assert set(captured.frames["CROSS"].frames) == {"NESTED"}
-        wd.detach()
+        wd.detach(scope, "tab")
 
 
 class TestAFrameCannotStallTheObservation:

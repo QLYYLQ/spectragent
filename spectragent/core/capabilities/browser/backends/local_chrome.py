@@ -27,6 +27,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import Field
@@ -53,6 +54,7 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     merge_chrome_switches,
     split_switch,
 )
+from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.schemas.provider_session import ProviderSession
 
 logger = logging.getLogger(__name__)
@@ -232,6 +234,49 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _launch_override(name: str, args: Sequence[str], default: Any) -> Any:
+    """Chrome uses the last scalar switch; keep its ownership facts in that order."""
+    value = default
+    for arg in args:
+        switch, candidate = split_switch(arg)
+        if switch == name:
+            if not candidate:
+                raise ValueError(f"{name} in extra_args/launch_args requires an explicit =value")
+            value = candidate
+    return value
+
+
+def _check_available_port(port: int) -> None:
+    """Fail before launch when the configured loopback endpoint is already occupied."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+        try:
+            reservation.bind(("127.0.0.1", port))
+        except OSError as exc:
+            raise RuntimeError(
+                f"local_chrome remote_debugging_port={port} is unavailable: {exc}; "
+                "the existing service was not connected or stopped"
+            ) from exc
+
+
+async def _settle(task: asyncio.Task[Any]) -> Any:
+    """Finish ownership cleanup even if its caller is cancelled again."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
+
+
+@dataclass
+class _OwnedChrome:
+    """Resources of exactly one subprocess, never looked up again by a numeric PID."""
+
+    process: asyncio.subprocess.Process
+    temporary_profile: str | None
+    closing: asyncio.Task[None] | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -468,10 +513,7 @@ class LocalChromeProvider(BrowserProviderBase):
     ] = 5.0
 
     # ── internal state (excluded from config) ──────────────────────────
-    _processes: dict[str, asyncio.subprocess.Process] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _temp_dirs: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _launches: dict[str, _OwnedChrome] = field(default_factory=dict, init=False, repr=False)
 
     # -------------------------------------------------------------------
     # Build Chrome CLI arguments
@@ -594,78 +636,103 @@ class LocalChromeProvider(BrowserProviderBase):
         """
         env = dict(launch_env or {})
         session_id = str(uuid.uuid4())
-
-        # Resolve port.
-        port = (
-            kwargs.get("remote_debugging_port") or self.remote_debugging_port or _find_free_port()
+        overrides = [*(self.extra_args or ()), *launch_args]
+        configured_port = _launch_override(
+            "--remote-debugging-port",
+            overrides,
+            kwargs.get("remote_debugging_port", self.remote_debugging_port),
         )
+        port = _find_free_port() if configured_port is None else int(configured_port)
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                f"local_chrome remote_debugging_port={configured_port!r} must be 1..65535"
+            )
+        _check_available_port(port)
 
-        # Resolve user data dir: the configuration's, or a fresh temporary one.
-        udd = kwargs.get("user_data_dir") or self.user_data_dir
+        # Resolve everything that can fail before creating an owned directory.
+        executable = kwargs.get("executable_path") or self.executable_path or find_chrome()
+        udd = _launch_override(
+            "--user-data-dir",
+            overrides,
+            kwargs.get("user_data_dir") or self.user_data_dir,
+        )
+        if udd is not None and (not isinstance(udd, str) or not udd):
+            raise ValueError("local_chrome user_data_dir must be a non-empty path or None")
         temp_dir: str | None = None
         if udd is None:
             temp_dir = tempfile.mkdtemp(prefix="chrome-profile-")
             udd = temp_dir
-
-        # Resolve executable.
-        executable = kwargs.get("executable_path") or self.executable_path or find_chrome()
-
-        # Build args.
-        chrome_args = self._chrome_args(port, udd, launch_args)
-        cmd = [executable, *chrome_args, self.startup_url]
-
-        logger.info("Launching Chrome: %s (port=%d)", executable, port)
-        logger.debug("Chrome args: %s", " ".join(cmd))
-
-        # Launch subprocess.
-        #
-        # ``DEVNULL``, not ``PIPE``: nothing in this package ever reads
-        # ``process.stdout`` / ``process.stderr``, and an undrained pipe is not
-        # merely wasteful. It has a fixed kernel buffer (64 KiB on macOS), and
-        # Chrome is chatty on stderr — GPU, font and DevTools notices — so a
-        # long enough session fills it and Chrome then blocks in ``write()``
-        # forever, with no log line to say so. The visible symptom was milder:
-        # the transport keeps a pipe protocol alive past the run, so its
-        # ``__del__`` fires after the loop is gone and ``proto.pipe.close()``
-        # calls ``call_soon`` on a closed loop — "RuntimeError: Event loop is
-        # closed", printed after an otherwise successful run. ``DEVNULL``
-        # leaves ``BaseSubprocessTransport._pipes`` empty, settling both.
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env={**os.environ, **env} if env else None,
-        )
-
-        # Wait for CDP to become ready.
+        udd = os.path.abspath(os.path.expanduser(udd))
+        process: asyncio.subprocess.Process | None = None
         try:
-            cdp_url = await self._wait_for_cdp(port)
-        except Exception:
-            await self._kill_process(process)
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            chrome_args = self._chrome_args(port, udd, launch_args)
+            # Raw overrides remain legal, but every occurrence spells the same
+            # effective resource. In particular, a relative path or ~ cannot make
+            # metadata describe a different profile from the one Chrome opened.
+            chrome_args = [
+                f"--user-data-dir={udd}"
+                if split_switch(arg)[0] == "--user-data-dir"
+                else f"--remote-debugging-port={port}"
+                if split_switch(arg)[0] == "--remote-debugging-port"
+                else arg
+                for arg in chrome_args
+            ]
+            cmd = [executable, *chrome_args, self.startup_url]
+            logger.info("Launching Chrome: %s (port=%d)", executable, port)
+
+            # Both streams are discarded: an undrained pipe can stop Chrome once
+            # its kernel buffer fills. Ownership is proved by a read-only CDP query.
+            spawning = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env={**os.environ, **env} if env else None,
+                )
+            )
+            try:
+                process = await asyncio.shield(spawning)
+            except asyncio.CancelledError as cancellation:
+                # Cancelling create_subprocess_exec can lose the process handle
+                # after fork. Finish acquiring it, then let the common cleanup own it.
+                try:
+                    process = await _settle(spawning)
+                except Exception as spawn_error:
+                    cancellation.add_note(f"Chrome process creation also failed: {spawn_error}")
+                raise
+            assert process is not None
+            self._launches[session_id] = _OwnedChrome(process, temp_dir)
+            cdp_url = await self._wait_for_cdp(port, process, udd)
+            return ProviderSession(
+                session_id=session_id,
+                provider_id=self.provider_id,
+                cdp_url=cdp_url,
+                metadata={
+                    "pid": process.pid,
+                    "port": port,
+                    "executable": executable,
+                    "user_data_dir": udd,
+                    "headless": self.headless,
+                    "command_line": list(cmd),
+                    "launch_env": env,
+                    "launch_flags": _fingerprintable_flags(chrome_args, env),
+                },
+            )
+        except BaseException as failure:
+            if process is not None:
+                self._launches.setdefault(session_id, _OwnedChrome(process, temp_dir))
+                try:
+                    await _settle(asyncio.create_task(self._close_session(session_id)))
+                except BaseException as cleanup_error:
+                    failure.add_note(f"Chrome cleanup also failed: {cleanup_error}")
+            elif temp_dir is not None:
+                try:
+                    shutil.rmtree(temp_dir)
+                except OSError as cleanup_error:
+                    failure.add_note(
+                        f"Chrome temporary profile cleanup also failed: {cleanup_error}"
+                    )
             raise
-
-        # Store for cleanup.
-        self._processes[session_id] = process
-        if temp_dir:
-            self._temp_dirs[session_id] = temp_dir
-
-        return ProviderSession(
-            session_id=session_id,
-            provider_id=self.provider_id,
-            cdp_url=cdp_url,
-            metadata={
-                "pid": process.pid,
-                "port": port,
-                "executable": executable,
-                "user_data_dir": udd,
-                "headless": self.headless,
-                "command_line": list(cmd),
-                "launch_env": env,
-                "launch_flags": _fingerprintable_flags(chrome_args, env),
-            },
-        )
 
     # -------------------------------------------------------------------
     # LaunchArgsProvider (LAUNCH_ARGS)
@@ -797,59 +864,134 @@ class LocalChromeProvider(BrowserProviderBase):
         return "; ".join(found) or None
 
     async def close(self, session: ProviderSession | None = None) -> None:
-        """Shut down Chrome process(es)."""
-        if session is not None:
-            await self._close_session(session.session_id)
-            return
-        # Close all.
-        for sid in list(self._processes):
-            await self._close_session(sid)
+        """Release the requested session, or attempt every owned session's cleanup."""
+        sessions = [session.session_id] if session is not None else list(self._launches)
+        failures: list[BaseException] = []
+        for session_id in sessions:
+            try:
+                await self._close_session(session_id)
+            except BaseException as exc:
+                failures.append(exc)
+        cancellation = next(
+            (failure for failure in failures if isinstance(failure, asyncio.CancelledError)), None
+        )
+        if cancellation is not None:
+            for failure in failures:
+                if failure is not cancellation:
+                    cancellation.add_note(f"Chrome cleanup also failed: {failure}")
+            raise cancellation
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Local Chrome session cleanup failed", failures)
 
     # -------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------
 
-    async def _wait_for_cdp(self, port: int) -> str:
-        """Poll ``/json/version`` until Chrome's CDP endpoint is ready."""
+    async def _wait_for_cdp(
+        self,
+        port: int,
+        process: asyncio.subprocess.Process,
+        user_data: str,
+    ) -> str:
+        """Accept an endpoint only after its browser process matches this launch."""
         url = f"http://127.0.0.1:{port}/json/version"
-        deadline = asyncio.get_event_loop().time() + self.cdp_wait_timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.cdp_wait_timeout
+        launch = f"pid={process.pid}, remote_debugging_port={port}, user_data_dir={user_data!r}"
 
-        # ``trust_env=False`` keeps this poll off any ambient ``http_proxy``.
-        # Routing loopback through a proxy does not merely add a hop: while the
-        # port is still closed the proxy accepts the connection and then stalls,
-        # so the poll raises ReadTimeout instead of ConnectError. Every failure
-        # mode here is "not ready yet", so the retry catches TransportError as a
-        # whole rather than enumerating classes — an unlisted one used to abort
-        # startup on the first iteration instead of retrying to the deadline.
-        # ValueError covers a torn /json/version body during Chrome's boot.
+        def check_alive() -> None:
+            if process.returncode is not None:
+                raise RuntimeError(
+                    f"local_chrome launch ({launch}) exited with code {process.returncode} "
+                    "before endpoint ownership was established; the profile may already "
+                    "belong to another Chrome process"
+                )
+
+        # No ambient proxy, even while a closed loopback port is being retried.
         async with httpx.AsyncClient(trust_env=False) as client:
-            while asyncio.get_event_loop().time() < deadline:
+            while loop.time() < deadline:
+                check_alive()
+                ws_url = None
                 try:
-                    resp = await client.get(url, timeout=2.0)
+                    resp = await client.get(url, timeout=min(2.0, deadline - loop.time()))
                     if resp.status_code == 200:
                         data = resp.json()
-                        ws_url = data.get("webSocketDebuggerUrl", "")
-                        if ws_url:
-                            logger.info("Chrome CDP ready: %s", ws_url)
-                            return ws_url
+                        ws_url = (
+                            data.get("webSocketDebuggerUrl") if isinstance(data, dict) else None
+                        )
                 except (httpx.TransportError, ValueError):
                     pass
-                await asyncio.sleep(0.2)
+                check_alive()
+                if ws_url:
+                    address = urlsplit(ws_url)
+                    if (
+                        address.scheme != "ws"
+                        or address.hostname not in ("127.0.0.1", "localhost")
+                        or address.port != port
+                        or not address.path.startswith("/devtools/browser/")
+                    ):
+                        raise RuntimeError(
+                            f"local_chrome launch ({launch}) advertised an unexpected endpoint {ws_url!r}"
+                        )
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        async with asyncio.timeout(remaining):
+                            async with CDPClient(ws_url, proxy=None) as probe:
+                                result = await probe.send("SystemInfo.getProcessInfo")
+                        browser_pids = [
+                            info.get("id")
+                            for info in result.get("processInfo", [])
+                            if isinstance(info, dict) and info.get("type") == "browser"
+                        ]
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"local_chrome cannot establish endpoint ownership for launch ({launch}): {exc}"
+                        ) from exc
+                    check_alive()
+                    if browser_pids != [process.pid]:
+                        raise RuntimeError(
+                            f"local_chrome endpoint ownership mismatch for launch ({launch}): "
+                            f"CDP reports browser process IDs {browser_pids!r}; existing browser was not adopted"
+                        )
+                    logger.info("Chrome CDP ownership verified: %s (pid=%s)", ws_url, process.pid)
+                    return ws_url
+                await asyncio.sleep(min(0.2, max(0.0, deadline - loop.time())))
 
+        check_alive()
         raise TimeoutError(
-            f"Chrome CDP endpoint did not become ready within {self.cdp_wait_timeout}s "
-            f"(port {port})"
+            f"Chrome CDP endpoint did not become ready within {self.cdp_wait_timeout}s ({launch})"
         )
 
     async def _close_session(self, session_id: str) -> None:
-        """Close a single Chrome session."""
-        process = self._processes.pop(session_id, None)
-        if process is not None:
-            await self._kill_process(process)
+        owned = self._launches.get(session_id)
+        if owned is None:
+            return
+        if owned.closing is None or owned.closing.done():
+            owned.closing = asyncio.create_task(self._release_session(session_id, owned))
+        try:
+            await asyncio.shield(owned.closing)
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _settle(owned.closing)
+            except BaseException as cleanup_error:
+                cancellation.add_note(f"Chrome cleanup also failed: {cleanup_error}")
+            raise
 
-        temp_dir = self._temp_dirs.pop(session_id, None)
-        if temp_dir:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+    async def _release_session(self, session_id: str, owned: _OwnedChrome) -> None:
+        await self._kill_process(owned.process)
+        # Only a confirmed exited process permits deleting its temporary profile.
+        # A failed kill retains the ownership record so close() can be retried.
+        if owned.process.returncode is None:
+            raise RuntimeError(
+                f"Chrome process {owned.process.pid} has not exited; its profile is retained"
+            )
+        if owned.temporary_profile is not None:
+            shutil.rmtree(owned.temporary_profile)
+        self._launches.pop(session_id, None)
 
     async def _kill_process(self, process: asyncio.subprocess.Process) -> None:
         """Gracefully terminate, then force-kill if needed."""

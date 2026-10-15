@@ -166,6 +166,25 @@ async def test_emitted_on_the_first_collection_then_only_on_change() -> None:
         await cap.teardown()
 
 
+async def test_nonempty_batches_repeat_their_fingerprint_after_an_uncommitted_batch() -> None:
+    from spectragent.core.capabilities.browser.archive import DomRawArchiver
+
+    cap, driver = archiving_capability(archivers=(DomRawArchiver(),))
+    await driver.start()
+    try:
+        await driver.observe()
+        discarded = await cap.collect_archive()
+        await driver.observe()
+        following = await cap.collect_archive()
+        first = next(file for file in discarded.files if file.scope == "run")
+        second = next(file for file in following.files if file.scope == "run")
+        assert first.data == second.data
+        assert any(file.scope == "step" for file in following.files)
+        assert not (await cap.collect_archive()).files
+    finally:
+        await cap.teardown()
+
+
 async def test_off_probes_in_an_isolated_world_once_per_document() -> None:
     """The page never runs the probe in its own world, and a quiet step does not rerun it."""
     recorder = _Probed()
