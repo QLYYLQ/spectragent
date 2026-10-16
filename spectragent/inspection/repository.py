@@ -11,7 +11,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -20,6 +20,12 @@ from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
+from spectragent.inspection.restoration import (
+    restoration_gap,
+    restoration_overview,
+    restoration_results,
+)
+from spectragent.schemas.observation.image import read_model_image
 
 
 class RepositoryError(ValueError):
@@ -33,7 +39,9 @@ class RunRepository(Protocol):
     def matches(self, key: str) -> bool: ...
     def run(self, key: str) -> dict[str, Any]: ...
     def step(self, key: str, index: int) -> dict[str, Any]: ...
-    def screenshot(self, key: str, index: int) -> bytes | None: ...
+    def screenshot(
+        self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
+    ) -> bytes | None: ...
     def compare(self, keys: list[str]) -> dict[str, Any]: ...
     def compare_groups(self, left: str, right: str, evaluator: str) -> dict[str, Any]: ...
     def reports(self) -> list[dict[str, Any]]: ...
@@ -136,6 +144,21 @@ def _execution_kind(config: TraceConfig) -> str:
     return "replay" if network == "archive" else "live" if network == "live" else "unknown"
 
 
+def _strategy(config: TraceConfig) -> dict[str, Any]:
+    loops = [
+        block for block in _mappings(config.resolved) if block.get("loop_id") == config.loop_id
+    ]
+    loop = loops[0] if len(loops) == 1 else {}
+    restorer = loop.get("restorer") or {}
+    return {
+        "history_source": loop.get("history_source"),
+        "verify": restorer.get("verify") if isinstance(restorer, dict) else None,
+        "restorer": restorer.get("restorer_id") if isinstance(restorer, dict) else None,
+        "continue_steps": loop.get("continue_steps"),
+        "max_steps": loop.get("max_steps"),
+    }
+
+
 def _replay_log(trace: RunTrace) -> dict[str, Any]:
     from spectragent.core.capabilities.browser.replay.replay_log import iter_decisions
 
@@ -187,6 +210,7 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "config_hash": manifest.config_hash,
         "config_source": _json(config.config_source),
         "execution_kind": _execution_kind(config),
+        "strategy": _strategy(config),
         "created_at": manifest.created_at.isoformat(),
         "updated_at": manifest.updated_at.isoformat(),
         "agent_done": str(result.agent_done) if result else None,
@@ -349,6 +373,7 @@ class _FileRepository:
                         "recording_ms": trace.recording_timing(entry.step),
                         "has_screenshot": bool(_has_screenshot(entry)),
                         "fragment_keys": list(entry.fragments),
+                        "gap": restoration_gap(_json(record)),
                         "call_count": len(entry.call_metrics)
                         if trace.config.recording.metrics
                         else None,
@@ -374,6 +399,11 @@ class _FileRepository:
                 "usage": _json(usage),
                 "source_key": execution["source_key"],
                 "execution": execution,
+                "restoration_overview": restoration_overview(
+                    steps, trace.config.branch.checkpoint_step
+                )
+                if trace.config.branch
+                else None,
                 "replay_log": _replay_log(trace),
             }
         except (TraceSchemaError, KeyError) as exc:
@@ -425,7 +455,57 @@ class _FileRepository:
             "checkpoint": branch.checkpoint_step if branch else None,
             "relationship": "branch" if branch else "replay" if _replay_archive(config) else None,
             "source_resolution": resolution,
+            **_strategy(config),
         }
+
+    def _comparison(self, trace: RunTrace, record: Any) -> dict[str, Any] | None:
+        if trace.config.branch is None or (
+            record.restoration is None and record.origin != "restored"
+        ):
+            return None
+        execution = self._execution(trace)
+        source_step = record.source_history.source_step if record.source_history else record.step
+        comparison = {
+            "history_source": execution["history_source"],
+            "source_key": execution["source_key"],
+            "source_step": source_step,
+            "source_status": execution["source_resolution"],
+            "source": None,
+            "error": None,
+            "results": restoration_results(_json(record), None),
+        }
+        if (
+            record.source_history
+            and record.source_history.source_run_id != trace.config.branch.source_run_id
+        ):
+            comparison.update(
+                source_key=None,
+                source_status="inconsistent_reference",
+                error="The step and run name different source runs.",
+            )
+            return comparison
+        if execution["source_key"] is None:
+            return comparison
+        try:
+            source = self._trace(execution["source_key"])
+            original = source.step(source_step)
+            if original is None:
+                comparison["source_status"] = "missing_step"
+                return comparison
+            entry = next(item for item in source.manifest.steps if item.step == source_step)
+            comparison["source"] = {
+                "record": _json(original),
+                "fragments": {
+                    name: _json(source.observation_fragment(source_step, name))
+                    for name in entry.fragments
+                },
+                "has_screenshot": bool(_has_screenshot(entry)),
+                "recording": _json(source.config.recording),
+            }
+            comparison["results"] = restoration_results(_json(record), _json(original))
+        except (RepositoryError, TraceSchemaError, OSError, KeyError) as exc:
+            comparison.update(source_status="unreadable", error=str(exc))
+        return comparison
 
     def step(self, key: str, index: int) -> dict[str, Any]:
         trace = self._trace(key)
@@ -461,14 +541,33 @@ class _FileRepository:
                     ]
                 ),
                 "has_screenshot": bool(_has_screenshot(entry)),
+                "gap": restoration_gap(_json(record)),
+                "comparison": self._comparison(trace, record),
             }
         except (TraceSchemaError, KeyError) as exc:
             raise RepositoryError(str(exc)) from exc
 
-    def screenshot(self, key: str, index: int) -> bytes | None:
+    def screenshot(
+        self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
+    ) -> bytes | None:
         try:
-            return self._trace(key).screenshot(index)
-        except TraceSchemaError as exc:
+            trace = self._trace(key)
+            if view == "browser":
+                return trace.screenshot(index)
+            if view != "agent":
+                raise RepositoryError(f"Unknown screenshot view: {view}")
+            trace.require_recording("observations", consumer="agent observation viewing")
+            entry = next((entry for entry in trace.manifest.steps if entry.step == index), None)
+            if entry is not None:
+                for name, files in entry.fragments.items():
+                    if (
+                        name.rsplit(".", 1)[-1] == "screenshot"
+                        and files.artifact
+                        and not files.failed
+                    ):
+                        return read_model_image(trace.observation_fragment(index, name))
+            return None
+        except (TraceSchemaError, TypeError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
 
     def compare(self, keys: list[str]) -> dict[str, Any]:

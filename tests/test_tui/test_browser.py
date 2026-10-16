@@ -5,7 +5,7 @@ import threading
 from typing import cast
 
 import pytest
-from textual.widgets import DataTable, Input, RichLog, Static
+from textual.widgets import DataTable, Input, Static, TextArea
 
 from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
@@ -36,7 +36,7 @@ async def test_select_run_then_step_and_search(tmp_path):
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        rendered = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        rendered = app.query_one("#content", TextArea).text
         assert '"record"' in rendered
         assert '"calls"' in rendered
         app.query_one("#search", Input).value = "does not exist"
@@ -44,6 +44,45 @@ async def test_select_run_then_step_and_search(tmp_path):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert runs.row_count == 0
+
+
+async def test_details_can_be_selected_and_copied_without_closing(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        content = app.query_one("#content", TextArea)
+        content.focus()
+        await pilot.press("f7", "ctrl+c")
+        assert content.selected_text == content.text
+        assert app.clipboard == content.text
+        assert app.is_running
+        assert '"summary"' in app.clipboard
+        before = content.text
+        await pilot.press("x", "backspace")
+        assert content.text == before
+        app.query_one("#runs", DataTable).focus()
+        await pilot.press("f8")
+        assert app.clipboard == before
+
+
+async def test_search_selection_ctrl_c_copies_instead_of_closing(tmp_path):
+    app = BrowserApp(open_repository(tmp_path))
+    async with app.run_test() as pilot:
+        search = app.query_one("#search", Input)
+        search.value = "history"
+        search.focus()
+        await pilot.press("ctrl+shift+a", "ctrl+c")
+        assert app.clipboard == "history"
+        assert app.is_running
+
+
+async def test_ctrl_c_from_run_table_still_closes_history_view(tmp_path):
+    app = BrowserApp(open_repository(tmp_path))
+    async with app.run_test() as pilot:
+        app.query_one("#runs", DataTable).focus()
+        await pilot.press("ctrl+c")
+        assert not app.is_running
 
 
 def test_terminal_does_not_expand_inline_images_into_megabytes():
@@ -131,18 +170,13 @@ async def test_search_is_debounced_and_old_detail_cannot_replace_new_selection()
             app._select_run("slow")
             await _until(repository.detail_started.is_set)
             app._select_run("fast")
-            await _until(
-                lambda: (
-                    '"run_id": "fast"'
-                    in "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
-                )
-            )
+            await _until(lambda: '"run_id": "fast"' in app.query_one("#content", TextArea).text)
             await pilot.pause()
             assert not repository.detail_finished.is_set()
             repository.detail_released.set()
             await _until(repository.detail_finished.is_set)
             await pilot.pause()
-            text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+            text = app.query_one("#content", TextArea).text
             assert '"run_id": "fast"' in text
             assert '"run_id": "slow"' not in text
     finally:
@@ -190,9 +224,7 @@ async def test_initial_run_and_source_checkpoint_keep_the_selected_root(tmp_path
         await pilot.press("s")
         await _until(
             lambda: (
-                app._selected == "source"
-                and '"record"'
-                in "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+                app._selected == "source" and '"record"' in app.query_one("#content", TextArea).text
             )
         )
         await pilot.pause()
@@ -222,7 +254,7 @@ async def test_source_unavailable_under_single_run_root_has_an_explicit_reason(t
         await _until(lambda: app._run_detail is not None and app._selected == ".")
         await pilot.press("s")
         await pilot.pause()
-        text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        text = app.query_one("#content", TextArea).text
         assert "unavailable under this root" in " ".join(text.split())
         assert app._selected == "."
 
@@ -255,7 +287,7 @@ async def test_unresolved_source_navigation_explains_the_recorded_resolution(res
         await _until(lambda: app._run_detail is not None)
         await pilot.press("s")
         await pilot.pause()
-        text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        text = app.query_one("#content", TextArea).text
         assert reason in " ".join(text.split())
         assert app._selected == "initial"
 
@@ -298,17 +330,12 @@ async def test_history_restoration_separates_source_success_from_actual_failure(
         await _until(lambda: app._run_detail is not None)
         steps = app.query_one("#steps", DataTable)
         assert "source: browser.click; actual: browser.click (failed)" in str(
-            steps.get_row_at(0)[2]
+            steps.get_row_at(0)[3]
         )
         steps.focus()
         await pilot.press("enter")
-        await _until(
-            lambda: (
-                '"actual_action_results"'
-                in "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
-            )
-        )
-        text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        await _until(lambda: '"actual_action_results"' in app.query_one("#content", TextArea).text)
+        text = app.query_one("#content", TextArea).text
         assert '"actual_restoration_actions"' in text
         assert '"live_success": false' in text
         assert '"source_reply": "recorded source reply"' in text

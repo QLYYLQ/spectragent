@@ -56,7 +56,7 @@ uv run spectragent components list --layer agent
 uv run spectragent config generate
 ```
 
-普通交互终端显示 Rich 实时进度；加 `--tui` 使用全屏界面。TUI 的阶段来自当前进程，显示的动作步骤标为已观察，是否持久化由 Trace 查看器确认。按 `q` 或 Ctrl-C 关闭正在执行的界面会请求取消并等待 trace 和环境收尾。不存在暂停或原地恢复的暗含操作。
+普通交互终端显示 Rich 实时进度；加 `--tui` 使用全屏界面。TUI 的阶段来自当前进程，显示的动作步骤标为已观察，是否持久化由 Trace 查看器确认。按 `q` 或在活动表格按 Ctrl-C 关闭正在执行的界面会请求取消并等待 trace 和环境收尾。详情与日志支持鼠标或 Shift+方向键选择，F7 全选，Ctrl-C 复制选区（无选区时复制当前文本）；F8 直接复制详情或当前日志。日志有选区时暂缓刷新。本机 macOS 使用系统剪贴板，SSH 使用终端 OSC 52 剪贴板支持。不存在暂停或原地恢复的暗含操作。
 
 ```bash
 uv run spectragent run --config configs/browser_use_local.yaml \
@@ -89,6 +89,8 @@ uv run spectragent tui --root traces --run branch/RUN_KEY
 
 `--config-hash` 是另一种筛选：精确选择 Trace 已记录的有效配置摘要，可与来源路径取交集；它不是源 YAML 字节摘要。`--run` 与显式筛选冲突会在打开界面前拒绝。若源录制与分叉分别在 `record/`、`branch/`，请选它们的共同父目录作为 root；TUI 的 `s` 跳到所选运行的源检查点，网页提供同样的链接，不越界打开根外的来源。
 
+分叉页面直接显示 `source/restored` 历史策略与 `strict/warn` 恢复策略，时间线标出 checkpoint 和可测差异。Observation 中并排查看 Source record 与 Actual replay，包括截图、URL/DOM 校验、动作重定位、原结果与实际结果；通过恢复校验仍可能存在容差内的截图差异。Agent observation 默认按录制的 cursor 配置重建模型图片；Browser state 切回干净截图。cursor 开启但位置未知时保持原图并明确标注，精确发送的 prompt 图片在 Model calls 查看。
+
 恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
 
 查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、评测、配置和分叉来源。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择 evaluator；重复尝试记为 ambiguous，不自动挑最好的一次。判分配置不同不合并统计。报告页读取同一根目录下的独立评测、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
@@ -100,6 +102,8 @@ ssh -L 8765:127.0.0.1:8765 your-server
 ```
 
 网页前端已经随 Python 包分发，使用者无需 Node。修改前端源码时，在 `frontend/viewer` 执行 `npm ci`、`npm run build`，产物写入 `spectragent/viewer/static/`。界面不会重新执行网络回放或调用 judge；这两项仍由各自运行命令明确启动。
+
+`view` 在前台运行。在启动它的终端按 Ctrl-C 会关闭监听端口，未完成请求有 2 秒退出宽限；关闭浏览器标签不会停止服务。若另一个已脱离终端的 viewer 仍占着端口，先用 `lsof -nP -iTCP:8765 -sTCP:LISTEN` 查 PID，再用 `ps -p PID -o command=` 确认是预期的 `spectragent view`，然后 `kill -INT PID`；不要按端口盲目结束其它程序。
 
 ## 独立评测已录下的任务
 

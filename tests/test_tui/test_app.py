@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 import pytest
-from textual.widgets import DataTable, RichLog, Static, TabbedContent
+from textual.widgets import DataTable, Static, TabbedContent, TextArea
 
 from spectragent.monitoring import ProgressState
 from spectragent.schemas.action import Action, ActionResult
@@ -31,6 +31,43 @@ async def test_progress_is_rendered_and_return_value_survives_closure():
         assert "FINISHED" in str(app.query_one("#summary", Static).render())
         await pilot.press("q")
     assert app.operation_result() == 17
+
+
+async def test_copy_does_not_cancel_live_run_and_log_selection_survives_refresh():
+    state = ProgressState()
+    release = asyncio.Event()
+
+    async def operation():
+        await release.wait()
+
+    app = MonitorApp(operation, state)
+    async with app.run_test(size=(110, 40)) as pilot:
+        app._show_details({"history_source": "source", "actual": "changed"})
+        await pilot.pause()
+        detail = app.query_one("#details", TextArea)
+        detail.focus()
+        await pilot.press("f7", "ctrl+c")
+        assert app.clipboard == detail.text
+        assert not app._cancel_requested
+        assert app.operation is not None and not app.operation.done()
+        state.log("first event")
+        app.refresh_progress()
+        app.query_one("#views", TabbedContent).active = "log_view"
+        await pilot.pause()
+        log = app.query_one("#events", TextArea)
+        log.focus()
+        await pilot.press("f7")
+        state.log("next event")
+        app.refresh_progress()
+        assert log.text == "first event"
+        await pilot.press("ctrl+c")
+        assert app.clipboard == "first event"
+        await pilot.press("right")
+        app.refresh_progress()
+        assert "next event" in log.text
+        release.set()
+        await pilot.pause()
+        await pilot.press("q")
 
 
 @pytest.mark.parametrize("close", ["keyboard", "programmatic"])
@@ -108,13 +145,13 @@ async def test_selected_step_shows_action_result_and_log_handler_is_removed():
         await pilot.press("enter")
         await pilot.pause()
         assert app.query_one("#views", TabbedContent).active == "detail_view"
-        text = "\n".join(line.text for line in app.query_one("#details", RichLog).lines)
+        text = app.query_one("#details", TextArea).text
         assert "element disappeared" in text
         assert '"index": 5' in text
-        # Activate the pane so RichLog has a width and flushes deferred lines.
+        # Activate the pane so TextArea has a width and flushes deferred lines.
         await pilot.click(app.query_one("#views", TabbedContent).get_tab("log_view"))
         await pilot.pause()
-        text = "\n".join(line.text for line in app.query_one("#events", RichLog).lines)
+        text = app.query_one("#events", TextArea).text
         assert "direct logging is visible" in text
         await pilot.press("q")
     assert logging.getLogger().handlers == original_handlers
@@ -134,7 +171,7 @@ async def test_inspect_trace_opens_only_the_committed_result(tmp_path):
         await pilot.pause()
         await pilot.press("o")
         await pilot.pause()
-        text = "\n".join(line.text for line in app.query_one("#details", RichLog).lines)
+        text = app.query_one("#details", TextArea).text
         assert '"trace_status": "complete"' in text
         assert '"agent_done": "timeout"' in text
         await pilot.press("q")
@@ -182,6 +219,8 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
     async def operation():
         state.run_started(
             loop_id="branch",
+            history_source="source",
+            verify="warn",
             max_steps=30,
             continue_steps=0,
             branch=BranchProvenance(
@@ -217,14 +256,15 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
         assert "policy steps 1 · configured ceiling 30 · continue_steps 0" in text
         assert "1/30" not in text
         assert "source-run · checkpoint 1" in text
+        assert "Agent history: source · verify: warn" in text
         table = app.query_one("#steps", DataTable)
         assert "source: browser.click; actual: browser.click (failed)" in str(
-            table.get_row_at(0)[2]
+            table.get_row_at(0)[3]
         )
         table.focus()
         await pilot.press("enter")
         await pilot.pause()
-        text = "\n".join(line.text for line in app.query_one("#details", RichLog).lines)
+        text = app.query_one("#details", TextArea).text
         assert '"actual_action_results"' in text
         assert '"source_reply": "source reply"' in text
         assert '"actual_restoration_actions"' in text

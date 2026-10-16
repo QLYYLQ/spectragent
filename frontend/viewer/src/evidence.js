@@ -40,3 +40,39 @@ export function trailingCallCount(run) {
   if (run.config.recording.trajectory) return run.trailing_calls.length;
   return null;
 }
+
+export function historyLabel(source) {
+  return source === "source"
+    ? "Source history"
+    : source === "restored"
+      ? "Restored history"
+      : "History source unknown";
+}
+
+export function historyExplanation(source) {
+  if (source === "source")
+    return "The Agent keeps the original conversation. Differences in actual replay are not substituted into that history.";
+  if (source === "restored")
+    return "The Agent receives actual restored observations, retargeted actions and returned results. Earlier replies remain attributed source material.";
+  return "The history strategy was not recorded. Source material alone does not establish which history the Agent used.";
+}
+
+export function cursorLabel(fragments) {
+  const fragment = Object.entries(fragments || {}).find(([key]) =>
+    key.endsWith(".screenshot"),
+  )?.[1];
+  if (!fragment || fragment.error) return "Cursor metadata unavailable";
+  if (!fragment.cursor) return "Cursor disabled";
+  if (!fragment.cursor.position)
+    return "Cursor enabled · position unknown (no overlay)";
+  return `Cursor rendered · (${fragment.cursor.position.join(", ")}) CSS px · size ${fragment.cursor.size_css_px} CSS px`;
+}
+
+export function gapLabel(gap) {
+  if (!gap) return "No comparison";
+  if (gap.differences.length)
+    return `${gap.differences.length} measured differences`;
+  return gap.unmeasured.length
+    ? "Comparison incomplete"
+    : "No measured differences";
+}

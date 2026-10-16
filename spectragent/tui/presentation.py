@@ -2,6 +2,22 @@
 
 from typing import Any
 
+from spectragent.inspection.restoration import restoration_gap
+
+
+def gap_text(gap: dict[str, Any] | None) -> str:
+    """A compact difference label that does not equate tolerance with equality."""
+    if gap is None:
+        return "—"
+    label = (
+        f"{len(gap['differences'])} differences"
+        if gap["differences"]
+        else "unmeasured"
+        if gap["unmeasured"]
+        else "no measured gap"
+    )
+    return f"{label} · {gap['verdict'] or 'unknown'}"
+
 
 def terminal_value(value: Any) -> Any:
     """Keep image payloads out of terminal text while preserving all other details."""
@@ -24,6 +40,7 @@ def step_presentation(record: dict[str, Any]) -> dict[str, Any]:
         return record
     check = record.get("restoration") or {}
     return {
+        "agent_history_vs_replay": restoration_gap(record),
         **{
             key: value
             for key, value in record.items()

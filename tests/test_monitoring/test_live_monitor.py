@@ -187,7 +187,14 @@ async def test_strict_restore_failure_keeps_zero_policy_steps_and_branch_context
         branch_group_id="source/s3",
     )
     await hook.on_run_start(
-        loop=SimpleNamespace(max_steps=30, continue_steps=0), loop_id="branch", branch=provenance
+        loop=SimpleNamespace(
+            max_steps=30,
+            continue_steps=0,
+            history_source="source",
+            restorer=SimpleNamespace(verify="warn"),
+        ),
+        loop_id="branch",
+        branch=provenance,
     )
 
     async def recorded():
@@ -209,5 +216,7 @@ async def test_strict_restore_failure_keeps_zero_policy_steps_and_branch_context
     assert snapshot["calls"] == 0
     assert snapshot["max_steps"] == 30
     assert snapshot["continue_steps"] == 0
+    assert snapshot["identity"]["history_source"] == "source"
+    assert snapshot["identity"]["verify"] == "warn"
     assert snapshot["branch"] == provenance.model_dump(mode="json")
     assert snapshot["steps"][0]["detail"]["restoration"]["verdict"] == "diverged"

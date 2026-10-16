@@ -226,17 +226,30 @@ def test_static_app_is_packaged_and_uses_only_local_scripts(client):
 
 
 def test_serve_defaults_to_loopback_without_opening_browser(tmp_path: Path, monkeypatch, capsys):
+    import socket
+
     from spectragent.viewer import server
 
     captured = {}
-    monkeypatch.setattr(server.uvicorn, "run", lambda app, **kwargs: captured.update(kwargs))
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(server.uvicorn.Config, "bind_socket", lambda self: listener)
+    monkeypatch.setattr(
+        server.uvicorn.Server,
+        "run",
+        lambda self, **kwargs: captured.update(config=self.config, **kwargs),
+    )
     monkeypatch.setattr(
         server.webbrowser, "open", lambda *args: pytest.fail("unexpected browser open")
     )
     server.serve(tmp_path)
-    assert captured["host"] == "127.0.0.1"
-    assert captured["port"] == 8765
-    assert "http://127.0.0.1:8765/" in capsys.readouterr().out
+    assert captured["config"].host == "127.0.0.1"
+    assert captured["config"].port == 8765
+    assert captured["config"].timeout_graceful_shutdown == 2
+    assert captured["sockets"] == [listener]
+    assert listener.fileno() == -1
+    assert f"http://127.0.0.1:{port}/" in capsys.readouterr().out
 
 
 def test_public_serve_forwards_initial_run_to_the_app(tmp_path: Path, monkeypatch):
@@ -244,6 +257,8 @@ def test_public_serve_forwards_initial_run_to_the_app(tmp_path: Path, monkeypatc
 
     build_reference_trace(tmp_path)
     apps = []
-    monkeypatch.setattr(server.uvicorn, "run", lambda app, **kwargs: apps.append(app))
-    serve(tmp_path, initial_run="run-test")
+    monkeypatch.setattr(
+        server.uvicorn.Server, "run", lambda self, **kwargs: apps.append(self.config.app)
+    )
+    serve(tmp_path, port=0, initial_run="run-test")
     assert TestClient(apps[0]).get("/api/workspace").json()["initial_run"] == "run-test"

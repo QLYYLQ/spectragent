@@ -3535,6 +3535,8 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 **一个读侧，多个界面。** `spectragent/inspection/` 提供结构化查询 Protocol，CLI、Textual 和 FastAPI/React 本地查看器共用它。运行目录发现可以列目录；一个 run 的全部记录与附件只经 `RunTrace`，不绕过 manifest。每次刷新建立新的 reader 快照，不复用缓存的 manifest。路径必须在用户指定根目录之内，损坏或不支持的 trace 在列表中显示原因，不静默消失。网页只读，默认监听回环地址；远端使用 SSH 转发。前端资源随 Python 包分发，不依赖运行时 CDN 或 Node。
 
+`view` 是前台进程，`serve` 显式持有监听 socket，启动或关闭异常也在作用域退出时关闭；先成功绑定再报告 URL 或安排打开网页。Ctrl-C/SIGTERM 沿 Uvicorn 的信号处理关闭，未完成请求最多有 2 秒 graceful-shutdown 宽限。此预算限制请求等待，不声称能中断 OS 中阻塞的文件 I/O；查看器不写 trace。已脱离终端的旧 viewer 不会收到另一个终端的 Ctrl-C，不能在启动时擅自杀掉占用端口的进程。
+
 **目录、配置来源与单次运行。** `view`、历史 `tui` 和 `runs list` 使用同一选择规则：`--root` 是目录搜索边界，默认 `traces`，也可以是单个 run；`--config PATH` 按启动配置文件的来源筛选这个根内的全部历史版本（用户 2026-10-15 确认），不解释为当前 YAML 内容相同，也不通过读取 YAML 的输出路径偷偷扩大搜索范围。路径展开 `~` 并规范化为绝对路径；不同目录中的同名文件不同，移动后的文件视为新的来源。配置文件已经删掉也能按原路径查询。`--config-hash` 另用于精确选择已记录的有效配置摘要，两者可以取交集。`--run KEY` 是根内相对路径，用于初始聚焦；列表筛选不缩小根内源运行导航的范围，但初始 run 必须满足显式筛选。没有显式网页路由时采用初始聚焦，已保存的网页深链接优先。
 
 **来源证据。** `TraceConfig.config_source` 是可选的 `ConfigSource{path, sha256}`：path 是配置文件规范化后的绝对路径，sha256 是启动时读取的源 YAML 字节摘要。CLI 读取一次字节，同时用于解析和计算版本；经 `AgentRuntime.execute(config_source=...)`、lifecycle 传给 TraceWriter，不从脱敏配置反推。它是来源元数据，不进入既有 `configuration_digest`，也不记录 YAML 内容、凭据或环境变量。批量任务清单记录同一来源。飞轮先读取原阶段配置，再改写运行路径；调用现有 CLI 时显式传递原来源及其已捕获版本，因此筛选原模板能找到它启动的运行。未记录来源的 trace 显示来源未知，不迁移、不猜测、不混入指定来源的结果。
@@ -3548,6 +3550,8 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 **查看内容。** 运行列表、步骤时间线、截图、任意 observation fragment、每步全部模型调用及 trailing 调用、请求 schema、动作与错误、评测依据、源/分叉关系和配置比较；不同 evaluator 不混算。已有独立评测、飞轮、诊断和数据集报告直接读取各自产物，保留原来的分母和不可测原因。浏览历史与主动网络回放是两种操作；查看器不启动浏览器环境、不重新判分。
 
 **回放与恢复显示。** 只由已录事实标记网络来源与分叉关系，不从目录名推测 same-path 或 fork 业务角色。分叉的来源链接指向源 run 的检查点；源缺失、ID 歧义或根外来源明确显示，查看器不越界打开。恢复步的普通 actions/action_results 是本次恢复中实际返回结果的配对；所有执行尝试、异常和重定位保存在 `restoration.actions`。旧回复与源动作只在 `source_history` 中作为来源材料展示，不能冒充本次新思考；顶层无返回结果的失败尝试也必须从完整恢复证据中显示。实时 TUI 显示配置的 max_steps 上限与 branch continue_steps，不能把 max_steps 当作分叉实际策略预算。浏览器回放决定通过既有 `iter_decisions` 读取和按权重计数，包含 trailing 的决定；未绑定日志、日志为空与已提交日志不可读三种情况分开，未知不能画成零 miss。
+
+**历史与环境的差异视图（2026-10-16）。** 分叉页面与 TUI 显式展示已记录的 `history_source`、恢复器 `verify`、checkpoint 和 continuation 预算。源历史与实际恢复观测并列，动作重定位、返回结果、异常、URL、DOM signature、截图 dHash 和 document misses 使用既有恢复证据；容差内通过与存在可测差异同时显示，零 dHash 不宣称像素相同，未测不补零。只在恢复步与显式 checkpoint 校验处建立源步骤对应，后续 policy 步不凭相同步号伪造配对。源不可读不遮蔽本次可读证据。截图可切换 Browser state 原图与 Agent observation：后者经 fragment 的公开 `ModelImage` 合同按已记录元数据重建 cursor，默认显示模型视图，标明光标关闭或位置未知；精确提交的模型输入仍看 recorded calls，不把重建视图宣称为已提交输入。TUI 详情与日志支持选择和复制；在文本区 Ctrl-C 复制，活动区 Ctrl-C 与 q 保留取消并等待收尾；日志选择期间冻结文本，防止刷新破坏选区。
 
 ## 5. RunTrace 记录与持久化体系
 

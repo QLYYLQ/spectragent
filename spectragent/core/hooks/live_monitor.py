@@ -56,6 +56,8 @@ class LiveMonitor(HookBase):
                 "run_started",
                 max_steps=getattr(kwargs.get("loop"), "max_steps", None),
                 continue_steps=getattr(kwargs.get("loop"), "continue_steps", None),
+                history_source=getattr(kwargs.get("loop"), "history_source", None),
+                verify=getattr(getattr(kwargs.get("loop"), "restorer", None), "verify", None),
                 branch=kwargs.get("branch"),
                 **{
                     key: kwargs.get(key)

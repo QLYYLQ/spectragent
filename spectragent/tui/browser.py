@@ -12,9 +12,10 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
+from textual.widgets import DataTable, Footer, Header, Input, Static
 
-from spectragent.tui.presentation import step_actions, step_presentation, terminal_value
+from spectragent.tui.presentation import gap_text, step_actions, step_presentation, terminal_value
+from spectragent.tui.text import EvidenceText
 
 if TYPE_CHECKING:
     from spectragent.inspection.repository import RunRepository
@@ -28,13 +29,14 @@ class BrowserApp(App[None]):
     #search { dock: top; }
     #runs { height: 2fr; min-height: 6; }
     #detail { height: 3fr; }
-    #steps { width: 2fr; }
-    #content { width: 3fr; border-left: solid $primary; }
+    #steps { width: 1fr; }
+    #content { width: 1fr; border-left: solid $primary; }
     #status { height: auto; max-height: 3; padding: 0 1; color: $text-muted; }
     """
     BINDINGS = [
         Binding("q", "quit", "Close"),
-        Binding("ctrl+c", "quit", "Close", priority=True),
+        Binding("ctrl+c", "copy_or_quit", "Copy / close", priority=True),
+        Binding("f8", "copy_details", "Copy details", priority=True),
         Binding("r", "refresh_runs", "Refresh"),
         Binding("slash", "search", "Search"),
         Binding("s", "source", "Source checkpoint"),
@@ -65,22 +67,29 @@ class BrowserApp(App[None]):
             )
             with Horizontal(id="detail"):
                 yield DataTable(id="steps", cursor_type="row")
-                yield RichLog(id="content", wrap=True, markup=False)
+                yield EvidenceText(id="content")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#runs", DataTable).add_columns(
-            "Task",
-            "Agent / model",
-            "Agent ending",
-            "Trace",
-            "Policy steps",
-            "Known tokens",
-            "Config source",
-        )
-        self.query_one("#steps", DataTable).add_columns(
-            "Step", "Origin", "Actions / restoration", "Error"
-        )
+        for title, width in (
+            ("Task", 24),
+            ("Execution / history", 27),
+            ("Agent ending", 12),
+            ("Trace", 12),
+            ("Policy steps", 12),
+            ("Known tokens", 12),
+            ("Agent / model", 28),
+            ("Config source", 36),
+        ):
+            self.query_one("#runs", DataTable).add_column(title, width=width)
+        for title, width in (
+            ("Step", 4),
+            ("Origin", 9),
+            ("Gap / verification", 25),
+            ("Actions / restoration", 48),
+            ("Error", 36),
+        ):
+            self.query_one("#steps", DataTable).add_column(title, width=width)
         self.action_refresh_runs()
         self.query_one("#runs", DataTable).focus()
         if self._initial_run is not None:
@@ -95,11 +104,21 @@ class BrowserApp(App[None]):
         self.query_one("#search", Input).focus()
 
     def _show(self, value: Any) -> None:
-        content = self.query_one("#content", RichLog)
-        content.clear()
-        content.write(
-            Text(json.dumps(terminal_value(value), indent=2, ensure_ascii=False, default=str))
+        content = self.query_one("#content", EvidenceText)
+        content.load_text(
+            json.dumps(terminal_value(value), indent=2, ensure_ascii=False, default=str)
         )
+
+    async def action_copy_details(self) -> None:
+        await self.query_one("#content", EvidenceText).action_copy()
+
+    async def action_copy_or_quit(self) -> None:
+        if isinstance(self.focused, EvidenceText):
+            await self.focused.action_copy()
+        elif isinstance(self.focused, Input) and self.focused.selected_text:
+            self.copy_to_clipboard(self.focused.selected_text)
+        else:
+            await self.action_quit()
 
     def action_refresh_runs(self) -> None:
         self._request_runs(self.query_one("#search", Input).value, debounce=False)
@@ -132,11 +151,19 @@ class BrowserApp(App[None]):
         for row in rows:
             table.add_row(
                 Text(str(row.get("task_id") or row.get("run_id") or row["key"])),
-                Text(f"{row.get('agent_id') or '—'} / {row.get('model') or '—'}"),
+                Text(
+                    f"{row.get('execution_kind', 'unknown')}"
+                    + (
+                        f" · {(row.get('strategy') or {}).get('history_source') or '?'} history"
+                        if row.get("branch")
+                        else ""
+                    )
+                ),
                 str(row.get("agent_done") or "—"),
                 str(row.get("trace_status") or "unreadable"),
                 str(row.get("policy_steps", "—")),
                 str(row.get("tokens") if row.get("tokens") is not None else "unknown"),
+                Text(f"{row.get('agent_id') or '—'} / {row.get('model') or '—'}"),
                 Text(str((row.get("config_source") or {}).get("path") or "Unknown")),
                 key=row["key"],
             )
@@ -162,7 +189,7 @@ class BrowserApp(App[None]):
             self._detail_generation += 1
             self.workers.cancel_group(self, "run-detail")
             self.query_one("#steps", DataTable).clear()
-            self.query_one("#content", RichLog).clear()
+            self.query_one("#content", EvidenceText).load_text("")
 
     @on(DataTable.RowSelected, "#runs")
     def run_selected(self, event: DataTable.RowSelected) -> None:
@@ -207,15 +234,25 @@ class BrowserApp(App[None]):
             if self._source_selection and key not in self._rows
             else ""
         )
+        execution = detail.get("execution") or {}
+        strategy = (
+            f" · Agent history: {execution.get('history_source') or 'unknown'}"
+            f" · verify: {execution.get('verify') or 'unknown'}"
+            f" · checkpoint {execution.get('checkpoint')} (*)"
+            if execution.get("checkpoint") is not None
+            else ""
+        )
         self.query_one("#status", Static).update(
-            f"Run {key} · config source: {config_source}{scope}"
+            f"Run {key}{strategy}{scope} · config source: {config_source}"
         )
         table = self.query_one("#steps", DataTable)
         for item in detail.get("steps", []):
             record = item.get("record", item)
             table.add_row(
-                str(record["step"]),
+                str(record["step"])
+                + ("*" if record["step"] == execution.get("checkpoint") else ""),
                 str(record.get("origin", "policy")),
+                Text(gap_text(record.get("gap"))),
                 Text(step_actions(record)),
                 Text(str(record.get("error") or "")),
                 key=str(record["step"]),
@@ -255,7 +292,18 @@ class BrowserApp(App[None]):
                 self._show({"error": str(exc)})
         else:
             if self._detail_is_current(key, generation):
-                self._show({**detail, "record": step_presentation(detail["record"])})
+                self._show(
+                    {
+                        "agent_history_vs_replay": detail.get("gap"),
+                        "history_comparison": detail.get("comparison"),
+                        **{
+                            name: value
+                            for name, value in detail.items()
+                            if name not in {"gap", "comparison"}
+                        },
+                        "record": step_presentation(detail["record"]),
+                    }
+                )
 
     def action_source(self) -> None:
         detail = self._run_detail

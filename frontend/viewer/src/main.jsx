@@ -1,7 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { startupRoute } from "./routing.js";
-import { actionLabel, restoredActionOutcome, trailingCallCount, verdictLabel } from "./evidence.js";
+import {
+  actionLabel,
+  restoredActionOutcome,
+  trailingCallCount,
+  verdictLabel,
+  historyLabel,
+  historyExplanation,
+  cursorLabel,
+  gapLabel,
+} from "./evidence.js";
 import "./styles.css";
 
 const number = (value) =>
@@ -291,11 +300,7 @@ function Verdicts({ verdicts = [], evaluationError }) {
       {verdicts.map((verdict, i) => (
         <div key={`${verdict.evaluator}-${i}`}>
           <span className="verdict-name">{verdict.evaluator}</span>
-          <Badge
-            value={
-              verdictLabel(verdict)
-            }
-          />
+          <Badge value={verdictLabel(verdict)} />
           <span className="muted small">{verdict.verdict_source}</span>
         </div>
       ))}
@@ -563,6 +568,14 @@ function RunList({ revision, selected, setSelected, workspace }) {
                         </td>
                         <td>
                           <Badge value={row.execution_kind || "unknown"} />
+                          {row.branch && (
+                            <small className="strategy-label">
+                              {historyLabel(row.strategy?.history_source)}
+                              <br />
+                              Checkpoint {row.branch.checkpoint_step} · verify{" "}
+                              {row.strategy?.verify || "unknown"}
+                            </small>
+                          )}
                         </td>
                         <td>
                           <Badge value={row.agent_done} />
@@ -586,17 +599,24 @@ function RunList({ revision, selected, setSelected, workspace }) {
                           </small>
                         </td>
                         <td className="numeric">
-                          {row.usage_measured === false ? "Not measured" : number(row.tokens)}
-                          {row.usage_measured && row.usage_complete === false && (
-                            <small className="warn-text">Known subtotal</small>
-                          )}
+                          {row.usage_measured === false
+                            ? "Not measured"
+                            : number(row.tokens)}
+                          {row.usage_measured &&
+                            row.usage_complete === false && (
+                              <small className="warn-text">
+                                Known subtotal
+                              </small>
+                            )}
                           {row.usage_missing > 0 && (
                             <small className="warn-text">
                               {row.usage_missing} unknown
                             </small>
                           )}
                         </td>
-                        <td className="numeric">{duration(row.execution_ms)}</td>
+                        <td className="numeric">
+                          {duration(row.execution_ms)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -703,7 +723,10 @@ function Calls({ calls, schemas = {} }) {
         >
           <div className="section-heading">
             <h3>
-              {call.purpose === "prompt_helper" ? "Prompt helper" : "Agent decision"} {call.call ?? index}
+              {call.purpose === "prompt_helper"
+                ? "Prompt helper"
+                : "Agent decision"}{" "}
+              {call.call ?? index}
               <span className="muted small"> · step {call.step}</span>
             </h3>
             <div className="inline">
@@ -712,8 +735,10 @@ function Calls({ calls, schemas = {} }) {
             </div>
           </div>
           <p className="muted small">
-            Caller: {call.caller || "Unknown"} · Model: {call.model || "Unknown"}
-            {call.purpose === "prompt_helper" && " · External prompt generation; this is not the Agent's thought."}
+            Caller: {call.caller || "Unknown"} · Model:{" "}
+            {call.model || "Unknown"}
+            {call.purpose === "prompt_helper" &&
+              " · External prompt generation; this is not the Agent's thought."}
           </p>
           {call.failure && (
             <div className="notice error">
@@ -757,9 +782,9 @@ function Calls({ calls, schemas = {} }) {
   );
 }
 
-function Screenshot({ runKey, step }) {
+function Screenshot({ runKey, step, view = "agent" }) {
   const [failed, setFailed] = useState(false);
-  const src = query("screenshot", { key: runKey, index: step });
+  const src = query("screenshot", { key: runKey, index: step, view });
   useEffect(() => setFailed(false), [src]);
   return failed ? (
     <div className="notice error">
@@ -775,18 +800,368 @@ function Screenshot({ runKey, step }) {
       >
         <img
           src={src}
-          alt={`Recorded browser observation at step ${step}`}
+          alt={`${view === "agent" ? "Agent observation" : "Browser state"} at step ${step}`}
           onError={() => setFailed(true)}
         />
       </a>
       <figcaption>
         <Icon name="image" />
-        Observation · step {step}
+        {view === "agent" ? "Agent observation" : "Browser state"} · step {step}
         <a href={src} target="_blank" rel="noreferrer">
-          Open original ↗
+          Open full size ↗
         </a>
       </figcaption>
     </figure>
+  );
+}
+
+function ImageViewSwitch({ view, setView }) {
+  return (
+    <div className="tabs compact image-switch" aria-label="Screenshot view">
+      {[
+        ["agent", "Agent observation"],
+        ["browser", "Browser state · clean"],
+      ].map(([key, label]) => (
+        <button
+          key={key}
+          className={view === key ? "active" : ""}
+          aria-pressed={view === key}
+          onClick={() => setView(key)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ObservationImage({ runKey, step, fragments }) {
+  const [view, setView] = useState("agent");
+  return (
+    <section>
+      <ImageViewSwitch view={view} setView={setView} />
+      <p className="muted small">
+        {view === "agent"
+          ? cursorLabel(fragments)
+          : "Clean captured pixels · used for restoration and evaluation"}
+      </p>
+      <Screenshot runKey={runKey} step={step} view={view} />
+      {view === "agent" && (
+        <p className="muted small">
+          Reconstructed from recorded observation metadata. Exact submitted
+          prompts are in Model calls.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function GapSummary({ gap }) {
+  if (!gap) return null;
+  return (
+    <div className={`gap-summary ${gap.differences.length ? "has-gap" : ""}`}>
+      <div className="section-heading">
+        <strong>{gapLabel(gap)}</strong>
+        <span className="inline small">
+          Verification <Badge value={gap.verdict} />
+        </span>
+      </div>
+      {gap.differences.length > 0 && (
+        <ul>
+          {gap.differences.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
+      {gap.unmeasured.length > 0 && (
+        <details>
+          <summary>{gap.unmeasured.length} unavailable comparisons</summary>
+          <ul>
+            {gap.unmeasured.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <p className="muted small">
+        Verification uses configured tolerances. A passing check or zero dHash
+        distance does not prove identical screenshots.
+      </p>
+    </div>
+  );
+}
+
+function RestorationComparison({ step, runKey, index }) {
+  const [view, setView] = useState("agent");
+  const comparison = step.comparison;
+  const source = comparison.source;
+  const check = step.record.restoration;
+  const prefix = step.record.origin === "restored";
+  return (
+    <section className="restoration-comparison">
+      <div className="section-heading">
+        <h3>Source history ↔ Actual replay</h3>
+        <Badge
+          value={
+            comparison.history_source
+              ? `${comparison.history_source}_history`
+              : "history_unknown"
+          }
+        />
+      </div>
+      <p className="history-explanation">
+        {historyExplanation(comparison.history_source)}{" "}
+        {prefix
+          ? "This restored step makes no new policy decision."
+          : "At the checkpoint, the new policy always uses the actual restored observation."}
+      </p>
+      <GapSummary gap={step.gap} />
+      <ImageViewSwitch view={view} setView={setView} />
+      <div className="restoration-columns">
+        <article className="restoration-column source-column">
+          <div className="section-heading">
+            <h3>Source record · {comparison.source_step}</h3>
+            <span className="eyebrow">
+              {prefix && comparison.history_source === "source"
+                ? "Agent history"
+                : "Reference evidence"}
+            </span>
+          </div>
+          {source ? (
+            <>
+              <p className="muted small">
+                {view === "agent"
+                  ? cursorLabel(source.fragments)
+                  : "Original browser state · clean capture"}
+              </p>
+              {source.has_screenshot ? (
+                <Screenshot
+                  runKey={comparison.source_key}
+                  step={comparison.source_step}
+                  view={view}
+                />
+              ) : (
+                <Empty title="Source screenshot unavailable">
+                  {source.recording.observations
+                    ? "No committed screenshot."
+                    : "Observations were not recorded."}
+                </Empty>
+              )}
+              <p className="observation-summary">
+                {source.record.observation_summary}
+              </p>
+              <button
+                className="text-button"
+                onClick={() =>
+                  navigate(
+                    runRoute(comparison.source_key, {
+                      step: comparison.source_step,
+                    }),
+                  )
+                }
+              >
+                Open source step ↗
+              </button>
+              <JsonPanel
+                title="Source observation fragments"
+                value={source.fragments}
+              />
+            </>
+          ) : (
+            <div className="notice">
+              <strong>
+                Source unavailable ·{" "}
+                {comparison.source_status.replaceAll("_", " ")}
+              </strong>
+              <p>
+                {comparison.error ||
+                  "Source evidence cannot be opened within the selected root. Saved restoration measurements are still shown."}
+              </p>
+            </div>
+          )}
+          <JsonPanel
+            title="Earlier Agent reply · source material"
+            value={
+              step.record.source_history?.source_reply ??
+              source?.record.llm_output
+            }
+          />
+        </article>
+        <article className="restoration-column actual-column">
+          <div className="section-heading">
+            <h3>
+              {prefix ? "Actual replay" : "Checkpoint state"} · {index}
+            </h3>
+            <span className="eyebrow">
+              {prefix && comparison.history_source === "restored"
+                ? "Agent history"
+                : prefix
+                  ? "Environment evidence"
+                  : "New policy input"}
+            </span>
+          </div>
+          <p className="muted small">
+            {view === "agent"
+              ? cursorLabel(step.fragments)
+              : "Restored browser state · clean capture"}
+          </p>
+          {step.has_screenshot ? (
+            <Screenshot runKey={runKey} step={index} view={view} />
+          ) : (
+            <Empty title="Replay screenshot unavailable">
+              No committed screenshot for this step.
+            </Empty>
+          )}
+          <p className="observation-summary">
+            {step.record.observation_summary}
+          </p>
+          <JsonPanel
+            title="Actual observation fragments"
+            value={step.fragments}
+          />
+        </article>
+      </div>
+      {check?.evidence?.map((evidence) => (
+        <div className="table-scroll" key={evidence.capability_id}>
+          <table className="gap-table">
+            <caption>
+              {evidence.capability_id} · recorded restoration measurements
+            </caption>
+            <thead>
+              <tr>
+                <th>Measure</th>
+                <th>Source</th>
+                <th>Actual replay</th>
+                <th>Comparison</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                className={evidence.url_match === false ? "difference-row" : ""}
+              >
+                <th>URL</th>
+                <td>{text(evidence.recorded_url)}</td>
+                <td>{text(evidence.restored_url)}</td>
+                <td>
+                  {evidence.url_match == null
+                    ? "Not measured"
+                    : evidence.url_match
+                      ? "Matches"
+                      : "Changed"}
+                </td>
+              </tr>
+              <tr
+                className={
+                  evidence.signature_match === false ? "difference-row" : ""
+                }
+              >
+                <th>DOM signature</th>
+                <td>Source signature</td>
+                <td>
+                  {evidence.signature_match == null
+                    ? "Unknown"
+                    : `${evidence.signature_missing} missing · ${evidence.signature_extra} extra`}
+                </td>
+                <td>
+                  {evidence.signature_match == null
+                    ? "Not measured"
+                    : evidence.signature_match
+                      ? "Matches"
+                      : "Changed"}
+                </td>
+              </tr>
+              <tr
+                className={
+                  evidence.screenshot_distance > 0 ? "difference-row" : ""
+                }
+              >
+                <th>Screenshot dHash</th>
+                <td>Clean capture</td>
+                <td>Clean capture</td>
+                <td>
+                  {evidence.screenshot_distance == null
+                    ? "Not measured"
+                    : `Distance ${evidence.screenshot_distance}`}
+                </td>
+              </tr>
+              <tr
+                className={evidence.document_misses > 0 ? "difference-row" : ""}
+              >
+                <th>Document misses</th>
+                <td>—</td>
+                <td>{evidence.document_misses ?? "Not measured"}</td>
+                <td>Offline replay evidence</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ))}
+      {!!check?.actions?.length && (
+        <section>
+          <h3>Action correspondence</h3>
+          {check.actions.map((action, i) => (
+            <article className="action-correspondence" key={i}>
+              <div className="section-heading">
+                <strong>
+                  Action {i + 1} · {action.method}
+                </strong>
+                <Badge value={restoredActionOutcome(action)} />
+              </div>
+              <div className="restoration-columns">
+                <div>
+                  <h4>Recorded action</h4>
+                  <JsonBlock value={action.recorded} />
+                  <p className="small">
+                    Source success: {text(action.recorded_success)}
+                  </p>
+                  <JsonPanel
+                    title="Source result"
+                    value={comparison.results?.[i]?.source}
+                    initialOpen
+                  />
+                </div>
+                <div>
+                  <h4>Actually executed</h4>
+                  {action.executed ? (
+                    <JsonBlock value={action.executed} />
+                  ) : (
+                    <p>Not executed · {action.failure || "unknown reason"}</p>
+                  )}
+                  <p className="small">
+                    Actual success: {text(action.live_success)}
+                  </p>
+                  <p
+                    className={
+                      comparison.results?.[i]?.status === "changed"
+                        ? "gap-label"
+                        : "muted small"
+                    }
+                  >
+                    Result payload:{" "}
+                    {comparison.results?.[i]?.status || "unavailable"}
+                  </p>
+                  {action.live_error && (
+                    <p className="row-error">{action.live_error}</p>
+                  )}
+                  <JsonPanel
+                    title="Actual returned result"
+                    value={action.result}
+                    initialOpen
+                  />
+                </div>
+              </div>
+              {action.detail && <p className="muted small">{action.detail}</p>}
+            </article>
+          ))}
+        </section>
+      )}
+      {!prefix && (
+        <p className="notice">
+          Restoration stops before the source checkpoint action. The Actions and
+          Model calls tabs show this run's new decision.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -806,7 +1181,10 @@ function StepActions({ record }) {
             </p>
           </div>
           {record.source_history && (
-            <JsonPanel title="Source material and restoration correspondence" value={record.source_history} />
+            <JsonPanel
+              title="Source material and restoration correspondence"
+              value={record.source_history}
+            />
           )}
           {check ? (
             <section>
@@ -874,8 +1252,8 @@ function StepActions({ record }) {
       )}
       {record.truncated_actions > 0 && (
         <div className="notice">
-          {record.truncated_actions} model-emitted actions were discarded{" "}
-          by the action limit.
+          {record.truncated_actions} model-emitted actions were discarded by the
+          action limit.
         </div>
       )}
       <JsonPanel
@@ -943,9 +1321,16 @@ function StepDetail({ runKey, index, revision }) {
                 "actions",
                 step.record.origin === "restored"
                   ? "Restoration actions"
-                  : step.recording.trajectory ? `Actions (${step.record.actions?.length || 0})` : "Actions (not recorded)",
+                  : step.recording.trajectory
+                    ? `Actions (${step.record.actions?.length || 0})`
+                    : "Actions (not recorded)",
               ],
-              ["calls", step.recording.metrics ? `Model calls (${step.call_metrics.length})` : "Model calls"],
+              [
+                "calls",
+                step.recording.metrics
+                  ? `Model calls (${step.call_metrics.length})`
+                  : "Model calls",
+              ],
               ["archive", `Archive (${step.archive.length})`],
             ].map(([key, label]) => (
               <button
@@ -960,8 +1345,19 @@ function StepDetail({ runKey, index, revision }) {
           </div>
           {tab === "observation" && (
             <>
-              {step.has_screenshot && (
-                <Screenshot runKey={runKey} step={index} />
+              {step.comparison && (
+                <RestorationComparison
+                  step={step}
+                  runKey={runKey}
+                  index={index}
+                />
+              )}
+              {!step.comparison && step.has_screenshot && (
+                <ObservationImage
+                  runKey={runKey}
+                  step={index}
+                  fragments={step.fragments}
+                />
               )}
               <p className="observation-summary">
                 {step.record.origin === "restored" && (
@@ -990,20 +1386,31 @@ function StepDetail({ runKey, index, revision }) {
           )}
           {tab === "actions" && (
             <>
-              {step.recording.trajectory
-                ? <StepActions record={step.record} />
-                : <Empty title="Actions not recorded">The recording plan did not select the agent trajectory.</Empty>}
+              {step.recording.trajectory ? (
+                <StepActions record={step.record} />
+              ) : (
+                <Empty title="Actions not recorded">
+                  The recording plan did not select the agent trajectory.
+                </Empty>
+              )}
               <JsonPanel title="Step record" value={step.record} />
             </>
           )}
-          {tab === "calls" && (
-            step.recording.trajectory
-              ? <Calls calls={step.calls} schemas={step.output_schemas} />
-              : <>
-                  <Empty title="Model inputs and replies not recorded">The recording plan did not select the agent trajectory.</Empty>
-                  <JsonPanel title="Call metrics and errors" value={step.call_metrics} initialOpen />
-                </>
-          )}
+          {tab === "calls" &&
+            (step.recording.trajectory ? (
+              <Calls calls={step.calls} schemas={step.output_schemas} />
+            ) : (
+              <>
+                <Empty title="Model inputs and replies not recorded">
+                  The recording plan did not select the agent trajectory.
+                </Empty>
+                <JsonPanel
+                  title="Call metrics and errors"
+                  value={step.call_metrics}
+                  initialOpen
+                />
+              </>
+            ))}
           {tab === "archive" && (
             <>
               <p className="muted small">
@@ -1056,13 +1463,29 @@ function Trajectory({ run, route, revision }) {
                 {String(step.step).padStart(2, "0")}
               </span>
               <Badge value={step.origin} />
+              {run.execution.checkpoint === step.step && (
+                <span className="checkpoint-label">Checkpoint</span>
+              )}
               {step.error && (
                 <span className="error-dot" title={step.error}>
                   !
                 </span>
               )}
             </div>
-            <span className="action-name">{run.config.recording.trajectory ? actionLabel(step) : "Actions not recorded"}</span>
+            <span className="action-name">
+              {run.config.recording.trajectory
+                ? actionLabel(step)
+                : "Actions not recorded"}
+            </span>
+            {step.gap && (
+              <span
+                className={
+                  step.gap.differences.length ? "gap-label" : "muted small"
+                }
+              >
+                {gapLabel(step.gap)}
+              </span>
+            )}
             <span className="muted small">
               {duration(step.duration_ms)}
               {step.call_count ? ` · ${step.call_count} calls` : ""}
@@ -1098,9 +1521,7 @@ function Evaluations({ evaluations, error }) {
               <span className="eyebrow">{result.verdict_source}</span>
               <h3>{result.evaluator_id || slug}</h3>
             </div>
-            <Badge
-              value={verdictLabel(result)}
-            />
+            <Badge value={verdictLabel(result)} />
           </div>
           <p className="muted small">
             {date(result.timestamp)} · {result.benchmark} / {result.subset}
@@ -1145,6 +1566,27 @@ function ExecutionContext({ run }) {
           <dt>Network source</dt>
           <dd>{text(execution.network_source)}</dd>
         </div>
+        {run.summary.branch && (
+          <>
+            <div>
+              <dt>Agent history</dt>
+              <dd>{historyLabel(execution.history_source)}</dd>
+            </div>
+            <div>
+              <dt>Restoration policy</dt>
+              <dd>
+                {text(execution.restorer)} · verify {text(execution.verify)}
+              </dd>
+            </div>
+            <div>
+              <dt>Continuation budget</dt>
+              <dd>
+                Checkpoint decision + {text(execution.continue_steps)} further
+                steps · ceiling {text(execution.max_steps)}
+              </dd>
+            </div>
+          </>
+        )}
         <div>
           <dt>Source relationship</dt>
           <dd>{text(execution.relationship)}</dd>
@@ -1168,6 +1610,53 @@ function ExecutionContext({ run }) {
           </div>
         )}
       </dl>
+      {run.summary.branch && (
+        <>
+          <p className="history-explanation">
+            {historyExplanation(execution.history_source)}
+          </p>
+          {run.restoration_overview && (
+            <div className="restoration-overview">
+              <span>
+                <strong>
+                  {run.restoration_overview.checked}/
+                  {run.restoration_overview.expected}
+                </strong>{" "}
+                restoration checks
+              </span>
+              <span>
+                <strong>{run.restoration_overview.accepted}</strong> accepted
+              </span>
+              <span>
+                <strong>{run.restoration_overview.warned}</strong> warnings
+              </span>
+              <span>
+                <strong>{run.restoration_overview.diverged}</strong> diverged
+              </span>
+              <span>
+                <strong>
+                  {run.restoration_overview.different_steps.length}
+                </strong>{" "}
+                steps with measured differences
+              </span>
+              {run.restoration_overview.different_steps.length > 0 && (
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    navigate(
+                      runRoute(run.summary.key, {
+                        step: run.restoration_overview.different_steps[0],
+                      }),
+                    )
+                  }
+                >
+                  Inspect first difference →
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
       {execution.source_key && (
         <button
           className="text-button"
@@ -1450,7 +1939,10 @@ function RunDetail({ route, revision }) {
                     ? "Evaluations (!)"
                     : `Evaluations (${Object.keys(run.evaluations).length})`,
                 ],
-                ["trailing", `Trailing calls (${number(trailingCallCount(run))})`],
+                [
+                  "trailing",
+                  `Trailing calls (${number(trailingCallCount(run))})`,
+                ],
                 [
                   "replay",
                   run.replay_log?.error
@@ -1503,7 +1995,11 @@ function RunDetail({ route, revision }) {
                       The recording plan did not select the agent trajectory.
                     </Empty>
                     {run.config.recording.metrics ? (
-                      <JsonPanel title="Call metrics and errors" value={run.trailing_call_metrics} initialOpen />
+                      <JsonPanel
+                        title="Call metrics and errors"
+                        value={run.trailing_call_metrics}
+                        initialOpen
+                      />
                     ) : (
                       <p className="muted">Model calls not measured.</p>
                     )}
@@ -1693,7 +2189,10 @@ function EvidenceColumn({ summary, revision }) {
               >
                 {data.steps.map((item) => (
                   <option key={item.step} value={item.step}>
-                    {item.step} · {item.origin} · {data.config.recording.trajectory ? actionLabel(item) : "Actions not recorded"}
+                    {item.step} · {item.origin} ·{" "}
+                    {data.config.recording.trajectory
+                      ? actionLabel(item)
+                      : "Actions not recorded"}
                   </option>
                 ))}
               </select>
@@ -1714,11 +2213,19 @@ function EvidenceColumn({ summary, revision }) {
                 </span>
               </div>
               {data.has_screenshot ? (
-                <Screenshot runKey={summary.key} step={index} />
+                <ObservationImage
+                  runKey={summary.key}
+                  step={index}
+                  fragments={data.fragments}
+                />
               ) : (
                 <div className="empty">
                   <Icon name="image" />
-                  <p>{data.recording.observations ? "No committed screenshot" : "Observations not selected"}</p>
+                  <p>
+                    {data.recording.observations
+                      ? "No committed screenshot"
+                      : "Observations not selected"}
+                  </p>
                 </div>
               )}
               {data.recording.trajectory ? (

@@ -5,7 +5,7 @@ from __future__ import annotations
 import webbrowser
 from pathlib import Path, PurePosixPath
 from threading import Timer
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -103,8 +103,10 @@ def create_app(
         return repository.step(_key(key), index)
 
     @app.get("/api/screenshot")
-    def screenshot(key: str, index: Annotated[int, Query(ge=0)]) -> Response:
-        data = repository.screenshot(_key(key), index)
+    def screenshot(
+        key: str, index: Annotated[int, Query(ge=0)], view: Literal["browser", "agent"] = "browser"
+    ) -> Response:
+        data = repository.screenshot(_key(key), index, view=view)
         if data is None:
             raise HTTPException(404, "This step has no committed screenshot")
         return Response(content=data, media_type=_image_type(data))
@@ -162,18 +164,30 @@ def serve(
         root, initial_run=initial_run, config_source=config_source, config_hash=config_hash
     )
     url_host = f"[{host}]" if ":" in host else host
-    print(f"All4One viewer: http://{url_host}:{port}/", flush=True)
-    print("Read-only local evidence. Press Ctrl-C to stop.", flush=True)
-    timer = None
-    if open_browser:
-        browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-        if ":" in browser_host:
-            browser_host = f"[{browser_host}]"
-        timer = Timer(0.8, webbrowser.open, args=(f"http://{browser_host}:{port}/",))
-        timer.daemon = True
-        timer.start()
-    try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
-    finally:
-        if timer is not None:
-            timer.cancel()
+    # These requests only read evidence. Do not wait indefinitely for a slow
+    # client or query on exit. Own the listener outside the server lifecycle
+    # as well, so an interrupted startup/shutdown cannot retain the port.
+    config = uvicorn.Config(
+        app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=2
+    )
+    with config.bind_socket() as listener:
+        print(f"All4One viewer: http://{url_host}:{listener.getsockname()[1]}/", flush=True)
+        print(
+            "Read-only local evidence. Press Ctrl-C to stop (up to 2s for active requests).",
+            flush=True,
+        )
+        timer = None
+        if open_browser:
+            browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+            if ":" in browser_host:
+                browser_host = f"[{browser_host}]"
+            timer = Timer(
+                0.8, webbrowser.open, args=(f"http://{browser_host}:{listener.getsockname()[1]}/",)
+            )
+            timer.daemon = True
+            timer.start()
+        try:
+            uvicorn.Server(config).run(sockets=[listener])
+        finally:
+            if timer is not None:
+                timer.cancel()

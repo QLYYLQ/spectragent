@@ -16,10 +16,12 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.events import Print
-from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Header, Static, TabbedContent, TabPane
 
+from spectragent.inspection.restoration import restoration_gap
 from spectragent.monitoring.state import ProgressState
-from spectragent.tui.presentation import step_actions, step_presentation, terminal_value
+from spectragent.tui.presentation import gap_text, step_actions, step_presentation, terminal_value
+from spectragent.tui.text import EvidenceText
 
 T = TypeVar("T")
 
@@ -55,7 +57,8 @@ class MonitorApp(App[None], Generic[T]):
     .caption { height: 1; color: $text-muted; padding-left: 1; }
     """
     BINDINGS = [
-        Binding("ctrl+c", "cancel", "Cancel and close", priority=True),
+        Binding("ctrl+c", "copy_or_cancel", "Copy / cancel", priority=True),
+        Binding("f8", "copy_details", "Copy details", priority=True),
         Binding("q", "cancel", "Close", priority=True),
         Binding("escape", "activity", "Activity"),
         Binding("o", "inspect_trace", "Inspect trace"),
@@ -91,16 +94,21 @@ class MonitorApp(App[None], Generic[T]):
                 )
                 yield DataTable(id="steps", cursor_type="row")
             with TabPane("Details", id="detail_view"):
-                yield RichLog(id="details", markup=False, wrap=True)
+                yield EvidenceText(id="details")
             with TabPane("Logs", id="log_view"):
-                yield RichLog(id="events", markup=False, wrap=True, max_lines=100)
+                yield EvidenceText(id="events")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#tasks", DataTable).add_columns("Task", "State", "Agent ending", "Trace")
-        self.query_one("#steps", DataTable).add_columns(
-            "Step", "Origin", "Actions / restoration", "Error"
-        )
+        for title, width in (
+            ("Step", 4),
+            ("Origin", 9),
+            ("Gap / verification", 25),
+            ("Actions / restoration", 48),
+            ("Error", 36),
+        ):
+            self.query_one("#steps", DataTable).add_column(title, width=width)
         self.set_interval(0.15, self.refresh_progress)
         self.refresh_progress()
         self.begin_capture_print(self)
@@ -179,6 +187,7 @@ class MonitorApp(App[None], Generic[T]):
         branch = snapshot.get("branch")
         provenance = (
             f"\nSource: {branch.get('source_run_id', '—')} · checkpoint {branch.get('checkpoint_step', '—')} · branch {branch.get('branch_index', '—')}"
+            f" · Agent history: {identity.get('history_source') or 'unknown'} · verify: {identity.get('verify') or 'unknown'}"
             if branch
             else ""
         )
@@ -219,6 +228,7 @@ class MonitorApp(App[None], Generic[T]):
                 table.add_row(
                     str(row["step"]),
                     row["origin"],
+                    Text(gap_text(restoration_gap(row["detail"]))),
                     Text(step_actions(row["detail"])),
                     Text(str(row["error"] or "")),
                     key=str(row["step"]),
@@ -226,17 +236,15 @@ class MonitorApp(App[None], Generic[T]):
             self._last_steps = steps
         events = snapshot["events"]
         if events != self._last_events:
-            log = self.query_one("#events", RichLog)
-            log.clear()
-            for event in events:
-                log.write(Text(event))
-            self._last_events = events
+            log = self.query_one("#events", EvidenceText)
+            if not log.selected_text:
+                log.load_text("\n".join(events))
+                self._last_events = events
 
     def _show_details(self, value: Any) -> None:
-        detail = self.query_one("#details", RichLog)
-        detail.clear()
-        detail.write(
-            Text(json.dumps(terminal_value(value), ensure_ascii=False, indent=2, default=str))
+        detail = self.query_one("#details", EvidenceText)
+        detail.load_text(
+            json.dumps(terminal_value(value), ensure_ascii=False, indent=2, default=str)
         )
         self.set_focus(None)
         self.query_one("#views", TabbedContent).active = "detail_view"
@@ -301,6 +309,17 @@ class MonitorApp(App[None], Generic[T]):
 
     def action_cancel(self) -> None:
         self._request_close()
+
+    async def action_copy_details(self) -> None:
+        active = self.query_one("#views", TabbedContent).active
+        target = "#events" if active == "log_view" else "#details"
+        await self.query_one(target, EvidenceText).action_copy()
+
+    async def action_copy_or_cancel(self) -> None:
+        if isinstance(self.focused, EvidenceText):
+            await self.focused.action_copy()
+        else:
+            self._request_close()
 
     def action_quit(self) -> None:
         self._request_close()

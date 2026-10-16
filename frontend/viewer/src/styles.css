@@ -14,6 +14,137 @@
   --muted: #6b7b85;
   --nav: #0a0e14;
 }
+
+.strategy-label {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.history-explanation {
+  margin: 12px 0;
+  max-width: 1050px;
+  color: #425260;
+}
+.restoration-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.restoration-overview strong {
+  font-size: 18px;
+}
+.restoration-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  margin: 14px 0;
+}
+.restoration-column {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-top: 4px solid #5573a3;
+  border-radius: 7px;
+  background: #fff;
+}
+.restoration-column.actual-column {
+  border-top-color: #008c7b;
+}
+.restoration-column .section-heading {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.restoration-column .screenshot {
+  margin: 12px 0;
+}
+.restoration-column .screenshot img {
+  max-height: 440px;
+  object-fit: contain;
+}
+.restoration-column .empty {
+  padding: 28px 12px;
+}
+.restoration-column .observation-summary {
+  overflow-wrap: anywhere;
+}
+.gap-summary {
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-left: 4px solid #71828b;
+  border-radius: 5px;
+  margin: 14px 0;
+  background: #f6f8f9;
+}
+.gap-summary.has-gap {
+  border-left-color: #c26400;
+  background: #fff6e8;
+}
+.gap-summary ul {
+  margin: 8px 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}
+.gap-summary p:last-child {
+  margin-bottom: 0;
+}
+.gap-summary summary {
+  color: #536570;
+  margin: 10px 0;
+}
+.gap-label {
+  color: #a64d00;
+  font-size: 12px;
+  font-weight: 650;
+}
+.checkpoint-label {
+  display: block;
+  color: #006b60;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.image-switch {
+  margin: 16px 0 10px;
+}
+.gap-table {
+  width: 100%;
+  table-layout: fixed;
+  margin: 16px 0;
+}
+.gap-table caption {
+  text-align: left;
+  font-weight: 650;
+  padding: 8px 0;
+}
+.gap-table td,
+.gap-table th {
+  padding: 12px;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.difference-row {
+  background: #fff1dc;
+}
+.action-correspondence {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin: 12px 0;
+}
+.action-correspondence .restoration-columns > div {
+  min-width: 0;
+}
+.action-correspondence h4 {
+  margin: 6px 0 10px;
+}
+@media (max-width: 1100px) {
+  .restoration-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 * {
   box-sizing: border-box;
 }
