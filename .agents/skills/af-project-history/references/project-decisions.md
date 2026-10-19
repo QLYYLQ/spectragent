@@ -20,6 +20,16 @@ not inferred from the mere existence or volume of today's test data.
 This ruling removes a compatibility constraint; it is not a request to clean files now.
 User-owned source artwork and other protected assets remain governed by their own rules.
 
+## Browser integration acceptance uses samples
+
+User ruling, 2026-10-19: representative end-to-end samples are sufficient to complete
+M18; do not require the full Agent × benchmark Cartesian product. The execution DAG
+already records that all three Agents reached their goals in the 2026-10-01 samples.
+M18 is accepted on that recorded evidence, superseding the 2026-10-09 flywheel-only
+waiver. This does not claim a new rerun, full-matrix coverage, successful authentication,
+or complete replay fidelity. Shared multi-Agent/multi-tab workflows and other new browser
+experiments retain their own acceptance evidence without reopening M18.
+
 ## Research workflow is the product
 
 AF/Spectragent targets agent researchers, especially two workflows:

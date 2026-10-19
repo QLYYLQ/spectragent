@@ -1,6 +1,7 @@
 # Current handoff and remaining work
 
-Memory updated 2026-10-16 after framework-expansion acceptance at `626612a`.
+Memory updated 2026-10-19 for the user's sampled M18 acceptance; the implementation
+acceptance snapshot below remains 2026-10-16 at `626612a`.
 This file routes continuation; it does not outrank `docs/architecture_design.md`,
 `docs/execution_dag.md` or `AGENTS.md`.
 
@@ -45,6 +46,27 @@ the screenshot after 10 seconds, and source/replay search documents repeatedly r
 202. Read-only diagnosis did not confirm a new framework defect; the cause remains
 unresolved, not established as site noise (`live/miss_diagnosis.json`). Eastmoney showed
 a slider, but Luna did not drag it; this run does not establish slider rebound.
+
+## Browser samples on 2026-10-19
+
+User ruling: M18 is complete on existing representative samples; the full Cartesian
+matrix is no longer a gate. See the current execution DAG and `project-decisions.md`.
+New local evidence is `tmp/browser_multi_tab_20261019/delivery.json` (with per-attempt
+`acceptance.json`, YAML, traces and lifecycle witnesses). Two real BrowserUse instances
+(DOM and DOM+vision), using `gpt-6-luna` through DMX, shared one owned Chrome with two
+seeded tabs per context. Three bounded attempts observed separate contexts/targets and
+synthetic local-storage markers; all six traces completed and all three processes exited.
+All six tasks ended on model-request timeouts, so the full multi-tab workflow remains
+unaccepted. Do not describe supplied tabs as Agent-created tabs or complete recording as
+task success. The five existing shared-browser/login live tests were also rerun and passed.
+
+Two retry-attempt prefixes replayed offline through checkpoint 1: four restoration checks
+passed, including tab-ID and DOM-index retargeting. Both new checkpoint calls returned;
+their later unrecorded requests produced three misses, with no query near-miss candidate.
+No request rule was changed. This is short-prefix evidence, not full workflow replay.
+Small text/schema probes and a text-only replay of a failed prompt succeeded; the timeout
+pattern implicates request/route reliability but does not establish its root cause.
+The new `af-improve-replay-rules` skill is a first version for user review.
 
 ## Prior six-package acceptance (2026-10-15)
 
@@ -131,7 +153,7 @@ and the current execution DAG. The original full list is
 | Cross-run pools, archive merging, environment mocks and broader replay/training paths | New scope and dependency review, not an implication of this lifecycle or replay work. |
 | Wire-level requests and pre-call prompt durability under process kill | Logical request recording is implemented; these stronger guarantees remain deferred. |
 | More detailed judge/unevaluable failure classification | Independent judging exists, but does not close every finer classification question. |
-| Full Agent × benchmark integration matrix | Still a separate DAG acceptance gate; sampled browser runs and frozen test suites do not replace it. |
+| Real multi-Agent, multi-tab browser workflows | Shared-context/popup isolation and independent-runtime WAL tests exist; separately verify a composed workflow with several real Agents each operating multiple tabs. This is not a remaining M18 gate. |
 | Automatic dynamic-region masking / virtual time | Diagnostics do not alter restoration verdicts; the prior probe did not justify shipping virtual time. |
 | Jev/System One/probe/cascade | Read the full preserved memo before resuming. Generic helper attribution is not approval or implementation of these research proposals. |
 | Remaining port-residue issues | Revalidate individual findings against current design/code/tests; do not batch-execute a dated handoff. |
@@ -149,6 +171,7 @@ original evidence is missing remain unproven, not newly confirmed bugs.
 
 | Old entry | Current routing |
 |---|---|
+| M18 full Agent × benchmark gate and flywheel-only waiver | Superseded by the user's 2026-10-19 ruling: M18 is complete on the previously recorded three-Agent samples. Full Cartesian coverage is optional research, not acceptance debt; see the current DAG. |
 | `review_changes/README.md` and the six "awaiting implementation" specifications | Completed requirements/evidence. Start from `implementation/README.md`. |
 | `review_reconciliation/index.json` and earlier partition audits | Historical review traceability; old pending labels are not a task scheduler. |
 | `HANDOFF_261010_react_loop_layering.md`, `react_synthesis.md` | The approved layering/accounting implementation is complete. The temporary prohibition on editing react.py is over. |
@@ -161,7 +184,8 @@ original evidence is missing remain unproven, not newly confirmed bugs.
 The detailed earlier memory, including dated live measurements and user rulings, is
 preserved in [flywheel-history.md](flywheel-history.md). Read it on demand, not before
 every new task. `HANDOFF_260918_skyvern_cleaner.md` §9 and the current Skyvern tests document
-its implemented JS path; the full benchmark matrix remains independent.
+its implemented JS path; its old full-matrix gate is superseded by the 2026-10-19
+sampled M18 acceptance, not by those capability tests.
 
 Claude's `memory/MEMORY.md` now routes five obsolete runtime-status records through its
 `reference_af_history_index.md`: WAL open items, initial flywheel plan, review-followup

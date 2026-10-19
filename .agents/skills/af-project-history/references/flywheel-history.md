@@ -282,8 +282,10 @@ The verification entry points under `tests/test_core/test_capabilities/` are:
 - `test_browser_js_scope.py`: cross-scope execution, session ownership, and rollback;
 - `test_browser_skyvern_dom.py`: explicit failure without fallback and frame deadlines.
 
-These capability checks do not complete M18's three-Agent × three-benchmark
-integration matrix. Revalidate that separate gate before declaring it complete.
+These capability checks did not complete the then-required M18 three-Agent ×
+three-benchmark matrix. That gate was superseded by the user's 2026-10-19 ruling:
+the previously recorded three-Agent end-to-end samples suffice, and M18 is complete.
+See the current execution DAG; do not restore the historical full-matrix requirement.
 
 ## Older evidence, not the active queue
 
