@@ -32,13 +32,13 @@ The document proposed but did not decide or implement:
 - a cascade Loop only after real-trace accuracy × coverage is measured;
 - text-only evaluator triage.
 
-No Jev implementation, config, tests, or reproducible probe exists in the repository.
+At that date, no Jev implementation, config, tests, or reproducible probe existed in the repository.
 The old memo's `SummaryMemory`, money-accounting, and some runtime statements were later
 superseded; the current issue is model-call ownership and per-model token attribution,
 not aggregating guessed monetary cost.
 
-Current decision inputs are `docs/architecture_design.md` §§4.1, 4.6, and 4.7; the M18
-gate in `docs/execution_dag.md`; and the approved environment-vs-subject ownership rule
+Current decision inputs are `docs/architecture_design.md` §§4.1, 4.6, and 4.7;
+`docs/execution_dag.md`; and the approved environment-vs-subject ownership rule
 in `docs/actions_that_call_an_llm.md`. The memo's proposed order was probe → real-trace
 calibration → config-time compatibility gate → cascade. That order is evidence for a
 future decision, not authorization to implement it.
@@ -49,3 +49,16 @@ The 2026-10-15 implementation supplies generic caller/purpose/model/step attribu
 and prompt-helper model lifecycle. That closes the generic plumbing gap; it does not
 resolve Jev's subject-versus-instrument ownership, registrar, result contract, probe,
 calibration or cascade proposals. Read the preserved memo before resuming any of them.
+
+## Later offline comparison trial (2026-10-19)
+
+The user authorized a clean-DOM comparison experiment with `jev-1.14.0` through DMX.
+Current measurements and reproducible local requests are in
+`tmp/jev_dom_review_20261019/delivery.json`; the maintained recipe is
+`af-improve-replay-rules/references/clean-dom-jev.md`. The DMX native decision endpoint
+was verified. Eight initial valid choices matched prelabelled cases; one oversized
+Bilibili input succeeded after its irrelevant link inventory was omitted. This does
+not establish broad accuracy/calibration; a direct-typing case had conflicting choice
+and yes/no outputs. It remains offline instrument research, with no new registrar,
+runtime judge, or cascade implementation. The earlier memo's modality results remain
+historical; this new trial sent no images.

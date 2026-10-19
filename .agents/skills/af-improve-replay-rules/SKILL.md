@@ -91,6 +91,15 @@ use `capture_from_document` and the existing cleaners when a normalized view hel
 Align capture cycle/time, tab, document URL/loader evidence and action correspondence
 before comparing. Across browsers, backend node IDs are not semantic identities.
 
+For fast comparison, reconstruct `TargetCapture`, run the configured cleaner, then the
+existing `DOMBudgetPass` and serializer. Keep the resulting `DOMState` for geometry and
+link checks, and use its text view for a compact comparison/model input. Normalize only
+the serializer's transient element handles/new-node markers, including shadow/scroll
+prefixes; preserve page text and meaningful attributes. Save derived views outside the
+immutable source trace and report applied budgets. Equal text does not establish equal
+link destinations, geometry or purely visual properties. See
+[clean DOM and Jev trial](references/clean-dom-jev.md) for the measured offline workflow.
+
 Match task-relevant text, roles, input values where available, result links/order,
 target geometry, visibility and occlusion. Screenshots establish what was visible;
 DOM presence alone does not prove visibility. Check that the corresponding action
@@ -115,6 +124,13 @@ This AI review belongs to the offline skill. Replacing the runtime restoration j
 with an LLM or introducing semantic verification as a framework strategy is separate
 implementation work; do not silently rewrite saved restoration verdicts or relax global
 thresholds merely to make a report green.
+
+When testing a decision model, freeze expected labels separately before submitting cases;
+send actual task/evidence without prior conclusions. Preserve raw responses, input
+selection, model identity, latency and usage. A choice, its confidence, a probability
+distribution and a separate yes/no answer are distinct outputs; conflicting answers or
+low confidence require further review. Oversized input is an evaluation failure, not a
+negative verdict. Reduce irrelevant evidence explicitly and retain the failed attempt.
 
 ## Review what may change
 
