@@ -113,6 +113,7 @@ def _screenshot(
 ) -> Any:
     return SimpleNamespace(
         platform=SimpleNamespace(operating_system="macos"),
+        history=SimpleNamespace(items=[]),
         task=SimpleNamespace(user_request="tick the checkbox"),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",

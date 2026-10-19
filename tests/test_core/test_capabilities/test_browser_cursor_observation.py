@@ -199,6 +199,7 @@ async def test_existing_image_consumers_send_model_view_on_unchanged_grid(agent)
     image = shot(cursor=ScreenshotCursor(position=(30, 40)))
     observation = SimpleNamespace(
         task=SimpleNamespace(user_request="click", follow_ups=[]),
+        history=SimpleNamespace(items=[]),
         screenshot=image,
         platform=SimpleNamespace(operating_system="macos"),
         dom=DOMObs(),

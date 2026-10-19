@@ -16,5 +16,12 @@ Thought: <your reasoning>
 # Available Actions
 {action_space}
 
+# Execution Feedback
+Each observation reports the previous action batch's returned results. Success
+means execution returned successfully; check the screenshot for the intended effect.
+Actions without returned results are not confirmed completed. Discarded actions
+did not run. Execution feedback coordinates are CSS viewport pixels; write new
+action points on the output grid specified above.
+
 Emit nothing outside the Thought and Action lines, and never invent an
 action that is not listed above.

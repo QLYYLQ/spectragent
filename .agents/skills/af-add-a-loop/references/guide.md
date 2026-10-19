@@ -141,6 +141,13 @@ hook call counter, start background generation, or nest an event loop inside a b
 Prompt/helper failures are execution failures and cancellation propagates; they are not
 recording failures to suppress.
 
+UI-TARS declares its task once in the prepare seed and the measured platform once on
+the first observation after prepare, which need not be source step zero in an export
+segment. Its user turn renders the preceding batch from `loop.history`, including each
+returned result, rather than the singular `loop.action_result`. This layout is Agent-owned;
+Memory retains/trims the returned messages and does not infer missing execution facts.
+Check fresh executions, source/restored history and segment reseeding when changing it.
+
 ## 3. Execution outcomes, cancellation and recording isolation
 
 ### Execution failures and vetoes

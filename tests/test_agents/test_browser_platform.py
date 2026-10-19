@@ -40,6 +40,7 @@ def _observation(operating_system: Any = "macos") -> Any:
     return SimpleNamespace(
         platform=SimpleNamespace(operating_system=operating_system),
         task=TaskObs(user_request="Select all text in the focused editor."),
+        history=SimpleNamespace(items=[]),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",
             image_width=1280,
@@ -110,7 +111,7 @@ async def test_missing_platform_is_not_rendered_as_a_known_platform(agent_class)
         )
 
 
-@pytest.mark.parametrize("agent_class", AGENTS)
+@pytest.mark.parametrize("agent_class", [BrowserUseAgent, SkyvernAgent])
 async def test_platform_changes_with_the_observation_not_cached_agent_state(agent_class) -> None:
     agent = agent_class()
     assert "macOS (macos)" in _text(

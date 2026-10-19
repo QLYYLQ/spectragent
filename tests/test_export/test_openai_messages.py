@@ -70,13 +70,14 @@ async def test_a_record_is_the_context_and_the_weighted_target(
     roles = [(m["role"], m.get("weight")) for m in record.record["messages"]]
     assert roles == [
         ("system", None),
+        ("system", None),
         ("user", None),
         ("assistant", 0),
         ("user", None),
         ("assistant", 1),
     ]
     assert record.record["messages"][-1]["content"] == second.target
-    assert record.record["messages"][2]["content"] == _first.target
+    assert record.record["messages"][3]["content"] == _first.target
 
 
 async def test_images_become_stored_paths(composer: ConfigComposer, tmp_path: Path) -> None:

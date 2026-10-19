@@ -309,6 +309,7 @@ class TestAgentToCapabilityActionVocabulary:
                     (),
                     {
                         "platform": BrowserPlatformObs(operating_system="macos"),
+                        "history": HistoryObs(),
                         "task": type("Task", (), {"user_request": "t"})(),
                         "screenshot": ScreenshotObs(
                             image_bytes=b"\x89PNG\r\n\x1a\n",

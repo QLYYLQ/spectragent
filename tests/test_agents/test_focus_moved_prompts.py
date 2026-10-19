@@ -44,7 +44,7 @@ _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: sha256 of UI-TARS's messages (system prompt, then this step's) for :func:`_observation`
 #: with no move and the measured macOS platform. A deliberate change to
 #: UI-TARS's prompt updates it; nothing in this package may.
-UI_TARS_PROMPT_SHA256 = "27d2d4636432b03e682fbc3b3a3f0f1be2e08fe985c0587e7a98e79a3d7a9cc1"
+UI_TARS_PROMPT_SHA256 = "ddfc0e61c19e32e62a3d545fe2b942744d1ffe8a530a164e9e88473d78f111db"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:

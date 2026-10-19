@@ -176,9 +176,11 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 |---|---|---|---|
 | BrowserUseAgent | `configs/browser_use_local.yaml` | 默认 DOM 文本，按元素索引操作；也支持 DOM + 截图或纯截图 | `uv run spectragent run --config configs/browser_use_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 | SkyvernAgent | `configs/skyvern_agent_local.yaml` | Skyvern DOM 清洗与 HTML 序列化、动作历史和结构化输出 | `uv run spectragent run --config configs/skyvern_agent_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
-| UITarsAgent | `configs/ui_tars_local.yaml` | 只向模型发送截图，解析 `Action:` 文本中的坐标动作 | `uv run spectragent run --config configs/ui_tars_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
+| UITarsAgent | `configs/ui_tars_local.yaml` | 截图驱动，解析 `Action:` 坐标动作，并接收逐项执行反馈 | `uv run spectragent run --config configs/ui_tars_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 
 三个文件中的 `llm` 都只是可编辑的 OpenAI 示例。运行 UI-TARS 专用模型时，把 `llm.model_type`、`model`、`provider`（必要时 `base_url`）改为该模型实际提供的 API；`coordinate_space` 要与它输出的坐标一致，值为 `screenshot_pixels` 或 `normalized_1000`。`prompt_template` 可选 `computer_use`、`grounding`、`mobile_use`。`ui_tars` 不请求 DOM，浏览器不会为这个 agent 提取 DOM。
+
+UI-TARS 的 Task 只在初始 system 中声明；浏览器实测平台在首次观测时加入一次 system 上下文。每轮 user 消息包含当前截图、步数和上一批动作的逐项执行结果，区分返回成功、返回失败、没有返回结果的动作及被截断的数量。它通过 `loop.history` 获取执行事实，由 Agent 渲染后交给已配置的 memory strategy 保存和裁剪；memory 不自行从 trace 补结果或去重 Task。`success` 只说明执行器结果，是否达成页面目标仍需检查截图。新执行或独立导出段重新初始化平台；老轨迹保留原件，不能用新提示伪造旧 prompt 的逐字历史重建。
 
 模型客户端在一次任务或独立评测执行内惰性创建并复用，结束时由相应执行入口关闭。Runtime 统一清理主模型与显式绑定的提示辅助模型；独立 judge 由评测入口收尾。调用方注入的 HTTP transport 默认借用，框架不关闭它。成功、失败、超时和取消都走有界清理；清理异常单独报告，不改变已取得的模型回复、用量或原始错误。后一次执行重新创建自建 transport，prepare/dry-run 不打开连接。
 

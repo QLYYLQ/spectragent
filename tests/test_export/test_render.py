@@ -165,6 +165,7 @@ class TestAssembly:
         assert first.context[0].text == seed[0].text  # the student's own prepare()
         assert [type(m).__name__ for m in third.context] == [
             "SystemMessage",
+            "SystemMessage",
             "UserMessage",
             "AssistantMessage",
             "UserMessage",
@@ -340,7 +341,11 @@ class TestUntranslatable:
         renderer = _renderer(composer, untranslatable="drop_step")
         _first, last = await renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
         assert last.context_steps == ()
-        assert [type(m).__name__ for m in last.context] == ["SystemMessage", "UserMessage"]
+        assert [type(m).__name__ for m in last.context] == [
+            "SystemMessage",
+            "SystemMessage",
+            "UserMessage",
+        ]
         assert last.context[0].text == renderer.runtime.seed_messages(last.sample.task)[0].text
 
     async def test_truncate(self, composer: ConfigComposer, tmp_path: Path) -> None:

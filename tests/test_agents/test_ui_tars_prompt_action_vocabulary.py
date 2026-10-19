@@ -152,6 +152,7 @@ async def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) ->
         await agent.build_react_prompt(
             SimpleNamespace(
                 platform=SimpleNamespace(operating_system="macos"),
+                history=SimpleNamespace(items=[]),
                 task=SimpleNamespace(user_request="t"),
                 screenshot=ScreenshotObs(
                     image_bytes=b"\x89PNG\r\n\x1a\n",

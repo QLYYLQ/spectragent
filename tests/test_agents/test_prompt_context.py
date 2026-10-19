@@ -31,7 +31,7 @@ AGENT_CLASSES = (BrowserUseAgent, SkyvernAgent, UITarsAgent)
 ORIGINAL_PROMPT_DIGESTS = {
     BrowserUseAgent: "d89b121aa6319adcc31f2032e14b19a73d0a021459d3ea8248820d06d12a8451",
     SkyvernAgent: "bf357a0c812a20adaef9d691207e1a2720d6df5310bfbd7b1df7e26c1a577eb1",
-    UITarsAgent: "d5273359664aec634d4894dfc063c42ba152787ee900b0dae5671a4e2a941063",
+    UITarsAgent: "5d483e7921a2f646023f5f9d7d66506a712e8f08abce863001c146e2dc4d0a41",
 }
 
 
@@ -39,6 +39,7 @@ def observation() -> Any:
     return SimpleNamespace(
         task=SimpleNamespace(user_request="Open the live result", follow_ups=[]),
         platform=SimpleNamespace(operating_system="macos"),
+        history=SimpleNamespace(items=[]),
         dom=SimpleNamespace(element_tree="[29]<button>Live result</button>"),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",
@@ -126,13 +127,17 @@ async def test_no_contribution_preserves_every_message_byte_across_phases(
     policy = await agent.build_react_prompt(
         observation(), context=ReactPromptContext(step=4, phase="policy")
     )
-    history = await agent.build_react_prompt(
+    history = await prepared(agent_class).build_react_prompt(
         observation(), context=ReactPromptContext(step=4, phase="history", is_branch=True)
     )
     assert serialized(policy) == serialized(history)
     payload = json.dumps(serialized(policy), sort_keys=True, ensure_ascii=False).encode()
     assert hashlib.sha256(payload).hexdigest() == ORIGINAL_PROMPT_DIGESTS[agent_class]
-    assert len(policy) == 1 and isinstance(policy[0], UserMessage)
+    if agent_class is UITarsAgent:
+        assert len(policy) == 2 and isinstance(policy[0], SystemMessage)
+    else:
+        assert len(policy) == 1
+    assert isinstance(policy[-1], UserMessage)
 
 
 @pytest.mark.parametrize("agent_class", AGENT_CLASSES)
@@ -148,7 +153,7 @@ async def test_agent_places_system_and_turn_contributions_without_changing_obser
         PromptContribution(text="Check the live result first", placement="turn"),
     ]
     context = ReactPromptContext(step=4, phase="policy", contributions=contributions)
-    shown = await agent.build_react_prompt(observation(), context=context)
+    shown = await prepared(agent_class).build_react_prompt(observation(), context=context)
     assert serialized(shown[1:-1]) == serialized(plain)
     assert isinstance(shown[0], SystemMessage)
     assert shown[0].text == "External prompt contribution:\nCompare the available options"
@@ -171,8 +176,14 @@ async def test_restored_history_shows_actual_execution_and_labels_source_reply(
     messages = await agent.build_restored_history(
         observation(), history=history, context=ReactPromptContext(step=4, phase="history")
     )
-    assert all(message.role == "user" for message in messages)
-    assert "Live result" in messages[0].text or "Screenshot: 2000x1000 pixels." in messages[0].text
+    if agent_class is UITarsAgent:
+        assert isinstance(messages[0], SystemMessage)
+        assert "<input_platform>" in messages[0].text
+        assert all(message.role == "user" for message in messages[1:])
+    else:
+        assert all(message.role == "user" for message in messages)
+    observation_text = next(message.text for message in messages if message.role == "user")
+    assert "Live result" in observation_text or "Screenshot: 2000x1000 pixels." in observation_text
     assert "not a new reply or thought" in messages[-1].text
     if agent_class in (BrowserUseAgent, UITarsAgent):
         assert "Executed coordinate parameters use CSS viewport pixels." in messages[-1].text

@@ -70,6 +70,7 @@ class _FakeObservation:
         self.screenshot = screenshot
         self.task = task or _FakeTask()
         self.platform = SimpleNamespace(operating_system="macos")
+        self.history = SimpleNamespace(items=[])
 
 
 def _make_agent(**overrides: Any) -> UITarsAgent:
@@ -148,7 +149,7 @@ class TestWiring:
         wiring = UITarsAgent.__wiring__
         assert wiring["observation"] == {
             "registry": "observation",
-            "keys": ["screenshot", "platform", "task"],
+            "keys": ["screenshot", "platform", "history"],
             "optional_keys": ["step_info"],
             "declare_only": True,
         }
@@ -245,10 +246,11 @@ class TestBuildReactPrompt:
         )
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
-        # Pure builder: a single new user message this step.
-        assert len(messages) == 1
-        assert isinstance(messages[0], UserMessage)
-        content = messages[0].content
+        # The first observation declares its measured platform, then its frame.
+        assert len(messages) == 2
+        assert isinstance(messages[0], SystemMessage)
+        assert isinstance(messages[1], UserMessage)
+        content = messages[1].content
         # Multi-modal: list with text + image
         assert isinstance(content, list)
         assert len(content) == 2
@@ -280,16 +282,16 @@ class TestBuildReactPrompt:
         )
         content = (
             await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
-        )[0].content
+        )[-1].content
         assert isinstance(content, list)
         image = next(p for p in content if isinstance(p, ContentPartImageParam))
         assert image.image_url.url.startswith("data:image/jpeg;base64,")
         assert image.image_url.media_type == "image/jpeg"
 
-    async def test_task_text_pulled_from_observation(self) -> None:
+    async def test_task_is_declared_only_in_the_seed(self) -> None:
         agent = _make_agent()
-        agent.prepare(
-            task="ignored-old-value",
+        seed = agent.prepare(
+            task="open settings menu",
             action_descriptors=[],
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
@@ -300,11 +302,12 @@ class TestBuildReactPrompt:
         messages = await agent.build_react_prompt(
             obs, context=ReactPromptContext(step=0, phase="policy")
         )
-        content = messages[0].content
+        content = messages[-1].content
         assert isinstance(content, list)
         text_parts = [p for p in content if isinstance(p, ContentPartTextParam)]
-        assert any("open settings menu" in p.text for p in text_parts)
-        # Confirms task does NOT come from agent state (agent has no _task).
+        assert "open settings menu" in str(seed[0].content)
+        assert all("open settings menu" not in p.text for p in text_parts)
+        assert all("Task:" not in p.text for p in text_parts)
         assert not hasattr(agent, "_task")
 
     async def test_falls_back_to_text_when_no_screenshot(self) -> None:
@@ -318,11 +321,12 @@ class TestBuildReactPrompt:
         messages = await agent.build_react_prompt(
             obs, context=ReactPromptContext(step=0, phase="policy")
         )
-        assert len(messages) == 1
-        assert isinstance(messages[0], UserMessage)
-        content = messages[0].content
+        assert len(messages) == 2
+        assert isinstance(messages[0], SystemMessage)
+        assert isinstance(messages[1], UserMessage)
+        content = messages[1].content
         assert isinstance(content, str)
-        assert "some task" in content
+        assert "some task" not in content
         assert "no screenshot available" in content
 
 

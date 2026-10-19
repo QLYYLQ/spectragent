@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -631,7 +632,7 @@ class UITarsAgent(AgentBase):
     # narrowed the generated config to whichever capability happened to
     # be registered.
     #
-    # Pure vision: a screenshot and the task, nothing DOM-shaped. The
+    # Page input is visual; loop history supplies execution feedback. The
     # required actions are what the model cannot work without; the
     # optional four are the rest of its native vocabulary, dropped from
     # both the prompt and the parser's reach when a capability does not
@@ -642,7 +643,7 @@ class UITarsAgent(AgentBase):
         "agent_loop": ("agent_loop", ["react", "branch"]),
         "observation": {
             "registry": "observation",
-            "keys": ["screenshot", "platform", "task"],
+            "keys": ["screenshot", "platform", "history"],
             "optional_keys": ["step_info"],
             "declare_only": True,
         },
@@ -683,8 +684,8 @@ class UITarsAgent(AgentBase):
     ] = "screenshot_pixels"
 
     # ── internal state ─────────────────────────────────────────
-    # ``task`` reaches every step via ``obs.task.user_request`` (loop
-    # fragment); the agent does not hold its own copy.
+    # Task text belongs to the prepare seed. Platform is measured by the
+    # environment and becomes a system message on the first observation.
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
     )
@@ -703,6 +704,7 @@ class UITarsAgent(AgentBase):
     _grid: PointGrid | None = field(default=None, init=False, repr=False)
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
+    _input_platform_text: str | None = field(default=None, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``) via conscribe's ``WiredField`` descriptors.
@@ -734,8 +736,9 @@ class UITarsAgent(AgentBase):
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
-        ``task`` is baked into the system prompt, and also flows through
-        every step's observation as ``obs.task.user_request``.
+        ``task`` is written once in the system prompt. The first observed
+        platform is another system message, reset here for each execution
+        or independently rendered training segment.
 
         ``max_actions_per_step`` comes from the Loop, which is what
         actually truncates; the prompt has to promise exactly that.
@@ -749,6 +752,7 @@ class UITarsAgent(AgentBase):
             name: verb for name, verb in _VERB_TABLE.items() if verb.action in negotiated
         }
         self._grid = None
+        self._input_platform_text = None
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task, self._action_descriptors, max_actions_per_step
         )
@@ -761,14 +765,19 @@ class UITarsAgent(AgentBase):
     async def build_react_prompt(
         self, observation: Any, *, context: ReactPromptContext
     ) -> list[BaseMessage]:
-        """Pure builder: return the screenshot user-message for this step.
+        """Return this observation and the preceding batch's execution feedback.
+
+        The first call after prepare also declares the measured platform
+        as fixed system context. This is independent of the step number:
+        an exported segment may begin at a nonzero source step. Builders
+        return messages; only the Loop or offline renderer writes memory.
 
         UI-TARS is purely vision-driven, so the screenshot is always
         attached. With no screenshot bytes the step degrades to a text
         placeholder so the LLM call still succeeds — and since that step
         has no grid, any point in its reply is refused.
 
-        The one piece of state it records is that grid, because
+        The per-frame grid is recorded because
         ``parse_react_output`` has to place a point with the image the
         reply was looking at.
 
@@ -779,8 +788,23 @@ class UITarsAgent(AgentBase):
                 here instead of feeding the model a parse error per step
                 that it has no way to fix.
         """
-        task_text = observation.task.user_request
         platform_text = render_browser_platform(observation)
+        if self._input_platform_text is not None and platform_text != self._input_platform_text:
+            raise ValueError(
+                "UI-TARS input platform changed within an execution; prepare a new run"
+            )
+        prefix: list[BaseMessage] = (
+            [SystemMessage(content=platform_text, cache=True)]
+            if self._input_platform_text is None
+            else []
+        )
+        step_info = getattr(observation, "step_info", None)
+        step_label = (
+            f"Step: {step_info.step}/{step_info.max_steps}"
+            if step_info is not None
+            else f"Step: {context.step + 1}"
+        )
+        text = step_label + "\n" + self._render_action_results(observation.history)
         screenshot = getattr(observation, "screenshot", None)
         if screenshot is not None and not isinstance(screenshot, ScreenshotGeometry):
             raise TypeError(
@@ -794,17 +818,14 @@ class UITarsAgent(AgentBase):
 
         if screenshot is None or image_bytes is None:
             self._grid = None
-            return place_prompt_contributions(
-                [
-                    UserMessage(
-                        content=f"Task: {task_text}\n{platform_text}\n(no screenshot available)"
-                    )
-                ],
+            messages = place_prompt_contributions(
+                [*prefix, UserMessage(content=f"{text}\n(no screenshot available)")],
                 context=context,
             )
+            self._input_platform_text = platform_text
+            return messages
 
         self._grid = point_grid(self.coordinate_space, screenshot)
-        text = f"Task: {task_text}\n{platform_text}"
         if self._grid is not None and self._grid.space == "screenshot_pixels":
             text += f"\nScreenshot: {self._grid.width}x{self._grid.height} pixels."
         # Labelled from the bytes, not assumed: the capability can be
@@ -822,7 +843,52 @@ class UITarsAgent(AgentBase):
                 ),
             ),
         ]
-        return place_prompt_contributions([UserMessage(content=content)], context=context)
+        messages = place_prompt_contributions(
+            [*prefix, UserMessage(content=content)], context=context
+        )
+        self._input_platform_text = platform_text
+        return messages
+
+    @staticmethod
+    def _render_action_results(history: Any) -> str:
+        """Render the last batch without treating proposed actions as completed.
+
+        History is the existing loop-source contract shared with branch
+        reconstruction and export. Earlier batches already have their own
+        messages; the singular action_result fragment loses all but the
+        last result. Sensitivity markers remain trace-only evidence.
+        """
+        if not history.items:
+            return "<action_results>\nNo previous action batch.\n</action_results>"
+        record = history.items[-1]
+        if len(record.action_results) > len(record.actions):
+            raise ValueError("UI-TARS action feedback has more results than actions")
+        returned = len(record.action_results)
+        facts = {
+            "step": record.step + 1,
+            "returned_results": [
+                {
+                    "action": action.model_dump(mode="json"),
+                    "result": result.model_dump(
+                        mode="json", exclude={"typed_into_sensitive_field"}
+                    ),
+                }
+                for action, result in zip(
+                    record.actions[:returned], record.action_results, strict=True
+                )
+            ],
+            "actions_without_returned_results": [
+                action.model_dump(mode="json") for action in record.actions[returned:]
+            ],
+            "discarded_action_count": record.truncated_actions,
+            "error_phase": record.error_phase or None,
+            "error": record.error,
+        }
+        return (
+            "<action_results>\n"
+            + json.dumps(facts, ensure_ascii=False, sort_keys=True)
+            + "\n</action_results>"
+        )
 
     async def build_restored_history(
         self,

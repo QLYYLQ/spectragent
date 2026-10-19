@@ -103,10 +103,17 @@ def test_the_context_is_the_source_runs_prefix(composer: ConfigComposer, tmp_pat
     records = {line["id"]: line for line in read_jsonl(out / "train.jsonl")}
     renders = {line["sample"]["sample_id"]: line["render"] for line in _lines(out)}
     checkpoint = records["src-s1-b0/s1"]["messages"]
-    assert [m["role"] for m in checkpoint] == ["system", "user", "assistant", "user", "assistant"]
-    assert checkpoint[2]["content"] == records["src/s0"]["messages"][-1]["content"]
+    assert [m["role"] for m in checkpoint] == [
+        "system",
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert checkpoint[3]["content"] == records["src/s0"]["messages"][-1]["content"]
     # The step-0 observation is the source run's (color 10), not the branch's restored one.
-    assert checkpoint[1]["content"][1] == records["src/s0"]["messages"][1]["content"][1]
+    assert checkpoint[2]["content"][1] == records["src/s0"]["messages"][2]["content"][1]
     assert renders["src-s1-b0/s1"]["context_steps"] == [0]
     assert renders["src-s1-b0/s2"]["context_steps"] == [0, 1]
     assert checkpoint[-1]["content"].startswith("Thought: branch 0\n")

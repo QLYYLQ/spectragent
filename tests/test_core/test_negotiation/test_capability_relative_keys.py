@@ -609,7 +609,8 @@ class TestUITarsRunsWhereverItsVerbsExist:
             assert result.fragment_bindings["screenshot"] == f"{prefix}.screenshot"
             assert result.fragment_bindings["platform"] == f"{prefix}.platform"
             # The loop-source half resolves the same relative way.
-            assert "loop.task" in result.loop_sourced
+            assert "loop.history" in result.loop_sourced
+            assert result.fragment_bindings["history"] == "loop.history"
 
     def test_a_composite_holding_both_refuses_and_names_the_candidates(
         self,

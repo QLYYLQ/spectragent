@@ -556,7 +556,7 @@ class TestStepTimings:
             ),
             context=context,
         )
-        rendered_restored = await agent.build_react_prompt(
+        rendered_restored = await agent_cls().build_react_prompt(
             SimpleNamespace(
                 task=TaskObs(user_request="continue"),
                 history=HistoryObs(items=[restored]),

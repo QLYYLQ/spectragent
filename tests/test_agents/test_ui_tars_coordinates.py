@@ -73,6 +73,7 @@ def _observation(
     return SimpleNamespace(
         platform=SimpleNamespace(operating_system="macos"),
         task=SimpleNamespace(user_request="tick the checkbox"),
+        history=SimpleNamespace(items=[]),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",
             viewport_width=viewport[0],
@@ -92,7 +93,7 @@ async def _step_text(agent: UITarsAgent, observation: Any) -> str:
         await agent.build_react_prompt(
             observation, context=ReactPromptContext(step=0, phase="policy")
         )
-    )[0].content
+    )[-1].content
     assert isinstance(content, list)
     return next(p.text for p in content if isinstance(p, ContentPartTextParam))
 
@@ -186,6 +187,7 @@ class TestTheFieldIsTheSharedGrid:
         agent = _agent()
         observation = SimpleNamespace(
             platform=SimpleNamespace(operating_system="macos"),
+            history=SimpleNamespace(items=[]),
             task=SimpleNamespace(user_request="t"),
             screenshot=SimpleNamespace(image_bytes=b"\x89PNG\r\n\x1a\n"),
         )
@@ -362,6 +364,7 @@ class TestTheFrameIsPerStep:
             await agent.build_react_prompt(
                 SimpleNamespace(
                     platform=SimpleNamespace(operating_system="macos"),
+                    history=SimpleNamespace(items=[]),
                     task=SimpleNamespace(user_request="t"),
                 ),
                 context=ReactPromptContext(step=0, phase="policy"),
