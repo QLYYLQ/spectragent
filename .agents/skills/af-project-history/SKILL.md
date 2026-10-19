@@ -22,6 +22,9 @@ compromise or silently refresh the historical claim.
 
 ## Read only the relevant reference
 
+- Highest-priority next framework work, set by the user on 2026-10-19: formal Jev
+  integration. Start with [jev-integration-handoff.md](references/jev-integration-handoff.md)
+  for measured evidence, the working offline skill and the unresolved architecture decisions.
 - Current accepted implementation, the new local handoff, genuinely deferred work and
   retired continuation routes: [unfinished-work.md](references/unfinished-work.md).
   Current local evidence starts at `tmp/framework_expansion/delivery.json`, with

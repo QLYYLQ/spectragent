@@ -1,11 +1,25 @@
 # Current handoff and remaining work
 
-Memory updated 2026-10-19 for the user's sampled M18 acceptance; the implementation
+Memory updated 2026-10-19 for the user's highest-priority Jev integration follow-up; the implementation
 acceptance snapshot below remains 2026-10-16 at `626612a`.
 This file routes continuation; it does not outrank `docs/architecture_design.md`,
 `docs/execution_dag.md` or `AGENTS.md`.
 
-## Current entry point
+## Highest priority: formal Jev integration
+
+Explicit user ruling, 2026-10-19: **formal Jev integration into AF is the highest-priority
+next work item**. Start from [jev-integration-handoff.md](jev-integration-handoff.md).
+The user has also authorized Jev as the fast offline decision stage in the replay rule
+improvement skill. That skill workflow is current work; its helper is not a framework
+provider or a replacement for runtime restoration checks.
+
+The next framework task should first settle the public contract, registrar/receptor,
+consumer ownership, probability/result persistence and uncertainty handling against
+current architecture. Priority does not decide those open design questions. Earlier Jev
+deferrals no longer set its scheduling priority; unrelated work still follows the user's
+active request. The accepted implementation snapshot below remains historical evidence.
+
+## Accepted implementation entry point
 
 The current local handoff is
 [framework_expansion/delivery.json](../../../../tmp/framework_expansion/delivery.json).
@@ -170,7 +184,7 @@ and the current execution DAG. The original full list is
 | More detailed judge/unevaluable failure classification | Independent judging exists, but does not close every finer classification question. |
 | Real multi-Agent, multi-tab browser workflows | Shared-context/popup isolation and independent-runtime WAL tests exist; separately verify a composed workflow with several real Agents each operating multiple tabs. This is not a remaining M18 gate. |
 | Automatic dynamic-region masking / virtual time | Diagnostics do not alter restoration verdicts; the prior probe did not justify shipping virtual time. |
-| Jev/System One/probe/cascade | Read the full preserved memo before resuming. Generic helper attribution is not approval or implementation of these research proposals. |
+| Jev formal integration; probe/cascade scope remains undecided | Highest-priority next framework work by the user's 2026-10-19 ruling; start with `jev-integration-handoff.md`. The offline skill is available. Registrar/consumer decisions and any runtime probe/cascade remain to be settled against current architecture. |
 | Remaining port-residue issues | Revalidate individual findings against current design/code/tests; do not batch-execute a dated handoff. |
 
 Internal verification debt is separate from those feature decisions. The uncertain

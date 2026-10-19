@@ -2,6 +2,8 @@
 
 Measured on 2026-10-19. This is an offline experiment, not a runtime judge or a decision
 model registrar. Architecture and current code remain authoritative.
+For the current skill integration, use [the Jev workflow](jev-workflow.md); the results
+below explain its evidence-selection and escalation choices.
 
 ## Reusing the capture
 

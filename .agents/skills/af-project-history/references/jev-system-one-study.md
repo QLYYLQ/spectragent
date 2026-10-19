@@ -62,3 +62,8 @@ not establish broad accuracy/calibration; a direct-typing case had conflicting c
 and yes/no outputs. It remains offline instrument research, with no new registrar,
 runtime judge, or cascade implementation. The earlier memo's modality results remain
 historical; this new trial sent no images.
+
+The user's subsequent 2026-10-19 ruling promotes formal framework integration to the
+highest-priority continuation. Use [jev-integration-handoff.md](jev-integration-handoff.md)
+for that active work; the replay skill now includes a reusable native Jev review helper.
+The historical proposals above remain choices to resolve, not an already selected design.

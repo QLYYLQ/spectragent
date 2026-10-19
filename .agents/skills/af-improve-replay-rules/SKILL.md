@@ -11,6 +11,9 @@ outcomes. A higher hit rate alone does not establish a better replay.
 
 This is an offline operator workflow: Codex reasons over saved evidence and uses existing
 AF commands. It does not put an LLM in request serving or rewrite rules during a run.
+The default review path is evidence check → configured DOM cleaning and comparison →
+Jev triage where task relevance remains uncertain → deeper visual/evidence review when
+needed → causal request diagnosis → scoped rules → counterexamples and replay validation.
 Honor the requested scope: diagnose, propose, or apply and verify. Existing authorization
 persists; do not ask again for each authorized local edit. A proposal task produces a
 candidate directory and diff; an apply task may update the selected rules after validation.
@@ -77,7 +80,30 @@ public reports, or infer that every suggested name is a real parameter.
 | URL/signature/action/retarget/screenshot mismatch without a causal miss | Inspect active tab, focus, geometry, DOM, action outcome, settle evidence and timing. |
 | Challenge/login, lost session, unsupported worker/WebSocket behavior | Diagnose that boundary; synthetic success does not fix it. |
 
-## Let AI assess whether the difference matters to the task
+## Use Jev to triage task relevance
+
+Use `jev-1.14.0` on the configured DMX route as this skill's fast, text-based decision
+stage. It is an instrument reading recorded evidence, separate from the browser Agent.
+Read [the operational recipe](references/jev-workflow.md) and use
+`scripts/jev_review.py` for preserved requests/responses and conservative review routing.
+Complete deterministic matches can proceed with their evidence; use Jev for differences
+whose relevance to the task needs interpretation, rather than paying for every snapshot.
+
+Give it the task, next action and aligned clean DOM views, plus relevant link/geometry
+facts and explicit evidence gaps. Keep prior judgments and expected labels out of the
+request. For visual-only questions, missing evidence, low confidence or disagreeing
+answers, continue with the screenshot/DOM review below. If the route is unavailable,
+report the failure and continue that evidence review; do not block independent diagnosis
+or silently substitute a model.
+
+`candidate_acceptable` means the difference may be non-blocking for the stated task;
+`investigate_difference` prioritizes causal diagnosis; `further_review` calls for deeper
+inspection by the agent conducting this skill. None authorizes dropping a meaningful
+request field. The provisional confidence cutoff is a review-routing knob, not a
+calibrated accuracy claim or a new runtime acceptance threshold. Further review does
+not inherently require another user permission question.
+
+## Complete the evidence review
 
 Use machine checks to locate differences, then have the AI conducting this skill inspect
 the task, corresponding actions, source/replay screenshots and DOM. Its task-level
@@ -182,6 +208,10 @@ the conclusion as local. Do not require a full Agent × benchmark matrix.
    measurements, document/subresource misses, synthetic replies and exhausted reuse.
    Include task-specific semantic evidence and recording health. Unreached steps stay
    visible in the denominator. Test criterion changes separately from rule changes.
+5. For cases triaged by Jev, review the candidate with the same task, questions, model
+   and evidence-selection policy used for the baseline. Preserve both reviews and any
+   visual adjudication. A changed model label alone does not establish a repaired replay;
+   the matched responses, task evidence and negative cases still decide the rule change.
 
 Use the task's time/token/iteration limits. Stop on a verified repair, exhausted budget,
 or missing evidence required for the next hypothesis. Without an iteration budget, perform

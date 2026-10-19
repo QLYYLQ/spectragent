@@ -3,6 +3,15 @@
 These notes preserve explicit user intent. Confirm that the current architecture docs
 have not superseded them before implementing a change.
 
+## Current highest-priority follow-up: formal Jev integration
+
+User ruling, 2026-10-19: add Jev to the replay self-improvement skill's offline workflow,
+and make formal integration of Jev into AF the highest-priority next framework task.
+The concrete continuation is `jev-integration-handoff.md`. The user selected
+`jev-1.14.0` through the same DMX gateway as Luna. This establishes priority and the
+working use case; it does not choose a registrar, permit treating Jev as a general chat
+model, or approve replacing runtime restoration checks with a model judgment.
+
 ## Current generated data is disposable test data
 
 Explicit user ruling, 2026-10-14: all data generated so far is test data and can be
