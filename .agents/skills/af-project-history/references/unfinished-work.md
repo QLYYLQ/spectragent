@@ -68,6 +68,21 @@ Small text/schema probes and a text-only replay of a failed prompt succeeded; th
 pattern implicates request/route reliability but does not establish its root cause.
 The new `af-improve-replay-rules` skill is a first version for user review.
 
+Later that day, the user manually logged into dedicated Bilibili and Xiaohongshu
+profiles. `tmp/replay_rules_login_20261019/delivery.json` records the authenticated
+search experiment with Luna + UI-TARS: both recordings completed; Bilibili's baseline
+and confirmation each passed four restoration checks. Xiaohongshu's baseline search
+page was empty; three scoped request-ID rules restored the same 19 result links,
+titles and order in two offline replays, with checkpoint dHash distance 28 → 0.
+Earlier search-history panel open/closed differences remain warnings, judged
+non-blocking for this task from the actual screenshots and subsequent actions.
+The published rules retain query/page/sort/filter keys, with 23 local counterexample
+checks and 92 passing related tests. This is repeated replay of one source, not a
+cross-account or independent live holdout. The skill now performs offline AI review
+using aligned DOM, screenshots and task context; it does not replace runtime verdicts.
+This successful text-action experiment does not close the earlier concurrent multi-tab
+workflow or establish that the structured-output timeout issue was resolved.
+
 ## Prior six-package acceptance (2026-10-15)
 
 The earlier implementation handoff is

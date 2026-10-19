@@ -32,7 +32,20 @@ recordings by comparing replay misses with recorded requests and response
 bodies. On 2026-10-15 the parameter rules were narrowed to the documented
 endpoints, with exact paths and methods checked through the recordings'
 committed network indexes. File comments retain the parameter rationale.
-The set contains 25 site files plus the explicit baseline.
+That set contained 25 site files plus the explicit baseline. On 2026-10-19,
+`xiaohongshu.com.yaml` added three exact search endpoints after an authenticated
+record/replay comparison: notes ignores body `search_id`/`session_id`, filter ignores
+query `search_id`, and onebox ignores body `search_id`/`request_id`. The same saved
+login seed and search inputs were held constant; the recorded responses did not echo
+these identifiers. All other content selectors remain in the matching key.
+
+The failing search replay showed an empty result page. Two candidate replays restored
+the same 19 result links, titles and order from the archived DOM, and reduced the
+search checkpoint's screenshot distance from 28 to 0. The two earlier warnings were
+a search-history panel's open/closed state; the recommendation cards were unchanged.
+They remain recorded warnings, with task relevance assessed separately. These are
+repeats of one source task, not evidence across accounts or every search variant;
+negative request mutations verify that keywords, pages, sorting and filters do not merge.
 
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another

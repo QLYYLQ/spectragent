@@ -61,6 +61,12 @@ occurrences; disclose missing individual timestamps. A hashed body key cannot re
 the original fields. Compare clean screenshots, not cursor-decorated model images;
 low dHash distance does not prove equal click targets or focus.
 
+The automatic near-miss report considers query differences, not every POST-body
+difference. Compare the actual recorded request body with available replay evidence;
+preserve empty values when decoding canonical parameters. Packed telemetry may be
+misread as enormous query parameter names. Do not copy those strings into rules or
+public reports, or infer that every suggested name is a real parameter.
+
 | Evidence | Next decision |
 |---|---|
 | `no_match` with a near candidate | Compare actual requests/responses and endpoint semantics before proposing normalization. |
@@ -70,6 +76,45 @@ low dHash distance does not prove equal click targets or focus.
 | `match_level_disallowed` | Inspect both permissions and semantic correctness before enabling a weaker match. |
 | URL/signature/action/retarget/screenshot mismatch without a causal miss | Inspect active tab, focus, geometry, DOM, action outcome, settle evidence and timing. |
 | Challenge/login, lost session, unsupported worker/WebSocket behavior | Diagnose that boundary; synthetic success does not fix it. |
+
+## Let AI assess whether the difference matters to the task
+
+Use machine checks to locate differences, then have the AI conducting this skill inspect
+the task, corresponding actions, source/replay screenshots and DOM. Its task-level
+assessment is not determined by the image-hash threshold alone. Keep the raw distances,
+machine verdicts and warnings unchanged alongside that assessment.
+
+AF already compares interactive-element signatures when `browser.dom` is available.
+Vision-only Agents may have no negotiated DOM fragment while `browser.dom_raw` still
+archives the same observation cycle. Read it through the committed archive interface;
+use `capture_from_document` and the existing cleaners when a normalized view helps.
+Align capture cycle/time, tab, document URL/loader evidence and action correspondence
+before comparing. Across browsers, backend node IDs are not semantic identities.
+
+Match task-relevant text, roles, input values where available, result links/order,
+target geometry, visibility and occlusion. Screenshots establish what was visible;
+DOM presence alone does not prove visibility. Check that the corresponding action
+reached the intended control and produced the expected state. Keep unavailable frames,
+redacted values, missing captures and contradictory evidence explicit. A comparison of
+two empty extractions is not evidence of equivalence.
+
+Report **acceptable for this task**, **material difference**, or **insufficient evidence**,
+with the step/artifact references, the changed region or elements, and why they affect
+the task. For example, a closed search-history panel can be non-blocking when the next
+action directly types the query and the same results return; it is material if the task
+requires selecting an item from that panel. An empty result list in place of recorded
+results is material even with zero document misses: a failed JSON subresource can cause it.
+
+Do not attribute differences to recommendation algorithms without checking the evidence.
+Independent live runs may receive different recommendations. Offline replay of one
+archive serves saved responses; rendering/animation/focus/timing, request selection and
+missing resources must be distinguished from fresh server-side recommendations. Compare
+the recorded result identities and content before accepting a result difference.
+
+This AI review belongs to the offline skill. Replacing the runtime restoration judge
+with an LLM or introducing semantic verification as a framework strategy is separate
+implementation work; do not silently rewrite saved restoration verdicts or relax global
+thresholds merely to make a report green.
 
 ## Review what may change
 

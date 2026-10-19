@@ -1,0 +1,61 @@
+# Validated on an authenticated search recording and two independent offline replays.
+# The changed fields are request/search-session identifiers at these exact endpoints.
+# Authentication cookies are unchanged; search terms, pagination and filters remain in keys.
+# Recorded responses do not echo these identifiers. Query/page/filter mutations still miss.
+# This is endpoint-specific experimental evidence, not a rule for other session_id fields.
+rules:
+- id: xiaohongshu-search-notes-request-ids
+  scope:
+    host: so.xiaohongshu.com
+    path: /api/sns/web/v2/search/notes
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - search_id
+  - session_id
+  keep_body_paths:
+  - keyword
+  - page
+  - page_size
+  - sort
+  - note_type
+  - geo
+  - image_formats.*
+  - ext_flags*
+- id: xiaohongshu-search-filter-request-id
+  scope:
+    host: edith.xiaohongshu.com
+    path: /api/sns/web/v1/search/filter
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - search_id
+  keep_query:
+  - keyword
+- id: xiaohongshu-search-onebox-request-ids
+  scope:
+    host: edith.xiaohongshu.com
+    path: /api/sns/web/v1/search/onebox
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - search_id
+  - request_id
+  keep_body_paths:
+  - keyword
+  - biz_type
