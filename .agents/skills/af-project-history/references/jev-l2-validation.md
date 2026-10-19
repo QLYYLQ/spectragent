@@ -138,3 +138,50 @@ that root under `tmp/trace_cleanup_20261019/superseded-rerun/`.
 The user's subsequent cleanup retained the preceding cohort's 12 traces and these
 12 final traces; older raw traces, including initial timeout attempts mentioned above,
 were removed. See [retention details](operations-and-exclusions.md#local-trace-retention-after-the-ui-tars-rerun).
+
+## Headless follow-up and action feedback diagnosis
+
+The user subsequently requested more trajectories, all headless and quiet, with longer
+model timeouts. Evidence is in
+[the headless report](../../../../tmp/jev_headless_calibration_20261019/report.md),
+`delivery.json`, `analysis.json` and `verification.json` beside it. Five original L2
+tasks (130, 2, 238, 30, 220) used DeepSeek v4.1 flash 1017 with 300-second model calls,
+1,800-second task limits and four actions per step. Five recordings and six replays
+closed with complete recording health; restoration checks were 93 ok and 34 warn.
+The extra task130 replay is a repeat, not an independent source. The user preference
+for headless applies to future browser experiments; see the operations reference.
+
+Twenty-eight selected pairs were labelled by Codex before 56 Jev requests. The baseline
+6000-character/20-link evidence budget agreed with 24/28 labels; the compact
+1500-character/8-link budget agreed with 21/28, with 44.5% fewer reported tokens.
+Both yielded zero candidate accepts, 27 further reviews and one investigate-difference.
+These are selected-pair agreement figures, not calibrated accuracy; warnings were
+oversampled and there was one adjudicator. All 2,757 reviewed source/replay files were
+unchanged. All 11 run IDs are distinct; the read-only viewer is on port 8768.
+
+Concrete findings, not implemented fixes:
+
+- Task238's second image contains four eggs in the source and is absent in replay.
+  Both Jev variants chose acceptable; conservative routing still required review.
+  Exact-URL replay consumed two available 200 bodies of identical digest, then an
+  incomplete record and returned 404. The earlier body is readable and visually
+  verified. Response-sequence/availability semantics need design; URL broadening is
+  not a fix for an exact hit with no body.
+- Task30 retained task-relevant video-time/content divergence, including source
+  00:41 versus replay 00:10. Equal controls do not establish equal information.
+- Bilibili first diverged at step3. Its `/x/space/wbi/acc/info` request differed from
+  eight available source requests only in `dm_img_inter` and `w_rid`; later screenshots
+  show login failure/overlays. The fields' equivalence and a candidate replay have not
+  been validated. Do not inherit the earlier Origin/CORS causal claim for this run.
+- The user's action-feedback question exposed a real input-validation lead:
+  Bilibili source step20 sent a full URL through `send_keys` and received success.
+  The unknown multichar key path emits one key and no character text. Clear invalid-key
+  feedback and measured action effects are proposed, not yet added to the framework.
+- A live inference that task130's pointer at (45,34) caused ineffective scrolling was
+  explicitly corrected. Raw-DOM offsets show successful 300px increments from 0 to
+  2100 in both source and replay. Pointer location alone is not evidence of a bad scroll.
+
+No new matching rule or production action/observation behavior was applied. The source
+recording returning done, recording health, restored environment fidelity and Jev route
+remain independent facts. Detailed feedback proposals are in the local
+`action-feedback-findings.json`; they are not architecture decisions.

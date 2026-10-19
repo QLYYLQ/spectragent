@@ -1059,6 +1059,18 @@ class GAIAAgent(AgentBase):
 
 **设计决策**：Observation 不再是万能袋，而是 Fragment 注册表 + `__wiring__` 三方协商 + Resolver 模式。Fragment 是语义不可分的一组字段，独立注册在 conscribe；Env(Capability)/Agent/Loop 通过 `__wiring__` 声明 provides/requires；config 时 Avro 式协商 → 动态生成 Observation model → Capability 的 Resolver 按需计算。
 
+**浏览器通用观测（2026-10-19 裁决，enhance 待实现）。** 环境含 BrowserCapability 时，
+`env.observe()` 应为所有使用它的 Agent 提供统一的结构化浏览器观测：当前页面、tab、截图及
+坐标上下文，指针/焦点，加载状态，以及可测量的动作效果。共同事实由 BrowserCapability 的
+Resolver 采集，不能分别做成 UI-TARS、BrowserUse、Skyvern 的私有补丁；Agent 仍负责提示
+呈现，不重复采集浏览器状态。公共基线随浏览器能力可用，不要求各 Agent 重复实现或逐项
+选入。实现前须明确该基线自动进入协商结果的规则、fragment 划分、有类型字段、失败语义和
+采集预算；仍经现有 fragment、同周期采集、协商和持久化合同交付，不绕过协商，不给其他
+capability 的 Observation 强加浏览器字段。ActionResult 的执行成败、后续环境的观测变化和
+任务是否达成保持独立；未测量不等于零，批次后的变化不自动归因到某一个动作，敏感值不
+回显。当前代码尚未实现这项公共基线，后续工作记录在
+`.agents/skills/af-project-history/references/enhance.md`。
+
 #### 截图的原图与模型视图
 
 浏览器 capability 的 `screenshot_cursor`（默认 False）与 `screenshot_cursor_size`（默认 32 CSS px，16–96）决定模型图片里是否显示放大、高亮的光标。它们属于 capability 的 `Annotated` 标量配置与实验身份，不属于 Agent 或 profile，也不改变 DOM 的 `debug_highlight`。

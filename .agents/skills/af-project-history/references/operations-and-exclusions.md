@@ -1,5 +1,15 @@
 # Operations, local assets, and excluded memories
 
+## Browser experiment preference
+
+User ruling on 2026-10-19: run subsequent browser trajectory experiments headless,
+quietly in the background, without opening visible Chrome windows. Apply
+`backend.headless: true` to both fresh recordings and replays. DeepSeek v4.1 or Luna
+are authorized for the current Jev calibration batch; allow longer model-call
+timeouts. Preserve recorded historical configurations rather than editing them to
+look headless. The current batch uses 300-second model calls and a 1,800-second
+per-task execution timeout.
+
 ## Localhost HTTP clients
 
 The development machine has historically exported HTTP(S) proxy variables. A client
