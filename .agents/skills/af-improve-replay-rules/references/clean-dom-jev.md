@@ -1,7 +1,8 @@
 # Clean DOM comparison and decision-model trial
 
-Measured on 2026-10-19. This is an offline experiment, not a runtime judge or a decision
-model registrar. Architecture and current code remain authoritative.
+Measured on 2026-10-19 before formal integration. This preserves the earlier offline
+experiment; the current Decision registrar and independent review job supersede its
+prototype tooling. It is not a runtime judge. Architecture and current code remain authoritative.
 For the current skill integration, use [the Jev workflow](jev-workflow.md); the results
 below explain its evidence-selection and escalation choices.
 

@@ -21,7 +21,8 @@ candidate directory and diff; an apply task may update the selected rules after 
 ## Contracts and inputs
 
 Locate and read the relevant current sections of `docs/architecture_design.md`: §4.1
-restoration, §4.14 request matching/rules/logs, §5 recording health/committed readers.
+restoration, §4.14 request matching/rules/logs, §4.18 independent replay review, and §5
+recording health/committed readers.
 Read `configs/replay_rules/README.md` for the YAML schema and use `af-data-flywheel` for
 pipeline configuration/execution. Current architecture outranks historical runbooks and
 reports. An undefined framework contract requires a design decision before coding it.
@@ -82,17 +83,20 @@ public reports, or infer that every suggested name is a real parameter.
 
 ## Use Jev to triage task relevance
 
-Use `jev-1.14.0` on the configured DMX route as this skill's fast, text-based decision
-stage. It is an instrument reading recorded evidence, separate from the browser Agent.
-Read [the operational recipe](references/jev-workflow.md) and use
-`scripts/jev_review.py` for preserved requests/responses and conservative review routing.
+Use the formal `spectragent replay-review` job with the `replay_reviewer` configuration
+axis and its separate `decision_model` receptor. The shipped DMX configuration selects
+`jev-1.14.0`; direct and OpenRouter configurations are also available. It reads recorded
+evidence independently of the browser Agent. Read [the operational recipe](references/jev-workflow.md)
+for aligned trace pairs, source configuration, native calls and conservative routing.
 Complete deterministic matches can proceed with their evidence; use Jev for differences
 whose relevance to the task needs interpretation, rather than paying for every snapshot.
 
-Give it the task, next action and aligned clean DOM views, plus relevant link/geometry
-facts and explicit evidence gaps. Keep prior judgments and expected labels out of the
-request. For visual-only questions, missing evidence, low confidence or disagreeing
-answers, continue with the screenshot/DOM review below. If the route is unavailable,
+The job derives the task, next actions, configured clean DOM views, link/geometry facts,
+raw screenshots and explicit evidence gaps through committed readers. Keep prior
+judgments and expected labels out of the request. Mark visual comparisons with
+`visual_required: true`; missing pixels must not become a text-only acceptance.
+For missing evidence, low confidence or disagreeing answers, continue with the
+screenshot/DOM review below. If the route is unavailable,
 report the failure and continue that evidence review; do not block independent diagnosis
 or silently substitute a model.
 
