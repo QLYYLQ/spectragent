@@ -30,9 +30,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance, ArchiveScope
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
@@ -44,7 +44,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage
 from spectragent.core.trace.encoding import (
     EncodedFragment,
     EncodedLLMCall,
@@ -59,7 +59,12 @@ from spectragent.core.trace.encoding import (
     sha256_hex,
 )
 from spectragent.core.trace.fsio import atomic_write
-from spectragent.core.trace.models import RecordedLLMCall, TraceConfig, TraceStatus
+from spectragent.core.trace.models import (
+    RecordedChatCall,
+    RecordedLLMCall,
+    TraceConfig,
+    TraceStatus,
+)
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
@@ -79,8 +84,8 @@ class Reply(BaseModel):
     action: str
 
 
-def usage(prompt: int = 10, completion: int = 5) -> ChatInvokeUsage:
-    return ChatInvokeUsage(
+def usage(prompt: int = 10, completion: int = 5) -> ModelInvokeUsage:
+    return ModelInvokeUsage(
         prompt_tokens=prompt,
         prompt_cached_tokens=0,
         prompt_cache_creation_tokens=None,
@@ -146,6 +151,21 @@ def cancelled_call(
     return encode_llm_call(step, call, pending)
 
 
+_Value = TypeVar("_Value")
+
+
+def required(value: _Value | None) -> _Value:
+    """Require an optional fixture result before inspecting its fields."""
+    assert value is not None
+    return value
+
+
+def as_chat(call: RecordedLLMCall) -> RecordedChatCall:
+    """Assert the Chat contract when a fixture deliberately records Chat evidence."""
+    assert call.kind == "chat"
+    return call
+
+
 def read_back(encoded: EncodedLLMCall) -> RecordedLLMCall:
     """An encoded call record read back the way ``RunTrace`` reads one, without a commit.
 
@@ -156,7 +176,7 @@ def read_back(encoded: EncodedLLMCall) -> RecordedLLMCall:
     record = json.loads(encoded.file.data)
     files = {image.rel_path: image.data for image in encoded.images}
     restore_prompt_images(record, lambda ref: prompt_image_text(ref, files[ref.stored_image]))
-    return RecordedLLMCall.model_validate(record)
+    return TypeAdapter(RecordedLLMCall).validate_python(record)
 
 
 def screenshot(step: int, data: bytes = PNG_BYTES) -> EncodedFragment:

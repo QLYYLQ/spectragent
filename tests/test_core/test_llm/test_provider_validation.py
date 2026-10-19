@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import json
 import pkgutil
 from collections.abc import Callable
@@ -89,7 +90,17 @@ def _hand_validations(path: Path) -> list[str]:
 
 def test_no_provider_validates_an_output_format_by_hand() -> None:
     offenders: list[str] = []
-    for path in sorted(_PROVIDERS_DIR.glob("*.py")):
+    # This is the Chat structured-generation contract. Decision's independent
+    # native validation is covered for every Decision registrar key in
+    # test_decision_provider.py; it must never raise the Chat retry exception.
+    chat_modules = {
+        Path(file)
+        for cls in LLMRegistrar.get_all().values()
+        for base in cls.__mro__
+        if base.__module__.startswith("spectragent.core.llm.providers.")
+        if (file := inspect.getsourcefile(base)) is not None and Path(file).parent == _PROVIDERS_DIR
+    }
+    for path in sorted(chat_modules):
         if path.name in _EXEMPT:
             continue
         offenders.extend(_hand_validations(path))

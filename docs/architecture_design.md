@@ -1767,6 +1767,48 @@ manifest 只索引实际提交内容。`complete_through` 是连续完整前缀�
 
 ### 4.7 LLM 抽象
 
+**Chat 与 Decision 共享身份和生命周期，分别注册。** 公共 `BaseInferenceModel`
+Protocol 声明 `model/model_type/provider/name`、显式 `inference_kind: chat | decision`
+与 `aclose`，不声明宽泛调用方法。`BaseChatModel` 的消息、tools、泛型
+`ChatInvokeCompletion[T]` 合同保持；`BaseDecisionModel.ainvoke(request: DecisionRequest)
+-> DecisionResult` 接收结构化 state、独立 typed questions 和图片 assets。
+实现基座 `ModelBase` 只共享 `ClientResources` 与关闭逻辑；`ChatModelBase` 和
+`DecisionModelBase` 分别绑定 `LLMRegistrar/llm` 与 `DecisionModelRegistrar/decision_model`。
+两轴都用 `model_type.provider` 嵌套判别器，自动发现，均纳入 `collect_registrars()`。
+现有 Agent、chat judge、prompt helper 的受体继续是 Chat，不扩大为公共模型类型。
+直接 Python 装配也须在使用消费者前检查明确的调用协议，不能靠同名 `ainvoke` 猜测。
+通用用量类型名为 `ModelInvokeUsage`，保留原有未知/零/缓存/图片语义，不留旧名别名。
+
+**Decision 原生合同。** `DecisionRequest` 保留字符串、对象或数组 state；问题以 ID
+映射到 Choice / Score / Noul / Box 的判别联合。instructions 与 criteria 中的描述保留
+JSON 结构和原生 null；所选路由不支持的 null 组合在发送前明确拒绝。2026-10-19 的真实请求确认 DMX/OpenRouter 都拒绝 null Score 等级，OpenRouter 还拒绝 null instructions；Noul criteria 按 API 的非 null 描述合同校验。选择项最多 255，Score 有 2–10 档。答案 ID、type 与请求逐项
+对应；Choice 保留 choice/全部 probabilities/confidence，Score 保留连续 score、结构化
+legend、全部 probabilities/confidence，Noul 保留概率，Box 保留归一化四边和 confidence。
+校验有限数、概率范围、选项和等级集合、argmax、等级期望的舍入误差及 Box 边界；
+不重算覆盖 confidence，不把 Noul 阈值化。问题独立求值，依赖关系由调用者组织。
+
+图片使用带原生 `format/data_base64` 的显式 assets；引用可以出现于 state、instructions
+和 criteria 的字符串值，不能仅出现在对象键。资产可带来源摘要和变换说明，这些属于
+逻辑输入证据，不发送给 provider。provider 校验格式、尺寸、引用、模型版本能力和
+请求体预算；不静默丢弃或缩放。Box 需要图片，目标是否存在由独立 Noul 问题回答。
+首版只实现 PNG/JPEG 的 JSON 传输，不增加 multipart、音频、视频或长上下文开关。
+
+`typesafe.direct` 发送 `<base_url>/v1/systemone`，base_url 是服务根：官方为
+`https://api.typesafe.ai`，DMX 为 `https://www.dmxapi.cn/typesafe`；图片/Box 带官方
+实验请求头。`typesafe.openrouter` 发送 `<base_url>/alpha/decisions`，默认根为
+`https://openrouter.ai/api`，把逻辑图片引用编译为 Decisions 支持的 image_url parts。
+路由不共享未经转换的 HTTP 请求。返回同时保留请求模型、实际服务模型、原生 usage
+及实际返回的 ID/provider 等元数据；不存在的值保持未知。HTTP、超限、不支持输入、
+答案校验失败各有类型化错误，答案错误不进入 ReAct 的聊天解析重试。
+每次 `ainvoke` 默认只发送一次请求，无隐藏重试；失败的已知 usage 仍保留。客户端
+懒创建、复用、借用 transport 与有界清理统一遵守上面的公共生命周期合同。
+
+协议依据为 [TypeSafe API](https://docs.typesafe.ai/api)、
+[结构化字段](https://docs.typesafe.ai/primitives/advanced)、
+[图片](https://docs.typesafe.ai/images)、[Box](https://docs.typesafe.ai/primitives/box)
+及 [OpenRouter Decisions](https://openrouter.ai/docs/guides/community/multimodal-decisions)，
+核对日期 2026-10-19。路由的实现覆盖与真实请求验收分别报告。
+
 ```
 BaseChatModel (Protocol)
     ├── model: str
@@ -2119,6 +2161,8 @@ BrowserCapability.teardown()
 ```
 
 **本地启动的资源所有权。** `local_chrome` 在业务 CDP 操作前验证本次 subprocess、连接端点、有效 profile 与 `ProviderSession` 是同一份启动事实。端口返回 `/json/version` 不是所有权证明：占用端口、子进程提前退出、profile 将启动转交旧进程、并发抢端口都必须明确失败。provider 核验实际 browser 进程身份，保留创建时的 process handle；关闭只终止该 handle 对应实例，不能按端口、进程名或复用 PID 猜所有权。失败、取消和正常结束均尝试回收本次拥有的进程与临时 profile，用户指定的持久 profile 从不删除。证明与资源账归本地 provider，不进入通用 Environment 协议。
+
+已确认本次 browser 主进程退出后，临时 profile 的删除对退出阶段的文件增删允许至多 5 次尝试，等待合计 0.75 秒；仅重试 ENOENT/ENOTEMPTY，目录已消失视为完成。其它 I/O 错误或持续变化仍抛出并保留资源账供 close 重试。该等待上限不声称能终止阻塞的系统 I/O，不扩展到持久 profile。
 
 **外部端点是借用连接。** 显式 `cdp_url` 继续受支持；选了 `local_chrome` backend 不代表端点由它创建。没有本次 `ProviderSession` 或实验所有者的 context lease，就只释放 AF 的连接、scope、bridge 与订阅，不关整个浏览器、不杀外部进程、不删 profile、不批量关闭已有 tab。录制、pinned、archive replay 仍按 provider 能力与 setup 合同检查，不为任意外部端点伪造共享录制能力。
 
@@ -3553,6 +3597,44 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 **历史与环境的差异视图（2026-10-16）。** 分叉页面与 TUI 显式展示已记录的 `history_source`、恢复器 `verify`、checkpoint 和 continuation 预算。源历史与实际恢复观测并列，动作重定位、返回结果、异常、URL、DOM signature、截图 dHash 和 document misses 使用既有恢复证据；容差内通过与存在可测差异同时显示，零 dHash 不宣称像素相同，未测不补零。只在恢复步与显式 checkpoint 校验处建立源步骤对应，后续 policy 步不凭相同步号伪造配对。源不可读不遮蔽本次可读证据。截图可切换 Browser state 原图与 Agent observation：后者经 fragment 的公开 `ModelImage` 合同按已记录元数据重建 cursor，默认显示模型视图，标明光标关闭或位置未知；精确提交的模型输入仍看 recorded calls，不把重建视图宣称为已提交输入。TUI 详情与日志支持选择和复制；在文本区 Ctrl-C 复制，活动区 Ctrl-C 与 q 保留取消并等待收尾；日志选择期间冻结文本，防止刷新破坏选区。
 
+### 4.18 独立 replay 审查
+
+`ReplayReviewerRegistrar`（`reviewer_id`，配置层 `replay_reviewer`）属于独立
+`spectragent/replay_review/`，首个实现 `jev` 通过 `decision_model` 单实例受体调用
+Decision 模型。`BaseReplayReviewer.review(case) -> ReviewAssessment` 只判断给定任务、
+下一批动作和对齐观测的相关差异。它不返回 `EvalResult`，不把模型故障当任务失败，
+不进入 Runtime/Restorer，不修改 matcher、规则、源 trace 或源用量。
+
+`spectragent replay-review --config <普通组合 YAML> --pairs <输入 JSON> --out <新目录>`
+由 `ReplayReviewRunner` 驱动。输入列明 source/replay trace、各自 step 和源运行配置。
+自动对齐只接受有明确 branch/source 对应关系的恢复步骤；显式输入也验证该关系。
+所有证据从 committed reader 取得。审查域层选择任务和动作，浏览器证据读取/重清洗
+位于 browser 包，通过 `ArchiveReader` 读取 raw DOM；cleaner、budget、serializer
+从所给源配置的同一个已组合 capability 取得，不另外默认构造策略。保存源配置中
+这些策略与轨迹记录配置的比对、证据文件摘要、capture 时间/cycle、裁剪说明、链接、
+几何、原始 screenshot 来源和原有 restoration/miss 事实。缺少来源、未采集内容、损坏、
+对齐失败分别报告，不从空提取推断等价。图片不混入 Agent 的光标展示变换。
+
+问题内容与 policy 都版本化。原生结果、语义判断（acceptable/material_difference/
+insufficient_evidence）、执行状态、分诊路线分别保存。首版政策独立检查 Choice
+confidence 与等价 Noul，不取平均；低置信、分歧、证据不足或服务故障进入
+further_review；可信差异进入 investigate_difference；其余为 candidate_acceptable。
+阈值可配置，含义是待验证的离线分诊，不是校准承诺；不自动调用强模型。
+标签、预期答案、开发/留出划分只在验收侧，永不进入模型请求。
+
+独立 job 有自己的 `job_id`、不可覆盖的新目录、配置/问题/policy 快照、证据来源及
+调用索引。模型调用经 AOP 的 `ainvoke` 边界，复用公共 PendingLLMCall、编码和图片
+哈希合同；owner 为 replay_review、step 为 null，源 step 仅在证据引用中。
+内容文件先持久写入，再原子安装审查 manifest；reader 只认索引内文件并校验摘要与
+路径。每项有执行与记录两种状态，失败/取消调用只结算一次，写入故障不覆盖模型
+返回或原错误。job 最终有界关闭自己持有的模型。
+
+首版验收使用固定 Jev 的 DMX 路线做文本、图片/Box、真实网页的离线审查；官方和
+OpenRouter 各有 HTTP 契约测试，有凭证才补真实调用。以三个独立源任务的 Luna
+record/replay（max_actions_per_step=4）加合成语义反例、缺证据、重复和选项顺序测试
+报告有效覆盖、接受子集错误/误放、分歧、翻转、延迟和超时。样本不足或错误仍单独
+列明，不据此宣布动态 replay 已验收。动态参与另行设计。
+
 ## 5. RunTrace 记录与持久化体系
 
 ### 5.1 设计原则
@@ -3605,7 +3687,7 @@ class WALWriter:
         """write_durable config.json（按需建 run 目录和 traces/），建 steps/ observations/ messages/ evals/，
         把这些目录项一批 fsync：run 目录，加上为它新建的每个目录的父目录（traces/；这个 run
         新建了 traces/ 时再加 traces/ 的父目录），然后才 atomic_write 初始 manifest
-        （format_version=5，last_step_completed=-1，complete_through=-1，status=writing）。
+        （format_version=6，last_step_completed=-1，complete_through=-1，status=writing）。
         先有 config.json 才有 manifest：run 存在了，它的配置就一定在。之后的提交只 fsync run 目录
         之内的目录，run 目录自己的名字只在这里落盘。manifest 写成之前任何一步失败，都不留下 run。"""
 
@@ -3734,7 +3816,7 @@ traces/
   ├── suite_index.json                  # 可选：后置生成的聚合索引
   │
   └── {run_id}/
-      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 5；trace 自己那本账
+      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 6；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
       │
@@ -3796,11 +3878,11 @@ traces/
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
-**manifest（format_version 5）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
+**manifest（format_version 6）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
 
 ```json
 {
-  "format_version": 5,
+  "format_version": 6,
   "run_id": "f2bbae22",
   "last_step_completed": 1,
   "status": "complete",
@@ -3849,7 +3931,7 @@ traces/
 | `complete` | 已关闭，在声明记录范围内完整；已恢复的历史故障仍可见 | `finalize` |
 | `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容（run 可继续）、收尾那次收集、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
-`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 5，旧数据和 fixtures 重建，不保留兼容路径。
+`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
 **记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 5`）：
 
@@ -3878,7 +3960,7 @@ class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent �
     INCOMPLETE = "incomplete"
 
 class TraceManifest(BaseModel):
-    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 5，RunTrace 只接受 5
+    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 6，RunTrace 只接受 6
     run_id: str
     last_step_completed: int = -1            # 最大已提交步号，不是计数
     expected_steps: int = 0
@@ -3940,7 +4022,7 @@ class RecordedCompletion(BaseModel):
     completion: Any                    # 文本回复是 str；结构化回复是它的 JSON 形式，不还原成回复模型
     thinking: str | None = None        # 响应带回的模型推理（§4.7）；没有就是 None
     redacted_thinking: str | None = None   # 只以不透明形式返回的推理（Anthropic 的 data、Bedrock 的 base64……）
-    usage: ChatInvokeUsage | None = None
+    usage: ModelInvokeUsage | None = None
     stop_reason: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
 
@@ -3950,9 +4032,12 @@ class CallFailure(BaseModel):
     raw_output: str | None = None      # 校验器看到的原文（StructuredOutputValidationError）
     partial_output: str | None = None  # 被截断的回复已经生成的部分（ModelOutputTruncatedError）
     stop_reason: str | None = None
-    usage: ChatInvokeUsage | None = None
+    usage: ModelInvokeUsage | None = None
 
-class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
+class RecordedChatCall(BaseModel):     # messages/NNN_call_KK.json
+    kind: Literal["chat"]              # required; no old-format default
+    owner: Literal["run", "replay_review"]
+    owner_id: str
     step: int                          # 调用时 Loop 所在的 step；trailing 调用 = 没提交的那一步
     call: int                          # 本步内按开始顺序的序号，从 0 起
     status: Literal["completed", "failed", "cancelled"]
@@ -3971,6 +4056,17 @@ class PromptImageRef(BaseModel):       # 盘上的调用记录里，一张内联
 ```
 
 盘上的调用记录比 `RecordedLLMCall` 多一样东西：prompt 里带了内联图片时，`messages` 后面有 `image_refs`，列出每个 `PromptImageRef` 在 `messages` 里的位置（从 `messages` 起的键与下标，如 `[1, "content", 1, "image_url", "url"]`）；没有内联图片的调用不写这个键（有值才写）。`RunTrace` 按它把原文放回去之后才按 `RecordedLLMCall` 校验，所以读回来的永远是完整的 prompt；绕过 `RunTrace` 直接按 `RecordedLLMCall` 校验盘上的记录会失败（`url` 的位置是一个对象，不是字符串），不会悄悄拿到一个缺了图片的 prompt。
+
+**当前调用格式为 v6。** `RecordedLLMCall` 是以必填 `kind` 判别的
+`RecordedChatCall | RecordedDecisionCall`，共享 owner/owner_id、call_id、caller/purpose、
+model、时间、状态与 failure。Chat 保留 messages/output_format/completion；Decision
+保存完整 request（state/questions/assets）与原生 result。run 的 step 为整数，独立
+审查的 step 为 null，不能把证据来源伪装为执行身份。kind 与 purpose 独立，恢复和
+导出明确拒绝 Decision 主决策，跳过 helper；不把 helper 重新调用或交给 Agent parser。
+metrics-only 不复制 request/图片；Decision assets 的 data_base64 同样内容寻址，
+引用位置从 request 根开始，所有其他字符串不被当作图片。读取恢复原文并校验哈希。
+旧 v5 reader 不在生产中兼容；升级前在当前工具下冻结历史输入和摘要，旧轨迹不回写。
+AgentResult 结构未变，仍为 3.0。
 
 **调用记录里的图片只存一份（用户 2026-10-14 的裁决）。** 调用记录存的是整份 prompt，而 memory 保留全部截图的 agent（UI-TARS）每次调用都带着之前的每一张：第 k 次调用把前面 k 张截图再存一遍。实测一个 12 步的 UI-TARS 录制：`messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB，按 base64 计），同一个 run 的 `observations/` 是 3.5 MB；三个站点的冒烟链共 305 MB，其中 127 MB 是调用记录。按下面的规则重新编码同一批记录：这个录制的 `messages/` 从 33.8 MB 降到 3.1 MB（调用记录 0.1 MB，10 张图片解码后 3.0 MB），整条链的调用记录与图片从 129.7 MB 降到 46.6 MB，报告按每个任务各段合计的字节从 102 MB 降到 74 MB；57 次调用读回来与原记录逐字节相同。现在：
 
@@ -4064,7 +4160,7 @@ class RestorationCheck(BaseModel):
 
 - `origin`：`policy` 是 Loop 自己的 agent 决定的一步；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
 - `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`。值为 `None` 的量不参与判定。
-- 当前 `AgentResult.schema_version` 为 `3.0`，trace `format_version` 为 `5`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
+- 当前 `AgentResult.schema_version` 为 `3.0`，trace `format_version` 为 `6`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
 
 **`TraceConfig.branch`：分叉来源（M31）**。按 §5.4 "记录一个新的 run 级事实" 的步骤：
@@ -4100,7 +4196,7 @@ class TraceConfig(BaseModel):
 
 ```python
 class RunTrace:
-    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 5 就抛 TraceSchemaError
+    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 6 就抛 TraceSchemaError
 
     @property
     def trace_dir(self) -> Path: ...
@@ -4211,7 +4307,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 归档元数据不合法 | extra 索引里一条记录的 `meta["archive"]` 不能按 `ArchiveMeta` 校验通过；点名那个索引文件 |
 | 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
 | fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
-| `format_version` 不支持 | 不是 5（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
+| `format_version` 不支持 | 不是 6（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
 
 把前两者都塌缩成 `None`，会让一批旧 schema 的 trace 静默地表现为“agent 没跑完”。`AgentResult.schema_version` 只接受当前版本：旧版本字段名对不上，接受它只会换来一条指着某个被改名字段的 pydantic 报错，而不是“这个 trace 太旧”。
 
@@ -4269,7 +4365,9 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 |--------|---------|------|------|
 | `AgentRegistrar` | `agent_id` (flat) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验 | ✅ |
 | `AgentLoopRegistrar` | `loop_id` (flat) | Loop 实现（执行策略）；通过 `__required_slots__` 声明所需 agent 方法，通过 `__loop_inputs__` 声明每任务的输入（M31） | ✅ ReactLoop；M31：`branch`（`BranchLoop`，ReactLoop 子类，§4.1）；CodeAct/FunctionCalling/PlanExecute 待 P2/P3 |
-| `LLMRegistrar` | `model_type.provider` (nested) | LLM provider 实现 | ✅ |
+| `LLMRegistrar` | `model_type.provider` (nested) | Chat provider 实现，保持 Chat 受体隔离 | ✅ |
+| `ReplayReviewerRegistrar` | `reviewer_id` (flat) | `replay_reviewer`：独立 replay 审查 job 的策略，`jev` 持 Decision 受体，§4.18 | ✅ |
+| `DecisionModelRegistrar` | `model_type.provider` (nested) | `core/llm/decision_registrar.py`，Decision provider：`typesafe.direct` / `typesafe.openrouter`，配置层 `decision_model` | ✅ |
 | `EnvironmentRegistrar` | `env_type` (flat) | 环境实现，通过 `__wiring__["capabilities"]` 注入 Capabilities，按前缀路由 action | ✅（仅 BrowserEnvironment；CompositeEnvironment 待） |
 | `CapabilityRegistrar` | `capability_id` (flat) | 能力 = ActionGroup + Resolver 合体；持 backend wired field | ✅（仅 BrowserCapability；docker / tool_sandbox / desktop_vm / android / gpu_profiling 待） |
 | `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern` / `browser_use` / `airtop` / `agentbay` / `hyperbrowser`。文件位于 `core/capabilities/browser/backends/` | ✅ |

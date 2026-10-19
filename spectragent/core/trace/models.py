@@ -24,8 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # cross into the trace layer duck-typed, so the WAL's interface stays
 # ``TraceFile``.
 from spectragent.core.archive.privacy import RedactionLedger
+from spectragent.core.llm.decision import DecisionRequest, DecisionResult
 from spectragent.core.llm.messages import BaseMessage, ToolCall
-from spectragent.core.llm.views import ChatInvokeUsage
+from spectragent.core.llm.views import ModelInvokeUsage
 from spectragent.schemas._types import UTCDatetime
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.config_source import ConfigSource
@@ -51,7 +52,7 @@ from spectragent.schemas.restoration import BranchProvenance
 #: A format-2
 #: ``error`` meant either outcome, and a format-3 call record holds its
 #: images inline: ``RunTrace`` refuses every version but this one.
-TRACE_FORMAT_VERSION = 5
+TRACE_FORMAT_VERSION = 6
 
 
 class TraceStatus(StrEnum):
@@ -360,7 +361,7 @@ class RecordedCompletion(BaseModel):
     completion: Any
     thinking: str | None = None
     redacted_thinking: str | None = None
-    usage: ChatInvokeUsage | None = None
+    usage: ModelInvokeUsage | None = None
     stop_reason: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
 
@@ -383,7 +384,7 @@ class CallFailure(BaseModel):
     partial_output: str | None = None
     stop_reason: str | None = None
     #: A failed call is billed all the same.
-    usage: ChatInvokeUsage | None = None
+    usage: ModelInvokeUsage | None = None
 
 
 #: A prompt message, tagged by ``role`` so a malformed one fails naming the
@@ -423,7 +424,10 @@ class RecordedCallMetrics(BaseModel):
     """One invocation's facts, readable without its prompt or reply artifacts."""
 
     call_id: str
-    step: int
+    kind: Literal["chat", "decision"]
+    owner: Literal["run", "replay_review"]
+    owner_id: str
+    step: int | None
     call: int
     caller: str = "agent"
     purpose: str = "agent_decision"
@@ -432,12 +436,12 @@ class RecordedCallMetrics(BaseModel):
     started_at: float
     ended_at: float
     latency_ms: int
-    usage: ChatInvokeUsage | None = None
+    usage: ModelInvokeUsage | None = None
     error: str | None = None
     detail: str | None = None
 
 
-class RecordedLLMCall(BaseModel):
+class RecordedCallBase(BaseModel):
     """``messages/NNN_call_KK.json`` — one LLM call, whatever its outcome.
 
     On disk, every image the prompt sent inline is a :class:`PromptImageRef`
@@ -447,7 +451,11 @@ class RecordedLLMCall(BaseModel):
     wants a string), so nothing reads a prompt with its images missing.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     call_id: str = ""
+    owner: Literal["run", "replay_review"]
+    owner_id: str
     caller: str = "agent"
     purpose: str = "agent_decision"
     model: str = ""
@@ -455,7 +463,7 @@ class RecordedLLMCall(BaseModel):
 
     #: The step the Loop was on. For a trailing call, the step it never
     #: surrendered, retaining its execution-time identity.
-    step: int
+    step: int | None
     #: Start order within the step, from 0.
     call: int
     status: Literal["completed", "failed", "cancelled"]
@@ -464,12 +472,26 @@ class RecordedLLMCall(BaseModel):
     started_at: float
     #: From the start to the return, the raise or the cancellation.
     latency_ms: int
+    failure: CallFailure | None = None
+
+
+class RecordedChatCall(RecordedCallBase):
+    kind: Literal["chat"]
     #: The whole prompt, as the caller handed it to ``ainvoke`` — its inline
     #: images included.
     messages: list[RecordedMessage]
     output_format: OutputFormatRef | None = None  # None: an unstructured call
     completion: RecordedCompletion | None = None  # completed calls only
     failure: CallFailure | None = None  # failed and cancelled calls
+
+
+class RecordedDecisionCall(RecordedCallBase):
+    kind: Literal["decision"]
+    request: DecisionRequest
+    result: DecisionResult | None = None
+
+
+RecordedLLMCall = Annotated[RecordedChatCall | RecordedDecisionCall, Field(discriminator="kind")]
 
 
 class TraceNegotiation(BaseModel):

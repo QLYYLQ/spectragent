@@ -425,13 +425,15 @@ async def test_recorded_time_instruction_and_prompt_snapshot_are_the_actual_requ
 
 async def test_failed_judge_preserves_known_usage_and_prompt_evidence(traces_dir):
     from spectragent.core.llm.exceptions import ModelOutputTruncatedError
-    from spectragent.core.llm.views import ChatInvokeUsage
+    from spectragent.core.llm.views import ModelInvokeUsage
 
     class TruncatedJudge(FakeJudge):
+        inference_kind = "chat"
+
         async def ainvoke(self, messages, output_format=None, **kwargs):
             raise ModelOutputTruncatedError(
                 model="test",
-                usage=ChatInvokeUsage(
+                usage=ModelInvokeUsage(
                     prompt_tokens=40,
                     completion_tokens=20,
                     total_tokens=60,

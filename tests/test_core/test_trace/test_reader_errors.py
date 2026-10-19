@@ -437,8 +437,8 @@ class TestFormatVersions:
             _trace(reference.run_dir)
 
     def test_a_newer_format_is_refused_at_construction(self, reference):
-        path = _declare_format(reference.run_dir, 6)
-        with pytest.raises(TraceSchemaError, match="format version 6") as exc_info:
+        path = _declare_format(reference.run_dir, 7)
+        with pytest.raises(TraceSchemaError, match="format version 7") as exc_info:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
         assert "the spectragent that wrote it" in str(exc_info.value)

@@ -374,7 +374,7 @@ class TestUntranslatable:
             write_ui_tars_run(
                 tmp_path,
                 "run-two",
-                [ExportStep(actions=[click_at(1, 1), click_at(2, 2)], fragments=[screenshot()])],
+                [ExportStep(actions=[click_at(i, i) for i in range(5)], fragments=[screenshot()])],
             )
         )
         renderer = _renderer(composer)

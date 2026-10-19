@@ -23,7 +23,7 @@ agent:
     agent_loop:
       loop_id: branch
       max_steps: 30
-      max_actions_per_step: 1
+      max_actions_per_step: 4
       continue_steps: 0                  # the recorded run's last step, decided once
       restorer:
         restorer_id: prefix_replay

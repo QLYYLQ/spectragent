@@ -47,7 +47,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
 ## 录制
 
-`configs/flywheel/record_ui_tars_pinned.yaml` 是发布的录制配置：UITarsAgent（`coordinate_space: screenshot_pixels`，`max_actions_per_step: 1`），`replayability: { replayability_id: pinned, random_seed: 7 }`，`network_source: { source_id: live }`，trace hook 上绑三个归档器。录制前复制一份（下面记作 `my/record.yaml`），把 `trace_writer.trace_dir` 从发布值 `traces` 改成 `traces/recorded`：发布的分叉与原路径回放配置从这个目录找源 run，导出配置也读 `traces/recorded/*`。回放 run 和分叉 run 不能当分叉的源，和录制混在一个目录里时，分叉 sweep 在开跑前就报错（`on_unbranchable: raise`）。
+`configs/flywheel/record_ui_tars_pinned.yaml` 是发布的录制配置：UITarsAgent（`coordinate_space: screenshot_pixels`，`max_actions_per_step: 4`），`replayability: { replayability_id: pinned, random_seed: 7 }`，`network_source: { source_id: live }`，trace hook 上绑三个归档器。录制前复制一份（下面记作 `my/record.yaml`），把 `trace_writer.trace_dir` 从发布值 `traces` 改成 `traces/recorded`：发布的分叉与原路径回放配置从这个目录找源 run，导出配置也读 `traces/recorded/*`。回放 run 和分叉 run 不能当分叉的源，和录制混在一个目录里时，分叉 sweep 在开跑前就报错（`on_unbranchable: raise`）。
 
 ```bash
 export OPENAI_API_KEY="你的密钥"
@@ -226,7 +226,7 @@ Loop 一侧：
 agent_loop:
   loop_id: branch
   max_steps: 30
-  max_actions_per_step: 1          # 必须与源 run 相同
+  max_actions_per_step: 4          # 必须与源 run 相同
   continue_steps: 0                # 0：只决定第 t 步；N：之后再走 N 个 ReAct 步
   history_source: source          # source 精确原对话；restored 使用本次恢复事实
   restorer:
@@ -309,7 +309,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 - `length: { max_tokens: 65536 }`：学生每轮都保留截图，30 步的整段在 1280×720 上光图像约 36k token。有记录超出预算时，导出失败并点名这条记录，从不截断；训练器的上下文更短时，换一个 `max_steps` 更小的学生。
 - `output_dir`：发布值 `datasets/sft_v1`，相对工作目录；已存在就拒绝。
 
-学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 1` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。
+学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。
 
 样本是至少执行了一个动作、没有出错的策略步。动作失败的步照样导出，标 `labels.step_status: action_failed`。分叉 run 导出它的策略步，上下文是源 run 的前缀；同一组里检查点步动作相同的样本标 `duplicate_of`，不删。产物先写进 `<output_dir>.partial/`，图片数、坐标范围、参考答案泄漏、凭证形状和长度的检查全部通过才改名：
 
@@ -530,3 +530,59 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ## 定位入口
 
 需要改这一层时，录制与回放看 `spectragent/core/capabilities/browser/` 下的 `recorder.py`、`archive/`、`replay/`、`cooperation.py` 和 `restoration.py`；trace 的读法在 `spectragent/core/trace/reader.py` 与 `spectragent/core/archive/source.py`；分叉在 `spectragent/core/loops/branch.py`、`spectragent/core/loops/restore/` 和 `spectragent/core/data_loader/task/trace_branches.py`；导出在 `spectragent/export/`；度量与链在 `spectragent/flywheel/`。`tests/_helpers/flywheel_rehearsal.py` 是演练怎么改写发布配置、怎么写链规格的完整例子。字段细节见 [configs/README.md](../configs/README.md)，单个浏览器 agent 怎么运行见 [Browser agent 运行手册](browser_agent_runbook.md)。
+
+
+## 独立 Jev replay 审查
+
+运行示例统一使用 `max_actions_per_step: 4`；record、same-path replay、branch 和学生配置保持相同预算。
+当前 trace 为 v6，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
+新 reader 不自动补 `kind` 或转换旧格式。独立审查只读 source/replay，不改变恢复校验、源 token 计数或任务正确性评分。
+
+审查配置为普通组合根中的 `replay_reviewer` 层，模型从 `decision_model` 受体注入：
+`configs/replay_review/jev_dmx.yaml`、`jev_direct.yaml`、`jev_openrouter.yaml`。
+DMX 根为 `https://www.dmxapi.cn/typesafe`，官方根为 `https://api.typesafe.ai`；都由 provider 拼接 `/v1/systemone`。
+OpenRouter 根为 `https://openrouter.ai/api`，拼接 `/alpha/decisions`。凭证由配置指定的环境变量提供。
+
+输入 JSON 示例（路径相对输入文件所在目录）：
+
+```json
+{
+  "format": "af-replay-review-input-1",
+  "pairs": [{
+    "source": "traces/source",
+    "replay": "traces/replay",
+    "source_step": 1,
+    "replay_step": 1,
+    "source_config": "record.yaml",
+    "visual_required": true
+  }]
+}
+```
+
+```bash
+uv run spectragent replay-review --config configs/replay_review/jev_dmx.yaml --pairs pairs.json --out reviews/new-job --dry-run
+uv run spectragent replay-review --config configs/replay_review/jev_dmx.yaml --pairs pairs.json --out reviews/new-job --json
+uv run spectragent view --root reviews
+```
+
+源配置须与 trace 中记录的 cleaner、serializer 和 DOM budget 一致。审查器使用这些已组合实例重建 raw DOM，
+保留裁剪范围、链接/几何、原始截图及机器恢复证据；不读光标装饰后的模型图片。输入不足、损坏、对齐错误、
+模型超时/HTTP/答案错误分别报告。目标是当前任务及下一批动作范围内的相关性，不是预测未录制的后续页面。
+
+新目录中的 `review-manifest.json` 索引配置、逐项判断、证据和调用。每个模型调用只有一份 latency/usage，
+一个批次的问题数不等于调用数；未知 usage 单独列出。`status` 是审查是否执行成功，`verdict` 是语义判断，
+`route` 是候选接受、调查差异或进一步复核。阈值是可配置分诊政策，没有校准保证。可通过
+`replay_review.jev.route_result(result, policy)` 离线重算路由；不会自动调用强模型。
+查看器的 Reports & datasets 中可查看该 job、原生分布、Score legend、Noul、Box 和图片。
+
+图片/Box 使用固定模型版本并校验尺寸。实测发现各路由对 null 的准入不同：Score 等级和 Noul criteria
+不接受显式 null；OpenRouter instructions 也不能为 null。Choice 选项描述可为 null。
+不支持的组合请求前报错；没有自动网络重试，不为了通过而改写描述或删除模态。
+
+
+2026-10-19 的三任务实测使用 `gpt-6-luna`，OpenAI 原生路线，并显式设置
+`frequency_penalty: null`、`temperature: null`、`reasoning_effort: low`；该路线拒绝默认 frequency_penalty。
+7 对页面在独立 Jev 审查中用 `max_text_chars: 6000`、`max_links: 20` 完成有效判定；更大的示例预算
+在 Wikipedia 上触发了模型上下文上限。预算裁剪记录在输入 scope，原始失败与复测分别保存。
+这组样本只有 2/7 达到候选接受阈值，其余进入进一步复核，不能当作运行期门控的校准证明。
+页内锚点对齐保留完整导航 URL；截图/DOM 的文档 URL 只在 base URL 与 loader 都对应时允许省略 fragment。

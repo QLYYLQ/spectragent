@@ -258,6 +258,7 @@ def test_yaml_explicitly_selects_the_browser_hook_and_rejects_a_typo() -> None:
 
 
 class _Reply:
+    inference_kind = "chat"
     model = "fixed-local-reply"
 
     async def ainvoke(self, _messages: Any, **_kwargs: Any) -> ChatInvokeCompletion:

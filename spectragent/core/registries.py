@@ -42,11 +42,13 @@ def collect_registrars() -> dict[str, type]:
     from spectragent.core.environments._registrar import EnvironmentRegistrar
     from spectragent.core.hooks._registrar import HookRegistrar
     from spectragent.core.llm._registrar import LLMRegistrar
+    from spectragent.core.llm.decision_registrar import DecisionModelRegistrar
     from spectragent.core.loops._registrar import AgentLoopRegistrar
     from spectragent.core.loops.restore import RestorerRegistrar
     from spectragent.evaluator._registrar import EvaluatorRegistrar
     from spectragent.export._registrar import ExporterRegistrar
     from spectragent.export.translate._registrar import ActionTranslatorRegistrar
+    from spectragent.replay_review._registrar import ReplayReviewerRegistrar
 
     return {
         # Leaves of the wiring DAG first — not load-bearing but keeps
@@ -83,6 +85,8 @@ def collect_registrars() -> dict[str, type]:
         "restorer": RestorerRegistrar,
         "agent_loop": AgentLoopRegistrar,
         "llm": LLMRegistrar,
+        "decision_model": DecisionModelRegistrar,
+        "replay_reviewer": ReplayReviewerRegistrar,
         "memory": MemoryRegistrar,
         "environment": EnvironmentRegistrar,
         "hook": HookRegistrar,

@@ -14,7 +14,8 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from spectragent.core.trace.encoding import snapshot
-from spectragent.core.trace.models import RecordedMessage
+from spectragent.core.trace.errors import IncompatibleCallKindError
+from spectragent.core.trace.models import RecordedChatCall, RecordedMessage
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
@@ -25,6 +26,16 @@ from spectragent.schemas.observation.fragments import StepInfoObs
 STEP_INFO_KEY = "loop.step_info"
 
 _MESSAGE: TypeAdapter[Any] = TypeAdapter(RecordedMessage)
+
+
+def recorded_chat_decisions(trace: RunTrace, step: int, *, consumer: str) -> list[RecordedChatCall]:
+    """Only main Chat decisions are eligible for ReAct history and training answers."""
+    calls = [call for call in trace.llm_messages(step) if call.purpose == "agent_decision"]
+    if any(call.kind != "chat" for call in calls):
+        raise IncompatibleCallKindError(
+            f"{consumer}: {trace.run_id} step {step} contains a non-Chat Agent decision; this consumer requires Chat evidence"
+        )
+    return [call for call in calls if call.kind == "chat"]
 
 
 def recorded_form(messages: Sequence[Any]) -> list[Any]:

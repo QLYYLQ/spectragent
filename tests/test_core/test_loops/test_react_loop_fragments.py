@@ -63,6 +63,7 @@ class _FakeEnv:
 
 
 class _FakeLLM:
+    inference_kind = "chat"
     model = "test"
 
     def __init__(self, completions: list[str]) -> None:

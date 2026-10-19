@@ -10,6 +10,8 @@ import {
   historyExplanation,
   cursorLabel,
   gapLabel,
+  modelCallTitle,
+  decisionAnswerRows,
 } from "./evidence.js";
 import "./styles.css";
 
@@ -707,6 +709,31 @@ function Messages({ messages }) {
   );
 }
 
+function DecisionContents({ call }) {
+  return <>
+    <details className="message-details">
+      <summary>Decision state and evidence</summary>
+      <StructuredData value={call.request?.state} />
+    </details>
+    <JsonPanel title="Questions and criteria" value={call.request?.questions} />
+    <div className="decision-images">
+      {Object.entries(call.request?.assets || {}).map(([key, asset]) => <figure key={key}>
+        <img alt={`Decision input ${key}`} src={`data:image/${asset.format === "png" ? "png" : "jpeg"};base64,${asset.data_base64}`} />
+        <figcaption>{key}</figcaption>
+        {asset.provenance && <JsonPanel title="Image origin and transformations" value={asset.provenance} />}
+      </figure>)}
+    </div>
+    {decisionAnswerRows(call.result).map(answer => <section className="panel padded" key={answer.id}>
+      <div className="section-heading"><h4>{answer.id}</h4><Badge value={answer.type} /></div>
+      <p>Answer: <strong>{text(answer.value)}</strong></p>
+      {answer.confidence !== null && <p>Provider confidence: {answer.confidence}</p>}
+      {answer.probabilities && <StructuredData value={answer.probabilities} />}
+      {answer.legend && <JsonPanel title="Score legend" value={answer.legend} initialOpen />}
+    </section>)}
+    {call.result && <JsonPanel title="Native decision result and usage" value={call.result} />}
+  </>;
+}
+
 function Calls({ calls, schemas = {} }) {
   if (!calls?.length)
     return (
@@ -723,13 +750,12 @@ function Calls({ calls, schemas = {} }) {
         >
           <div className="section-heading">
             <h3>
-              {call.purpose === "prompt_helper"
-                ? "Prompt helper"
-                : "Agent decision"}{" "}
+              {modelCallTitle(call)}{" "}
               {call.call ?? index}
-              <span className="muted small"> · step {call.step}</span>
+              <span className="muted small"> · {call.step == null ? `job ${call.owner_id}` : `step ${call.step}`}</span>
             </h3>
             <div className="inline">
+              <Badge value={call.kind} />
               <Badge value={call.status} />
               <span className="small mono">{duration(call.latency_ms)}</span>
             </div>
@@ -751,6 +777,7 @@ function Calls({ calls, schemas = {} }) {
               />
             </div>
           )}
+          {call.kind === "decision" ? <DecisionContents call={call} /> : <>
           <details className="message-details" open>
             <summary>
               Request · {number(call.messages?.length || 0)} messages
@@ -775,6 +802,7 @@ function Calls({ calls, schemas = {} }) {
               No structured output schema requested.
             </p>
           )}
+          </>}
           <JsonPanel title="Full call record" value={call} />
         </article>
       ))}
@@ -2679,6 +2707,26 @@ function ExperimentComparison({ route, revision }) {
   );
 }
 
+function ReplayReviewReport({ report }) {
+  return <>
+    <div className="section-heading"><h3>Independent replay review</h3><Badge value={report.manifest.status} /></div>
+    <StructuredData value={report.manifest.summary} />
+    <JsonPanel title="Question and policy snapshot" value={report.config} />
+    {report.items.map(item => <section className="panel padded" key={item.index}>
+      <h3>Observation pair {item.index + 1}</h3>
+      <dl className="properties">
+        <div><dt>Execution</dt><dd>{item.assessment.status}</dd></div>
+        <div><dt>Semantic judgment</dt><dd>{item.assessment.verdict || "Not assessed"}</dd></div>
+        <div><dt>Review route</dt><dd>{item.assessment.route}</dd></div>
+      </dl>
+      <p>{item.assessment.reasons.join(" · ")}</p>
+      {item.assessment.detail && <p className="notice error">{item.assessment.detail}</p>}
+      <JsonPanel title="Evidence, source references and restoration checks" value={item.evidence} />
+      <Calls calls={item.calls} />
+    </section>)}
+  </>;
+}
+
 function Reports({ route, revision, workspace }) {
   const list = useRemote("/api/reports", revision);
   const report = useRemote(
@@ -2757,7 +2805,7 @@ function Reports({ route, revision, workspace }) {
                       Download JSON ↓
                     </button>
                   </div>
-                  <StructuredData value={item.data} />
+                  {item.kind === "replay_review" ? <ReplayReviewReport report={item.data} /> : <StructuredData value={item.data} />}
                   <JsonPanel title="Raw report" value={item.data} />
                 </div>
               )}

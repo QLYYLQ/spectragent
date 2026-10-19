@@ -167,6 +167,7 @@ async def test_judge_transport_failure_is_not_scored_as_wrong(traces_dir, refere
     """
 
     class _Broken:
+        inference_kind = "chat"
         model = "broken"
 
         async def ainvoke(self, messages, output_format=None, **kwargs):

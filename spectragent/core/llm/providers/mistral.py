@@ -14,7 +14,7 @@ from spectragent.core.llm.messages import BaseMessage, Function, ToolCall
 from spectragent.core.llm.schema.mistral import MistralSchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -172,10 +172,10 @@ class ChatMistral(ChatModelBase):
             return None
         return {k: str(v) for k, v in self.default_query.items() if v is not None}
 
-    def _build_usage(self, usage: dict[str, Any] | None) -> ChatInvokeUsage | None:
+    def _build_usage(self, usage: dict[str, Any] | None) -> ModelInvokeUsage | None:
         if not usage:
             return None
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=usage.get("prompt_tokens", 0),
             prompt_cached_tokens=None,
             prompt_cache_creation_tokens=None,

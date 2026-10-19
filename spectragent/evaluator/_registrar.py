@@ -24,7 +24,7 @@ from typing import Any, ClassVar
 
 from conscribe import create_registrar
 
-from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.base import BaseChatModel, require_inference_protocol
 from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic, close_models
 from spectragent.core.llm.messages import (
     BaseMessage,
@@ -337,6 +337,7 @@ class LLMJudgeEvaluator(LLMJudgeReceptors, EvaluatorBase):
         if system is not None:
             messages.append(SystemMessage(content=system))
         messages.append(UserMessage(content=content))
+        require_inference_protocol(self.llm, "chat", consumer=f"{self.evaluator_id}.llm")
         completion = await self.llm.ainvoke(messages)
         if tally is not None:
             tally.add(completion.usage)

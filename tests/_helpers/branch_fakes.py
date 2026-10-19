@@ -38,7 +38,7 @@ from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage
 from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
@@ -304,6 +304,8 @@ class ScriptedLLM:
     exception, raised. Text for a structured call is wrapped as ``{"text": …}``.
     """
 
+    inference_kind = "chat"
+
     model = "scripted-teacher"
     model_type = "scripted"
     provider = "test"
@@ -311,7 +313,7 @@ class ScriptedLLM:
 
     #: What every reply is billed: a source with real token counts, so a
     #: restored copy of its steps can be seen not to carry them.
-    USAGE = ChatInvokeUsage(
+    USAGE = ModelInvokeUsage(
         prompt_tokens=10,
         prompt_cached_tokens=None,
         prompt_cache_creation_tokens=None,

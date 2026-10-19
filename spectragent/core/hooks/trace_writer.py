@@ -29,7 +29,7 @@ from spectragent.core.archive import (
 from spectragent.core.archive.privacy import RedactionLedger, redact_value
 from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.llm.call_context import RunCallContext
-from spectragent.core.llm.views import ChatInvokeUsage
+from spectragent.core.llm.views import ModelInvokeUsage
 from spectragent.core.trace.encoding import (
     EncodedOutputFormat,
     PendingLLMCall,
@@ -402,8 +402,18 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             output = kwargs.get("output_format", args[1] if len(args) > 1 else None)
             target = ctx.get("target")
             model = str(target.model) if target is not None else self._model
+            kind = getattr(target, "inference_kind", "chat")
+            if kind not in ("chat", "decision"):
+                raise ValueError(f"Unsupported inference protocol {kind!r}")
+            logical_input = (
+                args[0] if args else kwargs.get("request" if kind == "decision" else "messages")
+            )
             pending = PendingLLMCall(
-                args[0] if args else kwargs.get("messages"),
+                logical_input if kind == "chat" else None,
+                kind=kind,
+                owner="run",
+                owner_id=self._run_id,
+                request=logical_input if kind == "decision" else None,
                 output_format=self._output_format(output) if self.recording.trajectory else None,
                 capture_trajectory=self.recording.trajectory,
                 capture_metrics=self.recording.metrics,
@@ -452,7 +462,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     def _account(self, call: PendingLLMCall) -> None:
         try:
             self._coverage.calls += 1
-            usage = ChatInvokeUsage.model_validate(call.usage) if call.usage is not None else None
+            usage = ModelInvokeUsage.model_validate(call.usage) if call.usage is not None else None
             if usage is None:
                 self._coverage.missing_call_ids.append(call.call_id)
             else:
@@ -517,7 +527,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 record.execution_errors = errors
             if self.recording.metrics:
                 usages = [
-                    ChatInvokeUsage.model_validate(call.usage)
+                    ModelInvokeUsage.model_validate(call.usage)
                     for call in calls
                     if call.usage is not None
                 ]

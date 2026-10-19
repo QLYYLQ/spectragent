@@ -1,10 +1,11 @@
-"""BaseChatModel Protocol — the public contract for all LLM chat implementations."""
+"""Public inference contracts: shared identity, separate typed invocation protocols."""
 
 from collections.abc import Sequence
-from typing import Any, Protocol, TypeVar, overload, runtime_checkable
+from typing import Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
 from pydantic import BaseModel
 
+from spectragent.core.llm.decision import DecisionCapabilities, DecisionRequest, DecisionResult
 from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic, ModelClientLifecycle
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -13,8 +14,19 @@ from spectragent.core.llm.views import ChatInvokeCompletion
 T = TypeVar("T", bound=BaseModel)
 
 
+def require_inference_protocol(
+    model: object, kind: Literal["chat", "decision"], *, consumer: str
+) -> None:
+    """Validate explicit protocol declarations on direct-Python consumer paths."""
+    actual = getattr(model, "inference_kind", None)
+    if actual != kind or not callable(getattr(model, "ainvoke", None)):
+        raise TypeError(
+            f"{consumer} requires the {kind!r} inference protocol; got {actual!r} from {type(model).__name__}"
+        )
+
+
 @runtime_checkable
-class BaseChatModel(ModelClientLifecycle, Protocol):
+class BaseInferenceModel(ModelClientLifecycle, Protocol):
     model: str
 
     @property
@@ -27,6 +39,26 @@ class BaseChatModel(ModelClientLifecycle, Protocol):
 
     @property
     def name(self) -> str: ...
+
+    @property
+    def inference_kind(self) -> Literal["chat", "decision"]: ...
+
+
+@runtime_checkable
+class BaseDecisionModel(BaseInferenceModel, Protocol):
+    @property
+    def inference_kind(self) -> Literal["decision"]: ...
+
+    @property
+    def capabilities(self) -> DecisionCapabilities: ...
+
+    async def ainvoke(self, request: DecisionRequest) -> DecisionResult: ...
+
+
+@runtime_checkable
+class BaseChatModel(BaseInferenceModel, Protocol):
+    @property
+    def inference_kind(self) -> Literal["chat"]: ...
 
     @property
     def supports_tools(self) -> bool:

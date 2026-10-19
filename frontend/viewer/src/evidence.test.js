@@ -8,7 +8,27 @@ import {
   cursorLabel,
   historyExplanation,
   gapLabel,
+  modelCallTitle,
+  decisionAnswerRows,
 } from "./evidence.js";
+
+test("Decision kind is independent of Agent decision purpose", () => {
+  assert.equal(modelCallTitle({kind: "decision", purpose: "replay_review"}), "Replay review");
+  assert.equal(modelCallTitle({kind: "chat", purpose: "agent_decision"}), "Agent decision");
+  assert.equal(modelCallTitle({kind: "decision", purpose: "prompt_helper"}), "Prompt helper");
+});
+
+test("native answer rows preserve zero, structured legends and absent Noul confidence", () => {
+  const rows = decisionAnswerRows({answers: {
+    binary: {type: "noul", noul: 0},
+    score: {type: "score", score: 1.2, confidence: 0.8, legend: {0: {meaning: "low"}}, probabilities: {0: 0.2, 1: 0.8}},
+    box: {type: "box", box: {left: 0, top: 0, right: 0.5, bottom: 1}, confidence: 0.9},
+  }});
+  assert.equal(rows[0].value, 0);
+  assert.equal(rows[0].confidence, null);
+  assert.deepEqual(rows[1].legend, {0: {meaning: "low"}});
+  assert.equal(rows[2].value.right, 0.5);
+});
 
 test("cursor labels distinguish disabled, unknown and recorded positions", () => {
   assert.equal(cursorLabel({}), "Cursor metadata unavailable");

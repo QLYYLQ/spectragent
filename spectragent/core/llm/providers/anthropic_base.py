@@ -41,7 +41,7 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.anthropic_format import AnthropicMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -258,7 +258,7 @@ class AnthropicCompatBase(ChatModelBase):
             )
             yield client
 
-    def _get_usage(self, response: Message) -> ChatInvokeUsage:
+    def _get_usage(self, response: Message) -> ModelInvokeUsage:
         """Anthropic's three input counters, folded into one prompt total.
 
         ``input_tokens`` here is the *uncached remainder only* — it excludes
@@ -274,7 +274,7 @@ class AnthropicCompatBase(ChatModelBase):
         cache_read = response.usage.cache_read_input_tokens or 0
         cache_write = response.usage.cache_creation_input_tokens or 0
         prompt_tokens = response.usage.input_tokens + cache_read + cache_write
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=prompt_tokens,
             completion_tokens=response.usage.output_tokens,
             total_tokens=prompt_tokens + response.usage.output_tokens,
@@ -283,7 +283,7 @@ class AnthropicCompatBase(ChatModelBase):
             prompt_image_tokens=None,
         )
 
-    def _reject_if_truncated(self, response: Message, usage: ChatInvokeUsage) -> None:
+    def _reject_if_truncated(self, response: Message, usage: ModelInvokeUsage) -> None:
         """Refuse a reply the token ceiling cut off, on every return path.
 
         All three of this class's paths need it and all three would word it

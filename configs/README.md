@@ -387,7 +387,7 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 agent_loop:
   loop_id: branch
   max_steps: 30
-  max_actions_per_step: 1           # must be the source run's (checked at assembly)
+  max_actions_per_step: 4           # must be the source run's (checked at assembly)
   continue_steps: 0                 # 0: decide step t only; N: N more ReAct steps after it
   terminal_observation: true        # default: one more observation after the run ends
   history_source: source            # exact source history, or restored execution history
@@ -522,7 +522,7 @@ task_loader:
   input exports to the same bytes.
 - **Record for the student you train.** The student renders from what was recorded: a
   vision student needs the screenshot, at the student's viewport, format and DPR (the
-  export refuses a mismatch). Recording with a vision agent and `max_actions_per_step: 1`
+  export refuses a mismatch). Recording with a vision agent and `max_actions_per_step: 4`
   (`flywheel/record_ui_tars_pinned.yaml`) loses nothing; a DOM teacher's index actions need
   occlusion evidence (above), and a step with more actions than the student's
   `max_actions_per_step` is `exceeds_action_budget`.
@@ -656,3 +656,12 @@ uv run python spectragent/scripts/generate_all.py
 ```
 
 This rewrites `spectragent/generated/_composed.py` and per-class `.pyi` stubs.
+
+
+## Independent replay review
+
+The three files under `configs/replay_review/` compose an independent `replay_reviewer` job.
+Its `decision_model` receptor accepts TypeSafe native and OpenRouter Decisions providers;
+Chat `llm` receptors remain separate. See `docs/data_flywheel_runbook.md` for the paired-input
+JSON, command, route roots, recording format and result interpretation. All shipped run
+YAML now explicitly sets `max_actions_per_step: 4`, including record/replay/branch/student.

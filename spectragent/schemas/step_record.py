@@ -25,7 +25,7 @@ class TokenUsage(BaseModel):
 
     @classmethod
     def from_llm_usage(cls, usage: Any) -> "TokenUsage | None":
-        """Build from a provider ``ChatInvokeUsage``, or ``None`` if unmeasured.
+        """Build from a provider ``ModelInvokeUsage``, or ``None`` if unmeasured.
 
         Duck-typed rather than imported so ``schemas/`` stays independent
         of ``core/llm/``. Returning ``None`` for a ``None`` input keeps the

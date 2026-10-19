@@ -358,7 +358,7 @@ agent:
     agent_loop:
       loop_id: branch
       max_steps: 30
-      max_actions_per_step: 1          # must equal the source's; checked at assembly
+      max_actions_per_step: 4          # must equal the source's; checked at assembly
       continue_steps: 0                # ReAct steps after the policy step
       terminal_observation: true       # the branch default
       history_source: source          # or restored, independent of strict/warn
@@ -1170,3 +1170,19 @@ value on an existing one.
 | A replay log hit on a JSONP request, yet the page lacks what it loads (hot searches, an ad, search results) | The entry's `callback_rewrite`: absent while the requested name differs from the record's means the answer is outside the wrapper grammar (a callback in the path, `window.NAME(`), or the request hit a record of the same endpoint without a callback. `sections.sites.by_site.<site>.callback_rewrites` counts the rewrites per site |
 | Recorded and replayed screenshots differ, or an agent decided on a half-rendered page | Read the step's `settle` record on its browser fragments: `capped` means the page never went quiet within `settle_max_wait_s` (a carousel, a video, a poll); `unknown` means its state could not be read (`detail`). The wait sees no request still in flight with nothing else changing (architecture §4.14) |
 | A model call waits until its timeout late in a long process | A provider that leaves its SDK client to the garbage collector (architecture §4.7). A provider closes every client it builds before the request returns |
+
+
+## 6. Independent replay review
+
+The optional `replay_reviewer` layer and `spectragent replay-review` read aligned committed
+source/replay observations with the source configuration's DOM recipe. `decision_model`
+is a separate model axis. The job stores its own calls, native answers, policy/question
+versions, evidence references and recording health; it does not append Agent calls or
+change restoration results. `docs/data_flywheel_runbook.md` and architecture §4.18 define
+the input and result contracts. All shipped run YAML uses four actions per step.
+
+Current traces use format 6, including explicit Chat/Decision call kinds. Keep historical
+trace originals and use frozen prepared inputs or their original-version reader; do not
+add a missing-kind-as-Chat compatibility path. Candidate acceptance, further review and
+execution failure are separate facts; low confidence or missing evidence never becomes
+a task-correctness failure or automatic runtime permission.

@@ -851,6 +851,7 @@ class TestFailedSetupReleasesResources:
             usage = None
 
         class _LLM:
+            inference_kind = "chat"
             model = "test-model"
             name = "test-model"
 

@@ -180,9 +180,9 @@ class ChatBrowserUse(ChatModelBase):
 
         usage = None
         if "usage" in result and result["usage"] is not None:
-            from spectragent.core.llm.views import ChatInvokeUsage
+            from spectragent.core.llm.views import ModelInvokeUsage
 
-            usage = ChatInvokeUsage(**result["usage"])
+            usage = ModelInvokeUsage(**result["usage"])
 
         if output_format is not None:
             # Pydantic already coerces nested models, including discriminated

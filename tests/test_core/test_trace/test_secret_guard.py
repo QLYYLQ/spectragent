@@ -195,6 +195,7 @@ class _Completion:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "gpt-4o-mini"
     name = "gpt-4o-mini"
 

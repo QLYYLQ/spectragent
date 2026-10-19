@@ -183,6 +183,7 @@ async def test_composed_runtime_delivers_platform_to_the_model(
     seen = []
 
     class Model:
+        inference_kind = "chat"
         model = "offline-stub"
 
         async def ainvoke(self, messages, output_format: type[BaseModel] | None = None):

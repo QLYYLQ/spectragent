@@ -16,6 +16,7 @@ from spectragent.schemas.recording import RecordingProblem
 from tests._helpers.fragment_samples import PNG_BYTES
 from tests._helpers.trace_builder import (
     Reply,
+    as_chat,
     blob,
     completed_call,
     data_url,
@@ -89,8 +90,8 @@ def test_out_of_order_steps_repair_coverage_without_changing_identity(tmp_path, 
     assert trace.manifest.missing_steps == []
     assert trace.manifest.status is TraceStatus.COMPLETE
     assert trace.manifest.recording_problems == [problem]
-    assert trace.llm_messages(0)[0].messages[-1].text == "first"
-    assert trace.llm_messages(1)[0].messages[-1].text == "second"
+    assert as_chat(trace.llm_messages(0)[0]).messages[-1].text == "first"
+    assert as_chat(trace.llm_messages(1)[0]).messages[-1].text == "second"
     wal.finalize(TraceStatus.COMPLETE)
     assert RunTrace(wal.run_dir).manifest.recording_problems == [problem]
     with pytest.raises(ValueError, match="already committed"):
@@ -192,7 +193,7 @@ def test_uncertain_step_commit_refreshes_index_and_dedup_before_the_next_write(
     assert shared.rel_path not in writes
     assert not any(path.startswith("messages/images/") for path in writes)
     assert not any(path.startswith("messages/output_formats/") for path in writes)
-    assert trace.llm_messages(0)[0].messages == prompt("first", [data_url(PNG_BYTES)])
+    assert as_chat(trace.llm_messages(0)[0]).messages == prompt("first", [data_url(PNG_BYTES)])
     assert trace.read_extra(shared.rel_path) == b"shared response body"
     with pytest.raises(ValueError, match="immutable"):
         wal.commit_step(2, step_record(2), extra_files=[extra(shared.rel_path, b"overwrite")])

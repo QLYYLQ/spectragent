@@ -100,6 +100,7 @@ from tests._helpers.fragment_samples import PNG_BYTES
 from tests._helpers.trace_builder import (
     agent_result,
     archive_file,
+    as_chat,
     prompt,
     read_back,
     step_record,
@@ -934,7 +935,7 @@ class TestPrivacy:
         stored = sorted(Path(rel).suffix for rel in trace.manifest.prompt_images)
         assert stored == [".png", ".txt"]
         (call,) = trace.llm_messages(0)
-        user = call.messages[1]
+        user = as_chat(call).messages[1]
         assert isinstance(user, UserMessage) and isinstance(user.content, list)
         urls = [part.image_url.url for part in user.content if part.type == "image_url"]
         assert urls == [

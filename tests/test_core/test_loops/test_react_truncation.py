@@ -17,7 +17,7 @@ import asyncio
 from typing import Any
 
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
-from spectragent.core.llm.views import ChatInvokeUsage
+from spectragent.core.llm.views import ModelInvokeUsage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -61,7 +61,7 @@ class _FakeMemory:
         self.messages.clear()
 
 
-_TRUNCATED_USAGE = ChatInvokeUsage(
+_TRUNCATED_USAGE = ModelInvokeUsage(
     prompt_tokens=12000,
     prompt_cached_tokens=8000,
     prompt_cache_creation_tokens=1500,
@@ -74,9 +74,11 @@ _TRUNCATED_USAGE = ChatInvokeUsage(
 class _TruncatingLLM:
     """Every call hits the ceiling — which is what a too-small ceiling does."""
 
+    inference_kind = "chat"
+
     model = "claude-test"
 
-    def __init__(self, usage: ChatInvokeUsage | None = _TRUNCATED_USAGE) -> None:
+    def __init__(self, usage: ModelInvokeUsage | None = _TRUNCATED_USAGE) -> None:
         self.calls = 0
         self._usage = usage
 

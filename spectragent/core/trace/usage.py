@@ -109,6 +109,7 @@ def recorded_usage(
             count += 1
             usage = TokenUsage.from_llm_usage(call.usage)
             if usage is None:
+                assert call.step is not None  # RunTrace validates execution ownership.
                 without.append(
                     CallWithoutUsage(
                         step=call.step, call=call.call, status=call.status, trailing=is_trailing
@@ -136,7 +137,9 @@ def reported_usage(call: RecordedLLMCall | RecordedCallMetrics) -> TokenUsage | 
     """
     if isinstance(call, RecordedCallMetrics):
         return TokenUsage.from_llm_usage(call.usage)
-    if call.completion is not None:
+    if call.kind == "decision" and call.result is not None:
+        usage = call.result.usage
+    elif call.kind == "chat" and call.completion is not None:
         usage = call.completion.usage
     elif call.failure is not None:
         usage = call.failure.usage

@@ -202,6 +202,7 @@ class _AuditAgent:
 
 
 class _AuditLLM:
+    inference_kind = "chat"
     model = "test"
 
     async def ainvoke(self, messages, **kwargs):

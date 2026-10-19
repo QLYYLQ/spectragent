@@ -145,6 +145,8 @@ class _MockCompletion:
 class _MockLLM:
     """Stub LLM that returns a canned completion regardless of input."""
 
+    inference_kind = "chat"
+
     def __init__(self, response: Any) -> None:
         self._response = response
 

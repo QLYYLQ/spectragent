@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import to_json
 
 from spectragent.core.llm.messages import (
@@ -68,6 +68,7 @@ from spectragent.core.trace.wal import WALWriter
 from tests._helpers.fragment_samples import JPEG_BYTES, PNG_BYTES
 from tests._helpers.trace_builder import (
     agent_result,
+    as_chat,
     data_url,
     extra,
     new_wal,
@@ -96,7 +97,9 @@ def _as_sent(messages: list[Any]) -> bytes:
 
 def _as_read(call: RecordedLLMCall) -> bytes:
     """The serialised form of a prompt read back."""
-    return to_json([message.model_dump(mode="json") for message in call.messages], indent=2)
+    return to_json(
+        [message.model_dump(mode="json") for message in as_chat(call).messages], indent=2
+    )
 
 
 # ── a growing history of screenshots ──────────────────────────
@@ -201,7 +204,7 @@ class TestAGrowingHistoryOfScreenshots:
         for step in range(STEPS):
             (call,) = trace.llm_messages(step)
             assert _as_read(call) == _as_sent(history.prompts[step]), f"step {step}"
-            assert call.messages == history.prompts[step]
+            assert as_chat(call).messages == history.prompts[step]
         (trailing,) = trace.trailing_calls
         assert _as_read(trailing) == _as_sent(history.trailing)
 
@@ -223,7 +226,7 @@ class TestAGrowingHistoryOfScreenshots:
         }
         # Validated as it lies on disk, the record refuses: no prompt with images missing.
         with pytest.raises(ValidationError):
-            RecordedLLMCall.model_validate(record)
+            TypeAdapter(RecordedLLMCall).validate_python(record)
 
     def test_the_storage_measure_files_them_apart(self, history: HistoryRun) -> None:
         from spectragent.flywheel.metrics import storage_category
@@ -370,7 +373,7 @@ class TestWhatIsLeftAlone:
         with caplog.at_level(logging.WARNING, logger="spectragent.core.trace.encoding"):
             encoded = _call(0, 0, messages)
         assert encoded.images == ()
-        assert RecordedLLMCall.model_validate_json(encoded.file.data).messages == messages
+        assert TypeAdapter(RecordedLLMCall).validate_json(encoded.file.data).messages == messages
         assert "recorded inline" in caplog.text
 
 

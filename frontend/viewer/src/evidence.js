@@ -76,3 +76,20 @@ export function gapLabel(gap) {
     ? "Comparison incomplete"
     : "No measured differences";
 }
+export function modelCallTitle(call) {
+  if (call.purpose === "replay_review") return "Replay review";
+  if (call.purpose === "prompt_helper") return "Prompt helper";
+  if (call.purpose === "agent_decision") return "Agent decision";
+  return call.purpose || "Model call";
+}
+
+export function decisionAnswerRows(result) {
+  return Object.entries(result?.answers || {}).map(([id, answer]) => ({
+    id,
+    type: answer.type,
+    value: answer.choice ?? answer.score ?? answer.noul ?? answer.box,
+    confidence: answer.confidence ?? null,
+    probabilities: answer.probabilities ?? null,
+    legend: answer.legend ?? null,
+  }));
+}

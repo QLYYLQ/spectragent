@@ -21,6 +21,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action
 from tests._helpers.fixture_site import FixtureSite
 from tests._helpers.scripted_llm import ScriptedLLMServer
+from tests._helpers.trace_builder import as_chat
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -134,7 +135,7 @@ async def test_runtime_trace_records_clean_original_and_actual_model_image(
         call = trace.llm_messages(1)[0]
         recorded = [
             part.image_url.url
-            for message in call.messages
+            for message in as_chat(call).messages
             if isinstance(message.content, list)
             for part in message.content
             if isinstance(part, ContentPartImageParam)

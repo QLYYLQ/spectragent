@@ -23,6 +23,7 @@ import random
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 import pytest
@@ -57,7 +58,13 @@ from tests._helpers.replay_archive import RecordingScript
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 #: Every shipped config, the data-flywheel recording configs included
 #: (``configs/flywheel/``, M29: they turn the browser archive on).
-SHIPPED_CONFIGS = sorted([*CONFIG_DIR.glob("*.yaml"), *CONFIG_DIR.glob("flywheel/*.yaml")])
+SHIPPED_CONFIGS = sorted(
+    [
+        *CONFIG_DIR.glob("*.yaml"),
+        *CONFIG_DIR.glob("flywheel/*.yaml"),
+        *CONFIG_DIR.glob("replay_review/*.yaml"),
+    ]
+)
 
 # A capability block that satisfies Pydantic on the agent's
 # declaration-only ``capability`` wiring entry. The Composer must build
@@ -129,6 +136,15 @@ class TestShippedConfigs:
         run = composer.compose(copy.deepcopy(root))
         if "exporter" in root:
             _check_export_config(composer, run, root)
+            return
+        if "replay_reviewer" in root:
+            from spectragent.core.llm.base import require_inference_protocol
+
+            reviewer = run.single("replay_reviewer")
+            require_inference_protocol(
+                reviewer.decision_model, "decision", consumer="shipped replay reviewer"
+            )
+            assert reviewer.max_text_chars == 12000
             return
 
         # 1. env.capabilities is a real dict of live capability instances,
@@ -923,6 +939,13 @@ _UNTRACKED_SCALARS: frozenset[str] = frozenset(
 #: entry here means a new YAML line that proves nothing — give it a value
 #: the operator actually chose, or drop the line.
 _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
+    "jev_direct.yaml": frozenset(
+        {"replay_reviewer[0].decision_model.model", "replay_reviewer[0].decision_model.api_key_env"}
+    ),
+    "jev_dmx.yaml": frozenset({"replay_reviewer[0].decision_model.model"}),
+    "jev_openrouter.yaml": frozenset(
+        {"replay_reviewer[0].decision_model.model", "replay_reviewer[0].decision_model.api_key_env"}
+    ),
     "browser_use_shared.yaml": frozenset(
         {"environment[0].capabilities[0].profile", "hook[0].trace_dir"}
     ),
@@ -1028,6 +1051,32 @@ def _leaf_paths(node: Any, prefix: str = "") -> Iterator[str]:
 def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
     """Resolve each shipped block to the instance that consumes it."""
     blocks: list[_Block] = []
+    for i, entry in enumerate(root.get("replay_reviewer", [])):
+        blocks.append(
+            _Block(
+                f"replay_reviewer[{i}]",
+                lambda r, i=i: r["replay_reviewer"][i],
+                lambda run, i=i: run.instances("replay_reviewer")[i],
+            )
+        )
+        for child in ("decision_model", "policy"):
+            if child in entry:
+                blocks.append(
+                    _Block(
+                        f"replay_reviewer[{i}].{child}",
+                        lambda r, i=i, c=child: r["replay_reviewer"][i][c],
+                        lambda run, i=i, c=child: getattr(run.instances("replay_reviewer")[i], c),
+                    )
+                )
+        blocks.append(
+            _Block(
+                f"replay_reviewer[{i}].decision_model.provider",
+                lambda r, i=i: r["replay_reviewer"][i]["decision_model"]["provider"],
+                lambda run, i=i: SimpleNamespace(
+                    name=run.instances("replay_reviewer")[i].decision_model.provider
+                ),
+            )
+        )
 
     def agent_of(run: Any, index: int, entry_id: str | None) -> Any:
         return (
@@ -1247,6 +1296,12 @@ def _perturb(value: Any, obj: Any = None, key: str = "") -> Any:
     if isinstance(value, int):
         return value + 7
     if isinstance(value, float):
+        field = getattr(type(obj), "model_fields", {}).get(key) if obj is not None else None
+        if field is not None and 0 <= value <= 1:
+            lower = next((m.ge for m in field.metadata if hasattr(m, "ge")), 0.0)
+            upper = next((m.le for m in field.metadata if hasattr(m, "le")), 1.0)
+            middle = (lower + upper) / 2
+            return middle if middle != value else (lower + middle) / 2
         # A fraction stays a fraction (``validation_fraction`` is bounded to
         # [0, 1]); any other float moves by 7.
         if 0.0 <= value <= 1.0:

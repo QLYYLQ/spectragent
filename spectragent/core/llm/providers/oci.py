@@ -34,7 +34,7 @@ from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, Sys
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.oci_format import OCIRawMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -129,13 +129,13 @@ class ChatOCI(ChatModelBase):
             self._own_signer_resources(client.base_client.signer, clients)
         return client
 
-    def _extract_usage(self, response) -> ChatInvokeUsage | None:
+    def _extract_usage(self, response) -> ModelInvokeUsage | None:
         try:
             if hasattr(response, "data") and hasattr(response.data, "chat_response"):
                 chat_response = response.data.chat_response
                 if hasattr(chat_response, "usage"):
                     usage = chat_response.usage
-                    return ChatInvokeUsage(
+                    return ModelInvokeUsage(
                         prompt_tokens=getattr(usage, "prompt_tokens", 0),
                         prompt_cached_tokens=None,
                         prompt_cache_creation_tokens=None,

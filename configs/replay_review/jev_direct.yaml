@@ -1,0 +1,18 @@
+# TypeSafe official route; set TYPESAFE_API_KEY in the invoking environment.
+replay_reviewer:
+  - reviewer_id: jev
+    decision_model:
+      model_type: typesafe
+      model: jev-1.14.0
+      provider: {name: direct}
+      base_url: https://api.typesafe.ai
+      api_key_env: TYPESAFE_API_KEY
+      timeout: 35
+    include_screenshots: true
+    max_text_chars: 12000
+    max_links: 64
+    policy:
+      version: replay-triage-1
+      confidence_min: 0.9
+      equivalence_min: 0.8
+      difference_max: 0.2

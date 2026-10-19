@@ -721,6 +721,7 @@ class _Completion:
 
 
 class ContractArchiveLLM:
+    inference_kind = "chat"
     model = "contract-archive-llm"
 
     async def ainvoke(self, messages: Any, **kwargs: Any) -> _Completion:

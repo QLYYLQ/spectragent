@@ -42,9 +42,11 @@ from tests._helpers.trace_builder import (
     Reply,
     agent_result,
     archive_file,
+    as_chat,
     build_archive_trace,
     build_reference_trace,
     new_wal,
+    required,
     step_record,
 )
 
@@ -66,7 +68,7 @@ class TestRunTrace:
         # The agent timed out (result.json); the trace recorded all of it.
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.complete_through == 1
-        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 5
+        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 6
 
     def test_run_id(self, trace):
         assert trace.run_id == "run-test"
@@ -874,8 +876,8 @@ class TestWhateverTheWriterCommitsTheReaderReads:
 
         (call,) = RunTrace(wal.run_dir).llm_messages(0)
 
-        assert call.completion is not None
-        assert call.completion.completion == reply.model_dump(mode="json")
+        assert as_chat(call).completion is not None
+        assert required(as_chat(call).completion).completion == reply.model_dump(mode="json")
 
     def test_a_deep_fragment(self, tmp_path):
         from spectragent.schemas.observation.fragments import ToolResultObs

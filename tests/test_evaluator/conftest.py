@@ -217,6 +217,8 @@ class FakeJudge:
     exhausted, so a test only has to script the turns it cares about.
     """
 
+    inference_kind = "chat"
+
     replies: list[str] = field(default_factory=lambda: ["Status: success"])
     model: str = "fake-judge"
     calls: list[RecordedCall] = field(default_factory=list)

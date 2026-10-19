@@ -255,6 +255,7 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
             )
 
     class _LLM:
+        inference_kind = "chat"
         model = "stub"
 
         async def ainvoke(self, _messages: Any, **_kw: Any) -> Any:

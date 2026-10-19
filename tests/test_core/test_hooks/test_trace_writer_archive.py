@@ -70,6 +70,7 @@ from tests._helpers.trace_builder import (
     agent_result,
     archive_file,
     archive_item,
+    as_chat,
     step_record,
     usage,
 )
@@ -631,7 +632,7 @@ class TestTheCloseOut:
         assert [r.name for _, r in trace.iter_archive(STEPS_KEY, include_trailing=True)][
             -1
         ] == "cycle_002.json"
-        assert trace.trailing_calls[0].messages[0].text == "step 1, never surrendered"
+        assert as_chat(trace.trailing_calls[0]).messages[0].text == "step 1, never surrendered"
 
     async def test_the_close_out_collection_happens_at_most_once(self, tmp_path):
         bench = Bench(tmp_path)
@@ -677,7 +678,7 @@ class TestTheCloseOut:
         trace = bench.trace()
         assert bench.spy.calls == 2
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.trailing_calls[0].messages[0].text == "lonely"
+        assert as_chat(trace.trailing_calls[0]).messages[0].text == "lonely"
         assert [step for step, _ in trace.iter_archive(STEPS_KEY, include_trailing=True)] == [
             0,
             None,
@@ -701,7 +702,7 @@ class TestTheCloseOut:
         assert "ArchiveCollectionError" in reason
         assert "broken on purpose" in reason
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
-        assert trace.trailing_calls[0].messages[0].text == "the last word"
+        assert as_chat(trace.trailing_calls[0]).messages[0].text == "the last word"
         # And never again: ``on_run_error`` does not retry the collection.
         await bench.writer.on_run_error(error=RuntimeError("x"), partial_steps=[])
         assert bench.spy.calls == 2
@@ -736,7 +737,7 @@ class TestTheCloseOut:
         trace = RunTrace(run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.result is not None
-        assert trace.trailing_calls[0].messages[0].text == "in flight at the cancellation"
+        assert as_chat(trace.trailing_calls[0]).messages[0].text == "in flight at the cancellation"
         await writer.on_run_error(error=asyncio.CancelledError(), partial_steps=[])
         assert env.calls == 2
 
@@ -1009,7 +1010,7 @@ class TestArchiveFaultsPreserveExecution:
         assert env.calls == 3
         assert result.agent_done == AgentDoneStatus.DONE and result.error is None
         assert trace.step(0) is None and trace.step(1) is not None
-        assert [call.messages[0].text for call in trace.llm_messages(1)] == [
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == [
             "the later step's call"
         ]
         assert trace.trailing_calls == []
@@ -1061,7 +1062,7 @@ class TestArchiveFaultsPreserveExecution:
         assert [entry.step for entry in trace.manifest.steps] == [0, 2]
         assert trace.step_count == 2
         assert trace.step(1) is None
-        assert [call.messages[0].text for call in trace.llm_messages(2)] == ["step 2"]
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(2)] == ["step 2"]
         assert trace.trailing_calls == []
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.missing_steps == [1]
@@ -1106,7 +1107,7 @@ class TestArchiveFaultsPreserveExecution:
 
         trace = bench.trace()
         assert trace.step(1) is not None
-        assert [call.messages[0].text for call in trace.llm_messages(1)] == ["step 1"]
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == ["step 1"]
         assert trace.trailing_calls == []
         assert [
             (step, r.path) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
@@ -1179,8 +1180,10 @@ class TestArchiveFaultsPreserveExecution:
         assert trace.manifest.complete_through == 0
         assert trace.manifest.missing_steps == [1]
         assert "File name too long" in (trace.manifest.incomplete_reason or "")
-        assert [call.messages[0].text for call in trace.llm_messages(2)] == ["later segment"]
-        assert [call.messages[0].text for call in trace.trailing_calls] == [
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(2)] == [
+            "later segment"
+        ]
+        assert [as_chat(call).messages[0].text for call in trace.trailing_calls] == [
             "genuinely unfinished step"
         ]
         assert [
@@ -1344,8 +1347,8 @@ class TestArchiveFaultsPreserveExecution:
             (1, "env/steps/001/contract_archive.steps/cycle_002.json"),
             (2, "env/steps/002/contract_archive.steps/cycle_003.json"),
         ]
-        assert [call.messages[0].text for call in trace.llm_messages(1)] == ["step 1"]
-        assert [call.messages[0].text for call in trace.llm_messages(2)] == ["step 2"]
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == ["step 1"]
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(2)] == ["step 2"]
         assert trace.trailing_calls == []
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.missing_steps == []

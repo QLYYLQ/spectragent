@@ -99,6 +99,7 @@ class _Completion:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "test-model"
     name = "test-model"
 
@@ -659,6 +660,7 @@ class TestGuardVeto:
 
 
 class _RaisingLLM:
+    inference_kind = "chat"
     model = "test-model"
 
     def __init__(self, exc: Exception) -> None:
@@ -1065,6 +1067,8 @@ class _NoUsage:
 
 class _SilentLLM:
     """A provider that reports no usage at all."""
+
+    inference_kind = "chat"
 
     model = "test-model"
 

@@ -50,6 +50,7 @@ class _Completion:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "test-model"
 
     def __init__(self, raises: BaseException | None = None) -> None:

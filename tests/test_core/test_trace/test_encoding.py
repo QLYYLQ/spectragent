@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
@@ -68,9 +68,11 @@ from tests._helpers.trace_builder import (
     CAPTURED_AT,
     Reply,
     archive_item,
+    as_chat,
     new_wal,
     prompt,
     read_back,
+    required,
     step_record,
     usage,
 )
@@ -212,14 +214,14 @@ class TestLLMCallRecords:
 
         assert (record.step, record.call, record.status) == (3, 1, "completed")
         assert record.failure is None
-        assert record.output_format is None
-        assert record.completion is not None
-        assert record.completion.completion == "click(3)"
-        assert record.completion.thinking == "the button"
-        assert record.completion.usage == usage()
-        assert record.completion.stop_reason == "end_turn"
-        assert record.completion.tool_calls == [tool_call]
-        assert record.messages == prompt("what now?")
+        assert as_chat(record).output_format is None
+        assert as_chat(record).completion is not None
+        assert required(as_chat(record).completion).completion == "click(3)"
+        assert required(as_chat(record).completion).thinking == "the button"
+        assert required(as_chat(record).completion).usage == usage()
+        assert required(as_chat(record).completion).stop_reason == "end_turn"
+        assert required(as_chat(record).completion).tool_calls == [tool_call]
+        assert as_chat(record).messages == prompt("what now?")
 
     def test_a_structured_reply_is_recorded_as_its_json(self) -> None:
         pending = PendingLLMCall(prompt("go"), encode_output_format(Reply))
@@ -228,11 +230,14 @@ class TestLLMCallRecords:
         )
         record = _round_trip(pending)
 
-        assert record.completion is not None
-        assert record.completion.completion == {"thought": "t", "action": "click"}
-        assert record.output_format is not None
-        assert record.output_format.name == "Reply"
-        assert record.output_format.source == "requested"
+        assert as_chat(record).completion is not None
+        assert required(as_chat(record).completion).completion == {
+            "thought": "t",
+            "action": "click",
+        }
+        assert as_chat(record).output_format is not None
+        assert required(as_chat(record).output_format).name == "Reply"
+        assert required(as_chat(record).output_format).source == "requested"
 
     def test_a_refused_structured_reply_keeps_what_the_validator_saw(self) -> None:
         pending = PendingLLMCall(prompt("go"))
@@ -242,7 +247,7 @@ class TestLLMCallRecords:
         record = _round_trip(pending)
 
         assert record.status == "failed"
-        assert record.completion is None
+        assert as_chat(record).completion is None
         assert record.failure is not None
         assert record.failure.error == "StructuredOutputValidationError"
         assert record.failure.detail == "mismatch"
@@ -278,10 +283,10 @@ class TestLLMCallRecords:
         record = _round_trip(pending)
 
         assert record.status == "cancelled"
-        assert record.completion is None
+        assert as_chat(record).completion is None
         assert record.failure is not None
         assert record.failure.error == "CancelledError"
-        assert record.messages == prompt("never answered")
+        assert as_chat(record).messages == prompt("never answered")
 
     def test_a_call_still_in_flight_is_recorded_as_cancelled_without_a_failure(self) -> None:
         pending = PendingLLMCall(prompt("still waiting"))
@@ -289,7 +294,7 @@ class TestLLMCallRecords:
 
         assert record.status == "cancelled"
         assert record.failure is None
-        assert record.completion is None
+        assert as_chat(record).completion is None
         assert record.latency_ms >= 0
 
     def test_the_first_outcome_wins(self) -> None:
@@ -328,7 +333,7 @@ class TestLLMCallRecords:
         pending = PendingLLMCall(messages)
         pending.complete(ChatInvokeCompletion(completion="ok", usage=None))
 
-        assert _round_trip(pending).messages == messages
+        assert as_chat(_round_trip(pending)).messages == messages
 
     def test_the_prompt_is_the_one_registered(self) -> None:
         """A message mutated after the call went out does not rewrite the record."""
@@ -337,7 +342,7 @@ class TestLLMCallRecords:
         message.content = "rewritten later"
         message.cache = True
 
-        recorded = _round_trip(pending).messages[0]
+        recorded = as_chat(_round_trip(pending)).messages[0]
         assert isinstance(recorded, UserMessage)
         assert (recorded.content, recorded.cache) == ("as asked", False)
 
@@ -357,7 +362,7 @@ class TestTheWriterNeverValidates:
         assert raw["messages"] == [{"m": 1}, "<opaque>"]
         assert raw["completion"] == {"completion": "a bare string reply"}
         with pytest.raises(ValidationError):
-            RecordedLLMCall.model_validate_json(encode_llm_call(0, 0, pending).file.data)
+            TypeAdapter(RecordedLLMCall).validate_json(encode_llm_call(0, 0, pending).file.data)
 
     def test_a_completion_shaped_object_is_read_by_attribute(self) -> None:
         class PlainUsage:
@@ -373,12 +378,14 @@ class TestTheWriterNeverValidates:
         pending.complete(PlainCompletion())
         record = _round_trip(pending)
 
-        assert record.completion is not None
-        assert record.completion.completion == "done()"
-        assert record.completion.usage is not None
-        assert record.completion.usage.total_tokens == 10
-        assert record.completion.usage.prompt_cached_tokens is None  # not reported
-        assert record.completion.tool_calls == []
+        assert as_chat(record).completion is not None
+        assert required(as_chat(record).completion).completion == "done()"
+        assert required(as_chat(record).completion).usage is not None
+        assert required(required(as_chat(record).completion).usage).total_tokens == 10
+        assert (
+            required(required(as_chat(record).completion).usage).prompt_cached_tokens is None
+        )  # not reported
+        assert required(as_chat(record).completion).tool_calls == []
 
     def test_a_property_that_raises_does_not_fail_the_call(self) -> None:
         class Hostile:
@@ -391,8 +398,8 @@ class TestTheWriterNeverValidates:
         pending = PendingLLMCall(prompt("go"))
         pending.complete(Hostile())
         record = _round_trip(pending)
-        assert record.completion is not None
-        assert record.completion.usage is None
+        assert as_chat(record).completion is not None
+        assert required(as_chat(record).completion).usage is None
 
 
 class TestOutputSchemas:

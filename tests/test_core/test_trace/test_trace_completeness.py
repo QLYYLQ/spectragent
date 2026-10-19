@@ -26,7 +26,7 @@ from spectragent.core.llm.exceptions import (
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
 )
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops._registrar import AgentLoopBase
 from spectragent.core.loops.errors import ParseError
@@ -36,6 +36,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import TaskObs
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.trace_builder import as_chat, required
 
 _PNG = b"\x89PNG\r\n\x1a\n-pretend-this-is-a-screenshot"
 
@@ -133,6 +134,7 @@ class _Completion:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "gpt-4o-mini"
 
     async def ainvoke(self, messages, **kw):
@@ -195,6 +197,8 @@ class _CrashAfterLLMLoop(_SlowLoop):
 
 class _HangingLLM:
     """A model that never answers — until something cancels the call."""
+
+    inference_kind = "chat"
 
     model = "gpt-4o-mini"
 
@@ -386,9 +390,9 @@ class TestAbnormalEndKeepsTheLastExchange:
         t = RunTrace(writer.run_dir)
         (call,) = t.trailing_calls
         assert (call.step, call.call, call.status) == (0, 0, "completed")
-        assert [m.text for m in call.messages] == ["find the price"]
-        assert call.completion is not None
-        assert call.completion.completion == '{"action": "done"}'
+        assert [m.text for m in as_chat(call).messages] == ["find the price"]
+        assert as_chat(call).completion is not None
+        assert required(as_chat(call).completion).completion == '{"action": "done"}'
         # Recorded as trailing, not as a step that never happened.
         assert t.step_count == 0
         assert t.llm_messages(0) == []
@@ -406,7 +410,7 @@ class TestAbnormalEndKeepsTheLastExchange:
         assert writer.run_dir is not None
 
         t = RunTrace(writer.run_dir)
-        assert [m.text for m in t.trailing_calls[0].messages] == ["find the price"]
+        assert [m.text for m in as_chat(t.trailing_calls[0]).messages] == ["find the price"]
         assert t.manifest.status == TraceStatus.COMPLETE
 
 
@@ -426,10 +430,10 @@ class TestACancelledCallKeepsItsPrompt:
         assert t.step_count == 0
         (call,) = t.trailing_calls
         assert (call.step, call.call, call.status) == (0, 0, "cancelled")
-        assert call.completion is None
+        assert as_chat(call).completion is None
         assert call.failure is not None
         assert call.failure.error == "CancelledError"
-        assert [m.text for m in call.messages] == ["go"]
+        assert [m.text for m in as_chat(call).messages] == ["go"]
 
     async def test_cut_off_by_the_runs_own_timeout(self, tmp_path):
         llm = _HangingLLM()
@@ -498,6 +502,8 @@ _HANG = object()
 class _ScriptedLLM:
     """Answers each call from a script: a completion, an exception to raise, or ``_HANG``."""
 
+    inference_kind = "chat"
+
     model = "gpt-4o-mini"
 
     def __init__(self, *script: Any) -> None:
@@ -514,8 +520,8 @@ class _ScriptedLLM:
         return answer
 
 
-def _billed(completion_tokens: int) -> ChatInvokeUsage:
-    return ChatInvokeUsage(
+def _billed(completion_tokens: int) -> ModelInvokeUsage:
+    return ModelInvokeUsage(
         prompt_tokens=100,
         prompt_cached_tokens=0,
         prompt_cache_creation_tokens=None,
@@ -616,12 +622,14 @@ class TestEveryCallOfAStepThroughTheRealLoop:
 
         # Every call asked for the same reply model, committed once.
         (schema_sha,) = t.manifest.output_formats
-        assert {c.output_format.sha256 for c in calls if c.output_format} == {schema_sha}
+        assert {
+            required(as_chat(c).output_format).sha256 for c in calls if as_chat(c).output_format
+        } == {schema_sha}
         assert t.output_schema(schema_sha)["title"] == "_Reply"
         # The calls account for what the step says it cost.
         billed = 0
         for call in calls:
-            outcome = call.failure or call.completion
+            outcome = call.failure or as_chat(call).completion
             assert outcome is not None
             assert outcome.usage is not None
             billed += outcome.usage.total_tokens
@@ -658,18 +666,18 @@ class TestEveryCallOfAStepThroughTheRealLoop:
         ]
         self._assert_the_first_two_attempts(calls)
         cancelled = calls[2]
-        assert cancelled.completion is None
+        assert as_chat(cancelled).completion is None
         assert cancelled.failure is not None
         assert cancelled.failure.error == "CancelledError"
-        assert [m.role for m in cancelled.messages] == [
+        assert [m.role for m in as_chat(cancelled).messages] == [
             "user",
             "assistant",
             "user",
             "assistant",
             "user",
         ]
-        assert cancelled.output_format is not None
-        assert cancelled.output_format.sha256 in t.manifest.output_formats
+        assert as_chat(cancelled).output_format is not None
+        assert required(as_chat(cancelled).output_format).sha256 in t.manifest.output_formats
         assert t.result is not None
         assert t.result.error == "Execution cancelled"
         assert t.manifest.status == TraceStatus.COMPLETE

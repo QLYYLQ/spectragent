@@ -189,6 +189,8 @@ class TestAroundThroughTheWeaver:
 
     async def test_around_ainvoke(self) -> None:
         class _LLM:
+            inference_kind = "chat"
+
             async def ainvoke(self, messages, **kwargs):
                 return "completion"
 

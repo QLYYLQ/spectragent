@@ -24,12 +24,12 @@ from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.providers.anthropic import ChatAnthropic
 from spectragent.core.llm.providers.google import ChatGoogle
 from spectragent.core.llm.providers.openai import ChatOpenAI
-from spectragent.core.llm.views import ChatInvokeUsage
+from spectragent.core.llm.views import ModelInvokeUsage
 from tests._helpers.llm_clients import FakeClient
 
 
-def _usage(completion_tokens: int = 8192) -> ChatInvokeUsage:
-    return ChatInvokeUsage(
+def _usage(completion_tokens: int = 8192) -> ModelInvokeUsage:
+    return ModelInvokeUsage(
         prompt_tokens=1000,
         prompt_cached_tokens=0,
         prompt_cache_creation_tokens=0,

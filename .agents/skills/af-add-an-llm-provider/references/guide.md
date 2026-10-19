@@ -44,7 +44,7 @@ on every route — `tool_choice: {"type":"tool"}` 400'd, `output_config` returne
 
 ## 2. Mechanics
 
-`LLMRegistrar` is the repo's only **nested** registrar
+Chat providers use the **nested** `LLMRegistrar`
 (`core/llm/_registrar.py:21-26`): `discriminator_fields=["model_type", "provider"]`,
 `key_separator="."`. Keys are `model_type.provider`; there are 15 registered:
 
@@ -65,7 +65,7 @@ provider via `ChatModelBase.model_family` → `detect_model_family`). Currently 
 `supports_strict_mode`, `supports_json_schema`, `schema_requires_gemini_fix`,
 `schema_rejects_closed_union_branches`.
 
-Adding a provider owes the test suite five things:
+Adding a Chat provider owes the test suite five things:
 
 1. A `_Case` row in `tests/test_core/test_llm/test_provider_validation.py:451-470` —
    19 rows for 15 keys, because a provider with two structured paths owes one per path.
@@ -320,3 +320,26 @@ What a new provider owes:
   runs that differ only in whether the replies carried reasoning.
 - **A failed call keeps none.** `StructuredOutputValidationError` and
   `ModelOutputTruncatedError` produce a `CallFailure`, which has no reasoning field.
+
+
+## 10. Native Decision providers
+
+`DecisionModelRegistrar` is another nested `model_type.provider` registrar, collected as
+`decision_model`; its `typesafe.direct` and `typesafe.openrouter` implementations are absent
+from Chat's `llm` union. Shared identity and client ownership live in `BaseInferenceModel`
+and `ModelBase`; the invoking contracts remain separate. Neutral provider usage is
+`ModelInvokeUsage`. No Chat alias or mixed-registry whitelist is retained.
+
+A Decision provider must preserve the native Choice/Score/Noul/Box schemas and actual
+service model/usage/metadata, validate the request/answer correspondence, and reject
+unsupported modalities or route-specific nullable fields before HTTP. Image compilation
+belongs to the route; native assets and OpenRouter image parts are different formats.
+Tests cover every Decision registry key, including failures, cancellation, borrowed/owned
+clients and images. A Decision response error is `DecisionResponseError`, never
+`StructuredOutputValidationError`.
+
+Trace v6 records explicit `chat | decision` calls. Independent `replay_reviewer` jobs own
+Decision calls with purpose `replay_review` and no Agent step; they do not mutate source
+runs or restoration policy. Use `configs/replay_review/` and the data flywheel runbook.
+Record real route coverage separately from mocked HTTP coverage; bounded synthetic image
+success does not establish real-page calibration.

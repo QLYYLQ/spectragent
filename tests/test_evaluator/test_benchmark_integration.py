@@ -107,6 +107,7 @@ class _Completion:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "offline-model"
     name = "offline-model"
 

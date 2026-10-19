@@ -212,6 +212,11 @@ class _BrowserAgent:
 
 
 class _LLM:
+    inference_kind = "chat"
+
+    async def ainvoke(self, *args, **kwargs):
+        raise AssertionError("pre-flight must not invoke a model")
+
     model = "start-page-llm"
     name = "start-page-llm"
 

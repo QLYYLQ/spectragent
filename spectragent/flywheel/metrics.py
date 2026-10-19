@@ -1501,7 +1501,11 @@ def request_texts(call: RecordedLLMCall) -> list[str]:
     alphabet. An image sent by URL is text like any other.
     """
     texts: list[str] = []
-    stack: list[Any] = [message.model_dump(mode="json") for message in call.messages]
+    stack: list[Any] = (
+        [message.model_dump(mode="json") for message in call.messages]
+        if call.kind == "chat"
+        else [call.request.model_dump(mode="json", by_alias=True, exclude={"assets"})]
+    )
     while stack:
         value = stack.pop()
         if isinstance(value, str):

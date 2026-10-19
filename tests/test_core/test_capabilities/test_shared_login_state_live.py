@@ -124,6 +124,7 @@ async def test_shared_seeded_runtimes_commit_isolated_state_and_replay_after_one
     context_ids: dict[str, str] = {}
 
     class Model:
+        inference_kind = "chat"
         model = name = "scripted_seeded_fixture"
 
         def __init__(self, label: str) -> None:

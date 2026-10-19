@@ -18,7 +18,7 @@ from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 #: ``tool_choice`` spelled the Converse way. There is no "none" — Converse
 #: cannot advertise tools while forbidding their use.
 _BEDROCK_TOOL_CHOICE = MappingProxyType({"auto": "auto", "required": "any"})
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 if TYPE_CHECKING:
     from boto3 import client as AwsClient  # type: ignore
@@ -179,11 +179,11 @@ class ChatBedrock(ChatModelBase):
             }
         ]
 
-    def _get_usage(self, response: dict[str, Any]) -> ChatInvokeUsage | None:
+    def _get_usage(self, response: dict[str, Any]) -> ModelInvokeUsage | None:
         if "usage" not in response:
             return None
         u = response["usage"]
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=u.get("inputTokens", 0),
             completion_tokens=u.get("outputTokens", 0),
             total_tokens=u.get("totalTokens", 0),

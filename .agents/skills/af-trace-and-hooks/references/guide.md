@@ -48,6 +48,13 @@ work is associated with the original step; `recording_timing(step)` reads a late
 measurement, avoiding a self-referential final timing field. Runtime alone times
 `execution_ms`; task drivers own total elapsed time.
 
+Call records now discriminate `RecordedChatCall | RecordedDecisionCall` by required `kind`.
+Kind is independent of purpose: a Chat policy call has `purpose=agent_decision`; a Decision
+review call has `purpose=replay_review`. Runtime calls own a run/step; standalone review
+jobs own their job ID and use `step=null`. Request assets retain all placements and use
+content-addressed image storage. Metrics-only does not snapshot Decision inputs. ReAct
+history and training export require Chat main decisions and ignore helper calls.
+
 ## 3. WAL, immutable segments and reader contracts
 
 A sealed segment keeps its original step, calls, observations, action results and handed
@@ -65,7 +72,7 @@ commits. Trailing segment IDs distinguish retries from reused list positions.
 The manifest retains sparse committed steps, expected range, missing steps, continuous
 `complete_through`, and historical problems. Repaired holes can restore current complete
 status without erasing history. `result.json` records execution outcome; recording health
-never replaces it. Current format is 5 and result schema is 3.0, with no compatibility shim.
+never replaces it. Current format is 6 and result schema is 3.0, with no compatibility shim.
 
 Readers only follow committed indexes and validated paths inside the run directory.
 `RunTrace.call_metrics` and `trailing_call_metrics` do not decode prompts or pictures.

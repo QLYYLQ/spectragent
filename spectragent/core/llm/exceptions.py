@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — types only, no import at runtime
-    from spectragent.core.llm.views import ChatInvokeUsage
+    from spectragent.core.llm.views import ModelInvokeUsage
 
 
 class ModelError(Exception):
@@ -61,7 +61,7 @@ class StructuredOutputValidationError(ModelProviderError):
     ``response_format`` and would otherwise leave no trace of itself.
 
     ``usage`` is whatever the call actually cost — the provider's own
-    ``ChatInvokeUsage``, typed, because the Loop puts it straight into a
+    ``ModelInvokeUsage``, typed, because the Loop puts it straight into a
     ``ChatInvokeCompletion`` and the recording component adds it to the run's
     total. A failed validation is still billed, and dropping it here is
     how a run's token total came out lower than the bill.
@@ -73,7 +73,7 @@ class StructuredOutputValidationError(ModelProviderError):
         *,
         raw_output: str,
         model: str | None = None,
-        usage: "ChatInvokeUsage | None" = None,
+        usage: "ModelInvokeUsage | None" = None,
     ) -> None:
         super().__init__(message, 422, model)
         self.raw_output = raw_output
@@ -130,7 +130,7 @@ class ModelOutputTruncatedError(ModelProviderError):
         stop_reason: str | None = None,
         ceiling_field: str = "max_tokens",
         ceiling: int | None = None,
-        usage: "ChatInvokeUsage | None" = None,
+        usage: "ModelInvokeUsage | None" = None,
         partial_output: str | None = None,
     ) -> None:
         spent = getattr(usage, "completion_tokens", None)

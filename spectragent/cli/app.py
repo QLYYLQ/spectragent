@@ -635,6 +635,11 @@ def create_app() -> typer.Typer:
 
     leaf_commands = (
         (
+            "replay-review",
+            "spectragent.replay_review.cli",
+            "Review recorded replay evidence independently. Supports --json and --dry-run.",
+        ),
+        (
             "run",
             "spectragent.core.run_cli",
             "Run one task. Add --tui for an interactive monitor, or --json.",

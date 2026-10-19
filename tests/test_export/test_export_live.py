@@ -48,6 +48,7 @@ from tests._helpers import replay_driver as driver
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, student_root
 from tests._helpers.fixture_site import FixtureSite
 from tests._helpers.scripted_llm import ScriptedLLMServer
+from tests._helpers.trace_builder import as_chat
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -133,7 +134,7 @@ def _rendered(composer: ConfigComposer, trace: RunTrace) -> list[RenderedSample]
 
 
 def _prompt(trace: RunTrace, step: int, call: int = 0) -> list[Any]:
-    return recorded_form(trace.llm_messages(step)[call].messages)
+    return recorded_form(as_chat(trace.llm_messages(step)[call]).messages)
 
 
 def _same_up_to_writing(

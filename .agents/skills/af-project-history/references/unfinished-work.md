@@ -1,5 +1,8 @@
 # Current handoff and remaining work
 
+
+> **Implementation update, 2026-10-19 — feature/jev-add.** Formal native Decision models and the independent replay reviewer are implemented. Current design is `architecture_design.md` §4.7/§4.18 and trace format 6; AgentResult remains 3.0. The earlier planning text below is retained history, not an unstarted implementation queue. Current local delivery: [jev_add/delivery.json](../../../../tmp/jev_add/delivery.json). Full validation: 8,264 passed, no failures/errors/skips, 22 existing warnings; Pyright 0/0; frontend 13 tests and build passed. Three Luna records and three same-path replays completed with max_actions_per_step=4, 7/7 restoration checks and pixel-identical observations. Three unservable jQuery requests remain explicit (the recording also lacks complete responses). Jev bounded review returned 7/7 valid results, 2 candidate accepts and 5 further reviews, including one low-confidence semantic error caught by disagreement handling. DMX and OpenRouter native routes were live-tested; official direct has HTTP contract coverage but no live credential. Dynamics remain a separate future design, not accepted by these small experiments.
+
 Memory updated 2026-10-19 for the user's highest-priority Jev integration follow-up; the implementation
 acceptance snapshot below remains 2026-10-16 at `626612a`.
 This file routes continuation; it does not outrank `docs/architecture_design.md`,

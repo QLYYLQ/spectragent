@@ -893,7 +893,13 @@ class RunTrace:
             raise TraceSchemaError(
                 f"{path}: a stored prompt image cannot be put back: {exc}", path=path
             ) from exc
-        call = _validated(path, record, RecordedLLMCall.model_validate, "RecordedLLMCall")
+        call = _validated(
+            path, record, TypeAdapter(RecordedLLMCall).validate_python, "RecordedLLMCall"
+        )
+        if call.owner != "run" or call.step is None:
+            raise TraceSchemaError(
+                f"{path}: runtime calls must belong to a run and execution step", path=path
+            )
         if step is not None and call.step != step:
             raise TraceSchemaError(
                 f"{path} records a call of step {call.step}, but is committed with step {step}",
@@ -904,6 +910,10 @@ class RunTrace:
     def _read_call_metrics(self, rel: str, *, step: int | None = None) -> RecordedCallMetrics:
         path = self._listed(rel)
         call = _read_model(path, RecordedCallMetrics)
+        if call.owner != "run" or call.step is None:
+            raise TraceSchemaError(
+                f"{path}: runtime call metrics must belong to a run and execution step", path=path
+            )
         if step is not None and call.step != step:
             raise TraceSchemaError(
                 f"{path} records call metrics of step {call.step}, "

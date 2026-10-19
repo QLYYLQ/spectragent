@@ -14,7 +14,7 @@ from pydantic import Field
 
 from spectragent.core.aop.advice import Intercept
 from spectragent.core.hooks._registrar import HookBase
-from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.base import BaseChatModel, require_inference_protocol
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.prompt import PromptContribution, PromptRequest, ReactPromptContext
 
@@ -122,6 +122,8 @@ class PromptContributionHook(HookBase):
         if len(self.helper_llms) > 1:
             raise ValueError("A prompt contribution accepts at most one helper model")
         self.helper_llms = list(self.helper_llms)
+        for model in self.helper_llms:
+            require_inference_protocol(model, "chat", consumer="prompt_contribution.helper_llms")
         self.parameters = deepcopy(self.parameters)
         self._function, self._code_digest = _resolve_function(self.function)
 

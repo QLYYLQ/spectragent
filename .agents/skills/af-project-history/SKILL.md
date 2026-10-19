@@ -22,9 +22,10 @@ compromise or silently refresh the historical claim.
 
 ## Read only the relevant reference
 
-- Highest-priority next framework work, set by the user on 2026-10-19: formal Jev
-  integration. Start with [jev-integration-handoff.md](references/jev-integration-handoff.md)
-  for measured evidence, the working offline skill and the unresolved architecture decisions.
+- Formal Jev integration, implemented on `feature/jev-add` on 2026-10-19: start with
+  [jev-integration-handoff.md](references/jev-integration-handoff.md) for current delivery
+  evidence and preserved earlier decisions. Independent review is implemented; calibrated
+  dynamic replay participation remains a separate future task.
 - Current accepted implementation, the new local handoff, genuinely deferred work and
   retired continuation routes: [unfinished-work.md](references/unfinished-work.md).
   Current local evidence starts at `tmp/framework_expansion/delivery.json`, with
@@ -46,7 +47,7 @@ compromise or silently refresh the historical claim.
 - Earlier flywheel discussion, dated live experiments and heavy-handoff provenance,
   only when that history is needed: [flywheel-history.md](references/flywheel-history.md).
   Its old pending labels and temporary freezes are superseded, not active instructions.
-- The dated Jev/System One feasibility study and unresolved registrar/attribution choice:
+- The dated Jev/System One feasibility study and its historical registrar/attribution questions:
   [jev-system-one-study.md](references/jev-system-one-study.md)
 - Human–code-agent development rationale and implemented config explanation/template tooling:
   [developer-experience.md](references/developer-experience.md)

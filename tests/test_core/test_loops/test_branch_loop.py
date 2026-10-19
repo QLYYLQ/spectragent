@@ -41,6 +41,7 @@ from tests._helpers.branch_fakes import (
     record_source,
     run_branch,
 )
+from tests._helpers.trace_builder import as_chat
 
 #: A four-step source: three clicks, then done.
 SOURCE_REPLIES = ["click 100", "click 101", "click 102", "done ok"]
@@ -216,7 +217,7 @@ class TestRecords:
     async def test_the_teacher_sees_the_sources_context(self, tmp_path: Path, source: Path) -> None:
         out = await run_branch(tmp_path, source, 2, ["click 102"])
         assert recorded_form(out.llm.prompts[0]) == recorded_form(
-            RunTrace(source).llm_messages(2)[0].messages
+            as_chat(RunTrace(source).llm_messages(2)[0]).messages
         )
 
 
@@ -722,7 +723,7 @@ class TestRecordedReplies:
         assert recorded.step(0).truncated_actions == 1  # type: ignore[union-attr]
         out = await run_branch(tmp_path, source, 2, ["done ok"])
         assert recorded_form(out.llm.prompts[0]) == recorded_form(
-            recorded.llm_messages(2)[0].messages
+            as_chat(recorded.llm_messages(2)[0]).messages
         )
 
     async def test_a_structured_refusal_replays_as_the_raw_reply(self, tmp_path: Path) -> None:
@@ -740,7 +741,7 @@ class TestRecordedReplies:
             tmp_path, source, 2, ["done ok"], agent=BranchFakeAgent(structured=True)
         )
         assert recorded_form(out.llm.prompts[0]) == recorded_form(
-            recorded.llm_messages(2)[0].messages
+            as_chat(recorded.llm_messages(2)[0]).messages
         )
         assert out.result is not None and out.result.agent_done.value == "done"
 
@@ -835,7 +836,7 @@ class TestRecordedReplies:
         source = await record_source(tmp_path, SOURCE_REPLIES, memory="sliding_window", window=3)
         out = await run_branch(tmp_path, source, 3, ["done ok"], memory="sliding_window", window=3)
         assert recorded_form(out.llm.prompts[0]) == recorded_form(
-            RunTrace(source).llm_messages(3)[0].messages
+            as_chat(RunTrace(source).llm_messages(3)[0]).messages
         )
         assert out.result is not None and out.result.agent_done.value == "done"
         assert DONE in out.cap.log[-1]

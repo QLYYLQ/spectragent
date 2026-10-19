@@ -37,7 +37,14 @@ from spectragent.schemas.prompt import PromptRef, TextPrompt
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_fakes import CAPABILITY_ID, STEPS_KEY, FakeStepArchiver
-from tests._helpers.trace_builder import agent_result, archive_item, step_record, usage
+from tests._helpers.trace_builder import (
+    agent_result,
+    archive_item,
+    as_chat,
+    required,
+    step_record,
+    usage,
+)
 
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
@@ -244,9 +251,9 @@ async def test_failed_first_segment_is_backfilled_after_second_without_mixing_ca
     for step, text in enumerate(("first", "second")):
         (recorded,) = trace.llm_messages(step)
         assert (recorded.step, recorded.call) == (step, 0)
-        assert recorded.messages[-1].text == f"{text} prompt"
-        assert recorded.completion is not None
-        assert recorded.completion.completion == f"{text} reply"
+        assert as_chat(recorded).messages[-1].text == f"{text} prompt"
+        assert as_chat(recorded).completion is not None
+        assert required(as_chat(recorded).completion).completion == f"{text} reply"
         step_value = trace.step(step)
         assert step_value is not None
         assert step_value.actions[0].params["index"] == step
@@ -276,7 +283,7 @@ async def test_observation_capture_failure_loses_only_its_own_segment(writer_fac
     assert trace.step(0) is None
     assert trace.llm_messages(0) == []
     assert trace.trailing_calls == []
-    assert [item.messages[-1].text for item in trace.llm_messages(1)] == ["saved prompt"]
+    assert [as_chat(item).messages[-1].text for item in trace.llm_messages(1)] == ["saved prompt"]
     assert result.metrics.llm_calls == 2
     assert recorded_usage(trace).calls == 1
     assert not recorded_usage(trace).complete
@@ -295,7 +302,7 @@ async def test_archive_collection_failure_preserves_action_result_and_future_cap
     await close(writer, steps=2)
     trace = trace_of(writer)
     assert trace.manifest.missing_steps == [0]
-    assert [item.messages[-1].text for item in trace.llm_messages(1)] == ["next"]
+    assert [as_chat(item).messages[-1].text for item in trace.llm_messages(1)] == ["next"]
 
 
 async def test_call_capture_failure_does_not_replace_success_or_original_error(
@@ -622,7 +629,7 @@ async def test_tail_archive_failure_does_not_discard_unfinished_step_calls(write
     await close(writer, steps=0)
     trace = trace_of(writer)
     assert trace.manifest.status is TraceStatus.INCOMPLETE
-    assert [item.messages[-1].text for item in trace.trailing_calls] == ["unfinished step"]
+    assert [as_chat(item).messages[-1].text for item in trace.trailing_calls] == ["unfinished step"]
     assert recorded_usage(trace).tokens == 15
 
 
@@ -746,9 +753,9 @@ async def test_unselected_usage_and_error_details_do_not_leak_through_trajectory
     assert saved_call.status == status
     assert saved_call.failure is None
     if status == "completed":
-        assert saved_call.completion is not None
-        assert saved_call.completion.completion == "selected model reply"
-        assert saved_call.completion.usage is None
+        assert as_chat(saved_call).completion is not None
+        assert required(as_chat(saved_call).completion).completion == "selected model reply"
+        assert required(as_chat(saved_call).completion).usage is None
     saved_step = trace.step(0)
     assert saved_step is not None
     assert saved_step.error is None and saved_step.error_phase == ""

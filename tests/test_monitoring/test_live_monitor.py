@@ -23,6 +23,8 @@ async def test_call_lifetime_return_failure_and_unknown_usage():
     reply = SimpleNamespace(usage=SimpleNamespace(total_tokens=12))
 
     class Model:
+        inference_kind = "chat"
+
         async def ainvoke(self):
             entered.set()
             await release.wait()

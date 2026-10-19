@@ -35,6 +35,7 @@ from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import PromptModelOwner, RuntimeHook
+from spectragent.core.llm.base import require_inference_protocol
 from spectragent.core.llm.call_context import RunCallContext
 from spectragent.core.llm.lifecycle import close_models
 from spectragent.core.loops.base import AgentLoop
@@ -363,6 +364,7 @@ class AgentRuntime:
         memory = agent.memory
         # Step 1: Slot validation
         loop.validate_slots(agent)
+        require_inference_protocol(llm, "chat", consumer=f"Agent {type(agent).__name__}.llm")
         self._call_context = RunCallContext()
         self._identity = RunIdentity.resolve(agent=agent, loop=loop, env=env, task_id=task_id)
         self._execution_limits = loop.execution_limits()
@@ -444,6 +446,10 @@ class AgentRuntime:
         execution_models = [llm]
         for hook in self._hooks:
             if isinstance(hook, PromptModelOwner):
+                for model in hook.helper_llms:
+                    require_inference_protocol(
+                        model, "chat", consumer=f"{type(hook).__name__}.helper_llms"
+                    )
                 execution_models.extend(hook.helper_llms)
                 hook.bind_prompt_models(
                     [weaver.wrap(model, role="llm") for model in hook.helper_llms],

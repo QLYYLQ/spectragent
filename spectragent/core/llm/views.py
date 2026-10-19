@@ -22,9 +22,9 @@ def join_reasoning(pieces: Iterable[object]) -> str | None:
     return "\n".join(texts) if texts else None
 
 
-class ChatInvokeUsage(BaseModel):
+class ModelInvokeUsage(BaseModel):
     """
-    Usage information for a chat model invocation.
+    Provider-reported usage for a model invocation, including Decision calls.
     """
 
     prompt_tokens: int
@@ -73,7 +73,7 @@ class ChatInvokeCompletion(BaseModel, Generic[T]):
     redacted reasoning (base64), a Responses API item's ``encrypted_content``.
     """
 
-    usage: ChatInvokeUsage | None
+    usage: ModelInvokeUsage | None
     """The usage of the response."""
 
     stop_reason: str | None = None

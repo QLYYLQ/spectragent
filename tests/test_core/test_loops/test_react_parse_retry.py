@@ -104,6 +104,8 @@ class _Completion:
 class _LLM:
     """Replies from a script, and remembers what it was asked each time."""
 
+    inference_kind = "chat"
+
     model = "test-model"
 
     def __init__(self, replies: list[str], usage: Any = None) -> None:
@@ -485,6 +487,8 @@ class TestRetryPathRespectsRunAbort:
         env, _cap = _fresh_env()
 
         class _AbortOnSecondCall(_LLM):
+            inference_kind = "chat"
+
             async def ainvoke(self, messages: Any, **kw: Any) -> Any:
                 if self.calls >= 1:
                     raise RunAbort("risk control", source="guard")

@@ -1,6 +1,6 @@
 # All4One Agent Framework — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 33 个开发模块（M01–M33）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 34 个开发模块（M01–M34）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 >
 > 状态阅读说明（2026-10-16）：图中依赖关系是实施顺序，不表示每个节点都尚未实现。
 > 六项后续改造已在 `a6a36d0` 完成验收；当前续接见本地
@@ -86,6 +86,7 @@ flowchart TB
         M31["M31<br/>状态分叉<br/>（检查点恢复 + BranchLoop）"]
         M32["M32<br/>训练导出<br/>（canonical 样本 + 翻译 + 学生渲染）"]
         M33(["M33<br/>度量闸门<br/>（报告 + 链 + fixture 演练）"])
+        M34["M34<br/>Jev 与独立 replay 审查"]
     end
 
     subgraph P2_DOCKER ["P2 · Docker + SWE 生态"]
@@ -108,6 +109,11 @@ flowchart TB
     %% ════════════════════════════════════════
     %% 依赖边
     %% ════════════════════════════════════════
+
+    M04 --> M34
+    M27 --> M34
+    M29 --> M34
+    M31 --> M34
 
     %% M01 → P0 抽象层
     M01 --> M02
@@ -1487,6 +1493,24 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 **跟进（2026-10-13，按用户的裁决）**：报告格式升到 `af-flywheel-report-2`。上面写的 Q1 / Q4 / Q7 三个决定在报告里改用语义名 `miss_policy`、`recording_coverage`、`retention`（加上 `site_rules`），阈值改成"约束对象 + `_MIN_` / `_MAX_` + 量"的名字，报告的键、标题与规则文字不再用规划编号。`supported` 要求证据来自至少 10 个站点，不足时最多是 `partial`（"insufficient sample"），低于 `supported` 的原因写在 `status_reason`；空分叉（从检查点起没有执行任何动作）不进"`strict` 够不够用"的占比，按原因单独计数。每步归档开销的上限 300 ms 只在 `core/archive/budget.py` 定义一次，开销基准与报告共用；目录树摘要合成 `core/trace/digest.py` 一处；`report.md` 列出各项度量跳过的 run；`report --out` 写不了、数据集读不回来时 CLI 点名报错（退出码 1）。设计以 architecture §4.16 为准。之后（同日，按用户的隐私模型"只有我"）：隐私一项只看两道门——录下的每一次模型请求与导出的数据集，不再扫描 `env/` 与 trace 的其余文件——按门分开计数，报告格式升到 `af-flywheel-report-3`。再之后（同日，live 冒烟对比录制与回放的截图之后，按用户的裁决）：每次观测之前等页面落定——主 frame 的文档加载完，再连续 500 ms 没有 DOM 变化与资源完成，上限 5 s，录制与回放一样，只协商 DOM 的观测也等（architecture §4.14 "观测之前等页面落定"，旋钮 `settle_quiet_ms` / `settle_max_wait_s`）；恢复校验比较的就是两边的观测，没有只为校验另拍的截图；坐标点击与拖拽在处理器失败时报告失败；报告格式升到 `af-flywheel-report-4`（归档开销带每个角色观测前的落定等待）。
 
 **使用的 skill**：`af-trace-and-hooks`、`af-add-a-capability`、`af-regenerate-and-verify`。
+
+---
+
+### M34: Jev 原生模型与独立 replay 审查 — ✅ 已实现并验证
+
+**优先级**：用户 2026-10-19 指定的下一项最高优先级框架工作。
+**依赖**：M04、M10、M11、M27–M31 的模型调用、已提交证据与回放对应关系；不依赖任务正确性 judge。
+**设计权威**：`architecture_design.md` §4.7、§4.18、§5.3–§5.5。
+
+- 公共模型 Protocol 与资源基座；Chat/Decision 分轴、强类型调用、显式协议和配置隔离。
+- `typesafe.direct` 与 `typesafe.openrouter`，原生四类答案、结构化描述、图片、元数据和类型化错误。
+- trace v6：显式 chat/decision 判别、独立 owner、Decision 图片内容寻址；旧格式明确拒绝，result 仍为 3.0。
+- `replay_reviewer` 独立 job、版本化问题/政策、已提交证据对齐、源配置 DOM 重建、独立调用与原子提交结果；查看器展示。
+- 回归/配置生成/前端/类型检查，以及三个 Luna 任务的 record/replay 与 Jev 审查，每步最多四个动作。
+
+本期不改变恢复判定，不做 Agent cascade，不自动启用候选规则；动态 replay 参与以本期实验为后续设计依据。
+
+2026-10-19 验收：8,264 tests passed，零失败/错误/跳过，22 条既有警告；Pyright 零错误/警告，前端 13 tests 与 build 通过。三个 Luna record/replay 全部完成，7/7 恢复检查通过且像素一致；保留 3 条源响应不完整的脚本 miss。Jev 紧预算复测 7/7 有效，2 条 candidate_acceptable、5 条进一步复核；其中一条低置信语义误报被分诊政策拦下。重复/顺序/语义反例另存，不据此宣称已校准或允许动态放行。详细本地证据：`tmp/jev_add/delivery.json`。
 
 ---
 

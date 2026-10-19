@@ -41,7 +41,7 @@ from spectragent.core.loops.restore.prefix_replay import (  # noqa: F401 — reg
     PrefixReplayRestorer,
 )
 from spectragent.core.loops.validation import IncompatibleCheckpointError
-from spectragent.core.trace.models import RecordedLLMCall, TraceNegotiation
+from spectragent.core.trace.models import RecordedChatCall, TraceNegotiation
 from spectragent.core.trace.reconstruction import first_difference, recorded_form
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.core.trace.sources import not_closed_reason, past_complete_reason
@@ -536,7 +536,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
     def _recorded_reply(
         self,
         source: SourceRun,
-        call: RecordedLLMCall,
+        call: RecordedChatCall,
         output_model: Any,
         step: int,
         index: int,

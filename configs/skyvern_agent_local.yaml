@@ -7,7 +7,7 @@ agent:
     agent_loop:
       loop_id: react
       max_steps: 30
-      max_actions_per_step: 1
+      max_actions_per_step: 4
     llm:
       model_type: openai
       model: gpt-4o

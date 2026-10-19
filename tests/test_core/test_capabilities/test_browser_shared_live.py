@@ -245,6 +245,7 @@ async def test_concurrent_runtimes_commit_independent_complete_traces(tmp_path):
     async with fixture_site() as (origin, requests), ExperimentScope() as scope:
 
         class Model:
+            inference_kind = "chat"
             model = name = "scripted_fixture"
 
             def __init__(self, label):

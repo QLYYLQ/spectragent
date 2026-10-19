@@ -223,6 +223,8 @@ class FakeBrowserEnv(EnvironmentBase):
 class ScriptedTeacher:
     """Replies from a script; a dict is validated into the call's output model."""
 
+    inference_kind = "chat"
+
     model = "scripted-teacher"
     name = "scripted-teacher"
     model_type = "test"

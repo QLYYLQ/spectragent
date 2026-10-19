@@ -23,7 +23,7 @@ from spectragent.core.llm.exceptions import (
     StructuredOutputValidationError,
 )
 from spectragent.core.llm.messages import UserMessage
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage
 from spectragent.core.trace.models import TraceManifest, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
@@ -33,14 +33,15 @@ from spectragent.schemas.observation import build_observation_model
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.step_record import StepRecord, TokenUsage
+from tests._helpers.trace_builder import as_chat, required
 
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
 _PNG = b"\x89PNG\r\n\x1a\n-fake-bytes"
 
 
-def _usage(total: int = 15) -> ChatInvokeUsage:
-    return ChatInvokeUsage(
+def _usage(total: int = 15) -> ModelInvokeUsage:
+    return ModelInvokeUsage(
         prompt_tokens=total - 5,
         prompt_cached_tokens=0,
         prompt_cache_creation_tokens=None,
@@ -247,7 +248,7 @@ class TestTraceWriterLifecycle:
         run_dir = await _start(writer)
         assert (run_dir / "manifest.json").exists()
         assert (run_dir / "config.json").exists()
-        assert RunTrace(run_dir).manifest.format_version == 5
+        assert RunTrace(run_dir).manifest.format_version == 6
 
     async def test_config_records_full_identity(self, writer):
         """A trace nothing can join back to its dataset is an orphan.
@@ -300,10 +301,10 @@ class TestTraceWriterLifecycle:
         assert record.token_usage.total_tokens == 15
         (call,) = trace.llm_messages(0)
         assert (call.step, call.call, call.status) == (0, 0, "completed")
-        assert call.messages == _prompt("what do you see?")
-        assert call.completion is not None
-        assert call.completion.completion == "click(button)"
-        assert call.completion.usage == _usage()
+        assert as_chat(call).messages == _prompt("what do you see?")
+        assert as_chat(call).completion is not None
+        assert required(as_chat(call).completion).completion == "click(button)"
+        assert required(as_chat(call).completion).usage == _usage()
         assert (run_dir / "messages/000_call_00.json").is_file()
 
     async def test_multi_step_commit(self, writer):
@@ -315,7 +316,7 @@ class TestTraceWriterLifecycle:
         trace = RunTrace(run_dir)
         assert trace.manifest.last_step_completed == 2
         assert writer.health.committed_steps == 3
-        assert [trace.llm_messages(i)[0].messages[0].text for i in range(3)] == [
+        assert [as_chat(trace.llm_messages(i)[0]).messages[0].text for i in range(3)] == [
             "step 0",
             "step 1",
             "step 2",
@@ -505,7 +506,7 @@ class TestEveryCallOfAStep:
         await _seal(writer, None, args=(_step(0),), kwargs={})
 
         calls = RunTrace(run_dir).llm_messages(0)
-        assert [(c.call, c.status, c.messages[0].text) for c in calls] == [
+        assert [(c.call, c.status, as_chat(c).messages[0].text) for c in calls] == [
             (0, "failed", "first try"),
             (1, "completed", "second try"),
             (2, "completed", "third try"),
@@ -523,7 +524,7 @@ class TestEveryCallOfAStep:
 
         (call,) = RunTrace(run_dir).llm_messages(0)
         assert call.status == "failed"
-        assert call.completion is None
+        assert as_chat(call).completion is None
         assert call.failure is not None
         assert call.failure.error == "StructuredOutputValidationError"
         assert call.failure.raw_output == '{"action": [{}]}'
@@ -575,25 +576,29 @@ class TestEveryCallOfAStep:
 
         trace = RunTrace(run_dir)
         calls = trace.llm_messages(0)
-        assert [(c.call, c.status, c.messages[0].text) for c in calls] == [
+        assert [(c.call, c.status, as_chat(c).messages[0].text) for c in calls] == [
             (0, "completed", "attempt 0"),
             (1, "failed", "attempt 1"),
             (2, "failed", "attempt 2"),
             (3, "cancelled", "attempt 3"),
         ]
         retry, refused_call, truncated_call, cancelled = calls
-        assert retry.completion is not None
-        assert retry.completion.completion == "not an action"
+        assert as_chat(retry).completion is not None
+        assert required(as_chat(retry).completion).completion == "not an action"
         assert refused_call.failure is not None
         assert refused_call.failure.raw_output == '{"action": 7}'
         assert refused_call.failure.usage == _usage(20)
         assert truncated_call.failure is not None
         assert truncated_call.failure.partial_output == '{"action": "cli'
         assert truncated_call.failure.usage == _usage(40)
-        assert cancelled.completion is None
+        assert as_chat(cancelled).completion is None
         assert cancelled.failure is not None
         assert cancelled.failure.error == "CancelledError"
-        refs = {call.output_format.sha256 for call in calls if call.output_format is not None}
+        refs = {
+            required(as_chat(call).output_format).sha256
+            for call in calls
+            if as_chat(call).output_format is not None
+        }
         assert refs == set(trace.manifest.output_formats)
         assert len(refs) == 1
         assert trace.trailing_calls == []
@@ -687,7 +692,7 @@ class TestEveryCallOfAStep:
         await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
-        assert call.messages[0].text == "as sent"
+        assert as_chat(call).messages[0].text == "as sent"
 
 
 class TestTheModelsReasoning:
@@ -709,10 +714,12 @@ class TestTheModelsReasoning:
         assert raw["completion"]["thinking"] == "The third element is the search button."
         assert raw["completion"]["redacted_thinking"] == "EuYBCkQYAiJA-opaque"
         (call,) = RunTrace(run_dir).llm_messages(0)
-        assert call.completion is not None
-        assert call.completion.completion == "click(3)"
-        assert call.completion.thinking == "The third element is the search button."
-        assert call.completion.redacted_thinking == "EuYBCkQYAiJA-opaque"
+        assert as_chat(call).completion is not None
+        assert required(as_chat(call).completion).completion == "click(3)"
+        assert (
+            required(as_chat(call).completion).thinking == "The third element is the search button."
+        )
+        assert required(as_chat(call).completion).redacted_thinking == "EuYBCkQYAiJA-opaque"
 
     async def test_a_reply_without_reasoning_records_none(self, writer):
         run_dir = await _start(writer)
@@ -720,9 +727,9 @@ class TestTheModelsReasoning:
         await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
-        assert call.completion is not None
-        assert call.completion.thinking is None
-        assert call.completion.redacted_thinking is None
+        assert as_chat(call).completion is not None
+        assert required(as_chat(call).completion).thinking is None
+        assert required(as_chat(call).completion).redacted_thinking is None
 
 
 class TestTheRequestedSchema:
@@ -735,7 +742,9 @@ class TestTheRequestedSchema:
 
         trace = RunTrace(run_dir)
         (sha,) = trace.manifest.output_formats
-        refs = [call.output_format for step in range(2) for call in trace.llm_messages(step)]
+        refs = [
+            as_chat(call).output_format for step in range(2) for call in trace.llm_messages(step)
+        ]
         assert len(refs) == 4
         assert all(ref is not None and (ref.name, ref.sha256) == ("Reply", sha) for ref in refs)
         assert trace.output_schema(sha) == Reply.model_json_schema()
@@ -763,7 +772,7 @@ class TestTheRequestedSchema:
         await _seal(writer, None, args=(_step(0),), kwargs={})
 
         trace = RunTrace(run_dir)
-        assert trace.llm_messages(0)[0].output_format is None
+        assert as_chat(trace.llm_messages(0)[0]).output_format is None
         assert trace.manifest.output_formats == []
 
     async def test_a_schema_that_cannot_be_generated_does_not_fail_the_call(self, writer):
@@ -771,7 +780,7 @@ class TestTheRequestedSchema:
         await _call(writer, output_format=object)  # type: ignore[arg-type]
         await _seal(writer, None, args=(_step(0),), kwargs={})
 
-        assert RunTrace(run_dir).llm_messages(0)[0].output_format is None
+        assert as_chat(RunTrace(run_dir).llm_messages(0)[0]).output_format is None
 
 
 class TestTrailingCalls:
@@ -789,7 +798,7 @@ class TestTrailingCalls:
         trace = RunTrace(run_dir)
         (call,) = trace.trailing_calls
         assert (call.step, call.call, call.status) == (0, 0, "completed")
-        assert call.messages[0].text == "step 0 prompt"
+        assert as_chat(call).messages[0].text == "step 0 prompt"
         assert trace.manifest.trailing[0].llm_calls == ["messages/000_call_00.json"]
 
     async def test_a_cancelled_call_keeps_its_prompt(self, writer):
@@ -800,8 +809,8 @@ class TestTrailingCalls:
 
         (call,) = RunTrace(run_dir).trailing_calls
         assert call.status == "cancelled"
-        assert call.messages[0].text == "the call the timeout cut off"
-        assert call.completion is None
+        assert as_chat(call).messages[0].text == "the call the timeout cut off"
+        assert as_chat(call).completion is None
         assert call.failure is not None
         assert call.failure.error == "CancelledError"
 
@@ -826,10 +835,10 @@ class TestTrailingCalls:
         trace = RunTrace(run_dir)
         assert trace.step_count == 1
         (call,) = trace.trailing_calls
-        assert (call.step, call.messages[0].text) == (1, "step 1")
+        assert (call.step, as_chat(call).messages[0].text) == (1, "step 1")
         assert trace.llm_messages(1) == []
         # The committed step's call is untouched.
-        assert trace.llm_messages(0)[0].messages[0].text == "step 0"
+        assert as_chat(trace.llm_messages(0)[0]).messages[0].text == "step 0"
 
     async def test_every_registered_call_is_committed(self, writer):
         run_dir = await _start(writer)
@@ -847,7 +856,7 @@ class TestTrailingCalls:
         await _call(writer, "lonely")
         await writer.on_run_error(error=RuntimeError("boom"), partial_steps=[])
 
-        assert RunTrace(run_dir).trailing_calls[0].messages[0].text == "lonely"
+        assert as_chat(RunTrace(run_dir).trailing_calls[0]).messages[0].text == "lonely"
 
     async def test_end_then_error_commits_them_once(self, writer):
         run_dir = await _start(writer)
@@ -879,7 +888,7 @@ class TestTrailingCalls:
         await writer.on_run_end(result=_result())
         trace = RunTrace(run_dir)
         assert trace.trailing_calls == []
-        assert [(call.call, call.messages[0].text) for call in trace.llm_messages(0)] == [
+        assert [(call.call, as_chat(call).messages[0].text) for call in trace.llm_messages(0)] == [
             (0, "before the flush"),
             (1, "after the flush"),
         ]

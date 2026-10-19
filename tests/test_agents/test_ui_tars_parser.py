@@ -197,6 +197,7 @@ class TestTheRealFailures:
                 return _screenshot()
 
         class _LLM:
+            inference_kind = "chat"
             model = "stub"
 
             def __init__(self) -> None:

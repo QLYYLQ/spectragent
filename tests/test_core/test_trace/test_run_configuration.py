@@ -136,6 +136,7 @@ class _Completion:
 
 
 class _SlowLLM:
+    inference_kind = "chat"
     model = "gpt-4o-mini"
 
     async def ainvoke(self, messages, **kw):

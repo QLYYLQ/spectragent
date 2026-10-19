@@ -534,3 +534,60 @@ async def test_live_cancelled_startup_only_removes_the_new_chrome(
         opening.cancel()
         await asyncio.gather(opening, return_exceptions=True)
         await provider.close()
+
+
+async def test_late_temporary_profile_writes_are_retried_after_process_exit(harness, monkeypatch):
+    import errno
+
+    provider = harness.provider()
+    session = await provider.open()
+    remove = local_chrome.shutil.rmtree
+    sleep = asyncio.sleep
+    attempts = []
+    delays = []
+
+    def churn(path):
+        assert harness.process.returncode is not None
+        attempts.append(path)
+        if len(attempts) < 3:
+            raise OSError(errno.ENOTEMPTY, "directory repopulated", path)
+        remove(path)
+
+    async def backoff(delay):
+        delays.append(delay)
+        await sleep(0)
+
+    monkeypatch.setattr(local_chrome.shutil, "rmtree", churn)
+    monkeypatch.setattr(local_chrome.asyncio, "sleep", backoff)
+    await provider.close(session)
+    assert len(attempts) == 3 and delays == [0.05, 0.1]
+    assert not harness.created[0].exists()
+    await provider.close(session)
+    assert len(attempts) == 3
+
+
+async def test_profile_churn_retry_is_bounded_and_failure_remains_retryable(harness, monkeypatch):
+    import errno
+
+    provider = harness.provider()
+    session = await provider.open()
+    remove = local_chrome.shutil.rmtree
+    sleep = asyncio.sleep
+    attempts = []
+
+    def churn(path):
+        attempts.append(path)
+        raise OSError(errno.ENOTEMPTY, "persistent churn", path)
+
+    async def backoff(delay):
+        await sleep(0)
+
+    monkeypatch.setattr(local_chrome.shutil, "rmtree", churn)
+    monkeypatch.setattr(local_chrome.asyncio, "sleep", backoff)
+    with pytest.raises(OSError) as failure:
+        await provider.close(session)
+    assert failure.value.errno == errno.ENOTEMPTY and len(attempts) == 5
+    assert harness.created[0].exists()
+    monkeypatch.setattr(local_chrome.shutil, "rmtree", remove)
+    await provider.close(session)
+    assert not harness.created[0].exists()

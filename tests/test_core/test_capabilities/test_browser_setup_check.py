@@ -319,6 +319,11 @@ class _ScreenshotAgent:
 
 
 class _LLM:
+    inference_kind = "chat"
+
+    async def ainvoke(self, *args, **kwargs):
+        raise AssertionError("prepare must not invoke a model")
+
     model = "setup-check-llm"
     name = "setup-check-llm"
 

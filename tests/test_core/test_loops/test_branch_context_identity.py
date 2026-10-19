@@ -34,6 +34,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.schemas.restoration import Checkpoint
 from tests._helpers.branch_browser import AgentKind, Outcome, branch_loop, drive, source_loop
+from tests._helpers.trace_builder import as_chat
 
 
 def _refusal(raw: str) -> StructuredOutputValidationError:
@@ -145,7 +146,7 @@ async def test_policy_context_equals_source(tmp_path: Path, kind: AgentKind, mem
     for step in range(STEPS):
         branch = await _branch(tmp_path, kind, memory, source, step, id_offset=100)
         teacher = recorded_form(branch.teacher.prompts[0])
-        recorded = recorded_form(source.llm_messages(step)[0].messages)
+        recorded = recorded_form(as_chat(source.llm_messages(step)[0]).messages)
         assert teacher == recorded, f"step {step}: the teacher's context is not the source's"
 
 
@@ -158,7 +159,7 @@ async def test_history_from_recording_prompt_from_live(
     for step in range(STEPS):
         branch = await _branch(tmp_path, kind, memory, source, step, id_offset=500)
         teacher = recorded_form(branch.teacher.prompts[0])
-        recorded = recorded_form(source.llm_messages(step)[0].messages)
+        recorded = recorded_form(as_chat(source.llm_messages(step)[0]).messages)
         # Everything before the checkpoint's prompt comes from the recording.
         assert teacher[:-1] == recorded[:-1], f"step {step}: the rebuilt history differs"
         # The checkpoint's prompt is what the agent built from the live page.

@@ -14,7 +14,7 @@ from spectragent.core.llm.model_families import ModelFamily, detect_model_family
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.ollama_format import OllamaMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -91,7 +91,7 @@ class ChatOllama(ChatModelBase):
         return OllamaAsyncClient(host=self.host, timeout=self.timeout, **params)
 
     @staticmethod
-    def _get_usage(response: Any) -> ChatInvokeUsage | None:
+    def _get_usage(response: Any) -> ModelInvokeUsage | None:
         """Read Ollama's token counters off the response.
 
         Ollama is the offline / reproducible-benchmark provider, so this is
@@ -104,7 +104,7 @@ class ChatOllama(ChatModelBase):
             return None
         prompt_tokens = prompt_tokens or 0
         completion_tokens = completion_tokens or 0
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=prompt_tokens,
             prompt_cached_tokens=None,
             prompt_cache_creation_tokens=None,

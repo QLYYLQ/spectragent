@@ -295,7 +295,7 @@ class _FileRepository:
             yield path, files
             # All contents of a run/dataset are private to its reader. In
             # particular, do not find fake reports in archived web content.
-            if "manifest.json" in files:
+            if "manifest.json" in files or "review-manifest.json" in files:
                 directories.clear()
 
     def _kind(self, path: Path) -> str | None:
@@ -306,6 +306,8 @@ class _FileRepository:
         if not isinstance(data, dict):
             return None
         fmt = str(data.get("format", ""))
+        if fmt == "af-replay-review-1" and path.name == "review-manifest.json":
+            return "replay_review"
         if fmt.startswith("af-independent-evaluation-"):
             return "evaluation"
         if fmt.startswith("af-flywheel-report-"):
@@ -394,7 +396,7 @@ class _FileRepository:
                 "trailing_output_schemas": {
                     call.output_format.sha256: trace.output_schema(call.output_format.sha256)
                     for call in trailing
-                    if call.output_format is not None
+                    if call.kind == "chat" and call.output_format is not None
                 },
                 "usage": _json(usage),
                 "source_key": execution["source_key"],
@@ -518,7 +520,7 @@ class _FileRepository:
             schemas = {
                 call.output_format.sha256: trace.output_schema(call.output_format.sha256)
                 for call in calls
-                if call.output_format is not None
+                if call.kind == "chat" and call.output_format is not None
             }
             return {
                 "record": {**_json(record), "recording_ms": trace.recording_timing(index)},
@@ -613,7 +615,8 @@ class _FileRepository:
             names = [
                 name
                 for name in files
-                if name in {"report.json", "diagnostics.json", "manifest.json"}
+                if name
+                in {"report.json", "diagnostics.json", "manifest.json", "review-manifest.json"}
                 or (directory.name == ".sessions" and name.endswith(".json"))
             ]
             for name in sorted(names):
@@ -748,6 +751,17 @@ class _FileRepository:
             raise FileNotFoundError(f"No experiment report at {key}")
         if record["error"]:
             raise RepositoryError(record["error"])
+        if record["kind"] == "replay_review":
+            from spectragent.replay_review.storage import open_review
+
+            try:
+                return {
+                    "key": key,
+                    "kind": "replay_review",
+                    "data": open_review(path.parent).report(),
+                }
+            except (ValueError, OSError) as exc:
+                raise RepositoryError(str(exc)) from exc
         return {"key": key, "kind": self._kind(path), "data": self._read_json(path)}
 
 

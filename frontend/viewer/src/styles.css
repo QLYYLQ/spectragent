@@ -1598,3 +1598,7 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+.decision-images { display: flex; gap: 1rem; flex-wrap: wrap; }
+.decision-images figure { margin: 0; max-width: 36rem; flex: 1 1 20rem; }
+.decision-images img { width: 100%; height: auto; border: 1px solid #cbd5e1; border-radius: 0.5rem; }
+.decision-images figcaption { overflow-wrap: anywhere; margin: 0.5rem 0; }

@@ -105,6 +105,7 @@ class _Agent:
 
 
 class _Helper:
+    inference_kind = "chat"
     name = "test helper"
 
     def __init__(self, call_context, *, error=None):

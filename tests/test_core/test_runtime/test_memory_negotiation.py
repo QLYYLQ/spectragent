@@ -115,6 +115,7 @@ class _Completion:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "test"
 
     async def ainvoke(self, messages, **kwargs):

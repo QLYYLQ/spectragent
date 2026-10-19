@@ -39,6 +39,7 @@ from spectragent.core.loops.react import ReactLoop, serialize_llm_output
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.llm_clients import FakeClient
+from tests._helpers.trace_builder import as_chat
 
 # ── Shared fixtures ───────────────────────────────────────────────
 
@@ -229,6 +230,8 @@ class _FakeMemory:
 
 class _RecordingLLM:
     """Records the ``output_format`` every ainvoke was given."""
+
+    inference_kind = "chat"
 
     model = "test"
 
@@ -1016,6 +1019,7 @@ class TestStructuredValidationIsFedBack:
         bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
 
         class _RaisingLLM:
+            inference_kind = "chat"
             model = "gpt-4o"
 
             async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
@@ -1067,6 +1071,7 @@ class TestStructuredValidationIsFedBack:
         agent = _prepared_agent()
 
         class _DeadLLM:
+            inference_kind = "chat"
             model = "gpt-4o"
 
             async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
@@ -1112,7 +1117,7 @@ class TestStructuredValidationIsFedBack:
         from spectragent.core.aop.weaver import Weaver
         from spectragent.core.hooks.trace_writer import TraceWriter
         from spectragent.core.llm.exceptions import StructuredOutputValidationError
-        from spectragent.core.llm.views import ChatInvokeUsage
+        from spectragent.core.llm.views import ModelInvokeUsage
         from spectragent.core.step_recorder import StepRecorder
         from spectragent.core.trace.reader import RunTrace
 
@@ -1120,6 +1125,7 @@ class TestStructuredValidationIsFedBack:
         bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
 
         class _RaisingLLM:
+            inference_kind = "chat"
             model = "gpt-4o"
 
             async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
@@ -1127,7 +1133,7 @@ class TestStructuredValidationIsFedBack:
                     "schema mismatch",
                     raw_output=bad,
                     model="gpt-4o",
-                    usage=ChatInvokeUsage(
+                    usage=ModelInvokeUsage(
                         prompt_tokens=10,
                         prompt_cached_tokens=0,
                         prompt_cache_creation_tokens=None,
@@ -1175,9 +1181,9 @@ class TestStructuredValidationIsFedBack:
         assert trace.step_count == 1
         assert trace.trailing_calls == []
         (call,) = trace.llm_messages(0)
-        assert call.messages, "the prompt that produced the refused reply was not recorded"
+        assert as_chat(call).messages, "the prompt that produced the refused reply was not recorded"
         assert call.status == "failed"
-        assert call.completion is None
+        assert as_chat(call).completion is None
         assert call.failure is not None
         assert call.failure.error == "StructuredOutputValidationError"
         assert call.failure.raw_output == bad

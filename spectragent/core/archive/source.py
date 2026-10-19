@@ -66,6 +66,9 @@ class ArchiveEntry(Protocol):
     def captured_at(self) -> float: ...
 
     @property
+    def cycle(self) -> int | None: ...
+
+    @property
     def ids(self) -> Mapping[str, str]: ...
 
     @property

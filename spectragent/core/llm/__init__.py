@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 
 # Lightweight imports that are commonly used
 from spectragent.core.llm._registrar import ChatModelBase, LLMRegistrar
-from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.base import BaseChatModel, BaseDecisionModel, BaseInferenceModel
+from spectragent.core.llm.decision import DecisionRequest, DecisionResult
+from spectragent.core.llm.decision_registrar import DecisionModelBase, DecisionModelRegistrar
 from spectragent.core.llm.lifecycle import (
     ClientCleanupDiagnostic,
     ModelClientLifecycle,
@@ -108,6 +110,10 @@ __all__ = [
     # Registry
     "LLMRegistrar",
     "ChatModelBase",
+    "DecisionModelRegistrar",
+    "DecisionModelBase",
+    "DecisionRequest",
+    "DecisionResult",
     # Execution lifecycle
     "ClientCleanupDiagnostic",
     "ModelClientLifecycle",
@@ -115,6 +121,8 @@ __all__ = [
     "model_session",
     # Base classes
     "BaseChatModel",
+    "BaseInferenceModel",
+    "BaseDecisionModel",
     "OpenAICompatBase",
     "AnthropicCompatBase",
     # OpenAI-compatible providers

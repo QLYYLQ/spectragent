@@ -18,6 +18,7 @@ from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs
 from tests._helpers.fragment_samples import PNG_BYTES
 from tests._helpers.trace_builder import (
+    as_chat,
     build_reference_trace,
     data_url,
     fragment,
@@ -101,7 +102,7 @@ def test_step_info_is_read_only_from_committed_fragments(tmp_path: Path) -> None
 
 def test_message_context_uses_the_recorders_round_trip(recorded: RunTrace) -> None:
     live = prompt("what do you see?", images=[data_url(PNG_BYTES)])
-    from_trace = recorded.llm_messages(0)[0].messages
+    from_trace = as_chat(recorded.llm_messages(0)[0]).messages
     assert recorded_form(live) == recorded_form(from_trace)
     changed = recorded_form(prompt("changed"))
     assert first_difference(changed, recorded_form(from_trace)).startswith("message 1 differs")

@@ -23,13 +23,14 @@ from typing import Any, TypeVar
 
 from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.trace import reconstruction
-from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.errors import IncompatibleCallKindError, TraceSchemaError
 from spectragent.core.trace.models import (
-    RecordedLLMCall,
+    RecordedChatCall,
     TraceConfig,
     TraceManifest,
 )
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_chat_decisions
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
@@ -118,14 +119,15 @@ class SourceRun:
             raise IncompatibleCheckpointError(self.name, [f"step {step} is not committed"])
         return record
 
-    def calls(self, step: int) -> list[RecordedLLMCall]:
+    def calls(self, step: int) -> list[RecordedChatCall]:
         """Recorded Agent decisions and parse retries, excluding helper calls."""
-        return self._read(
-            lambda: [
-                call for call in self._trace.llm_messages(step) if call.purpose == "agent_decision"
-            ],
-            f"the decision calls of step {step}",
-        )
+        try:
+            return self._read(
+                lambda: recorded_chat_decisions(self._trace, step, consumer="ReAct history"),
+                f"the decision calls of step {step}",
+            )
+        except IncompatibleCallKindError as exc:
+            raise IncompatibleCheckpointError(self.name, [str(exc)]) from exc
 
     def observation(self, step: int, negotiated: Any) -> Any:
         """The observation *step* recorded, as this run's ``NegotiatedObservation``.

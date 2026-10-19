@@ -13,6 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
+class IncompatibleCallKindError(ValueError):
+    """Valid model evidence does not implement the consumer's inference protocol."""
+
+
 class TraceSchemaError(RuntimeError):
     """A trace file exists — or is committed — but cannot be read as what it should be.
 

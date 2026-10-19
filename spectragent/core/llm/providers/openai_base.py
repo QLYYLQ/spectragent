@@ -32,7 +32,7 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -280,11 +280,11 @@ class OpenAICompatBase(ChatModelBase):
     # ------------------------------------------------------------------
     # Usage extraction
     # ------------------------------------------------------------------
-    def get_usage(self, response: ChatCompletion) -> ChatInvokeUsage | None:
+    def get_usage(self, response: ChatCompletion) -> ModelInvokeUsage | None:
         """Normalize chat-completions usage for compatible provider request paths."""
         if response.usage is None:
             return None
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=response.usage.prompt_tokens,
             prompt_cached_tokens=(
                 response.usage.prompt_tokens_details.cached_tokens
@@ -297,14 +297,14 @@ class OpenAICompatBase(ChatModelBase):
             total_tokens=response.usage.total_tokens,
         )
 
-    def get_usage_from_responses(self, response: Response) -> ChatInvokeUsage | None:
+    def get_usage_from_responses(self, response: Response) -> ModelInvokeUsage | None:
         """Normalize Responses API usage for compatible provider request paths."""
         if response.usage is None:
             return None
         cached = None
         if response.usage.input_tokens_details is not None:
             cached = getattr(response.usage.input_tokens_details, "cached_tokens", None)
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=response.usage.input_tokens,
             prompt_cached_tokens=cached,
             prompt_cache_creation_tokens=None,

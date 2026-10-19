@@ -18,4 +18,11 @@ Read [references/guide.md](references/guide.md) by symptom:
 
 Validate the actual response against the real closed action union; an HTTP 200 does not prove that a gateway preserved the schema.
 
-A provider fills `ChatInvokeCompletion.thinking` (and `redacted_thinking`) from whatever reasoning its response already carries, on every return path, and never changes the request to obtain it; the reasoning is recorded, never fed back.
+A Chat provider fills `ChatInvokeCompletion.thinking` (and `redacted_thinking`) from whatever reasoning its response already carries, on every return path, and never changes the request to obtain it; the reasoning is recorded, never fed back.
+
+
+Decision providers use the separate `DecisionModelRegistrar` / `decision_model` axis in
+`core/llm`, with `BaseDecisionModel.ainvoke(DecisionRequest) -> DecisionResult`. Preserve
+native questions, probabilities, legends and assets. Use Decision's own contract tests;
+never route a Decision validation failure through Chat's parse-retry exception. See
+architecture §4.7/§4.18 and `tests/test_core/test_llm/test_decision_provider.py`.

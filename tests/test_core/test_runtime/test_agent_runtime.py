@@ -58,6 +58,7 @@ class MockCompletion:
 
 
 class MockLLM:
+    inference_kind = "chat"
     model = "test"
 
     async def ainvoke(self, messages, **kwargs):
@@ -701,6 +702,8 @@ async def test_an_earlier_lifecycle_failure_cannot_skip_helper_model_cleanup():
     from spectragent.core.hooks._registrar import HookBase
 
     class Model(MockLLM):
+        inference_kind = "chat"
+
         def __init__(self):
             self.calls = 0
             self.closed = 0
@@ -767,6 +770,8 @@ async def test_startup_failure_drains_handlers_and_closes_owned_models(ending):
     }[ending]
 
     class Model(MockLLM):
+        inference_kind = "chat"
+
         def __init__(self, label):
             self.label = label
             self.calls = 0

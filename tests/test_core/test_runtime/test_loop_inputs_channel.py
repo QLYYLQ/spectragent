@@ -67,6 +67,7 @@ class _Agent:
 
 
 class _LLM:
+    inference_kind = "chat"
     model = "test"
 
     async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:

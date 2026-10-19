@@ -45,7 +45,8 @@ from typing import Any, Literal
 from pydantic import BaseModel
 from pydantic_core import to_json, to_jsonable_python
 
-from spectragent.core.llm.views import ChatInvokeUsage
+from spectragent.core.llm.decision import DecisionRequest
+from spectragent.core.llm.views import ModelInvokeUsage
 from spectragent.core.trace.models import ArchiveMeta, OutputFormatRef, PromptImageRef
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.dynamic_model import iter_fragments
@@ -417,7 +418,7 @@ def _attr(value: Any, name: str, default: Any = None) -> Any:
 
 
 def _usage(usage: Any) -> Any:
-    """Usage in ``ChatInvokeUsage``'s shape.
+    """Usage in ``ModelInvokeUsage``'s shape.
 
     A model or mapping converts as it is; any other object is read field by
     field, so a provider (or a test double) that reports usage as a plain
@@ -426,7 +427,7 @@ def _usage(usage: Any) -> Any:
     """
     if usage is None or isinstance(usage, (BaseModel, Mapping)):
         return snapshot(usage)
-    return {name: snapshot(_attr(usage, name)) for name in ChatInvokeUsage.model_fields}
+    return {name: snapshot(_attr(usage, name)) for name in ModelInvokeUsage.model_fields}
 
 
 def _completion(result: Any, *, capture_metrics: bool = True) -> dict[str, Any]:
@@ -506,6 +507,11 @@ class PendingLLMCall:
 
     messages: Any
     output_format: EncodedOutputFormat | None = None
+    kind: Literal["chat", "decision"] = "chat"
+    owner: Literal["run", "replay_review"] = "run"
+    owner_id: str = ""
+    request: Any = None
+    result: Any = None
     capture_trajectory: bool = True
     capture_metrics: bool = True
     capture_errors: bool = True
@@ -525,7 +531,18 @@ class PendingLLMCall:
     _started: float = field(default_factory=time.perf_counter, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.messages = snapshot(self.messages) if self.capture_trajectory else None
+        self.messages = (
+            snapshot(self.messages) if self.capture_trajectory and self.kind == "chat" else None
+        )
+        self.request = (
+            snapshot(
+                self.request.logical_dump()
+                if isinstance(self.request, DecisionRequest)
+                else self.request
+            )
+            if self.capture_trajectory and self.kind == "decision"
+            else None
+        )
         self._started = time.perf_counter()
         self.started_at = time.time()
 
@@ -534,7 +551,12 @@ class PendingLLMCall:
         if self._settle("completed"):
             self.usage = _usage(_attr(result, "usage")) if self.capture_metrics else None
             if self.capture_trajectory:
-                self.completion = _completion(result, capture_metrics=self.capture_metrics)
+                if self.kind == "chat":
+                    self.completion = _completion(result, capture_metrics=self.capture_metrics)
+                else:
+                    self.result = snapshot(result)
+                    if not self.capture_metrics and isinstance(self.result, dict):
+                        self.result.update(usage=None, native_usage=None)
 
     def fail(self, exc: BaseException) -> None:
         """The call raised *exc* — an ``Exception``: a refusal, a truncation, a dead socket."""
@@ -601,12 +623,26 @@ def encode_llm_call(step: int, call: int, pending: PendingLLMCall) -> EncodedLLM
     the record holds a reference in its place, and ``image_refs`` — written
     only when there is one — lists where each reference stands.
     """
+    return encode_model_call(pending, rel_path=call_path(step, call), step=step, call=call)
+
+
+def encode_model_call(
+    pending: PendingLLMCall, *, rel_path: str, step: int | None, call: int
+) -> EncodedLLMCall:
+    """Shared invocation encoding for runtime steps and independently owned review jobs."""
     latency = pending.latency_ms
     if latency is None:
         latency = _elapsed_ms(pending._started)
-    stored = store_prompt_images(pending.messages)
+    stored = (
+        store_prompt_images(pending.messages)
+        if pending.kind == "chat"
+        else store_decision_images(pending.request)
+    )
     record: dict[str, Any] = {
         "step": step,
+        "kind": pending.kind,
+        "owner": pending.owner,
+        "owner_id": pending.owner_id,
         "call": call,
         "call_id": pending.call_id or f"{step}:{call}",
         "caller": pending.caller,
@@ -616,23 +652,27 @@ def encode_llm_call(step: int, call: int, pending: PendingLLMCall) -> EncodedLLM
         "status": pending.status or "cancelled",
         "started_at": pending.started_at,
         "latency_ms": latency,
-        "messages": stored.messages,
     }
     if stored.image_refs:
         record[IMAGE_REFS_KEY] = stored.image_refs
-    record["output_format"] = (
-        pending.output_format.ref.model_dump(mode="json") if pending.output_format else None
-    )
-    record["completion"] = pending.completion
+    if pending.kind == "chat":
+        record["messages"] = stored.messages
+        record["output_format"] = (
+            pending.output_format.ref.model_dump(mode="json") if pending.output_format else None
+        )
+        record["completion"] = pending.completion
+    else:
+        record["request"] = stored.messages
+        record["result"] = pending.result
     record["failure"] = pending.failure
     data = to_json(record, indent=2, fallback=_unknown, bytes_mode="base64")
     return EncodedLLMCall(
-        file=TraceFile(call_path(step, call), data),
+        file=TraceFile(rel_path, data),
         output_format=pending.output_format.file if pending.output_format else None,
         images=stored.images,
         metrics=(
             encode_call_metrics(step, call, pending)
-            if pending.capture_metrics or pending.capture_errors
+            if step is not None and (pending.capture_metrics or pending.capture_errors)
             else None
         ),
     )
@@ -642,6 +682,9 @@ def encode_call_metrics(step: int, call: int, pending: PendingLLMCall) -> TraceF
     """Encode the invocation ledger without touching messages, schema or images."""
     failure = pending.failure or {}
     value = {
+        "kind": pending.kind,
+        "owner": pending.owner,
+        "owner_id": pending.owner_id,
         "call_id": pending.call_id or f"{step}:{call}",
         "step": step,
         "call": call,
@@ -754,6 +797,43 @@ def store_prompt_images(messages: Any) -> StoredPrompt:
         return StoredPrompt(messages, [], ())
 
 
+def store_decision_images(request: Any) -> StoredPrompt:
+    """Store only declared Decision assets; references retain all logical placements."""
+    try:
+        replacements = []
+        files: dict[str, TraceFile] = {}
+        for key, asset in (request or {}).get("assets", {}).items():
+            value = asset.get("data_base64")
+            if not isinstance(value, str):
+                continue
+            try:
+                data = base64.b64decode(value, validate=True)
+            except ValueError:
+                data = b""
+            if data and base64.b64encode(data).decode("ascii") == value:
+                path = prompt_image_path(
+                    sha256_hex(data), image_suffix(data) or _UNKNOWN_IMAGE_SUFFIX
+                )
+                prefix = ""
+            else:
+                data = value.encode("utf-8")
+                path = prompt_image_path(sha256_hex(data), _TEXT_SUFFIX)
+                prefix = None
+            ref = PromptImageRef(stored_image=path, prefix=prefix).model_dump(mode="json")
+            replacements.append((("assets", key, "data_base64"), ref))
+            files.setdefault(path, TraceFile(path, data, content_addressed=True))
+        if not replacements:
+            return StoredPrompt(request, [], ())
+        return StoredPrompt(
+            _replaced(request, replacements),
+            [list(at) for at, _ in replacements],
+            tuple(files.values()),
+        )
+    except Exception:
+        logger.warning("Decision image capture failed; preserving inline assets", exc_info=True)
+        return StoredPrompt(request, [], ())
+
+
 def restore_prompt_images(record: Any, text_of: Callable[[PromptImageRef], str]) -> None:
     """Put back, in a parsed call record, the text each ``PromptImageRef`` stands for.
 
@@ -773,7 +853,7 @@ def restore_prompt_images(record: Any, text_of: Callable[[PromptImageRef], str])
     positions = record.pop(IMAGE_REFS_KEY)
     if not isinstance(positions, list):
         raise ValueError(f"{IMAGE_REFS_KEY} is a {type(positions).__name__}, not a list")
-    messages = record.get("messages")
+    messages = record.get("request" if record.get("kind") == "decision" else "messages")
     for at in positions:
         holder, key = _locate(messages, at)
         ref = PromptImageRef.model_validate(holder[key])

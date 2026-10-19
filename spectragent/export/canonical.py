@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_chat_decisions
 from spectragent.export.errors import missing_export_slots
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
@@ -105,6 +106,7 @@ def canonicalise(
     for record in records:
         if record.step not in exportable_set:
             continue
+        recorded_chat_decisions(trace, record.step, consumer="training export")
         executed = executed_actions(record)
         teacher_actions, dropped = _project(executed)
         observations, image = _observations(trace, record.step, entries[record.step].fragments)

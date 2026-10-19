@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage
 from spectragent.core.trace.encoding import (
     EncodedLLMCall,
     PendingLLMCall,
@@ -39,7 +39,7 @@ from tests._helpers.trace_builder import (
 )
 
 
-def _call(step: int, index: int, usage: ChatInvokeUsage | None) -> EncodedLLMCall:
+def _call(step: int, index: int, usage: ModelInvokeUsage | None) -> EncodedLLMCall:
     pending = PendingLLMCall(prompt("go"))
     pending.complete(ChatInvokeCompletion(completion="done()", usage=usage))
     return encode_llm_call(step, index, pending)
@@ -51,8 +51,8 @@ def _failed(step: int, index: int, exc: Exception) -> EncodedLLMCall:
     return encode_llm_call(step, index, pending)
 
 
-def _usage(prompt_tokens: int, completion: int, total: int) -> ChatInvokeUsage:
-    return ChatInvokeUsage(
+def _usage(prompt_tokens: int, completion: int, total: int) -> ModelInvokeUsage:
+    return ModelInvokeUsage(
         prompt_tokens=prompt_tokens,
         prompt_cached_tokens=None,
         prompt_cache_creation_tokens=None,
@@ -65,7 +65,7 @@ def _usage(prompt_tokens: int, completion: int, total: int) -> ChatInvokeUsage:
 class _Billed(Exception):
     """A failed call that was billed all the same: the exception carries the usage."""
 
-    def __init__(self, usage: ChatInvokeUsage) -> None:
+    def __init__(self, usage: ModelInvokeUsage) -> None:
         super().__init__("the reply did not validate")
         self.usage = usage
 

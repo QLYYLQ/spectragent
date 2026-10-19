@@ -39,6 +39,8 @@ class _MockEnv:
 
 
 class _MockLLM:
+    inference_kind = "chat"
+
     async def ainvoke(self, messages, **kwargs):
         return {"completion": "hello", "usage": {"tokens": 42}}
 
@@ -250,6 +252,8 @@ class TestRoleWithMultipleTargets:
         from spectragent.core.aop.errors import DeadInterceptError
 
         class SynchronousModel:
+            inference_kind = "chat"
+
             def ainvoke(self, messages):
                 return "wrong shape"
 

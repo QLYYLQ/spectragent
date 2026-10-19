@@ -16,6 +16,7 @@ fresh profile without the configuration or ``config.json`` showing it
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import logging
@@ -1022,8 +1023,29 @@ class LocalChromeProvider(BrowserProviderBase):
                 f"Chrome process {owned.process.pid} has not exited; its profile is retained"
             )
         if owned.temporary_profile is not None:
-            shutil.rmtree(owned.temporary_profile)
+            await self._remove_temporary_profile(owned.temporary_profile)
         self._launches.pop(session_id, None)
+
+    async def _remove_temporary_profile(self, path: str) -> None:
+        """Allow late Chrome file churn after its owned main process has exited.
+
+        Five attempts, with 0.75 seconds total backoff, handle only missing
+        entries and directories repopulated during traversal. Permission and
+        other I/O failures still propagate, retaining ownership for close retry.
+        This is never called for a user-supplied persistent profile.
+        """
+        for attempt in range(5):
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError as exc:
+                if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY}:
+                    raise
+                if not os.path.lexists(path):
+                    return
+                if attempt == 4:
+                    raise
+                await asyncio.sleep(0.05 * 2**attempt)
 
     async def _kill_process(self, process: asyncio.subprocess.Process) -> None:
         """Gracefully terminate, then force-kill if needed."""

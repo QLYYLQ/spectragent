@@ -94,6 +94,8 @@ class _Endpoint:
 class _Recording:
     """The provider, keeping every completion it handed the Loop."""
 
+    inference_kind = "chat"
+
     def __init__(self, llm: ChatOpenAI) -> None:
         self._llm = llm
         self.model = llm.model

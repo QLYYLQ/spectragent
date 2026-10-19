@@ -45,6 +45,7 @@ from spectragent.core.trace.reader import RunTrace
 from tests._helpers.archive_bench import FIXTURE_SETTLE_QUIET_MS
 from tests._helpers.fixture_site import FixtureSite
 from tests._helpers.scripted_llm import ScriptedLLMServer
+from tests._helpers.trace_builder import as_chat
 
 #: The recording's tier: seeded, stepped clock from the run's start.
 RANDOM_SEED = 7
@@ -266,7 +267,7 @@ def recorded_completions(trace: RunTrace) -> list[str]:
     for step in range(trace.step_count):
         completed = [call for call in trace.llm_messages(step) if call.status == "completed"]
         assert completed, f"step {step} has no completed model call"
-        completion = completed[-1].completion
+        completion = as_chat(completed[-1]).completion
         assert completion is not None
         value = completion.completion
         replies.append(value if isinstance(value, str) else json.dumps(value))

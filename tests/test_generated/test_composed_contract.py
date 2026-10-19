@@ -36,7 +36,7 @@ assert "archiver" not in schema["properties"]
 assert schema["additionalProperties"] is False
 assert "archiver" not in result.top_level_layers
 
-for path in sorted(Path("configs").glob("*.yaml")) + sorted(Path("configs/flywheel").glob("*.yaml")):
+for path in sorted(Path("configs").glob("*.yaml")) + sorted(Path("configs/flywheel").glob("*.yaml")) + sorted(Path("configs/replay_review").glob("*.yaml")):
     raw = yaml.safe_load(path.read_text())
     assert runtime.model_validate(raw).model_dump(mode="json") == ComposedConfig.model_validate(raw).model_dump(mode="json"), path
 

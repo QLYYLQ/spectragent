@@ -98,7 +98,7 @@ _GEMINI_TOOL_MODE = MappingProxyType(
         "none": types.FunctionCallingConfigMode.NONE,
     }
 )
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -252,7 +252,7 @@ class ChatGoogle(ChatModelBase):
         return str(self.model)
 
     def _reject_if_truncated(
-        self, response: types.GenerateContentResponse, usage: ChatInvokeUsage | None
+        self, response: types.GenerateContentResponse, usage: ModelInvokeUsage | None
     ) -> None:
         """Refuse a reply the output-token ceiling cut off.
 
@@ -293,7 +293,7 @@ class ChatGoogle(ChatModelBase):
             )
         return None
 
-    def _get_usage(self, response: types.GenerateContentResponse) -> ChatInvokeUsage | None:
+    def _get_usage(self, response: types.GenerateContentResponse) -> ModelInvokeUsage | None:
         if response.usage_metadata is None:
             return None
 
@@ -305,7 +305,7 @@ class ChatGoogle(ChatModelBase):
                 if detail.modality == MediaModality.IMAGE
             )
 
-        return ChatInvokeUsage(
+        return ModelInvokeUsage(
             prompt_tokens=response.usage_metadata.prompt_token_count or 0,
             completion_tokens=(response.usage_metadata.candidates_token_count or 0)
             + (response.usage_metadata.thoughts_token_count or 0),
