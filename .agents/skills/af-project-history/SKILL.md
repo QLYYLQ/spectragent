@@ -26,6 +26,10 @@ compromise or silently refresh the historical claim.
   [jev-integration-handoff.md](references/jev-integration-handoff.md) for current delivery
   evidence and preserved earlier decisions. Independent review is implemented; calibrated
   dynamic replay participation remains a separate future task.
+- The later, harder LexBench L2 comparison with Luna and DeepSeek 1017:
+  [jev-l2-validation.md](references/jev-l2-validation.md). It preserves task failures,
+  replay divergence, native thinking coverage and independent Jev triage; the earlier
+  three simple tasks do not establish fidelity on these sites.
 - Current accepted implementation, the new local handoff, genuinely deferred work and
   retired continuation routes: [unfinished-work.md](references/unfinished-work.md).
   Current local evidence starts at `tmp/framework_expansion/delivery.json`, with

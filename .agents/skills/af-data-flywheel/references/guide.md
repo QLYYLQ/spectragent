@@ -149,6 +149,13 @@ uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
     --start-url URL --task "..."
 ```
 
+A custom Python benchmark harness must pass `task_id`, `benchmark` and `subset` to
+`AgentRuntime.execute`; the loader's environment setup does not carry the subset.
+Branch provenance takes `source_subset` from the source trace. The independent eval CLI
+refuses an empty or mismatched reference identity, even when the task text happens to
+match. Preserve an incorrectly labelled trace rather than editing it after recording;
+an explicitly bound reference assessment must disclose the missing identity separately.
+
 - The recorder connection, a second CDP client the capability owns, opens only when an
   archiver is bound, the tier is not `none`, or the network source intercepts. With none of
   the three, nothing extra is opened or sent.
