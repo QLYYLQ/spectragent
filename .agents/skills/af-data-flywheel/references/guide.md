@@ -151,6 +151,9 @@ uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
 
 A custom Python benchmark harness must pass `task_id`, `benchmark` and `subset` to
 `AgentRuntime.execute`; the loader's environment setup does not carry the subset.
+Use a distinct `run_id` for each recording and replay/branch execution while retaining
+the benchmark's original `task_id`. The viewer resolves source links by run identity;
+duplicate run IDs in its root correctly produce an ambiguous source, not a guessed link.
 Branch provenance takes `source_subset` from the source trace. The independent eval CLI
 refuses an empty or mismatched reference identity, even when the task text happens to
 match. Preserve an incorrectly labelled trace rather than editing it after recording;

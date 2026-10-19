@@ -103,3 +103,38 @@ keyword/page/sort counterexamples from seven real requests. The relevant video h
 4,369,565 of 36,600,669 bytes recorded (11.94%); missing Range coverage cannot be repaired
 by normalizing requests. Telemetry misses were not promoted into broad synthetic-204
 rules. No new rule was accepted and the shipped rule directory remained unchanged.
+
+## Rerun after the UI-TARS prompt correction
+
+The same six original tasks were rerun after `37cb7ae`, with four actions per step
+and the previous model parameters. Current local evidence is
+[report](../../../../tmp/jev_l2_prompt_fixed_20261019/report.md),
+[delivery](../../../../tmp/jev_l2_prompt_fixed_20261019/delivery.json), and
+[thinking index](../../../../tmp/jev_l2_prompt_fixed_20261019/thinking-index.json).
+All six recordings and six final replays closed with complete recording health.
+The source calls now carry the L2 subset, so the strict evaluation CLI runs directly.
+
+The prompt audit checked 58 source calls with no discrepancies: task and platform
+appear once, and prior action feedback matches the recorded execution. DeepSeek
+returned nonempty native thinking on 41 source calls. Luna timed out on tasks 30 and
+130; its task 220 answer read a loading value of zero while the terminal screenshot
+showed 687. The judge assigned 75 despite describing that core answer as wrong, so
+the passing numeric threshold must not be reported as task success. DeepSeek returned
+answers on all three tasks, but the two Xiaohongshu answers still lack sufficient
+evidence for the maximum-collection or maximum-likes requirement.
+
+Restoration produced 51 passing checks and four warnings across 55 checks. Luna's
+task 130 and 220 replay checkpoint model calls timed out separately from restoration.
+Jev assessed all 35 selected pairs: one `candidate_acceptable`, 34 `further_review`.
+This is observation-equivalence triage, not acceptance of a new matching rule. No
+rules changed. Hash checks confirmed all 1,650 reviewed source/replay files unchanged.
+Different execution paths prevent interpreting fewer warnings as a fix for the prior
+Origin/CORS, media-coverage or loading-state findings.
+
+The initial replay attempt reused source run IDs. Preserve the original recordings;
+the six replays were rerun with distinct IDs, and all six source links now resolve in
+the clean viewer root. The superseded replay reports and metadata are retained outside
+that root under `tmp/trace_cleanup_20261019/superseded-rerun/`.
+The user's subsequent cleanup retained the preceding cohort's 12 traces and these
+12 final traces; older raw traces, including initial timeout attempts mentioned above,
+were removed. See [retention details](operations-and-exclusions.md#local-trace-retention-after-the-ui-tars-rerun).

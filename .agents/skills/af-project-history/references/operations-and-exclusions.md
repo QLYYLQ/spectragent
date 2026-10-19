@@ -11,6 +11,23 @@ environment proxy inheritance and catch the transport-level error family appropr
 to the client. Remote LLM clients are a different case and may need the proxy. Verify
 the current environment rather than assuming a particular port or proxy product.
 
+## Local trace retention after the UI-TARS rerun
+
+User ruling on 2026-10-19: for the new Luna/DeepSeek LexBench L2 rerun, remove all
+older AF RunTrace directories under `tmp/` and `traces/`, retaining the immediately
+preceding two-model cohort (12 record/replay runs) and the current rerun. This cleanup
+removed 2,696 old trace directories, approximately 6.28 GB of logical file content.
+The previous cohort's 2,393 files were checked unchanged. Standalone configuration,
+reports and login state remain; a separate metadata-only archive retains old run
+configuration/results/evaluations/metrics, not replayable trajectories or media.
+
+Local evidence is `tmp/trace_cleanup_20261019/plan.json`, `result.json` and
+`old-trace-metadata.zip`; the fresh viewer root is `tmp/jev_l2_prompt_fixed_20261019`.
+Earlier dated reports may therefore outlive their raw traces. Do not infer a new
+recording failure from their deliberate removal or claim the metadata archive can
+reconstruct the deleted environment evidence. The retention operation did not delete
+source code, standalone YAML, retained login state or the protected `assets/` tree.
+
 ## Remote execution aliases
 
 Historical Claude hooks exposed `@local`, `@dev`, and `@hub` routing aliases. They are
