@@ -75,3 +75,31 @@ old standalone HTTP helper and duplicate tests were removed in `ef2915e`. Runboo
 corrections are in `d849233`. The 27 formal replay-review tests, skill validation,
 relative links and CLI dry-run passed. All ten shipped runtime YAML action budgets
 were checked as four. No production Python behavior changed in this follow-up.
+
+## Subsequent rule audit
+
+At the user's request, the two Jev `investigate_difference` cases (Bilibili steps 8 and
+21) were manually reviewed. The differing pages and replay login overlay support those
+judgments. The first screenshot difference is step 2, before the URL divergence.
+The local [audit report](../../../../tmp/jev_lexbench_l2_comparison_20261019/rule-audit/report.md)
+and `audit.json` preserve the supporting records and a rejected candidate.
+
+The history page's correct `/x/web-interface/nav` response was selected but logged
+`answer=failed`; a subsequent request in the same top-level history frame consumed a
+response recorded for the message subdomain, with its `Access-Control-Allow-Origin`
+and `Vary: Origin`. The saved screenshots show login-information retrieval failure.
+CORS failure is a supported causal inference, not a captured console exception.
+
+A narrowly scoped candidate keeping only Origin in the request-header tie-break passed
+schema/level/source-scope checks but failed the real Matcher's necessary counterexample:
+both baseline and candidate selected the same wrong response after six constructed
+Origin requests against actual recorded responses. It was rejected before browser
+validation and never applied. Current architecture gives recording order priority within
+a key; headers only break ties. Vary/Origin response variants and failed-delivery cursor
+consumption need a matching-contract decision, not a broad URL/header ignore rule.
+
+The existing Xiaohongshu notes rules passed seven positive ID-change cases and 21
+keyword/page/sort counterexamples from seven real requests. The relevant video had only
+4,369,565 of 36,600,669 bytes recorded (11.94%); missing Range coverage cannot be repaired
+by normalizing requests. Telemetry misses were not promoted into broad synthetic-204
+rules. No new rule was accepted and the shipped rule directory remained unchanged.
