@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -51,6 +52,27 @@ _THINKING_POLICIES = (
     ("gemini-flash", GeminiThinkingPolicy(default_budget=-1)),
 )
 _NO_THINKING_DEFAULT = GeminiThinkingPolicy()
+
+
+#: Google documents 1.0 as the temperature default for every Gemini 3 model
+#: and strongly recommends keeping it: "Changing the temperature (setting it
+#: below 1.0) may lead to unexpected behavior, such as looping or degraded
+#: performance". https://ai.google.dev/gemini-api/docs/gemini-3#temperature
+_GEMINI_3_TEMPERATURE = 1.0
+#: The provider's long-standing default for every model before Gemini 3.
+_EARLIER_TEMPERATURE = 0.5
+#: Any Gemini 3 model id, a gateway's ``google/`` prefix included: "gemini-3"
+#: followed by a separator or the end, never by another digit.
+_GEMINI_3 = re.compile(r"gemini-3(?![0-9])")
+
+
+def gemini_default_temperature(model: str) -> float:
+    """The temperature ``temperature: auto`` sends to *model*.
+
+    Google's guidance covers all Gemini 3 models, so this matches the major
+    version rather than a list of measured ids.
+    """
+    return _GEMINI_3_TEMPERATURE if _GEMINI_3.search(model) else _EARLIER_TEMPERATURE
 
 
 def gemini_thinking_policy(model: str) -> GeminiThinkingPolicy:

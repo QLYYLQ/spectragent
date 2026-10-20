@@ -1,6 +1,6 @@
-"""A configured Gemini thinking level survives composition and SDK encoding.
+"""Gemini thinking and temperature settings survive composition and SDK encoding.
 
-The level is validated in two places, on purpose. A value the Gemini API
+The thinking level is validated in two places, on purpose. A value the Gemini API
 does not define at all (a typo) is refused when the YAML is composed; a
 defined level that one particular model refuses is refused before that
 model's first request, because only the model name decides it.
@@ -134,3 +134,41 @@ async def test_explicit_budget_and_level_precedence_are_unchanged() -> None:
         _composed_google("gemini-3.8-flash", thinking_level="low", thinking_budget=1024)
     )
     assert config["thinkingConfig"] == {"thinking_level": "LOW"}
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("gemini-3-pro-preview", 1.0),
+        ("gemini-3-flash-preview", 1.0),
+        ("gemini-3.1-pro-preview", 1.0),
+        ("gemini-3.8-flash", 1.0),
+        ("google/gemini-3.5-flash", 1.0),
+        ("gemini-2.5-flash", 0.5),
+        ("gemini-2.0-flash", 0.5),
+        ("gemini-flash-latest", 0.5),
+    ],
+)
+async def test_omitted_temperature_follows_google_guidance_for_gemini_3(
+    model: str, expected: float
+) -> None:
+    """Google documents 1.0 for every Gemini 3 model and warns against lowering it."""
+    chat = _composed_google(model)
+    assert chat.temperature == "auto"
+    config = await _wire_config(chat)
+    assert config["temperature"] == expected
+
+
+async def test_explicit_temperature_is_sent_as_written_on_any_model() -> None:
+    config = await _wire_config(_composed_google("gemini-3.8-flash", temperature=0.2))
+    assert config["temperature"] == 0.2
+
+
+async def test_null_temperature_sends_nothing() -> None:
+    config = await _wire_config(_composed_google("gemini-3.8-flash", temperature=None))
+    assert "temperature" not in config
+
+
+def test_a_temperature_word_other_than_auto_fails_at_config_time() -> None:
+    with pytest.raises(Exception, match="temperature"):
+        _composed_google("gemini-3.8-flash", temperature="hot")

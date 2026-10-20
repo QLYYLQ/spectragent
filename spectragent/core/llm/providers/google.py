@@ -5,7 +5,7 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Annotated, Any, TypeVar, overload
+from typing import Annotated, Any, Literal, TypeVar, overload
 
 from google import genai
 from google.auth.credentials import Credentials
@@ -19,7 +19,11 @@ from spectragent.core.llm.exceptions import ModelOutputTruncatedError, ModelProv
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
-from spectragent.core.llm.model_families.gemini import ThinkingLevel, gemini_thinking_policy
+from spectragent.core.llm.model_families.gemini import (
+    ThinkingLevel,
+    gemini_default_temperature,
+    gemini_thinking_policy,
+)
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
@@ -109,7 +113,18 @@ class ChatGoogle(ChatModelBase):
 
     # Model configuration
     model: Annotated[str, Field(description="Google Gemini model name")]
-    temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.5
+    temperature: Annotated[
+        float | Literal["auto"] | None,
+        Field(
+            description=(
+                "Sampling temperature. 'auto' (the default) keeps the provider's policy: "
+                "1.0 on Gemini 3 models, the default Google documents for them and "
+                "recommends keeping because lower values can make them loop, and 0.5 on "
+                "every other model. A number is sent as written; None sends nothing, so "
+                "the server's default applies."
+            )
+        ),
+    ] = "auto"
     top_p: Annotated[
         float | None, Field(description="Nucleus sampling top-p. None (the default): not sent.")
     ] = None
@@ -207,6 +222,16 @@ class ChatGoogle(ChatModelBase):
     def model_family(self) -> ModelFamily:
         """Declared capabilities for this model (see ``core/llm/model_families``)."""
         return detect_model_family(str(self.model))
+
+    def effective_temperature(self) -> float | None:
+        """The temperature to put on the wire, or ``None`` to send nothing.
+
+        A number is sent as written. Under ``auto`` the model decides
+        (:func:`~spectragent.core.llm.model_families.gemini.gemini_default_temperature`).
+        """
+        if self.temperature == "auto":
+            return gemini_default_temperature(self.model)
+        return self.temperature
 
     def _get_client_params(self) -> dict[str, Any]:
         http_options = self.http_options
@@ -325,8 +350,9 @@ class ChatGoogle(ChatModelBase):
         if self.config:
             config = self.config.copy()
 
-        if self.temperature is not None:
-            config["temperature"] = self.temperature
+        temperature = self.effective_temperature()
+        if temperature is not None:
+            config["temperature"] = temperature
         if self.top_p is not None:
             config["top_p"] = self.top_p
         if self.seed is not None:
