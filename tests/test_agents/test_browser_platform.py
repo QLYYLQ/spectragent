@@ -15,6 +15,7 @@ from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.observations import (
+    BrowserCaptureStateObs,
     BrowserMetaObs,
     BrowserPlatformObs,
     DOMObs,
@@ -28,6 +29,7 @@ from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import ActionResult
 from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.prompt import ReactPromptContext
@@ -221,6 +223,10 @@ async def test_composed_runtime_delivers_platform_to_the_model(
         "browser.screenshot": _observation().screenshot,
         "browser.dom": DOMObs(element_tree="<input />"),
         "browser.browser_meta": BrowserMetaObs(),
+        "browser.capture_state": BrowserCaptureStateObs(
+            pointer=PointerState(status="unknown"),
+            failed_visible_resources=FailedVisibleResources(status="measured", count=0),
+        ),
     }
     observation = build_observation_model_from_result(negotiated)(
         **{fragment_field_name(key): fragments[key] for key in negotiated.env_sourced}

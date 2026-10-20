@@ -221,7 +221,10 @@ class TestAssembly:
         )
         assert renderer.guarded == frozenset(descriptors)
         assert renderer.bindings["click_coordinate"] == "browser.click_coordinate"
-        assert renderer.env_fragments == frozenset({"browser.screenshot", "browser.platform"})
+        # The optional capture state is negotiated because the browser provides it.
+        assert renderer.env_fragments == frozenset(
+            {"browser.capture_state", "browser.screenshot", "browser.platform"}
+        )
 
     def test_missing_format_slot_names_training_export(self, composer: ConfigComposer) -> None:
         root = student_root(agent_id="browser_use", observation_mode="vision")
@@ -274,7 +277,7 @@ class TestWhatTheStudentNeeds:
         )
         with pytest.raises(IncompatibleFragmentError) as excinfo:
             _renderer(composer).check_source(trace, "recorded/run-dom")
-        assert excinfo.value.missing == {"browser.screenshot"}
+        assert excinfo.value.missing == {"browser.capture_state", "browser.screenshot"}
         assert excinfo.value.provider == "source run 'recorded/run-dom' (as recorded)"
         assert "browser.screenshot ← ui_tars (the student)" in str(excinfo.value)
 

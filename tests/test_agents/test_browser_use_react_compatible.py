@@ -205,18 +205,21 @@ class TestWiring:
 
     def test_observation_wiring(self) -> None:
         wiring = BrowserUseAgent.__wiring__
-        # Required: DOM/screenshot + the loop-source task.
-        # Optional: browser_meta + loop-source step_info/history.
-        # All capability-relative — which capability's ``dom`` this is
-        # gets decided at negotiation.
+        # Required: screenshot + browser page state (``browser_meta``: a
+        # browser agent always reads which page it is on) + the loop-source
+        # task. Optional: dom, the platform-neutral ``capture_state`` and
+        # loop-source step_info/history (docs/architecture_design.md §4.4,
+        # "观测增强按消费方分层"; ``browser_meta`` was optional before that
+        # ruling). All capability-relative — which capability's ``dom`` this
+        # is gets decided at negotiation.
         # The class declaration is the *superset across modes*: what every
         # mode needs is required, what a mode promotes or excludes is
         # optional. ``dom`` is optional here and promoted to required by
         # both DOM modes — see ``_MODE_DEMAND``.
         assert wiring["observation"] == {
             "registry": "observation",
-            "keys": ["screenshot", "platform", "task"],
-            "optional_keys": ["dom", "browser_meta", "step_info", "history"],
+            "keys": ["screenshot", "platform", "task", "browser_meta"],
+            "optional_keys": ["dom", "step_info", "history", "capture_state"],
             "declare_only": True,
         }
 

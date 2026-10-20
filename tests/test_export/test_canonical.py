@@ -162,6 +162,7 @@ class TestReferencesAndLabels:
         )
         (sample,) = _samples(run)
         assert [(ref.key, ref.failed) for ref in sample.observations] == [
+            ("browser.capture_state", False),
             ("browser.dom", True),
             ("browser.platform", False),
             ("browser.screenshot", False),

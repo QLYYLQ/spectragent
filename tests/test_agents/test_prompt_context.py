@@ -22,6 +22,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.assembly import make_agent
 
 AGENT_CLASSES = (BrowserUseAgent, SkyvernAgent, UITarsAgent)
@@ -230,16 +231,31 @@ async def test_restored_result_sensitivity_marker_stays_out_of_model_input(
 
 
 async def test_skyvern_next_prompt_remembers_actual_retargeted_actions() -> None:
+    """The window after a restored step shows what restoration actually ran.
+
+    Skyvern's window is rendered from the Loop's ``history`` fragment, whose
+    restored record carries the actual retargeted actions and results
+    (``BranchLoop._restored_record``); the source's actions and reply are
+    material on ``source_history`` and never enter it.
+    """
     agent = prepared(SkyvernAgent)
+    history = restored_history()
     await agent.build_restored_history(
-        observation(),
-        history=restored_history(),
-        context=ReactPromptContext(step=4, phase="history"),
+        observation(), history=history, context=ReactPromptContext(step=4, phase="history")
     )
+    restored = StepRecord(
+        step=4,
+        origin="restored",
+        source_history=history,
+        actions=history.actions,
+        action_results=history.results,
+    )
+    next_observation = observation()
+    next_observation.history = SimpleNamespace(items=[restored])
     messages = await agent.build_react_prompt(
-        observation(), context=ReactPromptContext(step=5, phase="policy")
+        next_observation, context=ReactPromptContext(step=5, phase="policy")
     )
-    assert "browser.click({'index': 29})" in messages[0].text
+    assert "browser.click({'index': 29}) -> error: The live button was disabled" in messages[0].text
     assert "'index': 3}" not in messages[0].text
     assert "old source thought" not in messages[0].text
 

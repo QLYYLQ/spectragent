@@ -106,12 +106,30 @@ _EXPECTED_ACTIONS: dict[str, set[str]] = {
     },
 }
 
+#: Every mode also negotiates the optional ``capture_state`` the browser provides.
 _EXPECTED_FRAGMENTS: dict[str, set[str]] = {
-    "dom": {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"},
-    "dom_vision": {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"},
+    "dom": {
+        "browser.dom",
+        "browser.screenshot",
+        "browser.browser_meta",
+        "browser.platform",
+        "browser.capture_state",
+    },
+    "dom_vision": {
+        "browser.dom",
+        "browser.screenshot",
+        "browser.browser_meta",
+        "browser.platform",
+        "browser.capture_state",
+    },
     # No ``browser.dom``: the DOMWatchdog is never asked, so no DOM is
     # extracted at all — not extracted and then hidden.
-    "vision": {"browser.screenshot", "browser.browser_meta", "browser.platform"},
+    "vision": {
+        "browser.screenshot",
+        "browser.browser_meta",
+        "browser.platform",
+        "browser.capture_state",
+    },
 }
 
 

@@ -38,13 +38,19 @@ from PIL import Image
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.core.action_guard import resolve_action_name
 from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.capabilities.browser.observations import BrowserPlatformObs, ScreenshotObs
+from spectragent.core.capabilities.browser.observations import (
+    BrowserCaptureStateObs,
+    BrowserMetaObs,
+    BrowserPlatformObs,
+    ScreenshotObs,
+)
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.errors import UnrepresentableActionError
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
 from spectragent.schemas.observation.fragments import (
     ActionResultObs,
@@ -130,6 +136,11 @@ def _observation(runtime: AgentRuntime, dpr: int) -> Any:
             image_width=image[0],
             image_height=image[1],
         ),
+        "browser.capture_state": BrowserCaptureStateObs(
+            pointer=PointerState(status="unknown"),
+            failed_visible_resources=FailedVisibleResources(status="measured", count=0),
+        ),
+        "browser.browser_meta": BrowserMetaObs(url="https://shop.example.test/"),
         "loop.task": TaskObs(user_request=_TASK),
         "loop.step_info": StepInfoObs(step=1, max_steps=30, today="2026-10-11"),
         "loop.history": HistoryObs(),
