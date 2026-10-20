@@ -142,7 +142,10 @@ class FrameCDP:
         if method == "Runtime.callFunctionOn" and "this.options" in params.get(
             "functionDeclaration", ""
         ):
-            return {"result": {"value": True}}
+            # The selection script's answer: it selected, and what it read
+            # right before and after (``effect_probes.SELECT_FACTS_JS``).
+            after = {"index": 1, "text": "b", "tag": "SELECT", "attrs": {}}
+            return {"result": {"value": {"selected": True, "before": 0, "after": after}}}
         if method == "Runtime.callFunctionOn" and params.get("returnByValue"):
             session, backend_id = params["objectId"].split("|")
             x, y, w, h = self.rects[(session, int(backend_id))]
@@ -177,6 +180,20 @@ RECTS: dict[tuple[str, int], Box] = {
 class _Scope(EventScope):
     def __init__(self) -> None:
         super().__init__("test-tab")
+
+
+#: A spent measurement budget: an action's effect probes send nothing
+#: (``effect_probes.ProbeBudget``), so the call log is the action's own. What
+#: the probes send, and where, is pinned in ``test_browser_actions/``
+#: (``test_pointer_effects.py``, ``test_text_input_effects.py``).
+NO_PROBES: dict[str, Any] = {"action_effect_timeout_s": 0.0}
+
+
+def outcome(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A handler's answer without the effect it measured (``effect_facts``)."""
+    if result is None:
+        return None
+    return {key: value for key, value in result.items() if key != "effect_facts"}
 
 
 def watchdog(cdp: FrameCDP, selector_map: DOMSelectorMap, **kwargs: Any) -> ActionWatchdog:
@@ -240,12 +257,12 @@ class TestClick:
     async def test_out_of_process_element(self, selector_map: DOMSelectorMap) -> None:
         cdp = FrameCDP()
         cb = node(selector_map, "cb")
-        result = await watchdog(cdp, selector_map)._on_click_element(
+        result = await watchdog(cdp, selector_map, **NO_PROBES)._on_click_element(
             ClickElementEvent(backend_node_id=10, session_id="cross")
         )
 
         # (0, 40, 30x30) in the frame + #cross's content origin (50, 510) → centre.
-        assert result == {"clicked": True, "x": 65, "y": 565}
+        assert outcome(result) == {"clicked": True, "x": 65, "y": 565}
         assert [(c.method, c.session_id) for c in cdp.about_nodes()] == [
             ("DOM.scrollIntoViewIfNeeded", "cross"),
             ("DOM.getContentQuads", "cross"),
@@ -266,7 +283,7 @@ class TestClick:
             ClickElementEvent(backend_node_id=10, session_id="nested")
         )
         # (5, 7, 60x21) + #nested (5, 115) in cross + #cross (50, 510) in page.
-        assert result == {"clicked": True, "x": 90, "y": 642}
+        assert outcome(result) == {"clicked": True, "x": 90, "y": 642}
         owner_boxes = [(c.session_id, c.params) for c in cdp.calls if c.method == "DOM.getBoxModel"]
         assert owner_boxes == [
             ("cross", {"backendNodeId": 12}),
@@ -278,10 +295,10 @@ class TestClick:
         self, selector_map: DOMSelectorMap
     ) -> None:
         cdp = FrameCDP()
-        result = await watchdog(cdp, selector_map)._on_click_element(
+        result = await watchdog(cdp, selector_map, **NO_PROBES)._on_click_element(
             ClickElementEvent(backend_node_id=52, session_id="tab")
         )
-        assert result == {"clicked": True, "x": 137, "y": 284}
+        assert outcome(result) == {"clicked": True, "x": 137, "y": 284}
         assert [c.method for c in cdp.calls] == [
             "DOM.scrollIntoViewIfNeeded",
             "DOM.getContentQuads",
@@ -294,10 +311,10 @@ class TestClick:
         self, selector_map: DOMSelectorMap
     ) -> None:
         cdp = FrameCDP()
-        result = await watchdog(cdp, selector_map)._on_click_element(
+        result = await watchdog(cdp, selector_map, **NO_PROBES)._on_click_element(
             ClickElementEvent(backend_node_id=14, session_id="tab")
         )
-        assert result == {"clicked": True, "x": 30, "y": 412}
+        assert outcome(result) == {"clicked": True, "x": 30, "y": 412}
         assert [c.method for c in cdp.calls] == [
             "DOM.scrollIntoViewIfNeeded",
             "DOM.resolveNode",
@@ -316,8 +333,15 @@ class TestClick:
             ClickElementEvent(backend_node_id=backend_id, session_id=session)
         )
         assert not [
-            c for c in cdp.calls if c.method.startswith("Runtime.") or c.method == "DOM.resolveNode"
+            c
+            for c in cdp.calls
+            if (c.method.startswith("Runtime.") and c.session_id != "tab")
+            or c.method == "DOM.resolveNode"
         ]
+        # The click's effect probes (the hit test right before the press, the
+        # focus after it) run on the tab, where the press is hit-tested; the
+        # element itself is never resolved, so ``on_target`` is unavailable.
+        assert {c.session_id for c in cdp.calls if c.method.startswith("Runtime.")} == {"tab"}
 
     async def test_the_quads_of_a_wrapped_element_are_boxed_together(
         self, selector_map: DOMSelectorMap
@@ -328,7 +352,7 @@ class TestClick:
         result = await watchdog(cdp, selector_map)._on_click_element(
             ClickElementEvent(backend_node_id=10, session_id="cross")
         )
-        assert result == {"clicked": True, "x": 65, "y": 565}
+        assert outcome(result) == {"clicked": True, "x": 65, "y": 565}
 
     async def test_without_quads_the_border_box_is_used(self, selector_map: DOMSelectorMap) -> None:
         quads = dict(QUADS)
@@ -338,7 +362,7 @@ class TestClick:
             ClickElementEvent(backend_node_id=10, session_id="cross")
         )
         # border box (0, 40, 102x102) in the frame + (50, 510).
-        assert result == {"clicked": True, "x": 101, "y": 601}
+        assert outcome(result) == {"clicked": True, "x": 101, "y": 601}
 
     async def test_the_same_backend_id_in_two_targets_is_two_elements(
         self, selector_map: DOMSelectorMap
@@ -409,7 +433,7 @@ class TestFramesUnderATransform:
         )
         # (100, 200) + 0.5 * (220, 110), the element's centre in the frame.
         # Adding the content origin alone would have said (320, 310).
-        assert result == {"clicked": True, "x": 210, "y": 255}
+        assert outcome(result) == {"clicked": True, "x": 210, "y": 255}
 
     async def test_a_rotated_frame_turns_the_element_with_it(
         self, selector_map: DOMSelectorMap
@@ -423,7 +447,7 @@ class TestFramesUnderATransform:
         result = await watchdog(cdp, selector_map, mouse_trajectory=strategy)._on_click_element(
             ClickElementEvent(backend_node_id=10, session_id="cross")
         )
-        assert result == {"clicked": True, "x": 445, "y": 210}
+        assert outcome(result) == {"clicked": True, "x": 445, "y": 210}
         # The target the trajectory aims at turns too: 40x20 becomes 20x40.
         assert strategy.seen == [(445, 210, 10, 20)]
 
@@ -442,7 +466,7 @@ class TestFramesUnderATransform:
         )
         # (8, 8, 64x24) → halved into #nested at (10, 100) → halved again
         # into #cross at (100, 200): a quarter-size box at (107, 252).
-        assert result == {"clicked": True, "x": 115, "y": 255}
+        assert outcome(result) == {"clicked": True, "x": 115, "y": 255}
 
     async def test_a_frame_under_perspective_is_refused_by_name(
         self, selector_map: DOMSelectorMap
@@ -474,10 +498,10 @@ class TestFramesUnderATransform:
         cdp = FrameCDP(
             raw_quads={("tab", 52): [[100.0, 260.0, 160.0, 270.0, 150.0, 300.0, 90.0, 290.0]]}
         )
-        result = await watchdog(cdp, selector_map)._on_click_element(
+        result = await watchdog(cdp, selector_map, **NO_PROBES)._on_click_element(
             ClickElementEvent(backend_node_id=52, session_id="tab")
         )
-        assert result == {"clicked": True, "x": 125, "y": 280}
+        assert outcome(result) == {"clicked": True, "x": 125, "y": 280}
         assert [c.method for c in cdp.about_nodes()] == [
             "DOM.scrollIntoViewIfNeeded",
             "DOM.getContentQuads",
@@ -490,7 +514,7 @@ class TestFramesUnderATransform:
         result = await watchdog(cdp, selector_map)._on_click_element(
             ClickElementEvent(backend_node_id=10, session_id="tab")
         )
-        assert result == {"clicked": True, "x": 40, "y": 110}
+        assert outcome(result) == {"clicked": True, "x": 40, "y": 110}
 
     async def test_typing_still_reaches_a_frame_it_cannot_aim_at(
         self, selector_map: DOMSelectorMap
@@ -503,7 +527,7 @@ class TestFramesUnderATransform:
         result = await watchdog(cdp, selector_map, mouse_trajectory=Straight())._on_type_text(
             TypeTextEvent(backend_node_id=11, session_id="cross", text="hi")
         )
-        assert result == {"typed": True, "length": 2, "sensitive": None}
+        assert outcome(result) == {"typed": True, "length": 2, "sensitive": None}
         assert cdp.mouse() == []
 
     async def test_scrolling_an_unmappable_frame_element_does_nothing(
@@ -562,7 +586,7 @@ class TestAFrameThatChangedIsNotClickedBlind:
             ClickElementEvent(backend_node_id=10, session_id="tab")
         )
         # #main-btn's snapshot bounds (0, 200, 80x20).
-        assert result == {"clicked": True, "x": 40, "y": 210}
+        assert outcome(result) == {"clicked": True, "x": 40, "y": 210}
 
     async def test_nor_scrolled_at_blind(self, selector_map: DOMSelectorMap) -> None:
         cdp = FrameCDP(raise_on={("DOM.getBoxModel", "tab")})
@@ -578,10 +602,10 @@ class TestKeyboardAndDom:
         self, selector_map: DOMSelectorMap
     ) -> None:
         cdp = FrameCDP()
-        result = await watchdog(cdp, selector_map)._on_type_text(
+        result = await watchdog(cdp, selector_map, **NO_PROBES)._on_type_text(
             TypeTextEvent(backend_node_id=11, session_id="cross", text="hi")
         )
-        assert result == {"typed": True, "length": 2, "sensitive": None}
+        assert outcome(result) == {"typed": True, "length": 2, "sensitive": None}
         keyboard = [
             (c.method, c.session_id) for c in cdp.calls if c.method != "Input.dispatchMouseEvent"
         ]

@@ -48,6 +48,17 @@ class _FakeCDP:
         return {}
 
 
+def _outcome(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A handler's answer without the effect it measured (``effect_facts``).
+
+    The effects are pinned in ``test_browser_actions/``; these tests are about
+    the input the handlers send.
+    """
+    if result is None:
+        return None
+    return {key: value for key, value in result.items() if key != "effect_facts"}
+
+
 def _watchdog(cdp: _FakeCDP) -> ActionWatchdog:
     # Empty selector map: exactly what a vision-only run has.
     return ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
@@ -63,12 +74,14 @@ class TestTypeAtCoordinate:
         )
 
         # The fake answers nothing for the focused-field read: unknown, not "not sensitive".
-        assert result == {"typed": True, "length": 2, "sensitive": None}
+        assert _outcome(result) == {"typed": True, "length": 2, "sensitive": None}
         methods = [c.method for c in cdp.calls]
-        # move + press + release, then select-all/backspace, the focus read, then insert.
+        # move + press + release, then select-all/backspace, the focus read, then insert
+        # (the effect's reads around the typing are not input).
+        inputs = [c for c in cdp.calls if c.method.startswith("Input.")]
         assert methods[:3] == ["Input.dispatchMouseEvent"] * 3
-        assert methods[-1] == "Input.insertText"
-        assert cdp.calls[-1].params == {"text": "hi"}
+        assert inputs[-1].method == "Input.insertText"
+        assert inputs[-1].params == {"text": "hi"}
 
     async def test_never_calls_dom_focus(self) -> None:
         """No selector_map means no node id — the click is the focus."""
@@ -115,7 +128,7 @@ class TestDrag:
             DragEvent(start_x=10, start_y=20, end_x=30, end_y=40)
         )
 
-        assert result == {"dragged": True, "from": [10, 20], "to": [30, 40]}
+        assert _outcome(result) == {"dragged": True, "from": [10, 20], "to": [30, 40]}
         mouse = [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
         pressed = next(c for c in mouse if c.params["type"] == "mousePressed")
         released = next(c for c in mouse if c.params["type"] == "mouseReleased")

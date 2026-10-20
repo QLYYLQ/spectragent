@@ -13,12 +13,19 @@ through public queries; actions never reach into its storage.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from agent_cdp import Participation
+from pydantic import ValidationError
+
+from spectragent.schemas.action import ActionEffect
 
 if TYPE_CHECKING:
+    from spectragent.core.actions._registrar import ActionBase
     from spectragent.core.capabilities.browser.capability import BrowserCapability
+
+logger = logging.getLogger(__name__)
 
 
 class ElementRef(NamedTuple):
@@ -80,3 +87,24 @@ def handler_field(event: Any, key: str) -> Any:
         if isinstance(value, dict) and key in value:
             return value[key]
     return None
+
+
+def effect_from(action: ActionBase, facts: Any) -> ActionEffect | None:
+    """The action's ``Effect`` built from the facts its executor measured, or ``None``.
+
+    *facts* is the ``effect_facts`` mapping a watchdog handler answered with
+    (:func:`handler_field`) or that the action measured itself: every field of
+    ``action.Effect`` but ``effect_id``, which is the action's own key. No
+    facts, or an action without an ``Effect``, is ``None``. Facts the model
+    refuses are a programming error in the executor; they are logged and the
+    action still returns its outcome — measuring never changes it
+    (``docs/architecture_design.md`` §4.5, "动作效果").
+    """
+    effect_cls = action.Effect
+    if effect_cls is None or not isinstance(facts, dict):
+        return None
+    try:
+        return effect_cls(effect_id=action.action_id, **facts)
+    except (TypeError, ValidationError) as exc:
+        logger.error("%s measured an effect its Effect model refuses: %s", action.action_id, exc)
+        return None

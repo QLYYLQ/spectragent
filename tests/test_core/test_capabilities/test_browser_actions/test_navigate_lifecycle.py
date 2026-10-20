@@ -228,7 +228,9 @@ class TestOnNavigateLifecycleWiring:
         # Loaders/frames don't match, so the future never resolves.
         types = [type(e).__name__ for e in scope.emitted]
         assert "NavigationCompleteEvent" in types
-        assert navigation.result() is None, "a committed page whose load is late is no failure"
+        assert navigation.result()["navigated"] is True, (
+            "a committed page whose load is late is no failure"
+        )
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert warning.getMessage() == (
             "navigate: https://example.com committed, but its 'load' lifecycle event did not "
@@ -364,7 +366,7 @@ class TestTheTwoBounds:
 
 
 class TestNavigationOutcomes:
-    """What the handler answers: ``None`` (success) or ``{"error": ...}``."""
+    """What the handler answers: ``{"navigated": True, ...}`` (success) or ``{"error": ...}``."""
 
     async def test_a_navigation_that_never_commits_fails(self) -> None:
         wd, scope = _watchdog(_FakeCDP(hang=True))
@@ -410,7 +412,7 @@ class TestNavigationOutcomes:
         answer = await wd._on_navigate(
             NavigateToUrlEvent(url="https://a.example/#part", lifecycle_timeout_ms=5000)
         )
-        assert answer is None
+        assert answer["navigated"] is True
         assert time.monotonic() - started < 1.0
         assert any(isinstance(e, NavigationCompleteEvent) for e in scope.emitted)
 
@@ -442,7 +444,7 @@ async def test_through_a_real_scope_a_late_load_is_answered_before_the_caller_gi
             await event
         took = time.monotonic() - started
         (outcome,) = event.event_results.values()
-        assert outcome.error is None and outcome.result is None
+        assert outcome.error is None and outcome.result["navigated"] is True
         assert 0.3 <= took < 1.0
         assert any("carrying on" in r.getMessage() for r in caplog.records)
     finally:

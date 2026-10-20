@@ -25,10 +25,12 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
     focused_scope,
     handler_field,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import TextInputEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     TypeAtCoordinateEvent,
@@ -50,6 +52,10 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
     """
 
     __registry_key__ = "browser.type_coordinate"
+
+    #: The control the click focused and the text went into, whether its value
+    #: changed (never the value), the clear's keys, and the focus afterwards.
+    Effect = TextInputEffect
 
     # ⭐ capability-side configurable side-effect
     clear_by_default: Annotated[
@@ -99,9 +105,12 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
             # The handler answers with an ``error`` when the click that should
             # focus the field failed (it then types nothing) or the typing after
             # it did: the text never went in, so the action failed.
+            effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
             return ActionResult(
-                success=True, typed_into_sensitive_field=handler_field(event, "sensitive")
+                success=True,
+                typed_into_sensitive_field=handler_field(event, "sensitive"),
+                effect=effect,
             )
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")

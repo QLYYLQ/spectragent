@@ -14,8 +14,13 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.capabilities.browser.actions._common import focused_scope
+from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
+    focused_scope,
+    handler_field,
+)
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import PointerEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import DragEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -29,6 +34,10 @@ class DragAction(SettleableAction, ActionBase):
     """Drag from one point of the viewport to another, both in CSS pixels."""
 
     __registry_key__ = "browser.drag"
+
+    #: The press and release points, what the page hit at the press, and the
+    #: focus afterwards.
+    Effect = PointerEffect
 
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -65,8 +74,9 @@ class DragAction(SettleableAction, ActionBase):
             await dispatch_request(scope, event)
             # The handler answers with an ``error`` when the press, the travel or
             # the release was not sent: the drag did not happen, so it failed.
+            effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(success=True, effect=effect)
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
         except (TypeError, ValueError) as exc:

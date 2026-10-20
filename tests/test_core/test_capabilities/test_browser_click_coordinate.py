@@ -30,6 +30,7 @@ from spectragent.core.capabilities.browser.watchdogs.screenshot_watchdog import 
 from tests.test_core.test_capabilities.test_browser_action_click_robustness import (
     FakeCDP,
     _Call,
+    _outcome,
 )
 
 
@@ -107,11 +108,13 @@ class TestCoordinateSpaceIsDeclared:
 class TestTargetBox:
     async def test_instant_click_sends_no_hit_test(self) -> None:
         cdp = _HitTestCDP(border=[0, 0, 100, 0, 100, 40, 0, 40])
-        wd = ActionWatchdog(input_platform="linux", cdp=cdp)  # type: ignore[arg-type]
+        # A spent effect budget: the click's own effect probes send nothing, so
+        # the log is the click's (they are pinned in test_browser_actions/).
+        wd = ActionWatchdog(input_platform="linux", cdp=cdp, action_effect_timeout_s=0.0)  # type: ignore[arg-type]
         result = await wd._on_click_coordinate(
             ClickCoordinateEvent(coordinate_x=30, coordinate_y=20)
         )
-        assert result == {"clicked": True, "x": 30, "y": 20}
+        assert _outcome(result) == {"clicked": True, "x": 30, "y": 20}
         assert [c.method for c in cdp.calls] == ["Input.dispatchMouseEvent"] * 3
 
     async def test_humanized_click_gets_a_box_centred_on_the_point(
@@ -136,7 +139,7 @@ class TestTargetBox:
         result = await wd._on_click_coordinate(
             ClickCoordinateEvent(coordinate_x=30, coordinate_y=20)
         )
-        assert result == {"clicked": True, "x": 30, "y": 20}
+        assert _outcome(result) == {"clicked": True, "x": 30, "y": 20}
         assert (seen["target_w"], seen["target_h"]) == (60.0, 40.0)
 
     async def test_hit_test_failure_is_size_unknown_not_a_failed_click(
@@ -150,4 +153,4 @@ class TestTargetBox:
         )
         assert await wd._target_box_at(5, 5) == (0.0, 0.0)
         result = await wd._on_click_coordinate(ClickCoordinateEvent(coordinate_x=5, coordinate_y=5))
-        assert result == {"clicked": True, "x": 5, "y": 5}
+        assert _outcome(result) == {"clicked": True, "x": 5, "y": 5}

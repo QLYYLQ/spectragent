@@ -278,3 +278,20 @@ def test_result_comparison_keeps_exception_slot_and_detects_changed_content():
     assert pairs[1]["status"] == "changed"
     source["actions"] = list(reversed(actions))
     assert all(pair["status"] == "unavailable" for pair in restoration_results(record, source))
+
+
+def test_result_comparison_shows_but_does_not_judge_measured_effects():
+    """A re-executed wait lasts a few ms longer: its outcome still matches."""
+    action = {"name": "browser.wait", "params": {"seconds": 1}}
+    source = {
+        "actions": [action],
+        "action_results": [
+            {"success": True, "effect": {"effect_id": "browser.wait", "waited_ms": 1001}}
+        ],
+    }
+    actual = {"success": True, "effect": {"effect_id": "browser.wait", "waited_ms": 1004}}
+    record = {"restoration": {"actions": [{"recorded": action, "result": actual}]}}
+    (pair,) = restoration_results(record, source)
+    assert pair["status"] == "matches"
+    assert pair["source"]["effect"]["waited_ms"] == 1001
+    assert pair["actual"]["effect"]["waited_ms"] == 1004

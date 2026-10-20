@@ -71,7 +71,7 @@ from __future__ import annotations
 
 import logging
 from asyncio import CancelledError, create_task, shield, wait_for
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -277,6 +277,7 @@ class HumanMouse:
         *,
         target_w: float = 0.0,
         target_h: float = 0.0,
+        before_press: Callable[[int, int], Awaitable[None]] | None = None,
     ) -> tuple[int, int]:
         """Move to (x, y), press, hold, release. Returns the final cursor pos.
 
@@ -294,8 +295,17 @@ class HumanMouse:
         order and a slot's events ride along with the next one dispatched, so
         a transport slower than the hold shortens the hold — it can never
         release a button that was never pressed.
+
+        ``before_press`` is awaited once the cursor has arrived, with the
+        point the press is about to be dispatched at: the caller's look at
+        what is under the pointer right before it goes down
+        (``ActionWatchdog`` measures the click's effect there). Its time is
+        spent before the hold's schedule starts, so it never shortens the
+        hold.
         """
         await self.move_to(x, y, target_w=target_w, target_h=target_h)
+        if before_press is not None:
+            await before_press(self._x, self._y)
         sid = self._sid()
         common = {
             "x": self._x,
@@ -393,19 +403,23 @@ class HumanMouse:
         *,
         target_w: float = 0.0,
         target_h: float = 0.0,
+        before_press: Callable[[int, int], Awaitable[None]] | None = None,
     ) -> None:
         """Press at start, move along the trajectory, release at end.
 
         Driven by ``browser.drag`` via ``ActionWatchdog._on_drag``. The
         travel between press and release goes through :meth:`move_to`, so
         a humanised run drags along the same path it would have moved
-        along.
+        along. ``before_press`` is awaited at the start point before the
+        button goes down, as in :meth:`click`.
         """
         buttons = self._button_mask(button)
         if not buttons:
             raise ValueError(f"Cannot drag with mouse button {button!r}")
         sid = self._sid()
         await self.move_to(start_x, start_y)
+        if before_press is not None:
+            await before_press(self._x, self._y)
         try:
             # Even a failed acknowledgement may have delivered the press. Always
             # attempt the release once dispatching the press has begun.

@@ -3,10 +3,22 @@
 from typing import Any
 
 
+def _outcome(result: dict[str, Any]) -> dict[str, Any]:
+    """A result without its measured effect: what the status compares."""
+    return {key: value for key, value in result.items() if key != "effect"}
+
+
 def restoration_results(
     record: dict[str, Any], source: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
-    """Compare result payloads without pairing across a missing/failed attempt."""
+    """Compare result payloads without pairing across a missing/failed attempt.
+
+    The status compares outcomes only. A result's measured ``effect`` (scroll
+    offsets, the element a click hit, how long a wait took) is shown with
+    both payloads but not judged here: measurements of a re-executed action
+    legitimately differ in timing, and whether a difference matters is the
+    reader's call.
+    """
     comparisons = []
     source_actions = (source or {}).get("actions", [])
     source_results = (source or {}).get("action_results", [])
@@ -26,7 +38,7 @@ def restoration_results(
                 "status": "unavailable"
                 if original is None or actual is None
                 else "matches"
-                if original == actual
+                if _outcome(original) == _outcome(actual)
                 else "changed",
             }
         )

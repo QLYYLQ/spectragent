@@ -10,9 +10,12 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
     focused_scope,
+    handler_field,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import NavigationEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import NavigateToUrlEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -29,9 +32,13 @@ class NavigateAction(SettleableAction, ActionBase):
     (``lifecycle_timeout_ms``); a phase that does not arrive in time only logs
     a warning (``ActionWatchdog._on_navigate``). Fails when the navigation
     does not commit in time, or the browser refuses it or reports it failed.
+
+    Reports a :class:`NavigationEffect`: the URL before and after, and whether
+    the document shown when the handler returned had finished loading.
     """
 
     __registry_key__ = "browser.navigate"
+    Effect = NavigationEffect
 
     # ⭐ capability-side configurable side-effects
     wait_until: Annotated[
@@ -90,8 +97,9 @@ class NavigateAction(SettleableAction, ActionBase):
                 lifecycle_timeout_ms=self.lifecycle_timeout_ms,
             )
             await dispatch_request(scope, event)
+            facts = handler_field(event, "effect_facts")
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(success=True, effect=effect_from(self, facts))
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
         except Exception as exc:  # pragma: no cover

@@ -12,10 +12,13 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     ElementRef,
+    effect_from,
     focused_scope,
+    handler_field,
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import ScrollEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import ScrollEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -26,9 +29,15 @@ if TYPE_CHECKING:
 
 @dataclass
 class ScrollAction(SettleableAction, ActionBase):
-    """Scroll the viewport (or a specific element when ``index`` is given)."""
+    """Scroll the viewport (or a specific element when ``index`` is given).
+
+    Its effect (:class:`~spectragent.core.capabilities.browser.effects.ScrollEffect`)
+    says which container actually moved, its offsets before and after, and
+    whether it reached its edge — measured by the executor around the wheel.
+    """
 
     __registry_key__ = "browser.scroll"
+    Effect = ScrollEffect
 
     # ⭐ capability-side configurable side-effect parameters
     default_amount: Annotated[
@@ -97,7 +106,9 @@ class ScrollAction(SettleableAction, ActionBase):
             )
             await dispatch_request(scope, event)
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(
+                success=True, effect=effect_from(self, handler_field(event, "effect_facts"))
+            )
         except ValueError as exc:
             return ActionResult(success=False, error=str(exc))
         except Exception as exc:  # pragma: no cover

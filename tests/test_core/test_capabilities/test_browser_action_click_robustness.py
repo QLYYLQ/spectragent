@@ -68,6 +68,17 @@ def _make_node(backend_node_id: int, bounds: DOMRect) -> DOMElementNode:
     )
 
 
+def _outcome(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The handler's answer without the effect it measured (``effect_facts``).
+
+    What the click measured is pinned in ``test_browser_actions/test_pointer_effects.py``;
+    these tests are about where it pressed.
+    """
+    if result is None:
+        return None
+    return {key: value for key, value in result.items() if key != "effect_facts"}
+
+
 def _watchdog(
     cdp: FakeCDP,
     selector_map: DOMSelectorMap,
@@ -86,22 +97,22 @@ class TestClickUsesLiveRect:
         wd = _watchdog(cdp, {42: node})
 
         result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
-        assert result == {"clicked": True, "x": 55, "y": 70}
+        assert _outcome(result) == {"clicked": True, "x": 55, "y": 70}
 
         methods = [c.method for c in cdp.calls]
-        # Three live-rect calls then three mouse events.
-        assert methods == [
+        # Three live-rect calls, then the mouse events. The effect probes
+        # around the press (hit test, focus) are interleaved with the mouse
+        # events and are not part of this sequence.
+        assert methods[:3] == [
             "DOM.scrollIntoViewIfNeeded",
             "DOM.resolveNode",
             "Runtime.callFunctionOn",
-            "Input.dispatchMouseEvent",
-            "Input.dispatchMouseEvent",
-            "Input.dispatchMouseEvent",
         ]
 
         # All three mouse events use the live-rect center (55, 70),
         # NOT node.bounds.center (450, 820).
-        mouse_events = cdp.calls[3:]
+        mouse_events = [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
+        assert len(mouse_events) == 3
         assert {evt.params["type"] for evt in mouse_events} == {
             "mouseMoved",
             "mousePressed",
@@ -129,7 +140,7 @@ class TestClickFallback:
         wd = _watchdog(cdp, {42: node})
 
         result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
-        assert result == {"clicked": True, "x": 450, "y": 820}
+        assert _outcome(result) == {"clicked": True, "x": 450, "y": 820}
 
         mouse_events = [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
         assert len(mouse_events) == 3
@@ -143,7 +154,7 @@ class TestClickFallback:
 
         result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
         # bounds.center == (12, 24).
-        assert result == {"clicked": True, "x": 12, "y": 24}
+        assert _outcome(result) == {"clicked": True, "x": 12, "y": 24}
 
     async def test_scroll_into_view_failure_does_not_abort(self) -> None:
         """scrollIntoViewIfNeeded failing is logged but doesn't block the click."""
@@ -156,7 +167,7 @@ class TestClickFallback:
 
         result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
         # Live rect path still succeeds → live coords (55, 70).
-        assert result == {"clicked": True, "x": 55, "y": 70}
+        assert _outcome(result) == {"clicked": True, "x": 55, "y": 70}
 
     async def test_unknown_node_returns_error(self) -> None:
         cdp = FakeCDP()

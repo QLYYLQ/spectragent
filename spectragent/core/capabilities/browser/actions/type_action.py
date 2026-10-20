@@ -16,11 +16,13 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
     focused_scope,
     handler_field,
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import TextInputEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import TypeTextEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -34,6 +36,10 @@ class TypeAction(SettleableAction, ActionBase):
     """Type text into a DOM element by its selector_map index."""
 
     __registry_key__ = "browser.type"
+
+    #: The control the text went into, whether its value changed (never the
+    #: value), the clear's keys, and the focus afterwards.
+    Effect = TextInputEffect
 
     # ⭐ capability-side configurable side-effect
     clear_by_default: Annotated[
@@ -87,9 +93,12 @@ class TypeAction(SettleableAction, ActionBase):
                 clear=clear,
             )
             await dispatch_request(scope, event)
+            effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
             return ActionResult(
-                success=True, typed_into_sensitive_field=handler_field(event, "sensitive")
+                success=True,
+                typed_into_sensitive_field=handler_field(event, "sensitive"),
+                effect=effect,
             )
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
