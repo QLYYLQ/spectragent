@@ -126,6 +126,25 @@ wrong-account counterexamples and a candidate replay before accepting any scoped
 No rule has been validated or applied for these fields. Subsequent login failures must
 not inherit the older Origin/CORS diagnosis without fresh evidence.
 
+**Diagnosis, 2026-10-20** (`tmp/bilibili_acc_info_20261020/brief.md`): `w_rid` is the WBI
+request signature (md5 over the other fields, `wts` and a key; recomputed for all 8
+records); `dm_img_inter` is anti-bot telemetry (window size and scroll mixed with random
+numbers). `mid` selects the profile. The login overlay follows a chain: the `acc/info`
+miss leaves the profile page without a scrollbar, the header shifts about 15 px, the step-4
+avatar click misses, page visits fall out of step, and `/x/web-interface/nav` answers served
+in recorded order reach the wrong page. Cookies and storage are not the cause. A scoped
+candidate rule raised restoration from 3/30 to 24/30 and 25/30 in two replays.
+
+**User decisions, 2026-10-20:**
+
+- Add the `acc/info` rule (ignore only `dm_img_inter` and `w_rid`; `exhaustion: repeat_last`)
+  to `configs/replay_rules/` with a regression test modelled on the Xiaohongshu rules test.
+  Validation is local: one account, one recording.
+- Validate the same-shape `arc/search` rule with a real replay; add it only if it passes.
+- Do not chase the unidentified signing key of four first-visit requests until one blocks a task.
+- `/nav` answers differ by requesting page but are served in recorded order. Design that
+  after the image-sequence implementation lands (same sequence code), then ask the user.
+
 ## Fix — media playback restoration
 
 Task30 source/replay frames include 00:41 versus 00:10 and different travel recommendations.
