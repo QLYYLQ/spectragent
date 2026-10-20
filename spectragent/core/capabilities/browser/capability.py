@@ -2639,6 +2639,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             # A recorder lost during the capture: nothing of it is served,
             # and the error says why rather than "no watchdog produced …".
             self._ensure_environment()
+            # TODO: a capture missing any negotiated fragment, optional ones
+            # included, is re-fired and finally fails whole; partial capture of
+            # optional fragments may be allowed later (architecture §4.4,
+            # capture_state). Until then optional resolvers record their own
+            # problems inside their fragment instead of failing.
             if wanted <= outcome.fragments.keys():
                 if not documents_disagree(outcome.stamps):
                     for fragment in outcome.fragments.values():
