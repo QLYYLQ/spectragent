@@ -1,0 +1,23 @@
+# Validated on one authenticated recording of one account and two offline replays of it.
+# The space page's profile request changes two fields between page loads of the same
+# profile: dm_img_inter (window size and scroll offset mixed with fresh random numbers,
+# anti-bot telemetry) and w_rid (the WBI signature: md5 over all other query fields, wts
+# and a signing key, so it changes whenever dm_img_inter does). The profile is selected by
+# mid; mid, wts, token, platform, web_location, locale/device fields and the other dm_*
+# fields stay in the key. Changing mid or wts still misses. Other signed endpoints need
+# their own evidence; this is not a rule for w_rid in general.
+rules:
+- id: bilibili-space-acc-info-signature
+  scope:
+    host: api.bilibili.com
+    path: /x/space/wbi/acc/info
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - dm_img_inter
+  - w_rid
