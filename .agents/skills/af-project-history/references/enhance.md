@@ -227,6 +227,17 @@ passed step 19 at screenshot distance 4 against threshold 5 although the content
   (stops the retry storm) and mark the step non-restorable. The unexplained self-pause
   in the headed run is investigated after media facts exist.
 
+## Fix — native scrollbar follows the host appearance
+
+Found 2026-10-20 (`tmp/bilibili_acc_info_20261020/delivery.json`, `distance_zero_check`):
+two replay sessions of the same Bilibili recording differ by exactly the 15-pixel native
+scrollbar strip. Runs pin the page colour scheme to dark, but the headless Chrome scrollbar
+apparently follows the Mac's automatic light/dark appearance, which no run records. Earlier
+session frames differed from the source by 10,800 pixels (screenshot distance about 4); this
+session by 0. Restoration counts across sessions are therefore not directly comparable.
+Not yet designed: whether to pin the native appearance at launch, record it in the browser
+run fingerprint, or both. Cause is inferred, not proven.
+
 ## Execution preference
 
 Run browser experiments headless and quietly. The latest batch uses 300-second DeepSeek
