@@ -469,7 +469,7 @@ class Restorer(Protocol):
 
 @dataclass(frozen=True)
 class RestorationContext:            # 窄的：没有 LLM、没有 memory、没有 recorder
-    env: Any                         # 织过的 environment：observe / retarget / verify_restoration
+    env: Any                         # 织过的 environment：observe / retarget / verify_restoration / align_next_observation
     act_fn: Callable[[Action], Awaitable[ActionResult]]   # guarded_act
     negotiated_obs: Any
     source: SourceRun                # 源 trace 的类型化读取：record(k)、observation(k)、calls(k)、step_info(k)
@@ -478,7 +478,7 @@ class RestorationContext:            # 窄的：没有 LLM、没有 memory、没
 
 恢复器只恢复**环境**，从不碰 memory，所以以后的 `capability_checkpoint`（Docker 的 snapshot/restore、Android 模拟器快照，经新增的 `RestorableCapability` 协议接入）是同一个接口下的另一个策略。逐条交回而不是最后一次性返回，是为了每恢复一步就提交一步：恢复到一半超时或崩溃，trace 里也已经有前面的步。
 
-`prefix_replay`（v1）对每个 k < t：`env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency`（后者在执行第 k 步动作之前等待第 k 步录下的模型等待时间，让异步加载有与源 run 相同的时间落定；默认 `none`）。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
+`prefix_replay`（v1）对每个 k < t：（`media: align` 时先 `env.align_next_observation(recorded_obs_k, media_seek_timeout_s=…)`，为下一次观测预约媒体对齐，§4.3 / §4.14）→ `env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency`（后者在执行第 k 步动作之前等待第 k 步录下的模型等待时间，让异步加载有与源 run 相同的时间落定；默认 `none`。它只能近似媒体的播放位置——起播延迟与落定抖动消不掉，源视频自己停住也复现不了——不是媒体恢复的手段）、`media: none | align`（默认 `align`：每一个被恢复的观测，含检查点 t 的那一个，在采集里落定之后、截图之前把对应上的媒体元素对齐到录下的状态；`none` 不对齐，留作对照；发布的原路径与分叉配置显式写 `align`）、`media_time_tolerance_s`（媒体位置差的容差，默认 1 s）、`media_seek_timeout_s`（一次对齐跳转必须完成的上限，默认 2 s）。对齐只在恢复前缀里发生：恢复器在第 t 步交回之后不再预约，Loop 从不碰页面上的媒体，检查点之后的策略步与终止观测都是真实时间。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
 
 ### 4.2 AgentRuntime（通用编排）
 
@@ -1006,11 +1006,12 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - `collect_archive()`：什么都没绑定时直接返回 `ArchiveBatch()`，一个 capability 也不碰。否则每个绑定了的 capability 一个任务**并发**收集；每个任务都跑完才裁决结果，不留孤儿任务。一个 capability 抛 `Exception`、交回的不是 `ArchiveBatch`，或交回的文件里有 `capability_id` 不是它自己的（后两条记成点名该 capability 的 `ArchiveContractError`，最后一条还点名那些 `archiver_id`），都算它失败；有任何失败就抛 `ArchiveCollectionError(env_type, failures)`：`failures` 是 capability id → 异常，消息按 capability 顺序点名每一个，`__cause__` 是按 capability 顺序的第一个失败；健康 capability 交回的批次随之丢弃（run 反正要失败，§4.6）。没有失败时按 capability 顺序把各批次合并成一个 `ArchiveBatch`。`CancelledError` 原样传播，包括某个 capability 自己抛出它的情形：`gather` 这时会让兄弟任务接着跑，所以先取消还没结束的任务、等它们收场，再原样重抛，同样不留孤儿任务。
 - 收集不带任何参数：environment 从不把步号（也不把 cycle）交给 capability。"第 t 步的提交取走的就归第 t 步"是记录器那一侧的规则（§4.6）。
 
-**检查点恢复的路由（M31）**（`core/environments/_registrar.py`）：恢复器（§4.1 `BranchLoop`）经 environment 调用两个只读的方法，capability 侧的协议是 §4.9 的 `RestorationSupport`：
+**检查点恢复的路由（M31）**（`core/environments/_registrar.py`）：恢复器（§4.1 `BranchLoop`）经 environment 调用两个只读的方法，capability 侧的协议是 §4.9 的 `RestorationSupport`；另有一个为下一次观测预约对齐的方法，capability 侧的协议是 §4.9 的 `RestorationAlignment`（列在最后）：
 
 - `retarget(action, recorded, restored) -> Retarget`：与 `act()` 同一套前缀路由（`action.name` 的第一段经 `_by_capability_id()` 找 capability）。路由到的 capability 实现了 `RestorationSupport` 就交给它；没实现、前缀不带点、或前缀找不到 capability 时返回恒等的 `Retarget(action=<原动作的副本>, method="identity")`。重放要复现源 run 的执行，连同它被 `guarded_act` 拒绝的那些动作：原样交给 `act_fn`，由它再拒绝一次，成败比较照样成立。`retarget` 从不执行动作，也不改环境。
 - `verify_restoration(recorded, restored) -> list[RestorationEvidence]`：按 capability 顺序扇出到每个实现了 `RestorationSupport` 的 capability，各交回一份证据（带自己的 `capability_id`）；没有任何实现者时是空列表，即"没有可校验的"。`recorded` 与 `restored` 都是本次协商的整个 `NegotiatedObservation`，capability 按自己 fragment 的本地名读它要的那几个（协商保证本地名不撞）。
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
+- `align_next_observation(recorded, *, media_seek_timeout_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
 
 **录下的采集与本配置是否一致（M32）**（`core/environments/_registrar.py`）：训练导出用学生的运行配置组装一个从不 setup 的环境，再问它"你按现在的配置采，会不会采出源 trace 录下的那种观测"：`compare_capture(recorded: Mapping[str, FragmentBase]) -> CaptureComparison`（`recorded` 是一步录下的 env 来源 fragment，键全限定）。按每个键的前缀经 `_by_capability_id()` 分给 capability，交给实现了 §4.9 `CaptureCheck` 的那些，按 capability 顺序合并它们的 `mismatches` 与 `unchecked`；没实现的 capability、找不到 capability 的键都不贡献（"没有可比的"）。只读配置与传进来的 fragment：不 setup、不连浏览器、不缓存。
 
@@ -1071,14 +1072,17 @@ capability 的 Observation 强加浏览器字段：
 | 动作效果：滚动位移、落点与命中、焦点、导航结果等 | `ActionResult.effect`，由动作类的嵌套 `Effect` 模型定义（§4.5“动作效果”） | 所有 Agent，渲染 `effect.describe()` |
 | 跨平台采集状态：落定、前台界面变化、指针、可见资源加载失败 | `capture_state` fragment（下文“跨平台采集状态”） | 所有 Agent，以 optional 声明 |
 | 浏览器页面状态：URL、标题、tabs | 现有 `browser.browser_meta` | 仅浏览器专用 Agent，required |
+| 媒体播放状态：每个媒体元素的位置、暂停、总时长（2026-10-20 裁决） | `browser.screenshot` 的 `media` 元数据（下文“截图的媒体状态”） | 恢复校验与对齐；浏览器专用 Agent 仅在 `show_media_state: true` 时渲染 |
 
 呈现归 Agent，但同一事实只有一种写法：跨平台事实由 `agents/_capture_state.py::render_capture_state(observation)`
 渲染，浏览器页面状态由 `agents/_browser_state.py::render_browser_state(observation)` 渲染并在内部复用前者，
 先例是 `render_browser_platform`。两个函数按相对名结构化读取 fragment，不 import capability 或 resolver
 类；Skyvern、BrowserUse 删除各自的 `browser_meta` 渲染，改用后者。ActionResult 的执行成败、动作效果、
 后续观测和任务是否达成保持独立；未测量不等于零，批次后的状态不归因到其中某一个动作，敏感值不回显。
-媒体播放时间不在本轮，随媒体恢复修复一起定义。后续工作记录在
-`.agents/skills/af-project-history/references/enhance.md`。
+媒体播放状态（2026-10-20 裁决）是 `browser.screenshot` 的附带元数据（下文“截图的媒体状态”），
+与像素同一次采集，所有协商了截图的 Agent 都带着它、默认不进提示词；浏览器专用 Agent 可经
+`render_browser_state` 渲染它，开关是 Agent 的 YAML 字段 `show_media_state`（默认 `false`，显式实验变量）。
+UI-TARS 不变。后续工作记录在 `.agents/skills/af-project-history/references/enhance.md`。
 
 #### 跨平台采集状态 `capture_state`
 
@@ -1123,6 +1127,16 @@ fragment 就是新增一个 Resolver watchdog。
 现有图片消费者通过通用 `ModelImage.model_image_bytes()` / `read_model_image()` 取得公开的模型视图，Agent 不认识浏览器绘图配置；纯文本 Agent 保持自身的输入模态。已知位置时，浏览器 fragment 用固定矢量和 Pillow 纯函数，从原图与少量元数据确定性重建图像，按实际图像像素与 CSS viewport 的两轴比例绘制，不改尺寸或坐标网格。位置未知时保持原图字节。PNG/JPEG 格式来自实际字节，JPEG 模型视图用记录的质量重编码。缓存只属于 fragment，所有原图、几何和光标输入变化都使缓存失效。`from_trace` 恢复原图和元数据后可重建同一模型视图，不在 JSON 中保存第二张 bitmap。
 
 完整 LLM 调用记录沿用 `PromptImageRef` 保存实际发送的模型图片，内容寻址；环境 screenshot artifact 仍只有干净原图。是否记录图片仍由 `RecordingPlan` 各通道决定，光标开关不额外启用 prompt 记录。训练导出用已有 `CaptureCheck` 比较呈现开关、大小和 JPEG 质量，不能默默把源图呈现为另一种输入。Branch 的 `history_source: source` 按源 fragment 的元数据重建同一模型视图，再精确比较原调用；`restored` 使用实际恢复观测的视图。新 policy 步读取当前 capability 的配置，呈现开关是显式实验变量，不把它扩成所有 branch 环境配置都必须相同的限制。
+
+#### 截图的媒体状态（2026-10-20 裁决）
+
+小红书任务 30 的诊断（本地的 `tmp/media_playback_20261020/`）：视频在源 run 里按真实时间播放，模型思考的几十秒也在播；原路径回放不等模型时间，同一步的画面停在不同位置（源 00:41、回放 00:10），截图感知哈希的距离却可能在阈值之内。播放位置因此是要记下、要比较、能对齐就对齐的环境状态（§4.14 "恢复：重定位与校验"）。
+
+- **放在哪里**：`ScreenshotObs.media: MediaState | None`（`core/capabilities/browser/media.py`），与 `source_url`、`cursor` 同类的 sidecar 元数据：与像素同一次采集，随截图 sidecar 写入，由 fragment 自己读回。`None`（trace JSON 里不写这个键）是没测：这个字段之前的证据、手建的 fragment。
+- **测什么**：页面上每个 `<video>` / `<audio>` 元素一条 `MediaElementState`：所在 frame（主 frame 是 `main`；同源子 frame 写成路径，每一段是 frame 元素在父文档里按文档顺序的序号，如 `main/1`）、它在该 frame 的媒体元素里的文档顺序、标签、视口里的位置框（CSS px；同源子 frame 里的元素加上 frame 内容框的偏移）、来源种类 `url` / `blob` / `stream`（`srcObject`）/ `none` / `other`、`url`（只在 `url` 种类时写；`blob:` 地址每次加载都变）、总时长（未知为 `None`）与 `live`（总时长无限：直播或流）；以及截图**之前**、**之后**各一次读数 `MediaReading{current_time, paused, seeking, ready_state, ended}`：`current_time` 是元素的精确 `currentTime`，不是网站显示的 mm:ss（实测一秒之内画面可以差 7–9 位 dHash）。同源检查读不进去的子 frame（跨站 iframe）记成 `unreachable_frames`（frame 路径与位置框）：里面有没有媒体，不知道。
+- **怎么测**：截图 resolver 在 `Page.captureScreenshot` 之前、之后各发一次只读的页内探针，在 isolated world `af-media`（每个文档一个，按名字复用）里执行，页面脚本看不到它。每次读数的上限是 `BrowserCapability` 的 `media_state_timeout_s`（默认 1 s）；超时、出错或回复不合形状，这次读数记为 `unknown`（`read_before` / `read_after`，附 `detail`），从不让截图失败；测不到的值是 `None`，不是 0。录制行为不变：不暂停、不跳转、不改任何媒体元素。
+- **谁读它**：恢复校验比较两边的媒体状态，恢复时的媒体对齐以录下的媒体状态为目标（§4.14）。提示词默认不含它；Skyvern、BrowserUse 的 `show_media_state: true` 时，`render_browser_state` 在页面状态之后写一段 `<media_state>`（每个元素的 frame、顺序、标签、当前时间 / 总时长、播放或暂停、是否直播；没测到就明说没测到）。这个开关改变提示词，是显式实验变量；它不改变协商。UI-TARS 不变。
+- **测不到的**：画布自己画的播放器没有媒体元素，只能靠截图距离发现；跨站 iframe 里的媒体读不到（上面的 `unreachable_frames`）；直播没有可比较的位置。
 
 #### Fragment 注册表
 
@@ -2158,10 +2172,24 @@ class RestorationSupport(Protocol):
     async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence: ...
 ```
 
-- 类型在 `spectragent/schemas/restoration.py`：`Retarget{action: Action | None, method: "identity" | "geometry_signature" | "tab_order_url", failure: "not_found" | "ambiguous" | None, detail}`（`action is None` 当且仅当 `failure` 不为空）；`RestorationEvidence{capability_id, url_match, recorded_url, restored_url, signature_match, signature_missing, signature_extra, screenshot_distance, document_misses}`，每个量都可以是 `None`（这个 capability 不测它，或这一次测不了，例如本 run 没有激活截图）。
+- 类型在 `spectragent/schemas/restoration.py`：`Retarget{action: Action | None, method: "identity" | "geometry_signature" | "tab_order_url", failure: "not_found" | "ambiguous" | None, detail}`（`action is None` 当且仅当 `failure` 不为空）；`RestorationEvidence{capability_id, url_match, recorded_url, restored_url, signature_match, signature_missing, signature_extra, screenshot_distance, document_misses, media}`，每个量都可以是 `None`（这个 capability 不测它，或这一次测不了，例如本 run 没有激活截图）。`media: MediaEvidence | None`（2026-10-20 裁决）：`comparisons: list[MediaComparison] | None`（两边每个媒体元素的对应关系 `matched` / `missing` / `extra` / `ambiguous`、是否直播、比较用的那次读数、两边的位置与暂停状态；`None` 是没比成：一边没有媒体状态或两次读数都不知道，`detail` 说为什么）与 `alignment: list[MediaAlignment] | None`（这次观测之前做的每一个对齐动作与结果；`None` 是没有预约对齐）。`MediaAlignment.outcome` 是 `aligned` / `already_aligned` / `failed`（跳转或播放没在上限内完成，已经尝试回滚）/ `not_restorable`（直播、对应有歧义、恢复出的页面里没有这个元素）/ `unknown`（录下的位置或状态不知道，没有目标）。
 - 为什么需要：browser 的元素 index 就是 Chrome 的 `backendNodeId`（`dom/models.py` 的 `element_handle`），新启动的浏览器里同一个元素的 index 不同，录下的 `click(index)` 不能原样重放；`switch_tab` 的 `target_id` 是每个浏览器新生成的 CDP targetId。坐标动作与导航动作不需要（pinned 回放下布局确定，截图哈希兜底）。
 - 不进 `BaseCapability`，`CapabilityBase` 也不给默认实现：默认（恒等、不校验）在 environment 那一侧（§4.3 "检查点恢复的路由"），不实现的 capability 什么都不用写。
-- capability 不知道 WAL、不知道步号：它拿到的是两个观测对象，读的是 fragment（browser 读 `browser.dom` 的自包含 `selector_map`、`browser.browser_meta`、`browser.screenshot`），不 import `core.trace`（§10）。唯一不从两个观测里读的是观测装不下的计数（browser 回放服务的主 frame 文档 miss）：capability 记着上一次读到的总数，报自上一次 `verify_restoration` 以来的增量，所以这个调用不是幂等的，恢复器对每个恢复出的观测恰好调用一次、按顺序（`prefix_replay` 正是如此）。Browser 的实现见 §4.14 "恢复：重定位与校验"。
+- capability 不知道 WAL、不知道步号：它拿到的是两个观测对象，读的是 fragment（browser 读 `browser.dom` 的自包含 `selector_map`、`browser.browser_meta`、`browser.screenshot`），不 import `core.trace`（§10）。不从两个观测里读的只有观测装不下的事实：browser 回放服务的主 frame 文档 miss（capability 记着上一次读到的总数，报自上一次 `verify_restoration` 以来的增量），以及自上一次 `verify_restoration` 以来做过的媒体对齐（下面 `RestorationAlignment`）。所以这个调用不是幂等的，恢复器对每个恢复出的观测恰好调用一次、按顺序（`prefix_replay` 正是如此）。Browser 的实现见 §4.14 "恢复：重定位与校验"。
+
+**为下一次观测预约对齐（2026-10-20 裁决）也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
+
+```python
+@runtime_checkable
+class RestorationAlignment(Protocol):
+    # 下一次观测是恢复出的、要对照 recorded 的那一次：在它的采集里、落定之后、截图之前，
+    # 把能对应上的媒体元素对齐到 recorded 里录下的状态。这里只记下预约，不碰环境
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None: ...
+```
+
+- 为什么在采集里做：对齐若在落定之前做，在播的视频会在落定的几秒里又走掉；若在 Loop 里做，Loop 就得认识页面上的媒体。capability 在自己的采集周期里做，恰好落在"等页面落定"与"截图"之间。
+- 预约只属于紧接着的那一次观测；那次观测的 `verify_restoration` 交回对齐记录并清掉预约（用上与否），所以检查点之后的策略步与终止观测从不对齐。
+- 不进 `BaseCapability`，`CapabilityBase` 不给默认；不实现的 capability 什么都不用写，environment 的扇出跳过它。它与 `RestorationSupport` 分开，是因为能重定位与校验的 capability 不一定有可对齐的东西。
 
 **采集一致性检查（M32）也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
 
@@ -3284,7 +3312,7 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 - `kind`：`hit` / `exhausted`（重复了用尽序列的最后一条可用响应）/ `substituted`（被消耗的记录没有正文，按规则的 `serve_identical` 用同一序列一条正文相同的可用记录代答，上面"匹配"）/ `synthetic`（合成的预检）/ `miss` / `summary`（被限流折叠的那些）；`captured_at`、`cycle`；请求事实 `method`、`url`、`resource_type`、`frame_id`、`frame`（文档：`main` / `sub`）、`target_id`、`session_id`。
 - 命中：`rule_id` 与 `exhaustion_policy`、`unavailable_policy`（规则的无正文策略）、`record_id` 与它的 `run_id`、`level`（`exact` / `normalized` / `fuzzy`）、`fuzzy_score`、`range`；送出的 JSONP 应答改写了回调名时还有 `callback_rewrite`（`parameter`、`recorded`、`requested`，上面"JSONP 回调名"）。
 - 代答（`substituted`）：`record_id` 是被消耗的那条（没有正文的），`served_record_id` 是实际送出的那条，`source_outcome` 是被消耗那条的源结局（上面"加载"）；其余字段与命中相同，`status` 是送出的状态。
-- miss：`request_class`（`document` / `benign` / `subresource`；`websocket` / `unservable` 不经策略，为空）、`reason`（`no_match` / `sequence_exhausted` / `match_level_disallowed` / `too_large` / `body_unavailable` / `archive_unreadable` / `range_uncovered` / `websocket` / `unservable`）、`answer`（`fulfilled` / `failed` / `none`）与 `status`、`match_key` 与 `body_key`（规范键，超过 512 字符的写成 `sha256:<hex>`）、`candidates`（最近的 3 个）、`diverged`（主 frame 文档 miss）；匹配到了、却送不出 body 的（`too_large`、`body_unavailable`）也带 `record_id` / `run_id`，`body_unavailable` 的另带 `source_outcome`（被消耗或被重复的那条的源结局）。`repeated: true`（用户 2026-10-20 的裁决）标出这个 miss 来自 `repeat_last` 在序列用尽之后的重复：被重复的那条没有可送出的 body（序列里没有可用记录），或者送出时读不出、超过上限；第一次消耗这条记录的 miss 不带它。重复送出成功的是 `exhausted`，本来就分得开。每个决定（命中也一样）都记 `answer` 与 `status`。
+- miss：`request_class`（`document` / `benign` / `subresource`；`websocket` / `unservable` 不经策略，为空）、`reason`（`no_match` / `sequence_exhausted` / `match_level_disallowed` / `too_large` / `body_unavailable` / `archive_unreadable` / `range_uncovered` / `websocket` / `unservable`）、`answer`（`fulfilled` / `failed` / `none`）与 `status`、`match_key` 与 `body_key`（规范键，超过 512 字符的写成 `sha256:<hex>`）、`candidates`（最近的 3 个）、`diverged`（主 frame 文档 miss）；匹配到了、却送不出 body 的（`too_large`、`body_unavailable`）也带 `record_id` / `run_id`，`body_unavailable` 的另带 `source_outcome`（被消耗或被重复的那条的源结局）；`range_uncovered` 的另带 `requested_range`：页面这次请求的 `Range` 头原文（2026-10-20 裁决：否则一次缺口与它引起的几百次重试在日志里分不开，是否反复请求同一个起点也说不清）。`repeated: true`（用户 2026-10-20 的裁决）标出这个 miss 来自 `repeat_last` 在序列用尽之后的重复：被重复的那条没有可送出的 body（序列里没有可用记录），或者送出时读不出、超过上限；第一次消耗这条记录的 miss 不带它。重复送出成功的是 `exhausted`，本来就分得开。每个决定（命中也一样）都记 `answer` 与 `status`。
 - **完整或摘要**：`log_mode: full` 保留每次事件；显式 `summary` 时同一次收集里相同含义的条目超过 `log_repeat_limit` 才折叠。摘要带 `folded_kind`、`count`、`first_captured_at`、`last_captured_at`，标明逐次时间不可恢复。不得跨 kind、原因、应答、状态、请求类别、frame、发散、记录身份（被消耗的与送出的都算）、源结局、是否重复（`repeated`）或适用规则合并；计数按代表次数而非文件行数。批次归属是收集时的步骤，不声称该步骤动作造成这些异步事件。
 
 
@@ -3348,13 +3376,29 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 - `url_match`：两边的截图出处 URL（或同 cycle 的 `browser_meta.url`）逐字相等；任一边没有地址时为 `None`；
 - `signature_match` / `signature_missing` / `signature_extra`：两边 `selector_map` 每个条目的签名（同上：tag、四个标识属性、文本哈希；不含 index 与 `bounds`）组成的多重集是否相等，以及录下有而恢复出没有、恢复出多出来的个数（没有 `browser.dom` 时为 `None`）；
 - `screenshot_distance`：两张截图的 64 位 dHash（Pillow：转灰度、Lanczos 缩到 9×8、相邻像素比较）的汉明距离（任一边没有截图字节、或字节解不开时为 `None`，后者记 WARNING）；
-- `document_misses`：自上一次 `verify_restoration` 以来回放服务记下的主 frame 文档 miss 数（`ReplayLog` 的单调计数 `diverged_total`，带 `diverged` 的条目（折叠进 `summary` 的也算）每条加一；回放日志照常被 `browser.replay_log` 逐步取走，不影响这个计数）。capability 记着上一次读到的总数，建回放服务时与 teardown 时归零。`network_source` 是 `live` 时为 `None`。
+- `document_misses`：自上一次 `verify_restoration` 以来回放服务记下的主 frame 文档 miss 数（`ReplayLog` 的单调计数 `diverged_total`，带 `diverged` 的条目（折叠进 `summary` 的也算）每条加一；回放日志照常被 `browser.replay_log` 逐步取走，不影响这个计数）。capability 记着上一次读到的总数，建回放服务时与 teardown 时归零。`network_source` 是 `live` 时为 `None`；
+- `media`（2026-10-20 裁决）：两边截图的媒体状态（§4.4 "截图的媒体状态"）逐元素对应后的比较，加上这次观测之前做过的媒体对齐（下面"媒体对齐"）。任一边截图没有媒体状态，或一边两次读数都不知道时，`comparisons` 为 `None`；两边截图都没有时整个 `media` 为 `None`。
 
-阈值不在这里：`screenshot_max_distance` 与 `strict | warn` 是恢复器的旋钮（§4.1）。
+**媒体元素的对应**（`media.py::match_media`）：录下的每个元素在恢复出的页面里找候选——同一 frame、视口位置框四个量都在 `retarget_tolerance_px` 之内、来源种类相同、两边都是 `url` 种类时地址逐字相等（`blob:` 地址不比）、两边总时长都已知时相差不超过 1 ms（同一个文件的总时长相同，作为辅助核对）。恰好一个候选、且它在该 frame 里的文档顺序与录下的相同，是 `matched`；没有候选是 `missing`；多个候选，或唯一的候选文档顺序不同（页面插入或删掉了别的媒体元素，顺序与位置说法不一），是 `ambiguous`。恢复出的页面里没被任何录下元素对应上的元素是 `extra`。有歧义就不对齐。比较用两边都测到的那次读数，优先截图之前那次。
+
+**恢复器的判定**：`media_mismatch`（§5.3）排在截图距离之前。`matched` 的元素两边的位置都已知、差超过 `media_time_tolerance_s`（默认 1 s），或两边的暂停状态都已知、不同，是不通过；`missing`、`extra`、`ambiguous`、任一边是直播（`live`），是不通过；这次观测之前的对齐里有 `failed` 或 `not_restorable`，是不通过。值为 `None` 的量、`comparisons` 为 `None`、对齐结果 `unknown`，都不参与判定。截图距离的阈值不变：媒体对上了，截图照样要比。截图距离分不出暂停与播放，所以暂停状态只靠媒体状态比。
+
+**媒体对齐**（`media: align`，§4.1；探针在本地的 `tmp/media_playback_20261020/probe/`）：恢复器在每一个被恢复的观测之前调 `align_next_observation`（§4.9 `RestorationAlignment`），capability 记下预约；那次观测的采集在等完页面落定、确认焦点之后、发出采集事件之前执行对齐，所以截图前的媒体读数与像素都是对齐之后的。步骤：
+
+1. 在 `af-media` 里读一次恢复出的页面的媒体状态（上限 `media_state_timeout_s`），按上面的规则与录下的截图媒体状态对应。录下的观测没有媒体状态（旧证据）时什么也不做，对齐记录为空列表、`detail` 说明。
+2. 每个 `matched` 元素以录下的截图之前那次读数（没有就用之后那次）为目标：精确的 `current_time` 与 `paused`。已经在同一位置（差不超过 1 ms）、同一暂停状态的是 `already_aligned`，不动。录下的位置或状态不知道的是 `unknown`，不动。
+3. 先对齐录下是暂停的元素：`pause()`，设 `currentTime` 为目标，等到 `seeked` 已经发生、`seeking` 为 false、`readyState ≥ 2`，上限 `media_seek_timeout_s`（默认 2 s）。只看 `currentTime` 不算成功：跳到录下字节之外时 `currentTime` 立刻报目标值，`seeking` 却一直为 true、画面不变（实测）。
+4. 再对齐录下是在播放的元素：同样暂停、跳转、等跳转完成，然后 `play()`，等到 `playing`（同一上限），随即采集——不再落定一次，否则在播的视频又会走掉最多一个落定上限。播放器在脚本跳转、播放之后可能露出控制条（小红书的 xgplayer 实测如此），对齐记录照实写 `seek_and_play`。
+5. 跳转或播放没在上限内完成是 `failed`：立刻把元素跳回对齐之前的位置、恢复对齐之前的播放或暂停状态（同一上限；这也让播放器停止对未录字节的重试风暴），`rolled_back` 记回滚是否完成。这一步不能恢复：判定里的 `media_mismatch`。
+6. `missing`、`ambiguous` 的录下元素与直播是 `not_restorable`，不动它们。`extra` 元素不动（录下的没有它的状态），比较里照样不通过。
+
+每一个动作——哪个元素、从哪里到哪里、做了什么、跳转用了多久、结果、回滚——都进对齐记录，由下一次 `verify_restoration` 交回，写进那一步 `RestorationCheck.evidence` 的 `media.alignment`，从不悄悄发生。回放日志里 `range_uncovered` 的次数从不决定对齐成败：播放器暂停时也会向后预取，越过录下的范围产生大量 miss，而对齐本身完全成功（实测：跳到 130 秒成功，随后 5 秒里 69 次 miss）。对齐只看元素自己的状态。
+
+阈值不在这里：`screenshot_max_distance`、`media_time_tolerance_s` 与 `strict | warn` 是恢复器的旋钮（§4.1）。
 
 焦点的移动不用单独恢复：前缀回放重新执行录下的动作、照常观测，跟随新 tab 与离开关掉的 tab 按与录制时同一条规则发生（上面"页面新开的标签页"），校验比较的就是移动之后采集到的那个 tab；没有重现的移动是 `url_mismatch` 或 `screenshot_distance`。
 
-校验比较的就是录下的与恢复出的两个观测本身，也就是 agent 看到的那两个：两边都在采集之前等过页面落定（上面"观测之前等页面落定"，录制与回放用同一个等待），没有只为校验而另拍的截图或另读的 DOM。
+校验比较的就是录下的与恢复出的两个观测本身，也就是 agent 看到的那两个：两边都在采集之前等过页面落定（上面"观测之前等页面落定"，录制与回放用同一个等待），没有只为校验而另拍的截图或另读的 DOM。`media: align` 时恢复出的观测是在媒体对齐之后采集的：这正是检查点上 agent 看到的那一个，对齐做了什么记在证据里。
 
 #### 已知限制
 
@@ -3379,7 +3423,8 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
   - 批次归属是"收集取走它的那一步"，不声称其中每条请求由该步动作引起：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
   - 第一次 live run（10 个真实 `online_mind2web` 任务上的度量）是度量链只跑录制、原路径回放与报告的那一种（§4.16）；它的链规格与命令在本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权（路由、N、token 上限），没有跑过。M30 写的 `tmp/flywheel/s2b/` 脚本已被它取代。
-- **页面落定的残余**（上面"观测之前等页面落定"）：窗口里什么都没发生、只有一个比窗口长的请求在途时（点击之后一次慢的接口调用，页面又没有加载提示）不等它，下一步才看到结果，Chrome 不为同一文档里的变化报网络空闲，而在控制连接上跟踪每个请求会把所有网络事件压到 agent 的连接上（recorder 自己有连接正是为此）；CSS 过渡与动画、canvas / WebGL、进程外 iframe 里的变化不经过主文档的 DOM，不算变化；永远不静的页面每一步都付上限（实测：滚动之后 6/38 的站点等满 5 s）。
+- **页面落定的残余**（上面"观测之前等页面落定"）：窗口里什么都没发生、只有一个比窗口长的请求在途时（点击之后一次慢的接口调用，页面又没有加载提示）不等它，下一步才看到结果，Chrome 不为同一文档里的变化报网络空闲，而在控制连接上跟踪每个请求会把所有网络事件压到 agent 的连接上（recorder 自己有连接正是为此）；CSS 过渡与动画、canvas / WebGL、进程外 iframe 里的变化不经过主文档的 DOM，不算变化；永远不静的页面每一步都付上限（实测：滚动之后 6/38 的站点等满 5 s）。在播的视频就是这样的页面：小红书任务 30 里视频播放的每一步都等满 5 s，暂停的步约 0.5 s 落定；落定记录不点名是媒体在播，读者可以对照同一截图的媒体状态。
+- **媒体恢复的边界**（2026-10-20 裁决，上面"恢复：重定位与校验"）：直播（总时长无限）、跳进录下字节之外的位置（跳转不完成，回滚、记 `failed`）、对应有歧义或缺失的元素都不恢复，判为 `media_mismatch`，从不判为通过。读不到的跨站 iframe 里的媒体与画布自己画的播放器测不到：媒体判定管不到它们，只有截图距离把关；读不到的 iframe 记在截图媒体状态的 `unreachable_frames` 里，里面有没有媒体不知道，所以本轮不据此判为不通过（经那个 frame 自己的 CDP 会话去读，是下一步的事）。离线回放只能送源页下载过的字节：检查点之后视频播过源页下载的范围就会卡住，播放器以每秒十几次的速度重试同一个区间（日志里是 `range_uncovered`，带 `requested_range`）。码率自适应的播放器在本机高速送出时可能换到归档里没有的清晰度。源页在模型思考时继续播放、播完自动跳到下一条，回放里对齐救不回这次导航，表现为 URL 不同。脚本跳转、播放之后播放器可能露出控制条，源截图里没有它；感知哈希看不出来。有界面浏览器里源视频自己停住的原因还没有查（有了媒体状态再录一次看）。
 - 本节的 Chrome 行为都是 153 的实测，归档器的部分与新 tab 的准备、时区与语言的所有者是 155 的实测（本机 Chrome 在 M29 期间升到了 155，153 时写下的金丝雀全部照样通过）；`requires_chrome` 的回归测试是版本金丝雀（新 tab 的在 `test_browser_new_tab_live.py`）。
 
 ### 4.15 训练导出（M32）
@@ -3596,14 +3641,14 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 |---|---|---|
 | 归档开销 | `record` 与 `control` 的 `StepRecord`；`record` 的 env/ extra 索引与 `index.jsonl` | **延迟**：策略步，沿用该报告从第 1 步起的比较窗口（第 0 步不再含 setup；setup 只计入 Runtime 的 execution_ms），每步环境侧执行时间 = `duration_ms − (llm_latency_ms 或 0)`，不把单独记录的 `recording_ms` 当成环境执行耗时（`duration_ms` 为 `None` 的步不计）；两组各自的 p50 / p95（最近秩的 `percentile`），开销 = 开 − 关。两组的档位（`TraceConfig.resolved` 里 capability 的 `replayability`）不同、或任一组为空时为 `null`。live 的两组走的不是同一条路径，比的是分布。**字节**：每个录制 run 的 env/ 去重前后（`RunTrace.committed_files` 里带 `archive` 的条目）——去重后 = 每个不同路径各计一次的 `size`；去重前 = 每一步（与收尾）的 extra 索引列出的每个 env 文件各计一次（内容寻址的文件被每个引用它的步各计一次），再加 revisit 记录替掉的完整记录长度（browser 的 `revisit_saving`）；按步数平均。按实际索引计账：`before == after + saved_by_revisit + saved_by_content_addressing`。revisit 只引用同一收集批次；很小的 body 可能因 revisit 头更大而产生负的净节省，照实报告，不截为零。**观测前的落定等待**（`settle_wait`，每个跑过的角色一条，按阶段顺序）：环境侧时间里有多少是观测之前等页面落定（§4.14），从每一步每个 browser fragment 都带的 `settle` 记录读（`settle.py::recorded_settle`：读该步记录了的第一个 browser fragment，`browser_meta`、截图、DOM 依次）；恢复步与终止观测也算，它们也是采集。每个角色给 p50 / p95（同一个 `percentile`）、上限截断的占比（分母是带记录的观测，没有记录时为 `null` 并写明原因）、读不到页面状态的次数、站点数与读不回来的 run。只是陈列，不参与规则 |
 | body 完整率 | `record` 的 `index.jsonl`（`iter_index_lines`） | 每个 `record_id` 的最终状态（最后一行；`streamed_later` 看有没有它的 `kind: body` 行）：有 body（`ok`、流完 body 的 `streamed_later`）、不需要 body（`redirect`、`websocket`）、明确没有 body（`too_large`、`incomplete`；最后一行是 `pending` 的按 `incomplete` 读，§4.14）。完整率 = 有 body 或状态明确的记录 / 全部记录；另报有 body 率（分母去掉不需要 body 的）与按状态的分布（browser 的 `body_completeness`）。"服务器发了、归档里没有"只有 fixture 的访问日志能判：那是演练测试的断言，不是报告的度量 |
-| 原路径回放保真（按站点） | `same_path` 的 `StepRecord.restoration`；源 run（`TraceConfig.branch.source_trace`，相对 `<root>/traces/record`）的截图 | 被校验的每一步（恢复步与检查点步）：恢复器判定 `ok` 的占比（URL、元素签名多重集、截图 dHash ≤ 阈值、无文档 miss，§4.14 "恢复"）；严格版：URL 相等且截图 sha256 与源 run 同一步相同的占比；每个 run 第一个不通过的步与原因；全部通过的 run 占比；`errored_runs`：没有干净结束的 run 数（两本账任一：trace 不是 `complete`，或 agent 以 error / timeout / vetoed 结束、没有读得回的 `result.json`） |
+| 原路径回放保真（按站点） | `same_path` 的 `StepRecord.restoration`；源 run（`TraceConfig.branch.source_trace`，相对 `<root>/traces/record`）的截图 | 被校验的每一步（恢复步与检查点步）：恢复器判定 `ok` 的占比（URL、元素签名多重集、截图 dHash ≤ 阈值、无文档 miss，§4.14 "恢复"）；严格版：URL 相等且截图 sha256 与源 run 同一步相同的占比；每个 run 第一个不通过的步与原因；全部通过的 run 占比；`errored_runs`：没有干净结束的 run 数（两本账任一：trace 不是 `complete`，或 agent 以 error / timeout / vetoed 结束、没有读得回的 `result.json`）；媒体（2026-10-20 裁决）：真正比较了媒体状态的步占被校验步的比例（`media_coverage`，`comparisons` 不为 `None` 才算）、原因里有 `media_mismatch` 的步数（`media_mismatches`）与对齐结果按 `outcome` 的计数（`media_alignment`），总体与按站点都给 |
 | 恢复校验率 | `branch` 的 `StepRecord.restoration` | 通过的校验 / 全部校验；不通过的按 `RestorationCheck.reasons` 计（一条多个原因各计一次）；重定位失败按 `not_found` / `ambiguous` 与 `RetargetMethod` 计 |
 | 分叉结果覆盖 | `branch` 的回放日志（`iter_decisions`）、`TraceConfig.branch.checkpoint_step`、各步执行的动作 | 在动了手的分叉里（空分叉单独计数，见上），检查点步及之后（策略步、终止步、收尾）一个主 frame 文档 miss（回放自己的 `diverged`）都没有的分叉占比；同一范围里其余的 miss（子 frame 文档、beacon、子资源；折叠的按它代表的条数计）按动作类型（miss 所在步执行的动作名；终止步记为 `terminal`、收尾的记为 `trailing`——页面加载完之后才发出的请求落在取走它的那次收集，§4.14 "步归因"）、`resourceType`、host、原因与请求类别分布。检查点之前的 miss 属于恢复，由恢复校验率的 `document_miss` 体现，不算这一项 |
 | 回放确定性 | `same_path` 与 `branch` 的终止步、检查点步的截图 | 同一输入 = 同一源 run、同一检查点、策略步执行的动作逐个相同（名字与参数的规范 JSON）；组内两两比较终止截图（`origin == "terminal"`）的 sha256，报可比的对数与相同的对数（没有终止步的 run 不比、计数）；另报同一检查点所有分支的检查点步截图（恢复出的状态，与 teacher 无关）是否相同 |
 | 导出确定性 | `datasets/first`、`datasets/second` | 两棵目录树的摘要（相对路径与每个文件的 sha256，按路径排序；`core/trace/digest.py::tree_digest`）相同；`repeat: 1` 时为 `null` |
 | 隐私 | 只看两道门（威胁模型"只有我"，§5.6；用户 2026-10-13 裁决）：**发给模型的**——每个角色每个读得回的 run 录下的每一次请求（`RunTrace.llm_messages` 与 `trailing_calls`，`core/trace/usage.py::recorded_calls`，token 上限数用量读的是同一份），搜它的 messages 里的每一段文字（`metrics.request_texts`：内联图片的 base64 `data:` URL 不是文字，不搜，base64 的字母表里也拼不出任何凭证形状；按 URL 发的图片照搜）；**导出的数据集**——`<root>/datasets` 下的每个文件（gzip 解开，`core/trace/secret_patterns.py::iter_readable`；导出的产物就是它的文件）。`env/` 与 trace 的其余文件（步记录、观测、配置）留在录制它的机器上，不搜：站点页面里自带的公开 key（例如 Google Maps 的浏览器 key，在 WARC 与回放日志里）因此不算泄漏 | 按门分开计数（`model_requests` / `datasets`，各一个 `PrivacyGate{items, planted, shapes, shape_items}`）：每个植入的凭证出现的次数（必须是 0）与含有它的请求数 / 文件数；`SECRET_PATTERNS` 每个形状的命中数与含有它的请求数 / 文件数；另记读到的 run 数与站点数（建议的站点数）与 `skipped`（读不回来的 trace、某次录下的请求读不回来的 run：整个 run 不计，`traces/<角色>/<run>` 加原因）。植入值来自链规格：演练写字面量，live 只写环境变量名、值从进程环境读；报告只写标签与次数，从不写值。"没有泄漏"要每个植入值都搜过：有一个没搜（环境变量没设、`report --root` 没有规格也就没有植入值），建议是 `insufficient`、没有结论；搜到的植入值或凭证形状照样是"泄漏"的结论，并点名是哪一道门；有 run 没读到时结论后面写明几个 |
 
-**检查证据与精确复现分开。** 原路径报告同时给出：已有恢复判据通过的步数、全部检查通过的 run 数、截图字节完全相等的比例、URL 已知且相等并且截图字节完全相等的比例，以及 URL / 元素签名的证据覆盖率。后一个精确比例仅比较两边截图都可读、且有 URL 比较证据的步；无 URL 证据的步不进它的分母，分母为零是未测到。图像相同但 URL 未知可以计入纯截图相同率，不能计入 URL 与截图都相同。原路径的边界仍是最后可分叉检查点，不能把该 run 的 `done` 写成源末动作后的业务成功。
+**检查证据与精确复现分开。** 原路径报告同时给出：已有恢复判据通过的步数、全部检查通过的 run 数、截图字节完全相等的比例、URL 已知且相等并且截图字节完全相等的比例，以及 URL / 元素签名 / 媒体状态的证据覆盖率。后一个精确比例仅比较两边截图都可读、且有 URL 比较证据的步；无 URL 证据的步不进它的分母，分母为零是未测到。图像相同但 URL 未知可以计入纯截图相同率，不能计入 URL 与截图都相同。原路径的边界仍是最后可分叉检查点，不能把该 run 的 `done` 写成源末动作后的业务成功。
 
 `runs_reaching_checkpoint` 必须具有分叉检查点的来源信息，且第 0 步至检查点步每一步都有恢复检查；`runs_passing` 还要求这些检查全部通过。中途观察失败、只留下全部通过的短前缀，不能算完整路径通过，报告列出首个缺检查的步。到检查点之后的模型失败另计 `errored_runs`，不抹掉已经证明的状态恢复；任务正确性仍独立判断。
 
@@ -4366,7 +4411,7 @@ class StepRecord(BaseModel):
 
 RestorationReason = Literal["document_miss", "url_mismatch", "retarget_not_found",
                             "retarget_ambiguous", "action_failed", "signature_mismatch",
-                            "screenshot_distance"]                # 也是判定 reason 的先后顺序
+                            "media_mismatch", "screenshot_distance"]   # 也是判定 reason 的先后顺序
 
 class RestoredAction(BaseModel):          # 恢复时一个录下的动作的去向
     recorded: Action                      # 源 StepRecord 里的那个（`guarded_act` 留下的名字，§4.1）
@@ -4388,7 +4433,7 @@ class RestorationCheck(BaseModel):
 ```
 
 - `origin`：`policy` 是 Loop 自己的 agent 决定的一步；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
-- `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`。值为 `None` 的量不参与判定。
+- `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；媒体证据不通过（`media.comparisons` 里有 `missing` / `extra` / `ambiguous` 或直播，`matched` 元素的位置差超过 `media_time_tolerance_s` 或暂停状态不同，或 `media.alignment` 里有 `failed` / `not_restorable`；§4.14 "恢复：重定位与校验"，2026-10-20 裁决）→ `media_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`。值为 `None` 的量不参与判定。
 - 当前 `AgentResult.schema_version` 为 `3.0`，trace `format_version` 为 `6`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
 
