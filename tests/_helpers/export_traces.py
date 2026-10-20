@@ -21,8 +21,13 @@ from typing import Any
 from PIL import Image
 
 from spectragent.core.archive.privacy import RedactionEntry, RedactionLedger
-from spectragent.core.capabilities.browser.observations import BrowserPlatformObs, ScreenshotObs
+from spectragent.core.capabilities.browser.observations import (
+    BrowserCaptureStateObs,
+    BrowserPlatformObs,
+    ScreenshotObs,
+)
 from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.trace.encoding import TraceFile, encode_fragment
 from spectragent.core.trace.models import (
     TaskSetupRecord,
@@ -34,6 +39,7 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_result import EvalResult
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs, TaskObs
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
@@ -49,6 +55,16 @@ def png(width: int, height: int, color: tuple[int, int, int] = (230, 230, 230)) 
     buffer = io.BytesIO()
     Image.new("RGB", (width, height), color).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def capture_state() -> BrowserCaptureStateObs:
+    """What a recorded browser run's ``capture_state`` says: settled, pointer and images known."""
+    state = BrowserCaptureStateObs(
+        pointer=PointerState(status="known", x=640, y=360),
+        failed_visible_resources=FailedVisibleResources(status="measured", count=0),
+    )
+    state.settle = PageSettle(waited_ms=520, outcome="settled")
+    return state
 
 
 def screenshot(
@@ -130,13 +146,18 @@ def write_run(
     recorded_negotiation = (
         TraceNegotiation(
             active_fragments=[
+                "browser.capture_state",
                 "browser.screenshot",
                 "browser.platform",
                 "loop.step_info",
                 "loop.task",
             ],
             required_fragments=["browser.platform"],
-            env_sourced_fragments=["browser.screenshot", "browser.platform"],
+            env_sourced_fragments=[
+                "browser.capture_state",
+                "browser.screenshot",
+                "browser.platform",
+            ],
             loop_sourced_fragments=["loop.step_info", "loop.task"],
         )
         if negotiation is _DEFAULT
@@ -177,6 +198,17 @@ def write_run(
             )
         ):
             values.append(BrowserPlatformObs(operating_system=input_platform))
+        # Recordings of agents that consume the optional capture state carry it
+        # on every step, as the browser captures it with the screenshot.
+        if (
+            recorded_negotiation is not None
+            and "browser.capture_state" in recorded_negotiation.env_sourced_fragments
+            and "browser.capture_state" not in spec.failed
+            and not any(
+                getattr(value, "fragment_id", None) == "browser.capture_state" for value in values
+            )
+        ):
+            values.append(capture_state())
         if spec.loop_fragments:
             values += [
                 TaskObs(user_request=task),
@@ -226,9 +258,15 @@ def write_run(
 
 #: What a UI-TARS run over the browser negotiates (``write_run(negotiation=...)``).
 UI_TARS_NEGOTIATION = TraceNegotiation(
-    active_fragments=["browser.screenshot", "browser.platform", "loop.step_info", "loop.task"],
+    active_fragments=[
+        "browser.capture_state",
+        "browser.screenshot",
+        "browser.platform",
+        "loop.step_info",
+        "loop.task",
+    ],
     required_fragments=["browser.screenshot", "browser.platform", "loop.task"],
-    env_sourced_fragments=["browser.screenshot", "browser.platform"],
+    env_sourced_fragments=["browser.capture_state", "browser.screenshot", "browser.platform"],
     loop_sourced_fragments=["loop.step_info", "loop.task"],
     active_actions=[
         "browser.click_coordinate",
@@ -245,15 +283,17 @@ UI_TARS_NEGOTIATION = TraceNegotiation(
 BROWSER_USE_NEGOTIATION = TraceNegotiation(
     active_fragments=[
         "browser.browser_meta",
+        "browser.capture_state",
         "browser.dom",
         "browser.screenshot",
         "browser.platform",
         "loop.step_info",
         "loop.task",
     ],
-    required_fragments=["browser.dom", "browser.platform", "loop.task"],
+    required_fragments=["browser.browser_meta", "browser.dom", "browser.platform", "loop.task"],
     env_sourced_fragments=[
         "browser.browser_meta",
+        "browser.capture_state",
         "browser.dom",
         "browser.screenshot",
         "browser.platform",

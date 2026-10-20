@@ -103,8 +103,9 @@ class TestObservationNegotiation:
             loop=extract_wiring(ReactLoop, "observation"),
             env_provides=env_provides,
         )
-        # dom + screenshot are required, browser_meta is optional but
-        # the env provides it so it should be active too.
+        # screenshot + browser_meta are required (browser_meta since the
+        # 2026-10-20 layering ruling); dom is optional in the class and
+        # active because the env provides it.
         assert {
             "browser.dom",
             "browser.screenshot",
@@ -112,15 +113,29 @@ class TestObservationNegotiation:
         } <= result.active_fragments
 
     def test_skyvern_activates_dom_and_drops_unused_optionals(self) -> None:
-        # When the env only provides dom (no screenshot/meta), Skyvern's
-        # required dom is satisfied and the optionals are simply absent.
+        # When the env provides only what Skyvern requires (dom, platform and
+        # the page state ``browser_meta``, required since the 2026-10-20
+        # layering ruling), the optionals — screenshot, capture_state — are
+        # simply absent.
         result = _observation_rules(
             agent=extract_wiring(SkyvernAgent, "observation"),
             loop=extract_wiring(ReactLoop, "observation"),
-            env_provides={"browser.dom", "browser.platform"},
+            env_provides={"browser.dom", "browser.platform", "browser.browser_meta"},
         )
-        assert "browser.dom" in result.active_fragments
+        assert {"browser.dom", "browser.browser_meta"} <= result.active_fragments
         assert "browser.screenshot" not in result.active_fragments
+
+    @pytest.mark.parametrize("agent_class", [SkyvernAgent, BrowserUseAgent])
+    def test_browser_agents_fail_without_page_state(self, agent_class: type[Any]) -> None:
+        # Browser page state is required for the browser-specific agents.
+        from spectragent.core.negotiation import IncompatibleFragmentError
+
+        with pytest.raises(IncompatibleFragmentError, match="browser_meta"):
+            _observation_rules(
+                agent=extract_wiring(agent_class, "observation"),
+                loop=extract_wiring(ReactLoop, "observation"),
+                env_provides={"browser.dom", "browser.platform", "browser.screenshot"},
+            )
 
     def test_ui_tars_fails_when_env_lacks_screenshot(self) -> None:
         # Required fragment missing → negotiation must raise.

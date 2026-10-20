@@ -333,14 +333,18 @@ async def test_history_actions_navigate_to_the_adjacent_committed_entry(
 
     group = ScopeGroup("history-action")
     scope = await group.create_scope("tab")
-    watchdog = ActionWatchdog(HistoryCDP(), input_platform="linux")
+    watchdog = ActionWatchdog(HistoryCDP(), input_platform="linux", action_effect_timeout_s=0.05)
     watchdog.attach(scope, "sid")
     try:
         await dispatch_request(scope, event)
-        assert sent == [
+        assert sent[:2] == [
             ("Page.getNavigationHistory", {}, "sid"),
             ("Page.navigateToHistoryEntry", {"entryId": entry_id}, "sid"),
         ]
+        # Then only the effect's reads of the history, waiting for the entry to commit.
+        assert {(method, session) for method, _params, session in sent[2:]} == {
+            ("Page.getNavigationHistory", "sid")
+        }
     finally:
         await group.close_all()
 

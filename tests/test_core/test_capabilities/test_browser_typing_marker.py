@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.actions.type_action import TypeAction
 from spectragent.core.capabilities.browser.actions.type_coordinate import TypeCoordinateAction
 from spectragent.core.capabilities.browser.dom.models import DOMRect
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
+    _FOCUSED_FIELD_JS,
     ActionWatchdog,
     _focused_field_verdict,
 )
@@ -28,6 +29,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from tests.test_core.test_capabilities.test_browser_action_click_robustness import (
     FakeCDP,
     _make_node,
+    _outcome,
 )
 from tests.test_core.test_capabilities.test_browser_action_frames import (
     _AnsweringScope,
@@ -84,7 +86,12 @@ class TestTheVerdict:
 
 
 class _FocusCDP(FakeCDP):
-    """Answers the focused-element read with a canned reply."""
+    """Answers the focused-element reads with one canned element.
+
+    Two reads ask: the sensitivity read (``_FOCUSED_FIELD_JS``, by value) gets
+    *focused* as it is; the effect's field probe (``effect_probes.FieldProbe``)
+    gets the same element by reference and then its reading.
+    """
 
     def __init__(self, focused: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -94,8 +101,24 @@ class _FocusCDP(FakeCDP):
         self, method: str, params: dict[str, Any] | None = None, *, session_id: str | None = None
     ) -> dict[str, Any]:
         reply = await super().send(method, params, session_id=session_id)
-        if method == "Runtime.evaluate":
+        params = params or {}
+        if method == "Runtime.evaluate" and params.get("expression") == _FOCUSED_FIELD_JS:
             return self.focused
+        if method == "Runtime.evaluate" and params.get("returnByValue") is False:
+            return {"result": {"type": "object", "subtype": "node", "objectId": "focused"}}
+        if method == "Runtime.callFunctionOn" and params.get("objectId") == "focused":
+            element = self.focused["result"]["value"]
+            return {
+                "result": {
+                    "value": {
+                        "facts": {"role": "textbox", "name": "Field"},
+                        "tag": element["tag"],
+                        "attrs": element["attrs"],
+                        "digest": "0:2166136261",
+                        "connected": True,
+                    }
+                }
+            }
         return reply
 
 
@@ -110,29 +133,54 @@ class TestTheHandlerReportsIt:
         result = await _watchdog(cdp)._on_type_text(
             TypeTextEvent(backend_node_id=42, text="hunter2", clear=False)
         )
-        assert result == {"typed": True, "length": 7, "sensitive": True}
+        assert _outcome(result) == {"typed": True, "length": 7, "sensitive": True}
 
     async def test_typing_into_a_plain_field(self) -> None:
         cdp = _FocusCDP(_focused("INPUT", type="search"))
         result = await _watchdog(cdp)._on_type_at_coordinate(
             TypeAtCoordinateEvent(coordinate_x=10, coordinate_y=20, text="shoes", clear=False)
         )
-        assert result == {"typed": True, "length": 5, "sensitive": False}
+        assert _outcome(result) == {"typed": True, "length": 5, "sensitive": False}
 
     async def test_the_field_is_judged_before_the_text_goes_in(self) -> None:
         cdp = _FocusCDP(_focused("INPUT", type="password"))
-        await _watchdog(cdp)._on_type_text(TypeTextEvent(backend_node_id=42, text="x", clear=True))
+        result = await _watchdog(cdp)._on_type_text(
+            TypeTextEvent(backend_node_id=42, text="x", clear=True)
+        )
+        assert result is not None and result["sensitive"] is True
         methods = [c.method for c in cdp.calls]
-        assert methods.index("Runtime.evaluate") < methods.index("Input.insertText")
-        read = next(c for c in cdp.calls if c.method == "Runtime.evaluate")
-        assert read.params["returnByValue"] is True
+        read = next(
+            i
+            for i, c in enumerate(cdp.calls)
+            if c.method == "Runtime.evaluate" and c.params["expression"] == _FOCUSED_FIELD_JS
+        )
+        # After the clear (whose keys can move focus), right before the text.
+        last_key = max(i for i, m in enumerate(methods) if m == "Input.dispatchKeyEvent")
+        assert last_key < read < methods.index("Input.insertText")
+        assert cdp.calls[read].params["returnByValue"] is True
+
+    async def test_without_a_clear_the_field_probes_verdict_is_the_one_before_the_text(
+        self,
+    ) -> None:
+        """Nothing is sent between the effect's field probe and the text, so its
+        reading is the verdict: the focused element is not read a second time."""
+        cdp = _FocusCDP(_focused("INPUT", type="password"))
+        result = await _watchdog(cdp)._on_type_text(
+            TypeTextEvent(backend_node_id=42, text="x", clear=False)
+        )
+        assert result is not None and result["sensitive"] is True
+        assert not [
+            c
+            for c in cdp.calls
+            if c.method == "Runtime.evaluate" and c.params["expression"] == _FOCUSED_FIELD_JS
+        ]
 
     async def test_a_failed_read_is_unknown_and_the_text_still_goes_in(self) -> None:
         cdp = FakeCDP(raise_on={"Runtime.evaluate"})
         result = await _watchdog(cdp)._on_type_text(
             TypeTextEvent(backend_node_id=42, text="hi", clear=False)
         )
-        assert result == {"typed": True, "length": 2, "sensitive": None}
+        assert _outcome(result) == {"typed": True, "length": 2, "sensitive": None}
         assert "Input.insertText" in [c.method for c in cdp.calls]
 
 

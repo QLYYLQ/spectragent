@@ -11,10 +11,13 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
     focused_scope,
+    handler_field,
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import SelectionEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     SelectDropdownEvent,
@@ -27,9 +30,14 @@ if TYPE_CHECKING:
 
 @dataclass
 class SelectDropdownAction(SettleableAction, ActionBase):
-    """Pick an option from a dropdown by value / visible text / sub-index."""
+    """Pick an option from a dropdown by value / visible text / sub-index.
+
+    Reports a :class:`SelectionEffect`: the option selected after the action
+    (its text withheld for a sensitive control) and whether it changed.
+    """
 
     __registry_key__ = "browser.select_dropdown"
+    Effect = SelectionEffect
 
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -65,8 +73,9 @@ class SelectDropdownAction(SettleableAction, ActionBase):
                 index=params.get("option_index"),
             )
             await dispatch_request(scope, event)
+            facts = handler_field(event, "effect_facts")
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(success=True, effect=effect_from(self, facts))
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
         except ValueError as exc:

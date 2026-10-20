@@ -88,7 +88,7 @@ DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000
 NAVIGATION_EVENT_MARGIN_S = 10.0
 
 
-class NavigateToUrlEvent(BaseEvent[dict[str, Any] | None]):
+class NavigateToUrlEvent(BaseEvent[dict[str, Any]]):
     """Navigate the current tab to a URL: wait for the commit, then for ``wait_until``.
 
     ``ActionWatchdog._on_navigate`` waits twice, one after the other:
@@ -104,7 +104,8 @@ class NavigateToUrlEvent(BaseEvent[dict[str, Any] | None]):
       resource never finishes is still drawn).
 
     The handler answers ``{"error": ...}`` when the navigation failed and
-    ``None`` otherwise. ``event_timeout`` — how long ``await event`` waits, and
+    ``{"navigated": True, "effect_facts": ...}`` otherwise (the measured
+    ``NavigationEffect`` facts). ``event_timeout`` — how long ``await event`` waits, and
     ``execution_timeout`` — the separate handler budget — both default to
     the two waits plus :data:`NAVIGATION_EVENT_MARGIN_S`. The caller's wait
     includes queue time; the execution budget starts when its handler starts.
@@ -214,8 +215,8 @@ class DragEvent(BaseEvent[dict[str, Any] | None]):
     execution_timeout: float = 30.0
 
 
-class ScrollEvent(BaseEvent[None]):
-    """Scroll page or a specific element."""
+class ScrollEvent(BaseEvent[dict[str, Any] | None]):
+    """Scroll page or a specific element; the handler answers what moved (``effect_facts``)."""
 
     direction: str  # "up" | "down" | "left" | "right"
     amount: int = 300  # pixels
@@ -226,7 +227,7 @@ class ScrollEvent(BaseEvent[None]):
     execution_timeout: float = 8.0
 
 
-class SendKeysEvent(BaseEvent[None]):
+class SendKeysEvent(BaseEvent[dict[str, Any] | None]):
     """Send keyboard keys (e.g. Enter, Escape, Ctrl+A)."""
 
     keys: str
@@ -234,15 +235,15 @@ class SendKeysEvent(BaseEvent[None]):
     execution_timeout: float = 60.0
 
 
-class GoBackEvent(BaseEvent[None]):
-    """Navigate back in browser history."""
+class GoBackEvent(BaseEvent[dict[str, Any]]):
+    """Navigate back in browser history; answered ``{"navigated": True, "effect_facts": ...}``."""
 
     event_timeout: float = 15.0
     execution_timeout: float = 15.0
 
 
-class GoForwardEvent(BaseEvent[None]):
-    """Navigate forward in browser history."""
+class GoForwardEvent(BaseEvent[dict[str, Any]]):
+    """Navigate forward in browser history; answered ``{"navigated": True, "effect_facts": ...}``."""
 
     event_timeout: float = 15.0
     execution_timeout: float = 15.0
@@ -255,8 +256,8 @@ class RefreshEvent(BaseEvent[None]):
     execution_timeout: float = 15.0
 
 
-class SelectDropdownEvent(BaseEvent[None]):
-    """Select an option from a dropdown element."""
+class SelectDropdownEvent(BaseEvent[dict[str, Any]]):
+    """Select an option from a dropdown element; answered ``{"selected": True, "effect_facts": ...}``."""
 
     backend_node_id: int
     #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.

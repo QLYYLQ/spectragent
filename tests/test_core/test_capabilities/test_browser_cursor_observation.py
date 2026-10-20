@@ -201,7 +201,7 @@ async def test_existing_image_consumers_send_model_view_on_unchanged_grid(agent)
         task=SimpleNamespace(user_request="click", follow_ups=[]),
         history=SimpleNamespace(items=[]),
         screenshot=image,
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         dom=DOMObs(),
     )
     messages = await agent.build_react_prompt(
@@ -231,7 +231,7 @@ async def test_skyvern_remains_text_when_screenshot_is_available() -> None:
         task=SimpleNamespace(user_request="click", follow_ups=[]),
         screenshot=shot(cursor=ScreenshotCursor(position=(20, 20))),
         dom=DOMObs(),
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
     )
     messages = await SkyvernAgent().build_react_prompt(
         observation,

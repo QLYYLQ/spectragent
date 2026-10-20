@@ -6,6 +6,7 @@ reply as a new decision. Agents opt into this layout from their public builders.
 
 import json
 
+from spectragent.agents._action_effects import result_facts
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 
@@ -32,11 +33,15 @@ def place_prompt_contributions(
     return [*system, *messages, *turn]
 
 
-def restored_history_message(history: RestoredHistory) -> UserMessage:
+def restored_history_message(history: RestoredHistory, *, show_action_effects: bool) -> UserMessage:
     """Describe actual restored execution separately from its source material.
 
     The sensitivity marker is trace-only evidence, just as in the normal
     action-result observation. It must not become model input in this path.
+    Each result's effect is the one measured while restoring, never the
+    source's; it is shown as its ``describe()`` line when
+    *show_action_effects* is on, and its raw fields never are
+    (``agents/_action_effects.py``).
     """
     history.validate_execution()
     facts = {
@@ -51,7 +56,7 @@ def restored_history_message(history: RestoredHistory) -> UserMessage:
         "actual_restored_execution": [
             {
                 "action": action.model_dump(mode="json"),
-                "result": result.model_dump(mode="json", exclude={"typed_into_sensitive_field"}),
+                "result": result_facts(result, show_effects=show_action_effects),
             }
             for action, result in zip(history.actions, history.results, strict=True)
         ],

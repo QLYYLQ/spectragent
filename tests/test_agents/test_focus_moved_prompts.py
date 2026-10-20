@@ -44,7 +44,8 @@ _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: sha256 of UI-TARS's messages (system prompt, then this step's) for :func:`_observation`
 #: with no move and the measured macOS platform. A deliberate change to
 #: UI-TARS's prompt updates it; nothing in this package may.
-UI_TARS_PROMPT_SHA256 = "ddfc0e61c19e32e62a3d545fe2b942744d1ffe8a530a164e9e88473d78f111db"
+#: Updated 2026-10-20: the platform block names a computer-use agent and its environment.
+UI_TARS_PROMPT_SHA256 = "9dd76b8b0b19339ba6565ba9defd8051047b64c65f3cf715f871acd315392d29"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:
@@ -78,7 +79,7 @@ def _observation(move: FocusMove | None) -> Any:
         },
     ]
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         **{fragment_field_name(key): build() for key, build in builders.items()},
         screenshot=ScreenshotObs(
             image_bytes=_png(),

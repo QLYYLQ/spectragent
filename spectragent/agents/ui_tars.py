@@ -59,7 +59,13 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
-from spectragent.agents._browser_platform import render_browser_platform
+from spectragent.agents._action_effects import result_facts
+from spectragent.agents._capture_state import (
+    CAPTURE_STATE_KEY,
+    capture_state_demand,
+    render_capture_state,
+)
+from spectragent.agents._input_platform import render_computer_use_platform
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompt_context import (
     place_prompt_contributions,
@@ -637,6 +643,13 @@ class UITarsAgent(AgentBase):
     # optional four are the rest of its native vocabulary, dropped from
     # both the prompt and the parser's reach when a capability does not
     # offer them.
+    #
+    # Cross-platform on purpose: ``capture_state`` is the platform-neutral
+    # capture fact every capability may provide (optional, so an
+    # environment without one still runs). Browser page state
+    # (``browser_meta``: URL, title, tabs) is for browser-specific agents
+    # and is deliberately not declared here (``docs/architecture_design.md``
+    # §4.4, "观测增强按消费方分层").
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
 
     __wiring__: ClassVar[dict[str, Any]] = {
@@ -644,7 +657,7 @@ class UITarsAgent(AgentBase):
         "observation": {
             "registry": "observation",
             "keys": ["screenshot", "platform", "history"],
-            "optional_keys": ["step_info"],
+            "optional_keys": ["step_info", CAPTURE_STATE_KEY],
             "declare_only": True,
         },
         "action": {
@@ -682,6 +695,30 @@ class UITarsAgent(AgentBase):
             ),
         ),
     ] = "screenshot_pixels"
+    show_action_effects: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Show each returned action's measured effect (the one line the "
+                "effect describes itself with, e.g. where a click landed or how "
+                "far a scroll moved) in the action feedback, restored history "
+                "included. Off: no effect reaches the model; the trace still "
+                "records every effect, so both arms of an ablation measure the same."
+            ),
+        ),
+    ] = True
+    show_capture_state: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Ask for the optional capture_state fragment (how the environment "
+                "stood when captured: settle, foreground change, pointer, failed "
+                "visible resources) and show it every step. Off: it is excluded "
+                "from this agent's observation demand, so it is neither captured "
+                "nor shown."
+            ),
+        ),
+    ] = True
 
     # ── internal state ─────────────────────────────────────────
     # Task text belongs to the prepare seed. Platform is measured by the
@@ -725,6 +762,15 @@ class UITarsAgent(AgentBase):
 
     def get_action_space(self) -> list[ActionDescriptor]:
         return list(self._action_descriptors)
+
+    # ── Negotiation ────────────────────────────────────────────
+
+    def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
+        """The class demand, without ``capture_state`` when ``show_capture_state`` is off."""
+        required, optional = super().negotiation_demand(registry)
+        return capture_state_demand(
+            self, registry, required, optional, shown=self.show_capture_state
+        )
 
     # ── Lifecycle hook called by AgentRuntime ──────────────────
 
@@ -788,7 +834,7 @@ class UITarsAgent(AgentBase):
                 here instead of feeding the model a parse error per step
                 that it has no way to fix.
         """
-        platform_text = render_browser_platform(observation)
+        platform_text = render_computer_use_platform(observation)
         if self._input_platform_text is not None and platform_text != self._input_platform_text:
             raise ValueError(
                 "UI-TARS input platform changed within an execution; prepare a new run"
@@ -805,6 +851,9 @@ class UITarsAgent(AgentBase):
             else f"Step: {context.step + 1}"
         )
         text = step_label + "\n" + self._render_action_results(observation.history)
+        capture_state = render_capture_state(observation)
+        if capture_state:
+            text += "\n" + capture_state
         screenshot = getattr(observation, "screenshot", None)
         if screenshot is not None and not isinstance(screenshot, ScreenshotGeometry):
             raise TypeError(
@@ -849,14 +898,15 @@ class UITarsAgent(AgentBase):
         self._input_platform_text = platform_text
         return messages
 
-    @staticmethod
-    def _render_action_results(history: Any) -> str:
+    def _render_action_results(self, history: Any) -> str:
         """Render the last batch without treating proposed actions as completed.
 
         History is the existing loop-source contract shared with branch
         reconstruction and export. Earlier batches already have their own
         messages; the singular action_result fragment loses all but the
-        last result. Sensitivity markers remain trace-only evidence.
+        last result. Sensitivity markers remain trace-only evidence. A
+        returned result's effect is shown only as its ``describe()`` line
+        (``"effect"`` in the result), and only with ``show_action_effects``.
         """
         if not history.items:
             return "<action_results>\nNo previous action batch.\n</action_results>"
@@ -869,9 +919,7 @@ class UITarsAgent(AgentBase):
             "returned_results": [
                 {
                     "action": action.model_dump(mode="json"),
-                    "result": result.model_dump(
-                        mode="json", exclude={"typed_into_sensitive_field"}
-                    ),
+                    "result": result_facts(result, show_effects=self.show_action_effects),
                 }
                 for action, result in zip(
                     record.actions[:returned], record.action_results, strict=True
@@ -900,7 +948,7 @@ class UITarsAgent(AgentBase):
         """Keep the live screenshot grid and label restored CSS-pixel actions as facts."""
         history.validate_execution()
         messages = await self.build_react_prompt(observation, context=context)
-        restored = restored_history_message(history)
+        restored = restored_history_message(history, show_action_effects=self.show_action_effects)
         return [
             *messages,
             UserMessage(

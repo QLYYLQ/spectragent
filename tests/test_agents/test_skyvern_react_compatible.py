@@ -18,8 +18,10 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.schemas.action import ActionDescriptor
+from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
+from spectragent.schemas.step_record import StepRecord
 
 #: Stand-in for a negotiated action set. Deliberately *not* empty: the
 #: old suite passed ``action_descriptors=[]`` everywhere, which is why a
@@ -80,12 +82,26 @@ class _FakeObservation:
         browser_meta: _FakeBrowserMeta | None = None,
         task: _FakeTask | None = None,
         step_info: _FakeStepInfo | None = None,
+        history: list[StepRecord] | None = None,
     ) -> None:
         self.dom = dom
         self.browser_meta = browser_meta
         self.task = task or _FakeTask()
-        self.platform = SimpleNamespace(operating_system="macos")
+        self.platform = SimpleNamespace(operating_system="macos", fragment_id="browser.platform")
         self.step_info = step_info
+        self.history = HistoryObs(items=list(history or []))
+
+
+def _clicks(*indexes: int) -> list[StepRecord]:
+    """One executed ``browser.click`` step per index, each with an ok result."""
+    return [
+        StepRecord(
+            step=step,
+            actions=[Action(name="browser.click", params={"index": index, "reasoning": "r"})],
+            action_results=[ActionResult(success=True)],
+        )
+        for step, index in enumerate(indexes)
+    ]
 
 
 def _make_agent(**overrides: Any) -> SkyvernAgent:
@@ -125,17 +141,21 @@ class TestWiring:
         assert "capability" not in SkyvernAgent.__wiring__
 
     def test_observation_wiring_dom_required_screenshot_optional(self) -> None:
-        # Skyvern is element-tree based: DOM is required + the task.
-        # Screenshot, browser_meta and step_info are optional. The agent
-        # renders its own bounded action history, not loop.history.
+        # Skyvern is element-tree based: DOM is required + the task. As a
+        # browser agent it requires the page state (``browser_meta``), and
+        # its bounded action-history window is rendered from the Loop's
+        # ``history`` (both were otherwise before the 2026-10-20 layering
+        # ruling: browser_meta optional, the window agent-owned state).
+        # Screenshot, step_info and the platform-neutral capture_state are
+        # optional.
         wiring = SkyvernAgent.__wiring__
         assert wiring["observation"] == {
             "registry": "observation",
-            "keys": ["dom", "platform", "task"],
+            "keys": ["dom", "platform", "task", "browser_meta", "history"],
             "optional_keys": [
                 "screenshot",
-                "browser_meta",
                 "step_info",
+                "capture_state",
             ],
             "declare_only": True,
         }
@@ -235,25 +255,28 @@ class TestPrepare:
         assert "verification code" in on
         assert "username=bob" in on
 
-    async def test_resets_action_history(self) -> None:
+    async def test_a_parsed_reply_never_enters_the_window(self) -> None:
+        """The window is the Loop's record of what ran, not what was proposed.
+
+        It used to be agent-owned state appended at parse time, so an
+        action the Loop cut or never reached was shown as history. Now a
+        parsed reply leaves no trace in the agent: the next prompt shows
+        only what the ``history`` fragment says ran.
+        """
         agent = _make_agent()
-        agent.parse_react_output(
-            SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=7)])
-        )
-        (before,) = await agent.build_react_prompt(
-            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
-        )
-        assert "browser.click(" in before.text
         agent.prepare(
             task="t",
             action_descriptors=[],
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
-        (after,) = await agent.build_react_prompt(
-            _FakeObservation(), context=ReactPromptContext(step=0, phase="policy")
+        agent.parse_react_output(
+            SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=7)])
         )
-        assert "(no actions yet)" in after.text
-        assert "browser.click(" not in after.text
+        (message,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
+        )
+        assert "<action_history>\n(no actions yet)\n</action_history>" in message.text
+        assert "browser.click(" not in message.text
 
 
 class TestBuildReactPrompt:
@@ -339,14 +362,11 @@ class TestBuildReactPrompt:
         assert isinstance(first, str)
         assert "<action_history>\n(no actions yet)\n</action_history>" in first
 
-        for i in range(3):
-            agent.parse_react_output(
-                SkyvernOutput(
-                    actions=[SkyvernActionItem(action_type="browser.click", index=i, reasoning="r")]
-                )
-            )
         later = (
-            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+            await agent.build_react_prompt(
+                _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), history=_clicks(0, 1, 2)),
+                context=ReactPromptContext(step=3, phase="policy"),
+            )
         )[0].content
         assert isinstance(later, str)
         history = later.split("<action_history>\n")[1].split("\n</action_history>")[0]
@@ -369,19 +389,14 @@ class TestBuildReactPrompt:
             action_descriptors=_DESCRIPTORS,
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
-        for i in range(3):
-            agent.parse_react_output(
-                SkyvernOutput(
-                    actions=[SkyvernActionItem(action_type="browser.click", index=i, reasoning="r")]
-                )
-            )
         content = (
             await agent.build_react_prompt(
-                _FakeObservation(dom=_FakeDOM(element_tree="<x/>")),
-                context=ReactPromptContext(step=0, phase="policy"),
+                _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), history=_clicks(0, 1, 2)),
+                context=ReactPromptContext(step=3, phase="policy"),
             )
         )[0].content
         assert isinstance(content, str)
+        assert "<action_history>\n(disabled)\n</action_history>" in content
         assert "browser.click(" not in content
 
     async def test_user_request_prefix(self) -> None:
@@ -552,24 +567,25 @@ class TestParseReactOutput:
         assert actions[0].params["extracted_content"] == "answer text"
         assert "text" not in actions[0].params
 
-    async def test_action_history_populated_for_prompt_window(self) -> None:
+    async def test_an_executed_action_enters_the_window_with_its_result(self) -> None:
         agent = _make_agent()
-        out = SkyvernOutput(
+        typed = StepRecord(
+            step=0,
             actions=[
-                SkyvernActionItem(
-                    action_type="browser.type",
-                    index=4,
-                    text="hello",
-                    reasoning="search",
+                Action(
+                    name="browser.type",
+                    params={"reasoning": "search", "index": 4, "text": "hello"},
                 )
-            ]
+            ],
+            action_results=[ActionResult(success=True)],
         )
-        agent.parse_react_output(out)
         (message,) = await agent.build_react_prompt(
-            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
+            _FakeObservation(history=[typed]), context=ReactPromptContext(step=1, phase="policy")
         )
-        assert "browser.type(" in message.text
-        assert "'text': 'hello'" in message.text
+        assert (
+            "browser.type({'reasoning': 'search', 'index': 4, 'text': 'hello'}) -> ok"
+            in message.text
+        )
 
     def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
         """The agent must not invent a provider for a bare verb.

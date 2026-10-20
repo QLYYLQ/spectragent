@@ -42,7 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ClassVar
 
 from agent_cdp import (
@@ -60,6 +60,22 @@ from spectragent.core.capabilities.browser.dom.sensitivity import (
     is_sensitive_control,
     withhold_sensitive_markup,
 )
+from spectragent.core.capabilities.browser.effect_probes import (
+    SELECT_FACTS_JS,
+    UNKNOWN,
+    FieldProbe,
+    ProbeBudget,
+    current_location,
+    document_loaded,
+    element_at,
+    focused_element,
+    history_entry_committed,
+    history_location,
+    release_object,
+    resolve_object,
+    selection_facts,
+)
+from spectragent.core.capabilities.browser.effects import ViewportPoint
 from spectragent.core.capabilities.browser.geometry import (
     FrameGeometryError,
     FrameProjection,
@@ -72,14 +88,10 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
-from spectragent.core.capabilities.browser.input.keyboard import (
-    ALT_MODIFIER,
-    CONTROL_MODIFIER,
-    META_MODIFIER,
-    SHIFT_MODIFIER,
-)
+from spectragent.core.capabilities.browser.input.chords import parse_key_chord
 from spectragent.core.capabilities.browser.input.mouse import PointerPosition
 from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.scroll_probe import ScrollProbe
 from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
@@ -109,6 +121,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     TypeAtCoordinateEvent,
     TypeTextEvent,
 )
+from spectragent.schemas.action import Unmeasured
 
 logger = logging.getLogger(__name__)
 
@@ -186,41 +199,31 @@ def _inside_sensitive_control(node: DOMElementNode | None) -> bool:
     return False
 
 
-# Key name → (DOM `key`, DOM `code`, Windows virtual key code, optional
-# `char` text) for CDP Input.dispatchKeyEvent. The 4th element, when not
-# None, means this key has a text interpretation and a separate
-# ``type=char`` event should be sandwiched between keyDown and keyUp;
-# without that event Chrome won't fire ``keypress`` and many JS handlers
-# (Amazon's search-on-Enter, autosuggest selectors, contenteditable
-# inputs) treat the press as half-hearted and skip their reaction.
-# Two-event keyDown + keyUp is enough for navigation keys (arrows, Esc,
-# Home/End, Pg*). Reference: ref/browser-use/browser_use/actor/element.py:423-501.
-# No key event carries a ``nativeVirtualKeyCode``: the ``input/keyboard.py``
-# module docstring ("No native key code") says what it did on macOS.
-_KEY_INFO: dict[str, tuple[str, str, int, str | None]] = {
-    "enter": ("Enter", "Enter", 13, "\r"),
-    "tab": ("Tab", "Tab", 9, "\t"),
-    "escape": ("Escape", "Escape", 27, None),
-    "backspace": ("Backspace", "Backspace", 8, None),
-    "delete": ("Delete", "Delete", 46, None),
-    "arrowup": ("ArrowUp", "ArrowUp", 38, None),
-    "arrowdown": ("ArrowDown", "ArrowDown", 40, None),
-    "arrowleft": ("ArrowLeft", "ArrowLeft", 37, None),
-    "arrowright": ("ArrowRight", "ArrowRight", 39, None),
-    "home": ("Home", "Home", 36, None),
-    "end": ("End", "End", 35, None),
-    "pageup": ("PageUp", "PageUp", 33, None),
-    "pagedown": ("PageDown", "PageDown", 34, None),
-    "space": (" ", "Space", 32, " "),
-}
-
-
 #: What a click on a frame element that can no longer be located reports.
 _STALE_FRAME_ELEMENT = (
     "The element is inside a frame that changed since the last observation "
     "(navigated, reloaded or removed), so it cannot be located; observe the "
     "page again before acting on it."
 )
+
+#: What a press on an element that stays outside the viewport reports.
+_OUTSIDE_VIEWPORT = (
+    "The element's centre lies outside the viewport and scrolling does not bring "
+    "it into view (it may be hidden off-screen, such as a closed panel), so a "
+    "press there would reach nothing; observe the page again and pick a visible "
+    "element."
+)
+
+#: Scroll an element so its centre is in the middle of the viewport.
+_CENTRE_INTO_VIEW_JS = (
+    "function() { this.scrollIntoView({block: 'center', inline: 'center'}); return {}; }"
+)
+
+
+def _centre(box: tuple[float, float, float, float]) -> tuple[float, float]:
+    """The centre of an ``(x, y, width, height)`` box."""
+    x, y, w, h = box
+    return x + w / 2, y + h / 2
 
 
 def _visible_span(centre: float, size: float, extent: int) -> float:
@@ -251,41 +254,6 @@ _CLIENT_RECT_JS = (
     "  return {x: r.x, y: r.y, w: r.width, h: r.height};"
     "}"
 )
-
-
-def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
-    """Build CDP Input.dispatchKeyEvent params for one logical key.
-
-    Returns ``(base_payload, char_text)``:
-
-    - ``base_payload`` is the shared subset (key, code,
-      windowsVirtualKeyCode) that the caller wraps with ``type=keyDown`` /
-      ``type=keyUp`` and any ``modifiers``. Never a ``nativeVirtualKeyCode``
-      (the ``input/keyboard.py`` module docstring, "No native key code").
-    - ``char_text`` is the text to dispatch as a ``type=char`` event
-      between keyDown and keyUp; ``None`` skips the char event.
-
-    Single printable characters (``"a"``, ``"5"``, ``"%"``) always emit
-    a char event with the character itself. Named navigation keys
-    (arrows, Esc, ...) skip char. Enter / Tab / Space carry their
-    canonical text representation per the table above.
-    """
-    info = _KEY_INFO.get(raw.lower())
-    if info is not None:
-        key, code, vk, char = info
-        return ({"key": key, "code": code, "windowsVirtualKeyCode": vk}, char)
-    if len(raw) == 1:
-        ch = raw
-        upper = ch.upper()
-        if ch.isalpha():
-            code = f"Key{upper}"
-        elif ch.isdigit():
-            code = f"Digit{ch}"
-        else:
-            code = upper
-        return ({"key": ch, "code": code, "windowsVirtualKeyCode": ord(upper)}, ch)
-    # Unknown multi-char key — pass through key-only.
-    return ({"key": raw}, None)
 
 
 _DEBUG_OVERLAY_JS = r"""
@@ -436,6 +404,7 @@ class ActionWatchdog(BrowserWatchdog):
             viewport=ctx.viewport,
             sessions=ctx.tab_sessions,
             pointer_position=ctx.pointer_position,
+            action_effect_timeout_s=ctx.action_effect_timeout_s,
         )
 
     @property
@@ -457,8 +426,11 @@ class ActionWatchdog(BrowserWatchdog):
         viewport: tuple[int, int] = (1280, 720),
         sessions: TabSessions | None = None,
         pointer_position: PointerPosition | None = None,
+        action_effect_timeout_s: float = 1.0,
     ) -> None:
         self._cdp = cdp
+        # How long each action may spend measuring its own effect (probe time).
+        self._effect_timeout_s = action_effect_timeout_s
         self._sessions = sessions
         self._selector_map_getter = selector_map_getter
         # Per-tab main frame id, used by _on_navigate to filter sub-frame
@@ -500,6 +472,10 @@ class ActionWatchdog(BrowserWatchdog):
         # we register it at most once per tab.
         self._overlay_script_installed = False
 
+    def _effect_budget(self) -> ProbeBudget:
+        """A fresh measurement budget for one action (``action_effect_timeout_s``)."""
+        return ProbeBudget(self._effect_timeout_s)
+
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
         self._session_id = session_id
@@ -511,13 +487,13 @@ class ActionWatchdog(BrowserWatchdog):
             (TypeTextEvent, self._on_type_text, action_result(marker="typed")),
             (TypeAtCoordinateEvent, self._on_type_at_coordinate, action_result(marker="typed")),
             (DragEvent, self._on_drag, action_result(marker="dragged")),
-            (ScrollEvent, self._on_scroll, action_result()),
-            (NavigateToUrlEvent, self._on_navigate, action_result()),
-            (SendKeysEvent, self._on_send_keys, action_result()),
-            (GoBackEvent, self._on_go_back, action_result()),
-            (GoForwardEvent, self._on_go_forward, action_result()),
+            (ScrollEvent, self._on_scroll, action_result(marker="scrolled")),
+            (NavigateToUrlEvent, self._on_navigate, action_result(marker="navigated")),
+            (SendKeysEvent, self._on_send_keys, action_result(marker="pressed")),
+            (GoBackEvent, self._on_go_back, action_result(marker="navigated")),
+            (GoForwardEvent, self._on_go_forward, action_result(marker="navigated")),
             (RefreshEvent, self._on_refresh, action_result()),
-            (SelectDropdownEvent, self._on_select_dropdown, action_result()),
+            (SelectDropdownEvent, self._on_select_dropdown, action_result(marker="selected")),
             (
                 ExtractContentEvent,
                 self._on_extract_content,
@@ -560,6 +536,12 @@ class ActionWatchdog(BrowserWatchdog):
         position depends on every frame around it, so a failure there means
         the frame navigated, reloaded or went away — and the snapshot's point
         now belongs to whatever replaced it.
+
+        The click's effect (``PointerEffect``) says whether the element hit
+        under the pointer is this one or inside it: the element is held as a
+        remote object of the tab and asked right before the press. An element
+        inside frames is not asked (``on_target`` is ``"unavailable"``): the
+        press is hit-tested on the tab, where such an element has no object.
         """
         node = self._resolve_node(event.backend_node_id, event.session_id)
         if node is None:
@@ -600,7 +582,25 @@ class ActionWatchdog(BrowserWatchdog):
             cx, cy = int(cx_f), int(cy_f)
             target_w, target_h = node.bounds.width, node.bounds.height
 
+        if not self._in_viewport(cx, cy):
+            # Chrome drops a press outside the viewport while the action would
+            # report success; the element was scrolled as far as it goes.
+            logger.warning(
+                "Not clicking %s: its centre (%d, %d) stays outside the viewport",
+                self._describe_node(node),
+                cx,
+                cy,
+            )
+            return {"error": _OUTSIDE_VIEWPORT}
+
         ax, ay = self._aim_inside(cx, cy, target_w, target_h)
+        budget = self._effect_budget()
+        # Not inside frames, the element belongs to the tab's own session.
+        target_object_id = (
+            None
+            if owners
+            else await resolve_object(self._cdp, self._session_id, event.backend_node_id, budget)
+        )
         return await self._click_at(
             ax,
             ay,
@@ -609,6 +609,9 @@ class ActionWatchdog(BrowserWatchdog):
             label=self._describe_node(node),
             target_w=target_w,
             target_h=target_h,
+            budget=budget,
+            target_object_id=target_object_id,
+            on_target="unavailable" if owners else UNKNOWN,
         )
 
     def _aim_inside(self, cx: float, cy: float, width: float, height: float) -> tuple[int, int]:
@@ -662,6 +665,7 @@ class ActionWatchdog(BrowserWatchdog):
             label=f"({event.coordinate_x}, {event.coordinate_y})",
             target_w=target_w,
             target_h=target_h,
+            budget=self._effect_budget(),
         )
 
     async def _target_box_at(self, x: int, y: int) -> tuple[float, float]:
@@ -721,6 +725,9 @@ class ActionWatchdog(BrowserWatchdog):
         label: str = "",
         target_w: float = 0.0,
         target_h: float = 0.0,
+        budget: ProbeBudget | None = None,
+        target_object_id: str | None = None,
+        on_target: bool | Unmeasured | None = None,
     ) -> dict[str, Any]:
         """Execute click at (x, y) via the HumanMouse middle layer.
 
@@ -728,7 +735,45 @@ class ActionWatchdog(BrowserWatchdog):
         human trajectory otherwise) plus press/release are owned by
         ``self._mouse``.
         The returned coords are the *requested* target, unchanged.
+
+        With a *budget* the click measures its effect (``PointerEffect``) and
+        answers it as ``effect_facts``: once the cursor has arrived, right
+        before the press, the element the tab hit-tests at the dispatched
+        point; after the release, the focused element. *target_object_id*
+        is the intended element as a remote object of the tab, for
+        ``on_target``; without one, ``on_target`` is the given value
+        (``None``: the click named no element). Measuring never changes the
+        click: a probe that fails or runs out of the budget leaves its fact
+        unknown. Without a budget (the focusing click of ``type_coordinate``)
+        nothing is measured.
         """
+        facts: dict[str, Any] = {
+            "point": ViewportPoint(x=x, y=y),
+            "hit": UNKNOWN,
+            "on_target": on_target,
+            "focus_after": UNKNOWN,
+        }
+
+        before_press: Callable[[int, int], Awaitable[None]] | None = None
+        if budget is not None:
+            probe_budget = budget
+
+            async def hit_test(px: int, py: int) -> None:
+                facts["point"] = ViewportPoint(x=px, y=py)
+                hit, verdict = await element_at(
+                    self._cdp,
+                    self._session_id,
+                    px,
+                    py,
+                    probe_budget,
+                    target_object_id=target_object_id,
+                )
+                facts["hit"] = hit
+                if target_object_id is not None:
+                    facts["on_target"] = verdict
+
+            before_press = hit_test
+
         try:
             await self._mouse.click(
                 x,
@@ -737,12 +782,24 @@ class ActionWatchdog(BrowserWatchdog):
                 click_count,
                 target_w=target_w,
                 target_h=target_h,
+                before_press=before_press,
             )
             await self._paint_click(x, y, label)
-            return {"clicked": True, "x": x, "y": y}
+            answer: dict[str, Any] = {"clicked": True, "x": x, "y": y}
+            if budget is not None:
+                facts["focus_after"] = await focused_element(self._cdp, self._session_id, budget)
+                answer["effect_facts"] = facts
+            return answer
         except Exception as e:
             logger.error("Click failed at (%d, %d): %s", x, y, e)
             return {"error": str(e)}
+        finally:
+            if target_object_id is not None and budget is not None:
+                object_id = target_object_id
+                await budget.run(
+                    lambda: release_object(self._cdp, self._session_id, object_id),
+                    "release target",
+                )
 
     # -----------------------------------------------------------------------
     # Type
@@ -769,7 +826,9 @@ class ActionWatchdog(BrowserWatchdog):
                 {"backendNodeId": event.backend_node_id},
                 session_id=sid,
             )
-            return await self._insert_text_at_focus(event.text, event.clear, session_id=sid)
+            return await self._insert_text_at_focus(
+                event.text, event.clear, budget=self._effect_budget(), session_id=sid
+            )
         except Exception as e:
             logger.error("Type failed: %s", e)
             return {"error": str(e)}
@@ -782,7 +841,11 @@ class ActionWatchdog(BrowserWatchdog):
         Clicking the coordinate is what moves focus; everything after it
         (select-all + Backspace, ``Input.insertText``) is focus-relative
         already and is shared verbatim with :meth:`_on_type_text`.
+
+        The focusing click measures nothing: this action's effect is the
+        typing's (``TextInputEffect``), measured from the focus it left.
         """
+        budget = self._effect_budget()
         clicked = await self._click_at(
             event.coordinate_x,
             event.coordinate_y,
@@ -793,13 +856,13 @@ class ActionWatchdog(BrowserWatchdog):
         if "error" in clicked:
             return clicked
         try:
-            return await self._insert_text_at_focus(event.text, event.clear)
+            return await self._insert_text_at_focus(event.text, event.clear, budget=budget)
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)
             return {"error": str(e)}
 
     async def _insert_text_at_focus(
-        self, text: str, clear: bool, *, session_id: str | None = None
+        self, text: str, clear: bool, *, budget: ProbeBudget, session_id: str | None = None
     ) -> dict[str, Any]:
         """Clear (optionally) and enter *text* into the focused node.
 
@@ -818,14 +881,50 @@ class ActionWatchdog(BrowserWatchdog):
         Right before the text goes in, the focused element is judged by the
         sensitivity rule; the verdict comes back as ``sensitive`` and the
         action records it (``ActionResult.typed_into_sensitive_field``).
+
+        The effect (``TextInputEffect``, answered as ``effect_facts``) is
+        measured on *budget*: the focused control is read before the clear
+        and again after the text (:class:`FieldProbe`: whether its value
+        changed, never the value), the keys are the clear's select-all chord
+        and Backspace, and the focused element is read once the text is in.
+        A probe that fails or runs out of the budget leaves its fact unknown;
+        it never changes the typing.
         """
         sid = self._element_session(session_id)
-        if clear:
-            await self._keyboard.clear_focused(session_id=sid)
-
-        sensitive = await self._focused_field_is_sensitive(sid)
-        await self._keyboard.type_text(text, session_id=sid)
-        return {"typed": True, "length": len(text), "sensitive": sensitive}
+        field = FieldProbe(self._cdp, sid, budget)
+        keys: tuple[str, ...] = ()
+        try:
+            await field.before()
+            if clear:
+                await self._keyboard.clear_focused(session_id=sid)
+                select_all = parse_key_chord(f"{self._keyboard.select_all_modifier[0]}+a")
+                keys = (select_all.text, "Backspace")
+                # The clear's keystrokes can move focus (a code box that steps
+                # back on Backspace), so the field is judged again right before
+                # the text goes in.
+                sensitive = await self._focused_field_is_sensitive(sid)
+            else:
+                # Nothing was sent since the field probe read the focused
+                # element: its verdict is the one right before the text.
+                sensitive = field.sensitive if isinstance(field.sensitive, bool) else None
+            await self._keyboard.type_text(text, session_id=sid)
+            value_changed = await field.after()
+            focus_after = await focused_element(self._cdp, self._session_id, budget)
+        finally:
+            await budget.run(field.release, "release field")
+        return {
+            "typed": True,
+            "length": len(text),
+            "sensitive": sensitive,
+            "effect_facts": {
+                "target": field.target,
+                "sensitive": field.sensitive,
+                "value_changed": value_changed,
+                "keys": keys,
+                "text_entered": bool(text),
+                "focus_after": focus_after,
+            },
+        }
 
     async def _focused_field_is_sensitive(self, session_id: str | None) -> bool | None:
         """Whether the element that will receive the text is a sensitive control.
@@ -857,16 +956,42 @@ class ActionWatchdog(BrowserWatchdog):
         The whole gesture belongs to :class:`HumanMouse` — press/move/
         release with the run's trajectory strategy in between, so a
         humanised run drags along a human path rather than teleporting.
+
+        Its effect (``PointerEffect``, answered as ``effect_facts``): the
+        press and release points, the element the tab hit-tests at the press
+        point right before the button goes down, and the focused element
+        afterwards. A probe that fails or runs out of the budget leaves its
+        fact unknown; it never changes the drag.
         """
+        budget = self._effect_budget()
+        facts: dict[str, Any] = {
+            "point": ViewportPoint(x=event.start_x, y=event.start_y),
+            "release_point": ViewportPoint(x=event.end_x, y=event.end_y),
+            "hit": UNKNOWN,
+            "focus_after": UNKNOWN,
+        }
+
+        async def hit_test(px: int, py: int) -> None:
+            facts["point"] = ViewportPoint(x=px, y=py)
+            facts["hit"], _ = await element_at(self._cdp, self._session_id, px, py, budget)
+
         try:
             await self._mouse.drag(
-                event.start_x, event.start_y, event.end_x, event.end_y, event.button
+                event.start_x,
+                event.start_y,
+                event.end_x,
+                event.end_y,
+                event.button,
+                before_press=hit_test,
             )
-            return {
+            answer: dict[str, Any] = {
                 "dragged": True,
                 "from": [event.start_x, event.start_y],
                 "to": [event.end_x, event.end_y],
             }
+            facts["focus_after"] = await focused_element(self._cdp, self._session_id, budget)
+            answer["effect_facts"] = facts
+            return answer
         except Exception as e:
             logger.error(
                 "Drag failed (%d, %d) -> (%d, %d): %s",
@@ -884,8 +1009,17 @@ class ActionWatchdog(BrowserWatchdog):
     # Scroll
     # -----------------------------------------------------------------------
 
-    async def _on_scroll(self, event: ScrollEvent) -> None:
-        """Scroll the viewport or a specific element."""
+    async def _on_scroll(self, event: ScrollEvent) -> dict[str, Any]:
+        """Scroll the viewport or a specific element, and measure what moved.
+
+        The wheel is dispatched at the pointer's current position for a page
+        scroll, or at an aimed point inside the element for an element
+        scroll. Around it, a :class:`ScrollProbe` holds the containers the
+        wheel could move at that point and reports the one that did, with its
+        offsets before and after and whether it reached its edge
+        (``effects.ScrollEffect``). Measuring is bounded by the action's
+        budget and never fails the scroll.
+        """
         try:
             dx, dy = 0, 0
             if event.direction == "down":
@@ -899,39 +1033,53 @@ class ActionWatchdog(BrowserWatchdog):
 
             if event.backend_node_id is not None:
                 node = self._resolve_node(event.backend_node_id, event.session_id)
-                if node is not None:
-                    owners = node.frame_owners()
-                    try:
-                        live = await self._get_live_viewport_center(
-                            event.backend_node_id, event.session_id, owners
-                        )
-                    except FrameGeometryError as exc:
-                        logger.warning("Not scrolling %s: %s", self._describe_node(node), exc)
-                        raise
-                    if live is not None:
-                        cx, cy, w, h = live
-                        # The wheel is aimed at a measured box too, so it goes
-                        # through the same seam as the click.
-                        cx, cy = self._aim_inside(cx, cy, w, h)
-                    elif owners:
-                        # Same reason as a click: the frame changed.
-                        logger.warning(
-                            "Element %s inside a frame could not be located live; "
-                            "not scrolling at its snapshot position",
-                            self._describe_node(node),
-                        )
-                        raise RuntimeError("Element could not be located for scrolling")
-                    elif node.bounds is not None:
-                        cx_f, cy_f = node.bounds.center
-                        cx, cy = self._aim_inside(cx_f, cy_f, node.bounds.width, node.bounds.height)
-                    else:
-                        raise RuntimeError("Element could not be located for scrolling")
-                    await self._mouse.wheel(cx, cy, dx, dy)
-                else:
+                if node is None:
                     raise ValueError(f"Element {event.backend_node_id} not in selector_map")
+                owners = node.frame_owners()
+                try:
+                    live = await self._get_live_viewport_center(
+                        event.backend_node_id, event.session_id, owners
+                    )
+                except FrameGeometryError as exc:
+                    logger.warning("Not scrolling %s: %s", self._describe_node(node), exc)
+                    raise
+                if live is not None:
+                    cx, cy, w, h = live
+                    # The wheel is aimed at a measured box too, so it goes
+                    # through the same seam as the click.
+                    cx, cy = self._aim_inside(cx, cy, w, h)
+                elif owners:
+                    # Same reason as a click: the frame changed.
+                    logger.warning(
+                        "Element %s inside a frame could not be located live; "
+                        "not scrolling at its snapshot position",
+                        self._describe_node(node),
+                    )
+                    raise RuntimeError("Element could not be located for scrolling")
+                elif node.bounds is not None:
+                    cx_f, cy_f = node.bounds.center
+                    cx, cy = self._aim_inside(cx_f, cy_f, node.bounds.width, node.bounds.height)
+                else:
+                    raise RuntimeError("Element could not be located for scrolling")
+                if not self._in_viewport(cx, cy):
+                    # A wheel outside the viewport scrolls nothing; same rule as a click.
+                    raise RuntimeError(_OUTSIDE_VIEWPORT)
             else:
-                mx, my = self._mouse.position
-                await self._mouse.wheel(mx, my, dx, dy)
+                cx, cy = self._mouse.position
+
+            direction = event.direction
+            if direction not in ("up", "down", "left", "right"):
+                raise ValueError(f"Unknown scroll direction {direction!r}")
+            probe = ScrollProbe(
+                self._cdp, self._session_id, self._effect_budget(), direction=direction
+            )
+            try:
+                await probe.before(cx, cy)
+                await self._mouse.wheel(cx, cy, dx, dy)
+                facts = await probe.after()
+            finally:
+                await probe.release()
+            return {"scrolled": True, "effect_facts": facts}
         except Exception as e:
             logger.error("Scroll failed: %s", e)
             raise
@@ -940,7 +1088,7 @@ class ActionWatchdog(BrowserWatchdog):
     # Navigation
     # -----------------------------------------------------------------------
 
-    async def _on_navigate(self, event: NavigateToUrlEvent) -> dict[str, Any] | None:
+    async def _on_navigate(self, event: NavigateToUrlEvent) -> dict[str, Any]:
         """Navigate to a URL: wait for the commit, then (optionally) for a lifecycle phase.
 
         Two waits, one after the other (``docs/architecture_design.md`` §4.14,
@@ -971,6 +1119,15 @@ class ActionWatchdog(BrowserWatchdog):
         (``NavigateToUrlEvent._outlast_both_waits``), so every outcome above
         is this handler's answer, never the caller giving up first.
 
+        A navigation that reached its page answers ``{"navigated": True,
+        "effect_facts": ...}``: the facts of a
+        :class:`~spectragent.core.capabilities.browser.effects.NavigationEffect`
+        (``docs/architecture_design.md`` §4.5, "动作效果") — the current
+        history entry's URL before anything else happens and after both
+        waits, and whether the document shown then finished loading. They are
+        measured within ``action_effect_timeout_s``; a probe that fails or
+        runs out leaves its fact unknown and never changes the answer.
+
         The lifecycle waiter is registered **synchronously** before
         ``Page.navigate`` is sent so we don't race the CDP response.
         Using :func:`agent_cdp.advanced.expect.expect` here would be a
@@ -989,6 +1146,12 @@ class ActionWatchdog(BrowserWatchdog):
         """
         if self._scope is None:
             raise RuntimeError("Navigation executor has no attached tab scope")
+
+        # The URL before, read before the lifecycle waiter is armed: while it
+        # is armed and the loader is not yet known, an event of the document
+        # being left would match it.
+        budget = self._effect_budget()
+        before = await current_location(self._cdp, self._session_id, budget)
 
         # 1. Pick lifecycle event class + base predicate from wait_until.
         lifecycle_target = self._lifecycle_target(event.wait_until)
@@ -1073,7 +1236,12 @@ class ActionWatchdog(BrowserWatchdog):
                     url=event.url,
                 )
             )
-            return None
+            after = await current_location(self._cdp, self._session_id, budget)
+            loaded = await document_loaded(self._cdp, self._session_id, budget)
+            return {
+                "navigated": True,
+                "effect_facts": {"before": before, "after": after, "document_loaded": loaded},
+            }
         finally:
             if waiter is not None:
                 waiter.close()
@@ -1127,13 +1295,24 @@ class ActionWatchdog(BrowserWatchdog):
             )
         return None
 
-    async def _on_go_back(self, _event: GoBackEvent) -> None:
-        await self._navigate_history(-1)
+    async def _on_go_back(self, _event: GoBackEvent) -> dict[str, Any]:
+        return await self._navigate_history(-1)
 
-    async def _on_go_forward(self, _event: GoForwardEvent) -> None:
-        await self._navigate_history(1)
+    async def _on_go_forward(self, _event: GoForwardEvent) -> dict[str, Any]:
+        return await self._navigate_history(1)
 
-    async def _navigate_history(self, offset: int) -> None:
+    async def _navigate_history(self, offset: int) -> dict[str, Any]:
+        """Go to the adjacent committed history entry; answer ``{"navigated": True, ...}``.
+
+        ``Page.navigateToHistoryEntry`` answers before the navigation commits,
+        so the effect's URL after is read once that entry has become the
+        current one, waited for within ``action_effect_timeout_s``
+        (:func:`~spectragent.core.capabilities.browser.effect_probes.history_entry_committed`).
+        When it has not by then, the URL after and whether the document
+        loaded are unknown — never the page being left reported as the
+        destination. The URL before is the current entry of the history this
+        handler read to find the adjacent one.
+        """
         history = await self._cdp.send("Page.getNavigationHistory", {}, session_id=self._session_id)
         if not isinstance(history, dict) or not isinstance(history.get("currentIndex"), int):
             raise RuntimeError("Browser returned no navigation history")
@@ -1145,9 +1324,21 @@ class ActionWatchdog(BrowserWatchdog):
         entry_id = entries[index].get("id")
         if not isinstance(entry_id, int):
             raise RuntimeError("Browser navigation history entry has no id")
+        before = history_location(history) or UNKNOWN
         await self._cdp.send(
             "Page.navigateToHistoryEntry", {"entryId": entry_id}, session_id=self._session_id
         )
+        budget = self._effect_budget()
+        after = await history_entry_committed(self._cdp, self._session_id, entry_id, budget)
+        loaded = (
+            await document_loaded(self._cdp, self._session_id, budget)
+            if after != UNKNOWN
+            else UNKNOWN
+        )
+        return {
+            "navigated": True,
+            "effect_facts": {"before": before, "after": after, "document_loaded": loaded},
+        }
 
     async def _on_refresh(self, _event: RefreshEvent) -> None:
         try:
@@ -1160,64 +1351,94 @@ class ActionWatchdog(BrowserWatchdog):
     # Send keys
     # -----------------------------------------------------------------------
 
-    async def _on_send_keys(self, event: SendKeysEvent) -> dict[str, str] | None:
-        """Send keyboard keys, supports modifiers (e.g. 'Ctrl+a', 'Enter').
+    async def _on_send_keys(self, event: SendKeysEvent) -> dict[str, Any]:
+        """Send one key or chord (``Enter``, ``a``, ``Control+A``).
 
-        Uses ``_resolve_key_event`` to fill ``code`` and
-        ``windowsVirtualKeyCode`` so the synthesized DOM ``KeyboardEvent``
-        has a non-zero ``keyCode`` and a real ``code`` string — both of
-        which JS handlers (especially React's onKeyDown) check before
-        treating the press as Enter. No ``nativeVirtualKeyCode``: on macOS
-        Chrome matched an unhandled key carrying one against its own menu
-        and opened ``chrome://settings/help`` in front of the agent's tab
-        (the ``input/keyboard.py`` module docstring, "No native key code").
+        The input is parsed by :func:`~spectragent.core.capabilities.browser.input.chords.parse_key_chord`,
+        the same parser ``browser.send_keys`` refuses with before it emits:
+        anything that is not a named key, a single character or a ``+``
+        chord of them answers an error and sends no key event at all
+        (``docs/architecture_design.md`` §4.13). The key event carries
+        ``code`` and ``windowsVirtualKeyCode`` so the synthesized DOM
+        ``KeyboardEvent`` has a non-zero ``keyCode`` and a real ``code``
+        string — both of which JS handlers (especially React's onKeyDown)
+        check before treating the press as Enter. No
+        ``nativeVirtualKeyCode``: on macOS Chrome matched an unhandled key
+        carrying one against its own menu and opened
+        ``chrome://settings/help`` in front of the agent's tab (the
+        ``input/keyboard.py`` module docstring, "No native key code").
+
+        The effect (``TextInputEffect``, answered as ``effect_facts``) is
+        measured as typing's is: the focused control before and after the
+        key (:class:`FieldProbe`), the chord as written canonically, and the
+        focused element afterwards. A key that types a printable character
+        (no Control, Alt or Meta held) into a field that is sensitive — or
+        whose sensitivity could not be read — is not named: it is reported as
+        entered text, so a secret's characters never reach the effect. An
+        input refused by the parser measures nothing.
         """
         try:
-            parts = [part.strip() for part in event.keys.split("+")]
-            if not all(parts):
-                raise ValueError("Key names and chord components must not be empty")
-            key = parts[-1]
-            modifiers = [part.lower() for part in parts[:-1]]
-
-            # Build modifier bitmask.
-            mod_mask = 0
-            aliases = {
-                "ctrl": CONTROL_MODIFIER,
-                "control": CONTROL_MODIFIER,
-                "alt": ALT_MODIFIER,
-                "option": ALT_MODIFIER,
-                "shift": SHIFT_MODIFIER,
-                "meta": META_MODIFIER,
-                "cmd": META_MODIFIER,
-                "command": META_MODIFIER,
-            }
-            for modifier in modifiers:
-                if modifier not in aliases:
-                    raise ValueError(f"Unknown modifier {modifier!r}; expected {sorted(aliases)}")
-                mod_mask |= aliases[modifier]
-
-            payload: dict[str, Any]
-            char_text: str | None
-            payload, char_text = _resolve_key_event(key)
-            await self._keyboard.press_key(
-                payload, modifiers=mod_mask, char_text=char_text, session_id=self._session_id
-            )
+            chord = parse_key_chord(event.keys)
         except Exception as e:
             logger.error("SendKeys failed: %s", e)
             return {"error": f"{type(e).__name__}: {e}"}
-        return None
+        budget = self._effect_budget()
+        field = FieldProbe(self._cdp, self._session_id, budget)
+        try:
+            await field.before()
+            await self._keyboard.press_key(
+                chord.payload,
+                modifiers=chord.modifier_mask,
+                char_text=chord.char_text,
+                session_id=self._session_id,
+            )
+            value_changed = await field.after()
+            focus_after = await focused_element(self._cdp, self._session_id, budget)
+        except Exception as e:
+            logger.error("SendKeys failed: %s", e)
+            return {"error": f"{type(e).__name__}: {e}"}
+        finally:
+            await budget.run(field.release, "release field")
+        types_a_character = (
+            chord.char_text is not None
+            and chord.char_text.isprintable()
+            and set(chord.modifiers) <= {"Shift"}
+        )
+        withheld = types_a_character and field.sensitive is not False
+        return {
+            "pressed": True,
+            "effect_facts": {
+                "target": field.target,
+                "sensitive": field.sensitive,
+                "value_changed": value_changed,
+                "keys": () if withheld else (chord.text,),
+                "text_entered": withheld,
+                "focus_after": focus_after,
+            },
+        }
 
     # -----------------------------------------------------------------------
     # Select dropdown — uses DOM.resolveNode + Runtime.callFunctionOn
     # -----------------------------------------------------------------------
 
-    async def _on_select_dropdown(self, event: SelectDropdownEvent) -> None:
+    async def _on_select_dropdown(self, event: SelectDropdownEvent) -> dict[str, Any]:
         """Select a dropdown option via CDP DOM.resolveNode + Runtime.callFunctionOn.
 
         Uses proper CDP argument binding to avoid JavaScript injection.
+
+        Answers ``{"selected": True, "effect_facts": ...}``: the facts of a
+        :class:`~spectragent.core.capabilities.browser.effects.SelectionEffect`,
+        read by the selection script itself, right before and right after it
+        selects (:func:`~spectragent.core.capabilities.browser.effect_probes.selection_facts`).
+        A control the shared sensitivity rule judges sensitive in the
+        observation it was indexed from keeps its option text in the page.
         """
-        if self._resolve_node(event.backend_node_id, event.session_id) is None:
+        node = self._resolve_node(event.backend_node_id, event.session_id)
+        if node is None:
             raise ValueError(f"Element {event.backend_node_id} not in selector_map")
+        withhold = is_sensitive_control(
+            node.tag_name, {str(k).lower(): str(v) for k, v in node.attributes.items()}
+        )
         if event.value is None and event.text is None and event.index is None:
             raise ValueError("Dropdown selection requires value, text or index")
         await self._highlight_node(event.backend_node_id, event.session_id)
@@ -1252,13 +1473,16 @@ class ActionWatchdog(BrowserWatchdog):
                 {
                     "functionDeclaration": (
                         "function(value) {"
-                        "  if (!this.options || this.disabled) return false;"
+                        + SELECT_FACTS_JS
+                        + "  if (!this.options || this.disabled) return false;"
                         f"  const index = {selection};"
                         "  const option = this.options[index];"
                         "  if (!option || option.disabled || option.parentElement.disabled) return false;"
+                        "  const before = this.selectedIndex;"
                         "  this.selectedIndex = index;"
                         "  this.dispatchEvent(new Event('change', {bubbles: true}));"
-                        "  return this.selectedIndex === index;"
+                        "  return {selected: this.selectedIndex === index, before: before,"
+                        f"          after: selectFacts(this, {'true' if withhold else 'false'})}};"
                         "}"
                     ),
                     "objectId": object_id,
@@ -1269,11 +1493,14 @@ class ActionWatchdog(BrowserWatchdog):
             )
             if not isinstance(result, dict) or result.get("exceptionDetails"):
                 raise RuntimeError("Dropdown selection returned no successful JavaScript result")
-            if result.get("result", {}).get("value") is not True:
+            answer = result.get("result", {}).get("value")
+            if not isinstance(answer, dict) or answer.get("selected") is not True:
                 raise ValueError("Dropdown has no enabled option matching the requested selection")
         except Exception as e:
             logger.error("Select dropdown failed: %s", e)
             raise
+        facts = selection_facts(answer.get("before"), answer.get("after"), withheld=withhold)
+        return {"selected": True, "effect_facts": facts}
 
     # -----------------------------------------------------------------------
     # Extract content
@@ -1594,6 +1821,11 @@ class ActionWatchdog(BrowserWatchdog):
                 box = await self._frame_element_box(backend_node_id, sid, frame_owners)
             else:
                 box = await self._page_element_box(backend_node_id, sid)
+                if box is not None and not self._in_viewport(*_centre(box)):
+                    # ``scrollIntoViewIfNeeded`` leaves an element alone that is
+                    # partly visible already, centre outside or not. Centre it.
+                    await self._call_on_node(backend_node_id, sid, _CENTRE_INTO_VIEW_JS)
+                    box = await self._page_element_box(backend_node_id, sid)
             if box is None:
                 return None
             x, y, w, h = box
@@ -1607,6 +1839,10 @@ class ActionWatchdog(BrowserWatchdog):
                 exc,
             )
             return None
+
+    def _in_viewport(self, x: float, y: float) -> bool:
+        """Whether a point is inside the viewport, where a press reaches the page."""
+        return 0 <= x < self._vw and 0 <= y < self._vh
 
     async def _page_element_box(
         self, backend_node_id: int, session_id: str | None

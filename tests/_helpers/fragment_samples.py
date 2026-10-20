@@ -34,13 +34,17 @@ from spectragent.core.capabilities.browser.dom.models import (
     ScrollInfo,
 )
 from spectragent.core.capabilities.browser.observations import (
+    BrowserCaptureStateObs,
     BrowserMetaObs,
     BrowserPlatformObs,
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.capabilities.browser.settle import PageSettle
+from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.fragments import (
     ActionResultObs,
     HistoryObs,
@@ -261,6 +265,24 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             page_title="Checkout",
             tabs=[{"id": "T1", "url": "https://shop.example/checkout", "active": True}],
             loader_id="7C0FFEE0LOADER",
+        ),
+    },
+    "browser.capture_state": {
+        # Every fact present: a capped wait, a followed tab, a known pointer, failed images.
+        "measured": lambda: BrowserCaptureStateObs(
+            settle=PageSettle(waited_ms=5000, outcome="capped", waiting_for=["load", "dom"]),
+            focus_moved=FocusMove(reason="new_tab", from_tab="T1", to_tab="T2"),
+            pointer=PointerState(status="known", x=120, y=95),
+            failed_visible_resources=FailedVisibleResources(
+                status="measured", count=3, identifiers=("missing.png", "hero.webp")
+            ),
+        ),
+        # Nothing measured: no wait, no move, the pointer and the probe unknown.
+        "unknown": lambda: BrowserCaptureStateObs(
+            pointer=PointerState(status="unknown"),
+            failed_visible_resources=FailedVisibleResources(
+                status="unknown", detail="the probe got no answer within 1s"
+            ),
         ),
     },
     "loop.action_result": {

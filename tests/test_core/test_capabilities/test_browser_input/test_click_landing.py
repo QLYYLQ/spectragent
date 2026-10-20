@@ -41,6 +41,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from tests.test_core.test_capabilities.test_browser_action_click_robustness import (
     FakeCDP,
     _make_node,
+    _outcome,
 )
 
 #: The live rect FakeCDP reports, and the centre it implies.
@@ -248,7 +249,7 @@ class TestWhatKeepsItsExactPoint:
             result = await wd._on_click_coordinate(
                 ClickCoordinateEvent(coordinate_x=311, coordinate_y=207)
             )
-            assert result == {"clicked": True, "x": 311, "y": 207}
+            assert _outcome(result) == {"clicked": True, "x": 311, "y": 207}
         assert set(strategy.seen) == {(311, 207)}
         assert strategy.boxes == []  # the aiming policy is never even asked
 

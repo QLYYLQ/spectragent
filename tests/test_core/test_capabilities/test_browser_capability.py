@@ -33,11 +33,17 @@ class TestStaticContract:
     def test_provided_fragments(self) -> None:
         cap = BrowserCapability()
         assert cap.provided_fragments == frozenset(
-            {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
+            {
+                "browser.dom",
+                "browser.screenshot",
+                "browser.browser_meta",
+                "browser.platform",
+                "browser.capture_state",
+            }
         )
 
     def test_wiring_observation(self) -> None:
-        # Wiring derives all four fragments from the registered resolvers.
+        # Wiring derives all five fragments from the registered resolvers.
         wiring = BrowserCapability.__wiring__
         assert "observation" in wiring
         entry = wiring["observation"]
@@ -49,6 +55,7 @@ class TestStaticContract:
             "browser.screenshot",
             "browser.browser_meta",
             "browser.platform",
+            "browser.capture_state",
         }
 
     def test_wiring_backend(self) -> None:

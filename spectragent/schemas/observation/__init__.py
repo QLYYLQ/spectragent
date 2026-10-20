@@ -13,6 +13,13 @@ from spectragent.schemas.observation._registrar import (
     ObservationRegistrar,
 )
 from spectragent.schemas.observation.base import ObservationFragment
+from spectragent.schemas.observation.capture_state import (
+    CaptureStateFragment,
+    FailedVisibleResources,
+    ForegroundChange,
+    PointerState,
+    SettleState,
+)
 from spectragent.schemas.observation.dynamic_model import (
     build_observation_model,
     build_observation_model_from_result,
@@ -34,14 +41,19 @@ from spectragent.schemas.observation.image import (
 )
 
 __all__ = [
+    "CaptureStateFragment",
     "CoordinateSpace",
+    "FailedVisibleResources",
+    "ForegroundChange",
     "FragmentBase",
     "FragmentFailure",
     "ImageMediaType",
     "ObservationFragment",
     "ObservationRegistrar",
     "PointGrid",
+    "PointerState",
     "ScreenshotGeometry",
+    "SettleState",
     "build_observation_model",
     "build_observation_model_from_result",
     "image_media_type",

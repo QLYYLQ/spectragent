@@ -11,10 +11,13 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
     focused_scope,
+    handler_field,
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import PointerEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import ClickElementEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -28,6 +31,10 @@ class ClickAction(SettleableAction, ActionBase):
     """Click a DOM element by its selector_map index."""
 
     __registry_key__ = "browser.click"
+
+    #: Where it pressed, what the page hit there and whether that is the
+    #: indexed element, and the focus afterwards (measured by the executor).
+    Effect = PointerEffect
 
     class Params(BaseModel):
         """An element of the selector map, which only ``browser.dom`` builds.
@@ -62,8 +69,9 @@ class ClickAction(SettleableAction, ActionBase):
                 session_id=element.session_id,
             )
             await dispatch_request(scope, event)
+            effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(success=True, effect=effect)
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
         except ValueError as exc:

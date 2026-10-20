@@ -19,21 +19,18 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser.input import HumanKeyboard, InstantRhythm, Keystroke
+from spectragent.core.capabilities.browser.input.chords import KEY_INFO, parse_key_chord
 from spectragent.core.capabilities.browser.platform import InputPlatform
-from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
-    _KEY_INFO,
-    ActionWatchdog,
-    _resolve_key_event,
-)
+from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
 from tests.test_core.test_capabilities.test_browser_action_click_robustness import FakeCDP
 
 from .conftest import RecordCDP
 
 #: Every key name ``browser.send_keys`` knows, a letter of each case, a digit, punctuation.
-SEND_KEYS = (*_KEY_INFO, "a", "Z", "5", "%", "[")
-#: Chords as agents write them, and a key name ``send_keys`` does not know.
-CHORDS = ("Enter", "ctrl+a", "Meta+A", "shift+Tab", "alt+a", "ctrl+Enter", "cmd+c", "F5")
+SEND_KEYS = (*KEY_INFO, "a", "Z", "5", "%", "[")
+#: Chords as agents write them, and other spellings of named keys.
+CHORDS = ("Enter", "ctrl+a", "Meta+A", "shift+Tab", "alt+a", "ctrl+Enter", "cmd+c", "F5", "esc")
 
 
 class _Rhythm:
@@ -51,11 +48,12 @@ def _key_events(cdp: FakeCDP) -> list[dict[str, Any]]:
 
 @pytest.mark.parametrize("raw", SEND_KEYS)
 def test_a_resolved_key_has_no_native_code_and_keeps_what_pages_read(raw: str) -> None:
-    payload, char = _resolve_key_event(raw)
+    chord = parse_key_chord(raw)
+    payload, char = chord.payload, chord.char_text
     assert "nativeVirtualKeyCode" not in payload
     assert payload["key"] and payload["code"] and payload["windowsVirtualKeyCode"] > 0
-    if raw in _KEY_INFO:
-        key, code, vk, text = _KEY_INFO[raw]
+    if raw in KEY_INFO:
+        key, code, vk, text = KEY_INFO[raw]
         assert (payload["key"], payload["code"], payload["windowsVirtualKeyCode"], char) == (
             key,
             code,
@@ -66,9 +64,9 @@ def test_a_resolved_key_has_no_native_code_and_keeps_what_pages_read(raw: str) -
 
 def test_enter_is_a_real_enter() -> None:
     """What a React-style handler checks: ``key`` Enter, ``keyCode`` 13, and a char that fires keypress."""
-    payload, char = _resolve_key_event("enter")
-    assert payload == {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
-    assert char == "\r"
+    chord = parse_key_chord("enter")
+    assert chord.payload == {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
+    assert chord.char_text == "\r"
 
 
 @pytest.mark.parametrize("keys", [*SEND_KEYS, *CHORDS])

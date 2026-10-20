@@ -40,8 +40,14 @@ from spectragent.core.capabilities.browser.dom.models import (
 )
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.settle import PageSettle
-from spectragent.core.capabilities.browser.tabs import FocusMove
+from spectragent.core.capabilities.browser.tabs import FocusMove, FocusMoveReason
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation.capture_state import (
+    CaptureStateFragment,
+    ForegroundChange,
+    ForegroundReason,
+    SettleState,
+)
 from spectragent.schemas.observation.image import image_suffix
 
 # ── DOM graph → JSON-safe dict ─────────────────────────────────────
@@ -404,7 +410,8 @@ class BrowserCaptureFragment(FragmentBase):
     itself (``tabs.py``, §4.14 "页面新开的标签页"). ``None`` — and then left
     out of the trace JSON — when the focus stayed where it was, so an
     observation without a move writes what it always wrote. No agent renders
-    either field.
+    either field; :class:`BrowserCaptureStateObs` projects both into the
+    platform-neutral capture state an agent may read.
     """
 
     __abstract__ = True
@@ -725,3 +732,60 @@ class BrowserMetaObs(BrowserCaptureFragment):
         if not self.url and not self.page_title:
             return ""
         return f"{self.page_title or '(untitled)'} <{self.url}>"
+
+
+#: How the browser's tab-focus record reads in the platform-neutral capture state.
+_FOREGROUND_REASONS: dict[FocusMoveReason, ForegroundReason] = {
+    "new_tab": "opened",
+    "tab_closed": "closed",
+}
+
+
+class BrowserCaptureStateObs(BrowserCaptureFragment, CaptureStateFragment):
+    """How the browser stood when this observation was captured (``capture_state``, §4.4).
+
+    The platform-neutral facts of :class:`CaptureStateFragment`, for the
+    browser. Two of them are records every browser fragment of a capture
+    already carries, and are projected from them rather than measured a
+    second time: :attr:`settle_state` reads :attr:`settle` (the one settle
+    wait of the capture) and :attr:`foreground_change` reads
+    :attr:`focus_moved` (the tab the capability followed or left before the
+    capture). The capability assigns both after the resolvers answered, the
+    same record on every fragment of the capture, so the projections are
+    computed on access and never stored: the trace keeps ``settle`` and
+    ``focus_moved`` exactly as on the other browser fragments, and nothing
+    else of them.
+
+    The other two are this fragment's own fields, set by its resolver
+    (``watchdogs/capture_state_watchdog.py``): :attr:`pointer`, the tab's last
+    confirmed pointer position, and :attr:`failed_visible_resources`, the
+    images visible in the viewport that failed to load.
+    """
+
+    __registry_key__ = "browser.capture_state"
+    __source__: ClassVar[Literal["env", "loop"]] = "env"
+
+    @property
+    def settle_state(self) -> SettleState | None:
+        """The capture's settle wait; ``None`` when the wait is off (``settle_max_wait_s: 0``)."""
+        settle = self.settle
+        if settle is None:
+            return None
+        return SettleState(
+            outcome=settle.outcome,
+            waited_ms=settle.waited_ms,
+            pending=tuple(settle.waiting_for),
+            detail=settle.detail,
+        )
+
+    @property
+    def foreground_change(self) -> ForegroundChange | None:
+        """The tab move the page caused before the capture; ``None`` when the focus stayed."""
+        move = self.focus_moved
+        if move is None:
+            return None
+        return ForegroundChange(
+            reason=_FOREGROUND_REASONS[move.reason],
+            from_surface=move.from_tab,
+            to_surface=move.to_tab,
+        )

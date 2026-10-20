@@ -9,9 +9,12 @@ from pydantic import BaseModel, ConfigDict
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    effect_from,
     focused_scope,
+    handler_field,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.effects import NavigationEffect
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import GoForwardEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -22,9 +25,14 @@ if TYPE_CHECKING:
 
 @dataclass
 class GoForwardAction(SettleableAction, ActionBase):
-    """Navigate forward in the current tab's history."""
+    """Navigate forward in the current tab's history.
+
+    Reports a :class:`NavigationEffect`: the URL before, the URL once the
+    history entry committed, and whether that document had finished loading.
+    """
 
     __registry_key__ = "browser.go_forward"
+    Effect = NavigationEffect
 
     class Params(BaseModel):
         """No parameters. Still a model: a provider dialect that cannot
@@ -46,7 +54,8 @@ class GoForwardAction(SettleableAction, ActionBase):
             scope = focused_scope(capability)
             event = GoForwardEvent()
             await dispatch_request(scope, event)
+            facts = handler_field(event, "effect_facts")
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(success=True, effect=effect_from(self, facts))
         except Exception as exc:  # pragma: no cover
             return ActionResult(success=False, error=str(exc))

@@ -49,8 +49,11 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, create_model
 from pydantic import Field as PydanticField
 
+from spectragent.agents._action_effects import effect_line
 from spectragent.agents._action_union import action_union
 from spectragent.agents._browser_platform import render_browser_platform
+from spectragent.agents._browser_state import render_browser_state
+from spectragent.agents._capture_state import CAPTURE_STATE_KEY, capture_state_demand
 from spectragent.agents._output_models import reasoning_fields
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompt_context import (
@@ -287,10 +290,15 @@ class BrowserUseAgent(AgentBase):
         "agent_loop": ("agent_loop", ["react", "branch"]),
         # ``screenshot`` is required in every mode because the evaluators
         # read it out of the trace, not because the model always sees it.
+        # ``browser_meta`` (URL, title, tabs) is required because this is a
+        # browser agent: no mode reads a page without knowing which page.
+        # ``capture_state`` is the platform-neutral capture fact every agent
+        # declares optional; ``show_capture_state`` may exclude it
+        # (``docs/architecture_design.md`` §4.4, "观测增强按消费方分层").
         "observation": {
             "registry": "observation",
-            "keys": ["screenshot", "platform", "task"],
-            "optional_keys": ["dom", "browser_meta", "step_info", "history"],
+            "keys": ["screenshot", "platform", "task", "browser_meta"],
+            "optional_keys": ["dom", "step_info", "history", CAPTURE_STATE_KEY],
             "declare_only": True,
         },
         "action": {
@@ -376,6 +384,30 @@ class BrowserUseAgent(AgentBase):
             description="Append this text to the system prompt. None (the default): nothing."
         ),
     ] = None
+    show_action_effects: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Show each executed action's measured effect (the one line the "
+                "effect describes itself with, e.g. where a click landed or how "
+                "far a scroll moved) in the agent history, restored history "
+                "included. Off: no effect reaches the model; the trace still "
+                "records every effect, so both arms of an ablation measure the same."
+            )
+        ),
+    ] = True
+    show_capture_state: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Ask for the optional capture_state fragment (how the environment "
+                "stood when captured: settle, foreground change, pointer, failed "
+                "visible resources) and show it in the browser state every step. "
+                "Off: it is excluded from this agent's observation demand, so it "
+                "is neither captured nor shown."
+            )
+        ),
+    ] = True
 
     # ── internal state populated by prepare() ──────────────────
     # ``task`` lives on every observation as ``obs.task.user_request``
@@ -443,12 +475,14 @@ class BrowserUseAgent(AgentBase):
     # ── Negotiation ────────────────────────────────────────────
 
     def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
-        """This instance's demand, narrowed by ``observation_mode``.
+        """This instance's demand, narrowed by ``observation_mode`` and ``show_capture_state``.
 
         The mode promotes some of the class's optional keys and excludes
-        others; ``bounded_demand`` then checks the result never left the
-        declared space. Negotiation itself is untouched — it receives one
-        ``(required, optional)`` pair and cannot tell that a mode chose it.
+        others; with ``show_capture_state`` off, the optional
+        ``capture_state`` is excluded too. ``bounded_demand`` then checks
+        the result never left the declared space. Negotiation itself is
+        untouched — it receives one ``(required, optional)`` pair and
+        cannot tell that a mode chose it.
 
         Both checks run even though ``demand_of`` would run the second
         one anyway. They answer different questions: ``_ModeDemand.apply``
@@ -456,12 +490,14 @@ class BrowserUseAgent(AgentBase):
         """
         required, optional = super().negotiation_demand(registry)
         demand = _MODE_DEMAND[self.observation_mode].get(registry)
-        if demand is None:
-            return required, optional
-        narrowed = demand.apply(
-            required,
-            optional,
-            where=f"_MODE_DEMAND[{self.observation_mode!r}][{registry!r}]",
+        if demand is not None:
+            required, optional = demand.apply(
+                required,
+                optional,
+                where=f"_MODE_DEMAND[{self.observation_mode!r}][{registry!r}]",
+            )
+        narrowed = capture_state_demand(
+            self, registry, required, optional, shown=self.show_capture_state
         )
         return bounded_demand(self, registry, *narrowed)
 
@@ -472,8 +508,11 @@ class BrowserUseAgent(AgentBase):
         # ``dom ← browser_use(observation_mode='dom')`` instead of leaving
         # "required fragment 'dom' is missing" as a puzzle. A dataclass's
         # generated repr would dump the LLM and the memory into the
-        # message; this says the one thing that chose the demand.
-        return f"browser_use(observation_mode={self.observation_mode!r})"
+        # message; this says what chose the demand — the mode, and the
+        # capture-state switch only when it narrows.
+        if self.show_capture_state:
+            return f"browser_use(observation_mode={self.observation_mode!r})"
+        return f"browser_use(observation_mode={self.observation_mode!r}, show_capture_state=False)"
 
     # ── Lifecycle hook called by AgentRuntime ──────────────────
 
@@ -597,7 +636,7 @@ class BrowserUseAgent(AgentBase):
         """Render the live page and actual restoration without parsing the old reply."""
         history.validate_execution()
         messages = await self.build_react_prompt(observation, context=context)
-        restored = restored_history_message(history)
+        restored = restored_history_message(history, show_action_effects=self.show_action_effects)
         return [
             *messages,
             UserMessage(
@@ -958,7 +997,7 @@ class BrowserUseAgent(AgentBase):
               <follow_up_requests>...</follow_up_requests>  (only if any)
               <step_info>...</step_info>                    (only if known)
             </agent_state>
-            <browser_state>URL/Title/Tabs/DOM</browser_state>
+            <browser_state>URL/Title/Tabs/capture state/DOM</browser_state>
 
         Scratchpad blocks (file_system, todo, plan, sensitive_data,
         page_stats, recent_events, ...) are intentionally omitted —
@@ -1011,6 +1050,16 @@ class BrowserUseAgent(AgentBase):
         excluded from the mode's action demand, so no result can contain
         any. Filtering the text here instead would be guessing at a
         provenance the string does not carry.
+
+        With ``show_action_effects`` on, a step whose results measured
+        effects gets an ``<effects>`` element after ``<results>``: one line
+        per such result, numbered by the action's position in the step and
+        named by it, holding the effect's ``describe()`` line. A step with
+        no effect to show renders exactly as before. An effect line is a
+        measured page fact and may name an element by its role and
+        accessible name (what a click hit, where focus went), in every mode:
+        a ``vision`` run that must read no page text at all turns
+        ``show_action_effects`` off.
         """
         items = list(getattr(history, "items", []) or [])
         if not items:
@@ -1027,41 +1076,39 @@ class BrowserUseAgent(AgentBase):
                 )
                 or "(none)"
             )
+            effects = [
+                f"{position}. {action.name}: {line}"
+                for position, (action, result) in enumerate(
+                    zip(rec.actions, rec.action_results, strict=False), start=1
+                )
+                if (line := effect_line(result, shown=self.show_action_effects)) is not None
+            ]
+            effects_xml = "<effects>\n" + "\n".join(effects) + "\n</effects>\n" if effects else ""
             tag = f"step_{rec.step + 1}"
             blocks.append(
                 f"<{tag}>\n"
                 f"<llm_output>{_truncate(rec.llm_output, 2000)}</llm_output>\n"
                 f"<actions>{actions_str}</actions>\n"
                 f"<results>{results_str}</results>\n"
+                f"{effects_xml}"
                 f"</{tag}>"
             )
         return "\n".join(blocks)
 
     def _render_browser_state(self, observation: Any) -> str:
-        """URL / Title / Tabs / DOM block.
+        """Page state (URL / Title / Tabs / capture state), then the DOM.
 
-        The DOM half is gated on the *mode*, not on whether the
-        observation happens to carry a ``dom`` fragment. In ``vision`` the
-        tree never reaches the model even if something put one on the
-        observation — which is what makes a vision ablation a vision
-        ablation.
+        The page state is the shared browser writing,
+        ``render_browser_state``. The DOM half is gated on the *mode*, not
+        on whether the observation happens to carry a ``dom`` fragment. In
+        ``vision`` the tree never reaches the model even if something put
+        one on the observation — which is what makes a vision ablation a
+        vision ablation.
         """
         parts: list[str] = []
-        meta = getattr(observation, "browser_meta", None)
-        if meta is not None:
-            url = getattr(meta, "url", "") or ""
-            title = getattr(meta, "page_title", "") or ""
-            if url:
-                parts.append(f"URL: {url}")
-            if title:
-                parts.append(f"Title: {title}")
-            tabs = getattr(meta, "tabs", None) or []
-            if tabs:
-                tab_info = ", ".join(
-                    f"[{t.get('tab_id', '?')}] {t.get('title', '')} ({t.get('url', '')})"
-                    for t in tabs
-                )
-                parts.append(f"Tabs: {tab_info}")
+        page_state = render_browser_state(observation)
+        if page_state:
+            parts.append(page_state)
 
         if self.observation_mode in _MODES_WITH_DOM:
             dom = getattr(observation, "dom", None)

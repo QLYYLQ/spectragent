@@ -23,6 +23,9 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
 from spectragent.core.capabilities.browser.watchdogs.browser_meta_watchdog import (
     BrowserMetaWatchdog,
 )
+from spectragent.core.capabilities.browser.watchdogs.capture_state_watchdog import (
+    CaptureStateWatchdog,
+)
 from spectragent.core.capabilities.browser.watchdogs.crash_watchdog import (
     CrashWatchdog,
 )
@@ -78,6 +81,7 @@ __all__ = [
     "ActionWatchdog",
     "ArchiveWatchdog",
     "BrowserMetaWatchdog",
+    "CaptureStateWatchdog",
     "CrashWatchdog",
     "DOMWatchdog",
     "JavaScriptExecutionWatchdog",

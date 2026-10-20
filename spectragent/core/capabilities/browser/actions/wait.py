@@ -21,6 +21,7 @@ about it ("the page is mostly blank, let me wait"), it emits ``browser.wait``.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -28,6 +29,8 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._common import effect_from
+from spectragent.core.capabilities.browser.effects import WaitEffect
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -36,9 +39,14 @@ if TYPE_CHECKING:
 
 @dataclass
 class WaitAction(ActionBase):
-    """Pause for N seconds before the next observation."""
+    """Pause for N seconds before the next observation.
+
+    Reports a :class:`WaitEffect`: how long the sleep actually lasted, by the
+    monotonic clock, in whole milliseconds.
+    """
 
     __registry_key__ = "browser.wait"
+    Effect = WaitEffect
 
     # ⭐ capability-side configurable side-effects
     default_seconds: Annotated[
@@ -105,8 +113,11 @@ class WaitAction(ActionBase):
                 error=(f"seconds={seconds} exceeds max_seconds={self.max_seconds}"),
             )
 
+        started = time.monotonic()
         await asyncio.sleep(seconds)
+        waited_ms = round((time.monotonic() - started) * 1000)
         return ActionResult(
             success=True,
             extracted_content=f"waited {seconds}s",
+            effect=effect_from(self, {"waited_ms": waited_ms}),
         )

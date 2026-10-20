@@ -1,8 +1,11 @@
 """SkyvernAgent — element-tree based agent with action history window.
 
-M14 refactor: Skyvern is now a passive domain-knowledge provider.
-Jinja2 prompt templating and the action-history window remain as agent
-config; the runtime/loop drive execution.
+Skyvern is a passive domain-knowledge provider. Jinja2 prompt templating and
+the size of the action-history window are agent config; the runtime/loop
+drive execution. The window itself is rendered from the Loop's ``history``
+fragment — the actions that actually ran, with their results and measured
+effects — so a live step, a branch's rebuilt history and a restored prefix
+all show it from the same records.
 
 The agent owns exactly one template,
 ``prompts/agents/skyvern/system_prompt.md``. It is not upstream
@@ -27,7 +30,10 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
+from spectragent.agents._action_effects import effect_line
 from spectragent.agents._browser_platform import render_browser_platform
+from spectragent.agents._browser_state import render_browser_state
+from spectragent.agents._capture_state import CAPTURE_STATE_KEY, capture_state_demand
 from spectragent.agents._output_models import SkyvernOutput
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompt_context import (
@@ -38,8 +44,9 @@ from spectragent.agents.prompts import PromptEngine
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
+from spectragent.schemas.step_record import StepRecord
 
 
 @dataclass
@@ -59,14 +66,19 @@ class SkyvernAgent(AgentBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
         # DOM is required, screenshot is optional (Skyvern is mostly
-        # element-tree based but can use vision when available).
+        # element-tree based but can use vision when available). Skyvern is
+        # a browser agent, so the page state (``browser_meta``: URL, title,
+        # tabs) is required; the platform-neutral ``capture_state`` is
+        # optional, as for every agent (``docs/architecture_design.md``
+        # §4.4, "观测增强按消费方分层"). ``history`` is the Loop's record of
+        # what ran — the action-history window is rendered from it.
         "observation": {
             "registry": "observation",
-            "keys": ["dom", "platform", "task"],
+            "keys": ["dom", "platform", "task", "browser_meta", "history"],
             "optional_keys": [
                 "screenshot",
-                "browser_meta",
                 "step_info",
+                CAPTURE_STATE_KEY,
             ],
             "declare_only": True,
         },
@@ -91,16 +103,19 @@ class SkyvernAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
-    # ``action_history_window`` counts *actions*, not steps, and it is
-    # spent in the per-step user message — not the system prompt. The
-    # system prompt is built once, inside ``prepare()``; rendering a
+    # ``action_history_window`` counts *executed actions*, not steps, and
+    # it is spent in the per-step user message — not the system prompt.
+    # The system prompt is built once, inside ``prepare()``; rendering a
     # window that grows each step into it would mean re-rendering it
     # every step, which the pure-builder ``prepare()`` contract in
     # ``core/runtime.py`` does not allow.
     action_history_window: Annotated[
         int,
         PydanticField(
-            description=("Number of most recent actions replayed in each step's user message")
+            description=(
+                "Number of most recent executed actions, with their results, "
+                "replayed in each step's user message"
+            )
         ),
     ] = 5
     # Hand-written rather than computed from the directory listing: a
@@ -150,15 +165,37 @@ class SkyvernAgent(AgentBase):
             )
         ),
     ] = False
+    show_action_effects: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Show each executed action's measured effect (the one line the "
+                "effect describes itself with, e.g. where a click landed or how "
+                "far a scroll moved) in the action history, restored history "
+                "included. Off: no effect reaches the model; the trace still "
+                "records every effect, so both arms of an ablation measure the same."
+            )
+        ),
+    ] = True
+    show_capture_state: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Ask for the optional capture_state fragment (how the environment "
+                "stood when captured: settle, foreground change, pointer, failed "
+                "visible resources) and show it with the page state every step. "
+                "Off: it is excluded from this agent's observation demand, so it "
+                "is neither captured nor shown."
+            )
+        ),
+    ] = True
 
     # ── internal state ─────────────────────────────────────────
     # ``task`` reaches every step via ``obs.task.user_request`` (loop
-    # fragment); the agent does not hold its own copy. ``_action_history``
-    # is agent-owned and per-run: ``prepare()`` clears it, every parsed
-    # step appends to it, and ``build_react_prompt`` renders the tail of
-    # it. It is what makes Skyvern's recency window a narrow list of the
-    # last N *actions* rather than the loop's full per-step transcript.
-    _action_history: list[str] = field(default_factory=list, init=False, repr=False)
+    # fragment); the agent does not hold its own copy. Neither does it hold
+    # an action history: the window is the tail of the Loop's ``history``
+    # fragment, the last N *executed actions* rather than the loop's full
+    # per-step transcript.
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
     )
@@ -185,6 +222,15 @@ class SkyvernAgent(AgentBase):
     def get_action_space(self) -> list[ActionDescriptor]:
         return list(self._action_descriptors)
 
+    # ── Negotiation ────────────────────────────────────────────
+
+    def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
+        """The class demand, without ``capture_state`` when ``show_capture_state`` is off."""
+        required, optional = super().negotiation_demand(registry)
+        return capture_state_demand(
+            self, registry, required, optional, shown=self.show_capture_state
+        )
+
     # ── Lifecycle hook called by AgentRuntime ──────────────────
 
     def prepare(
@@ -195,10 +241,8 @@ class SkyvernAgent(AgentBase):
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
-        Action history is non-memory state owned by the agent, so the
-        per-run reset happens here; it is *rendered* per step, in
-        ``build_react_prompt``. The per-step user message gets
-        task/step_info from observation fragments, not ``self``.
+        The per-step user message gets task, step_info and the action
+        history from observation fragments, not ``self``.
 
         ``max_actions_per_step`` comes from the Loop, which is what
         actually truncates. ``SkyvernOutput.actions`` is a list, so
@@ -209,7 +253,6 @@ class SkyvernAgent(AgentBase):
         if max_actions_per_step is None:
             raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
         self._action_descriptors = list(action_descriptors)
-        self._action_history.clear()
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task, self._action_descriptors, max_actions_per_step
         )
@@ -233,7 +276,9 @@ class SkyvernAgent(AgentBase):
         because it changes every step: the system prompt is built once,
         by ``prepare()``, and re-rendering it per step would break that
         contract. The template's "if the last step's actions did not move
-        the page, try something else" rule reads this block.
+        the page, try something else" rule reads this block. It is built
+        from the ``history`` fragment, so it shows what actually ran — with
+        each action's result and, when shown, its measured effect.
         """
         task = observation.task.user_request
         prefix_parts = [
@@ -246,7 +291,10 @@ class SkyvernAgent(AgentBase):
                 f"<step_info>step {step_info.step}/{step_info.max_steps} "
                 f"(today={step_info.today})</step_info>"
             )
-        prefix_parts.append(f"<action_history>\n{self._render_action_history()}\n</action_history>")
+        history = getattr(observation, "history", None)
+        prefix_parts.append(
+            f"<action_history>\n{self._render_action_history(history)}\n</action_history>"
+        )
         body = "\n".join(prefix_parts) + "\n\n" + self._render_browser_state(observation)
         return place_prompt_contributions([UserMessage(content=body, cache=True)], context=context)
 
@@ -257,16 +305,17 @@ class SkyvernAgent(AgentBase):
         history: RestoredHistory,
         context: ReactPromptContext,
     ) -> list[BaseMessage]:
-        """Render actual restored facts and advance this Agent's action history.
+        """Render actual restored facts after this step's live observation.
 
-        Rendering happens before this step's executed actions enter the window,
-        just as a policy prompt precedes its decision. The source reply is never
-        parsed and cannot populate the history with obsolete target identifiers.
+        The window shows the steps before this one, just as a policy prompt
+        precedes its decision; this step's restored record joins the Loop's
+        history afterwards, with the actions and effects actually executed.
+        The source reply is never parsed and cannot populate the history
+        with obsolete target identifiers.
         """
         history.validate_execution()
         messages = await self.build_react_prompt(observation, context=context)
-        restored = restored_history_message(history)
-        self._action_history.extend(f"{action.name}({action.params})" for action in history.actions)
+        restored = restored_history_message(history, show_action_effects=self.show_action_effects)
         return [*messages, restored]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
@@ -278,9 +327,7 @@ class SkyvernAgent(AgentBase):
             # (the default). ``extracted_content`` flows straight into
             # ``DoneAction.execute`` — no renaming hack needed.
             if llm_output.is_done:
-                done = self._done_action(llm_output.extracted_content, llm_output.success)
-                self._action_history.append(f"{done.name}({done.params})")
-                return [done]
+                return [self._done_action(llm_output.extracted_content, llm_output.success)]
 
             actions: list[Action] = []
             for item in llm_output.actions:
@@ -320,11 +367,6 @@ class SkyvernAgent(AgentBase):
                 if item.keys is not None:
                     params["keys"] = item.keys
                 actions.append(Action(name=name, params=params))
-
-            # Track actions in the window rendered by the next
-            # ``build_react_prompt``.
-            for a in actions:
-                self._action_history.append(f"{a.name}({a.params})")
 
             if not actions:
                 raise ParseError(
@@ -455,8 +497,16 @@ class SkyvernAgent(AgentBase):
             lines.append(f"- `{d.name}({params_part})` — {d.description}")
         return "\n".join(lines)
 
-    def _render_action_history(self) -> str:
-        """The last ``action_history_window`` actions, most recent last.
+    def _render_action_history(self, history: Any) -> str:
+        """The last ``action_history_window`` executed actions, most recent last.
+
+        Read from the Loop's ``history`` records, across steps, one line per
+        action that ran: ``name(params) -> ok`` or ``-> error: ...``, then
+        ``| effect: <line>`` when effects are shown and the action measured
+        one. An action that raised ends its step's batch (the Loop runs no
+        further action), so its line carries the step's error; actions the
+        Loop never ran — cut by ``max_actions_per_step``, or after a ``done``
+        or a raise — are not history.
 
         The ``<= 0`` branch is not defensive padding: ``lst[-0:]`` is
         ``lst[0:]``, so a window of 0 — the obvious way to say "no
@@ -464,22 +514,41 @@ class SkyvernAgent(AgentBase):
         """
         if self.action_history_window <= 0:
             return "(disabled)"
-        window = self._action_history[-self.action_history_window :]
+        records: list[StepRecord] = list(getattr(history, "items", None) or [])
+        lines = [line for record in records for line in self._executed_lines(record)]
+        window = lines[-self.action_history_window :]
         return "\n".join(window) if window else "(no actions yet)"
+
+    def _executed_lines(self, record: StepRecord) -> list[str]:
+        """One window line per action *record* actually ran, in order."""
+        lines = [
+            self._action_line(action, result)
+            for action, result in zip(record.actions, record.action_results, strict=False)
+        ]
+        raised = len(record.action_results)
+        if record.error_phase == "act" and raised < len(record.actions):
+            action = record.actions[raised]
+            lines.append(f"{action.name}({action.params}) -> error: {record.error}")
+        return lines
+
+    def _action_line(self, action: Action, result: ActionResult) -> str:
+        outcome = "ok" if result.success else _error_outcome(result.error)
+        line = f"{action.name}({action.params}) -> {outcome}"
+        effect = effect_line(result, shown=self.show_action_effects)
+        return f"{line} | effect: {effect}" if effect is not None else line
 
     @staticmethod
     def _render_browser_state(observation: Any) -> str:
-        """Format the browser-state portion of the user message body."""
-        parts: list[str] = []
+        """Format the browser-state portion of the user message body.
 
-        meta = getattr(observation, "browser_meta", None)
-        if meta is not None:
-            url = getattr(meta, "url", "") or ""
-            title = getattr(meta, "page_title", "") or ""
-            if url:
-                parts.append(f"URL: {url}")
-            if title:
-                parts.append(f"Title: {title}")
+        The page state (URL, title, tabs and the capture state) is the
+        shared browser writing, ``render_browser_state``; the element tree
+        is Skyvern's own.
+        """
+        parts: list[str] = []
+        page_state = render_browser_state(observation)
+        if page_state:
+            parts.append(page_state)
 
         dom = getattr(observation, "dom", None)
         if dom is not None:
@@ -492,3 +561,8 @@ class SkyvernAgent(AgentBase):
                 parts.append(f"Element Tree:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"
+
+
+def _error_outcome(error: str | None) -> str:
+    """A failed action's outcome in the window: ``error: <why>``, or just ``error``."""
+    return f"error: {error}" if error else "error"

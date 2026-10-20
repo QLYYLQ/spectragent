@@ -69,7 +69,7 @@ class _FakeObservation:
     ) -> None:
         self.screenshot = screenshot
         self.task = task or _FakeTask()
-        self.platform = SimpleNamespace(operating_system="macos")
+        self.platform = SimpleNamespace(operating_system="macos", fragment_id="browser.platform")
         self.history = SimpleNamespace(items=[])
 
 
@@ -145,12 +145,15 @@ class TestSlotConformance:
 class TestWiring:
     def test_pure_vision_observation_wiring(self) -> None:
         # Capability-relative: a screenshot is a screenshot whether a
-        # browser, a desktop VM or a phone produced it.
+        # browser, a desktop VM or a phone produced it. ``capture_state`` is
+        # the platform-neutral capture fact, optional; browser page state
+        # (``browser_meta``) is for browser-specific agents and is not here
+        # (docs/architecture_design.md §4.4, "观测增强按消费方分层").
         wiring = UITarsAgent.__wiring__
         assert wiring["observation"] == {
             "registry": "observation",
             "keys": ["screenshot", "platform", "history"],
-            "optional_keys": ["step_info"],
+            "optional_keys": ["step_info", "capture_state"],
             "declare_only": True,
         }
 

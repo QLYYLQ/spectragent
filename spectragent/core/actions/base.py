@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-    from spectragent.schemas.action import ActionDescriptor, ActionResult
+    from spectragent.schemas.action import ActionDescriptor, ActionEffect, ActionResult
 
 
 @runtime_checkable
@@ -31,10 +31,15 @@ class BaseAction(Protocol):
             An action that wrote its prose by hand and read its params out
             of a bare dict had no contract at all — only two descriptions
             of one, free to disagree.
+        Effect: The action's measured-output contract, or ``None`` when it
+            reports none — the twin of ``Params`` on the result side. It is
+            what ``ActionResult.effect`` holds and what the trace reader
+            validates a recorded effect with, found by ``action_id``.
     """
 
     action_id: str
     Params: ClassVar[type[BaseModel]]
+    Effect: ClassVar[type[ActionEffect] | None]
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         """Produce an ActionDescriptor for prompt construction.

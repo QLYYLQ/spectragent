@@ -338,7 +338,13 @@ class TestNegotiationDrivenCost:
         env = make_env(BrowserEnvironment, {"browser#0": cap})
 
         assert env.provided_fragments == frozenset(
-            {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
+            {
+                "browser.dom",
+                "browser.screenshot",
+                "browser.browser_meta",
+                "browser.platform",
+                "browser.capture_state",
+            }
         )
 
         negotiation = negotiate_observation(UITarsAgent(), ReactLoop(), env)

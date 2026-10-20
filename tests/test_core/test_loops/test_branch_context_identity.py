@@ -16,7 +16,8 @@ provider refused (the structured agents) and a multi-action reply cut to one:
   last still equals the source's, and the last is what the agent built from
   the live observation — which, for an agent that reads the DOM, is not the
   recorded one;
-- Skyvern's rendered action history (agent-owned state) is rebuilt.
+- Skyvern's rendered action-history window, which it renders from the Loop's
+  ``history`` fragment, is rebuilt.
 """
 
 from __future__ import annotations
@@ -183,8 +184,12 @@ async def test_skyvern_action_history_rebuilt(tmp_path: Path, memory: str) -> No
         branch = await _branch(tmp_path, "skyvern", memory, source, step, id_offset=100)
         _, at_policy_step = branch.prompts_built[-1]
         assert at_policy_step == recorded_history[step]
-    # Not vacuous: by step 2 the history holds both actions of the cut reply.
-    assert len(recorded_history[2]) == 3
+    # Not vacuous: by step 2 the window holds the two actions that ran — step
+    # 0's click and the kept half of step 1's cut reply. The cut action never
+    # ran, so it is not history (the window was agent-owned state appended at
+    # parse time before 2026-10-20, and then listed it too).
+    assert len(recorded_history[2]) == 2
+    assert "'index': 103" not in "\n".join(recorded_history[2])
 
 
 @pytest.mark.parametrize("kind", AGENTS)

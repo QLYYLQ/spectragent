@@ -36,7 +36,7 @@ def feedback(messages: list[Any]) -> dict[str, Any]:
 
 def observation(*, platform: str = "macos", history: list[StepRecord] | None = None) -> Any:
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system=platform),
+        platform=SimpleNamespace(operating_system=platform, fragment_id="browser.platform"),
         history=HistoryObs(items=history or []),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",

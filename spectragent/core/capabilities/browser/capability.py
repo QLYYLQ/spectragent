@@ -594,6 +594,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     dom_viewport_only: bool
     settle_quiet_ms: int
     settle_max_wait_s: float
+    action_effect_timeout_s: float
+    capture_state_timeout_s: float
     retarget_tolerance_px: float
     new_tabs: Literal["follow", "stay"]
     expected_platform: InputPlatform | None
@@ -852,6 +854,46 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = DEFAULT_SETTLE_MAX_WAIT_S,
+        action_effect_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                le=10,
+                description=(
+                    "The most time, in seconds, one action may spend measuring its own "
+                    "effect (ActionResult.effect): the point it pressed and the element "
+                    "there, the focused control, whether a field's value changed, scroll "
+                    "positions, the URL and load state around a navigation. Only the "
+                    "probes count against it, not the action itself; waiting for a wheel "
+                    "to land counts. A fact whose probe runs out of it is recorded as "
+                    "unknown; the action's success or error never depends on the "
+                    "measurement. Measured in headless Chrome: a click, a type or a key "
+                    "press spends 2-4 ms (at most ~26 ms), a navigation ~5 ms, a scroll "
+                    "40-80 ms waiting for the wheel to land (the first wheel on a fresh page "
+                    "was seen landing after ~0.9 s). Default 1, which covers that first "
+                    "wheel and bounds a scroll that never lands."
+                ),
+            ),
+        ] = 1.0,
+        capture_state_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                le=10,
+                description=(
+                    "The most time, in seconds, the browser.capture_state fragment may "
+                    "spend on its in-page probe (the visible images that failed to load) "
+                    "in each observation. A probe that runs out is recorded as unknown, "
+                    "never as zero; the rest of the observation is unaffected. Settle and "
+                    "tab changes are read from the same capture and cost nothing here. "
+                    "The probe itself takes a few milliseconds (headless Chrome: about 1 ms "
+                    "on simple pages, at most 10 ms at the 95th percentile with 5,000 images "
+                    "or on image-heavy sites); it runs on the page's main thread, so this "
+                    "limit is reached only when page scripts hold that thread, and then it "
+                    "is what the observation pays. Default 1."
+                ),
+            ),
+        ] = 1.0,
         retarget_tolerance_px: Annotated[
             float,
             PydanticField(
@@ -930,6 +972,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
         self.settle_quiet_ms = settle_quiet_ms
         self.settle_max_wait_s = settle_max_wait_s
+        self.action_effect_timeout_s = action_effect_timeout_s
+        self.capture_state_timeout_s = capture_state_timeout_s
         self.retarget_tolerance_px = retarget_tolerance_px
         self.new_tabs = new_tabs
 
@@ -2595,6 +2639,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             # A recorder lost during the capture: nothing of it is served,
             # and the error says why rather than "no watchdog produced …".
             self._ensure_environment()
+            # TODO: a capture missing any negotiated fragment, optional ones
+            # included, is re-fired and finally fails whole; partial capture of
+            # optional fragments may be allowed later (architecture §4.4,
+            # capture_state). Until then optional resolvers record their own
+            # problems inside their fragment instead of failing.
             if wanted <= outcome.fragments.keys():
                 if not documents_disagree(outcome.stamps):
                     for fragment in outcome.fragments.values():
@@ -3528,6 +3577,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             screenshot_quality=self.screenshot_quality,
             screenshot_cursor=self.screenshot_cursor,
             screenshot_cursor_size=self.screenshot_cursor_size,
+            action_effect_timeout_s=self.action_effect_timeout_s,
+            capture_state_timeout_s=self.capture_state_timeout_s,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,
