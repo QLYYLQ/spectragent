@@ -152,7 +152,13 @@ evidence keeps the source step's own reading for comparison. Thresholds and gate
 User decision, 2026-10-20 (review pass): the capture_state source counts only failures new in
 the replay — a replay failed image whose identifier is not among the source step's failed
 images; with no usable source reading it counts every replay failure (conservative) and
-records the fallback (`capture_state_baseline: none`).
+records the fallback (`capture_state_baseline: none`). Kept as implemented (review
+decision): replay failures past the 8 named identifiers count as new, a truncated source
+list excuses only the names it lists, and matching is by file-name identifier.
+Review decision, 2026-10-20: measured action effects never enter the Jev request; they are
+stripped from the restoration correspondence, so requests stay identical to the fitted
+evidence (the 28-pair rebuild is byte-identical to the earlier job). Showing effects would
+need an explicit evidence option and a re-fit.
 
 ## Fix — keyboard argument validation
 

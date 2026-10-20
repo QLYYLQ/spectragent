@@ -568,6 +568,57 @@ def test_request_asks_three_independent_noul_questions_and_withholds_done_answer
     }
 
 
+def test_request_carries_no_action_effect_from_the_restoration():
+    """Effects are not review evidence: the request equals one built without them."""
+    from spectragent.core.capabilities.browser.effects import (
+        ElementFacts,
+        PointerEffect,
+        ViewportPoint,
+    )
+    from spectragent.schemas.action import ActionResult
+    from spectragent.schemas.restoration import RestorationCheck, RestoredAction
+
+    def restoration(result: ActionResult) -> dict:
+        return RestorationCheck(
+            step=3,
+            verdict="ok",
+            actions=[
+                RestoredAction(
+                    recorded=Action(name="browser.click", params={"index": 4}),
+                    executed=Action(name="browser.click", params={"index": 7}),
+                    method="identity",
+                    recorded_success=True,
+                    result=result,
+                    live_success=True,
+                )
+            ],
+        ).model_dump(mode="json")
+
+    effect = PointerEffect(
+        effect_id="browser.click",
+        point=ViewportPoint(x=640, y=212),
+        hit=ElementFacts(role="button", name="Place order"),
+        on_target=True,
+        focus_after="nothing",
+    )
+    measured, plain = case(), case()
+    measured.machine_evidence["restoration"] = restoration(
+        ActionResult(success=True, effect=effect)
+    )
+    plain.machine_evidence["restoration"] = restoration(ActionResult(success=True))
+    assert "effect" in measured.machine_evidence["restoration"]["actions"][0]["result"]
+    reviewer = make_reviewer()
+    request = reviewer.build_request(measured)
+    assert request.logical_dump() == reviewer.build_request(plain).logical_dump()
+    assert "effect" not in json.dumps(request.state)
+    assert "Place order" not in json.dumps(request.state)
+    # The case's own evidence keeps the effect; only the request leaves it out.
+    assert measured.machine_evidence["restoration"]["actions"][0]["result"]["effect"]["hit"] == {
+        "role": "button",
+        "name": "Place order",
+    }
+
+
 @pytest.mark.parametrize("path", sorted(Path("configs/replay_review").glob("*.yaml")))
 def test_shipped_reviewer_config_and_wrong_chat_model(path):
     composer = ConfigComposer(registrars=collect_registrars())

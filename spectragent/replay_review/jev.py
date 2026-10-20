@@ -111,6 +111,20 @@ def _is_done(action: dict[str, Any]) -> bool:
     return str(action.get("name", "")).rpartition(".")[2] == "done"
 
 
+def strip_action_effects(correspondence: list[dict[str, Any]]) -> None:
+    """Remove each executed result's measured action effect in place.
+
+    Effects are not review evidence (``docs/architecture_design.md`` §4.18): the
+    thresholds were fitted on requests without them, so a request stays
+    identical to the fitted evidence. Showing effects would take an explicit
+    evidence option, whose digest change invalidates the fit.
+    """
+    for item in correspondence:
+        result = item.get("result")
+        if isinstance(result, dict):
+            result.pop("effect", None)
+
+
 def withhold_done_answers(
     next_actions: list[dict[str, Any]], correspondence: list[dict[str, Any]]
 ) -> None:
@@ -183,6 +197,7 @@ class JevReplayReviewer(ReplayReviewerBase):
         correspondence = copy.deepcopy(
             (case.machine_evidence.get("restoration") or {}).get("actions", [])
         )
+        strip_action_effects(correspondence)
         if self.evidence.done_answer == "withhold":
             withhold_done_answers(next_actions, correspondence)
         state: dict[str, Any] = {
