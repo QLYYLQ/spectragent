@@ -230,15 +230,16 @@ class TestSendKeys:
 
     async def test_a_chord_with_nothing_focused(self) -> None:
         # Written as the parser writes it (``KeyChord.text``): the modifier
-        # canonical, the key as it was sent.
+        # canonical and, held with Control, the letter in capitals, as the
+        # clear's select-all is written.
         effect = text_input(await press(ProbeCDP(field="null"), "ctrl+a"))
         assert (effect.target, effect.keys, effect.value_changed) == (
             "nothing",
-            ("Control+a",),
+            ("Control+A",),
             "unavailable",
         )
         assert (
-            effect.describe() == "Pressed Control+a with nothing focused; nothing is focused now."
+            effect.describe() == "Pressed Control+A with nothing focused; nothing is focused now."
         )
 
     async def test_the_field_is_read_around_the_key(self) -> None:

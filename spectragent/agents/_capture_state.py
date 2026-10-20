@@ -91,7 +91,8 @@ def _settle(settle: Any) -> str:
         pending = ", ".join(settle.pending)
         tail = f"; still pending: {pending}" if pending else ""
         return f"capped: the wait ended at its limit after {waited}{tail}."
-    return f"unknown after waiting {waited}."
+    detail = f" ({settle.detail})" if getattr(settle, "detail", None) else ""
+    return f"unknown after waiting {waited}{detail}."
 
 
 def _foreground(change: Any) -> str:

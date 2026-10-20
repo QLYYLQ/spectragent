@@ -173,8 +173,8 @@ CASES: list[tuple[ActionEffect, str]] = [
     (
         TabSwitchEffect(
             effect_id="browser.switch_tab",
-            before=TabFacts(tab_id="T1", url="https://a.test/"),
-            after=TabFacts(tab_id="T2", url="https://b.test/"),
+            before=TabFacts(tab_id="T1", location=Location(url="https://a.test/")),
+            after=TabFacts(tab_id="T2", location=Location(url="https://b.test/")),
             document_loaded=False,
         ),
         "Switched from tab T1 to tab T2 (https://b.test/); "

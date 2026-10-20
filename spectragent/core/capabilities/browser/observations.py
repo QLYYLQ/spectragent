@@ -775,6 +775,7 @@ class BrowserCaptureStateObs(BrowserCaptureFragment, CaptureStateFragment):
             outcome=settle.outcome,
             waited_ms=settle.waited_ms,
             pending=tuple(settle.waiting_for),
+            detail=settle.detail,
         )
 
     @property

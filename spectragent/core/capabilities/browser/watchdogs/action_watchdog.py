@@ -897,7 +897,8 @@ class ActionWatchdog(BrowserWatchdog):
             await field.before()
             if clear:
                 await self._keyboard.clear_focused(session_id=sid)
-                keys = (f"{self._keyboard.select_all_modifier[0]}+A", "Backspace")
+                select_all = parse_key_chord(f"{self._keyboard.select_all_modifier[0]}+a")
+                keys = (select_all.text, "Backspace")
                 # The clear's keystrokes can move focus (a code box that steps
                 # back on Backspace), so the field is judged again right before
                 # the text goes in.

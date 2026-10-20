@@ -592,6 +592,9 @@ async def tab_facts(
 ) -> TabFacts | Literal["unknown"]:
     """The tab a control session is attached to, and its current URL.
 
+    ``"unknown"`` only when the tab itself cannot be named; a URL that cannot
+    be read leaves the tab's ``location`` unknown and its identifier known.
+
     *tab_id* is the tab's CDP target id when the caller already knows it;
     otherwise ``Target.getTargetInfo`` on the session names it — the
     ``tab_id`` ``browser_meta`` lists. The URL is the current history entry's
@@ -612,9 +615,8 @@ async def tab_facts(
             return UNKNOWN
         tab_id = answer
     location = await current_location(cdp, session_id, budget)
-    if not isinstance(location, Location):
-        return UNKNOWN
-    return TabFacts(tab_id=tab_id, url=location.url)
+    # A known tab keeps its identifier when only its URL could not be read.
+    return TabFacts(tab_id=tab_id, location=location if isinstance(location, Location) else UNKNOWN)
 
 
 #: ``selectFacts(el, withhold)``: a ``<select>``'s selected index, that option's

@@ -13,8 +13,9 @@ The four facts and what "missing" means for each:
 - **settle** (:attr:`CaptureStateFragment.settle_state`): how the wait before
   the capture ended — ``settled``, ``capped`` (the cap ended it; ``pending``
   names what had not settled yet, in the capability's own labels) or
-  ``unknown`` — and how long it took. ``None`` when the capability did not
-  wait (its wait is turned off).
+  ``unknown``, with a short ``detail`` saying why when that is known — and how
+  long it took. ``None`` when the capability did not wait (its wait is turned
+  off).
 - **foreground change** (:attr:`CaptureStateFragment.foreground_change`): the
   capability moved its focus before this capture because of the
   environment's own behaviour — a newly opened surface it followed, or the
@@ -71,6 +72,8 @@ class SettleState(BaseModel):
     waited_ms: int = Field(ge=0)
     #: What had not settled when a capped wait ended, in the capability's labels.
     pending: tuple[str, ...] = ()
+    #: Why the state could not be read, for an ``unknown`` outcome, when known.
+    detail: str | None = None
 
 
 class ForegroundChange(BaseModel):

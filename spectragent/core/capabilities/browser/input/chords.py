@@ -118,9 +118,17 @@ class KeyChord:
 
     @property
     def text(self) -> str:
-        """The chord as written canonically: ``Control+Shift+A``, ``Enter``, ``a``."""
+        """The chord as written canonically: ``Control+Shift+A``, ``Enter``, ``a``.
+
+        A letter held with Control, Alt or Meta is written in capitals, the
+        way shortcuts are named (``Control+a`` and ``Control+A`` are one
+        chord); a letter alone, or with Shift only, is written as given,
+        because there its case is the character typed.
+        """
         key = str(self.payload["key"])
         name = "Space" if key == " " else key
+        if len(name) == 1 and name.isalpha() and set(self.modifiers) - {"Shift"}:
+            name = name.upper()
         return "+".join([*self.modifiers, name])
 
 

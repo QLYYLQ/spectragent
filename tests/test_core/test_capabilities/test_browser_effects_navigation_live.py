@@ -209,14 +209,14 @@ def test_switch_tab_reports_both_tabs_by_the_ids_browser_meta_lists(
     effect = result.effect
     assert isinstance(effect, TabSwitchEffect)
     assert effect.effect_id == "browser.switch_tab"
-    assert effect.before == TabFacts(tab_id=opener, url=site.url("opener.html"))
-    assert effect.after == TabFacts(tab_id=second, url=site.url("second.html"))
+    assert effect.before == TabFacts(tab_id=opener, location=Location(url=site.url("opener.html")))
+    assert effect.after == TabFacts(tab_id=second, location=Location(url=site.url("second.html")))
     assert effect.document_loaded in (True, False), "measured, not unknown"
     back = session.results["switch back"]
     assert isinstance(back.effect, TabSwitchEffect)
     assert (back.effect.before, back.effect.after, back.effect.document_loaded) == (
-        TabFacts(tab_id=second, url=site.url("second.html")),
-        TabFacts(tab_id=opener, url=site.url("opener.html")),
+        TabFacts(tab_id=second, location=Location(url=site.url("second.html"))),
+        TabFacts(tab_id=opener, location=Location(url=site.url("opener.html"))),
         True,
     )
     assert back.effect.describe() == (

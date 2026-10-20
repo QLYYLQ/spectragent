@@ -103,7 +103,9 @@ class TestTheFragment:
                 PageSettle(
                     waited_ms=3, outcome="unknown", detail="the tab's main frame is not known"
                 ),
-                SettleState(outcome="unknown", waited_ms=3),
+                SettleState(
+                    outcome="unknown", waited_ms=3, detail="the tab's main frame is not known"
+                ),
             ),
         ],
         ids=["off", "settled", "capped", "unknown"],

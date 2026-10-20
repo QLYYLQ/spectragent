@@ -19,7 +19,7 @@ from typing import Any
 from agent_cdp import ScopeGroup
 
 from spectragent.core.capabilities.browser import BrowserCapability
-from spectragent.core.capabilities.browser.effects import TabFacts, TabSwitchEffect
+from spectragent.core.capabilities.browser.effects import Location, TabFacts, TabSwitchEffect
 from spectragent.core.capabilities.browser.profiles import resolve_profile
 from spectragent.schemas.action import Action, ActionResult
 
@@ -116,8 +116,8 @@ class TestTabSwitchEffect:
         effect = _effect(await _switch(cap, "T2"))
         assert effect.effect_id == "browser.switch_tab"
         assert (effect.before, effect.after, effect.document_loaded) == (
-            TabFacts(tab_id="T1", url="https://t1.example/"),
-            TabFacts(tab_id="T2", url="https://t2.example/"),
+            TabFacts(tab_id="T1", location=Location(url="https://t1.example/")),
+            TabFacts(tab_id="T2", location=Location(url="https://t2.example/")),
             True,
         )
         assert effect.describe() == (
@@ -128,7 +128,7 @@ class TestTabSwitchEffect:
     async def test_the_most_recent_tab_is_named_by_the_tab_it_selected(self) -> None:
         cap = await _capability(TabsCDP(["T1", "T2", "T3"]))
         effect = _effect(await _switch(cap, None))
-        assert effect.after == TabFacts(tab_id="T3", url="https://t3.example/")
+        assert effect.after == TabFacts(tab_id="T3", location=Location(url="https://t3.example/"))
 
     async def test_a_tab_still_loading_says_so(self) -> None:
         cap = await _capability(TabsCDP(["T1", "T2"], ready="interactive"))
@@ -144,7 +144,7 @@ class TestTabSwitchEffect:
         effect = _effect(result)
         assert (effect.before, effect.after) == (
             "unknown",
-            TabFacts(tab_id="T2", url="https://t2.example/"),
+            TabFacts(tab_id="T2", location=Location(url="https://t2.example/")),
         )
         assert effect.describe() == (
             "Switched from a tab that is unknown to tab T2 (https://t2.example/); "
@@ -166,14 +166,15 @@ class TestTabSwitchEffect:
         took = time.monotonic() - started
         effect = _effect(result)
         assert cap.default_session_id == "sid-T2"
+        # The tab switched to is known from the switch itself; only its URL is not.
         assert (effect.before, effect.after, effect.document_loaded) == (
             "unknown",
-            "unknown",
+            TabFacts(tab_id="T2", location="unknown"),
             "unknown",
         )
         assert took < 0.5, "every probe shares one 50 ms budget"
         assert effect.describe() == (
-            "Switched from a tab that is unknown to a tab that is unknown; "
+            "Switched from a tab that is unknown to tab T2 (its URL is unknown); "
             "whether the document finished loading is unknown."
         )
 

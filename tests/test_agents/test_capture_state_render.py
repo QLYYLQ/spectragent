@@ -96,6 +96,10 @@ def test_the_whole_block() -> None:
             "capped: the wait ended at its limit after 3000 ms.",
         ),
         (SettleState(outcome="unknown", waited_ms=120), "unknown after waiting 120 ms."),
+        (
+            SettleState(outcome="unknown", waited_ms=0, detail="the page state could not be read"),
+            "unknown after waiting 0 ms (the page state could not be read).",
+        ),
     ],
 )
 def test_settle(settle: SettleState | None, expected: str) -> None:

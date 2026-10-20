@@ -99,10 +99,19 @@ class Location(_Fact):
 
 
 class TabFacts(_Fact):
-    """A tab: its identifier (as ``browser_meta`` lists it) and the URL it showed."""
+    """A tab: its identifier (as ``browser_meta`` lists it) and the document it showed.
+
+    ``location`` is a gap of its own, so a tab whose identifier is known keeps
+    it when its URL could not be read.
+    """
 
     tab_id: str
-    url: str
+    location: Location | Unmeasured
+
+    def text(self) -> str:
+        if isinstance(self.location, Location):
+            return f"tab {self.tab_id} ({_clip(self.location.url)})"
+        return f"tab {self.tab_id} (its URL is {_gap(self.location)})"
 
 
 class OptionFacts(_Fact):
@@ -327,7 +336,7 @@ class TabSwitchEffect(ActionEffect):
             else f"a tab that is {_gap(self.before)}"
         )
         if isinstance(self.after, TabFacts):
-            after = f"tab {self.after.tab_id} ({_clip(self.after.url)})"
+            after = self.after.text()
         else:
             after = f"a tab that is {_gap(self.after)}"
         return f"Switched from {before} to {after}; {_loaded(self.document_loaded)}."
