@@ -8,6 +8,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - actionTime
   - deviceid

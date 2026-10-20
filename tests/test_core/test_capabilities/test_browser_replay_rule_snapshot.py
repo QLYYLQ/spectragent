@@ -21,10 +21,12 @@ rules:
     scope: {}
     priority: -100
     exhaustion: miss
+    unavailable: miss
   - id: polling-status
     scope: {host: shop.test, path: /poll, method: GET, port: 80}
     priority: 10
     exhaustion: repeat_last
+    unavailable: miss
     ignore_query: [tick]
 """
 
@@ -95,7 +97,7 @@ async def test_uncovered_recorded_request_is_refused_before_serving(tmp_path: Pa
 
 def test_rule_levels_are_checked_before_opening_a_run(tmp_path: Path) -> None:
     (tmp_path / "rule.yaml").write_text(
-        "rules:\n  - id: over-broad\n    exhaustion: miss\n    levels: [normalized]\n"
+        "rules:\n  - id: over-broad\n    exhaustion: miss\n    unavailable: miss\n    levels: [normalized]\n"
     )
     source = ArchiveNetworkSource(
         matcher=MatcherConfig(levels=("exact",), site_rules=str(tmp_path))

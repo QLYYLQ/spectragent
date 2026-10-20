@@ -162,6 +162,10 @@ class TestTheRepeatLimit:
             {"frame_id": "another-frame"},
             {"diverged": True},
             {"record_id": "another-record"},
+            {"unavailable_policy": "miss"},
+            {"source_outcome": "network_failed"},
+            {"served_record_id": "another-served-record"},
+            {"repeated": True},
         ],
     )
     def test_summary_keeps_different_decision_meanings_separate(
@@ -176,6 +180,29 @@ class TestTheRepeatLimit:
         assert [entry.kind for entry in drained] == ["miss", "miss", "summary", "summary"]
         assert [entry.count for entry in drained[2:]] == [1, 1]
         assert all(getattr(drained[-1], name) == value for name, value in difference.items())
+
+    def test_substituted_answers_fold_only_with_the_same_records_and_outcome(self) -> None:
+        """The consumed record, the record served for it and the source outcome all count."""
+        log = ReplayLog(mode="summary", repeat_limit=1)
+        substituted = _entry(
+            "substituted",
+            record_id="cancelled",
+            served_record_id="donor",
+            source_outcome="page_cancelled_before_response",
+            unavailable_policy="serve_identical",
+            status=200,
+        )
+        for entry in (substituted, substituted, substituted):
+            log.append(entry)
+        log.append(substituted.model_copy(update={"source_outcome": "memory_cache"}))
+        drained = [ReplayLogEntry.model_validate(line) for line in log.drain()]
+        assert [(e.kind, e.folded_kind, e.count) for e in drained] == [
+            ("substituted", None, None),
+            ("substituted", None, None),
+            ("summary", "substituted", 2),
+        ]
+        assert drained[-1].served_record_id == "donor"
+        assert drained[-1].source_outcome == "page_cancelled_before_response"
 
     def test_summary_times_preserve_event_order_even_if_wall_clock_moves_back(self) -> None:
         log = ReplayLog(mode="summary", repeat_limit=1)

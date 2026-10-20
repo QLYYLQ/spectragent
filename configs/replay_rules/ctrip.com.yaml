@@ -11,6 +11,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_body_paths:
   - head.cid
 - id: ctrip-hot-destinations
@@ -20,6 +21,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_body_paths:
   - head.clientID
   - head.Frontend.vid
@@ -30,6 +32,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - _rm
   ignore_body_paths:
@@ -45,6 +48,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://m.ctrip.com/restapi/soa2/23619/json/recordErrorLog*
 - id: ctrip-format-number
@@ -54,6 +58,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-general-config
@@ -63,6 +68,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-qr-code
@@ -72,6 +78,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-station-booking
@@ -81,6 +88,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-ticket-success-rate
@@ -90,6 +98,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-train-stations
@@ -99,6 +108,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-train-transfers
@@ -108,6 +118,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-member-summary
@@ -117,6 +128,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-popup-tips
@@ -126,6 +138,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-train-config
@@ -135,6 +148,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-station-info
@@ -144,6 +158,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-discard-telemetry
@@ -153,6 +168,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-config-by-key
@@ -162,6 +178,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-injected-function-report
@@ -171,6 +188,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID
 - id: ctrip-ad-hotels
@@ -180,5 +198,6 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - x-traceID

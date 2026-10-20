@@ -7,5 +7,6 @@ rules:
     path: /rest/n/log/*
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://wlog.kuaishou.com/rest/n/log/**

@@ -9,6 +9,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - t
   - reqID
@@ -24,5 +25,6 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://apilog-web.acfun.cn/rest/direct/frontend/perfLog*

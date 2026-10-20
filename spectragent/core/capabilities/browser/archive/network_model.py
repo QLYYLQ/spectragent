@@ -91,6 +91,17 @@ BodyStatus = Literal["ok", "redirect", "too_large", "streamed_later", "websocket
 Terminal = Literal["redirected", "finished", "failed", "websocket"]
 
 
+#: The ``error_text`` the recorder writes for a request whose target went away
+#: before the request ended: not a failure Chrome reported (replay's loading
+#: reads it apart from a real network failure, arch §4.14 "加载").
+TARGET_DETACHED_ERROR = "the target detached before the request finished"
+
+
+def failure_text(params: Mapping[str, Any]) -> str:
+    """Why ``Network.loadingFailed`` says the request failed (its ``errorText``, else the block)."""
+    return str(params.get("errorText") or params.get("blockedReason") or "loading failed")
+
+
 def recordable(url: str) -> bool:
     return url.startswith(RECORDED_SCHEMES)
 
@@ -242,6 +253,10 @@ class Exchange:
     initiator: dict[str, Any] | None = None
     #: Epoch seconds of ``requestWillBeSent`` (or of the pause, before it).
     started_at: float | None = None
+    #: Epoch seconds the request ended: its terminal event (``loadingFinished``,
+    #: ``loadingFailed``, the next hop's redirect, a target detach) arrived.
+    #: ``None`` until then.
+    ended_at: float | None = None
     #: ``wallTime - timestamp`` of the request, to put CDP's monotonic
     #: timestamps on the wall clock.
     wall_offset: float | None = None
@@ -479,6 +494,7 @@ class NetworkModel:
                 previous, redirect, has_extra=bool(params.get("redirectHasExtraInfo"))
             )
             previous.terminal = "redirected"
+            previous.ended_at = self.end_time(previous, params.get("timestamp"))
             self._touch(previous)
         chain = self._chains.get(request_id, [])
         hop = next((h for h in chain if not h.has_request_event and h.url == url), None)
@@ -562,6 +578,7 @@ class NetworkModel:
         if hop is None:
             return
         hop.terminal = "finished"
+        hop.ended_at = self.end_time(hop, params.get("timestamp"))
         length = params.get("encodedDataLength")
         hop.encoded_length = float(length) if isinstance(length, int | float) else None
         self._touch(hop)
@@ -574,9 +591,8 @@ class NetworkModel:
         if hop is None:
             return
         hop.terminal = "failed"
-        hop.error_text = str(
-            params.get("errorText") or params.get("blockedReason") or "loading failed"
-        )
+        hop.ended_at = self.end_time(hop, params.get("timestamp"))
+        hop.error_text = failure_text(params)
         self._touch(hop)
 
     def target_detached(self, session_id: str | None) -> None:
@@ -587,7 +603,8 @@ class NetworkModel:
             for hop in chain:
                 if hop.session_id == session_id and hop.terminal is None and not hop.written:
                     hop.terminal = "failed"
-                    hop.error_text = "the target detached before the request finished"
+                    hop.ended_at = self._clock()
+                    hop.error_text = TARGET_DETACHED_ERROR
                     self._touch(hop)
 
     # ── WebSocket events ─────────────────────────────────────────────
@@ -695,6 +712,11 @@ class NetworkModel:
         if hop.wall_offset is None or not isinstance(stamp, int | float):
             return None
         return hop.wall_offset + float(stamp)
+
+    def end_time(self, hop: Exchange, stamp: Any) -> float:
+        """When *hop*'s terminal event happened: its CDP timestamp on the wall clock, else now."""
+        wall = self._wall(hop, stamp)
+        return wall if wall is not None else self._clock()
 
     # ── pauses (the session's on_paused) ─────────────────────────────
 

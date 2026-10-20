@@ -1,7 +1,8 @@
 """The replay log, ``replay.jsonl`` (§4.14 "回放日志").
 
 The replay server writes every decision it makes — a hit, a repeated
-exhausted record, a synthesised preflight, a miss — into one
+exhausted record, a record without a body answered by an identical one, a
+synthesised preflight, a miss — into one
 :class:`ReplayLog`; the ``browser.replay_log`` archiver's session
 (``archive/replay_log.py``) drains it at each collection into that step's
 ``replay.jsonl``. Collection assigns the batch to a step; it does not claim
@@ -19,7 +20,8 @@ rest come out as one ``summary`` with ``count``, ``first_captured_at`` and
 Identical means every field but when it
 happened (``captured_at``, ``cycle``) and the candidates listed — the same
 decision (kind, reason, answer, status, request class, frame, ``diverged``,
-record, the callback rewrite's parameter and recorded name) about the same
+record — consumed and served — source outcome, ``repeated``, the callback
+rewrite's parameter and recorded name) about the same
 request in the same frame — where the request is named by its canonical key
 (a cache-busted poll is one request asked again, and so is a JSONP poll
 asking a fresh callback name each time) or, without one (a WebSocket, an
@@ -50,15 +52,25 @@ from spectragent.core.capabilities.browser.archive.replay_log import (
     REPLAY_LOG_ARCHIVER,
     REPLAY_LOG_NAME,
 )
+from spectragent.core.capabilities.browser.replay.archive_index import SourceOutcome
 from spectragent.core.capabilities.browser.replay.jsonp import CallbackRewrite
 from spectragent.core.capabilities.browser.replay.miss_policy import MissReason, RequestClass
+from spectragent.core.capabilities.browser.replay.site_rules import (
+    ExhaustionPolicy,
+    UnavailablePolicy,
+)
 
 #: What one entry records. ``hit``: served from the archive; ``exhausted``:
-#: every candidate was used and the last one was served again; ``synthetic``:
-#: a CORS preflight the archive does not hold, answered 204; ``miss``: not
-#: served from the archive (answered by the miss policy, or unanswerable);
-#: ``summary``: entries folded by the rate limit.
-EntryKind = Literal["hit", "exhausted", "synthetic", "miss", "summary"]
+#: every candidate was used and the last available one was served again;
+#: ``substituted``: the consumed record has no body and an available record
+#: of the same sequence with the identical body answered for it (the rule's
+#: ``unavailable: serve_identical``); ``synthetic``: a CORS preflight the
+#: archive does not hold, answered 204; ``miss``: not served from the archive
+#: (answered by the miss policy, or unanswerable); ``summary``: entries
+#: folded by the rate limit.
+EntryKind = Literal["hit", "exhausted", "substituted", "synthetic", "miss", "summary"]
+#: The kinds a ``summary`` can fold: every decision kind.
+DecisionKind = Literal["hit", "exhausted", "substituted", "synthetic", "miss"]
 LogMode = Literal["full", "summary"]
 #: How the request was answered: fulfilled, failed, or not at all (Chrome
 #: never paused it — a WebSocket handshake, a nested worker's script).
@@ -99,13 +111,21 @@ class ReplayLogEntry(BaseModel):
     target_id: str | None = None
     session_id: str | None = None
     # ── a hit (and the record a ``too_large`` / ``body_unavailable`` miss matched) ──
+    #: The record consumed (for ``substituted``, the one without a body).
     record_id: str | None = None
     run_id: str | None = None
+    #: The record whose response was sent in its place (``substituted`` only).
+    served_record_id: str | None = None
+    #: How the source request of a consumed record without a body ended
+    #: (``substituted``, and a ``body_unavailable`` miss).
+    source_outcome: SourceOutcome | None = None
     level: Literal["exact", "normalized", "fuzzy"] | None = None
     fuzzy_score: float | None = None
-    #: The selected request rule and its explicit response exhaustion policy.
+    #: The selected request rule, its explicit response exhaustion policy and
+    #: its policy for a consumed record without a body.
     rule_id: str | None = None
-    exhaustion_policy: Literal["repeat_last", "miss"] | None = None
+    exhaustion_policy: ExhaustionPolicy | None = None
+    unavailable_policy: UnavailablePolicy | None = None
     #: ``bytes N-E/T`` of a range answer.
     range: str | None = None
     #: A JSONP answer served calling the callback name this request asked for
@@ -122,10 +142,14 @@ class ReplayLogEntry(BaseModel):
     candidates: list[ReplayCandidate] = Field(default_factory=list)
     #: A main-frame document miss: the replay left the recording here.
     diverged: bool = False
+    #: A miss that repeats an exhausted sequence's last record (``repeat_last``) —
+    #: one without a servable body, or one that failed to serve — rather than the
+    #: first time that record was consumed. Written only when true.
+    repeated: bool | None = None
     # ── a summary ──
     #: The kind of the entries a ``summary`` folds, and how many it folds
     #: (beyond the ``log_repeat_limit`` written in full).
-    folded_kind: Literal["hit", "exhausted", "synthetic", "miss"] | None = None
+    folded_kind: DecisionKind | None = None
     count: int | None = Field(default=None, ge=1)
     #: Occurrence times of the first and last events represented by the summary.
     first_captured_at: float | None = None

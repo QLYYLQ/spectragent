@@ -851,3 +851,205 @@ async def test_unreadable_source_body_is_a_distinct_offline_miss(tmp_path: Path)
     assert entry["status"] == 404
     assert all(sent.method != "Fetch.continueRequest" for sent in client.sent)
     await recorder.close()
+
+
+# ── recorded requests without a body (§4.14 "匹配", "回放日志") ─────────
+
+PICTURE = "http://cdn.test/pic.webp"
+PICTURE_BYTES = b"RIFF....WEBPfour eggs"
+CROSS_SITE = {"Accept": "image/webp", "Origin": "http://shop.test"}
+SAME_SITE = {"Accept": "image/webp"}
+
+
+def _rules(root: Path, policy: str) -> str:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "rules.yaml").write_text(
+        "rules:\n"
+        "  - id: everything\n"
+        "    scope: {}\n"
+        "    exhaustion: repeat_last\n"
+        f"    unavailable: {policy}\n"
+    )
+    return str(root)
+
+
+@pytest.fixture(scope="module")
+def unavailable_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A picture loaded twice and then cancelled; an ad blocked; a thumbnail always cancelled."""
+
+    async def _record() -> Path:
+        script = RecordingScript(tmp_path_factory.mktemp("unavailable"), run_id="run-pic")
+        image = {"Content-Type": "image/webp", "Access-Control-Allow-Origin": "*"}
+        await script.exchange(
+            PICTURE,
+            body=PICTURE_BYTES,
+            headers={**image, "X-Recorded-As": "cross-site"},
+            request_headers=CROSS_SITE,
+            resource_type="Image",
+        )
+        await script.exchange(
+            PICTURE,
+            body=PICTURE_BYTES,
+            headers={**image, "X-Recorded-As": "same-site"},
+            request_headers=SAME_SITE,
+            resource_type="Image",
+        )
+        script.failed(
+            PICTURE,
+            error_text="net::ERR_ABORTED",
+            request_headers=CROSS_SITE,
+            resource_type="Image",
+        )
+        await script.exchange("http://ads.test/ad.png", body=b"PNG", resource_type="Image")
+        script.failed(
+            "http://ads.test/ad.png", error_text="net::ERR_BLOCKED_BY_ORB", resource_type="Image"
+        )
+        script.failed(
+            "http://cdn.test/thumb.webp", error_text="net::ERR_ABORTED", resource_type="Image"
+        )
+        await script.commit(0)
+        return script.finish()
+
+    return asyncio.run(_record())
+
+
+class TestRecordsWithoutABody:
+    async def _serve(
+        self, run: Path, tmp_path: Path, policy: str
+    ) -> tuple[RecorderConnection, FakeClient, ReplayServer, str]:
+        source = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules=_rules(tmp_path / policy, policy))
+        )
+        _browser, recorder, client, server, sid = await _serving(run, source=source)
+        return recorder, client, server, sid
+
+    async def _three_pictures(self, client: FakeClient, sid: str) -> None:
+        for request_id, headers in (("p1", CROSS_SITE), ("p2", SAME_SITE), ("p3", CROSS_SITE)):
+            _pause(client, sid, request_id, PICTURE, resource_type="Image", headers=headers)
+            await _settle()
+
+    async def test_the_cancelled_request_is_answered_by_the_identical_cross_site_record(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        await self._three_pictures(client, sid)
+        third = _sent(client, "p3")
+        assert (third["responseCode"], _body(third)) == (200, PICTURE_BYTES)
+        assert _headers(third)["x-recorded-as"] == "cross-site"
+        assert "x-replay-miss" not in _headers(third)
+        first, _second, substituted = _log(server)
+        assert substituted["kind"] == "substituted"
+        assert substituted["served_record_id"] == first["record_id"]
+        assert substituted["record_id"] not in (first["record_id"], _second["record_id"])
+        assert substituted["source_outcome"] == "page_cancelled_before_response"
+        assert (substituted["unavailable_policy"], substituted["exhaustion_policy"]) == (
+            "serve_identical",
+            "repeat_last",
+        )
+        assert (substituted["answer"], substituted["status"], substituted["level"]) == (
+            "fulfilled",
+            200,
+            "exact",
+        )
+        assert "reason" not in substituted
+        await recorder.close()
+
+    async def test_under_miss_it_stays_a_404_that_says_how_the_source_ended(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        recorder, client, server, sid = await self._serve(unavailable_run, tmp_path, "miss")
+        await self._three_pictures(client, sid)
+        third = _sent(client, "p3")
+        assert (third["responseCode"], _headers(third)["x-replay-miss"]) == (404, "1")
+        entry = _log(server)[-1]
+        assert (entry["kind"], entry["reason"], entry["source_outcome"]) == (
+            "miss",
+            "body_unavailable",
+            "page_cancelled_before_response",
+        )
+        assert entry["unavailable_policy"] == "miss" and "served_record_id" not in entry
+        await recorder.close()
+
+    async def test_a_source_network_failure_stays_a_failure(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        for request_id in ("a1", "a2"):
+            _pause(client, sid, request_id, "http://ads.test/ad.png", resource_type="Image")
+            await _settle()
+        assert _sent(client, "a1")["responseCode"] == 200
+        assert _sent(client, "a2")["responseCode"] == 404
+        entry = _log(server)[-1]
+        assert (entry["kind"], entry["reason"], entry["source_outcome"]) == (
+            "miss",
+            "body_unavailable",
+            "network_failed",
+        )
+        await recorder.close()
+
+    async def test_nothing_to_substitute_keeps_the_404_and_logs_the_outcome(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        _pause(client, sid, "t1", "http://cdn.test/thumb.webp", resource_type="Image")
+        await _settle()
+        assert _sent(client, "t1")["responseCode"] == 404
+        (entry,) = _log(server)
+        assert (entry["reason"], entry["source_outcome"], entry["request_class"]) == (
+            "body_unavailable",
+            "page_cancelled_before_response",
+            "subresource",
+        )
+        await recorder.close()
+
+    async def test_a_repeat_of_a_record_without_a_body_is_marked(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        """The first miss on the body-less record is not a repeat; repeat_last's repeats are."""
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        for request_id in ("t1", "t2", "t3"):
+            _pause(client, sid, request_id, "http://cdn.test/thumb.webp", resource_type="Image")
+            await _settle()
+        entries = _log(server)
+        assert [(e["reason"], e.get("repeated")) for e in entries] == [
+            ("body_unavailable", None),
+            ("body_unavailable", True),
+            ("body_unavailable", True),
+        ]
+        assert {e["record_id"] for e in entries} == {entries[0]["record_id"]}
+        assert {e["source_outcome"] for e in entries} == {"page_cancelled_before_response"}
+        await recorder.close()
+
+    async def test_a_repeat_that_is_served_is_exhausted_not_marked(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        """Four pictures: three recorded, then the last available one served again."""
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        await self._three_pictures(client, sid)
+        _pause(client, sid, "p4", PICTURE, resource_type="Image", headers=SAME_SITE)
+        await _settle()
+        assert _body(_sent(client, "p4")) == PICTURE_BYTES
+        last = _log(server)[-1]
+        assert last["kind"] == "exhausted" and "repeated" not in last
+        await recorder.close()
+
+    async def test_a_hit_carries_no_outcome(self, unavailable_run: Path, tmp_path: Path) -> None:
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        _pause(client, sid, "p1", PICTURE, resource_type="Image", headers=CROSS_SITE)
+        await _settle()
+        (entry,) = _log(server)
+        assert entry["kind"] == "hit"
+        assert "source_outcome" not in entry and "served_record_id" not in entry
+        await recorder.close()

@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from spectragent.core.capabilities.browser.replay.archive_index import ArchiveIndex
@@ -41,7 +42,9 @@ def write_rules(root: Path, files: dict[str, str]) -> Path:
 
 class TestEachKey:
     def test_ignore_query(self) -> None:
-        rule = SiteRule(id="policy", exhaustion="repeat_last", ignore_query=("session*",))
+        rule = SiteRule(
+            id="policy", exhaustion="repeat_last", unavailable="miss", ignore_query=("session*",)
+        )
         with_session = request_keys("GET", "http://a.test/p?session_id=1&x=1", None, None, rule)
         other_session = request_keys("GET", "http://a.test/p?session_id=2&x=1", None, None, rule)
         assert with_session.normalized == other_session.normalized
@@ -56,6 +59,7 @@ class TestEachKey:
         rule = SiteRule(
             id="policy",
             exhaustion="repeat_last",
+            unavailable="miss",
             ignore_body_paths=(
                 "client.ts",
                 "nonce",
@@ -97,14 +101,20 @@ class TestEachKey:
         index = ArchiveIndex([first, second])
         assert (
             Matcher(
-                index, rules=_rules_with("a.test", SiteRule(id="policy", exhaustion="repeat_last"))
+                index,
+                rules=_rules_with(
+                    "a.test", SiteRule(id="policy", exhaustion="repeat_last", unavailable="miss")
+                ),
             )
             .match(request)
             .record
             == second
         )  # shares X-Trace
         rules = _rules_with(
-            "a.test", SiteRule(id="policy", exhaustion="repeat_last", ignore_headers=("x-*",))
+            "a.test",
+            SiteRule(
+                id="policy", exhaustion="repeat_last", unavailable="miss", ignore_headers=("x-*",)
+            ),
         )
         # Ignored: the tie falls through to the earlier recording.
         assert Matcher(ArchiveIndex([first, second]), rules=rules).match(request).record == second
@@ -119,7 +129,9 @@ class TestEachKey:
         assert (
             Matcher(
                 ArchiveIndex([first, late]),
-                rules=_rules_with("a.test", SiteRule(id="policy", exhaustion="repeat_last")),
+                rules=_rules_with(
+                    "a.test", SiteRule(id="policy", exhaustion="repeat_last", unavailable="miss")
+                ),
             )
             .match(request)
             .record
@@ -138,7 +150,10 @@ class TestEachKey:
             )
         )
         assert Matcher(ArchiveIndex([recorded]), config).match(document).reason == "no_match"
-        rules = _rules_with("a.test", SiteRule(id="policy", exhaustion="repeat_last", fuzzy=True))
+        rules = _rules_with(
+            "a.test",
+            SiteRule(id="policy", exhaustion="repeat_last", unavailable="miss", fuzzy=True),
+        )
         hit = Matcher(ArchiveIndex([recorded]), config, rules).match(document)
         assert (hit.record, hit.level, hit.fuzzy_score) == (recorded, "fuzzy", 0.5)
         posted = indexed(
@@ -162,6 +177,7 @@ class TestEachKey:
         rule = SiteRule(
             id="policy",
             exhaustion="repeat_last",
+            unavailable="miss",
             synthesize_204=(
                 "https://stats.example.com/*",
                 "*/collect?*",
@@ -175,6 +191,7 @@ class TestEachKey:
         rule = SiteRule(
             id="policy",
             exhaustion="repeat_last",
+            unavailable="miss",
             response_echo=(
                 EchoRule(
                     url="https://example.com/aura*",
@@ -202,6 +219,7 @@ class TestEachKey:
         rule = SiteRule(
             id="policy",
             exhaustion="repeat_last",
+            unavailable="miss",
             response_echo=(
                 EchoRule(url="*", request_path="requestId", response_path="items.*.rid"),
             ),
@@ -223,6 +241,7 @@ class TestEachKey:
         scoped = SiteRule(
             id="policy",
             exhaustion="repeat_last",
+            unavailable="miss",
             response_echo=(
                 EchoRule(
                     url="http://b.test/*", request_path="requestId", response_path="items.*.rid"
@@ -240,21 +259,24 @@ class TestRequestSelection:
     def test_endpoint_method_and_effective_port_select_independently(self) -> None:
         rules = SiteRules(
             [
-                SiteRule(id="fallback", priority=-1, exhaustion="repeat_last"),
+                SiteRule(id="fallback", priority=-1, exhaustion="repeat_last", unavailable="miss"),
                 SiteRule(
                     id="read",
                     scope=RequestScope(host="api.test", path="/stock", method="GET", port=443),
                     exhaustion="miss",
+                    unavailable="miss",
                 ),
                 SiteRule(
                     id="write",
                     scope=RequestScope(host="api.test", path="/stock", method="POST", port=443),
                     exhaustion="miss",
+                    unavailable="miss",
                 ),
                 SiteRule(
                     id="alternate",
                     scope=RequestScope(url="https://api.test:8443/stock*"),
                     exhaustion="repeat_last",
+                    unavailable="miss",
                 ),
             ]
         )
@@ -264,9 +286,15 @@ class TestRequestSelection:
         assert rules.require_for_request("GET", "https://api.test/other").id == "fallback"
 
     def test_highest_priority_wins_without_merging(self) -> None:
-        broad = SiteRule(id="broad", exhaustion="repeat_last", ignore_query=("id",))
+        broad = SiteRule(
+            id="broad", exhaustion="repeat_last", unavailable="miss", ignore_query=("id",)
+        )
         fine = SiteRule(
-            id="fine", priority=10, exhaustion="miss", scope=RequestScope(path="/stock")
+            id="fine",
+            priority=10,
+            exhaustion="miss",
+            unavailable="miss",
+            scope=RequestScope(path="/stock"),
         )
         for rules in (SiteRules([broad, fine]), SiteRules([fine, broad])):
             selected = rules.require_for_request("GET", "https://a.test/stock")
@@ -275,8 +303,18 @@ class TestRequestSelection:
     def test_equal_priority_conflict_names_both_rules_and_request(self) -> None:
         rules = SiteRules(
             [
-                SiteRule(id="left", exhaustion="miss", scope=RequestScope(host="a.test")),
-                SiteRule(id="right", exhaustion="repeat_last", scope=RequestScope(path="/stock")),
+                SiteRule(
+                    id="left",
+                    exhaustion="miss",
+                    unavailable="miss",
+                    scope=RequestScope(host="a.test"),
+                ),
+                SiteRule(
+                    id="right",
+                    exhaustion="repeat_last",
+                    unavailable="miss",
+                    scope=RequestScope(path="/stock"),
+                ),
             ]
         )
         with pytest.raises(SiteRuleError, match="left.*right.*GET.*stock"):
@@ -284,7 +322,14 @@ class TestRequestSelection:
 
     def test_host_globs_never_imply_a_domain_suffix(self) -> None:
         rules = SiteRules(
-            [SiteRule(id="sub", exhaustion="miss", scope=RequestScope(host="*.a.test"))]
+            [
+                SiteRule(
+                    id="sub",
+                    exhaustion="miss",
+                    unavailable="miss",
+                    scope=RequestScope(host="*.a.test"),
+                )
+            ]
         )
         assert rules.for_request("GET", "http://www.a.test/") is not None
         assert rules.for_request("GET", "http://a.test/") is None
@@ -294,6 +339,7 @@ class TestRequestSelection:
         rule = SiteRule(
             id="keep",
             exhaustion="miss",
+            unavailable="miss",
             ignore_query=("*",),
             keep_query=("id",),
             ignore_body_paths=("client.*",),
@@ -311,11 +357,12 @@ class TestRuleInput:
         "body",
         [
             "rules: [{id: a}]",
-            "rules: [{id: a, exhaustion: invalid}]",
+            "rules: [{id: a, exhaustion: invalid, unavailable: miss}]",
+            "rules: [{id: a, exhaustion: miss, unavailable: invalid}]",
             "rules: []",
             "",
             "[]",
-            "rules: [{id: a, exhaustion: miss, unknown: true}]",
+            "rules: [{id: a, exhaustion: miss, unavailable: miss, unknown: true}]",
         ],
     )
     def test_invalid_or_undeclared_policy_is_rejected_with_file(
@@ -325,25 +372,47 @@ class TestRuleInput:
         with pytest.raises(SiteRuleError, match="policy.yaml"):
             SiteRules.load(root)
 
+    def test_a_rule_without_its_unavailable_policy_is_refused_naming_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Like ``exhaustion``, there is no default: a rule that does not say is refused."""
+        root = write_rules(tmp_path, {"policy.yaml": "rules: [{id: a, exhaustion: repeat_last}]"})
+        with pytest.raises(SiteRuleError, match=r"policy\.yaml(.|\n)*unavailable"):
+            SiteRules.load(root)
+        with pytest.raises(ValidationError, match="unavailable"):
+            SiteRule.model_validate({"id": "a", "exhaustion": "miss"})
+
     def test_missing_directory_and_duplicate_ids_are_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(SiteRuleError, match="does not exist"):
             SiteRules.load(tmp_path / "absent")
         with pytest.raises(SiteRuleError, match="duplicate.*same"):
             SiteRules(
-                [SiteRule(id="same", exhaustion="miss"), SiteRule(id="same", exhaustion="miss")]
+                [
+                    SiteRule(id="same", exhaustion="miss", unavailable="miss"),
+                    SiteRule(id="same", exhaustion="miss", unavailable="miss"),
+                ]
             )
 
     def test_rules_cannot_expand_run_levels(self) -> None:
         for rule in (
-            SiteRule(id="fuzzy", exhaustion="miss", fuzzy=True),
-            SiteRule(id="normalized", exhaustion="miss", levels=("normalized",)),
+            SiteRule(id="fuzzy", exhaustion="miss", unavailable="miss", fuzzy=True),
+            SiteRule(
+                id="normalized", exhaustion="miss", unavailable="miss", levels=("normalized",)
+            ),
         ):
             with pytest.raises(SiteRuleError, match="matcher.levels"):
                 SiteRules([rule]).validate_levels(["exact"])
 
     def test_known_requests_require_coverage_but_unknown_requests_remain_diagnostic(self) -> None:
         rules = SiteRules(
-            [SiteRule(id="known", exhaustion="miss", scope=RequestScope(path="/known"))]
+            [
+                SiteRule(
+                    id="known",
+                    exhaustion="miss",
+                    unavailable="miss",
+                    scope=RequestScope(path="/known"),
+                )
+            ]
         )
         assert rules.for_request("GET", "http://a.test/unknown") is None
         with pytest.raises(SiteRuleError, match="exhaustion.*GET.*unknown"):
@@ -352,11 +421,13 @@ class TestRuleInput:
 
 class TestFrozenSnapshot:
     def test_editing_and_deleting_files_never_changes_frozen_behavior(self, tmp_path: Path) -> None:
-        text = "# exact source text\nrules:\n  - id: original\n    exhaustion: repeat_last\n    ignore_query: [ts]\n"
+        text = "# exact source text\nrules:\n  - id: original\n    exhaustion: repeat_last\n    unavailable: miss\n    ignore_query: [ts]\n"
         root = write_rules(tmp_path, {"policy.yaml": text})
         rules = SiteRules.load(root)
         frozen = rules.snapshot()
-        (root / "policy.yaml").write_text("rules: [{id: changed, exhaustion: miss}]")
+        (root / "policy.yaml").write_text(
+            "rules: [{id: changed, exhaustion: miss, unavailable: miss}]"
+        )
         assert SiteRules.load(root).sha256 != rules.sha256
         (root / "policy.yaml").unlink()
         restored = SiteRules.from_snapshot(
@@ -368,7 +439,7 @@ class TestFrozenSnapshot:
         assert restored.sha256 == rules.sha256
 
     def test_body_and_collection_digests_are_verified(self) -> None:
-        rules = SiteRules([SiteRule(id="one", exhaustion="miss")])
+        rules = SiteRules([SiteRule(id="one", exhaustion="miss", unavailable="miss")])
         snapshot = rules.snapshot()
         wrong_file = snapshot.files[0].model_copy(update={"text": "changed"})
         for bad in (
@@ -379,7 +450,9 @@ class TestFrozenSnapshot:
                 SiteRules.from_snapshot(bad)
 
     def test_collections_and_nested_rules_are_immutable(self) -> None:
-        rules = SiteRules([SiteRule(id="one", exhaustion="miss", ignore_query=("ts",))])
+        rules = SiteRules(
+            [SiteRule(id="one", exhaustion="miss", unavailable="miss", ignore_query=("ts",))]
+        )
         rule = rules.require_for_request("GET", "http://a.test/")
         assert isinstance(rule.ignore_query, tuple)
         with pytest.raises(ValidationError, match="frozen"):
@@ -390,3 +463,18 @@ class TestFrozenSnapshot:
         selected = rules.require_for_request("POST", "https://m.ctrip.com/restapi/business/stock")
         assert selected.exhaustion == "repeat_last"
         assert not selected.ignores_body_path("id")
+
+    def test_every_shipped_rule_writes_its_unavailable_policy_and_the_baseline_serves_identical(
+        self,
+    ) -> None:
+        """Each rule file states the policy itself; no rule relies on a parse-time default."""
+        root = Path(__file__).resolve().parents[3] / "configs" / "replay_rules"
+        written = [
+            (path.name, rule)
+            for path in sorted(root.glob("*.yaml"))
+            for rule in yaml.safe_load(path.read_text())["rules"]
+        ]
+        assert written
+        assert [name for name, rule in written if "unavailable" not in rule] == []
+        baseline = SiteRules.load(root).require_for_request("GET", "https://any.test/")
+        assert (baseline.id, baseline.unavailable) == ("baseline", "serve_identical")

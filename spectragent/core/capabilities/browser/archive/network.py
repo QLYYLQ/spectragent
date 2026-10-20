@@ -53,6 +53,10 @@ that step: ``exchanges.warc.gz`` (``archive/warc.py``), ``index.jsonl`` (one
 line for each exchange still in flight, and for each written
 ``streamed_later`` exchange whose body is still streaming; a ``body`` line
 per streamed body when its request ends) and ``websocket.jsonl`` (frames).
+A ``pending`` line carries the request's start time (``started_at``); an
+``exchange`` line, and a streamed exchange's ``body`` line, the time its
+request ended (``ended_at``, ``None`` while it had not) — evidence of how long
+a source request lived before the page cancelled it (§4.14).
 There is no match key in the index: replay derives keys from the raw
 request facts with one canonicaliser, so a rule change leaves no stale key
 behind.
@@ -87,10 +91,12 @@ from spectragent.core.capabilities.browser.archive.base import (
 )
 from spectragent.core.capabilities.browser.archive.encoding import jsonl
 from spectragent.core.capabilities.browser.archive.network_model import (
+    TARGET_DETACHED_ERROR,
     Exchange,
     HeldBytes,
     NetworkModel,
     admit_network_event,
+    failure_text,
     header_value,
 )
 from spectragent.core.capabilities.browser.archive.redaction import (
@@ -125,6 +131,10 @@ _CONTENT_RANGE = re.compile(r"^\s*(\w+)\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)\s*$")
 WARC_NAME = "exchanges.warc.gz"
 INDEX_NAME = "index.jsonl"
 WEBSOCKET_NAME = "websocket.jsonl"
+#: How a ``body_note`` begins when the inline body read outlived
+#: ``body_read_timeout_s`` (the seconds follow): replay's loading reads it as
+#: the recorder's timeout, not the page's or the network's (arch §4.14 "加载").
+BODY_READ_TIMEOUT_NOTE = "Fetch.getResponseBody did not answer within"
 
 
 def parse_content_range(value: str | None) -> dict[str, Any] | None:
@@ -474,21 +484,51 @@ class NetworkSession(BrowserArchiveSession):
         self.model.target_detached(event.session_id)
         for request_id, stream in list(self._streams.items()):
             if stream.session_id == event.session_id:
-                self._settle_stream(request_id, finished=False, ended="the target detached")
+                self._settle_stream(
+                    request_id,
+                    finished=False,
+                    ended="the target detached",
+                    ended_at=self.ctx.clock(),
+                    error_text=TARGET_DETACHED_ERROR,
+                )
 
     def _end_stream(self, event: RecorderEvent, *, finished: bool, ended: str) -> None:
         """A request's end settles its stream, when it is the streaming session's."""
         request_id = str(event.params.get("requestId") or "")
         stream = self._streams.get(request_id)
         if stream is not None and stream.session_id == event.session_id:
-            self._settle_stream(request_id, finished=finished, ended=ended)
+            self._settle_stream(
+                request_id,
+                finished=finished,
+                ended=ended,
+                ended_at=self.model.end_time(stream.hop, event.params.get("timestamp")),
+                error_text=None if finished else failure_text(event.params),
+            )
 
-    def _settle_stream(self, request_id: str, *, finished: bool, ended: str) -> None:
-        """Judge a stream whose request ended and queue its ``body`` line (and blob)."""
+    def _settle_stream(
+        self,
+        request_id: str,
+        *,
+        finished: bool,
+        ended: str,
+        ended_at: float,
+        error_text: str | None,
+    ) -> None:
+        """Judge a stream whose request ended and queue its ``body`` line (and blob).
+
+        The exchange line went out before the request ended, so the request's
+        end — when, and the failure if it failed — is written on this line.
+        """
         stream = self._streams.pop(request_id)
         status, body, note = stream.outcome(finished=finished, ended=ended)
         hop = stream.hop
-        line: dict[str, Any] = {"kind": "body", "record_id": hop.record_id, "body_status": status}
+        line: dict[str, Any] = {
+            "kind": "body",
+            "record_id": hop.record_id,
+            "body_status": status,
+            "ended_at": ended_at,
+            "error_text": error_text,
+        }
         blob: ArchiveFile | None = None
         if body is not None:
             digest = hashlib.sha256(body).hexdigest()
@@ -649,7 +689,7 @@ class NetworkSession(BrowserArchiveSession):
             self.model.body_finished(
                 hop,
                 status="incomplete",
-                note=f"Fetch.getResponseBody did not answer within {archiver.body_read_timeout_s:g}s",
+                note=f"{BODY_READ_TIMEOUT_NOTE} {archiver.body_read_timeout_s:g}s",
                 content_range=content_range,
             )
             return
@@ -796,6 +836,7 @@ class NetworkSession(BrowserArchiveSession):
                 "record_id": exchange.record_id,
                 "method": exchange.method,
                 "url": exchange.url,
+                "started_at": exchange.started_at,
                 "waiting_for": exchange.waiting_for() or "raw_headers",
             }
             for exchange in pending
@@ -806,6 +847,7 @@ class NetworkSession(BrowserArchiveSession):
                 "record_id": exchange.record_id,
                 "method": exchange.method,
                 "url": exchange.url,
+                "started_at": exchange.started_at,
                 "waiting_for": "streamed_body",
             }
             for exchange in streaming
@@ -928,6 +970,7 @@ class NetworkSession(BrowserArchiveSession):
             "paused_session_id": exchange.paused_session,
             "initiator": exchange.initiator,
             "started_at": exchange.started_at,
+            "ended_at": exchange.ended_at,
             "timing": exchange.timing,
             "from_service_worker": exchange.from_service_worker,
             "from_cache": exchange.served_from_cache or exchange.from_disk_cache,

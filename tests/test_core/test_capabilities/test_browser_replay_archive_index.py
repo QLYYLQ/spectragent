@@ -21,6 +21,7 @@ import pytest
 
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities.browser.archive.network import INDEX_NAME, WARC_NAME
+from spectragent.core.capabilities.browser.archive.network_model import TARGET_DETACHED_ERROR
 from spectragent.core.capabilities.browser.replay.archive_index import (
     BlobPayload,
     BodyLine,
@@ -32,6 +33,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     WarcPayload,
     iter_index_lines,
     load_archive,
+    source_outcome,
 )
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule, SiteRules
@@ -190,6 +192,94 @@ class TestEachKindOfRecord:
         assert key.cover(normalized, 7, None) is None, "bytes 7-9 were never recorded"
 
 
+class TestSourceOutcomes:
+    """How each source request recorded without a body ended, read off the recorder's facts."""
+
+    @pytest.fixture()
+    async def outcomes(self, tmp_path: Path) -> dict[str, IndexedRecord]:
+        recording = RecordingScript(tmp_path, body_read_timeout_s=0.05)
+        recording.failed(f"{SHOP}/cancelled-early.webp", error_text="net::ERR_ABORTED")
+        recording.failed(f"{SHOP}/cancelled-late.webp", error_text="net::ERR_ABORTED", status=200)
+        recording.failed(f"{SHOP}/ad.png", error_text="net::ERR_BLOCKED_BY_ORB")
+        recording.from_memory_cache(f"{SHOP}/cached.webp")
+        await recording.body_read_times_out(f"{SHOP}/slow.js")
+        await recording.streamed_cancelled(f"{SHOP}/stream.js", b"s" * 6000)
+        await recording.exchange(f"{SHOP}/fine.js")
+        await recording.too_large(f"{SHOP}/huge")
+        await recording.commit(0)
+        recording.in_flight(f"{SHOP}/never")
+        await recording.commit(1)
+        return by_url(load_archive(open_archive(recording.finish())))
+
+    @pytest.mark.parametrize(
+        ("path", "outcome"),
+        [
+            ("/cancelled-early.webp", "page_cancelled_before_response"),
+            ("/cancelled-late.webp", "page_cancelled_during_body"),
+            ("/ad.png", "network_failed"),
+            ("/cached.webp", "memory_cache"),
+            ("/slow.js", "recorder_timeout"),
+            ("/stream.js", "page_cancelled_during_body"),
+            ("/never", "in_flight_at_run_end"),
+        ],
+    )
+    async def test_each_record_without_a_body_says_how_its_request_ended(
+        self, outcomes: dict[str, IndexedRecord], path: str, outcome: str
+    ) -> None:
+        record = outcomes[f"{SHOP}{path}"]
+        assert (record.miss_reason, record.source_outcome) == ("body_unavailable", outcome)
+
+    async def test_records_with_a_body_or_too_large_have_no_outcome(
+        self, outcomes: dict[str, IndexedRecord]
+    ) -> None:
+        assert outcomes[f"{SHOP}/fine.js"].source_outcome is None
+        huge = outcomes[f"{SHOP}/huge"]
+        assert (huge.miss_reason, huge.source_outcome) == ("too_large", None)
+
+    @staticmethod
+    def _line(**fields: Any) -> ExchangeLine:
+        return ExchangeLine.model_validate(
+            {"kind": "exchange", "record_id": "r", "url": f"{SHOP}/x", "body_status": "incomplete"}
+            | fields
+        )
+
+    def test_the_first_matching_fact_decides(self) -> None:
+        """In flight beats an error; an error beats a cache hit; a detach is not the network."""
+        line = self._line(error_text="net::ERR_FAILED", from_cache=True)
+        assert source_outcome(line, None, ends_pending=True) == "in_flight_at_run_end"
+        assert source_outcome(line, None, ends_pending=False) == "network_failed"
+        cached = self._line(from_cache=True, paused_session_id=None)
+        assert source_outcome(cached, None, ends_pending=False) == "memory_cache"
+        paused_cache = self._line(from_cache=True, paused_session_id="page-s")
+        assert source_outcome(paused_cache, None, ends_pending=False) == "unknown"
+        detached = self._line(error_text=TARGET_DETACHED_ERROR)
+        assert source_outcome(detached, None, ends_pending=False) == "unknown"
+        assert source_outcome(self._line(), None, ends_pending=False) == "unknown"
+
+    def test_a_streamed_body_ends_on_its_body_line(self) -> None:
+        line = self._line(body_status="streamed_later", status=200)
+        body = BodyLine(
+            kind="body", record_id="r", body_status="incomplete", error_text="net::ERR_ABORTED"
+        )
+        assert source_outcome(line, body, ends_pending=False) == "page_cancelled_during_body"
+        failed = body.model_copy(update={"error_text": "net::ERR_CONNECTION_RESET"})
+        assert source_outcome(line, failed, ends_pending=False) == "network_failed"
+
+    async def test_pending_lines_carry_a_start_the_order_does_not_use(self, tmp_path: Path) -> None:
+        """Replay ordering is unchanged: a pending-only record still comes last."""
+        recording = RecordingScript(tmp_path)
+        recording.in_flight(f"{SHOP}/first")
+        await recording.exchange(f"{SHOP}/second")
+        await recording.commit(0)
+        run = recording.finish()
+        pending = [
+            line for _s, line in iter_index_lines(open_archive(run)) if line.kind == "pending"
+        ]
+        assert pending and all(line.started_at is not None for line in pending)
+        records = by_url(load_archive(open_archive(run)))
+        assert records[f"{SHOP}/first"].order > records[f"{SHOP}/second"].order
+
+
 class TestTheIndexAsAWhole:
     async def test_the_fingerprint_and_t0(self, recorded: RecordedArchive) -> None:
         assert recorded.fingerprint is not None
@@ -212,7 +302,16 @@ class TestTheIndexAsAWhole:
         plain = load_archive(reader).index.records[0]
         ruled = load_archive(
             reader,
-            SiteRules([SiteRule(id="session", exhaustion="miss", ignore_query=("session",))]),
+            SiteRules(
+                [
+                    SiteRule(
+                        id="session",
+                        exhaustion="miss",
+                        unavailable="miss",
+                        ignore_query=("session",),
+                    )
+                ]
+            ),
         ).index.records[0]
         assert plain.keys.exact == ruled.keys.exact
         assert plain.keys.normalized != ruled.keys.normalized

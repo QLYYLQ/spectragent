@@ -9,6 +9,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - lc
   - uuid
@@ -21,6 +22,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - device_id
   keep_query:
@@ -32,6 +34,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - jsonp
   keep_query:
@@ -43,6 +46,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - jsonp
   keep_query:

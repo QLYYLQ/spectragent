@@ -7,5 +7,6 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://pclog.thepaper.cn/log*

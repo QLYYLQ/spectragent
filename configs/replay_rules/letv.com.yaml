@@ -9,6 +9,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - apprunid
   - lc
@@ -23,6 +24,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - apprunid
   - lc
@@ -37,6 +39,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - apprunid
   - lc
@@ -52,6 +55,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - lc
   - uuid
@@ -65,6 +69,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - _r
   - lc
@@ -78,6 +83,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - vvid
   keep_query:

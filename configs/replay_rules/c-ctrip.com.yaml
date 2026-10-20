@@ -9,6 +9,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - v
 - id: ctrip-telemetry-collector
@@ -18,6 +19,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://s.c-ctrip.com/bee/collect*
 - id: ctrip-telemetry-pixel
@@ -27,5 +29,6 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://s.c-ctrip.com/bf.gif*

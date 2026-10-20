@@ -10,6 +10,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - timespan
   keep_query:
@@ -21,6 +22,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - domreadyt
   - wt
@@ -34,6 +36,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - mt
 - id: eastmoney-sdk-version
@@ -43,6 +46,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   ignore_query:
   - callback
 - id: eastmoney-recommendation-log
@@ -52,5 +56,6 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://huaxiang.eastmoney.com/CommonRecommend.png*

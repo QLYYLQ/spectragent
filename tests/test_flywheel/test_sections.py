@@ -141,6 +141,58 @@ class TestCallbackRewrites:
         assert "JSONP callback names rewritten 7" in render_markdown(report)
 
 
+class TestSubstitutions:
+    """Answers from an identical record are counted by site and by how the source request ended."""
+
+    async def test_counted_by_source_outcome_through_folded_repeats(self, tmp_path: Path) -> None:
+        layout = empty_layout(tmp_path)
+        write_plain(layout.traces("record"), "rec-pic", [Step()], task_id="t1", site="pic.test")
+
+        def substituted(outcome: str) -> ReplayLogEntry:
+            return hit("http://pic.test/eggs.webp").model_copy(
+                update={
+                    "kind": "substituted",
+                    "resource_type": "Image",
+                    "served_record_id": "donor",
+                    "source_outcome": outcome,
+                    "unavailable_policy": "serve_identical",
+                }
+            )
+
+        # Five substitutions for cancelled requests (three in full, two folded), one for a
+        # body the recorder missed, four repeats after exhaustion (three in full, one
+        # folded); a hit counts as neither.
+        reused = hit("http://pic.test/poll.json").model_copy(update={"kind": "exhausted"})
+        same_path = [substituted("page_cancelled_before_response") for _ in range(5)]
+        same_path += [substituted("memory_cache"), hit("http://pic.test/other.webp")]
+        same_path += [reused] * 4
+        await write_replayed(
+            layout.traces("same_path"),
+            "rec-pic-s0-b0",
+            [Step(origin="restored", replay=same_path), Step()],
+            task_id="t1",
+            site="pic.test",
+            branch=provenance("rec-pic", 0, 0, "t1"),
+            repeat_limit=3,
+        )
+        report = build_report(layout, evidence="rehearsal")
+        stats = report.sections.sites.by_site["pic.test"]
+        assert stats.substitutions == {"memory_cache": 1, "page_cancelled_before_response": 5}
+        assert (stats.reuses, stats.other_misses) == (4, 0)
+        assert (
+            'responses answered by an identical record {"memory_cache": 1, '
+            '"page_cancelled_before_response": 5}, responses repeated after exhaustion 4'
+            in render_markdown(report)
+        )
+
+    async def test_a_site_without_substitutions_counts_none(self, chain: ChainRuns) -> None:
+        by_site = sites(
+            chain, fidelity=same_path_fidelity(chain), blocked=[], exclude_below=0.8
+        ).by_site
+        assert by_site and all(item.substitutions == {} for item in by_site.values())
+        assert all(item.reuses >= 0 for item in by_site.values())
+
+
 class TestAFailedModelCallIsNotTheSites:
     """A failed model call — a 429, a timeout — is the route's failure, never site evidence."""
 

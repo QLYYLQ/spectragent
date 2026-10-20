@@ -184,7 +184,7 @@ class TestTheStrategies:
         rules = tmp_path / "rules"
         rules.mkdir()
         (rules / "shop.test.yaml").write_text(
-            "rules:\n  - id: shop\n    scope: {host: shop.test}\n    exhaustion: repeat_last\n    ignore_query: [session]\n"
+            "rules:\n  - id: shop\n    scope: {host: shop.test}\n    exhaustion: repeat_last\n    unavailable: miss\n    ignore_query: [session]\n"
         )
         wal = new_wal(tmp_path / "runs", "run-src")
         from spectragent.core.archive.source import open_archive

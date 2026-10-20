@@ -174,6 +174,7 @@ function Badge({ value, kind = "" }) {
           "restored",
           "warn",
           "exhausted",
+          "substituted",
         ].includes(String(value))
       ? "warn"
       : ["complete", "completed", "success", "policy", "ok", "hit"].includes(
@@ -1749,6 +1750,7 @@ function ReplayLog({ log, runKey }) {
           ["hit", "Archive hits"],
           ["miss", "Archive misses"],
           ["exhausted", "Exhausted responses"],
+          ["substituted", "Substituted responses"],
           ["synthetic", "Synthetic responses"],
         ].map(([key, label]) => (
           <Stat
@@ -1781,7 +1783,14 @@ function ReplayLog({ log, runKey }) {
             }}
           >
             <option value="">All decisions</option>
-            {["hit", "miss", "exhausted", "synthetic", "summary"].map(
+            {[
+              "hit",
+              "miss",
+              "exhausted",
+              "substituted",
+              "synthetic",
+              "summary",
+            ].map(
               (value) => (
                 <option key={value}>{value}</option>
               ),
@@ -1844,6 +1853,11 @@ function ReplayLog({ log, runKey }) {
                         {text(entry.answer)}
                         {entry.status != null ? ` · ${entry.status}` : ""}
                       </div>
+                      {entry.source_outcome && (
+                        <div className="muted small">
+                          Source: {entry.source_outcome}
+                        </div>
+                      )}
                     </td>
                     <td>
                       <JsonPanel title="Replay decision" value={entry} />

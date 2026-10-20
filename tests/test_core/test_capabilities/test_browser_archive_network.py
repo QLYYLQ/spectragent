@@ -29,6 +29,7 @@ from spectragent.core.capabilities.browser.archive.network import (
     NetworkSession,
     parse_content_range,
 )
+from spectragent.core.capabilities.browser.archive.network_model import TARGET_DETACHED_ERROR
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay.archive_source import (
     DEFAULT_FULFILL_BODY_BYTES,
@@ -842,6 +843,112 @@ class TestTheIndex:
         session, _ = _session()
         assert await session.collect() == []
 
+
+class TestRequestTimes:
+    """When a request started and ended: evidence of how long a source request lived (§4.14).
+
+    ``_request_event`` sends ``wallTime`` 1_700_000_000 at ``timestamp`` 10,
+    so a CDP timestamp ``t`` is ``1_700_000_000 + (t - 10)`` on the wall clock.
+    """
+
+    WALL = 1_700_000_000.0
+
+    async def test_a_pending_line_carries_the_start(self) -> None:
+        session, _ = _session()
+        deliver(session, _request_event("n1"))
+        (line,) = _index(await session.collect())
+        assert (line["kind"], line["started_at"]) == ("pending", self.WALL)
+
+    async def test_a_finished_exchange_carries_its_start_and_end(self) -> None:
+        session, recorder = _session()
+        await _one_exchange(session, recorder)
+        (line,) = _index(await session.collect())
+        assert (line["started_at"], line["ended_at"]) == (self.WALL, self.WALL + 1.0)
+
+    async def test_a_failed_request_ends_when_it_failed(self) -> None:
+        session, _ = _session()
+        deliver(session, _request_event("n1"))
+        deliver(
+            session,
+            event(
+                "Network.loadingFailed",
+                {"requestId": "n1", "timestamp": 10.25, "errorText": "net::ERR_ABORTED"},
+            ),
+        )
+        (line,) = _index(await session.collect())
+        assert (line["ended_at"], line["error_text"], line["status"]) == (
+            self.WALL + 0.25,
+            "net::ERR_ABORTED",
+            None,
+        )
+
+    async def test_a_redirect_hop_ends_when_the_next_hop_starts(self) -> None:
+        session, _ = _session()
+        deliver(session, _request_event("n1", "http://shop.test/old"))
+        redirect = {"status": 302, "statusText": "Found", "headers": {"Location": URL}}
+        deliver(session, _request_event("n1", URL, redirect=redirect))
+        lines = _index(await session.collect())
+        hop = next(line for line in lines if line["url"] == "http://shop.test/old")
+        assert hop["ended_at"] == self.WALL  # the redirect event's timestamp (10)
+
+    async def test_a_detached_target_ends_its_requests_at_the_detach(self) -> None:
+        session, recorder = _session()
+        recorder.add_target("worker-s", "W", "worker")
+        deliver(session, _request_event("n1", session_id="worker-s"))
+        deliver(session, event("Target.detachedFromTarget", {"sessionId": "worker-s"}, "worker-s"))
+        (line,) = _index(await session.collect())
+        assert line["ended_at"] is not None and line["error_text"] == TARGET_DETACHED_ERROR
+
+    async def test_an_exchange_written_before_its_request_ended_has_no_end(self) -> None:
+        """A body read at the Response stage settles the exchange; the request may not have ended."""
+        session, recorder = _session()
+        recorder.bodies["i1"] = b"hello"
+        deliver(session, _request_event("n1"))
+        await session.on_paused(paused(request_id="i1", network_id="n1", url=URL))
+        deliver(session, _response_event("n1"))
+        (line,) = _index(await session.collect())
+        assert (line["body_status"], line["started_at"], line["ended_at"]) == (
+            "ok",
+            self.WALL,
+            None,
+        )
+
+    async def test_a_streamed_body_line_carries_its_requests_end(self) -> None:
+        """The exchange line went out first; how the request ended is on its body line."""
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 2000)
+        first = _index(await session.collect())
+        assert first[0]["ended_at"] is None
+        stream_chunks(session, "n1", b"r" * 500)
+        deliver(
+            session,
+            event(
+                "Network.loadingFailed",
+                {"requestId": "n1", "timestamp": 12.0, "errorText": "net::ERR_ABORTED"},
+            ),
+        )
+        (body,) = _index(await session.collect())
+        assert (body["kind"], body["body_status"], body["ended_at"], body["error_text"]) == (
+            "body",
+            "incomplete",
+            self.WALL + 2.0,
+            "net::ERR_ABORTED",
+        )
+
+    async def test_a_streamed_body_that_finished_has_no_error(self) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 2000)
+        stream_chunks(session, "n1", b"r" * 2000)
+        deliver(session, _finished("n1"))
+        body = _index(await session.collect())[-1]
+        assert (body["body_status"], body["ended_at"], body["error_text"]) == (
+            "ok",
+            self.WALL + 1.0,
+            None,
+        )
+
+
+class TestContentRange:
     def test_content_range_parsing(self) -> None:
         assert parse_content_range("bytes */300") == {
             "unit": "bytes",

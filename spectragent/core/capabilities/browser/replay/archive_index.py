@@ -27,7 +27,12 @@ recording order (request start time, then index order):
   ``ok`` body line the record matches but cannot be served
   (``body_unavailable``).
 - ``too_large``, ``incomplete``, and a record whose last line is ``pending``
-  — matched, never served (``too_large`` / ``body_unavailable``).
+  — matched, never served as themselves (``too_large`` /
+  ``body_unavailable``). A ``body_unavailable`` record carries its
+  :data:`SourceOutcome` — how the source request ended, read off the index
+  line's own facts (:func:`source_outcome`) — which decides whether a rule's
+  ``unavailable: serve_identical`` may answer it from another record and
+  what the replay log says about it.
 - ``websocket`` — never a candidate (a handshake never pauses in Fetch).
 - ``206`` — only in the byte-range map (:class:`RangeMap`), with the ``200``
   bodies of the same request; a ``304`` is a candidate for a conditional
@@ -60,7 +65,12 @@ from warcio.archiveiterator import ArchiveIterator
 from warcio.exceptions import ArchiveLoadFailed
 
 from spectragent.core.archive.source import ArchiveEntry, ArchiveReader
-from spectragent.core.capabilities.browser.archive.network import INDEX_NAME, WARC_NAME
+from spectragent.core.capabilities.browser.archive.network import (
+    BODY_READ_TIMEOUT_NOTE,
+    INDEX_NAME,
+    WARC_NAME,
+)
+from spectragent.core.capabilities.browser.archive.network_model import TARGET_DETACHED_ERROR
 from spectragent.core.capabilities.browser.archive.warc import header_lines
 from spectragent.core.capabilities.browser.replay.canonical import (
     RequestKeys,
@@ -77,6 +87,22 @@ FINGERPRINT_CAPABILITY = "browser"
 BodyStatus = Literal[
     "ok", "redirect", "too_large", "streamed_later", "websocket", "incomplete", "pending"
 ]
+#: How a source request recorded without a body ended (arch §4.14 "加载"):
+#: still in flight when the run ended; cancelled by the page before any
+#: response, or while its body arrived; a real network failure Chrome
+#: reported; served from the browser's memory cache without a pause the
+#: recorder could read; the recorder's body read timed out; or none of these.
+SourceOutcome = Literal[
+    "in_flight_at_run_end",
+    "page_cancelled_before_response",
+    "page_cancelled_during_body",
+    "network_failed",
+    "memory_cache",
+    "recorder_timeout",
+    "unknown",
+]
+#: Chrome's error text for a request the page itself cancelled.
+PAGE_CANCELLED_ERROR = "net::ERR_ABORTED"
 
 
 class ReplayArchiveError(RuntimeError):
@@ -153,6 +179,14 @@ class ExchangeLine(_Line):
     content_range: dict[str, Any] | None = None
     body_status: Literal["ok", "redirect", "too_large", "streamed_later", "websocket", "incomplete"]
     started_at: float | None = None
+    ended_at: float | None = None
+    #: The session that paused it at the Response stage (``None``: never paused there).
+    paused_session_id: str | None = None
+    from_cache: bool | None = None
+    #: Why Chrome failed it (or the recorder's target-detach text).
+    error_text: str | None = None
+    #: Why the recorder kept no body.
+    body_note: str | None = None
 
 
 class PendingLine(_Line):
@@ -160,6 +194,7 @@ class PendingLine(_Line):
     record_id: str
     method: str | None = None
     url: str
+    started_at: float | None = None
     waiting_for: str | None = None
 
 
@@ -169,6 +204,10 @@ class BodyLine(_Line):
     body_status: str
     payload_sha256: str | None = None
     payload_length: int | None = None
+    note: str | None = None
+    #: The streamed request's end (its exchange line was written before it).
+    ended_at: float | None = None
+    error_text: str | None = None
 
 
 #: One line of ``index.jsonl``, as :func:`iter_index_lines` hands it out.
@@ -232,6 +271,8 @@ class IndexedRecord:
         started_at: Wall-clock start of the request, when known.
         miss_reason: Why the record matches but cannot be served, if it
             cannot (``too_large`` / ``body_unavailable``).
+        source_outcome: How the source request ended, for a
+            ``body_unavailable`` record (``None`` for every other record).
     """
 
     record_id: str
@@ -254,6 +295,7 @@ class IndexedRecord:
     resource_type: str | None = None
     started_at: float | None = None
     miss_reason: MissReason | None = None
+    source_outcome: SourceOutcome | None = None
 
     @property
     def servable(self) -> bool:
@@ -618,6 +660,7 @@ def load_archive(reader: ArchiveReader, rules: SiteRules | None = None) -> Recor
                     "content_type": None,
                     "body_status": "pending",
                     "miss_reason": "body_unavailable",
+                    "source_outcome": "in_flight_at_run_end",
                 },
             )
         )
@@ -855,6 +898,7 @@ def _exchange_fields(
             fields["payload"] = WarcPayload(warc.path, span.offset, span.length, response.record_id)
         if ends_pending:
             fields["miss_reason"] = "body_unavailable"
+            fields["source_outcome"] = "in_flight_at_run_end"
         return fields
 
     fields["response_headers"] = tuple(header_lines(line.response_headers))
@@ -871,9 +915,47 @@ def _exchange_fields(
         fields["payload_sha256"] = digest
         if ends_pending:
             fields["miss_reason"] = "body_unavailable"
+            fields["source_outcome"] = "in_flight_at_run_end"
         return fields
-    fields["miss_reason"] = "too_large" if status == "too_large" else "body_unavailable"
+    if status == "too_large":
+        fields["miss_reason"] = "too_large"
+        return fields
+    fields["miss_reason"] = "body_unavailable"
+    fields["source_outcome"] = source_outcome(line, body_line, ends_pending=ends_pending)
     return fields
+
+
+def source_outcome(
+    line: ExchangeLine, body_line: BodyLine | None, *, ends_pending: bool
+) -> SourceOutcome:
+    """How the source request of a ``body_unavailable`` exchange ended (arch §4.14 "加载").
+
+    Read off the facts the recorder wrote, first match wins: a record whose
+    last line is ``pending`` was still in flight when the run ended; Chrome's
+    ``net::ERR_ABORTED`` is the page cancelling it — before any response
+    (no status) or during the body; any other error Chrome reported is a real
+    network failure (the recorder's own target-detach text is not); with no
+    error, a cache hit that never paused at the Response stage was served
+    from memory, and a body read past ``body_read_timeout_s`` is the
+    recorder's timeout. A streamed exchange's end is on its ``body`` line,
+    which is read first.
+    """
+    if ends_pending:
+        return "in_flight_at_run_end"
+    error = (body_line.error_text if body_line is not None else None) or line.error_text
+    if error is not None:
+        if error == PAGE_CANCELLED_ERROR and line.status is None:
+            return "page_cancelled_before_response"
+        if error == PAGE_CANCELLED_ERROR:
+            return "page_cancelled_during_body"
+        if error == TARGET_DETACHED_ERROR:
+            return "unknown"
+        return "network_failed"
+    if line.from_cache and line.paused_session_id is None:
+        return "memory_cache"
+    if (line.body_note or "").startswith(BODY_READ_TIMEOUT_NOTE):
+        return "recorder_timeout"
+    return "unknown"
 
 
 def _content_type(line: ExchangeLine, headers: Mapping[str, str]) -> str | None:

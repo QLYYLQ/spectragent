@@ -3,13 +3,16 @@ rules:
     scope: {}
     priority: -100
     exhaustion: repeat_last
+    unavailable: serve_identical
   - id: fixture-jsonp
     scope: {path: '/jsonp/*'}
     priority: 10
     exhaustion: repeat_last
+    unavailable: serve_identical
     ignore_query: [callback, cb, _]
   - id: fixture-script-callback
     scope: {path: '/api/hot'}
     priority: 10
     exhaustion: repeat_last
+    unavailable: serve_identical
     ignore_query: [callback, _]
