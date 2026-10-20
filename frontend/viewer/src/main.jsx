@@ -2711,12 +2711,13 @@ function ReplayReviewReport({ report }) {
   return <>
     <div className="section-heading"><h3>Independent replay review</h3><Badge value={report.manifest.status} /></div>
     <StructuredData value={report.manifest.summary} />
-    <JsonPanel title="Question and policy snapshot" value={report.config} />
+    <JsonPanel title="Questions, policy and evidence options" value={report.config} />
     {report.items.map(item => <section className="panel padded" key={item.index}>
       <h3>Observation pair {item.index + 1}</h3>
       <dl className="properties">
         <div><dt>Execution</dt><dd>{item.assessment.status}</dd></div>
-        <div><dt>Semantic judgment</dt><dd>{item.assessment.verdict || "Not assessed"}</dd></div>
+        <div><dt>Information answer</dt><dd>{item.assessment.information ?? "Not assessed"}</dd></div>
+        <div><dt>Thresholds</dt><dd>{item.assessment.thresholds ? `${item.assessment.thresholds.scope}: accept ≥ ${item.assessment.thresholds.accept_information_min}, investigate ≤ ${item.assessment.thresholds.investigate_information_max}` : "Not applied"}</dd></div>
         <div><dt>Review route</dt><dd>{item.assessment.route}</dd></div>
       </dl>
       <p>{item.assessment.reasons.join(" · ")}</p>
