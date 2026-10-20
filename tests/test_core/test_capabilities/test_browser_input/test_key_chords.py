@@ -55,6 +55,12 @@ NOT_KEYS = (
         ("shift+a", "Shift+a", 8),
         ("shift + Tab", "Shift+Tab", 8),
         ("Alt+F4", "Alt+F4", 1),
+        # The plus key: alone, or the last key of a chord.
+        ("+", "+", 0),
+        (" + ", "+", 0),
+        ("Control++", "Control++", 2),
+        ("ctrl + +", "Control++", 2),
+        ("ctrl+shift++", "Control+Shift++", 2 | 8),
     ],
 )
 def test_named_keys_characters_and_chords_are_accepted(raw: str, text: str, mask: int) -> None:
@@ -71,6 +77,23 @@ def test_anything_else_is_refused_and_names_type(raw: str) -> None:
     message = str(caught.value)
     assert "send_keys accepts only a key or a key chord" in message
     assert "To enter text, use type." in message
+
+
+@pytest.mark.parametrize("raw", ["++", "+++", "ctrl+", "+a", "ctrl++a", "hyper++"])
+def test_a_plus_anywhere_but_alone_or_last_still_separates_parts(raw: str) -> None:
+    with pytest.raises(InvalidKeysError, match="send_keys accepts only a key or a key chord"):
+        parse_key_chord(raw)
+
+
+async def test_the_plus_key_is_pressed_with_its_character() -> None:
+    cdp = FakeCDP()
+    watchdog = ActionWatchdog(cdp=cdp, input_platform="linux", selector_map_getter=dict)  # type: ignore[arg-type]
+    result = await watchdog._on_send_keys(SendKeysEvent(keys="Control++"))
+    assert result is not None and "error" not in result, result
+    events = [call.params for call in cdp.calls if call.method == "Input.dispatchKeyEvent"]
+    assert [event["type"] for event in events][0] == "keyDown"
+    assert events[0]["key"] == "+" and events[0]["modifiers"] == 2
+    assert result["effect_facts"]["keys"] == ("Control++",)
 
 
 def test_a_long_refused_input_is_shortened_in_the_error() -> None:

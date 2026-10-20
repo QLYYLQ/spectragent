@@ -3,8 +3,10 @@
 ``docs/architecture_design.md`` §4.13: ``send_keys`` takes exactly three kinds
 of input — a named key (``Enter``, ``ArrowDown``, ``F5``), a single character
 (``a``, ``%``), or modifiers joined to one of those with ``+``
-(``Control+A``, ``Shift+Tab``). Anything else is refused before a single key
-event is sent, with an error that says text belongs in ``type``.
+(``Control+A``, ``Shift+Tab``). The plus key itself is the character ``+``:
+alone (``+``), or as the last key of a chord (``Control++``). Anything else is
+refused before a single key event is sent, with an error that says text
+belongs in ``type``.
 
 The rule exists because the old executor sent any unknown multi-character
 string as one key event whose ``key`` was the whole string and which carried
@@ -21,6 +23,7 @@ key is.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -95,6 +98,8 @@ MODIFIERS: dict[str, tuple[str, int]] = {
 _MODIFIER_ORDER = ("Control", "Alt", "Shift", "Meta")
 #: How much of a refused input the error repeats back.
 _ECHO_CHARS = 80
+#: Whitespace around a ``+``, dropped before the plus key is recognised.
+_PLUS_SPACING = re.compile(r"\s*\+\s*")
 
 
 class InvalidKeysError(ValueError):
@@ -137,7 +142,8 @@ def _refuse(raw: str, why: str) -> InvalidKeysError:
     return InvalidKeysError(
         f"send_keys accepts only a key or a key chord: a named key (Enter, Escape, ArrowDown, "
         f"F5, ...), a single character, or modifiers joined to one with '+' (Control+A, "
-        f"Shift+Tab). {why} (got {shown!r}). To enter text, use type."
+        f"Shift+Tab; the plus key is '+', or 'Control++' in a chord). {why} (got {shown!r}). "
+        "To enter text, use type."
     )
 
 
@@ -165,14 +171,22 @@ def parse_key_chord(raw: str) -> KeyChord:
 
     Named keys and modifier names are case-insensitive. A single character
     is sent as itself: ``"A"`` is the key ``A`` with its text. Whitespace
-    around each ``+``-separated part is ignored.
+    around each ``+``-separated part is ignored. ``+`` alone is the plus key,
+    and so is a final ``++`` (``Control++``: Control held with the plus key);
+    a ``+`` anywhere else separates the parts.
 
     Raises:
-        InvalidKeysError: an empty input or chord part, an unknown modifier,
-            or a final part that is neither a named key nor one character —
-            a URL, a word, a sentence.
+        InvalidKeysError: an empty input or chord part (``ctrl+``, ``+a``,
+            ``++``), an unknown modifier, or a final part that is neither a
+            named key nor one character — a URL, a word, a sentence.
     """
-    parts = [part.strip() for part in raw.split("+")]
+    compact = _PLUS_SPACING.sub("+", raw.strip())
+    if compact == "+":
+        parts = ["+"]
+    elif compact.endswith("++"):
+        parts = [part.strip() for part in compact[:-2].split("+")] + ["+"]
+    else:
+        parts = [part.strip() for part in raw.split("+")]
     if not all(parts):
         raise _refuse(raw, "Key names and chord parts must not be empty")
     *modifier_names, key_name = parts

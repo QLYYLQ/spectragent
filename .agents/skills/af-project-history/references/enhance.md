@@ -163,7 +163,8 @@ need an explicit evidence option and a re-fit.
 ## Fix — keyboard argument validation
 
 Scheduled on `enhance/action-effects-and-capture-state` as its own commit; the rule is in
-`docs/architecture_design.md` §4.13.
+`docs/architecture_design.md` §4.13. Review decision, 2026-10-20: the plus key is accepted as
+`+` alone or as the final `++` of a chord (`Control++`); other empty parts stay refused.
 
 
 Bilibili source `deepseek-hl-l2-220-baseline`, trace step20, submits a whole URL as
