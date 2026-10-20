@@ -71,6 +71,37 @@ this is a hypothesis, not an established cause of the measured errors. Keep ques
 evidence policies and task-level holdouts versioned. Runtime participation and automatic
 rule activation remain later design work, not consequences of merging the feature.
 
+**Experiment, 2026-10-20** (`tmp/jev_questions_20261020/brief.md`, 147 DMX calls): on the 28
+labelled pairs a split information question separated the labels (acceptable never below
+0.48, differences never above 0.24); a threshold chosen on the development tasks gave 0
+holdout false accepts and 11/11 coverage. This is optimistic: the question names failure
+kinds seen in the data, and with general wording Bilibili login/error pairs rose to
+0.61-0.68. Withholding the source `done` answer does not repair the current questions;
+serving facts in the request changed no route; an in-viewport replay image 404 rule alone
+catches the missing-image pair without false alarms.
+
+**User decisions, 2026-10-20 (implementation pending):**
+
+- Question set `replay-relevance-2`: three native questions (actionable targets, task
+  information, evidence sufficiency); only the information question routes, the other two
+  are recorded. The overall three-way Choice is removed. The information question names
+  login state, error pages, unrendered images and video frames, marked unvalidated until
+  a new-task, new-site holdout.
+- The source `done` answer text is withheld by default (YAML option). Serving facts stay
+  out of the request; deterministic rules live outside the model.
+- Policy `replay-triage-2`: candidate_acceptable needs information >= 0.45, no restoration
+  warning and no in-viewport missing image; investigate_difference when information <= 0.25
+  or an in-viewport missing image; otherwise further_review. Thresholds are provisional,
+  and candidate_acceptable only orders review, never skips it.
+- Implement the in-viewport image 404 rule in browser review evidence (replay log + DOM;
+  CSS backgrounds not covered); also read `capture_state` failed images when present.
+- Questions, policy and evidence options become required YAML fields with no code
+  defaults; every job records their content hash; fix the hardcoded question version.
+  Policy is a typed field on the Jev reviewer, not a registrar. Delete `replay-relevance-1`
+  and `replay-triage-1` with no parallel path.
+- Before relying on the thresholds: a two-annotator blind holdout (the user plus one AI
+  adjudicator) on new tasks and sites.
+
 ## Fix — keyboard argument validation
 
 Bilibili source `deepseek-hl-l2-220-baseline`, trace step20, submits a whole URL as
