@@ -235,8 +235,9 @@ scrollbar strip. Runs pin the page colour scheme to dark, but the headless Chrom
 apparently follows the Mac's automatic light/dark appearance, which no run records. Earlier
 session frames differed from the source by 10,800 pixels (screenshot distance about 4); this
 session by 0. Restoration counts across sessions are therefore not directly comparable.
-Not yet designed: whether to pin the native appearance at launch, record it in the browser
-run fingerprint, or both. Cause is inferred, not proven.
+User decision, 2026-10-20: no framework change now. The README states the limit (host
+appearance is neither pinned nor recorded; keep it fixed for production runs and compare
+restoration results only under the same appearance). Cause is inferred, not proven.
 
 ## Execution preference
 
