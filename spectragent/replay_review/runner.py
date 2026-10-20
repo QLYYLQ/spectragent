@@ -97,6 +97,7 @@ class ReplayReviewRunner:
         summary: dict[str, Any] = {}
         initialized = False
         try:
+            settings = reviewer.settings()
             store.create(
                 job_id,
                 len(pairs),
@@ -106,9 +107,8 @@ class ReplayReviewRunner:
                     "model": model.model,
                     "model_type": model.model_type,
                     "provider": model.provider,
-                    "questions": reviewer.questions(),
-                    "question_version": "replay-relevance-1",
-                    "policy": reviewer.policy.model_dump(mode="json"),
+                    "questions": reviewer.questions.content(),
+                    "settings": settings.model_dump(mode="json"),
                     "pairs": [p.model_dump(mode="json") for p in pairs],
                 },
             )
@@ -125,19 +125,19 @@ class ReplayReviewRunner:
                         status=exc.status,
                         reasons=[exc.status],
                         detail=str(exc),
-                        policy=reviewer.policy,
+                        settings=settings,
                     )
                 except asyncio.CancelledError as exc:
                     cancelled = exc
                     assessment = ReviewAssessment(
-                        status="cancelled", reasons=["cancelled"], policy=reviewer.policy
+                        status="cancelled", reasons=["cancelled"], settings=settings
                     )
                 except Exception as exc:
                     assessment = ReviewAssessment(
                         status="review_error",
                         reasons=["review_error"],
                         detail=f"{type(exc).__name__}: {exc}",
-                        policy=reviewer.policy,
+                        settings=settings,
                     )
                 assessments.append(assessment)
                 try:
@@ -192,8 +192,9 @@ class ReplayReviewRunner:
                     "usage_reported_calls": len(measured),
                     "missing_usage_calls": len(recorder.calls) - len(measured),
                     "tokens_reported": sum(u["total_tokens"] for u in measured),
-                    "question_disagreements": sum(
-                        "question_disagreement" in a.reasons for a in assessments
+                    "reasons": dict(Counter(r for a in assessments for r in a.reasons)),
+                    "threshold_scopes": dict(
+                        Counter(a.thresholds.scope for a in assessments if a.thresholds)
                     ),
                 }
                 if initialized:

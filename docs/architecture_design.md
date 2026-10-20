@@ -3723,12 +3723,109 @@ Decision 模型。`BaseReplayReviewer.review(case) -> ReviewAssessment` 只判�
 几何、原始 screenshot 来源和原有 restoration/miss 事实。缺少来源、未采集内容、损坏、
 对齐失败分别报告，不从空提取推断等价。图片不混入 Agent 的光标展示变换。
 
-问题内容与 policy 都版本化。原生结果、语义判断（acceptable/material_difference/
-insufficient_evidence）、执行状态、分诊路线分别保存。首版政策独立检查 Choice
-confidence 与等价 Noul，不取平均；低置信、分歧、证据不足或服务故障进入
-further_review；可信差异进入 investigate_difference；其余为 candidate_acceptable。
-阈值可配置，含义是待验证的离线分诊，不是校准承诺；不自动调用强模型。
-标签、预期答案、开发/留出划分只在验收侧，永不进入模型请求。
+原生答案、执行状态、分诊路线及其理由分别保存。没有原生的总体语义判断：路线是政策
+从原生答案和机器事实导出的值，不是模型的结论。不自动调用强模型。标签、预期答案、
+开发/留出划分只在验收侧，永不进入模型请求。
+
+**问题集、政策和证据选项都是必填 YAML 字段**（用户 2026-10-20 决定），代码不留默认值，
+也不保留旧版本的并行路径。三者各有内容摘要：对规范化 JSON（键排序、紧凑分隔、UTF-8）
+取 SHA-256；问题按发送给模型的逻辑形式计算（省略的字段与显式 null 不同）。版本标签
+给人看，摘要才是依据。job 快照记录三者的全文与摘要；每条 assessment 记录问题集版本
+与摘要、完整政策与摘要、证据选项与摘要、实际使用的阈值及其来源和机器事实，
+`route_result(result, settings, facts)` 因此可以离线重算。出厂形状：
+
+```yaml
+replay_reviewer:
+  - reviewer_id: jev
+    decision_model: {...}             # §4.7
+    evidence:                         # 请求带什么：每侧观测预算、截图、隐去的文本
+      done_answer: withhold           # keep | withhold
+      max_text_chars: 6000
+      max_links: 20
+      include_screenshots: true
+    questions:
+      version: replay-relevance-2
+      items:                          # 问题 ID → §4.7 的 Decision 问题
+        targets_equivalent: {type: noul, instructions: {...}}
+        information_equivalent: {type: noul, instructions: {...}}
+        evidence_sufficient: {type: noul, instructions: {...}}
+    policy:
+      version: replay-triage-2
+      information_question: information_equivalent
+      thresholds:                     # 全局默认
+        accept_information_min: 0.45
+        investigate_information_max: 0.25
+        fit:                          # 拟合来源
+          dataset: <所用标注数据的说明>
+          dataset_sha256: <64 位十六进制>
+          fitted_on: 2026-10-20
+          policy_version: replay-triage-2
+          questions_sha256: <拟合所用问题集的摘要>
+          evidence: {...}             # 拟合所用的证据选项全文，含预算
+          evidence_sha256: <这些证据选项的摘要>
+      overrides: []                   # 可为空，不可省略；元素形状见下
+```
+
+覆盖元素是 `{scope: site, domain: <注册域>, ...}` 或
+`{scope: task, benchmark: ..., subset: ..., task_id: ..., ...}`，其余字段与 `thresholds`
+相同（两个阈值和 `fit`）。
+
+**问题集 `replay-relevance-2`。** 三个独立的原生 Noul，不求平均：下一批动作的目标是否
+相同（`targets_equivalent`）、任务所需信息是否相同（`information_equivalent`）、证据是否
+足以比较（`evidence_sufficient`）。总体三选一 Choice 删除。只有信息问题参与路由，另两问
+只记录：目标问题在已有样本中缺少目标型反例，证据问题在现有裁剪下几乎总是低分。信息问题
+点名需要账号时的登录状态、错误或登录提示、未渲染的图片、视频画面与播放位置，并写明
+next_actions 里的答案文字不是信息存在的证据。这些点名参考过已知错误，在新任务、新站点
+的留出验证之前视为未验证。问题集是通用的 ID → 问题映射，研究者可以改写措辞；改写后应
+换版本标签，摘要无论如何都会区分内容。构造时检查政策的 `information_question` 存在于
+问题集且是 Noul，否则组合失败。
+
+**证据选项。** 决定请求内容的设置都在 `evidence` 块里，全部必填：每侧观测的文本字符
+上限 `max_text_chars`、链接与几何条目上限 `max_links`、是否附原始截图
+`include_screenshots`，以及 `done_answer`。出厂预算为每侧 6000 字符、20 条，即阈值拟合
+所用的预算；更大的预算在 DMX 路线上多数页面超出输入上限（用户 2026-10-20 决定）。
+`done_answer: withhold` 从请求中去掉源 `done` 动作的答案文本：动作参数中的
+`extracted_content`，以及恢复对应关系里 done 动作参数和其结果中的同一文本；动作类型保留。
+`keep` 原样发送。出厂值为 withhold：审查判断的是观测是否相同，不应参考被测 Agent 自己的
+结论。回放服务事实不进请求，确定性规则放在模型之外。
+
+**政策 `replay-triage-2`。** 路由是纯函数，输入为信息问题的原生 Noul、选中的阈值和机器
+事实。判定按以下顺序：
+- `investigate_difference`：回放有视口内图片未被服务（见下），或信息值 ≤
+  `investigate_information_max`。确定性门槛先于阈值：视口内缺图时信息值再高也进入调查。
+- `candidate_acceptable`：信息值 ≥ `accept_information_min`，恢复检查结论为 `ok`
+  （`warn` 与 `diverged` 都算恢复警告），并且已测得没有视口内图片未被服务。
+- `further_review`：其余情况，包括介于两阈值之间、恢复警告但信息值高、图片事实无法测得、
+  证据缺失、服务故障和答案合同错误。
+
+视口内缺图不依赖模型：模型调用失败、答案不合合同或因缺截图而未调用时，只要该事实为真，
+路线仍是 `investigate_difference`，执行状态照实记为失败（用户 2026-10-20 决定）。图片事实
+无法测得时阻止候选接受（同日确认）。reasons 写明决定路线的条件。这三条门槛由政策版本固定，改门槛须换版本；YAML 只给出路由
+问题、阈值和覆盖。candidate_acceptable 只决定人工复核的先后（最后复核），从不跳过复核，
+也不在运行时自动放行或改变恢复结论。
+
+**阈值是活参数。** 阈值是暂定的分诊参数，随标注数据增加持续重拟合，不是校准承诺；
+应在不同运行上继续拟合和检查，使误放率可以测量。政策有一个全局默认，另有可选覆盖，
+范围是站点或任务。站点写明注册域 `domain`（如 `bilibili.com`），参考观测 URL 的主机名
+等于该域或以 `.` 加该域结尾时匹配；不使用公共后缀表。多个站点覆盖同时匹配时最长的域
+胜出，同一个域写两次在组合时拒绝。任务按源 trace 的 `benchmark`、`subset`、`task_id`
+三者精确匹配。任务覆盖优先于站点覆盖，二者都优先于默认（用户 2026-10-20 决定）。
+两个阈值都在 [0, 1] 内，调查上限必须严格小于接受下限。
+
+每组阈值（默认和每个覆盖）都带拟合来源 `fit`：数据集说明、数据集摘要、拟合日期、拟合时
+的政策版本、所用问题集的摘要、所用证据选项的全文（含预算）及其摘要；摘要须与记录的全文
+一致。阈值与措辞和证据绑定：当前问题集或证据选项的摘要与某组阈值的 `fit` 不同时，组合
+直接失败，错误同时写出拟合时与当前的两组摘要；修正方法是重新拟合，或为当前问题与证据
+写一条新的拟合记录。
+
+**视口内图片未被服务**（browser 包 `review_evidence.py`，回放 replay log + raw DOM）。
+只看被审查步骤自己的那次采集，并只取发生时间不晚于回放截图的决定。更早的采集不计入：
+单页应用在许多步骤里保持同一个文档，早先没服务的图片之后可能已被服务或已离开页面。
+事实成立的条件：这次采集中某个 `resourceType: Image` 请求被回放判为 miss（strict 下答
+404 或失败），其 URL 被主文档某元素的属性值包含，或等于该元素的 `currentSourceURL`，
+并且该元素的布局框与视口相交。样式表里的 CSS 背景图和子框架文档中的
+引用不覆盖，结果中写明。回放没有绑定 `browser.replay_log` 时记为无法测得，不当作没有
+缺图；审查域只消费这一结果。
 
 独立 job 有自己的 `job_id`、不可覆盖的新目录、配置/问题/policy 快照、证据来源及
 调用索引。模型调用经 AOP 的 `ainvoke` 边界，复用公共 PendingLLMCall、编码和图片
