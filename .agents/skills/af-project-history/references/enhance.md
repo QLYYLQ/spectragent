@@ -47,6 +47,21 @@ and `action-feedback-findings.json` beside it. Task130's pointer at (45,34) did 
 scrolling: measured offsets increased from 0 to 2100. The earlier contrary inference was
 corrected; use actual displacement as evidence, not pointer location alone.
 
+**Implemented on `enhance/action-effects-and-capture-state`** (`tmp/action_effects_20261020/report.md`,
+head `a2d868b`). User decisions on its open points, 2026-10-20:
+- capture_state never fails the batched capture; probe problems become `unknown` inside the
+  fragment. Keep this; update the design text and leave a short TODO in the capture code for
+  allowing partial captures of optional fragments later.
+- `show_capture_state` changes negotiation, so it is part of branch/export identity:
+  recordings with different settings (including all 2026-10-19 recordings) cannot be
+  branched or exported together. Accepted; formal data collection has not started.
+- Effect lines keep element role and readable name for every Agent, UI-TARS included:
+  desktop and Android expose similar accessibility facts, so this is not a browser-only
+  channel. No extra detail switch for now.
+- Fix the Skyvern index click whose element centre was off-screen (scroll into view first),
+  and reword UI-TARS's platform block as a computer-use agent operating a browser, keeping
+  browser-operation semantics.
+
 ## Enhance — Jev questions and calibration
 
 The native Decision providers, typed results, independent review jobs, persistence and
@@ -160,6 +175,13 @@ consume the cursor, and `repeat_last` ignores availability.
   exchanges; replay ordering stays as is until holding is decided.
 - Acceptance: real offline replays of 238 and 130 (eggs visible, 130 checks not worse) and
   counterexamples that must stay unsubstituted.
+
+**Implemented on `fix/replay-serve-identical-for-unavailable-records`**
+(`tmp/replay_unavailable_20261020/report.md`): 238 step 11 distance 21 -> 0 with the eggs
+visible, 130 unchanged at 30/30. Follow-ups decided 2026-10-20: records with an `unknown`
+source outcome may be substituted; count `repeat_last` reuse per site next to
+substitutions; mark repeats of a body-less record in the replay log; no headed-browser
+verification of the headed 130 recording.
 
 ## Fix — Bilibili account request matching
 
