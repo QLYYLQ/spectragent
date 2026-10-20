@@ -214,9 +214,12 @@ _OUTSIDE_VIEWPORT = (
     "element."
 )
 
-#: Scroll an element so its centre is in the middle of the viewport.
+#: Scroll an element so its centre is in the middle of the viewport, at once:
+#: without ``behavior: 'instant'`` a page's ``scroll-behavior: smooth`` animates
+#: the scroll, and the box measured right after it is the one before.
 _CENTRE_INTO_VIEW_JS = (
-    "function() { this.scrollIntoView({block: 'center', inline: 'center'}); return {}; }"
+    "function() { this.scrollIntoView("
+    "{block: 'center', inline: 'center', behavior: 'instant'}); return {}; }"
 )
 
 

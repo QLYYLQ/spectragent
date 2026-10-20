@@ -4,7 +4,8 @@ A press outside the viewport reaches nothing: Chrome drops it and the action
 used to report success (a live Skyvern run pressed (1692, 60) in a 1280-wide
 viewport, on the close button of a closed side panel). The element is now
 scrolled into view first, centred by script when the browser's own
-scroll-into-view leaves its centre outside, and the press lands on it. An
+scroll-into-view leaves its centre outside, and the press lands on it — on a
+page that animates its scrolling (``scroll-behavior: smooth``) too. An
 element no scrolling can reach (pinned off-screen) is refused, with nothing
 pressed. Local fixture pages only (``tests/_helpers/effects_site.py``), the
 Skyvern cleaner, which indexes elements outside the viewport, headless.
@@ -74,7 +75,15 @@ async def _clicks(cap: BrowserCapability) -> int:
 
 @pytest.mark.parametrize(
     "page",
-    ["far.html", "far_hidden.html", "far_strip.html", "far_edge.html", "far_tall.html"],
+    [
+        "far.html",
+        "far_hidden.html",
+        "far_strip.html",
+        "far_edge.html",
+        "far_tall.html",
+        "far_edge_smooth.html",
+        "far_tall_smooth.html",
+    ],
 )
 async def test_the_element_is_scrolled_into_view_and_the_press_lands_on_it(
     site: EffectsSite, page: str

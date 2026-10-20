@@ -27,7 +27,8 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   scrolling strip; ``far_edge.html`` puts it across the right edge, partly
   visible with its centre outside; ``far_tall.html`` makes it taller than the
   viewport, its top visible and its centre below; ``far_fixed.html`` pins it with
-  ``position: fixed`` where no scrolling can reach it.
+  ``position: fixed`` where no scrolling can reach it; ``far_edge_smooth.html`` and
+  ``far_tall_smooth.html`` repeat those two under ``scroll-behavior: smooth``.
 
 Every control sits at a fixed CSS-px box (:data:`BOXES`), so a test clicks by
 coordinate without reading the DOM.
@@ -203,6 +204,16 @@ def _pages() -> dict[str, tuple[str, bytes]]:
                     "far_tall.html",
                     _far_button("absolute", left=100, height=2000),
                     "body{height:3000px}",
+                ),
+                (
+                    "far_edge_smooth.html",
+                    _far_button("absolute", left=1220),
+                    "html{scroll-behavior:smooth}body{width:2400px}",
+                ),
+                (
+                    "far_tall_smooth.html",
+                    _far_button("absolute", left=100, height=2000),
+                    "html{scroll-behavior:smooth}body{height:3000px}",
                 ),
             )
         },
