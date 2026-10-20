@@ -14,7 +14,7 @@ from spectragent.schemas.observation.fragments import (
 
 
 class TestFragmentRegistration:
-    """All 6 first-batch fragments should be auto-registered."""
+    """These fragments are auto-registered; other fragments may be registered too."""
 
     def test_dom_registered(self) -> None:
         assert ObservationRegistrar.get("browser.dom") is DOMObs
@@ -34,7 +34,7 @@ class TestFragmentRegistration:
     def test_tool_result_registered(self) -> None:
         assert ObservationRegistrar.get("tool_sandbox.tool_result") is ToolResultObs
 
-    def test_all_six_keys_present(self) -> None:
+    def test_these_keys_are_all_registered(self) -> None:
         keys = set(ObservationRegistrar.keys())
         expected = {
             "browser.dom",
@@ -82,7 +82,7 @@ class TestFragmentIsPydanticModel:
         assert obs.error is None
 
     def test_screenshot_default_construction(self) -> None:
-        # M13: image_path and image_bytes are both optional. Consumers
+        # image_path and image_bytes are both optional. Consumers
         # must populate at least one in practice, but the schema allows
         # default construction so the lazy-batch resolver can build the
         # fragment incrementally.
