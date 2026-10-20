@@ -1,6 +1,15 @@
+import re
 from dataclasses import dataclass
+from typing import Literal
 
 from spectragent.core.llm.model_families._base import ModelFamily
+
+#: Every thinking level the Gemini API defines: its ``ThinkingLevel`` enum
+#: (``MINIMAL``, ``LOW``, ``MEDIUM``, ``HIGH``) without
+#: ``THINKING_LEVEL_UNSPECIFIED``, spelled the way YAML writes it.
+#: https://ai.google.dev/api/generate-content#ThinkingLevel
+#: Which of them one model accepts is narrower; that is the policy below.
+ThinkingLevel = Literal["minimal", "low", "medium", "high"]
 
 
 @dataclass(frozen=True)
@@ -12,11 +21,11 @@ class GeminiThinkingPolicy:
     """
 
     supports_level: bool = False
-    accepted_levels: tuple[str, ...] | None = None
-    default_level: str | None = None
+    accepted_levels: tuple[ThinkingLevel, ...] | None = None
+    default_level: ThinkingLevel | None = None
     default_budget: int | None = None
     ignores_budget: bool = False
-    fallback_to_low: tuple[str, ...] = ()
+    fallback_to_low: tuple[ThinkingLevel, ...] = ()
 
 
 # Gemini 3.8 Flash's published native contract accepts low/medium/high,
@@ -43,6 +52,27 @@ _THINKING_POLICIES = (
     ("gemini-flash", GeminiThinkingPolicy(default_budget=-1)),
 )
 _NO_THINKING_DEFAULT = GeminiThinkingPolicy()
+
+
+#: Google documents 1.0 as the temperature default for every Gemini 3 model
+#: and strongly recommends keeping it: "Changing the temperature (setting it
+#: below 1.0) may lead to unexpected behavior, such as looping or degraded
+#: performance". https://ai.google.dev/gemini-api/docs/gemini-3#temperature
+_GEMINI_3_TEMPERATURE = 1.0
+#: The provider's long-standing default for every model before Gemini 3.
+_EARLIER_TEMPERATURE = 0.5
+#: Any Gemini 3 model id, a gateway's ``google/`` prefix included: "gemini-3"
+#: followed by a separator or the end, never by another digit.
+_GEMINI_3 = re.compile(r"gemini-3(?![0-9])")
+
+
+def gemini_default_temperature(model: str) -> float:
+    """The temperature ``temperature: auto`` sends to *model*.
+
+    Google's guidance covers all Gemini 3 models, so this matches the major
+    version rather than a list of measured ids.
+    """
+    return _GEMINI_3_TEMPERATURE if _GEMINI_3.search(model) else _EARLIER_TEMPERATURE
 
 
 def gemini_thinking_policy(model: str) -> GeminiThinkingPolicy:

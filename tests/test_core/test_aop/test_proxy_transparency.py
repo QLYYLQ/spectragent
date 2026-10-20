@@ -1,10 +1,13 @@
 """AOPProxy transparency — where it holds, and where it must say so.
 
-Six bugs are pinned here:
+The bugs pinned here:
 
 * ``proxy.attr = x`` landing in the proxy's own ``__dict__``, permanently
   shadowing the wrapped method — which is how ``Loop.weave()``'s
   ``agent.run = run`` made ``Intercept("run", role="agent")`` unreachable.
+* The proxy's own bookkeeping names (``_target``, ``_role``,
+  ``_background`` ...) hiding target attributes of the same names from
+  reads, while writes of those names went to the target.
 * Method resolution snapshotted at wrap time, so anything installed
   afterwards was never intercepted.
 * A hook declaring a role nobody wraps registering cleanly, appearing in
@@ -116,6 +119,72 @@ class TestProxyWritesPassThrough:
         proxy.run = second
         await proxy.run("t")
         assert seen == ["first", "second"]
+
+
+#: The names the proxy used to keep its own bookkeeping under.
+_FORMER_PROXY_ATTRIBUTES = (
+    "_target",
+    "_role",
+    "_method_interceptors",
+    "_wrapper_cache",
+    "_reported_missing",
+    "_background",
+)
+_FORMER_PROXY_METHODS = ("_protocol_method", "_reproxy")
+
+
+class _SameNamesTarget:
+    """A target that uses, for itself, every name the proxy used to keep."""
+
+    def __init__(self):
+        for name in _FORMER_PROXY_ATTRIBUTES:
+            setattr(self, name, f"the target's {name}")
+
+    def _protocol_method(self):
+        return "the target's _protocol_method"
+
+    def _reproxy(self):
+        return "the target's _reproxy"
+
+
+class TestProxyReadsReachTheTarget:
+    """A read through the proxy answers what the target holds, whatever the name.
+
+    The proxy kept its bookkeeping as ordinary instance attributes and
+    methods (``_target``, ``_role``, ``_background`` ...). Normal lookup
+    finds those before ``__getattr__`` runs, so a target attribute of the
+    same name could not be read through the proxy, while a write of that
+    name went to the target: write ``proxy._role``, read back the proxy's.
+    """
+
+    @pytest.mark.parametrize("name", _FORMER_PROXY_ATTRIBUTES)
+    def test_an_attribute_is_read_from_the_target(self, name):
+        proxy = AOPProxy(_SameNamesTarget(), {}, role="env")
+        assert getattr(proxy, name) == f"the target's {name}"
+
+    @pytest.mark.parametrize("name", _FORMER_PROXY_METHODS)
+    def test_a_method_is_read_from_the_target(self, name):
+        proxy = AOPProxy(_SameNamesTarget(), {}, role="env")
+        assert getattr(proxy, name)() == f"the target's {name}"
+
+    def test_a_write_reads_back(self):
+        target = _SameNamesTarget()
+        proxy = AOPProxy(target, {}, role="env")
+        proxy._role = "rewritten"
+        assert vars(target)["_role"] == "rewritten"
+        assert proxy._role == "rewritten"
+
+    def test_the_proxy_keeps_only_names_private_to_its_class(self):
+        """Any other name it resolved for itself would hide a target's."""
+        proxy = AOPProxy(_Target(), {}, role="env")
+        own = set(object.__getattribute__(proxy, "__dict__")) | set(vars(AOPProxy))
+        hidden = {
+            name
+            for name in own
+            if not name.startswith("_AOPProxy__")
+            and not (name.startswith("__") and name.endswith("__"))
+        }
+        assert hidden == set()
 
 
 class _Opinionated:

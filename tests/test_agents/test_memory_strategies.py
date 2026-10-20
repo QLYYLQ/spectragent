@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
+from typing import Any, get_args
 
 import pytest
+import yaml
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.memory.token_budget import TokenBudgetMemory
+from spectragent.agents.memory.token_budget import (
+    TEXT_TOKEN_ESTIMATORS,
+    TokenBudgetMemory,
+    TokenEstimator,
+)
+from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import (
     AssistantMessage,
     ContentPartImageParam,
@@ -16,6 +24,9 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
+from spectragent.core.registries import collect_registrars
+
+SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
 
 
 def _roles(messages) -> list[str]:
@@ -150,10 +161,17 @@ class TestTokenBudgetEstimation:
         by_words = TokenBudgetMemory(token_estimator="word_ratio")._estimate_tokens(msg)
         assert by_chars != by_words
 
-    def test_unknown_estimator_raises_instead_of_being_ignored(self) -> None:
-        mem = TokenBudgetMemory(token_estimator="tiktoken")
-        with pytest.raises(ValueError, match="Unknown token_estimator"):
-            mem._estimate_tokens(UserMessage(content="hi"))
+    def test_every_choice_names_an_estimator_and_every_estimator_is_a_choice(self) -> None:
+        assert set(get_args(TokenEstimator)) == set(TEXT_TOKEN_ESTIMATORS)
+
+    def test_yaml_selects_an_estimator(self) -> None:
+        memory = _composed_memory(token_estimator="word_ratio")
+        assert isinstance(memory, TokenBudgetMemory)
+        assert memory.token_estimator == "word_ratio"
+
+    def test_unknown_estimator_fails_at_config_time(self) -> None:
+        with pytest.raises(Exception, match="token_estimator"):
+            _composed_memory(token_estimator="tiktoken")
 
     def test_text_only_budgeting_still_works(self) -> None:
         # char_ratio: 4 chars == 1 token. system=1, "A"*40=10, "B"*8=2.
@@ -168,3 +186,11 @@ class TestTokenBudgetEstimation:
         selected = mem.get_context_messages()
         # Newest first within the remaining budget; the 10-token message does not fit.
         assert [m.content for m in selected] == ["S" * 4, "B" * 8]
+
+
+def _composed_memory(**fields: Any) -> Any:
+    """The shipped run config with a token-budget memory, composed for real."""
+    raw = yaml.safe_load(SHIPPED_CONFIG.read_text())
+    raw["agent"][0]["memory"] = {"memory_id": "token_budget", **fields}
+    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    return run.instance("agent", run.ids("agent")[0]).memory

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Annotated, ClassVar
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import Field as PydanticField
 
@@ -31,8 +31,11 @@ def _estimate_tokens_word_ratio(text: str) -> int:
     return max(1, int(len(text.split()) / 0.75))
 
 
-#: Registry of text token estimators, selected by the ``token_estimator`` field.
-TEXT_TOKEN_ESTIMATORS: Mapping[str, Callable[[str], int]] = MappingProxyType(
+#: The ``token_estimator`` choices: one per entry of :data:`TEXT_TOKEN_ESTIMATORS`.
+TokenEstimator = Literal["char_ratio", "word_ratio"]
+
+#: Text token estimators, selected by the ``token_estimator`` field.
+TEXT_TOKEN_ESTIMATORS: Mapping[TokenEstimator, Callable[[str], int]] = MappingProxyType(
     {
         "char_ratio": _estimate_tokens_char_ratio,
         "word_ratio": _estimate_tokens_word_ratio,
@@ -70,7 +73,13 @@ class TokenBudgetMemory(MemoryBase):
         8000
     )
     token_estimator: Annotated[
-        str, PydanticField(description="Token estimation method: 'char_ratio' or 'word_ratio'")
+        TokenEstimator,
+        PydanticField(
+            description=(
+                "Text token estimate: 'char_ratio' (about 4 characters per token) or "
+                "'word_ratio' (about 0.75 words per token)"
+            )
+        ),
     ] = "char_ratio"
     image_tokens: Annotated[
         int, PydanticField(description="Estimated token cost charged per image part")
@@ -83,17 +92,8 @@ class TokenBudgetMemory(MemoryBase):
     def memory_type(self) -> str:
         return "token_budget"
 
-    def _text_estimator(self) -> Callable[[str], int]:
-        try:
-            return TEXT_TOKEN_ESTIMATORS[self.token_estimator]
-        except KeyError:
-            raise ValueError(
-                f"Unknown token_estimator {self.token_estimator!r}. "
-                f"Available: {sorted(TEXT_TOKEN_ESTIMATORS)}"
-            ) from None
-
     def _estimate_tokens(self, message: BaseMessage) -> int:
-        estimate_text = self._text_estimator()
+        estimate_text = TEXT_TOKEN_ESTIMATORS[self.token_estimator]
         content = message.content
 
         # Tool calls are billed like any other output: name plus the serialized
