@@ -17,6 +17,20 @@ The user has also authorized Jev as the fast offline decision stage in the repla
 improvement skill. That skill workflow is current work; its helper is not a framework
 provider or a replacement for runtime restoration checks.
 
+The later 2026-10-19 discussion is recorded in the local
+[Jev TODO handoff](../../../../HANDOFF_261019_jev_integration_todo.md), with a durable
+summary in the Jev continuation entry above. The user supports `core/llm` placement
+and `RecordedLLMCall`'s `chat | decision` semantics, and subsequently accepted the
+common model base with separate Chat/Decision registrars: keep `LLMRegistrar` / `llm`
+for Chat, add `DecisionModelRegistrar` / `decision_model`, and use typed `ainvoke`
+subcontracts with shared infrastructure. The user explicitly fixed the phases: offline
+replay review in this integration; dynamic Jev participation in replay only after
+experiments pass, as a separate development task.
+Later DMX probes verified structured fields and
+synthetic native images/Box, while preserving an exact-repeat timeout and persistent
+cross-question disagreement. They did not implement the framework integration or
+establish cross-route equivalence or calibrated replay acceptance.
+
 The next framework task should first settle the public contract, registrar/receptor,
 consumer ownership, probability/result persistence and uncertainty handling against
 current architecture. Priority does not decide those open design questions. Earlier Jev

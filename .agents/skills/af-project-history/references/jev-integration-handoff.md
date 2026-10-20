@@ -14,7 +14,77 @@ core changes, especially §4.1 restoration, §4.6 recording/attribution, §4.7 m
 `docs/jev_system_one_model.md` as dated research. Do not implement its historical proposals
 or reuse its old runtime/metrics assumptions without current verification.
 
-## What is established
+## Pre-implementation review document and DMX probes (historical, 2026-10-19)
+
+The detailed, user-requested TODO handoff is
+[HANDOFF_261019_jev_integration_todo.md](../../../../HANDOFF_261019_jev_integration_todo.md).
+It is local-only and may be absent in a fresh clone. It records scope, unresolved
+decisions, source files, staged TODOs, acceptance tests and the resume instructions.
+No production integration was implemented in this discussion/documentation session.
+
+The user has now accepted the proposed structure: one `core/llm` package with a common
+model base, Chat/Decision subcontracts and separate registrars. Keep the existing
+`LLMRegistrar` / `llm` axis for Chat and add `DecisionModelRegistrar` / `decision_model`.
+Both subcontracts use typed `ainvoke` signatures; the parent owns identity/lifecycle,
+not a catch-all invocation. Retain native fields and `RecordedLLMCall`'s endorsed
+`chat | decision` semantics. The first consumer is independent replay review; its exact
+owner, record container, detailed schemas and policies still need design. Shared-registry
+whitelists and a Conscribe Protocol-filter extension are no longer the selected route.
+
+The earlier phrase "not authorized" about additional behavior was too broad: synchronous
+restoration gating, an Agent action-decision cascade Loop and automatically activating
+candidate replay rules are workflows not yet designed into the first integration TODO.
+This is not a requirement for approval on each model call or each rule change. The
+Agent cascade is distinct from the reviewer's cheap triage followed by deeper review.
+
+**Confirmed phase boundary, 2026-10-19:** the user explicitly chose offline replay
+review first. After experiments pass, Jev may dynamically participate in replay as a
+separate development task. Define and preserve the offline experiment criteria/results
+now; do not add runtime restoration gates or placeholder switches in this integration.
+The current small trial is not itself acceptance for dynamic replay. The exact later
+control points and policies remain to be designed; this does not automatically scope
+an Agent cascade or rule auto-activation into that later task.
+
+New local evidence is
+[jev_integration_assessment_20261019/assessment.json](../../../../tmp/jev_integration_assessment_20261019/assessment.json):
+
+- An isolated Conscribe probe showed that a Chat Protocol annotation alone does not
+  narrow Mode 1 wiring. Explicit key subsets reject non-Chat single/list entries.
+  Follow-up documentation/parser verification confirmed that 2.1.0 already supports
+  two-element key subsets and three-element required/optional key declarations;
+  four-element tuples are rejected, and dict entries carry options such as defaults.
+  An explicit subset needs no Conscribe extension. Automatic Protocol-based candidate
+  selection is the optional enhancement being discussed, not an integration prerequisite.
+  A further check confirmed existing `__skip_registries__` / registration filters:
+  an implementation may stay in one registrar while being excluded from another.
+  Chat and Decision can therefore use separate registrars within `core/llm`, sharing
+  infrastructure and using ordinary wiring. The user subsequently selected this
+  separate-registrar arrangement. Per-receptor
+  `{"registry": "llm", "exclude": [...]}` is not supported by 2.1.0.
+- DMX `jev-1.14.0` accepted structured state/instructions/criteria, array state and
+  null Choice descriptions; Score legends retained structured objects.
+- Three exact repeats of the restored-results input returned `acceptable`, confidence
+  0.95–0.97 and equivalence noul 0.85–0.87. Direct-typing input had two valid repeats:
+  `acceptable`, confidence 0.56–0.64, noul 0.23–0.30; another timed out at 35 seconds.
+  That input contains no target bounds, focus or occlusion evidence.
+- Correctly encoded native images **were tested in this later batch**. Swapping red/blue
+  halves changed the left-is-red noul from 0.99 to 0.01, and Box moved with the target.
+  Initial undersized synthetic images returned 400; corrected 640×320 images were
+  recorded separately. This establishes pixel ingestion, not real-page visual accuracy.
+- The valid image also succeeded without the experimental header required by official
+  documentation. Whether DMX added the header or its upstream accepted it is unknown.
+- Fourteen new requests produced ten successful, schema-checked responses, three
+  invalid-image-dimension errors and one timeout. Reported usage was 87,907 input and
+  654 output tokens; the four unreported usages remain unknown. No hidden retries.
+- There were no fresh official-direct or OpenRouter calls. Cross-route equivalence,
+  calibrated acceptance thresholds and broad replay accuracy remain unmeasured.
+
+Official current documentation describes confidence as derived from the returned
+distribution, not an independent correctness estimate. Native images/Box are experimental;
+old blanket statements that Jev cannot see images no longer describe the measured DMX
+route. Read the detailed handoff for primary-source links and the limits of these findings.
+
+## Initial clean-DOM trial
 
 - `jev-1.14.0` works through the user's DMX gateway at
   `https://www.dmxapi.cn/typesafe/v1/systemone`. Its native contract is
@@ -63,15 +133,17 @@ seeds or account data while preparing framework tests; use synthetic equivalents
    triage. Decide which existing evaluation/review component should own it. Current
    architecture keeps judges out of prefix restoration; a runtime judge or cascade is
    a separate design change, not implied by this priority.
-2. **Protocol and registration.** Decide whether a decision-model contract/registrar is
-   separate from chat models, or whether explicit capability/compatibility contracts can
-   make a shared axis sound. Keep native typed questions/answers. Do not register a
+2. **Protocol and registration.** The user selected the shared-base/Chat/Decision split
+   with separate registrars; settle the detailed public contracts and validate receptor
+   compatibility using the existing composition mechanisms. Keep native typed
+   questions/answers. Do not register a
    non-generative endpoint where unrestricted chat/free-text consumers silently accept it.
 3. **Configuration.** Put the receptor on its real consumer. Define model/endpoint,
    question specification, review policy, input selection and budgets through existing
    configuration composition. Revalidate current wiring, not the old memo's line numbers.
-4. **Results and identity.** Preserve choice, distributions, confidence, score/legend and
-   noul as their actual types; include model identity, question/prompt version, evidence
+4. **Results and identity.** The user endorsed `RecordedLLMCall`'s `chat | decision`
+   semantics. Preserve choice, distributions, confidence, score/structured legend,
+   noul and image/Box fields as their actual types; include model identity, question/prompt version, evidence
    scope/digest and reported usage. Define what missing fields and unsupported question
    types mean. Do not force probabilities into prose or discard them.
 5. **Attribution and persistence.** Reuse the implemented caller/purpose/model lifecycle
