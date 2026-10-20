@@ -54,6 +54,7 @@ from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.step_record import StepRecord
 
 if TYPE_CHECKING:
     from spectragent.core.llm.base import BaseChatModel
@@ -242,7 +243,7 @@ class AgentRuntime:
         return self._action_space.model_copy(deep=True)
 
     @property
-    def step_records(self) -> list[Any]:
+    def step_records(self) -> list[StepRecord]:
         """Steps the Loop has surrendered so far — the partial trajectory."""
         return self._recorder.records
 
