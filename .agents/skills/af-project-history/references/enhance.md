@@ -99,8 +99,11 @@ catches the missing-image pair without false alarms.
   defaults; every job records their content hash; fix the hardcoded question version.
   Policy is a typed field on the Jev reviewer, not a registrar. Delete `replay-relevance-1`
   and `replay-triage-1` with no parallel path.
-- Before relying on the thresholds: a two-annotator blind holdout (the user plus one AI
-  adjudicator) on new tasks and sites.
+- Thresholds are a living parameter (user, 2026-10-20): keep collecting labelled pairs and
+  re-fit them; per-site or even per-task thresholds are acceptable. So the policy carries a
+  default plus optional YAML overrides scoped by site host or task, each recording the data
+  and policy version it was fitted on. Keep fitting and checking on different runs so an
+  error rate stays measurable; this replaces the earlier "two-annotator holdout before use".
 
 ## Fix — keyboard argument validation
 
