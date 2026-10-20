@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from spectragent.core.actions.base import BaseAction
 from spectragent.core.actions.params import action_fragments, params_view
-from spectragent.schemas.action import ActionDescriptor
+from spectragent.schemas.action import ActionDescriptor, ActionEffect
 
 #: Separator between the owning capability and the local action id.
 #:
@@ -110,6 +110,19 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
     on first use instead of silently advertising no parameters;
     ``tests/test_core/test_actions/test_action_params_schema.py`` scans the
     registry for it.
+    """
+
+    Effect: ClassVar[type[ActionEffect] | None] = None
+    """What this action measurably did, as a model — the output twin of ``Params``.
+
+    ``None``: the action reports no effect (``done``, ``screenshot``). A
+    concrete action names a subclass of
+    :class:`~spectragent.schemas.action.ActionEffect`, possibly shared with
+    sibling actions, measures it during ``execute`` and returns it in
+    ``ActionResult.effect`` with ``effect_id`` set to its own
+    :attr:`action_id`. The trace reader finds this attribute by that key to
+    read a recorded effect back as its type (``core/trace/effects.py``;
+    ``docs/architecture_design.md`` §4.5, "动作效果").
     """
 
     @property

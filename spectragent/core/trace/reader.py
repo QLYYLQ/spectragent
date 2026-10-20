@@ -36,6 +36,12 @@ be inside the run directory once symlinks are resolved. Otherwise a crafted
 manifest listing ``/home/me/.ssh/id_rsa`` as a screenshot would hand that
 file to an image judge.
 
+**A recorded action effect comes back as its own type.** Every
+``ActionResult.effect`` in a step record or a fragment is rebuilt as the
+``Effect`` of the action its ``effect_id`` names, found in the action
+registry (``effects.py``) — never a dict. A key no action answers to, or a
+payload its ``Effect`` refuses, is a :class:`TraceSchemaError` naming the file.
+
 **A recorded prompt comes back whole.** A call record holds a reference
 where each image its prompt sent inline stood; the image is stored once per
 run under ``messages/images/``. Every accessor that returns recorded calls
@@ -56,6 +62,7 @@ from typing import Any, Literal, TypeVar
 from conscribe import discover
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from spectragent.core.trace.effects import registered_effect, restore_effects
 from spectragent.core.trace.encoding import (
     ARCHIVE_META_KEY,
     CONFIG_FILE,
@@ -88,6 +95,7 @@ from spectragent.core.trace.models import (
     TraceConfig,
     TraceManifest,
 )
+from spectragent.schemas.action import ActionEffect
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation._registrar import (
@@ -104,7 +112,8 @@ T = TypeVar("T")
 
 #: Where fragment classes live. A reader in an evaluation process may never
 #: have imported the module that registers one — browser fragments register
-#: when their watchdog's module is imported.
+#: when their watchdog's module is imported. Action classes, whose ``Effect``
+#: reads a recorded action effect back, live under the capabilities too.
 _FRAGMENT_PACKAGES = ("spectragent.schemas", "spectragent.core.capabilities")
 
 #: The local name every capability's screenshot fragment carries
@@ -266,6 +275,7 @@ class RunTrace:
         payload = _read_json_object(path)
         artifact = self._read_artifact(files.artifact) if files.artifact is not None else None
         try:
+            payload = restore_effects(cls, payload, self._effect_class)
             return decode_fragment(key, cls, payload, artifact)
         except (ValueError, RecursionError) as exc:
             # ``RecursionError``: JSON nested deeper than a decoder can walk —
@@ -874,7 +884,14 @@ class RunTrace:
 
     def _read_step(self, entry: StepManifestEntry) -> StepRecord:
         path = self._listed(entry.step_file)
-        record = _read_model(path, StepRecord)
+        value = _load_json(path, _read_bytes(path), "a StepRecord")
+        try:
+            value = restore_effects(StepRecord, value, self._effect_class)
+        except ValueError as exc:
+            raise TraceSchemaError(
+                f"{path} does not parse as a StepRecord: {exc}", path=path
+            ) from exc
+        record = _validated(path, value, StepRecord.model_validate, "StepRecord")
         if record.step != entry.step:
             raise TraceSchemaError(
                 f"{path} records step {record.step}, but the manifest commits it as step "
@@ -1007,6 +1024,22 @@ class RunTrace:
                 path=self._manifest_path,
             )
         return entry.fragments[keys[0]]
+
+    def _effect_class(self, effect_id: str) -> type[ActionEffect]:
+        """The ``Effect`` of the action *effect_id* names, importing the action packages once on a miss.
+
+        Raises:
+            ValueError: no action is registered under the key even after the
+                import, or it declares no ``Effect`` (the caller names the file).
+        """
+        try:
+            return registered_effect(effect_id)
+        except ValueError:
+            if self._discovered:
+                raise
+        self._discovered = True
+        discover(*_FRAGMENT_PACKAGES)
+        return registered_effect(effect_id)
 
     def _fragment_class(self, key: str) -> type[FragmentBase]:
         """The class registered under *key*, importing the fragment packages once on a miss."""

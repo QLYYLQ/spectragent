@@ -4,7 +4,13 @@ from spectragent.schemas._types import (
     AgentDoneStatus,
     EnvironmentStatus,
 )
-from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action import (
+    Action,
+    ActionDescriptor,
+    ActionEffect,
+    ActionResult,
+    Unmeasured,
+)
 from spectragent.schemas.agent_result import (
     AgentMetrics,
     AgentResult,
@@ -60,7 +66,9 @@ __all__ = [
     # Action
     "Action",
     "ActionDescriptor",
+    "ActionEffect",
     "ActionResult",
+    "Unmeasured",
     # Step record
     "StepRecord",
     "TokenUsage",
