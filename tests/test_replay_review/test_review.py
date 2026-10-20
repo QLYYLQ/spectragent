@@ -363,6 +363,53 @@ def test_a_site_override_fitted_elsewhere_is_refused_by_name():
         )
 
 
+@pytest.mark.parametrize(
+    ("image", "route", "reasons"),
+    [
+        (True, "investigate_difference", ["input_limit", "viewport_image_not_served"]),
+        (False, "further_review", ["input_limit"]),
+        (None, "further_review", ["input_limit"]),
+    ],
+)
+async def test_a_failed_model_call_still_follows_the_image_fact(image, route, reasons):
+    body = {"detail": {"error_type": "max_tokens_exceeded"}}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(400, json=body))
+    ) as client:
+        reviewer = make_reviewer()
+        reviewer.decision_model = TypeSafeDirect(api_key="test", http_client=client)
+        subject = case()
+        subject.facts = facts(viewport_image_not_served=image)
+        assessed = await reviewer.review(subject)
+    assert assessed.status == "input_limit" and assessed.route == route
+    assert assessed.reasons == reasons and assessed.information is None
+    assert assessed.request is not None and assessed.facts == subject.facts
+
+
+def test_unanswered_reviews_follow_the_image_fact_without_a_model():
+    missing = route_result(
+        DecisionResult.model_validate(
+            {"requested_model": "jev-1.14.0", "model": "jev-1.14.0", "answers": {}}
+        ),
+        settings(),
+        facts(viewport_image_not_served=True),
+    )
+    assert missing.status == "invalid_response" and missing.route == "investigate_difference"
+    assert missing.reasons == ["review_answer_contract", "viewport_image_not_served"]
+
+
+async def test_missing_visuals_with_an_image_miss_go_to_investigation():
+    reviewer = make_reviewer()
+    reviewer.decision_model = TypeSafeDirect()
+    subject = case()
+    subject.visual_required = True
+    subject.facts = facts(viewport_image_not_served=True)
+    assessed = await reviewer.review(subject)
+    assert assessed.status == "missing_evidence" and assessed.result is None
+    assert assessed.route == "investigate_difference"
+    assert assessed.reasons == ["visual_evidence_required", "viewport_image_not_served"]
+
+
 @pytest.mark.parametrize("field", ["questions", "policy", "evidence"])
 def test_required_yaml_fields_have_no_code_defaults(field):
     composer = ConfigComposer(registrars=collect_registrars())

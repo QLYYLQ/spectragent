@@ -38,6 +38,30 @@ from spectragent.replay_review.models import (
 )
 
 
+def route_unanswered(
+    status: ReviewStatus,
+    reasons: list[str],
+    settings: ReviewSettings,
+    facts: MachineFacts | None,
+    **recorded: Any,
+) -> ReviewAssessment:
+    """No usable model answer: only the deterministic image gate can still route.
+
+    An in-viewport image the replay did not serve sends the pair to
+    investigation whether or not the model answered; the execution status
+    keeps the failure.
+    """
+    image = facts is not None and facts.viewport_image_not_served is True
+    return ReviewAssessment(
+        status=status,
+        route="investigate_difference" if image else "further_review",
+        reasons=[*reasons, "viewport_image_not_served"] if image else reasons,
+        facts=facts,
+        settings=settings,
+        **recorded,
+    )
+
+
 def route_result(
     result: DecisionResult, settings: ReviewSettings, facts: MachineFacts
 ) -> ReviewAssessment:
@@ -49,12 +73,8 @@ def route_result(
     policy = settings.policy
     answer = result.answers.get(policy.information_question)
     if not isinstance(answer, NoulAnswer):
-        return ReviewAssessment(
-            status="invalid_response",
-            reasons=["review_answer_contract"],
-            facts=facts,
-            result=result,
-            settings=settings,
+        return route_unanswered(
+            "invalid_response", ["review_answer_contract"], settings, facts, result=result
         )
     thresholds = policy.select(facts)
     information = answer.noul
@@ -192,18 +212,12 @@ class JevReplayReviewer(ReplayReviewerBase):
             or case.reference.image is None
             or case.replay.image is None
         ):
-            return ReviewAssessment(
-                status="missing_evidence",
-                reasons=["visual_evidence_required"],
-                facts=case.facts,
-                settings=settings,
+            return route_unanswered(
+                "missing_evidence", ["visual_evidence_required"], settings, case.facts
             )
         if missing:
-            return ReviewAssessment(
-                status="missing_evidence",
-                reasons=["observation_unavailable"],
-                facts=case.facts,
-                settings=settings,
+            return route_unanswered(
+                "missing_evidence", ["observation_unavailable"], settings, case.facts
             )
         request = self.build_request(case)
         try:
@@ -226,12 +240,12 @@ class JevReplayReviewer(ReplayReviewerBase):
                 DecisionHTTPError: "http_error",
                 DecisionTransportError: "transport_error",
             }[type(exc)]
-            return ReviewAssessment(
-                status=cast(ReviewStatus, status),
-                reasons=[status],
+            return route_unanswered(
+                cast(ReviewStatus, status),
+                [status],
+                settings,
+                case.facts,
                 request=request,
-                facts=case.facts,
-                settings=settings,
                 detail=str(exc),
             )
         assessment = route_result(result, settings, case.facts)
