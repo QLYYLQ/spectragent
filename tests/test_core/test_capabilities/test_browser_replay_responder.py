@@ -194,6 +194,7 @@ def test_response_echo_copies_the_request_id() -> None:
     rule = SiteRule(
         id="request-echo",
         exhaustion="repeat_last",
+        unavailable="miss",
         response_echo=(
             EchoRule(url="http://shop.test/api/*", request_path="id", response_path="echo"),
         ),

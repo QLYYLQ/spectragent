@@ -123,7 +123,9 @@ class TestExplicitParameterSemantics:
         )
 
     def test_a_scoped_rule_can_explicitly_ignore_a_parameter(self) -> None:
-        rule = SiteRule(id="poll", exhaustion="repeat_last", ignore_query=("ts",))
+        rule = SiteRule(
+            id="poll", exhaustion="repeat_last", unavailable="miss", ignore_query=("ts",)
+        )
         first = request_keys("GET", "http://shop.test/poll?ts=1&id=8", None, None, rule)
         second = request_keys("GET", "http://shop.test/poll?ts=2&id=8", None, None, rule)
         assert first.normalized == second.normalized
@@ -257,7 +259,12 @@ class TestGraphQL:
         )
 
     def test_a_volatile_variable_is_removed_by_the_site_rule(self) -> None:
-        rule = SiteRule(id="body", exhaustion="miss", ignore_body_paths=("variables.cursor",))
+        rule = SiteRule(
+            id="body",
+            exhaustion="miss",
+            unavailable="miss",
+            ignore_body_paths=("variables.cursor",),
+        )
         a = self.op(variables={"q": "x", "cursor": "abc"})
         b = self.op(variables={"q": "x", "cursor": "def"})
         assert body_params(json.dumps(a).encode(), JSON) != body_params(
@@ -283,7 +290,9 @@ class TestGraphQL:
         assert (batch["0.operationName"], batch["1.operationName"]) == ("Search", "Other")
         swapped = body_params(json.dumps([second, first]).encode(), JSON)
         assert body_params(json.dumps([first, second]).encode(), JSON) != swapped
-        rule = SiteRule(id="body", exhaustion="miss", ignore_body_paths=("variables.q",))
+        rule = SiteRule(
+            id="body", exhaustion="miss", unavailable="miss", ignore_body_paths=("variables.q",)
+        )
         stripped = dict(body_params(json.dumps([first, second]).encode(), JSON, rule))
         assert "0.variables.q" not in stripped and "1.variables.q" not in stripped
 

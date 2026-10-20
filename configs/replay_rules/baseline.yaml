@@ -1,7 +1,10 @@
-# This published experiment explicitly reuses the last recorded response after exhaustion.
+# This published experiment explicitly reuses the last available recorded response after
+# exhaustion, and answers a recorded request without a body from an available record of the
+# same sequence when every available record there has the same status and body.
 # The framework supplies no fallback; endpoint rules below fully replace this rule.
 rules:
 - id: baseline
   scope: {}
   priority: -100
   exhaustion: repeat_last
+  unavailable: serve_identical

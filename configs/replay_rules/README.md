@@ -6,24 +6,43 @@ select this directory with `matcher: {site_rules: configs/replay_rules}`.
 
 Every `*.yaml` file contains a `rules` list. Filenames organize the evidence;
 they do not select a host or imply a domain suffix. Each rule declares its own
-scope, identity, priority and response exhaustion policy. All files form one
-rule set.
+scope, identity, priority, response exhaustion policy and its policy for a
+recorded request without a body. All files form one rule set.
 
 A request uses the matching rule with the greatest integer `priority`. Two
 matching rules at that priority are a configuration conflict, naming both
 rules. File order and filename order never break a tie. Rules do not merge:
-a narrower rule must repeat every behavior it needs, including `exhaustion`.
+a narrower rule must repeat every behavior it needs, including `exhaustion`
+and `unavailable`.
 Recorded and live requests must select the same rule identity to become matching
 candidates, including fuzzy and Range matching. Equal normalized keys from
 different scopes do not authorize exchanging their responses.
 
-The published `baseline.yaml` explicitly chooses `repeat_last` at priority
-`-100` for all requests. The endpoint rules use priority `0` and make the same
-choice explicitly. This preserves this experiment's selected response reuse
-behavior. It is not a framework default. To make a stateful endpoint miss after
-its recorded sequence is consumed, give it a matching rule with
-`exhaustion: miss`. Requests without an applicable policy are refused; the
-framework does not silently supply one.
+The published `baseline.yaml` explicitly chooses `repeat_last` and
+`serve_identical` at priority `-100` for all requests. The endpoint rules use
+priority `0` and make the same choices explicitly. This preserves this
+experiment's selected response reuse behavior. It is not a framework default.
+To make a stateful endpoint miss after its recorded sequence is consumed, give
+it a matching rule with `exhaustion: miss`. Requests without an applicable
+policy are refused; the framework does not silently supply one.
+
+## Records without a body
+
+A recording keeps some requests without a response body: the page cancelled
+them (most often images scrolled past), they were still in flight when the run
+ended, the browser served them from its memory cache, or the recorder's body
+read timed out. Such a record keeps its place in its response sequence. With
+`unavailable: miss` the miss policy answers it (a subresource gets 404). With
+`unavailable: serve_identical` an available record of the same sequence
+answers for it, but only when every available record of that sequence has the
+same status and the same recorded body. A request whose source failed on the
+network (for example `net::ERR_BLOCKED_BY_ORB`) is never answered from another
+record; that is fixed, not a rule setting. The replay log records each such
+answer as `substituted`, with both record ids and how the source request
+ended (`source_outcome`), so answering a request the source page cancelled is
+a visible deviation from the recording. `repeat_last` repeats the last
+available response; a sequence with no available response stays a
+`body_unavailable` miss.
 
 ## Evidence and scope
 
@@ -79,7 +98,8 @@ failed requests, candidates and the selected rule when investigating a change.
 | `id` | string | Rule identity, unique within the set; included in diagnostics. |
 | `scope` | mapping | Request constraints below; an empty mapping explicitly matches every request. |
 | `priority` | integer | Greatest matching priority wins; defaults to `0`. |
-| `exhaustion` | `repeat_last` or `miss` | Required. Reuse the last response of the selected sequence, or report `sequence_exhausted`. |
+| `exhaustion` | `repeat_last` or `miss` | Required. Reuse the last available response of the selected sequence, or report `sequence_exhausted`. |
+| `unavailable` | `miss` or `serve_identical` | Required. Answer a consumed record without a body through the miss policy, or with an available record of the same sequence when every available record there has the same status and body (never for a source network failure). |
 | `levels` | list of `exact`, `normalized`, `fuzzy`, or null | Restrict the run's allowed matching levels; null uses the run's set. A rule cannot enable a level forbidden by `matcher.levels`. |
 | `fuzzy` | boolean | Permit fuzzy matching for documents and non-GET requests, only when the run and rule allow `fuzzy`. Use `true` or `false`. |
 | `ignore_query` | list of name globs | Query fields omitted from the normalized key and fuzzy score. |
@@ -126,6 +146,7 @@ rules:
     scope: {}
     priority: -100
     exhaustion: repeat_last
+    unavailable: serve_identical
 
   - id: order-status
     scope:
@@ -135,14 +156,16 @@ rules:
       port: 443
     priority: 0
     exhaustion: miss
+    unavailable: miss
     levels: [exact, normalized]
     ignore_query: [request_nonce]
     ignore_body_paths: [client.trace_id]
     keep_body_paths: [id]
 ```
 
-This endpoint rule is complete: it chooses `miss` even though the broader rule
-chooses `repeat_last`. Neither rule authorizes ignoring `id` in an order body.
+This endpoint rule is complete: it chooses `miss` for both policies even though
+the broader rule chooses `repeat_last` and `serve_identical`. Neither rule
+authorizes ignoring `id` in an order body.
 
 ## JSONP callbacks
 
@@ -166,5 +189,6 @@ without accessing the original directory.
 
 Unknown fields, invalid types, duplicate identities and conflicting scopes
 are errors with rule/file context. Miss synthesis remains offline: it never
-fetches a missing response from the real site. Synthetic responses and sequence
-reuse remain distinguishable from recorded responses in the replay log.
+fetches a missing response from the real site. Synthetic responses, sequence
+reuse and answers from an identical record remain distinguishable from
+recorded responses in the replay log.

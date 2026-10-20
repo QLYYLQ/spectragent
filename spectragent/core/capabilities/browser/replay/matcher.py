@@ -4,6 +4,14 @@ The strongest allowed level with candidates owns the decision. Consumption
 is synchronous and shared across levels; exhaustion never silently changes
 to a weaker resource. Range matching obeys the same level and rule bounds,
 while using the byte-range map without consuming ordinary sequence cursors.
+
+A record without a body keeps its place in the sequence: the cursor
+consumes it like any other. The applicable rule's ``unavailable`` policy
+then decides its answer — the miss policy (``miss``), or another record of
+the same sequence (``serve_identical``) when every available record there
+has the same status and body and the source request did not fail on the
+network (never configurable). ``repeat_last`` repeats the sequence's last
+available response (arch §4.14 "匹配").
 """
 
 import dataclasses
@@ -21,6 +29,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     ArchiveIndex,
     IndexedRecord,
     RangeCover,
+    SourceOutcome,
 )
 from spectragent.core.capabilities.browser.replay.canonical import (
     Params,
@@ -33,6 +42,7 @@ from spectragent.core.capabilities.browser.replay.site_rules import (
     MatchLevel,
     SiteRule,
     SiteRules,
+    UnavailablePolicy,
 )
 
 #: Request headers that make a request conditional (a ``304`` answers only these).
@@ -45,6 +55,9 @@ CONDITIONAL_HEADERS = (
 )
 #: How many near records a miss reports.
 NEAREST = 3
+#: Source outcomes no record ever answers for: the source page saw the network
+#: fail, so the replay must fail too. Fixed here, never a rule's or a run's knob.
+NEVER_SUBSTITUTED: frozenset[SourceOutcome] = frozenset({"network_failed"})
 #: ``bytes=N-``, ``bytes=N-M``, ``bytes=-K`` (one range; a multi-range list is not served).
 _RANGE = re.compile(r"^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$", re.IGNORECASE)
 _STRIPPED = frozenset(DEFAULT_STRIPPED_REQUEST_HEADERS)
@@ -140,11 +153,15 @@ class MatchResult:
     Attributes:
         keys: The request's keys (what the replay log records).
         record: The record chosen (or repeated, or the first one a range
-            cover reads from); ``None`` on a miss.
+            cover reads from) — the one consumed, even when another record
+            answers for it; ``None`` on a miss.
+        substitute: The available record that answers for a consumed
+            record without a body (``serve_identical``); ``None`` otherwise.
         level: The level that found it.
         fuzzy_score: The ``2M/T`` score of a fuzzy hit.
         exhausted: The selected response sequence was consumed; the policy
-            either repeats its last record or reports ``sequence_exhausted``.
+            either repeats its last available record (with none, the last
+            record and its own reason) or reports ``sequence_exhausted``.
         range: The bytes that answer a ``Range`` request.
         reason: ``None`` when the result can be served; otherwise why not —
             ``no_match``, ``sequence_exhausted``, ``match_level_disallowed``,
@@ -155,6 +172,7 @@ class MatchResult:
 
     keys: RequestKeys
     record: IndexedRecord | None = None
+    substitute: IndexedRecord | None = None
     level: MatchLevel | None = None
     fuzzy_score: float | None = None
     exhausted: bool = False
@@ -163,10 +181,16 @@ class MatchResult:
     candidates: tuple[Candidate, ...] = ()
     rule_id: str | None = None
     exhaustion_policy: ExhaustionPolicy | None = None
+    unavailable_policy: UnavailablePolicy | None = None
 
     @property
     def servable(self) -> bool:
         return self.reason is None
+
+    @property
+    def served(self) -> IndexedRecord | None:
+        """The record whose recorded response is sent: the substitute, else the record."""
+        return self.substitute if self.substitute is not None else self.record
 
 
 def fuzzy_score(left: Params, right: Params) -> float:
@@ -233,6 +257,7 @@ class Matcher:
             result,
             rule_id=rule.id if rule else None,
             exhaustion_policy=rule.exhaustion if rule else None,
+            unavailable_policy=rule.unavailable if rule else None,
         )
 
     def _match_sequence(
@@ -248,9 +273,16 @@ class Matcher:
             group = groups[0]
             record = group.next_unused(self._used, self.affinity)
             if record is not None:
-                return self._hit(keys, level, group, record, exhausted=False)
+                substitute = (
+                    self._substitute(group, record)
+                    if selected.unavailable == "serve_identical"
+                    else None
+                )
+                return self._hit(keys, level, group, record, exhausted=False, substitute=substitute)
             if selected.exhaustion == "repeat_last":
-                return self._hit(keys, level, group, group.last(self.affinity), exhausted=True)
+                # The last available response; with none, the last record and its own reason.
+                last = group.last_available(self.affinity) or group.last(self.affinity)
+                return self._hit(keys, level, group, last, exhausted=True)
             return MatchResult(
                 keys=keys,
                 level=level,
@@ -344,18 +376,40 @@ class Matcher:
         record: IndexedRecord,
         *,
         exhausted: bool,
+        substitute: IndexedRecord | None = None,
     ) -> MatchResult:
+        """Consume *record*; a *substitute* answers for it and stays unused at its own place."""
         self._used.add((record.run_id, record.record_id))
         if self.affinity is None:
             self.affinity = record.run_id
         return MatchResult(
             keys=keys,
             record=record,
+            substitute=substitute,
             level=level,
             fuzzy_score=group.score if level == "fuzzy" else None,
             exhausted=exhausted,
-            reason=record.miss_reason,
+            reason=None if substitute is not None else record.miss_reason,
         )
+
+    def _substitute(self, group: "_Group", record: IndexedRecord) -> IndexedRecord | None:
+        """The available record that answers for *record*, which has no body — if one may.
+
+        Only for a ``body_unavailable`` record whose source request did not
+        fail on the network, and only when every available record of the
+        sequence has the same status and the same recorded body digest (a
+        record without a digest proves nothing). Among them: the affinity
+        run, the most request headers shared with the live request, the
+        nearest in recording order (the earlier on a tie).
+        """
+        if record.miss_reason != "body_unavailable" or record.source_outcome in NEVER_SUBSTITUTED:
+            return None
+        available = [r for r in group.records if r.servable]
+        if not available or any(r.payload_sha256 is None for r in available):
+            return None
+        if len({(r.status, r.payload_sha256) for r in available}) != 1:
+            return None
+        return group.nearest(available, record, self.affinity)
 
     # ── ranges ───────────────────────────────────────────────────────────
 
@@ -468,9 +522,34 @@ class _Group:
 
     def last(self, affinity: str | None) -> IndexedRecord:
         """The last record in recording order — of the affinity run, when it has one here."""
-        own = [r for r in self.records if affinity is not None and r.run_id == affinity]
-        pool = own or self.records
-        return max(pool, key=lambda r: (r.order, r.url, r.record_id))
+        return _last(self.records, affinity)
+
+    def last_available(self, affinity: str | None) -> IndexedRecord | None:
+        """The last record with a servable body, like :meth:`last`; ``None`` when none has one."""
+        available = [r for r in self.records if r.servable]
+        return _last(available, affinity) if available else None
+
+    def nearest(
+        self, pool: Sequence[IndexedRecord], to: IndexedRecord, affinity: str | None
+    ) -> IndexedRecord:
+        """The record of *pool* that answers for *to*: affinity, shared headers, distance, order."""
+        return min(
+            pool,
+            key=lambda r: (
+                affinity is not None and r.run_id != affinity,
+                -self._headers_of(r),
+                abs(r.order - to.order) if r.run_id == to.run_id else float("inf"),
+                r.order,
+                r.url,
+                r.record_id,
+            ),
+        )
+
+
+def _last(records: Sequence[IndexedRecord], affinity: str | None) -> IndexedRecord:
+    """The last of *records* in recording order — of the affinity run, when it has one there."""
+    own = [r for r in records if affinity is not None and r.run_id == affinity]
+    return max(own or records, key=lambda r: (r.order, r.url, r.record_id))
 
 
 def _shared_headers(

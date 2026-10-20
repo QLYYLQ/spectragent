@@ -15,7 +15,9 @@ pure construction — and owned by the capability from setup to teardown:
 - **Serving** — it owns the Request stage (``serves_requests``): each paused
   request reaches :meth:`ReplayServer.on_paused` in a task the recorder
   spawned. The live body is redacted with M29's ``redact_post_body`` before
-  any key; the matcher selects and consumes a record in one synchronous call;
+  any key; the matcher selects and consumes a record in one synchronous call
+  (for a consumed record without a body, possibly with an identical available
+  record answering in its place — the rule's ``unavailable: serve_identical``);
   ``responder.py`` shapes the answer (a JSONP answer calls the callback name
   this request asks for, ``jsonp.py``); the miss policy answers what the
   archive cannot. The answer goes to the **pausing** session (a dedicated worker's
@@ -334,16 +336,27 @@ class ReplayServer(RecorderParticipantBase):
         base["body_key"] = short_key(result.keys.body_key)
         base["rule_id"] = result.rule_id
         base["exhaustion_policy"] = result.exhaustion_policy
+        base["unavailable_policy"] = result.unavailable_policy
+        record = result.record
+        # A consumed record without a body: how its source request ended.
+        base["source_outcome"] = record.source_outcome if record is not None else None
         reason: MissReason | None = result.reason
         if reason is None:
             served = self._serve(result, live, raw_body)
             if isinstance(served, Fulfilment):
-                record = result.record
-                kind: EntryKind = "exhausted" if result.exhausted else "hit"
+                substitute = result.substitute
+                kind: EntryKind = (
+                    "substituted"
+                    if substitute is not None
+                    else "exhausted"
+                    if result.exhausted
+                    else "hit"
+                )
                 return served, ReplayLogEntry(
                     kind=kind,
                     record_id=record.record_id if record is not None else None,
                     run_id=record.run_id if record is not None else None,
+                    served_record_id=substitute.record_id if substitute is not None else None,
                     level=result.level,
                     fuzzy_score=result.fuzzy_score,
                     range=served.header("content-range") if result.range is not None else None,
@@ -370,7 +383,6 @@ class ReplayServer(RecorderParticipantBase):
             site_benign=rule is not None and rule.synthesizes_204(url),
         )
         decision = self.policy.decide(miss)
-        record = result.record
         entry = ReplayLogEntry(
             kind="miss",
             record_id=record.record_id if record is not None else None,
@@ -412,7 +424,7 @@ class ReplayServer(RecorderParticipantBase):
                     shift_dates=self.shift_dates,
                     now=now,
                 )
-            record = result.record
+            record = result.served
             if record is None:
                 return Refusal("no_match")
             if exceeds_cap(record.payload_length, cap):

@@ -19,6 +19,7 @@ canonicaliser the loader uses.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -178,12 +179,26 @@ class RecordingScript:
             ),
         )
 
+    def _stamp(self) -> float:
+        """A CDP timestamp a quarter second after the latest request (``wallTime`` minus 1.6e9)."""
+        return self._wall - 1_600_000_000.0 + 0.25
+
     def _finished(self, network_id: str) -> None:
         deliver(
             self.session,
             event(
                 "Network.loadingFinished",
-                {"requestId": network_id, "timestamp": 1.0, "encodedDataLength": 10},
+                {"requestId": network_id, "timestamp": self._stamp(), "encodedDataLength": 10},
+                PAGE_SESSION,
+            ),
+        )
+
+    def _failed(self, network_id: str, error_text: str) -> None:
+        deliver(
+            self.session,
+            event(
+                "Network.loadingFailed",
+                {"requestId": network_id, "timestamp": self._stamp(), "errorText": error_text},
                 PAGE_SESSION,
             ),
         )
@@ -319,20 +334,69 @@ class RecordingScript:
         finish()
         return None
 
-    def failed(self, url: str) -> str:
-        """A request that failed before any response: an ``incomplete`` record."""
+    def failed(
+        self,
+        url: str,
+        *,
+        error_text: str = "net::ERR_FAILED",
+        status: int | None = None,
+        request_headers: Mapping[str, str] | None = None,
+        resource_type: str = "XHR",
+    ) -> str:
+        """A request that failed: an ``incomplete`` record.
+
+        Without *status* it failed before any response (``net::ERR_ABORTED``:
+        the page cancelled it before the server answered); with one, its
+        response headers had arrived and the body never did. Never paused at
+        the Response stage, so the recorder read no body.
+        """
+        network_id, _ = self._ids()
+        sent = {"Accept": "*/*", **(request_headers or {})}
+        self._request(
+            network_id, url, method="GET", headers=sent, post=None, resource_type=resource_type
+        )
+        if status is not None:
+            self._response(network_id, url, status, {"Content-Type": "text/plain"}, resource_type)
+        self._failed(network_id, error_text)
+        return network_id
+
+    def from_memory_cache(self, url: str, *, resource_type: str = "Image") -> str:
+        """A request the browser answered from its memory cache: never paused, so no body."""
         network_id, _ = self._ids()
         self._request(
-            network_id, url, method="GET", headers={"Accept": "*/*"}, post=None, resource_type="XHR"
+            network_id,
+            url,
+            method="GET",
+            headers={"Accept": "*/*"},
+            post=None,
+            resource_type=resource_type,
         )
         deliver(
             self.session,
-            event(
-                "Network.loadingFailed",
-                {"requestId": network_id, "timestamp": 2.0, "errorText": "net::ERR_FAILED"},
-                PAGE_SESSION,
-            ),
+            event("Network.requestServedFromCache", {"requestId": network_id}, PAGE_SESSION),
         )
+        self._response(network_id, url, 200, {"Content-Type": "image/webp"}, resource_type)
+        self._finished(network_id)
+        return network_id
+
+    async def body_read_times_out(self, url: str, **exchange: Any) -> str:
+        """An exchange whose inline body read outlives the archiver's ``body_read_timeout_s``.
+
+        Give the script a short ``body_read_timeout_s``: the read waits for it.
+        """
+        self.recorder.holds["Fetch.getResponseBody"] = asyncio.Event()
+        try:
+            return await self.exchange(url, **exchange)
+        finally:
+            del self.recorder.holds["Fetch.getResponseBody"]
+
+    async def streamed_cancelled(self, url: str, body: bytes) -> str:
+        """A streamed body the page cancelled halfway: its ``body`` line is ``incomplete``."""
+        finish = await self.streamed_later(url, body, hold=True)
+        assert finish is not None
+        network_id = f"net-{self._n}"
+        stream_chunks(self.session, network_id, body[: len(body) // 2], session_id=PAGE_SESSION)
+        self._failed(network_id, "net::ERR_ABORTED")
         return network_id
 
     def in_flight(self, url: str) -> str:

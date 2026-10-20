@@ -52,10 +52,12 @@ SITE_RULE = """rules:
   - id: fixture-default
     scope: {}
     exhaustion: repeat_last
+    unavailable: serve_identical
     priority: -100
   - id: callback-endpoints
     scope: {path: '/jsonp/*'}
     exhaustion: repeat_last
+    unavailable: serve_identical
     priority: 10
     ignore_query: [cb, callback, _]
 """

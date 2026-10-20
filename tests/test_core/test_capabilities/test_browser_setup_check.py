@@ -393,7 +393,7 @@ def test_conflicting_replay_rules_are_refused_during_setup_check(
     source_run: Path, tmp_path: Path
 ) -> None:
     (tmp_path / "conflict.yaml").write_text(
-        "rules:\n  - {id: first, exhaustion: miss}\n  - {id: second, exhaustion: repeat_last}\n"
+        "rules:\n  - {id: first, exhaustion: miss, unavailable: miss}\n  - {id: second, exhaustion: repeat_last, unavailable: miss}\n"
     )
     cap = _replaying()
     cap.network_source = ArchiveNetworkSource(matcher=MatcherConfig(site_rules=str(tmp_path)))

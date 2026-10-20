@@ -2,8 +2,9 @@
 
 Rules select by method, host/path or URL and effective port. The greatest
 explicit priority wins; equal-priority matches are configuration conflicts.
-Every rule declares response-sequence exhaustion. File order never selects
-behavior, and all rule collections are immutable after parsing.
+Every rule declares response-sequence exhaustion and how a recorded request
+without a body is answered. File order never selects behavior, and all rule
+collections are immutable after parsing.
 """
 
 import fnmatch
@@ -27,6 +28,10 @@ class SiteRuleError(ValueError):
 
 MatchLevel = Literal["exact", "normalized", "fuzzy"]
 ExhaustionPolicy = Literal["repeat_last", "miss"]
+#: How a consumed record without a body (``body_unavailable``) is answered:
+#: by the miss policy, or by an available record of the same sequence when
+#: every available record there has the same status and body (§4.14 "匹配").
+UnavailablePolicy = Literal["miss", "serve_identical"]
 
 
 class RequestScope(BaseModel):
@@ -92,6 +97,7 @@ class SiteRule(BaseModel):
     scope: RequestScope = Field(default_factory=RequestScope)
     priority: int = 0
     exhaustion: ExhaustionPolicy
+    unavailable: UnavailablePolicy
     levels: tuple[MatchLevel, ...] | None = Field(default=None, min_length=1)
     ignore_query: tuple[str, ...] = ()
     keep_query: tuple[str, ...] = ()

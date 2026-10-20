@@ -21,6 +21,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     IndexedRecord,
     RangeMap,
     RangeSegment,
+    SourceOutcome,
 )
 from spectragent.core.capabilities.browser.replay.matcher import (
     NEAREST,
@@ -37,6 +38,7 @@ from spectragent.core.capabilities.browser.replay.site_rules import (
     SiteRule,
     SiteRuleError,
     SiteRules,
+    UnavailablePolicy,
 )
 from tests._helpers.replay_archive import indexed as build_indexed
 
@@ -53,7 +55,11 @@ FUZZY = MatcherConfig(
 def indexed(url: str, **kwargs: Any) -> IndexedRecord:
     """These sequence fixtures explicitly declare their cache-counter semantics."""
     return build_indexed(
-        url, rule=SiteRule(id="fixture", exhaustion="repeat_last", ignore_query=("_",)), **kwargs
+        url,
+        rule=SiteRule(
+            id="fixture", exhaustion="repeat_last", unavailable="miss", ignore_query=("_",)
+        ),
+        **kwargs,
     )
 
 
@@ -61,7 +67,13 @@ def build_matcher(
     index: ArchiveIndex, config: MatcherConfig | None = None, rules: SiteRules | None = None
 ) -> Matcher:
     if rules is None:
-        rules = SiteRules([SiteRule(id="fixture", exhaustion="repeat_last", ignore_query=("_",))])
+        rules = SiteRules(
+            [
+                SiteRule(
+                    id="fixture", exhaustion="repeat_last", unavailable="miss", ignore_query=("_",)
+                )
+            ]
+        )
     return Matcher(index, config, rules)
 
 
@@ -140,7 +152,9 @@ class TestTheFuzzyThreshold:
         posted = indexed(f"{API}?a=1&b=2", record_id="post", order=0, method="POST")
         post = LiveRequest("POST", f"{API}?a=1&b=3")
         assert build_matcher(ArchiveIndex([posted]), FUZZY).match(post).reason == "no_match"
-        rules = SiteRules([SiteRule(id="fuzzy", exhaustion="repeat_last", fuzzy=True)])
+        rules = SiteRules(
+            [SiteRule(id="fuzzy", exhaustion="repeat_last", unavailable="miss", fuzzy=True)]
+        )
         assert build_matcher(ArchiveIndex([page]), FUZZY, rules).match(document).level == "fuzzy"
         assert build_matcher(ArchiveIndex([posted]), FUZZY, rules).match(post).level == "fuzzy"
 
@@ -410,7 +424,7 @@ class TestExplicitPolicyBoundaries:
     def test_strong_sequence_exhaustion_does_not_consume_a_weaker_candidate(
         self, exhaustion: ExhaustionPolicy
     ) -> None:
-        rule = SiteRule(id="stock", exhaustion=exhaustion, ignore_query=("_",))
+        rule = SiteRule(id="stock", exhaustion=exhaustion, unavailable="miss", ignore_query=("_",))
         exact = build_indexed(f"{API}?_=1", record_id="exact", order=0, rule=rule)
         other = build_indexed(f"{API}?_=2", record_id="other", order=1, rule=rule)
         matcher = Matcher(ArchiveIndex([exact, other]), rules=SiteRules([rule]))
@@ -427,8 +441,18 @@ class TestExplicitPolicyBoundaries:
     def test_endpoint_polling_and_business_sequences_have_separate_policies(self) -> None:
         rules = SiteRules(
             [
-                SiteRule(id="poll", scope=RequestScope(path="/poll"), exhaustion="repeat_last"),
-                SiteRule(id="stock", scope=RequestScope(path="/stock"), exhaustion="miss"),
+                SiteRule(
+                    id="poll",
+                    scope=RequestScope(path="/poll"),
+                    exhaustion="repeat_last",
+                    unavailable="miss",
+                ),
+                SiteRule(
+                    id="stock",
+                    scope=RequestScope(path="/stock"),
+                    exhaustion="miss",
+                    unavailable="miss",
+                ),
             ]
         )
         poll = indexed("http://shop.test/poll", record_id="poll", order=0)
@@ -456,7 +480,13 @@ class TestExplicitPolicyBoundaries:
             )
         )
         assert build_matcher(ArchiveIndex([record]), config).match(get(API)).level == "exact"
-        rules = SiteRules([SiteRule(id="restricted", exhaustion="miss", levels=("normalized",))])
+        rules = SiteRules(
+            [
+                SiteRule(
+                    id="restricted", exhaustion="miss", unavailable="miss", levels=("normalized",)
+                )
+            ]
+        )
         assert Matcher(ArchiveIndex([record]), config, rules).match(get(API)).level == "normalized"
 
     def test_fuzzy_does_not_cross_effective_ports(self) -> None:
@@ -476,7 +506,9 @@ class TestExplicitPolicyBoundaries:
 
 class TestRangeLevelBoundary:
     def test_exact_only_never_uses_normalized_bytes(self) -> None:
-        rule = SiteRule(id="video", exhaustion="repeat_last", ignore_query=("ts",))
+        rule = SiteRule(
+            id="video", exhaustion="repeat_last", unavailable="miss", ignore_query=("ts",)
+        )
         record = build_indexed(
             "http://shop.test/v?ts=1", record_id="record", order=0, rule=rule, payload_length=10
         )
@@ -495,7 +527,7 @@ class TestRangeLevelBoundary:
         assert uncovered.reason == "range_uncovered"
 
     def test_exact_ranges_never_join_bytes_from_another_normalized_url(self) -> None:
-        rule = SiteRule(id="video", exhaustion="miss", ignore_query=("ts",))
+        rule = SiteRule(id="video", exhaustion="miss", unavailable="miss", ignore_query=("ts",))
         first = build_indexed("http://shop.test/v?ts=1", record_id="first", order=0, rule=rule)
         other = build_indexed("http://shop.test/v?ts=2", record_id="other", order=1, rule=rule)
         ranges = RangeMap(
@@ -521,7 +553,11 @@ class TestRangeLevelBoundary:
 
     def test_rule_level_restrictions_apply_to_ranges(self) -> None:
         rule = SiteRule(
-            id="video", exhaustion="repeat_last", levels=("exact",), ignore_query=("ts",)
+            id="video",
+            exhaustion="repeat_last",
+            unavailable="miss",
+            levels=("exact",),
+            ignore_query=("ts",),
         )
         record = build_indexed("http://shop.test/v?ts=1", record_id="record", order=0, rule=rule)
         index = ArchiveIndex(
@@ -549,6 +585,7 @@ class TestRequestRuleIsolation:
                     id=f"account-{account}",
                     scope=RequestScope(url=f"*account={account}*"),
                     exhaustion="miss",
+                    unavailable="miss",
                     ignore_query=("account", "nonce"),
                 )
                 for account in ("a", "b")
@@ -636,3 +673,227 @@ class TestRequestRuleIsolation:
             get(f"{API}?account=a&nonce=2", Range="bytes=5-9")
         )
         assert result.reason == "range_uncovered" and result.range is None
+
+
+# ── records without a body (§4.14 "匹配") ──────────────────────────────
+
+IMAGE = "http://cdn.test/pic.webp"
+CORS = {"Origin": "http://shop.test", "Referer": "http://shop.test/"}
+NO_CORS = {"Referer": "http://shop.test/"}
+
+
+def unavailable_rules(
+    policy: UnavailablePolicy, exhaustion: ExhaustionPolicy = "repeat_last"
+) -> SiteRules:
+    return SiteRules(
+        [SiteRule(id="fixture", exhaustion=exhaustion, unavailable=policy, ignore_query=("_",))]
+    )
+
+
+def body(record_id: str, order: int, digest: str = "same", **fields: Any) -> IndexedRecord:
+    """An available record of IMAGE whose recorded body hashes to *digest*."""
+    return indexed(IMAGE, record_id=record_id, order=order, payload_sha256=digest, **fields)
+
+
+def no_body(
+    record_id: str,
+    order: int,
+    outcome: SourceOutcome = "page_cancelled_before_response",
+    **fields: Any,
+) -> IndexedRecord:
+    """A record of IMAGE recorded without a body, ending as *outcome* in the source."""
+    return indexed(
+        IMAGE,
+        record_id=record_id,
+        order=order,
+        status=None,  # type: ignore[arg-type] — the request never got a response
+        miss_reason="body_unavailable",
+        source_outcome=outcome,
+        **fields,
+    )
+
+
+class TestRecordsWithoutABody:
+    def test_the_cancelled_third_request_is_answered_by_the_identical_record_sharing_its_headers(
+        self,
+    ) -> None:
+        """Two identical bodies, then a cancelled request: the cross-site one answers it."""
+        cors = body("cors", 0, request_headers=CORS)
+        plain = body("plain", 1, request_headers=NO_CORS)
+        cancelled = no_body("cancelled", 2, request_headers=CORS)
+        matcher = build_matcher(
+            ArchiveIndex([cors, plain, cancelled]), rules=unavailable_rules("serve_identical")
+        )
+        first = matcher.match(get(IMAGE, **CORS))
+        second = matcher.match(get(IMAGE, **NO_CORS))
+        third = matcher.match(get(IMAGE, **CORS))
+        assert ids(first, second, third) == ["cors", "plain", "cancelled"]
+        assert (third.substitute, third.served, third.reason, third.servable) == (
+            cors,
+            cors,
+            None,
+            True,
+        )
+        assert (third.unavailable_policy, third.exhausted, third.level) == (
+            "serve_identical",
+            False,
+            "exact",
+        )
+
+    def test_under_miss_the_same_request_is_a_body_unavailable_miss(self) -> None:
+        records = [body("a", 0), body("b", 1), no_body("cancelled", 2)]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("miss"))
+        third = [matcher.match(get(IMAGE)) for _ in range(3)][-1]
+        assert (third.record, third.substitute, third.reason) == (
+            records[2],
+            None,
+            "body_unavailable",
+        )
+        assert third.unavailable_policy == "miss"
+
+    def test_a_later_record_may_answer_and_keeps_its_own_place(self) -> None:
+        """Cancelled first, loaded later: the later record answers, then is served as itself."""
+        cancelled, loaded = no_body("cancelled", 0), body("loaded", 1)
+        matcher = build_matcher(
+            ArchiveIndex([cancelled, loaded]), rules=unavailable_rules("serve_identical")
+        )
+        first, second, third = (matcher.match(get(IMAGE)) for _ in range(3))
+        assert (first.record, first.substitute) == (cancelled, loaded)
+        assert (second.record, second.substitute, second.exhausted) == (loaded, None, False)
+        assert (third.record, third.exhausted) == (loaded, True)
+
+    def test_the_nearest_identical_record_answers_when_headers_tie(self) -> None:
+        early, cancelled, late = body("early", 0), no_body("cancelled", 4), body("late", 5)
+        matcher = build_matcher(
+            ArchiveIndex([early, cancelled, late]), rules=unavailable_rules("serve_identical")
+        )
+        results = [matcher.match(get(IMAGE)) for _ in range(2)]
+        assert (results[1].record, results[1].substitute) == (cancelled, late)
+
+    def test_a_body_that_changes_in_the_sequence_is_never_substituted(self) -> None:
+        """A state endpoint: identical answers, a different last one, a request never answered."""
+        records = [
+            body("n0", 0),
+            body("n1", 1),
+            body("n2", 2, digest="changed"),
+            no_body("pending", 3, outcome="in_flight_at_run_end"),
+        ]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        results = [matcher.match(get(IMAGE)) for _ in range(5)]
+        assert ids(*results) == ["n0", "n1", "n2", "pending", "n2"]
+        assert (results[3].substitute, results[3].reason) == (None, "body_unavailable")
+        assert (results[4].exhausted, results[4].servable) == (True, True)
+
+    def test_a_source_network_failure_is_never_substituted(self) -> None:
+        records = [body("ok", 0), no_body("blocked", 1, outcome="network_failed")]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        second = [matcher.match(get(IMAGE)) for _ in range(2)][-1]
+        assert (second.record, second.substitute, second.reason) == (
+            records[1],
+            None,
+            "body_unavailable",
+        )
+        assert second.record is not None and second.record.source_outcome == "network_failed"
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            "page_cancelled_before_response",
+            "page_cancelled_during_body",
+            "in_flight_at_run_end",
+            "memory_cache",
+            "recorder_timeout",
+            "unknown",
+        ],
+    )
+    def test_every_other_outcome_is_covered(self, outcome: SourceOutcome) -> None:
+        records = [body("ok", 0), no_body("missing", 1, outcome=outcome)]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        second = [matcher.match(get(IMAGE)) for _ in range(2)][-1]
+        assert second.substitute == records[0]
+
+    def test_different_statuses_are_never_substituted(self) -> None:
+        records = [body("ok", 0), body("gone", 1, status=404), no_body("cancelled", 2)]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        third = [matcher.match(get(IMAGE)) for _ in range(3)][-1]
+        assert (third.substitute, third.reason) == (None, "body_unavailable")
+
+    def test_a_record_without_a_body_digest_proves_nothing(self) -> None:
+        """A redirect is available but has no body digest: no identity to rely on."""
+        records = [
+            indexed(IMAGE, record_id="moved", order=0, status=302, body_status="redirect"),
+            no_body("cancelled", 1),
+        ]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        second = [matcher.match(get(IMAGE)) for _ in range(2)][-1]
+        assert (second.substitute, second.reason) == (None, "body_unavailable")
+
+    def test_recorded_error_responses_are_served_as_recorded(self) -> None:
+        """A recorded 404 or 500 has a body: it is an available record, served as it is."""
+        records = [body("missing", 0, status=404), body("broken", 1, status=500, digest="oops")]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        first, second = (matcher.match(get(IMAGE)) for _ in range(2))
+        assert [(r.record, r.substitute, r.reason) for r in (first, second)] == [
+            (records[0], None, None),
+            (records[1], None, None),
+        ]
+
+    def test_a_sequence_without_any_body_stays_a_miss_and_repeats_its_last(self) -> None:
+        records = [no_body("c0", 0), no_body("c1", 1)]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        results = [matcher.match(get(IMAGE)) for _ in range(3)]
+        assert ids(*results) == ["c0", "c1", "c1"]
+        assert [(r.reason, r.substitute, r.exhausted) for r in results] == [
+            ("body_unavailable", None, False),
+            ("body_unavailable", None, False),
+            ("body_unavailable", None, True),
+        ]
+
+    @pytest.mark.parametrize("policy", ["miss", "serve_identical"])
+    def test_repeat_last_repeats_the_last_available_response(
+        self, policy: UnavailablePolicy
+    ) -> None:
+        records = [body("a", 0), body("b", 1, digest="other"), no_body("cancelled", 2)]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules(policy))
+        results = [matcher.match(get(IMAGE)) for _ in range(5)]
+        assert ids(*results) == ["a", "b", "cancelled", "b", "b"]
+        assert results[2].reason == "body_unavailable"
+        assert [(r.exhausted, r.servable) for r in results[3:]] == [(True, True), (True, True)]
+
+    def test_a_too_large_record_is_never_substituted(self) -> None:
+        records = [body("a", 0), indexed(IMAGE, record_id="big", order=1, miss_reason="too_large")]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        second = [matcher.match(get(IMAGE)) for _ in range(2)][-1]
+        assert (second.substitute, second.reason) == (None, "too_large")
+
+    def test_a_normalized_sequence_is_judged_as_one_sequence(self) -> None:
+        records = [
+            indexed(f"{IMAGE}?_=1", record_id="a", order=0, payload_sha256="same"),
+            indexed(
+                f"{IMAGE}?_=2",
+                record_id="cancelled",
+                order=1,
+                miss_reason="body_unavailable",
+                source_outcome="page_cancelled_before_response",
+            ),
+        ]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        first, second = (matcher.match(get(f"{IMAGE}?_=9")) for _ in range(2))
+        assert (first.record, first.level) == (records[0], "normalized")
+        assert (second.record, second.substitute, second.level) == (
+            records[1],
+            records[0],
+            "normalized",
+        )
+
+    def test_the_affinity_run_answers_first(self) -> None:
+        mine = body("mine", 0, run_id="run-b")
+        theirs = body("theirs", 0, run_id="run-a")
+        cancelled = no_body("cancelled", 1, run_id="run-b")
+        matcher = build_matcher(
+            ArchiveIndex([theirs, mine, cancelled]), rules=unavailable_rules("serve_identical")
+        )
+        matcher.affinity = "run-b"
+        results = [matcher.match(get(IMAGE)) for _ in range(3)]
+        assert ids(*results) == ["mine", "cancelled", "theirs"]
+        assert results[1].substitute == mine

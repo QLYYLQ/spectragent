@@ -7,6 +7,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://log-sdk.ksapisrv.com/rest/wd/common/log/collect/misc2*
 - id: kuaishou-sdk-radar-log
@@ -16,5 +17,6 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://log-sdk.ksapisrv.com/rest/wd/common/log/collect/radar*

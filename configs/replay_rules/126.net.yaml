@@ -8,6 +8,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://h5.analytics.126.net/news/c*
 - id: netease-news-beacon
@@ -17,6 +18,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://h5.analytics.126.net/news/g*
 - id: netease-web-stat
@@ -26,5 +28,6 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://webstat.ws.126.net/stat/*

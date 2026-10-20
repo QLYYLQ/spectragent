@@ -8,6 +8,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://rumt-zh.com/collect/pv*
 - id: tencent-monitor-speed
@@ -17,6 +18,7 @@ rules:
     method: POST
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://rumt-zh.com/speed*
 - id: tencent-monitor-custom-timing
@@ -26,6 +28,7 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://rumt-zh.com/speed/custom*
 - id: tencent-monitor-performance
@@ -35,5 +38,6 @@ rules:
     method: GET
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   synthesize_204:
   - https://rumt-zh.com/speed/performance*
