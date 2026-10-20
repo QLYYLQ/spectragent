@@ -106,6 +106,35 @@ buttons is insufficient. Separate byte coverage, playback position and capture t
 and define the supported restoration contract. Preserve warnings and actual frames;
 do not hide the difference with a broader screenshot tolerance.
 
+**Diagnosis, 2026-10-20** (`tmp/media_playback_20261020/brief.md`): the cause is playback
+position. The video autoplays and kept playing while the source model thought (about 33 s
+over steps 13 and 15); replay with `pace: none` does not wait. Byte coverage was complete in
+the headless pair (41 of 41 ranges served) and screenshot timing matched. The existing check
+passed step 19 at screenshot distance 4 against threshold 5 although the content differed.
+
+**User decisions, 2026-10-20 (design and implementation pending):**
+
+- Record, check and align. Media state (per element position, paused, duration) is
+  screenshot-fragment metadata measured just before and after capture, with a
+  BrowserCapability YAML time budget. Recording behaviour does not change.
+- Restoration gains a "media differs" reason evaluated before screenshot distance:
+  YAML time tolerance (default 1 s), paused-state and missing-element differences count,
+  unknown values do not decide; the screenshot threshold is unchanged.
+- Alignment: restorer YAML field `media: none | align`, default `align`, written explicitly
+  in shipped same-path configs. It runs inside the capture after the settle wait and before
+  the screenshot, through the capability's restoration interface, only in the restored
+  prefix, never in the Loop and never after the checkpoint.
+- Matching across runs: same frame, document order, viewport position; URLs compared only
+  when not `blob:`; ambiguous means no alignment. Live streams, unreachable cross-site
+  iframes, canvas players, seeks into unrecorded bytes and ambiguous matches are marked
+  non-restorable, never passed.
+- Agents: browser-specific Agents may render media state through `render_browser_state`
+  behind an Agent YAML switch `show_media_state`, default off (an explicit experiment variable).
+- Byte coverage is not extended; `range_uncovered` misses log the requested range.
+- A real-Chrome probe of the site's player (seek and pause reliability) comes first; if it
+  fails, land recording and checking first and defer alignment. The unexplained self-pause
+  in the headed run is investigated after media facts exist.
+
 ## Execution preference
 
 Run browser experiments headless and quietly. The latest batch uses 300-second DeepSeek
