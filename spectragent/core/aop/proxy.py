@@ -4,9 +4,13 @@ The proxy delegates all attribute access to the original object, but
 replaces intercepted methods with wrapped versions that execute
 before/after/around hooks.
 
-Two properties make *named attribute access* through the proxy behave
+Three properties make *named attribute access* through the proxy behave
 like the target:
 
+* **Reads are not hidden.** The proxy keeps everything it needs for itself
+  under one class-private name (``_AOPProxy__state``) and defines no
+  other non-dunder name, so ``proxy._role`` or ``proxy._background`` reads
+  the target's attribute even when the target uses that name.
 * **Writes pass through.** ``proxy.run = fn`` sets the attribute on the
   *target*, not on the proxy. A proxy with its own ``__dict__`` entry
   would permanently shadow the wrapped method — which is exactly how
@@ -68,6 +72,7 @@ import functools
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from spectragent.core.aop.advice import AdviceType
@@ -165,6 +170,57 @@ def validate_advice_shape(
                 )
 
 
+@dataclass
+class _ProxyState:
+    """Everything an :class:`AOPProxy` keeps for itself."""
+
+    target: Any
+    role: str
+    method_interceptors: dict[str, list[InterceptorEntry]]
+    # Owner of non-blocking handler tasks. A private one when nobody
+    # supplied one keeps the tasks from being garbage-collected
+    # mid-flight; only a caller-supplied one can be *drained*.
+    background: BackgroundTasks
+    # {method_name: (resolved_original, wrapper)} — the resolved original
+    # is kept so a later rebind of the attribute invalidates the wrapper.
+    wrapper_cache: dict[str, tuple[Any, Any]] = field(default_factory=dict)
+    # Methods already reported as unservable — warn once, not per access.
+    reported_missing: set[str] = field(default_factory=set)
+
+
+#: The proxy's one instance attribute: the name ``self.__state`` would mangle
+#: to inside :class:`AOPProxy`. Normal lookup finds an instance attribute
+#: before ``__getattr__`` forwards anything, so whatever name the proxy keeps
+#: hides the target's attribute of that name. Only code written inside a
+#: class itself named ``AOPProxy`` produces this one.
+_STATE = "_AOPProxy__state"
+
+
+def _state(proxy: AOPProxy) -> _ProxyState:
+    # ``object.__getattribute__`` rather than ``proxy.<name>``: on a proxy
+    # whose state is not set yet (``copy`` probing for ``__setstate__``),
+    # the plain lookup would land in ``__getattr__`` and recurse.
+    return object.__getattribute__(proxy, _STATE)
+
+
+def _protocol_method(proxy: AOPProxy, dunder: str) -> Callable[..., Any]:
+    state = _state(proxy)
+    method = getattr(type(state.target), dunder, None)
+    if method is None:
+        raise UnsupportedProxyProtocolError(
+            f"AOPProxy(role={state.role!r}) was asked for {_PROTOCOL_HINTS[dunder]} "
+            f"but its target {type(state.target).__name__} does not implement "
+            f"{dunder}. The proxy declares the protocol so it can forward it; "
+            f"it cannot invent it."
+        )
+    return functools.partial(method, state.target)
+
+
+def _reproxy(proxy: AOPProxy, result: Any) -> Any:
+    """Keep ``as x`` woven when the target returns itself."""
+    return proxy if result is _state(proxy).target else result
+
+
 class AOPProxy:
     """Proxy that intercepts specific methods with AOP advice.
 
@@ -181,24 +237,21 @@ class AOPProxy:
         background: BackgroundTasks | None = None,
     ) -> None:
         # Use object.__setattr__ — our own __setattr__ forwards to the target.
-        object.__setattr__(self, "_target", target)
-        object.__setattr__(self, "_role", role)
-        object.__setattr__(self, "_method_interceptors", dict(method_interceptors))
-        # {method_name: (resolved_original, wrapper)} — the resolved original
-        # is kept so a later rebind of the attribute invalidates the wrapper.
-        object.__setattr__(self, "_wrapper_cache", {})
-        # Methods already reported as unservable — warn once, not per access.
-        object.__setattr__(self, "_reported_missing", set())
-        # Owner of non-blocking handler tasks. A private one when nobody
-        # supplied one keeps the tasks from being garbage-collected
-        # mid-flight; only a caller-supplied one can be *drained*.
         object.__setattr__(
-            self, "_background", background if background is not None else BackgroundTasks()
+            self,
+            _STATE,
+            _ProxyState(
+                target=target,
+                role=role,
+                method_interceptors=dict(method_interceptors),
+                background=background if background is not None else BackgroundTasks(),
+            ),
         )
 
     def __getattr__(self, name: str) -> Any:
-        target = object.__getattribute__(self, "_target")
-        interceptors = object.__getattribute__(self, "_method_interceptors").get(name)
+        state = _state(self)
+        target = state.target
+        interceptors = state.method_interceptors.get(name)
         if not interceptors:
             return getattr(target, name)
 
@@ -209,20 +262,20 @@ class AOPProxy:
             # have. ``getattr(obj, name, default)`` swallows the
             # AttributeError, so without this the hook is dead and nothing
             # says why.
-            reported = object.__getattribute__(self, "_reported_missing")
+            reported = state.reported_missing
             if name not in reported:
                 reported.add(name)
                 logger.warning(
                     "Hook(s) %s intercept %s.%s but %s has no such attribute — "
                     "this access cannot be advised.",
                     sorted({hook_id_of(h) for h, _, _ in interceptors}),
-                    object.__getattribute__(self, "_role"),
+                    state.role,
                     name,
                     type(target).__name__,
                 )
             raise
 
-        cache = object.__getattribute__(self, "_wrapper_cache")
+        cache = state.wrapper_cache
         cached = cache.get(name)
         # Bound methods are recreated per attribute access, so compare with
         # ``==`` (same function + same instance), never ``is``.
@@ -234,23 +287,22 @@ class AOPProxy:
             interceptors,
             name,
             target=target,
-            role=object.__getattribute__(self, "_role"),
-            background=object.__getattribute__(self, "_background"),
+            role=state.role,
+            background=state.background,
         )
         cache[name] = (original, wrapped)
         return wrapped
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Forward writes to the target so the proxy never shadows it."""
-        setattr(object.__getattribute__(self, "_target"), name, value)
+        setattr(_state(self).target, name, value)
 
     def __delattr__(self, name: str) -> None:
-        delattr(object.__getattribute__(self, "_target"), name)
+        delattr(_state(self).target, name)
 
     def __repr__(self) -> str:
-        target = object.__getattribute__(self, "_target")
-        methods = object.__getattribute__(self, "_method_interceptors")
-        return f"AOPProxy({target!r}, intercepted={sorted(methods)})"
+        state = _state(self)
+        return f"AOPProxy({state.target!r}, intercepted={sorted(state.method_interceptors)})"
 
     # ── forwarded protocols ───────────────────────────────────
     #
@@ -260,19 +312,19 @@ class AOPProxy:
     # equality.
 
     def __bool__(self) -> bool:
-        return bool(object.__getattribute__(self, "_target"))
+        return bool(_state(self).target)
 
     def __eq__(self, other: object) -> bool:
-        target = object.__getattribute__(self, "_target")
+        target = _state(self).target
         if isinstance(other, AOPProxy):
-            other = object.__getattribute__(other, "_target")
+            other = _state(other).target
         return bool(target == other)
 
     def __hash__(self) -> int:
         # Paired with __eq__ on purpose: a proxy and its target compare
         # equal, so they must hash alike or a dict keyed by one would
         # miss the other.
-        return hash(object.__getattribute__(self, "_target"))
+        return hash(_state(self).target)
 
     # ── curated protocols: forward, or explain ────────────────
     #
@@ -281,42 +333,26 @@ class AOPProxy:
     # entry per protocol a real target in this framework implements —
     # rather than a generated per-target subclass: a fixed class is
     # greppable, has one identity, and needs no cache to avoid building
-    # a new type per wrap.
-
-    def _protocol_method(self, dunder: str) -> Callable[..., Any]:
-        target = object.__getattribute__(self, "_target")
-        method = getattr(type(target), dunder, None)
-        if method is None:
-            role = object.__getattribute__(self, "_role")
-            raise UnsupportedProxyProtocolError(
-                f"AOPProxy(role={role!r}) was asked for {_PROTOCOL_HINTS[dunder]} "
-                f"but its target {type(target).__name__} does not implement "
-                f"{dunder}. The proxy declares the protocol so it can forward it; "
-                f"it cannot invent it."
-            )
-        return functools.partial(method, target)
-
-    def _reproxy(self, result: Any) -> Any:
-        """Keep ``as x`` woven when the target returns itself."""
-        return self if result is object.__getattribute__(self, "_target") else result
+    # a new type per wrap. Their helpers are module functions, not methods:
+    # a method name would hide a target attribute of the same name.
 
     def __enter__(self) -> Any:
-        return self._reproxy(self._protocol_method("__enter__")())
+        return _reproxy(self, _protocol_method(self, "__enter__")())
 
     def __exit__(self, *exc: Any) -> Any:
-        return self._protocol_method("__exit__")(*exc)
+        return _protocol_method(self, "__exit__")(*exc)
 
     async def __aenter__(self) -> Any:
-        return self._reproxy(await self._protocol_method("__aenter__")())
+        return _reproxy(self, await _protocol_method(self, "__aenter__")())
 
     async def __aexit__(self, *exc: Any) -> Any:
-        return await self._protocol_method("__aexit__")(*exc)
+        return await _protocol_method(self, "__aexit__")(*exc)
 
     def __iter__(self) -> Any:
-        return self._protocol_method("__iter__")()
+        return _protocol_method(self, "__iter__")()
 
     def __aiter__(self) -> Any:
-        return self._protocol_method("__aiter__")()
+        return _protocol_method(self, "__aiter__")()
 
 
 def _task_label(hook: Any, ctx: dict[str, Any], method_name: str, advice: str) -> str:
