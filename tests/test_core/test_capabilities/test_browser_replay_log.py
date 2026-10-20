@@ -165,6 +165,7 @@ class TestTheRepeatLimit:
             {"unavailable_policy": "miss"},
             {"source_outcome": "network_failed"},
             {"served_record_id": "another-served-record"},
+            {"repeated": True},
         ],
     )
     def test_summary_keeps_different_decision_meanings_separate(

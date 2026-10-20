@@ -160,9 +160,12 @@ class TestSubstitutions:
             )
 
         # Five substitutions for cancelled requests (three in full, two folded), one for a
-        # body the recorder missed; a miss and a hit count as neither.
+        # body the recorder missed, four repeats after exhaustion (three in full, one
+        # folded); a hit counts as neither.
+        reused = hit("http://pic.test/poll.json").model_copy(update={"kind": "exhausted"})
         same_path = [substituted("page_cancelled_before_response") for _ in range(5)]
         same_path += [substituted("memory_cache"), hit("http://pic.test/other.webp")]
+        same_path += [reused] * 4
         await write_replayed(
             layout.traces("same_path"),
             "rec-pic-s0-b0",
@@ -175,10 +178,11 @@ class TestSubstitutions:
         report = build_report(layout, evidence="rehearsal")
         stats = report.sections.sites.by_site["pic.test"]
         assert stats.substitutions == {"memory_cache": 1, "page_cancelled_before_response": 5}
-        assert stats.other_misses == 0
+        assert (stats.reuses, stats.other_misses) == (4, 0)
         assert (
             'responses answered by an identical record {"memory_cache": 1, '
-            '"page_cancelled_before_response": 5}' in render_markdown(report)
+            '"page_cancelled_before_response": 5}, responses repeated after exhaustion 4'
+            in render_markdown(report)
         )
 
     async def test_a_site_without_substitutions_counts_none(self, chain: ChainRuns) -> None:
@@ -186,6 +190,7 @@ class TestSubstitutions:
             chain, fidelity=same_path_fidelity(chain), blocked=[], exclude_below=0.8
         ).by_site
         assert by_site and all(item.substitutions == {} for item in by_site.values())
+        assert all(item.reuses >= 0 for item in by_site.values())
 
 
 class TestAFailedModelCallIsNotTheSites:

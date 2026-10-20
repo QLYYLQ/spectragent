@@ -396,7 +396,7 @@ class Matcher:
         """The available record that answers for *record*, which has no body — if one may.
 
         Only for a ``body_unavailable`` record whose source request did not
-        fail on the network, and only when every available record of the
+        fail on the network (an ``unknown`` outcome is eligible), and only when every available record of the
         sequence has the same status and the same recorded body digest (a
         record without a digest proves nothing). Among them: the affinity
         run, the most request headers shared with the live request, the

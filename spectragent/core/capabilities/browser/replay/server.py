@@ -403,6 +403,8 @@ class ReplayServer(RecorderParticipantBase):
                 for c in result.candidates
             ],
             diverged=decision.diverged,
+            # repeat_last repeated a record that could not be served (no available one).
+            repeated=True if result.exhausted and record is not None else None,
             **base,
         )
         if decision.answer == "fulfill":

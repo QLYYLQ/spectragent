@@ -1714,6 +1714,9 @@ class SiteStats(_Model):
     #: ended (``source_outcome``: page-cancelled and recorder-missed bodies apart). Like the
     #: ``exhausted`` reuse, never counted as a hit.
     substitutions: dict[str, int]
+    #: Responses the replays served again after their sequence was exhausted
+    #: (``repeat_last``; the replay log's ``exhausted``), never counted as a hit.
+    reuses: int
 
 
 class SiteExclusion(_Model):
@@ -1776,8 +1779,8 @@ def _failed_at_step0(run: Run) -> bool:
 def sites(
     chain: ChainRuns, *, fidelity: SamePathFidelity, blocked: Sequence[str], exclude_below: float
 ) -> Sites:
-    """By site (arch §4.16): counts, outcomes, fidelity, restoration, coverage, misses, rewrites
-    and substitutions.
+    """By site (arch §4.16): counts, outcomes, fidelity, restoration, coverage, misses, rewrites,
+    substitutions and reuses.
 
     Excluded: a site whose recordings met a challenge (*blocked*), whose
     same-path fidelity (the restorer's) is below *exclude_below*, or one of
@@ -1812,7 +1815,7 @@ def sites(
         failed0 = sum(1 for run in diagnosed if _failed_at_step0(run))
         branches = [run for run in chain.role("branch").runs if run.site == site]
         rate = restoration_rate(run.trace for run in branches)
-        clean = counted = documents = others = rewrites = 0
+        clean = counted = documents = others = rewrites = reuses = 0
         substituted: Counter[str] = Counter()
         for role in ("same_path", "branch"):
             for run in chain.role(role).runs:
@@ -1832,6 +1835,7 @@ def sites(
                 documents += sum(w for _s, e, w in decisions if e.diverged)
                 others += sum(w for _s, e, w in decisions if e.kind == "miss" and not e.diverged)
                 rewrites += sum(w for _s, e, w in decisions if e.callback_rewrite is not None)
+                reuses += sum(w for _s, e, w in decisions if e.kind == "exhausted")
                 for _s, e, w in decisions:
                     if e.kind == "substituted":
                         substituted[str(e.source_outcome)] += w
@@ -1861,6 +1865,7 @@ def sites(
             other_misses=others,
             callback_rewrites=rewrites,
             substitutions=_counts(substituted),
+            reuses=reuses,
         )
         by_site[site] = stats
         reasons: list[str] = []

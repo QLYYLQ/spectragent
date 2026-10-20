@@ -1415,7 +1415,8 @@ def _lines_section(name: str, sections: Sections) -> list[str]:
             f"branches without a document miss {_ratio_md(item.branch_zero_document_miss)}, document "
             f"misses {item.document_misses}, other misses {item.other_misses}, JSONP callback "
             f"names rewritten {item.callback_rewrites}, responses answered by an identical record "
-            f"{_fmt(item.substitutions)}" + (" — blocked" if item.blocked else "")
+            f"{_fmt(item.substitutions)}, responses repeated after exhaustion {item.reuses}"
+            + (" — blocked" if item.blocked else "")
             for site, item in s.by_site.items()
         ]
         lines += [f"- exclude {item.site}: {'; '.join(item.reasons)}" for item in s.exclusions]

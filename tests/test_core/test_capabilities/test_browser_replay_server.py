@@ -1008,6 +1008,41 @@ class TestRecordsWithoutABody:
         )
         await recorder.close()
 
+    async def test_a_repeat_of_a_record_without_a_body_is_marked(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        """The first miss on the body-less record is not a repeat; repeat_last's repeats are."""
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        for request_id in ("t1", "t2", "t3"):
+            _pause(client, sid, request_id, "http://cdn.test/thumb.webp", resource_type="Image")
+            await _settle()
+        entries = _log(server)
+        assert [(e["reason"], e.get("repeated")) for e in entries] == [
+            ("body_unavailable", None),
+            ("body_unavailable", True),
+            ("body_unavailable", True),
+        ]
+        assert {e["record_id"] for e in entries} == {entries[0]["record_id"]}
+        assert {e["source_outcome"] for e in entries} == {"page_cancelled_before_response"}
+        await recorder.close()
+
+    async def test_a_repeat_that_is_served_is_exhausted_not_marked(
+        self, unavailable_run: Path, tmp_path: Path
+    ) -> None:
+        """Four pictures: three recorded, then the last available one served again."""
+        recorder, client, server, sid = await self._serve(
+            unavailable_run, tmp_path, "serve_identical"
+        )
+        await self._three_pictures(client, sid)
+        _pause(client, sid, "p4", PICTURE, resource_type="Image", headers=SAME_SITE)
+        await _settle()
+        assert _body(_sent(client, "p4")) == PICTURE_BYTES
+        last = _log(server)[-1]
+        assert last["kind"] == "exhausted" and "repeated" not in last
+        await recorder.close()
+
     async def test_a_hit_carries_no_outcome(self, unavailable_run: Path, tmp_path: Path) -> None:
         recorder, client, server, sid = await self._serve(
             unavailable_run, tmp_path, "serve_identical"

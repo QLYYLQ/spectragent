@@ -20,8 +20,8 @@ rest come out as one ``summary`` with ``count``, ``first_captured_at`` and
 Identical means every field but when it
 happened (``captured_at``, ``cycle``) and the candidates listed — the same
 decision (kind, reason, answer, status, request class, frame, ``diverged``,
-record — consumed and served — source outcome, the callback rewrite's
-parameter and recorded name) about the same
+record — consumed and served — source outcome, ``repeated``, the callback
+rewrite's parameter and recorded name) about the same
 request in the same frame — where the request is named by its canonical key
 (a cache-busted poll is one request asked again, and so is a JSONP poll
 asking a fresh callback name each time) or, without one (a WebSocket, an
@@ -142,6 +142,10 @@ class ReplayLogEntry(BaseModel):
     candidates: list[ReplayCandidate] = Field(default_factory=list)
     #: A main-frame document miss: the replay left the recording here.
     diverged: bool = False
+    #: A miss that repeats an exhausted sequence's last record (``repeat_last``) —
+    #: one without a servable body, or one that failed to serve — rather than the
+    #: first time that record was consumed. Written only when true.
+    repeated: bool | None = None
     # ── a summary ──
     #: The kind of the entries a ``summary`` folds, and how many it folds
     #: (beyond the ``log_repeat_limit`` written in full).
