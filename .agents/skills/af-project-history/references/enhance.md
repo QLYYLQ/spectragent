@@ -227,6 +227,27 @@ passed step 19 at screenshot distance 4 against threshold 5 although the content
   (stops the retry storm) and mark the step non-restorable. The unexplained self-pause
   in the headed run is investigated after media facts exist.
 
+## Pending — source captures of half-loaded pages
+
+Found 2026-10-20 (`tmp/jev_new_setup_eval_20261020/brief.md`): when the live source capture
+hits the settle cap, the source screenshot shows a half-loaded page (e.g. Bilibili coin
+balance 0, blank profile) while the replay, served from the archive, is fully loaded (687).
+Waiting cannot make a replay less loaded; reproducing the source state would need network
+timing replay, the kind of time control previously judged not worth shipping.
+
+User direction, 2026-10-20 (decide after the observation branch lands, when `capture_state`
+records capped settles):
+- When generating data, avoid decisions on half-loaded pages: the Agent sees the capped
+  settle and can call `wait` explicitly.
+- With definite evidence of an incomplete load, filter such steps (e.g. do not choose them
+  as branch checkpoints or export samples).
+- Post-process trajectories for training: drop explicit `wait` steps and rewrite the
+  preceding step's thought so the sample reads as a normal load.
+- The labelling convention for such pairs in Jev calibration data is decided then too.
+Boundaries to keep when designing it: recorded traces stay immutable; filtering and
+rewriting happen in derived data (step selection, export) with provenance of every removed
+step and rewritten thought; rewritten thoughts are marked synthetic.
+
 ## Fix — native scrollbar follows the host appearance
 
 Found 2026-10-20 (`tmp/bilibili_acc_info_20261020/delivery.json`, `distance_zero_check`):
