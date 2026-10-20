@@ -249,7 +249,7 @@ def replay_images_not_served_in_viewport(
     """Image requests the replay did not serve that an element in the viewport references.
 
     The first of the two sources of the review's in-viewport image fact
-    (§4.18); :func:`capture_state_failed_images` is the second.
+    (§4.18); :func:`capture_state_new_failures` is the second.
     Only the reviewed step's own collection counts, keeping decisions that
     happened no later than ``observed_at`` (a folded summary counts from its
     first event). Earlier collections are left out on purpose: a single-page
@@ -375,7 +375,9 @@ def capture_state_failed_images(fragment: object, *, negotiated: bool) -> dict[s
     own view: the browser counts the main document's ``<img>`` elements that
     meet the viewport, are visible, and finished loading with nothing to
     show, whatever the cause (a replay miss, a body that is not an image).
-    ``failed`` is true when it counted at least one.
+    ``failed`` is true when it counted at least one. The review fact reads
+    the replay step's reading against the source step's
+    (:func:`capture_state_new_failures`).
 
     ``measurable`` is false, with a reason, when the run did not negotiate
     the fragment, the step recorded none, the capture failed, or the fact is
@@ -405,4 +407,50 @@ def capture_state_failed_images(fragment: object, *, negotiated: bool) -> dict[s
         "failed_visible_images": failed.count,
         "identifiers": list(failed.identifiers),
         "not_covered": list(CAPTURE_STATE_IMAGES_NOT_COVERED),
+    }
+
+
+def capture_state_new_failures(replay: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """The replay step's failed visible images that are new against the source step (§4.18).
+
+    *replay* and *source* are :func:`capture_state_failed_images` readings of
+    the reviewed replay step and its source step. Only a failure the source
+    page did not already show counts: a replay identifier that appears among
+    the source step's identifiers was broken in the source too and is left
+    out. A replay failure the capture did not name (more failed than
+    :data:`~spectragent.schemas.observation.capture_state.MAX_RESOURCE_IDENTIFIERS`)
+    cannot be compared and counts as new.
+
+    When the source step has no usable reading (not negotiated, not recorded,
+    a failed capture, unknown or unavailable), every replay failure counts —
+    the conservative fallback — and ``baseline`` says so with the source's
+    reason. ``failed`` is the result; an unmeasurable replay reading is
+    returned unchanged, still unmeasurable.
+    """
+    if not replay["measurable"]:
+        return replay
+    count = replay["failed_visible_images"]
+    if not source["measurable"]:
+        return {
+            "measurable": True,
+            "baseline": "none",
+            "fallback_reason": f"the source step has no usable reading: {source['reason']}",
+            "new_failed_visible_images": count,
+            "failed": count > 0,
+            "replay": replay,
+        }
+    broken_in_source = set(source["identifiers"])
+    new_named = [name for name in replay["identifiers"] if name not in broken_in_source]
+    unnamed = count - len(replay["identifiers"])
+    new = len(new_named) + unnamed
+    return {
+        "measurable": True,
+        "baseline": "source_step",
+        "new_identifiers": new_named,
+        "unnamed_counted_as_new": unnamed,
+        "source_identifiers_complete": source["failed_visible_images"]
+        == len(source["identifiers"]),
+        "new_failed_visible_images": new,
+        "failed": new > 0,
+        "replay": replay,
     }

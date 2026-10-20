@@ -231,8 +231,22 @@ class ViewportImageReadings(BaseModel):
     )
     capture_state: bool | None = Field(
         description="The replay capture's capture_state counted a visible image in the viewport "
-        "that failed to load"
+        "that failed to load and was not already failing in the source step"
     )
+    capture_state_baseline: Literal["source_step", "none"] | None = Field(
+        description="What the capture_state reading was compared with: source_step (only replay "
+        "failures absent from the source step's failed images count); none (the source step "
+        "had no usable reading, so every replay failure counts); None when capture_state "
+        "could not measure"
+    )
+
+    @model_validator(mode="after")
+    def check_baseline(self) -> ViewportImageReadings:
+        if (self.capture_state is None) != (self.capture_state_baseline is None):
+            raise ValueError(
+                "capture_state_baseline is given exactly when capture_state was measured"
+            )
+        return self
 
     def combined(self) -> bool | None:
         """True when either source reads true, False when one measured and neither reads true,
@@ -253,8 +267,8 @@ class MachineFacts(BaseModel):
     task: TaskIdentity | None = Field(description="Source task identity; None when unrecorded")
     restoration_warning: bool = Field(description="The restoration check did not pass")
     viewport_image_not_served: bool | None = Field(
-        description="An image in the replay's viewport was not served or failed to load, by "
-        "either source; None when neither source could measure"
+        description="An image in the replay's viewport was not served, or failed to load where "
+        "the source step's did not, by either source; None when neither source could measure"
     )
     viewport_image_sources: ViewportImageReadings = Field(
         description="Each source's own reading; the sources that read the fact's value supplied it"

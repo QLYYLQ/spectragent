@@ -134,7 +134,11 @@ def facts(**changes) -> MachineFacts:
     }
     values.setdefault(
         "viewport_image_sources",
-        {"replay_log": values["viewport_image_not_served"], "capture_state": None},
+        {
+            "replay_log": values["viewport_image_not_served"],
+            "capture_state": None,
+            "capture_state_baseline": None,
+        },
     )
     return MachineFacts.model_validate(values)
 
@@ -245,7 +249,11 @@ def test_information_question_routes_and_recomputes(information, changes, route,
 )
 def test_the_viewport_image_fact_combines_its_two_sources(replay_log, capture_state, combined):
     """Either source true makes it true; both unmeasured leave it unmeasured."""
-    readings = ViewportImageReadings(replay_log=replay_log, capture_state=capture_state)
+    readings = ViewportImageReadings(
+        replay_log=replay_log,
+        capture_state=capture_state,
+        capture_state_baseline=None if capture_state is None else "source_step",
+    )
     assert readings.combined() is combined
     machine = facts(viewport_image_not_served=combined, viewport_image_sources=readings)
     stored = MachineFacts.model_validate_json(machine.model_dump_json())
@@ -271,7 +279,19 @@ def test_facts_refuse_an_image_fact_that_does_not_combine_its_sources(
     with pytest.raises(ValidationError, match="must combine its sources"):
         facts(
             viewport_image_not_served=fact,
-            viewport_image_sources={"replay_log": replay_log, "capture_state": capture_state},
+            viewport_image_sources={
+                "replay_log": replay_log,
+                "capture_state": capture_state,
+                "capture_state_baseline": None if capture_state is None else "source_step",
+            },
+        )
+
+
+@pytest.mark.parametrize(("capture_state", "baseline"), [(None, "none"), (True, None)])
+def test_readings_refuse_a_baseline_without_a_capture_state_reading(capture_state, baseline):
+    with pytest.raises(ValidationError, match="capture_state_baseline"):
+        ViewportImageReadings(
+            replay_log=None, capture_state=capture_state, capture_state_baseline=baseline
         )
 
 
@@ -890,7 +910,7 @@ async def test_committed_alignment_and_configured_dom_recipe(tmp_path):
     # This replay did not bind the replay log: unknown is not "no missing image".
     assert prepared.facts.viewport_image_not_served is None
     assert prepared.facts.viewport_image_sources == ViewportImageReadings(
-        replay_log=None, capture_state=None
+        replay_log=None, capture_state=None, capture_state_baseline=None
     )
     viewport_images = prepared.machine_evidence["viewport_images"]
     assert viewport_images["replay_log"]["measurable"] is False
@@ -950,16 +970,17 @@ IMAGE_MISS_OFF_PAGE = {
 }
 
 
-def failed_images(count: int) -> FailedVisibleResources:
-    names = tuple(f"image-{index}.webp" for index in range(min(count, 2)))
+def failed_images(count: int, *names: str) -> FailedVisibleResources:
+    """*count* failed visible images, named *names* or ``image-<n>.webp`` for the first two."""
+    names = names or tuple(f"image-{index}.webp" for index in range(min(count, 2)))
     return FailedVisibleResources(status="measured", count=count, identifiers=names)
 
 
 @pytest.mark.parametrize(
     ("replay_log", "captured", "readings", "route"),
     [
-        # Without a replay log, the capture's own failed image decides.
-        (None, failed_images(1), (None, True), "investigate_difference"),
+        # Without a replay log, a failure the source step did not show decides.
+        (None, failed_images(1, "eggs.webp"), (None, True), "investigate_difference"),
         (None, failed_images(0), (None, False), "candidate_acceptable"),
         # The sources disagree: either true makes the fact true.
         ([IMAGE_MISS_OFF_PAGE], failed_images(2), (False, True), "investigate_difference"),
@@ -988,7 +1009,11 @@ async def test_capture_state_failed_images_are_the_second_source_of_the_image_fa
         source_capture_state=failed_images(1),
     )
     prepared = await prepare_case(pair, make_reviewer())
-    expected = ViewportImageReadings(replay_log=readings[0], capture_state=readings[1])
+    expected = ViewportImageReadings(
+        replay_log=readings[0],
+        capture_state=readings[1],
+        capture_state_baseline=None if readings[1] is None else "source_step",
+    )
     assert prepared.facts.viewport_image_sources == expected
     assert prepared.facts.viewport_image_not_served is expected.combined()
     assert route_result(result(0.9), settings(), prepared.facts).route == route
@@ -997,16 +1022,83 @@ async def test_capture_state_failed_images_are_the_second_source_of_the_image_fa
     reading = evidence["capture_state"]
     assert reading["measurable"] is (captured.status == "measured")
     if captured.status == "measured":
-        assert reading["failed_visible_images"] == captured.count
-        assert reading["identifiers"] == list(captured.identifiers)
-        assert reading["not_covered"] == [
+        assert reading["baseline"] == "source_step"
+        replay = reading["replay"]
+        assert replay["failed_visible_images"] == captured.count
+        assert replay["identifiers"] == list(captured.identifiers)
+        assert replay["not_covered"] == [
             "CSS background images",
             "images inside subframe documents",
         ]
     else:
         assert reading["reason"].startswith(f"failed visible images are {captured.status}")
-    # The source's own reading is kept for comparison and never enters the fact.
+    # The source's own reading is kept beside it as the baseline.
     assert evidence["source_capture_state"]["failed_visible_images"] == 1
+
+
+async def test_an_image_already_broken_in_the_source_is_not_counted(tmp_path):
+    """The same image failed in the source step's capture: the replay did not lose it."""
+    pair = await _recorded_pair(
+        tmp_path,
+        capture_state=failed_images(1, "eggs.webp"),
+        source_capture_state=failed_images(1, "eggs.webp"),
+    )
+    prepared = await prepare_case(pair, make_reviewer())
+    assert prepared.facts.viewport_image_sources == ViewportImageReadings(
+        replay_log=None, capture_state=False, capture_state_baseline="source_step"
+    )
+    assert prepared.facts.viewport_image_not_served is False
+    assert route_result(result(0.9), settings(), prepared.facts).route == "candidate_acceptable"
+    reading = prepared.machine_evidence["viewport_images"]["capture_state"]
+    assert (reading["new_failed_visible_images"], reading["new_identifiers"]) == (0, [])
+
+
+async def test_an_image_broken_only_in_the_replay_is_counted(tmp_path):
+    pair = await _recorded_pair(
+        tmp_path,
+        capture_state=failed_images(2, "logo.png", "eggs.webp"),
+        source_capture_state=failed_images(1, "logo.png"),
+    )
+    prepared = await prepare_case(pair, make_reviewer())
+    assert prepared.facts.viewport_image_sources == ViewportImageReadings(
+        replay_log=None, capture_state=True, capture_state_baseline="source_step"
+    )
+    assert route_result(result(0.9), settings(), prepared.facts).route == "investigate_difference"
+    reading = prepared.machine_evidence["viewport_images"]["capture_state"]
+    assert (reading["new_failed_visible_images"], reading["new_identifiers"]) == (1, ["eggs.webp"])
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        (None, "the run did not negotiate capture_state"),
+        (
+            FailedVisibleResources(status="unknown", detail="no answer"),
+            "failed visible images are unknown: no answer",
+        ),
+    ],
+)
+async def test_without_a_usable_source_reading_every_replay_failure_counts(
+    tmp_path, source, reason
+):
+    """The conservative fallback: the source cannot excuse anything, and that is recorded."""
+    pair = await _recorded_pair(
+        tmp_path, capture_state=failed_images(1, "eggs.webp"), source_capture_state=source
+    )
+    prepared = await prepare_case(pair, make_reviewer())
+    assert prepared.facts.viewport_image_sources == ViewportImageReadings(
+        replay_log=None, capture_state=True, capture_state_baseline="none"
+    )
+    assert route_result(result(0.9), settings(), prepared.facts).route == "investigate_difference"
+    reading = prepared.machine_evidence["viewport_images"]["capture_state"]
+    assert reading["fallback_reason"] == f"the source step has no usable reading: {reason}"
+    stored = ReviewAssessment.model_validate_json(
+        route_result(result(0.9), settings(), prepared.facts).model_dump_json(
+            exclude={"request", "result"}
+        )
+    )
+    assert stored.facts is not None
+    assert stored.facts.viewport_image_sources.capture_state_baseline == "none"
 
 
 async def test_missing_scope_corruption_and_source_are_distinct(tmp_path):

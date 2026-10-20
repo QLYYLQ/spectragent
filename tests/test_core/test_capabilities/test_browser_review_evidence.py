@@ -7,7 +7,10 @@ rare strings, layout bounds and scroll offsets in device pixels) and that
 step's replay log. The rule reads both only through the committed reader.
 
 The capture-state reading takes the step's recorded ``browser.capture_state``
-fragment (or its absence) and says whether it measured a failed visible image.
+fragment (or its absence) and says whether it measured a failed visible image;
+the review compares the replay step's reading with the source step's and counts
+only failures new in the replay, every replay failure when the source has no
+usable reading.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from spectragent.core.capabilities.browser.review_evidence import (
     VIEWPORT_IMAGE_RULE_NOT_COVERED,
     BrowserEvidenceUnavailable,
     capture_state_failed_images,
+    capture_state_new_failures,
     replay_images_not_served_in_viewport,
 )
 from spectragent.core.trace.models import TraceConfig, TraceNegotiation
@@ -383,3 +387,71 @@ def test_capture_state_unknown_is_never_zero(fragment, negotiated, reason):
 def test_capture_state_of_another_fragment_type_is_corrupt():
     with pytest.raises(TypeError, match="browser.capture_state"):
         capture_state_failed_images(DOMObs(), negotiated=True)
+
+
+def reading(count: int, *identifiers: str) -> dict:
+    """A measured capture_state reading of *count* failed images naming *identifiers*."""
+    return capture_state_failed_images(
+        captured(FailedVisibleResources(status="measured", count=count, identifiers=identifiers)),
+        negotiated=True,
+    )
+
+
+UNUSABLE = capture_state_failed_images(None, negotiated=False)
+
+
+def test_an_image_already_broken_in_the_source_is_not_a_new_failure():
+    new = capture_state_new_failures(reading(1, "eggs.webp"), reading(1, "eggs.webp"))
+    assert new["baseline"] == "source_step"
+    assert (new["failed"], new["new_failed_visible_images"], new["new_identifiers"]) == (
+        False,
+        0,
+        [],
+    )
+    assert new["replay"] == reading(1, "eggs.webp"), "the replay's own reading is kept whole"
+
+
+def test_an_image_broken_only_in_the_replay_is_a_new_failure():
+    new = capture_state_new_failures(reading(2, "logo.png", "eggs.webp"), reading(1, "logo.png"))
+    assert new["baseline"] == "source_step"
+    assert (new["failed"], new["new_failed_visible_images"], new["new_identifiers"]) == (
+        True,
+        1,
+        ["eggs.webp"],
+    )
+    clean_source = capture_state_new_failures(reading(1, "eggs.webp"), reading(0))
+    assert clean_source["failed"] is True and clean_source["new_identifiers"] == ["eggs.webp"]
+
+
+def test_replay_failures_the_capture_did_not_name_count_as_new():
+    """Past the identifier cap a failure has no name to compare, so it counts."""
+    new = capture_state_new_failures(reading(10, "a.png", "b.png"), reading(10, "a.png", "b.png"))
+    assert (new["new_identifiers"], new["unnamed_counted_as_new"]) == ([], 8)
+    assert new["failed"] is True and new["source_identifiers_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        UNUSABLE,
+        capture_state_failed_images(None, negotiated=True),
+        capture_state_failed_images(
+            captured(FailedVisibleResources(status="unknown", detail="no answer")), negotiated=True
+        ),
+        capture_state_failed_images(
+            captured(FailedVisibleResources(status="unavailable")), negotiated=True
+        ),
+    ],
+)
+def test_without_a_usable_source_reading_every_replay_failure_counts(source):
+    new = capture_state_new_failures(reading(1, "eggs.webp"), source)
+    assert new["baseline"] == "none"
+    assert new["fallback_reason"] == f"the source step has no usable reading: {source['reason']}"
+    assert (new["failed"], new["new_failed_visible_images"]) == (True, 1)
+    nothing = capture_state_new_failures(reading(0), source)
+    assert nothing["baseline"] == "none" and nothing["failed"] is False
+
+
+def test_an_unmeasurable_replay_reading_stays_unmeasurable():
+    replay = capture_state_failed_images(None, negotiated=True)
+    assert capture_state_new_failures(replay, reading(1, "eggs.webp")) == replay

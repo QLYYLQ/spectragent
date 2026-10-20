@@ -144,6 +144,10 @@ failed visible images are the second source of the in-viewport missing-image fac
 the replay-log + DOM rule. Either source true makes the fact true; both unmeasurable leave it
 unmeasurable; the facts keep each source's reading (`viewport_image_sources`) and the
 evidence keeps the source step's own reading for comparison. Thresholds and gates unchanged.
+User decision, 2026-10-20 (review pass): the capture_state source counts only failures new in
+the replay — a replay failed image whose identifier is not among the source step's failed
+images; with no usable source reading it counts every replay failure (conservative) and
+records the fallback (`capture_state_baseline: none`).
 
 ## Fix — keyboard argument validation
 

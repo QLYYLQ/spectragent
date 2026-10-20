@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.review_evidence import (
     BrowserEvidenceUnavailable,
     BrowserEvidenceUnsupported,
     capture_state_failed_images,
+    capture_state_new_failures,
     clean_recorded_dom,
     recorded_replay_facts,
     replay_images_not_served_in_viewport,
@@ -261,8 +262,12 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
                 loader_id=restored.scope.get("loader_id"),
                 observed_at=observed_at,
             )
-            captured = _capture_state_images(replay, pair.replay_step)
             source_captured = _capture_state_images(source, pair.source_step)
+            # Only failures the source page did not already show count; without a
+            # usable source reading, every replay failure does (recorded as such).
+            captured = capture_state_new_failures(
+                _capture_state_images(replay, pair.replay_step), source_captured
+            )
         except BrowserEvidenceUnavailable as exc:
             raise ReviewEvidenceError("missing_evidence", str(exc)) from exc
         except (ValueError, KeyError, TypeError, OSError) as exc:
@@ -272,6 +277,7 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
         readings = ViewportImageReadings(
             replay_log=images["in_viewport"] > 0 if images["measurable"] else None,
             capture_state=captured["failed"] if captured["measurable"] else None,
+            capture_state_baseline=captured["baseline"] if captured["measurable"] else None,
         )
         config = source.config
         facts = MachineFacts(
@@ -304,8 +310,8 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
                         else "replay_dom_capture",
                     },
                     "capture_state": captured,
-                    # For comparison only: an image already broken in the
-                    # source fails in the replay's capture too.
+                    # The baseline of the reading above: an image already
+                    # broken in the source fails in the replay's capture too.
                     "source_capture_state": source_captured,
                 },
                 "restoration": current.restoration.model_dump(mode="json"),
