@@ -7,7 +7,7 @@ import hashlib
 import io
 from pathlib import Path
 from typing import Any
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urlsplit
 
 import yaml
 from PIL import Image
@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.review_evidence import (
     BrowserEvidenceUnsupported,
     clean_recorded_dom,
     recorded_replay_facts,
+    replay_images_not_served_in_viewport,
 )
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.decision import DecisionImage, ImageProvenance
@@ -27,10 +28,12 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.replay_review.base import BaseReplayReviewer
 from spectragent.replay_review.models import (
     EvidenceRef,
+    MachineFacts,
     ReviewCase,
     ReviewEvidenceError,
     ReviewObservation,
     ReviewPair,
+    TaskIdentity,
 )
 
 
@@ -233,12 +236,35 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
                 )
         reference, source_ref = await _observation(source, pair.source_step, cap, reviewer)
         restored, replay_ref = await _observation(replay, pair.replay_step, cap, reviewer)
+        observed_at = restored.scope.get("screenshot_captured_at") or restored.captured_at
         try:
             replay_facts = recorded_replay_facts(replay, pair.replay_step)
+            images = replay_images_not_served_in_viewport(
+                replay,
+                pair.replay_step,
+                replay_log_recorded=replay.config.negotiation is not None
+                and "browser.replay_log" in replay.config.negotiation.active_archivers,
+                url=restored.url,
+                loader_id=restored.scope.get("loader_id"),
+                observed_at=observed_at,
+            )
+        except BrowserEvidenceUnavailable as exc:
+            raise ReviewEvidenceError("missing_evidence", str(exc)) from exc
         except (ValueError, KeyError, TypeError, OSError) as exc:
             raise ReviewEvidenceError(
                 "corrupt_evidence", f"Cannot read recorded replay facts: {exc}"
             ) from exc
+        config = source.config
+        facts = MachineFacts(
+            site_host=urlsplit(reference.url).hostname,
+            task=TaskIdentity(
+                benchmark=config.benchmark, subset=config.subset, task_id=config.task_id
+            )
+            if config.task_id
+            else None,
+            restoration_warning=current.restoration.verdict != "ok",
+            viewport_image_not_served=images["in_viewport"] > 0 if images["measurable"] else None,
+        )
         return ReviewCase(
             task=source.config.task,
             next_actions=original.actions,
@@ -246,9 +272,16 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
             replay=restored,
             source_ref=source_ref,
             replay_ref=replay_ref,
+            facts=facts,
             visual_required=pair.visual_required,
             machine_evidence={
                 "replay": replay_facts,
+                "viewport_images": {
+                    **images,
+                    "observed_at_source": "replay_screenshot"
+                    if restored.scope.get("screenshot_captured_at") is not None
+                    else "replay_dom_capture",
+                },
                 "restoration": current.restoration.model_dump(mode="json"),
                 "source_dom_recipe": {key: configured.get(key) for key in recipe_keys},
                 "source_origin": original.origin,

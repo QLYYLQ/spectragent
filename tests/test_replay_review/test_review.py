@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -38,11 +39,17 @@ from spectragent.replay_review.evidence import prepare_case
 from spectragent.replay_review.jev import JevReplayReviewer, route_result
 from spectragent.replay_review.models import (
     EvidenceRef,
+    MachineFacts,
+    ReviewAssessment,
     ReviewCase,
     ReviewEvidenceError,
+    ReviewEvidenceOptions,
     ReviewObservation,
     ReviewPair,
     ReviewPolicy,
+    ReviewQuestionSet,
+    ReviewSettings,
+    TaskIdentity,
 )
 from spectragent.replay_review.runner import ReplayReviewRunner, ReviewCallRecorder
 from spectragent.replay_review.storage import ReviewItem, ReviewStore, json_file
@@ -51,29 +58,60 @@ from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.browser_archive import archiving_capability
 from tests._helpers.dom_payloads import reference_page
-from tests._helpers.trace_builder import agent_result, new_wal, step_record
+from tests._helpers.trace_builder import agent_result, archive_file, new_wal, step_record
 from tests.test_core.test_llm.test_decision_provider import image_asset, request_dict, response_dict
 
+SHIPPED_DMX = Path("configs/replay_review/jev_dmx.yaml")
+QUESTION_IDS = ("targets_equivalent", "information_equivalent", "evidence_sufficient")
 
-def result(choice="acceptable", confidence=0.97, equivalent=0.95):
+
+def reviewer_block() -> dict:
+    """The shipped reviewer's questions, policy and evidence options, without its model."""
+    block = yaml.safe_load(SHIPPED_DMX.read_text())["replay_reviewer"][0]
+    return {key: value for key, value in block.items() if key != "decision_model"}
+
+
+def make_reviewer(**changes) -> JevReplayReviewer:
+    block = {**reviewer_block(), **changes}
+    return JevReplayReviewer(
+        questions=ReviewQuestionSet.model_validate(block["questions"]),
+        policy=ReviewPolicy.model_validate(block["policy"]),
+        evidence=ReviewEvidenceOptions.model_validate(block["evidence"]),
+    )
+
+
+def settings(policy: dict | None = None) -> ReviewSettings:
+    block = reviewer_block()
+    return ReviewSettings.of(
+        ReviewQuestionSet.model_validate(block["questions"]),
+        ReviewPolicy.model_validate(policy or block["policy"]),
+        ReviewEvidenceOptions.model_validate(block["evidence"]),
+    )
+
+
+def result(information=0.9, targets=0.8, sufficient=0.3):
     return DecisionResult.model_validate(
         {
             "requested_model": "jev-1.14.0",
             "model": "jev-1.14.0",
             "answers": {
-                "verdict": {
-                    "type": "choice",
-                    "choice": choice,
-                    "confidence": confidence,
-                    "probabilities": {
-                        key: 0.98 if key == choice else 0.01
-                        for key in ("acceptable", "material_difference", "insufficient_evidence")
-                    },
-                },
-                "task_equivalent": {"type": "noul", "noul": equivalent},
+                "targets_equivalent": {"type": "noul", "noul": targets},
+                "information_equivalent": {"type": "noul", "noul": information},
+                "evidence_sufficient": {"type": "noul", "noul": sufficient},
             },
         }
     )
+
+
+def facts(**changes) -> MachineFacts:
+    values = {
+        "site_host": "www.example.test",
+        "task": TaskIdentity(benchmark="bench", subset="L1", task_id="7"),
+        "restoration_warning": False,
+        "viewport_image_not_served": False,
+        **changes,
+    }
+    return MachineFacts.model_validate(values)
 
 
 def case():
@@ -85,41 +123,239 @@ def case():
     )
     return ReviewCase(
         task="Read the results",
-        next_actions=[Action(name="browser.done")],
+        next_actions=[Action(name="browser.done", params={"extracted_content": "four eggs"})],
         reference=obs,
         replay=obs.model_copy(deep=True),
         source_ref=ref,
         replay_ref=ref.model_copy(update={"run_id": "replay"}),
+        facts=facts(),
     )
+
+
+def fit(dataset: str = "override fixture") -> dict:
+    return {
+        "dataset": dataset,
+        "dataset_sha256": "c" * 64,
+        "fitted_on": "2026-10-21",
+        "policy_version": "replay-triage-2",
+    }
 
 
 @pytest.mark.parametrize(
-    ("choice", "confidence", "equivalent", "route", "reason"),
+    ("information", "changes", "route", "reasons"),
     [
-        ("acceptable", 0.97, 0.95, "candidate_acceptable", None),
-        ("material_difference", 0.98, 0.02, "investigate_difference", None),
-        ("acceptable", 0.6, 0.95, "further_review", "low_choice_confidence"),
-        ("acceptable", 0.97, 0.2, "further_review", "question_disagreement"),
-        ("material_difference", 0.98, 0.8, "further_review", "question_disagreement"),
-        ("acceptable", 0.97, 0.6, "further_review", "equivalence_not_established"),
-        ("insufficient_evidence", 1.0, 0.1, "further_review", "insufficient_evidence"),
+        (0.9, {}, "candidate_acceptable", []),
+        (0.45, {}, "candidate_acceptable", []),
+        (0.449, {}, "further_review", ["information_between_thresholds"]),
+        (0.26, {}, "further_review", ["information_between_thresholds"]),
+        (0.25, {}, "investigate_difference", ["information_at_or_below_investigate_max"]),
+        (0.02, {}, "investigate_difference", ["information_at_or_below_investigate_max"]),
+        # The deterministic image gate comes before the thresholds.
+        (
+            0.97,
+            {"viewport_image_not_served": True},
+            "investigate_difference",
+            ["viewport_image_not_served"],
+        ),
+        (
+            0.1,
+            {"viewport_image_not_served": True},
+            "investigate_difference",
+            ["viewport_image_not_served", "information_at_or_below_investigate_max"],
+        ),
+        # A warning or an unmeasured image fact only blocks acceptance.
+        (0.9, {"restoration_warning": True}, "further_review", ["restoration_warning"]),
+        (
+            0.2,
+            {"restoration_warning": True},
+            "investigate_difference",
+            ["information_at_or_below_investigate_max"],
+        ),
+        (
+            0.9,
+            {"viewport_image_not_served": None},
+            "further_review",
+            ["viewport_images_not_measurable"],
+        ),
+        (
+            0.9,
+            {"restoration_warning": True, "viewport_image_not_served": None},
+            "further_review",
+            ["restoration_warning", "viewport_images_not_measurable"],
+        ),
     ],
 )
-def test_policy_routes_distinct_facts_and_recomputes(choice, confidence, equivalent, route, reason):
-    raw = result(choice, confidence, equivalent)
-    policy = ReviewPolicy()
-    assessment = route_result(raw, policy)
-    assert assessment.route == route and assessment.status == "assessed"
-    assert assessment.verdict == choice
-    if reason:
-        assert reason in assessment.reasons
-    assert (
-        route_result(
-            DecisionResult.model_validate_json(raw.model_dump_json()),
-            ReviewPolicy.model_validate_json(policy.model_dump_json()),
-        )
-        == assessment
+def test_information_question_routes_and_recomputes(information, changes, route, reasons):
+    raw = result(information=information, targets=0.05, sufficient=0.05)
+    recorded = settings()
+    machine = facts(**changes)
+    assessment = route_result(raw, recorded, machine)
+    assert assessment.status == "assessed" and assessment.route == route
+    assert assessment.reasons == reasons and assessment.information == information
+    assert assessment.thresholds is not None and assessment.thresholds.scope == "default"
+    assert assessment.thresholds.fit.policy_version == "replay-triage-2"
+    # Only the information question routes; the recorded questions change nothing.
+    assert route_result(result(information, 0.99, 0.99), recorded, machine).route == route
+    stored = ReviewAssessment.model_validate_json(
+        assessment.model_dump_json(exclude={"request", "result"})
     )
+    assert stored.settings is not None and stored.facts is not None
+    assert route_result(raw, stored.settings, stored.facts) == assessment
+
+
+def test_overrides_by_host_and_task_record_their_fit():
+    policy = reviewer_block()["policy"]
+    policy["overrides"] = [
+        {
+            "scope": "host",
+            "host": "www.example.test",
+            "accept_information_min": 0.8,
+            "investigate_information_max": 0.1,
+            "fit": fit("site pairs"),
+        },
+        {
+            "scope": "task",
+            "benchmark": "bench",
+            "subset": "L1",
+            "task_id": "7",
+            "accept_information_min": 0.6,
+            "investigate_information_max": 0.3,
+            "fit": fit("task pairs"),
+        },
+    ]
+    recorded = settings(policy)
+    other_task = TaskIdentity(benchmark="bench", subset="L1", task_id="8")
+    by_host = route_result(result(0.7), recorded, facts(task=other_task))
+    assert by_host.thresholds is not None and by_host.thresholds.scope == "host"
+    assert by_host.thresholds.host == "www.example.test"
+    assert by_host.thresholds.fit.dataset == "site pairs"
+    assert by_host.route == "further_review"  # 0.7 would pass the default 0.45
+    by_task = route_result(result(0.7), recorded, facts())
+    assert by_task.thresholds is not None and by_task.thresholds.scope == "task"
+    assert by_task.thresholds.task == TaskIdentity(benchmark="bench", subset="L1", task_id="7")
+    assert by_task.thresholds.fit.dataset == "task pairs"
+    assert by_task.route == "candidate_acceptable"
+    assert route_result(result(0.28), recorded, facts()).route == "investigate_difference"
+    default = route_result(result(0.7), recorded, facts(site_host="other.test", task=None))
+    assert default.thresholds is not None and default.thresholds.scope == "default"
+    assert default.route == "candidate_acceptable"
+    persisted = json.loads(by_task.model_dump_json())
+    assert persisted["thresholds"]["fit"] == {**fit("task pairs")}
+    assert persisted["settings"]["policy"]["overrides"][1]["task_id"] == "7"
+    # Every override changes the recorded policy digest.
+    assert recorded.policy_sha256 != settings().policy_sha256
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.update(version="replay-triage-1"),
+        lambda p: p.pop("overrides"),
+        lambda p: p.pop("information_question"),
+        lambda p: p["thresholds"].pop("fit"),
+        lambda p: p["thresholds"]["fit"].pop("dataset_sha256"),
+        lambda p: p["thresholds"].update(investigate_information_max=0.45),
+        lambda p: p["thresholds"].update(accept_information_min=1.2),
+        lambda p: p.update(
+            overrides=[
+                {"scope": "host", "host": h, **thresholds, "fit": fit()}
+                for h in ("a.test", "a.test")
+                for thresholds in [
+                    {"accept_information_min": 0.5, "investigate_information_max": 0.2}
+                ]
+            ]
+        ),
+        lambda p: p.update(
+            overrides=[
+                {
+                    "scope": "host",
+                    "host": "https://A.test",
+                    "accept_information_min": 0.5,
+                    "investigate_information_max": 0.2,
+                    "fit": fit(),
+                }
+            ]
+        ),
+    ],
+)
+def test_policy_shape_is_refused_when_incomplete_or_inconsistent(mutate):
+    policy = reviewer_block()["policy"]
+    mutate(policy)
+    with pytest.raises(ValidationError):
+        ReviewPolicy.model_validate(policy)
+
+
+@pytest.mark.parametrize("field", ["questions", "policy", "evidence"])
+def test_required_yaml_fields_have_no_code_defaults(field):
+    composer = ConfigComposer(registrars=collect_registrars())
+    root = yaml.safe_load(SHIPPED_DMX.read_text())
+    del root["replay_reviewer"][0][field]
+    with pytest.raises(ValidationError, match=field):
+        composer.compose(root)
+    block = reviewer_block()
+    typed = {
+        "questions": ReviewQuestionSet.model_validate(block["questions"]),
+        "policy": ReviewPolicy.model_validate(block["policy"]),
+        "evidence": ReviewEvidenceOptions.model_validate(block["evidence"]),
+    }
+    del typed[field]
+    with pytest.raises(TypeError, match=f"missing 1 required .*'{field}'"):
+        JevReplayReviewer(**typed)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("question", "message"),
+    [("missing_question", "information_question"), ("verdict", "information_question")],
+)
+def test_routing_question_must_be_a_configured_noul(question, message):
+    composer = ConfigComposer(registrars=collect_registrars())
+    root = yaml.safe_load(SHIPPED_DMX.read_text())
+    block = root["replay_reviewer"][0]
+    block["questions"]["items"]["verdict"] = {
+        "type": "choice",
+        "instructions": "Pick one",
+        "criteria": {"same": "Same", "different": "Different"},
+    }
+    block["policy"]["information_question"] = question
+    with pytest.raises(Exception, match=message):
+        composer.compose(root)
+
+
+def test_old_question_and_policy_versions_are_gone():
+    for root in (Path("spectragent"), Path("configs")):
+        for path in root.rglob("*"):
+            if path.suffix in {".py", ".yaml", ".json"} and "generated" not in path.parts:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                assert "replay-relevance-1" not in text and "replay-triage-1" not in text, path
+
+
+def test_request_asks_three_independent_noul_questions_and_withholds_done_answers():
+    subject = case()
+    subject.machine_evidence["restoration"] = {
+        "actions": [
+            {
+                "recorded": {"name": "browser.done", "params": {"extracted_content": "four eggs"}},
+                "executed": {"name": "browser.done", "params": {"extracted_content": "four eggs"}},
+                "result": {"success": True, "is_done": True, "extracted_content": "four eggs"},
+            }
+        ]
+    }
+    withheld = make_reviewer().build_request(subject)
+    assert tuple(withheld.questions) == QUESTION_IDS
+    assert {q.type for q in withheld.questions.values()} == {"noul"}
+    state = json.dumps(withheld.state, ensure_ascii=False)
+    assert "four eggs" not in state and "browser.done" in state
+    assert '"is_done": true' in state
+    kept = make_reviewer(evidence={"done_answer": "keep"}).build_request(subject)
+    assert json.dumps(kept.state, ensure_ascii=False).count("four eggs") == 4
+    assert kept.questions == withheld.questions
+    # Withholding works on a copy; the case keeps the source answer.
+    assert subject.next_actions[0].params["extracted_content"] == "four eggs"
+    shipped = yaml.safe_load(SHIPPED_DMX.read_text())["replay_reviewer"][0]
+    assert shipped["evidence"] == {"done_answer": "withhold"}
+    assert withheld.logical_dump()["questions"] == {
+        key: {**value, "type": "noul"} for key, value in shipped["questions"]["items"].items()
+    }
 
 
 @pytest.mark.parametrize("path", sorted(Path("configs/replay_review").glob("*.yaml")))
@@ -151,8 +387,9 @@ def test_top_level_adoption_is_per_axis_and_missing_receptor_is_refused():
                 "timeout": 17,
             }
         ],
-        "replay_reviewer": [{"reviewer_id": "jev", "policy": {"confidence_min": 0.93}}],
+        "replay_reviewer": [{"reviewer_id": "jev", **reviewer_block()}],
     }
+    root["replay_reviewer"][0]["policy"]["thresholds"]["accept_information_min"] = 0.93
     # A required single receptor must be inline, even when a top-level
     # instance exists. Collection receptors adopt only their own axis.
     with pytest.raises(ValidationError, match="decision_model"):
@@ -162,14 +399,15 @@ def test_top_level_adoption_is_per_axis_and_missing_receptor_is_refused():
     reviewer = run.single("replay_reviewer")
     assert reviewer.decision_model is run.single("decision_model")
     assert reviewer.decision_model is not run.single("llm")
-    assert reviewer.decision_model.timeout == 17 and reviewer.policy.confidence_min == 0.93
+    assert reviewer.decision_model.timeout == 17
+    assert reviewer.policy.thresholds.accept_information_min == 0.93
     del root["replay_reviewer"][0]["decision_model"]
     with pytest.raises(Exception, match="decision_model"):
         composer.compose(root)
 
 
 async def test_direct_python_protocol_check_and_missing_visuals():
-    reviewer = JevReplayReviewer()
+    reviewer = make_reviewer()
     reviewer.decision_model = ChatOpenAI(model="chat")  # type: ignore[assignment]
     with pytest.raises(TypeError, match="decision"):
         await reviewer.review(case())
@@ -182,7 +420,7 @@ async def test_direct_python_protocol_check_and_missing_visuals():
 
 
 def test_task_and_next_action_are_inputs_and_labels_have_no_slot():
-    reviewer = JevReplayReviewer()
+    reviewer = make_reviewer()
     first = case()
     second = case()
     second.task = "Select the first search-history suggestion"
@@ -205,7 +443,7 @@ async def test_job_roundtrip_owns_calls_and_viewer_report(tmp_path, monkeypatch)
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=wire))
     ) as client:
-        reviewer = JevReplayReviewer()
+        reviewer = make_reviewer()
         model = TypeSafeDirect(api_key="private-test-key", http_client=client)
         reviewer.decision_model = model
         pair = ReviewPair(
@@ -226,6 +464,25 @@ async def test_job_roundtrip_owns_calls_and_viewer_report(tmp_path, monkeypatch)
         assert call.kind == "decision" and call.owner == "replay_review" and call.step is None
         assert call.owner_id == report["job_id"] and call.purpose == "replay_review"
         assert reviewer.decision_model is model and not client.is_closed
+        snapshot = store.read_json("config.json")
+        assert snapshot["questions"] == reviewer.questions.content()
+        recorded = snapshot["settings"]
+        assert recorded["questions"] == {
+            "version": "replay-relevance-2",
+            "sha256": reviewer.questions.sha256(),
+        }
+        assert recorded["policy_sha256"] == reviewer.policy.sha256()
+        assert recorded["evidence"] == {"done_answer": "withhold"}
+        assert recorded["evidence_sha256"] == reviewer.evidence.sha256()
+        assert "question_version" not in snapshot
+        item = store.read_json(manifest.items[0].assessment)
+        assert item["settings"] == recorded and item["route"] == "candidate_acceptable"
+        assert item["information"] == 0.9 and item["thresholds"]["scope"] == "default"
+        assert item["facts"] == facts().model_dump(mode="json")
+        call_answers = call.model_dump(mode="json")["result"]["answers"]
+        assert set(call_answers) == set(QUESTION_IDS)
+        assert report["summary"]["routes"] == {"candidate_acceptable": 2}
+        assert report["summary"]["threshold_scopes"] == {"default": 2}
         repo = open_repository(tmp_path)
         listed = repo.reports()
         assert len(listed) == 1 and listed[0]["kind"] == "replay_review"
@@ -310,7 +567,7 @@ def test_commit_index_ignores_orphans_and_refuses_escape_and_tampering(tmp_path)
         store.path("../secret")
     store.commit_item(
         ReviewItem(index=0, status="assessed", assessment="items/0.json"),
-        [json_file("items/0.json", {"verdict": "acceptable"})],
+        [json_file("items/0.json", {"route": "candidate_acceptable"})],
         [],
     )
     store.path("items/0.json").write_text("{}")
@@ -318,7 +575,7 @@ def test_commit_index_ignores_orphans_and_refuses_escape_and_tampering(tmp_path)
         store.read("items/0.json")
 
 
-async def _recorded_pair(tmp_path):
+async def _recorded_pair(tmp_path, replay_log: list[dict] | None = None):
     cap, driver = archiving_capability(archivers=(DomRawArchiver(),))
     await driver.start()
     try:
@@ -350,7 +607,14 @@ async def _recorded_pair(tmp_path):
                 agent_id="browser_use",
                 loop_id="react",
                 resolved=redact_config(composed.top_level_cfg),
-                negotiation=TraceNegotiation(active_archivers=["browser.dom_raw"]),
+                negotiation=TraceNegotiation(
+                    active_archivers=["browser.dom_raw"]
+                    + (
+                        ["browser.replay_log"]
+                        if name == "replay" and replay_log is not None
+                        else []
+                    )
+                ),
                 branch=provenance if name == "replay" else None,
             )
         )
@@ -370,11 +634,21 @@ async def _recorded_pair(tmp_path):
             origin="restored" if name == "replay" else "policy",
             restoration=RestorationCheck(step=0, verdict="ok") if name == "replay" else None,
         )
+        extra = [encode_archive_file(raw, step=0)]
+        if name == "replay" and replay_log:
+            extra.append(
+                archive_file(
+                    "browser.replay_log",
+                    "replay.jsonl",
+                    "\n".join(json.dumps(entry) for entry in replay_log).encode(),
+                    step=0,
+                )
+            )
         wal.commit_step(
             0,
             record,
             fragments=[f for f in fragments if f is not None],
-            extra_files=[encode_archive_file(raw, step=0)],
+            extra_files=extra,
         )
         wal.write_result(agent_result())
         wal.finalize(TraceStatus.COMPLETE)
@@ -394,8 +668,13 @@ async def test_committed_alignment_and_configured_dom_recipe(tmp_path):
         for p in tmp_path.rglob("*")
         if p.is_file()
     }
-    prepared = await prepare_case(pair, JevReplayReviewer())
+    prepared = await prepare_case(pair, make_reviewer())
     assert prepared.reference.text and prepared.reference.text == prepared.replay.text
+    assert prepared.facts.restoration_warning is False
+    assert prepared.facts.site_host == urlsplit(prepared.reference.url).hostname
+    # This replay did not bind the replay log: unknown is not "no missing image".
+    assert prepared.facts.viewport_image_not_served is None
+    assert prepared.machine_evidence["viewport_images"]["measurable"] is False
     assert prepared.reference.image is not None and prepared.source_ref.files
     assert prepared.machine_evidence["restoration"]["verdict"] == "ok"
     after = {
@@ -406,8 +685,33 @@ async def test_committed_alignment_and_configured_dom_recipe(tmp_path):
     assert after == before
     pair.source_step = 1
     with pytest.raises(ReviewEvidenceError) as error:
-        await prepare_case(pair, JevReplayReviewer())
+        await prepare_case(pair, make_reviewer())
     assert error.value.status == "missing_evidence"
+
+
+async def test_replay_image_facts_reach_the_case_through_the_browser_rule(tmp_path):
+    miss = {
+        "kind": "miss",
+        "captured_at": 0.0,
+        "cycle": 1,
+        "method": "GET",
+        "url": "https://img.example.test/not-on-this-page.webp",
+        "resource_type": "Image",
+        "reason": "no_match",
+        "answer": "fulfilled",
+        "status": 404,
+    }
+    pair = await _recorded_pair(tmp_path, replay_log=[miss])
+    prepared = await prepare_case(pair, make_reviewer())
+    images = prepared.machine_evidence["viewport_images"]
+    assert images["measurable"] is True and images["images_not_served"] == 1
+    assert images["referenced_in_main_document"] == 0 and images["in_viewport"] == 0
+    assert images["observed_at_source"] == "replay_screenshot"
+    assert prepared.facts.viewport_image_not_served is False
+    assert route_result(result(0.9), settings(), prepared.facts).route == "candidate_acceptable"
+    (tmp_path / "empty").mkdir()
+    empty = await _recorded_pair(tmp_path / "empty", replay_log=[])
+    assert (await prepare_case(empty, make_reviewer())).facts.viewport_image_not_served is False
 
 
 async def test_missing_scope_corruption_and_source_are_distinct(tmp_path):
@@ -417,15 +721,15 @@ async def test_missing_scope_corruption_and_source_are_distinct(tmp_path):
     config["recording"]["trajectory"] = False
     config_path.write_text(json.dumps(config))
     with pytest.raises(ReviewEvidenceError) as failure:
-        await prepare_case(pair, JevReplayReviewer())
+        await prepare_case(pair, make_reviewer())
     assert failure.value.status == "scope_unrecorded"
     config_path.write_text("{broken")
     with pytest.raises(ReviewEvidenceError) as failure:
-        await prepare_case(pair, JevReplayReviewer())
+        await prepare_case(pair, make_reviewer())
     assert failure.value.status == "corrupt_evidence"
     pair.source = str(tmp_path / "absent")
     with pytest.raises(ReviewEvidenceError) as failure:
-        await prepare_case(pair, JevReplayReviewer())
+        await prepare_case(pair, make_reviewer())
     assert failure.value.status == "missing_source"
 
 
@@ -486,7 +790,7 @@ async def test_model_result_survives_recording_failure_and_is_not_task_failure(
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=wire))
     ) as client:
-        reviewer = JevReplayReviewer()
+        reviewer = make_reviewer()
         reviewer.decision_model = TypeSafeDirect(api_key="test", http_client=client)
         pair = ReviewPair(
             source="source", replay="replay", source_step=0, replay_step=0, source_config="config"
@@ -588,7 +892,7 @@ async def test_document_anchor_alignment_requires_same_url_and_loader(tmp_path):
         meta["url"] += "#History"
         meta["loader_id"] = loader
         path.write_text(json.dumps(meta))
-    prepared = await prepare_case(pair, JevReplayReviewer())
+    prepared = await prepare_case(pair, make_reviewer())
     assert prepared.reference.url.endswith("#History")
     assert not prepared.reference.scope["dom_capture_url"].endswith("#History")
     path = tmp_path / "source" / meta_file
@@ -596,5 +900,5 @@ async def test_document_anchor_alignment_requires_same_url_and_loader(tmp_path):
     meta["url"] = meta["url"].replace("#History", "?changed=1")
     path.write_text(json.dumps(meta))
     with pytest.raises(ReviewEvidenceError) as error:
-        await prepare_case(pair, JevReplayReviewer())
+        await prepare_case(pair, make_reviewer())
     assert error.value.status == "alignment_error"

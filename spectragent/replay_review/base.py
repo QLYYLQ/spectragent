@@ -4,13 +4,22 @@ from typing import Protocol, runtime_checkable
 
 from spectragent.core.llm.base import BaseDecisionModel
 from spectragent.core.llm.lifecycle import ModelClientLifecycle
-from spectragent.replay_review.models import ReviewAssessment, ReviewCase, ReviewPolicy
+from spectragent.replay_review.models import (
+    ReviewAssessment,
+    ReviewCase,
+    ReviewEvidenceOptions,
+    ReviewPolicy,
+    ReviewQuestionSet,
+    ReviewSettings,
+)
 
 
 @runtime_checkable
 class BaseReplayReviewer(ModelClientLifecycle, Protocol):
     decision_model: BaseDecisionModel
+    questions: ReviewQuestionSet
     policy: ReviewPolicy
+    evidence: ReviewEvidenceOptions
     max_text_chars: int
     max_links: int
     include_screenshots: bool
@@ -20,4 +29,4 @@ class BaseReplayReviewer(ModelClientLifecycle, Protocol):
 
     async def review(self, case: ReviewCase) -> ReviewAssessment: ...
 
-    def questions(self) -> dict: ...
+    def settings(self) -> ReviewSettings: ...

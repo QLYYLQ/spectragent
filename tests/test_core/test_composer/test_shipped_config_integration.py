@@ -1059,13 +1059,72 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                 lambda run, i=i: run.instances("replay_reviewer")[i],
             )
         )
-        for child in ("decision_model", "policy"):
+        for child in ("decision_model", "policy", "questions", "evidence"):
             if child in entry:
                 blocks.append(
                     _Block(
                         f"replay_reviewer[{i}].{child}",
                         lambda r, i=i, c=child: r["replay_reviewer"][i][c],
                         lambda run, i=i, c=child: getattr(run.instances("replay_reviewer")[i], c),
+                    )
+                )
+        # The question set, threshold and override models nest; each mapping is a block.
+        for question in entry.get("questions", {}).get("items", {}):
+            blocks.append(
+                _Block(
+                    f"replay_reviewer[{i}].questions.items.{question}",
+                    lambda r, i=i, q=question: r["replay_reviewer"][i]["questions"]["items"][q],
+                    lambda run, i=i, q=question: run.instances("replay_reviewer")[
+                        i
+                    ].questions.items[q],
+                )
+            )
+            if isinstance(entry["questions"]["items"][question].get("instructions"), dict):
+                blocks.append(
+                    _Block(
+                        f"replay_reviewer[{i}].questions.items.{question}.instructions",
+                        lambda r, i=i, q=question: r["replay_reviewer"][i]["questions"]["items"][q][
+                            "instructions"
+                        ],
+                        lambda run, i=i, q=question: SimpleNamespace(
+                            **run.instances("replay_reviewer")[i].questions.items[q].instructions
+                        ),
+                    )
+                )
+        if "policy" in entry:
+            blocks.append(
+                _Block(
+                    f"replay_reviewer[{i}].policy.thresholds",
+                    lambda r, i=i: r["replay_reviewer"][i]["policy"]["thresholds"],
+                    lambda run, i=i: run.instances("replay_reviewer")[i].policy.thresholds,
+                )
+            )
+            blocks.append(
+                _Block(
+                    f"replay_reviewer[{i}].policy.thresholds.fit",
+                    lambda r, i=i: r["replay_reviewer"][i]["policy"]["thresholds"]["fit"],
+                    lambda run, i=i: run.instances("replay_reviewer")[i].policy.thresholds.fit,
+                )
+            )
+            for o in range(len(entry["policy"].get("overrides", []))):
+                blocks.append(
+                    _Block(
+                        f"replay_reviewer[{i}].policy.overrides[{o}]",
+                        lambda r, i=i, o=o: r["replay_reviewer"][i]["policy"]["overrides"][o],
+                        lambda run, i=i, o=o: run.instances("replay_reviewer")[i].policy.overrides[
+                            o
+                        ],
+                    )
+                )
+                blocks.append(
+                    _Block(
+                        f"replay_reviewer[{i}].policy.overrides[{o}].fit",
+                        lambda r, i=i, o=o: r["replay_reviewer"][i]["policy"]["overrides"][o][
+                            "fit"
+                        ],
+                        lambda run, i=i, o=o: (
+                            run.instances("replay_reviewer")[i].policy.overrides[o].fit
+                        ),
                     )
                 )
         blocks.append(
@@ -1301,7 +1360,9 @@ def _perturb(value: Any, obj: Any = None, key: str = "") -> Any:
             lower = next((m.ge for m in field.metadata if hasattr(m, "ge")), 0.0)
             upper = next((m.le for m in field.metadata if hasattr(m, "le")), 1.0)
             middle = (lower + upper) / 2
-            return middle if middle != value else (lower + middle) / 2
+            # Halfway toward the middle keeps sibling thresholds in order
+            # (an investigate maximum stays below an accept minimum).
+            return (value + middle) / 2 if middle != value else (lower + middle) / 2
         # A fraction stays a fraction (``validation_fraction`` is bounded to
         # [0, 1]); any other float moves by 7.
         if 0.0 <= value <= 1.0:
