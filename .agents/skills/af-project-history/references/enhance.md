@@ -131,6 +131,11 @@ investigate_difference; an unmeasurable missing-image fact blocks candidate acce
 site overrides use an explicit registrable domain (`domain: bilibili.com` covers its
 subdomains, longest match wins, no public-suffix list).
 
+User decision, 2026-10-20 (integration): the `capture_state` source of the in-viewport
+missing-image fact counts only failures new in the replay (an identifier absent from the
+source step's failed visible images); when the source step has no usable `capture_state`,
+fall back to all replay failures and record the fallback.
+
 ## Fix — keyboard argument validation
 
 Bilibili source `deepseek-hl-l2-220-baseline`, trace step20, submits a whole URL as
