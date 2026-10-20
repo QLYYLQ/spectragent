@@ -1059,17 +1059,46 @@ class GAIAAgent(AgentBase):
 
 **设计决策**：Observation 不再是万能袋，而是 Fragment 注册表 + `__wiring__` 三方协商 + Resolver 模式。Fragment 是语义不可分的一组字段，独立注册在 conscribe；Env(Capability)/Agent/Loop 通过 `__wiring__` 声明 provides/requires；config 时 Avro 式协商 → 动态生成 Observation model → Capability 的 Resolver 按需计算。
 
-**浏览器通用观测（2026-10-19 裁决，enhance 待实现）。** 环境含 BrowserCapability 时，
-`env.observe()` 应为所有使用它的 Agent 提供统一的结构化浏览器观测：当前页面、tab、截图及
-坐标上下文，指针/焦点，加载状态，以及可测量的动作效果。共同事实由 BrowserCapability 的
-Resolver 采集，不能分别做成 UI-TARS、BrowserUse、Skyvern 的私有补丁；Agent 仍负责提示
-呈现，不重复采集浏览器状态。公共基线随浏览器能力可用，不要求各 Agent 重复实现或逐项
-选入。实现前须明确该基线自动进入协商结果的规则、fragment 划分、有类型字段、失败语义和
-采集预算；仍经现有 fragment、同周期采集、协商和持久化合同交付，不绕过协商，不给其他
-capability 的 Observation 强加浏览器字段。ActionResult 的执行成败、后续环境的观测变化和
-任务是否达成保持独立；未测量不等于零，批次后的变化不自动归因到某一个动作，敏感值不
-回显。当前代码尚未实现这项公共基线，后续工作记录在
+**观测增强按消费方分层（2026-10-20 裁决，取代 2026-10-19 的“所有使用 BrowserCapability
+的 Agent 统一获得浏览器观测”；enhance 待实现）。** 10-19 的表述把 UI-TARS 也算进浏览器统一
+观测，这是误记：UI-TARS 是跨平台的 computer-use Agent，只消费不带平台假设的通用合同；
+Skyvern、BrowserUse 是浏览器专用 Agent。新增信息按消费方分三类，全部经现有 fragment、
+Resolver、同周期采集、协商与持久化合同交付，**协商规则不变**，不绕过协商，不给其他
+capability 的 Observation 强加浏览器字段：
+
+| 信息 | 合同 | 消费方 |
+|---|---|---|
+| 动作效果：滚动位移、落点与命中、焦点、导航结果等 | `ActionResult.effect`，由动作类的嵌套 `Effect` 模型定义（§4.5“动作效果”） | 所有 Agent，渲染 `effect.describe()` |
+| 跨平台采集状态：落定、前台界面变化、指针、可见资源加载失败 | `capture_state` fragment（下文“跨平台采集状态”） | 所有 Agent，以 optional 声明 |
+| 浏览器页面状态：URL、标题、tabs | 现有 `browser.browser_meta` | 仅浏览器专用 Agent，required |
+
+呈现归 Agent，但同一事实只有一种写法：跨平台事实由 `agents/_capture_state.py::render_capture_state(observation)`
+渲染，浏览器页面状态由 `agents/_browser_state.py::render_browser_state(observation)` 渲染并在内部复用前者，
+先例是 `render_browser_platform`。两个函数按相对名结构化读取 fragment，不 import capability 或 resolver
+类；Skyvern、BrowserUse 删除各自的 `browser_meta` 渲染，改用后者。ActionResult 的执行成败、动作效果、
+后续观测和任务是否达成保持独立；未测量不等于零，批次后的状态不归因到其中某一个动作，敏感值不回显。
+媒体播放时间不在本轮，随媒体恢复修复一起定义。后续工作记录在
 `.agents/skills/af-project-history/references/enhance.md`。
+
+#### 跨平台采集状态 `capture_state`
+
+通用基类 `CaptureStateFragment`（abstract）位于 `schemas/observation/`，只定义下面四项事实及其缺失
+语义，不含平台词汇；各 capability 用自己的前缀注册具体 fragment，本轮是 `browser.capture_state`，以后
+`android.capture_state`、`desktop.capture_state` 继承同一基类。Agent 用相对名 `capture_state` 声明为
+optional：环境提供就激活，不提供照常运行；采集失败按 optional fragment 记一条 `FragmentFailure`，不牵连
+截图等其他 fragment。
+
+| 事实 | 含义 | 缺失语义 |
+|---|---|---|
+| 落定 | 采集前等待的结果 `settled` / `capped` / `unknown`、等待时长、尚未落定的项（capability 自定义标签） | 等待关闭时为 `None` |
+| 前台界面变化 | 采集前 capability 因环境自身行为移动了焦点：页面打开了新界面，或当前界面自行关闭；从哪到哪 | 没有移动为 `None`；Agent 自己的切换动作不算 |
+| 指针 | 同一界面最后一次确认的指针位置（viewport 单位），状态 `known` / `unknown` / `unavailable`（平台没有指针） | 与截图光标展示开关无关 |
+| 可见资源加载失败 | 采集时视口内加载失败的可见资源数量及简短标识；本轮浏览器只测可见图片 | 测不到为 `unknown`，平台不支持为 `unavailable`；`0` 只表示测得为零 |
+
+浏览器由一个新的 Resolver watchdog 提供 `browser.capture_state`，与其他 fragment 同一次采集、共用同一次
+落定等待。落定与前台界面变化从同一次采集的 `PageSettle`、`FocusMove` 投影，不另测一遍；两者仍留在每个
+浏览器 fragment 上作为 trace 证据。指针读同 tab 的 `PointerPosition`。BrowserCapability 本身不改：新增
+fragment 就是新增一个 Resolver watchdog。
 
 #### 截图的原图与模型视图
 
@@ -1448,6 +1477,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
     __registry_key__: ClassVar[str]
 
     Params: ClassVar[type[BaseModel]]   # 每个具体 action 必须声明
+    Effect: ClassVar[type[ActionEffect] | None] = None   # 可选：执行后测得的事实（见“动作效果”）
 
     @property
     def action_id(self) -> str:
@@ -1510,6 +1540,29 @@ class ScrollAction(ActionBase):
 ```
 
 **注意**：`ActionBase` 使用 `@dataclass` + conscribe metaclass 的组合（参考 `AgentBase`），不需要 pydantic bridge，因为 action 对象本身不是数据传输对象，而是携带配置的执行器。
+
+#### 动作效果：`Effect` 与 `Params` 对称（2026-10-20 裁决，enhance 待实现）
+
+`Params` 是动作的输入合同，`Effect` 是它的输出事实合同。动作类可以声明嵌套的 `Effect` 模型，执行时自己测量，放进 `ActionResult.effect`。`ActionResult` 只多这一个通用槽位，不出现任何 capability 的字段：
+
+```python
+class ActionEffect(BaseModel):              # schemas/action.py，通用基类
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    effect_id: str                           # 产出它的动作的全限定 key，如 "browser.scroll"
+    def describe(self) -> str: ...          # 一行确定性的事实文本，供 prompt 使用
+
+class ActionResult(BaseModel):
+    success: bool
+    error: str | None = None
+    ...
+    effect: ActionEffect | None = None       # None：该动作没有 Effect，或没执行到可测量处
+```
+
+- **读回不新增注册表。** `effect_id` 就是产出它的动作 key。trace 读取侧（`RunTrace` 读 `steps/NNN.json`）按 `effect_id` 在现有 `ActionRegistrar` 查到动作类，用它的 `Effect` 还原类型；查不到或校验失败是 `TraceSchemaError`，不降级成 dict。`schemas/` 不 import 动作类。多个动作可以共用一个效果类（`click`、`click_coordinate`、`drag` 共用指针效果）。trace 格式版本不变：缺少 `effect` 与“不产出效果”同义，旧测试数据按 2026-10-14 的裁决重新生成。
+- **`describe()` 合同。** 只由本对象的类型化字段确定性派生，一行英文事实，不含任务判断；敏感字段既不回显内容，也不报长度；unknown / unavailable 要明说。所有 Agent 渲染这一行，不把效果字段直接 dump 进 prompt：跨平台 Agent 因此不需要认识任何具体效果类型，浏览器专用 Agent 仍可另读字段。
+- **测量语义。** 效果在这一个动作执行期间、执行前后测得，所以能归因到它；批次之后的页面状态属于 observation。`success` / `error` 仍只表示执行成败：测量失败只把对应字段记为 unknown，不改变成败，也不中止动作。测得为零、unknown、unavailable 三者区分。测量有时间上限，不能明显拖长动作。
+- **浏览器本轮范围。** 指针类 `click`、`click_coordinate`、`drag`：实际落点、命中元素（角色与可读名）、执行后焦点。文本输入类 `type`、`type_coordinate`、`send_keys`：实际进入的控件、值是否变化（不回显内容）、实际发出的键、执行后焦点。`scroll`：被滚动的是页面还是元素、前后位置与位移、是否到边界。导航类 `navigate`、`go_back`、`go_forward`、`switch_tab`：前后 URL 或目标 tab、文档是否加载完成。`select_dropdown`：当前选中项。`wait`：实际等待时长。`done`、`screenshot`、`extract_content` 不产出效果。
+- **历史、分叉与导出。** 效果随 `StepRecord.action_results` 持久化，Agent 经 `loop.history` 读到。`history_source: restored` 使用恢复执行时实际测得的效果，不复制源记录；导出与离线渲染读已提交的效果，不重新测量。本轮不提供关闭效果渲染的开关，与改动前的比较按代码版本区分。
 
 #### Capability 持有 action 实例
 
@@ -2598,7 +2651,7 @@ Browser capability 在 setup 时、模型做任何决定之前测量实际桌面
 
 同一份实测结果供输入控制器使用，也作为独立的环境观测 `browser.platform` 交给三个浏览器 Agent：UI-TARS 仍不需要 DOM，模型看到截图与明确的平台说明；截图来源 URL 仍不渲染进视觉提示。平台字段由现有 fragment/resolver/三方协商通路提供，不另建第四条配置或观测通道。平台不能仅写进 trace 而不告诉决策模型，也不能只放进 prompt 而不记录。该事实写入 browser 的 run 指纹，归档回放须与源平台相同；缺少平台证据的源不能按新契约猜测执行，旧文件保留作历史分析，不回写。
 
-`send_keys` 是字面键名和组合键：Ctrl 保持 Control，Meta/Cmd/Command 保持 Meta/Command（Alt/Option 保持 Alt），修饰位与页面收到的 DOM 键事件必须一致，执行器不把错误平台的 Ctrl+A 改成 Meta+A。不认识的修饰键、空键名或空组合分段在派发前拒绝，动作结果明确失败，不能只写日志后报告成功。对于浏览器 CDP 不自行执行的原生编辑快捷键，只有与实测平台匹配、且不带其他修饰的组合才能补对应编辑命令：macOS 的 Meta+A、Windows/Linux 的 Control+A 可带 `selectAll`；另一平台的组合不强制全选，也不改写修饰键。命令只附在真实 `keyDown` 上，不再发送可打印的 `char`；由 Chrome 的默认行为执行，因此页面的 `keydown.preventDefault()` 仍能取消它，不另用 JS 选择范围绕过页面。这里不扩展成任意快捷键意图推断，也不顺带扩展复制、粘贴、剪切。
+`send_keys` 是字面键名和组合键：Ctrl 保持 Control，Meta/Cmd/Command 保持 Meta/Command（Alt/Option 保持 Alt），修饰位与页面收到的 DOM 键事件必须一致，执行器不把错误平台的 Ctrl+A 改成 Meta+A。不认识的修饰键、空键名或空组合分段在派发前拒绝，动作结果明确失败，不能只写日志后报告成功。`send_keys` 只接受三种输入：命名键、单个字符、用 `+` 连接的组合键；其他字符串（例如整段 URL 或一句话）同样在派发前拒绝，错误信息写明“send_keys 只接受按键或组合键，输入文本请用 type”。页面没有变化不算输入错误。对于浏览器 CDP 不自行执行的原生编辑快捷键，只有与实测平台匹配、且不带其他修饰的组合才能补对应编辑命令：macOS 的 Meta+A、Windows/Linux 的 Control+A 可带 `selectAll`；另一平台的组合不强制全选，也不改写修饰键。命令只附在真实 `keyDown` 上，不再发送可打印的 `char`；由 Chrome 的默认行为执行，因此页面的 `keydown.preventDefault()` 仍能取消它，不另用 JS 选择范围绕过页面。这里不扩展成任意快捷键意图推断，也不顺带扩展复制、粘贴、剪切。
 
 `type` / `type_coordinate` 的 `clear=True` 则是明确的语义操作“清空这个字段”，不是模型提供的原始组合键；它可以根据同一份实际平台事实发正确的全选与删除序列，不再自行从 UA 或宿主机猜平台。回归要分别证明平台检测抗 UA 伪装、预期值不符/未知拒绝、模型确实收到平台、同平台正确快捷键与另一平台组合保持区分，以及回放平台不一致拒绝。云 CDP 是否允许读取内部平台事实必须实测；不支持时如实失败，不能用本机平台兜底。
 

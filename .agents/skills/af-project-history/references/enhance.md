@@ -5,42 +5,45 @@ Subsequent work focuses on enhancements and fixes. This ledger records that queu
 `docs/architecture_design.md` remains design authority and `docs/execution_dag.md`
 continues to govern dependencies. These items are not implemented by recording them.
 
-## Enhance — common browser observation
+## Enhance — action effects and observation layered by consumer
 
-**Accepted direction.** Every Agent using an environment with BrowserCapability
-receives the same structured browser observation contract through `env.observe()`.
-The common information is browser-owned environment behavior, not an opt-in repair
-implemented separately inside UI-TARS, BrowserUse or Skyvern. The baseline is available
-when the browser capability is present; Agents retain ownership of prompt presentation.
+**Design settled 2026-10-20; implementation on `enhance/action-effects-and-capture-state`.**
+The contracts are in `docs/architecture_design.md` §4.4 (layering, `capture_state`) and
+§4.5 ("动作效果"). This entry records why, not a second copy of the design.
 
-The common information covers:
+**Correction.** The 2026-10-19 wording said every Agent using BrowserCapability gets
+one browser observation, UI-TARS included. That was a misrecord: UI-TARS is a
+cross-platform computer-use Agent and consumes only platform-neutral contracts;
+Skyvern and BrowserUse are browser-specific. The user confirmed the correction.
 
-- Current browser state: screenshot, URL, active tab, viewport/coordinate geometry,
-  pointer position, focused control and capture/settle status.
-- Observable action effects: actual target/dispatch point, scroll displacement and
-  boundaries, focus/value changes, navigation/tab changes, and loading/error facts.
-- Explicit evidence quality: measured zero, unknown, unavailable, truncated and stale
-  facts remain distinct. Sensitive values are not exposed.
+User decisions in the 2026-10-20 design discussion:
 
-ActionResult continues to report each action's execution outcome. Browser observation
-reports the resulting environment facts; task achievement remains an Agent/evaluator
-judgment. One screenshot after a multi-action batch does not attribute a change to an
-individual action. Additional per-action measurement must establish that attribution.
-
-**Design work before implementation.** Keep registered fragments, resolver ownership,
-same-cycle capture, persistence/reconstruction and negotiation. Define how the common
-browser baseline enters the negotiated result automatically, its typed fields and
-required/optional failure behavior, and budgets for expensive target/focus/media facts.
-Do not implement the direction by bypassing negotiation, putting browser fields on every
-environment's observation, or introducing a single untyped state bag. Browser-specific
-facts remain under the browser capability; other capabilities retain their contracts.
-
-**Acceptance.** UI-TARS, BrowserUse and Skyvern receive the same measured facts from the
-same browser state without duplicating browser acquisition logic. Validate normal and
-ineffective scrolling, boundary conditions, wrong target/focus, invalid input, loading
-failure, tab navigation and unavailable evidence. Record/replay/history reconstruction
-retain the same facts. Compare repeated ineffective actions and task outcomes on frozen
-tasks; changing the information available to an Agent is an explicit experiment change.
+- Information is split by consumer. Action effects go to every Agent; cross-platform
+  capture state (settle, foreground change, pointer, failed visible resources) goes to
+  every Agent as an optional `capture_state` fragment; browser page state (URL, title,
+  tabs via `browser.browser_meta`) goes only to browser-specific Agents, as required.
+- Negotiation rules stay unchanged. Each Agent declares what it consumes.
+- Per-action effects live on `ActionResult.effect`, defined by a nested `Effect` model
+  on the action class, symmetric with `Params`. Read-back uses the existing
+  `ActionRegistrar` by action key; no new registrar (the user weighed registrar growth
+  against the rejected Protocol explosion and chose this).
+- Each effect provides a one-line `describe()`. Agents render that line, so a
+  cross-platform Agent never needs browser types. Shared agent-side renderers
+  (`render_capture_state`, `render_browser_state`) follow `render_browser_platform`;
+  an abstract intermediate class was rejected because subclass wiring entries replace
+  inherited ones and it would tie UI-TARS to the browser.
+- `capture_state` is a separate fragment, not fields on the screenshot, so a failing
+  measurement cannot degrade the required screenshot.
+- Scope this round: pointer, text-input, scroll, navigation, select and wait effects
+  (17 browser actions minus done, screenshot, extract_content). Media playback time is
+  deferred to the media restoration fix. The `send_keys` validation fix lands on the
+  same branch as its own commit.
+- Acceptance includes real model runs: UI-TARS + DeepSeek v4.1 flash headless on the
+  five frozen L2 tasks against the 2026-10-19 batch as baseline, same-path replays, and
+  one short live task each for Skyvern and BrowserUse. Raw trajectories judged to have
+  no value after acceptance may be deleted; the acceptance report stays.
+- After implementation, a separate clean-context review/refine pass runs, then the
+  related skills and docs are updated.
 
 Evidence: [headless follow-up report](../../../../tmp/jev_headless_calibration_20261019/report.md)
 and `action-feedback-findings.json` beside it. Task130's pointer at (45,34) did not stop
@@ -72,6 +75,10 @@ evidence policies and task-level holdouts versioned. Runtime participation and a
 rule activation remain later design work, not consequences of merging the feature.
 
 ## Fix — keyboard argument validation
+
+Scheduled on `enhance/action-effects-and-capture-state` as its own commit; the rule is in
+`docs/architecture_design.md` §4.13.
+
 
 Bilibili source `deepseek-hl-l2-220-baseline`, trace step20, submits a whole URL as
 `send_keys.keys` and receives success. The current unknown-multichar-key path sends one
