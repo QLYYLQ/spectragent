@@ -350,7 +350,11 @@ class TestNegotiationDrivenCost:
         negotiation = negotiate_observation(UITarsAgent(), ReactLoop(), env)
         await env.setup(negotiation=negotiation)
         try:
-            assert env.provided_fragments == frozenset({"browser.screenshot", "browser.platform"})
+            # UI-TARS declares capture_state optional, so the browser offering
+            # it activates it; it never asks for the DOM or the page meta.
+            assert env.provided_fragments == frozenset(
+                {"browser.screenshot", "browser.platform", "browser.capture_state"}
+            )
         finally:
             await env.teardown()
 
