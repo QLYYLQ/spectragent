@@ -134,18 +134,28 @@ class TestClickUsesLiveRect:
 
 class TestClickFallback:
     async def test_runtime_call_failure_falls_back_to_bounds(self) -> None:
-        # bounds.center == (450, 820). After Layer 1, those are CSS pixels.
+        # bounds.center == (450, 520). After Layer 1, those are CSS pixels.
+        node = _make_node(42, DOMRect(x=400.0, y=500.0, width=100.0, height=40.0))
+        cdp = FakeCDP(raise_on={"Runtime.callFunctionOn"})
+        wd = _watchdog(cdp, {42: node})
+
+        result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
+        assert _outcome(result) == {"clicked": True, "x": 450, "y": 520}
+
+        mouse_events = [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
+        assert len(mouse_events) == 3
+        for evt in mouse_events:
+            assert (evt.params["x"], evt.params["y"]) == (450, 520)
+
+    async def test_a_snapshot_centre_outside_the_viewport_is_refused(self) -> None:
+        """No live box, and the snapshot's centre (450, 820) is below a 720-high viewport."""
         node = _make_node(42, DOMRect(x=400.0, y=800.0, width=100.0, height=40.0))
         cdp = FakeCDP(raise_on={"Runtime.callFunctionOn"})
         wd = _watchdog(cdp, {42: node})
 
         result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
-        assert _outcome(result) == {"clicked": True, "x": 450, "y": 820}
-
-        mouse_events = [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
-        assert len(mouse_events) == 3
-        for evt in mouse_events:
-            assert (evt.params["x"], evt.params["y"]) == (450, 820)
+        assert result is not None and "outside the viewport" in result["error"]
+        assert [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"] == []
 
     async def test_resolve_node_failure_falls_back_to_bounds(self) -> None:
         node = _make_node(42, DOMRect(x=10.0, y=20.0, width=4.0, height=8.0))
@@ -168,6 +178,23 @@ class TestClickFallback:
         result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
         # Live rect path still succeeds → live coords (55, 70).
         assert _outcome(result) == {"clicked": True, "x": 55, "y": 70}
+
+    async def test_a_live_centre_outside_the_viewport_is_centred_then_refused(self) -> None:
+        """The element is centred by script once; still outside, nothing is pressed."""
+        node = _make_node(42, DOMRect(x=1700.0, y=40.0, width=120.0, height=40.0))
+        cdp = FakeCDP(rect={"x": 1700.0, "y": 40.0, "w": 120.0, "h": 40.0})
+        wd = _watchdog(cdp, {42: node})
+
+        result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
+        assert result is not None and "outside the viewport" in result["error"]
+        centring = [
+            c
+            for c in cdp.calls
+            if c.method == "Runtime.callFunctionOn"
+            and "scrollIntoView" in c.params.get("functionDeclaration", "")
+        ]
+        assert len(centring) == 1
+        assert [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"] == []
 
     async def test_unknown_node_returns_error(self) -> None:
         cdp = FakeCDP()

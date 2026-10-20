@@ -206,6 +206,25 @@ _STALE_FRAME_ELEMENT = (
     "page again before acting on it."
 )
 
+#: What a press on an element that stays outside the viewport reports.
+_OUTSIDE_VIEWPORT = (
+    "The element's centre lies outside the viewport and scrolling does not bring "
+    "it into view (it may be hidden off-screen, such as a closed panel), so a "
+    "press there would reach nothing; observe the page again and pick a visible "
+    "element."
+)
+
+#: Scroll an element so its centre is in the middle of the viewport.
+_CENTRE_INTO_VIEW_JS = (
+    "function() { this.scrollIntoView({block: 'center', inline: 'center'}); return {}; }"
+)
+
+
+def _centre(box: tuple[float, float, float, float]) -> tuple[float, float]:
+    """The centre of an ``(x, y, width, height)`` box."""
+    x, y, w, h = box
+    return x + w / 2, y + h / 2
+
 
 def _visible_span(centre: float, size: float, extent: int) -> float:
     """The part of a box that is on screen, kept symmetric about its centre.
@@ -562,6 +581,17 @@ class ActionWatchdog(BrowserWatchdog):
             cx_f, cy_f = node.bounds.center
             cx, cy = int(cx_f), int(cy_f)
             target_w, target_h = node.bounds.width, node.bounds.height
+
+        if not self._in_viewport(cx, cy):
+            # Chrome drops a press outside the viewport while the action would
+            # report success; the element was scrolled as far as it goes.
+            logger.warning(
+                "Not clicking %s: its centre (%d, %d) stays outside the viewport",
+                self._describe_node(node),
+                cx,
+                cy,
+            )
+            return {"error": _OUTSIDE_VIEWPORT}
 
         ax, ay = self._aim_inside(cx, cy, target_w, target_h)
         budget = self._effect_budget()
@@ -1030,6 +1060,9 @@ class ActionWatchdog(BrowserWatchdog):
                     cx, cy = self._aim_inside(cx_f, cy_f, node.bounds.width, node.bounds.height)
                 else:
                     raise RuntimeError("Element could not be located for scrolling")
+                if not self._in_viewport(cx, cy):
+                    # A wheel outside the viewport scrolls nothing; same rule as a click.
+                    raise RuntimeError(_OUTSIDE_VIEWPORT)
             else:
                 cx, cy = self._mouse.position
 
@@ -1787,6 +1820,11 @@ class ActionWatchdog(BrowserWatchdog):
                 box = await self._frame_element_box(backend_node_id, sid, frame_owners)
             else:
                 box = await self._page_element_box(backend_node_id, sid)
+                if box is not None and not self._in_viewport(*_centre(box)):
+                    # ``scrollIntoViewIfNeeded`` leaves an element alone that is
+                    # partly visible already, centre outside or not. Centre it.
+                    await self._call_on_node(backend_node_id, sid, _CENTRE_INTO_VIEW_JS)
+                    box = await self._page_element_box(backend_node_id, sid)
             if box is None:
                 return None
             x, y, w, h = box
@@ -1800,6 +1838,10 @@ class ActionWatchdog(BrowserWatchdog):
                 exc,
             )
             return None
+
+    def _in_viewport(self, x: float, y: float) -> bool:
+        """Whether a point is inside the viewport, where a press reaches the page."""
+        return 0 <= x < self._vw and 0 <= y < self._vh
 
     async def _page_element_box(
         self, backend_node_id: int, session_id: str | None

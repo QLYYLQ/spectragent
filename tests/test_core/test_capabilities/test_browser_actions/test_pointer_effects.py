@@ -120,14 +120,14 @@ class TestClickByIndex:
         self,
     ) -> None:
         # Every resolve fails: the click falls back to the snapshot box
-        # (centre 450, 820) and the hit test asks the point alone.
+        # (centre 450, 520) and the hit test asks the point alone.
         cdp = ProbeCDP(hit={"facts": GO}, fail={"resolve"})
         result = await click(cdp)
         effect = pointer(result)
-        assert effect.point == ViewportPoint(x=450, y=820)
+        assert effect.point == ViewportPoint(x=450, y=520)
         assert (effect.hit, effect.on_target) == (ElementFacts(role="button", name="Go"), "unknown")
         assert effect.describe() == (
-            'Clicked at (450, 820) on button "Go"; whether that is the targeted element is '
+            'Clicked at (450, 520) on button "Go"; whether that is the targeted element is '
             "unknown; nothing is focused now."
         )
 

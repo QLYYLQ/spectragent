@@ -187,7 +187,7 @@ def page_node(backend_node_id: int = 42) -> DOMElementNode:
     return DOMElementNode(
         tag_name="button",
         backend_node_id=backend_node_id,
-        bounds=DOMRect(x=400.0, y=800.0, width=100.0, height=40.0),
+        bounds=DOMRect(x=400.0, y=500.0, width=100.0, height=40.0),
         text_content="Go",
     )
 

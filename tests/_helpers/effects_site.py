@@ -17,7 +17,15 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   a visible one that loads (``ok.png``) and a failing one far below the fold;
 - ``opener.html`` — a ``target=_blank`` link ``#newtab`` to ``second.html``;
 - ``busy.html`` — text that changes every 50 ms, so the page never goes quiet;
-- ``a.html`` / ``b.html`` — two pages for navigation and history.
+- ``a.html`` / ``b.html`` — two pages for navigation and history;
+- ``far.html`` — a button ``#far`` (``Far button``) at :data:`FAR_LEFT` px from
+  the left of a page wider than the viewport, so its centre starts outside it;
+  ``far_hidden.html`` is the same page with horizontal overflow hidden, as some
+  sites set it; ``far_strip.html`` holds the button in a horizontally
+  scrolling strip; ``far_edge.html`` puts it across the right edge, partly
+  visible with its centre outside; ``far_tall.html`` makes it taller than the
+  viewport, its top visible and its centre below; ``far_fixed.html`` pins it with
+  ``position: fixed`` where no scrolling can reach it.
 
 Every control sits at a fixed CSS-px box (:data:`BOXES`), so a test clicks by
 coordinate without reading the DOM.
@@ -38,6 +46,8 @@ from PIL import Image
 SCROLL_PAGE_HEIGHT = 3000
 #: Height of the content inside ``scroll.html``'s ``#inner`` box, CSS px.
 INNER_CONTENT_HEIGHT = 1200
+#: How far from the left edge, CSS px, the off-viewport button of the ``far`` pages sits.
+FAR_LEFT = 1700
 #: ``(left, top, width, height)`` in CSS px of every control a test aims at.
 BOXES: dict[str, tuple[int, int, int, int]] = {
     "inner": (40, 120, 300, 200),
@@ -78,6 +88,16 @@ def _page(title: str, body: str, *, style: str = "") -> bytes:
         f"<style>body{{margin:0;font:16px sans-serif}}{style}</style></head>"
         f"<body>{body}</body></html>"
     ).encode()
+
+
+def _far_button(position: str, *, left: int = FAR_LEFT, height: int = 40) -> str:
+    """A button *left* px from the left whose clicks are counted in ``window.__farClicks``."""
+    return (
+        f'<button id="far" style="position:{position};left:{left}px;top:40px;'
+        f'width:120px;height:{height}px" '
+        'onclick="window.__farClicks=(window.__farClicks||0)+1">'
+        "Far button</button>"
+    )
 
 
 def _pages() -> dict[str, tuple[str, bytes]]:
@@ -149,6 +169,32 @@ def _pages() -> dict[str, tuple[str, bytes]]:
             ),
         ),
         "b.html": ("text/html; charset=utf-8", _page("Page B", "<p>Page B.</p>")),
+        **{
+            name: ("text/html; charset=utf-8", _page("Far", body, style=style))
+            for name, body, style in (
+                ("far.html", _far_button("absolute"), "body{width:2400px}"),
+                (
+                    "far_hidden.html",
+                    _far_button("absolute"),
+                    "html,body{overflow-x:hidden}body{width:2400px}",
+                ),
+                (
+                    "far_strip.html",
+                    '<div id="strip" style="width:600px;height:120px;overflow-x:auto;'
+                    'position:relative"><div style="width:2400px;height:100px;position:relative">'
+                    + _far_button("absolute")
+                    + "</div></div>",
+                    "",
+                ),
+                ("far_fixed.html", _far_button("fixed"), ""),
+                ("far_edge.html", _far_button("absolute", left=1220), "body{width:2400px}"),
+                (
+                    "far_tall.html",
+                    _far_button("absolute", left=100, height=2000),
+                    "body{height:3000px}",
+                ),
+            )
+        },
         "ok.png": ("image/png", _png((30, 120, 200))),
     }
 
