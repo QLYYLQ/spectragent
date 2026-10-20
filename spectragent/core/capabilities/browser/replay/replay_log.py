@@ -128,6 +128,9 @@ class ReplayLogEntry(BaseModel):
     unavailable_policy: UnavailablePolicy | None = None
     #: ``bytes N-E/T`` of a range answer.
     range: str | None = None
+    #: The ``Range`` header the page sent, on a ``range_uncovered`` miss: which
+    #: bytes it asked for that the recording does not hold.
+    requested_range: str | None = None
     #: A JSONP answer served calling the callback name this request asked for
     #: instead of the recorded one: which parameter, which two names (``jsonp.py``).
     callback_rewrite: CallbackRewrite | None = None

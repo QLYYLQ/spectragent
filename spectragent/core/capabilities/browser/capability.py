@@ -153,6 +153,11 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
+from spectragent.core.capabilities.browser.media import (
+    PendingAlignment,
+    align_media,
+    alignment_raised,
+)
 from spectragent.core.capabilities.browser.navigation import (
     MainFrameLoad,
     MainFrameNavigation,
@@ -197,7 +202,12 @@ from spectragent.core.capabilities.browser.replay.consistency import (
     version_warnings,
 )
 from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
-from spectragent.core.capabilities.browser.restoration import measure, retarget_action
+from spectragent.core.capabilities.browser.restoration import (
+    measure,
+    media_measure,
+    retarget_action,
+    screenshot_fragment,
+)
 from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.settle import (
     DEFAULT_SETTLE_MAX_WAIT_S,
@@ -250,7 +260,7 @@ from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.provider_session import ProviderSession
-from spectragent.schemas.restoration import RestorationEvidence, Retarget
+from spectragent.schemas.restoration import MediaAlignment, RestorationEvidence, Retarget
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 
 logger = logging.getLogger(__name__)
@@ -596,6 +606,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     settle_max_wait_s: float
     action_effect_timeout_s: float
     capture_state_timeout_s: float
+    media_state_timeout_s: float
     retarget_tolerance_px: float
     new_tabs: Literal["follow", "stay"]
     expected_platform: InputPlatform | None
@@ -650,6 +661,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: The replay log's ``diverged_total`` at the last ``verify_restoration``
     #: — what makes each measurement count only the misses since the previous one.
     _diverged_seen: int
+    #: The media alignment a restorer requested for the next observation, and
+    #: what its capture did, until the next ``verify_restoration`` takes it
+    #: (``align_next_observation``, §4.14).
+    _media_alignment: PendingAlignment | None
     #: The time zone and locale a frame no override reaches falls back to,
     #: measured right after launch when archivers are bound (§4.14).
     _browser_defaults: BrowserDefaults | None
@@ -896,6 +911,25 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 1.0,
+        media_state_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                le=10,
+                description=(
+                    "The most time, in seconds, each of the two reads of the page's media "
+                    "playback state may take: one just before and one just after every "
+                    "observation screenshot (every <video> and <audio> element's exact "
+                    "position, paused state, duration, frame, order and place, kept with "
+                    "the screenshot). A read that runs out is recorded as unknown; the "
+                    "screenshot never fails for it, and nothing on the page is changed. The "
+                    "read runs on the page's main thread and takes a few milliseconds, so "
+                    "this limit is reached only when page scripts hold that thread. In a "
+                    "branch run's restored prefix the same limit bounds the read the media "
+                    "alignment starts from. Default 1."
+                ),
+            ),
+        ] = 1.0,
         retarget_tolerance_px: Annotated[
             float,
             PydanticField(
@@ -976,6 +1010,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.settle_max_wait_s = settle_max_wait_s
         self.action_effect_timeout_s = action_effect_timeout_s
         self.capture_state_timeout_s = capture_state_timeout_s
+        self.media_state_timeout_s = media_state_timeout_s
         self.retarget_tolerance_px = retarget_tolerance_px
         self.new_tabs = new_tabs
 
@@ -1031,6 +1066,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._archivers = []
         self._archive = None
         self._diverged_seen = 0
+        self._media_alignment = None
         self._browser_defaults = None
         self._input_platform = None
         self._tabs = None
@@ -1384,18 +1420,52 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         URL, the interactive-element signature multiset and the screenshot
         hash distance are read from the two observations
-        (:func:`~spectragent.core.capabilities.browser.restoration.measure`);
+        (:func:`~spectragent.core.capabilities.browser.restoration.measure`),
+        and so are the two screenshots' media playback states;
         ``document_misses`` is this run's replay server's count of main-frame
         document misses since the previous call (``None`` when the network is
-        live) — reported once, so a restorer measures each restored
+        live), and the media alignment done since the previous call is taken
+        with it — both reported once, so a restorer measures each restored
         observation exactly once (the ``RestorationSupport`` contract).
         Thresholds are the restorer's.
         """
+        alignment: list[MediaAlignment] | None = None
+        alignment_detail = ""
+        # The alignment belongs to this restored observation only: taken here,
+        # whether a capture acted on it or not (``align_next_observation``).
+        pending, self._media_alignment = self._media_alignment, None
+        if pending is not None:
+            report = pending.take()
+            alignment, alignment_detail = list(report.records), report.detail
         return measure(
             recorded,
             restored,
             capability_id=self.capability_id,
             document_misses=self._document_misses_since_last_check(),
+            media=media_measure(
+                recorded,
+                restored,
+                tolerance_px=self.retarget_tolerance_px,
+                alignment=alignment,
+                alignment_detail=alignment_detail,
+            ),
+        )
+
+    # ── Checkpoint restoration: media alignment (RestorationAlignment, §4.9 / §4.14) ──
+
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+        """Align the next observation's media to *recorded*'s, inside its capture.
+
+        Only the request is kept here — the page is not touched. The next
+        observation cycle's capture aligns after its settle wait and before
+        its screenshot (:meth:`_capture_once`, ``media.py::align_media``),
+        and the next :meth:`verify_restoration` reports what it did. The
+        request belongs to that one cycle: a later cycle never aligns.
+        """
+        screenshot = screenshot_fragment(recorded)
+        self._media_alignment = PendingAlignment(
+            recorded=screenshot.media if screenshot is not None else None,
+            seek_timeout_s=media_seek_timeout_s,
         )
 
     def _document_misses_since_last_check(self) -> int | None:
@@ -2321,6 +2391,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._browser_defaults = None
         self._input_platform = None
         self._diverged_seen = 0
+        self._media_alignment = None
         for error in errors:
             if isinstance(error, asyncio.CancelledError):
                 for other in errors:
@@ -2414,6 +2485,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         """
         self._ensure_environment()
         self._observation_cycle = cycle
+        pending = self._media_alignment
+        if pending is not None and not pending.bind(cycle):
+            # Requested for an earlier observation: it never reaches this one.
+            self._media_alignment = None
 
     async def resolve_fragment(self, fragment_key: str) -> Any:
         """Resolve one observation fragment via the lazy-batch cache.
@@ -2637,6 +2712,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 sid = self.default_session_id
                 continue
             cache.raw.clear()  # a re-fired attempt's capture replaces the last one's
+            # A restored observation's media is aligned to the recording here:
+            # after the waits, right before the screenshot (§4.14). Once per cycle.
+            await self._align_media(sid)
             outcome = await self._fire_state_event(sid, scope, wanted)
             # A recorder lost during the capture: nothing of it is served,
             # and the error says why rather than "no watchdog produced …".
@@ -2697,6 +2775,27 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             f"{_OBSERVE_MAX_ATTEMPTS} attempts. Handlers responded: "
             f"{outcome.handler_count}. Errors: {detail}."
         )
+
+    async def _align_media(self, sid: str) -> None:
+        """Run the media alignment requested for this cycle, if any (``align_next_observation``)."""
+        pending = self._media_alignment
+        if pending is None or not pending.due(self._observation_cycle) or self._cdp is None:
+            return
+        try:
+            pending.report = await align_media(
+                self._cdp,
+                session_id=sid,
+                frame_id=self._main_frame_ids.get(sid),
+                recorded=pending.recorded,
+                tolerance_px=self.retarget_tolerance_px,
+                read_timeout_s=self.media_state_timeout_s,
+                seek_timeout_s=pending.seek_timeout_s,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # aligning never fails the observation; it is reported
+            logger.warning("media alignment (sid=%s) raised: %r", sid, exc)
+            pending.report = alignment_raised(pending.recorded, exc)
 
     async def _settle(self, sid: str, feed: NavigationFeed | None) -> PageSettle | None:
         """Wait for the focused tab's page to settle before a capture (``settle.py``, §4.14).
@@ -3581,6 +3680,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             screenshot_cursor_size=self.screenshot_cursor_size,
             action_effect_timeout_s=self.action_effect_timeout_s,
             capture_state_timeout_s=self.capture_state_timeout_s,
+            media_state_timeout_s=self.media_state_timeout_s,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,

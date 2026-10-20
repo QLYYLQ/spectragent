@@ -295,3 +295,63 @@ def test_result_comparison_shows_but_does_not_judge_measured_effects():
     assert pair["status"] == "matches"
     assert pair["source"]["effect"]["waited_ms"] == 1001
     assert pair["actual"]["effect"]["waited_ms"] == 1004
+
+
+def test_media_differences_and_alignment_problems_are_listed_unknowns_kept_apart():
+    record = {
+        "step": 3,
+        "origin": "restored",
+        "restoration": {
+            "verdict": "warn",
+            "evidence": [
+                {
+                    "capability_id": "browser",
+                    "url_match": True,
+                    "signature_match": None,
+                    "screenshot_distance": 4,
+                    "document_misses": 0,
+                    "media": {
+                        "comparisons": [
+                            {
+                                "element": "main#0 video",
+                                "correspondence": "matched",
+                                "recorded_time": 73.6,
+                                "restored_time": 22.6,
+                                "recorded_paused": False,
+                                "restored_paused": True,
+                            },
+                            {"element": "main#1 video", "correspondence": "extra"},
+                        ],
+                        "alignment": [
+                            {
+                                "element": "main#0 video",
+                                "outcome": "failed",
+                                "detail": "the seek did not complete within 2s",
+                            },
+                            {"element": "main#2 audio", "outcome": "aligned"},
+                        ],
+                    },
+                }
+            ],
+            "actions": [],
+        },
+    }
+    gap = restoration_gap(record)
+    assert gap is not None and gap["status"] == "changed"
+    media = [line for line in gap["differences"] if "media" in line]
+    assert media == [
+        "browser: media main#0 video at 22.600 s, recorded 73.600 s",
+        "browser: media main#0 video paused state changed",
+        "browser: media main#1 video extra",
+        "browser: media main#0 video alignment failed (the seek did not complete within 2s)",
+    ]
+    record["restoration"]["evidence"][0]["media"] = {
+        "comparisons": None,
+        "detail": "the recorded screenshot carries no media state",
+    }
+    unknown = restoration_gap(record)
+    assert unknown is not None
+    assert (
+        "browser: media state not compared (the recorded screenshot carries no media state)"
+        in unknown["unmeasured"]
+    )

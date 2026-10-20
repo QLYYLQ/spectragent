@@ -518,6 +518,56 @@ class TestSamePathFidelity:
         ]
         assert found.unmatched == []
 
+    def test_media_coverage_mismatches_and_alignment_by_site(self, chain: ChainRuns) -> None:
+        """Media is counted only where a comparison was actually made; alignment by outcome."""
+        from spectragent.schemas.restoration import (
+            MediaAlignment,
+            MediaComparison,
+            MediaEvidence,
+        )
+
+        assert same_path_fidelity(chain).overall.media_coverage.value == 0
+        measured = open_chain(chain.layout)
+        compared = MediaEvidence(
+            comparisons=[MediaComparison(element="main#0 video", correspondence="missing")],
+            alignment=[MediaAlignment(element="main#0 video", outcome="not_restorable")],
+        )
+        unknown = MediaEvidence(
+            comparisons=None,
+            detail="the recorded screenshot carries no media state",
+            alignment=[],
+        )
+        for run in measured.role("same_path").runs:
+            media = compared if run.site == "shop.test" else unknown
+            run.steps = tuple(
+                record.model_copy(
+                    update={
+                        "restoration": record.restoration.model_copy(
+                            update={
+                                "evidence": [
+                                    e.model_copy(update={"media": media})
+                                    for e in record.restoration.evidence
+                                ],
+                                "reasons": [
+                                    *(["media_mismatch"] if run.site == "shop.test" else []),
+                                ],
+                            }
+                        )
+                    }
+                )
+                if record.restoration is not None
+                else record
+                for record in run.steps
+            )
+        found = same_path_fidelity(measured)
+        shop, blocked = found.by_site["shop.test"], found.by_site["blocked.test"]
+        assert (shop.media_coverage.numerator, shop.media_coverage.denominator) == (6, 6)
+        assert shop.media_mismatches == 6
+        assert shop.media_alignment == {"not_restorable": 6}
+        assert blocked.media_coverage.value == 0, "a comparison not made is not covered"
+        assert blocked.media_mismatches == 0 and blocked.media_alignment == {}
+        assert found.overall.media_coverage.numerator == 6
+
     def test_errored_runs_count_either_ledger(self, chain: ChainRuns, tmp_path: Path) -> None:
         """Not ending cleanly: an incomplete or unclosed trace, or an agent in error / timeout / veto."""
         assert same_path_fidelity(chain).overall.errored_runs == 0

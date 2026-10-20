@@ -396,6 +396,9 @@ agent_loop:
     verify: strict                  # warn: record a failed check and go on
     screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
     pace: none                      # recorded_llm_latency: wait as long as the source waited
+    media: align                    # none: leave media where the replay put it (control arm)
+    media_time_tolerance_s: 1.0     # seconds a media position may differ and still pass
+    media_seek_timeout_s: 2.0       # seconds an alignment seek (and play) may take
 
 task_loader:
   - benchmark_name: trace_branches
@@ -436,7 +439,13 @@ task_loader:
   archive; `prefix_replay` re-executes the recorded actions (element indexes re-found by
   position and signature within `retarget_tolerance_px`, tab ids by their position in the
   order the tabs opened and their URL) and verifies every step: URL, interactive-element
-  signatures, screenshot hash distance, main-frame document misses, action outcomes. A tab
+  signatures, media playback state, screenshot hash distance, main-frame document misses,
+  action outcomes. With `media: align` (the default) each restored observation, the
+  checkpoint's included, first moves every matched video or audio element to the position
+  and play state recorded with that step's screenshot — inside the capture, after the page
+  settles and right before the screenshot — and each action is kept with the step's check;
+  a seek that does not complete in `media_seek_timeout_s` is undone and the step fails
+  `media_mismatch`. Nothing is aligned after the checkpoint. A tab
   the recording's actions opened is followed again by the same rule (`new_tabs`, above), so
   the restored observation is of the same tab. The restored steps are recorded as
   `origin: restored` with their check; step *t* and the `continue_steps` after it are the

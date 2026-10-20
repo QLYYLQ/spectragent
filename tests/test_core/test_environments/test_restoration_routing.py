@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from spectragent.core.capabilities._registrar import CapabilityBase
-from spectragent.core.capabilities.base import RestorationSupport
+from spectragent.core.capabilities.base import RestorationAlignment, RestorationSupport
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
@@ -144,3 +144,50 @@ class TestVerifyRestoration:
     async def test_nothing_to_check_without_an_implementer(self) -> None:
         env = make_env(EnvironmentBase, {"plain": _Plain()})
         assert await env.verify_restoration(object(), object()) == []
+
+
+class _Aligning(CapabilityBase):
+    """Keeps every alignment request it is handed; restores nothing else."""
+
+    __registry_key__ = "restore_route_aligning"
+
+    requests: list[tuple[Any, float]]
+
+    def get_action_descriptors(self, **ctx: Any) -> list[ActionDescriptor]:
+        return []
+
+    async def execute_action(self, action: Action, **kw: Any) -> ActionResult:
+        raise AssertionError("an alignment request must never execute an action")
+
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+        self.requests.append((recorded, media_seek_timeout_s))
+
+
+class _SecondAligning(_Aligning):
+    __registry_key__ = "restore_route_aligning_second"
+
+
+class TestAlignNextObservation:
+    """``RestorationAlignment``: a separate optional face, fanned out in capability order."""
+
+    def test_it_is_its_own_protocol(self) -> None:
+        aligning = _Aligning()
+        assert isinstance(aligning, RestorationAlignment)
+        assert not isinstance(aligning, RestorationSupport)
+        assert not isinstance(_restoring(), RestorationAlignment)
+
+    async def test_only_implementers_are_asked(self) -> None:
+        first, second = _Aligning(), _SecondAligning()
+        first.requests, second.requests = [], []
+        env = make_env(
+            EnvironmentBase,
+            {"a": first, "plain": _Plain(), "restore_route_cap": _restoring(), "b": second},
+        )
+        recorded = object()
+        await env.align_next_observation(recorded, media_seek_timeout_s=1.5)
+        assert first.requests == [(recorded, 1.5)]
+        assert second.requests == [(recorded, 1.5)]
+
+    async def test_nothing_happens_without_an_implementer(self) -> None:
+        env = make_env(EnvironmentBase, {"plain": _Plain()})
+        await env.align_next_observation(object(), media_seek_timeout_s=2.0)

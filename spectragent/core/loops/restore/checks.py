@@ -12,6 +12,11 @@ same rules (``docs/architecture_design.md`` §5.3 ``RestorationCheck``):
 - ``action_failed`` — a re-executed action succeeded where the recording
   failed or the reverse, or raised;
 - ``signature_mismatch`` — the interactive elements differ;
+- ``media_mismatch`` — a media element is missing, extra, ambiguous or a
+  live stream; a matched one is further from its recorded position than the
+  media tolerance or differs in its paused state; or the media alignment
+  before the capture failed or could not be done
+  (:func:`media_failed`);
 - ``screenshot_distance`` — the screenshots are further apart than the
   threshold.
 
@@ -26,6 +31,7 @@ from typing import Literal
 
 from spectragent.schemas.restoration import (
     REASON_ORDER,
+    MediaEvidence,
     RestorationCheck,
     RestorationEvidence,
     RestorationReason,
@@ -36,11 +42,41 @@ from spectragent.schemas.restoration import (
 VerifyPolicy = Literal["strict", "warn"]
 
 
+def media_failed(media: MediaEvidence, *, time_tolerance_s: float) -> bool:
+    """Whether media evidence fails (``docs/architecture_design.md`` §4.14, §5.3).
+
+    Fails on an element present on one side only, an ambiguous
+    correspondence, a live stream, a matched element whose two known
+    positions are more than *time_tolerance_s* apart or whose two known
+    paused states differ, and on an alignment that failed or could not be
+    done. Unknown values — a comparison that could not be made, a position
+    or state not measured, an alignment with no recorded target — never
+    decide.
+    """
+    for item in media.comparisons or []:
+        if item.correspondence != "matched" or item.live:
+            return True
+        if (
+            item.recorded_time is not None
+            and item.restored_time is not None
+            and abs(item.recorded_time - item.restored_time) > time_tolerance_s
+        ):
+            return True
+        if (
+            item.recorded_paused is not None
+            and item.restored_paused is not None
+            and item.recorded_paused != item.restored_paused
+        ):
+            return True
+    return any(record.outcome in ("failed", "not_restorable") for record in media.alignment or [])
+
+
 def failed_reasons(
     evidence: Sequence[RestorationEvidence],
     actions: Sequence[RestoredAction],
     *,
     screenshot_max_distance: int,
+    media_time_tolerance_s: float,
 ) -> list[RestorationReason]:
     """Every check that did not pass, in ``REASON_ORDER``."""
     failed: set[RestorationReason] = set()
@@ -51,6 +87,10 @@ def failed_reasons(
             failed.add("url_mismatch")
         if item.signature_match is False:
             failed.add("signature_mismatch")
+        if item.media is not None and media_failed(
+            item.media, time_tolerance_s=media_time_tolerance_s
+        ):
+            failed.add("media_mismatch")
         if (
             item.screenshot_distance is not None
             and item.screenshot_distance > screenshot_max_distance
@@ -81,6 +121,7 @@ def judge(
     *,
     verify: VerifyPolicy,
     screenshot_max_distance: int,
+    media_time_tolerance_s: float,
 ) -> RestorationCheck:
     """The verdict on one restored step.
 
@@ -88,7 +129,12 @@ def judge(
     and ``warn`` under ``warn``, with every failed check in ``reasons`` and
     the first of them in ``reason``.
     """
-    reasons = failed_reasons(evidence, actions, screenshot_max_distance=screenshot_max_distance)
+    reasons = failed_reasons(
+        evidence,
+        actions,
+        screenshot_max_distance=screenshot_max_distance,
+        media_time_tolerance_s=media_time_tolerance_s,
+    )
     if not reasons:
         verdict: Literal["ok", "warn", "diverged"] = "ok"
     else:

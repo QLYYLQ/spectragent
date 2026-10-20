@@ -478,6 +478,7 @@ class TestMeasure:
             observation(screenshot=after),
             capability_id="browser",
             document_misses=0,
+            media=None,
         )
         assert evidence.url_match is expected
         assert evidence.recorded_url == before.source_url
@@ -492,6 +493,7 @@ class TestMeasure:
             restored_view(fragments),
             capability_id="browser",
             document_misses=0,
+            media=None,
         )
         assert evidence.model_dump() == {
             "capability_id": "browser",
@@ -503,11 +505,12 @@ class TestMeasure:
             "signature_extra": 0,
             "screenshot_distance": 0,
             "document_misses": 0,
+            "media": None,
         }
 
     def test_nothing_measurable_is_none(self) -> None:
         evidence = measure(
-            observation(), observation(), capability_id="browser", document_misses=None
+            observation(), observation(), capability_id="browser", document_misses=None, media=None
         )
         assert evidence.url_match is None and evidence.recorded_url is None
         assert evidence.signature_match is None
@@ -520,7 +523,11 @@ class TestMeasure:
         restored = restored_view(fragments)
         delattr(restored, missing)
         evidence = measure(
-            recorded_view(fragments), restored, capability_id="browser", document_misses=None
+            recorded_view(fragments),
+            restored,
+            capability_id="browser",
+            document_misses=None,
+            media=None,
         )
         measured = {
             "browser_meta": evidence.url_match,
@@ -535,7 +542,11 @@ class TestMeasure:
         restored = restored_view(fragments)
         restored.screenshot = shot(None)
         evidence = measure(
-            recorded_view(fragments), restored, capability_id="browser", document_misses=None
+            recorded_view(fragments),
+            restored,
+            capability_id="browser",
+            document_misses=None,
+            media=None,
         )
         assert evidence.screenshot_distance is None
 
@@ -549,6 +560,7 @@ class TestMeasure:
             observation(dom=relaunched(dom_of(state))),
             capability_id="browser",
             document_misses=None,
+            media=None,
         )
         assert evidence.signature_match is False
         assert (evidence.signature_missing, evidence.signature_extra) == (2, 1)
@@ -582,7 +594,14 @@ def replaying_capability(log: ReplayLog) -> BrowserCapability:
 
 async def verdict(capability: BrowserCapability, recorded: Any, restored: Any) -> Any:
     evidence = await capability.verify_restoration(recorded, restored)
-    return judge(2, [evidence], [], verify="strict", screenshot_max_distance=5)
+    return judge(
+        2,
+        [evidence],
+        [],
+        verify="strict",
+        screenshot_max_distance=5,
+        media_time_tolerance_s=1.0,
+    )
 
 
 class TestReasons:

@@ -78,6 +78,7 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
                 unknown.append(f"{prefix}: document misses not measured")
             elif misses > 0:
                 differences.append(f"{prefix}: {misses} document misses")
+            _media_gap(prefix, item.get("media"), differences, unknown)
         for index, action in enumerate(check.get("actions", [])):
             prefix = f"Action {index + 1}"
             if action.get("executed") is None:
@@ -100,6 +101,43 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
         "unmeasured": unknown,
         "verdict": check.get("verdict") if check else None,
     }
+
+
+def _media_gap(
+    prefix: str, media: dict[str, Any] | None, differences: list[str], unknown: list[str]
+) -> None:
+    """Media differences and alignment problems, measured facts only; no tolerance applied."""
+    if media is None:
+        return
+    comparisons = media.get("comparisons")
+    if comparisons is None:
+        unknown.append(f"{prefix}: media state not compared ({media.get('detail') or 'unknown'})")
+    for item in comparisons or []:
+        element = item.get("element", "?")
+        if item.get("correspondence") != "matched":
+            differences.append(f"{prefix}: media {element} {item.get('correspondence')}")
+            continue
+        if item.get("live"):
+            differences.append(f"{prefix}: media {element} is a live stream")
+        recorded, restored = item.get("recorded_time"), item.get("restored_time")
+        if recorded is None or restored is None:
+            unknown.append(f"{prefix}: media {element} position not measured")
+        elif recorded != restored:
+            differences.append(
+                f"{prefix}: media {element} at {restored:.3f} s, recorded {recorded:.3f} s"
+            )
+        if (
+            item.get("recorded_paused") is not None
+            and item.get("restored_paused") is not None
+            and item["recorded_paused"] != item["restored_paused"]
+        ):
+            differences.append(f"{prefix}: media {element} paused state changed")
+    for record in media.get("alignment") or []:
+        if record.get("outcome") in ("failed", "not_restorable"):
+            differences.append(
+                f"{prefix}: media {record.get('element', '?')} alignment {record['outcome']}"
+                + (f" ({record['detail']})" if record.get("detail") else "")
+            )
 
 
 def restoration_overview(records: list[dict[str, Any]], checkpoint: int) -> dict[str, Any]:

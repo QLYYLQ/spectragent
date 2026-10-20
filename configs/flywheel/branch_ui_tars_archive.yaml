@@ -49,6 +49,9 @@ agent:
         restorer_id: prefix_replay
         verify: strict                   # warn: record failed checks and go on
         screenshot_max_distance: 5       # Hamming distance of the 64-bit dHashes
+        media: align                     # none: do not align media before restored screenshots (control arm)
+        media_time_tolerance_s: 1.0      # seconds a media position may differ and still pass
+        media_seek_timeout_s: 2.0        # seconds an alignment seek (and play) may take
     llm:                                 # the teacher: model and sampling may differ from the source
       model_type: openai
       model: gpt-4o

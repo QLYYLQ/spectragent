@@ -22,7 +22,8 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
     browser_use = BrowserUseAgent.__new__(BrowserUseAgent)
     browser_use.observation_mode = "dom"
     rendered_browser_use = browser_use._render_browser_state(observation)
-    rendered_skyvern = SkyvernAgent._render_browser_state(observation)
+    skyvern = SkyvernAgent.__new__(SkyvernAgent)
+    rendered_skyvern = skyvern._render_browser_state(observation)
 
     assert "DOMState(" not in rendered_browser_use + rendered_skyvern
     assert "private-value" not in rendered_browser_use + rendered_skyvern

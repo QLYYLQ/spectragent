@@ -1,11 +1,11 @@
 {
   "action": "c279064a06237e1b",
   "action_translator": "8b4647ee44411815",
-  "agent": "b5433ecbdfa976ca",
+  "agent": "603aab1361b280f4",
   "agent_loop": "01255b697fe676b8",
   "archiver": "fc8f73a5d8d33043",
   "browser_provider": "abe7192410e29768",
-  "capability": "1f149e65cdd26ab9",
+  "capability": "7d94652870f41b50",
   "decision_model": "d0bfd24ab459bd65",
   "dom_cleaner": "9868b2e2cc4db2c1",
   "dom_serializer": "9e8cae871fc23b1e",
@@ -21,7 +21,7 @@
   "network_source": "a83ed1db312cef4c",
   "replay_reviewer": "4b6f6458df4a5610",
   "replayability": "d710fa36b830ce21",
-  "restorer": "27e434f302e2b0f2",
+  "restorer": "cc094e9a5466d01d",
   "step_selector": "3106a11dbc89defe",
   "task_loader": "910dce7500af9a47",
   "typing_rhythm": "59fc223ba445c2eb"

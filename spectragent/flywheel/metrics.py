@@ -890,6 +890,12 @@ class Fidelity(_Model):
     url_coverage: Ratio
     #: Verified steps with an actual element-signature comparison.
     signature_coverage: Ratio
+    #: Verified steps with an actual media-state comparison (not an absent one).
+    media_coverage: Ratio
+    #: Verified steps that failed ``media_mismatch``.
+    media_mismatches: int = 0
+    #: Media alignment records by outcome, over the verified steps.
+    media_alignment: dict[str, int] = {}
     #: Runs with a restoration check at every step from zero through the checkpoint.
     runs_reaching_checkpoint: Ratio
     #: Runs with complete checkpoint coverage and every check passed.
@@ -948,6 +954,9 @@ class _FidelityTally:
     exact_compared: int = 0
     urls: int = 0
     signatures: int = 0
+    media: int = 0
+    media_mismatches: int = 0
+    media_alignment: Counter[str] = field(default_factory=Counter)
     reaching: int = 0
     passing: int = 0
     failures: list[FirstFailure] = field(default_factory=list)
@@ -969,6 +978,9 @@ class _FidelityTally:
             ),
             url_coverage=ratio(self.urls, self.verified, empty="no verified step"),
             signature_coverage=ratio(self.signatures, self.verified, empty="no verified step"),
+            media_coverage=ratio(self.media, self.verified, empty="no verified step"),
+            media_mismatches=self.media_mismatches,
+            media_alignment=_counts(self.media_alignment),
             runs_reaching_checkpoint=ratio(self.reaching, self.runs, empty="no same-path run"),
             runs_passing=ratio(self.passing, self.runs, empty="no same-path run"),
             first_failures=sorted(self.failures, key=lambda item: item.run),
@@ -1031,13 +1043,21 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
         checked = [record for record in run.steps if record.restoration is not None]
         first: FirstFailure | None = None
         verified = ok = strict_ok = strict_compared = exact_ok = exact_compared = 0
-        urls = signatures = 0
+        urls = signatures = media = media_mismatches = 0
+        alignment: Counter[str] = Counter()
         for record in checked:
             check = record.restoration
             assert check is not None
             verified += 1
             urls += int(any(e.url_match is not None for e in check.evidence))
             signatures += int(any(e.signature_match is not None for e in check.evidence))
+            media += int(
+                any(e.media is not None and e.media.comparisons is not None for e in check.evidence)
+            )
+            media_mismatches += int("media_mismatch" in check.reasons)
+            for item in check.evidence:
+                if item.media is not None:
+                    alignment.update(a.outcome for a in item.media.alignment or [])
             if check.verdict == "ok":
                 ok += 1
             elif first is None:
@@ -1081,6 +1101,9 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
             tally.exact_compared += exact_compared
             tally.urls += urls
             tally.signatures += signatures
+            tally.media += media
+            tally.media_mismatches += media_mismatches
+            tally.media_alignment.update(alignment)
             tally.reaching += int(reaching)
             if unreadable is not None:
                 tally.skipped[run.rel] = unreadable

@@ -189,6 +189,20 @@ class SkyvernAgent(AgentBase):
             )
         ),
     ] = True
+    show_media_state: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Show the media playback state measured with the screenshot (each "
+                "audio and video element's frame, order, position, length and whether "
+                "it plays) after the page state every step. Off (the default): it is "
+                "still recorded with every screenshot and used to check restoration, "
+                "but never reaches the model. An explicit experiment variable: it "
+                "changes the prompt. Needs the screenshot fragment; without one the "
+                "block says the state was not measured."
+            )
+        ),
+    ] = False
 
     # ── internal state ─────────────────────────────────────────
     # ``task`` reaches every step via ``obs.task.user_request`` (loop
@@ -537,8 +551,7 @@ class SkyvernAgent(AgentBase):
         effect = effect_line(result, shown=self.show_action_effects)
         return f"{line} | effect: {effect}" if effect is not None else line
 
-    @staticmethod
-    def _render_browser_state(observation: Any) -> str:
+    def _render_browser_state(self, observation: Any) -> str:
         """Format the browser-state portion of the user message body.
 
         The page state (URL, title, tabs and the capture state) is the
@@ -546,7 +559,7 @@ class SkyvernAgent(AgentBase):
         is Skyvern's own.
         """
         parts: list[str] = []
-        page_state = render_browser_state(observation)
+        page_state = render_browser_state(observation, show_media_state=self.show_media_state)
         if page_state:
             parts.append(page_state)
 

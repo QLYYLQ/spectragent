@@ -95,6 +95,7 @@ class TestRestorationCheck:
             "retarget_ambiguous",
             "action_failed",
             "signature_mismatch",
+            "media_mismatch",
             "screenshot_distance",
         )
 

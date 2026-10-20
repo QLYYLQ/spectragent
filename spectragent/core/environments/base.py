@@ -215,6 +215,16 @@ class Environment(Protocol):
         """
         ...
 
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+        """Ask every ``RestorationAlignment`` capability to align the next observation to *recorded*.
+
+        Fans out in capability order; nothing happens without an implementer.
+        The alignment runs inside the next observation's capture and is
+        reported by the ``verify_restoration`` after it; the request never
+        reaches a later observation.
+        """
+        ...
+
     def get_action_space(
         self,
         *,

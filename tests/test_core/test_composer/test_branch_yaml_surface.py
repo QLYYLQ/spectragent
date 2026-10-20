@@ -81,6 +81,50 @@ class TestNestedUnions:
             loop.restorer.pace,
         ) == ("warn", 12, "recorded_llm_latency")
 
+    def test_the_media_knobs_reach_the_restorer(self, composer: ConfigComposer) -> None:
+        loop = _loop(
+            composer,
+            _branch(
+                restorer={
+                    "restorer_id": "prefix_replay",
+                    "media": "none",
+                    "media_time_tolerance_s": 2.5,
+                    "media_seek_timeout_s": 4.0,
+                }
+            ),
+        )
+        restorer = loop.restorer
+        assert (restorer.media, restorer.media_time_tolerance_s, restorer.media_seek_timeout_s) == (
+            "none",
+            2.5,
+            4.0,
+        )
+        defaulted = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"})).restorer
+        assert (defaulted.media, defaulted.media_time_tolerance_s) == ("align", 1.0)
+        assert defaulted.media_seek_timeout_s == 2.0
+
+    @pytest.mark.parametrize(
+        "knob",
+        [
+            {"media": "aligned"},
+            {"media_time_tolerance_s": -1},
+            {"media_seek_timeout_s": 0},
+        ],
+        ids=["media-value", "tolerance-range", "seek-timeout-range"],
+    )
+    def test_a_media_knob_outside_its_range_is_refused(
+        self, composer: ConfigComposer, knob: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            composer.top_level_type.model_validate(
+                _branch(restorer={"restorer_id": "prefix_replay", **knob})
+            )
+
+    def test_the_shipped_restoring_configs_write_media_align(self) -> None:
+        for path in (SHIPPED_BRANCH, CONFIG.parent / "flywheel" / "same_path_ui_tars_archive.yaml"):
+            raw = yaml.safe_load(path.read_text("utf-8"))
+            assert raw["agent"][0]["agent_loop"]["restorer"]["media"] == "align", path.name
+
     def test_a_hand_built_loop_gets_the_default_restorer(self) -> None:
         loop = BranchLoop()
         assert isinstance(loop.restorer, PrefixReplayRestorer)

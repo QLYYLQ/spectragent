@@ -1,0 +1,1109 @@
+"""Media playback state of a browser screenshot, and aligning it during restoration.
+
+``docs/architecture_design.md`` §4.4 "截图的媒体状态" and §4.14 "恢复：重定位与校验".
+A video keeps playing in real time, while the model thinks too; a same-path
+replay does not wait for the model, so the same step's screenshot shows the
+same player at another position (task 30 of the Xiaohongshu runs: the source
+at 00:41, the replay at 00:10) and the screenshot hash may still pass. So the
+playback state of every media element is measured with the screenshot,
+compared during restoration, and aligned to the recording where it can be.
+
+**Measuring** (:func:`read_media`, :func:`media_state`). The screenshot
+resolver reads every ``<video>`` / ``<audio>`` element just before and just
+after ``Page.captureScreenshot``, in the isolated world :data:`MEDIA_WORLD`
+(one per document, reused by name; page scripts neither see nor disturb it).
+A read walks the main document and every same-origin child frame it can enter
+(open shadow roots included), in document order. Each element records its
+frame (``main``, or a path of frame-element indexes such as ``main/1``), its
+order among the media elements of that frame, its box in the top viewport,
+its source kind (``url`` / ``blob`` / ``stream`` / ``none`` / ``other``), the
+URL of a ``url`` source, its duration and whether it is live (an infinite
+duration or a stream), and a :class:`MediaReading` from each read: the exact
+``currentTime``, ``paused``, ``seeking``, ``readyState`` and ``ended``. A
+frame the walk cannot enter (a cross-site iframe) is listed as unreachable.
+A read that runs out of ``media_state_timeout_s``, fails or answers with
+something else is ``unknown`` — never a reason for the screenshot to fail.
+
+**Matching** (:func:`match_media`). Across two observations an element
+corresponds to the candidates in the same frame whose box lies within the
+retarget tolerance, of the same source kind, with an equal URL when both are
+``url`` sources (``blob:`` URLs change on every load) and an equal duration
+when both are known. Exactly one candidate at the same document order is
+``matched``; none is ``missing``; several, or one at another order, is
+``ambiguous``. A restored element nothing corresponds to is ``extra``.
+
+**Aligning** (:func:`align_media`). Before a restored observation's
+screenshot, after the settle wait, each matched element is moved to the
+recorded position and play state: paused targets first (pause, seek, wait for
+``seeked``, ``seeking == false`` and ``readyState >= 2``), then playing ones
+(the same, then ``play()`` and wait for ``playing``), and the capture follows
+at once. ``currentTime`` alone is no proof: a seek into bytes the recording
+never fetched reports the target at once while ``seeking`` stays true and the
+frame never changes (measured on the site's player). A seek or play that does
+not complete within ``media_seek_timeout_s`` is ``failed``, and the element is
+put back where it was (which also stops the player's retry storm on the
+missing bytes). Every action is recorded.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Final, Literal
+
+from agent_cdp import CDPCommandProtocol
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from spectragent.schemas.restoration import (
+    MediaAlignment,
+    MediaComparison,
+    MediaEvidence,
+    MediaReadingPoint,
+)
+
+logger = logging.getLogger(__name__)
+
+#: The isolated world media is read and aligned in (``Page.createIsolatedWorld``):
+#: one per document, reused by name, invisible to the page's own scripts.
+MEDIA_WORLD: Final = "af-media"
+
+#: The most media elements one read reports; a page with more is ``truncated``.
+MAX_MEDIA_ELEMENTS: Final = 64
+#: The most unreachable frames one read reports.
+MAX_UNREACHABLE_FRAMES: Final = 32
+#: The longest media URL kept, in characters.
+MAX_MEDIA_URL_CHARS: Final = 2048
+#: Two durations or two positions this close are the same (float noise, not a tolerance).
+SAME_TIME_S: Final = 0.001
+#: The longest ``detail`` a record carries, in characters.
+_DETAIL_MAX_CHARS: Final = 240
+#: How long past its own budget the reply of an awaiting in-page call may take.
+_REPLY_GRACE_S: Final = 0.5
+
+#: The kind of source a media element plays: an ordinary URL, a ``blob:`` URL
+#: (script-fed media: the bytes come from the page's own requests), a stream
+#: (``srcObject``), no source, or something else (``data:``, ``file:`` …).
+MediaSource = Literal["url", "blob", "stream", "none", "other"]
+#: Whether a read around the screenshot produced an answer.
+MediaReadStatus = Literal["measured", "unknown"]
+
+
+# ── the in-page half ──────────────────────────────────────────────────
+
+#: Walks the documents it can enter and returns ``{frame path, element}`` pairs.
+#: Shared by the read and the alignment, so both find the same element by the
+#: same path and order.
+_WALK = """
+const afMediaWalk = (maxElements, maxFrames) => {
+  const media = [];
+  const unreachable = [];
+  let truncated = false;
+  const visit = (doc, path, offsetX, offsetY) => {
+    const found = [];
+    const frames = [];
+    const collect = (root) => {
+      for (const el of root.querySelectorAll('*')) {
+        const tag = el.tagName;
+        if (tag === 'VIDEO' || tag === 'AUDIO') found.push(el);
+        else if (tag === 'IFRAME' || tag === 'FRAME') frames.push(el);
+        if (el.shadowRoot) collect(el.shadowRoot);
+      }
+    };
+    collect(doc);
+    found.forEach((el, order) => {
+      if (media.length >= maxElements) { truncated = true; return; }
+      media.push({frame: path, order: order, el: el, offsetX: offsetX, offsetY: offsetY});
+    });
+    frames.forEach((frameEl, index) => {
+      const childPath = path + '/' + index;
+      let child = null;
+      try { child = frameEl.contentDocument; } catch (error) { child = null; }
+      const box = frameEl.getBoundingClientRect();
+      if (!child) {
+        if (unreachable.length < maxFrames) {
+          unreachable.push({frame: childPath, x: box.x + offsetX, y: box.y + offsetY,
+                            width: box.width, height: box.height});
+        }
+        return;
+      }
+      let padX = 0, padY = 0;
+      try {
+        const style = frameEl.ownerDocument.defaultView.getComputedStyle(frameEl);
+        padX = parseFloat(style.paddingLeft) || 0;
+        padY = parseFloat(style.paddingTop) || 0;
+      } catch (error) {}
+      visit(child, childPath,
+            offsetX + box.x + frameEl.clientLeft + padX,
+            offsetY + box.y + frameEl.clientTop + padY);
+    });
+  };
+  visit(document, 'main', 0, 0);
+  return {media: media, unreachable: unreachable, truncated: truncated};
+};
+const afMediaNumber = (value) =>
+  (typeof value === 'number' && Number.isFinite(value)) ? value : null;
+const afMediaReading = (el) => ({
+  current_time: afMediaNumber(el.currentTime),
+  paused: !!el.paused,
+  seeking: !!el.seeking,
+  ready_state: typeof el.readyState === 'number' ? el.readyState : null,
+  ended: !!el.ended,
+});
+"""
+
+_READ_PROBE = (
+    "(() => {"
+    + _WALK
+    + """
+  const walked = afMediaWalk(%(max_elements)d, %(max_frames)d);
+  const kind = (el) => {
+    if (el.srcObject) return 'stream';
+    const src = el.currentSrc || el.src || '';
+    if (!src) return 'none';
+    if (src.startsWith('blob:')) return 'blob';
+    if (/^https?:/i.test(src)) return 'url';
+    return 'other';
+  };
+  return {
+    elements: walked.media.map((item) => {
+      const el = item.el;
+      const box = el.getBoundingClientRect();
+      const source = kind(el);
+      const duration = el.duration;
+      return {
+        frame: item.frame,
+        order: item.order,
+        tag: el.tagName.toLowerCase(),
+        x: box.x + item.offsetX,
+        y: box.y + item.offsetY,
+        width: box.width,
+        height: box.height,
+        source_kind: source,
+        url: source === 'url' ? String(el.currentSrc || el.src).slice(0, %(max_url)d) : null,
+        duration: afMediaNumber(duration),
+        live: source === 'stream' || duration === Infinity,
+        reading: afMediaReading(el),
+      };
+    }),
+    unreachable_frames: walked.unreachable,
+    truncated: walked.truncated,
+  };
+})()
+"""
+)
+_READ_EXPRESSION: Final = _READ_PROBE % {
+    "max_elements": MAX_MEDIA_ELEMENTS,
+    "max_frames": MAX_UNREACHABLE_FRAMES,
+    "max_url": MAX_MEDIA_URL_CHARS,
+}
+
+#: Seek one element (by frame path and order) to a position, optionally play it,
+#: and report. ``target`` may be ``null``: only the play state is set.
+_ALIGN_PROBE = (
+    "(async (framePath, order, target, play, budgetMs) => {"
+    + _WALK
+    + """
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const walked = afMediaWalk(%(max_elements)d, 0);
+  const item = walked.media.find((m) => m.frame === framePath && m.order === order);
+  if (!item) return {found: false};
+  const el = item.el;
+  const before = afMediaReading(el);
+  let seeked = target === null;
+  let seekMs = null;
+  const seekStarted = performance.now();
+  if (target !== null) {
+    let fired = false;
+    const onSeeked = () => { fired = true; };
+    el.addEventListener('seeked', onSeeked);
+    try {
+      el.pause();
+      el.currentTime = target;
+      for (;;) {
+        if (fired && !el.seeking && el.readyState >= 2) { seekMs = performance.now() - seekStarted; break; }
+        if (performance.now() - seekStarted >= budgetMs) break;
+        await sleep(5);
+      }
+    } finally {
+      el.removeEventListener('seeked', onSeeked);
+    }
+    seeked = seekMs !== null;
+  } else if (!play) {
+    el.pause();
+  }
+  let played = null;
+  let playError = null;
+  if (seeked && play) {
+    let playing = false;
+    let started = false;
+    const onPlaying = () => { playing = true; };
+    el.addEventListener('playing', onPlaying);
+    const playStarted = performance.now();
+    try {
+      const promise = el.play();
+      if (promise && typeof promise.then === 'function') {
+        promise.then(() => { started = true; },
+                     (error) => { playError = String((error && error.name) || error); });
+      } else {
+        started = true;
+      }
+      for (;;) {
+        if (playError !== null) break;
+        if (playing && started && !el.paused) break;
+        if (performance.now() - playStarted >= budgetMs) break;
+        await sleep(5);
+      }
+    } finally {
+      el.removeEventListener('playing', onPlaying);
+    }
+    played = playError === null && playing && started && !el.paused;
+  }
+  return {found: true, before: before, seeked: seeked, seek_ms: seekMs,
+          played: played, play_error: playError, reached: afMediaReading(el)};
+})(%(frame)s, %(order)d, %(target)s, %(play)s, %(budget_ms)d)
+"""
+)
+
+
+# ── the record ────────────────────────────────────────────────────────
+
+
+class MediaRect(BaseModel):
+    """A box in the top-level viewport, CSS pixels."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class MediaReading(BaseModel):
+    """One media element at one instant; a field not measured is ``None``, never 0."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    current_time: float | None = None
+    paused: bool | None = None
+    seeking: bool | None = None
+    ready_state: int | None = None
+    ended: bool | None = None
+
+
+class MediaElementState(BaseModel):
+    """One ``<video>`` / ``<audio>`` element around one screenshot.
+
+    ``frame`` and ``order`` place it: the frame path (``main``, ``main/1`` …)
+    and its document order among that frame's media elements. ``url`` is
+    kept only for a ``url`` source (``source_kind``). ``duration`` is ``None`` when unknown;
+    ``live`` is an infinite duration or a stream, which has no position to
+    compare. ``before`` / ``after``: the readings taken just before and just
+    after the screenshot (``None``: that read did not see the element, or
+    did not answer).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    frame: str
+    order: int = Field(ge=0)
+    tag: Literal["video", "audio"]
+    rect: MediaRect
+    source_kind: MediaSource
+    url: str | None = None
+    duration: float | None = None
+    live: bool = False
+    before: MediaReading | None = None
+    after: MediaReading | None = None
+
+    @property
+    def label(self) -> str:
+        """How records name it: ``<frame>#<order> <tag>``."""
+        return element_label(self.frame, self.order, self.tag)
+
+    def reading(self, point: MediaReadingPoint) -> MediaReading | None:
+        return self.before if point == "before" else self.after
+
+
+class MediaFrameState(BaseModel):
+    """A child frame the read could not enter (a cross-site iframe): its media, if any, is unknown."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    frame: str
+    rect: MediaRect
+
+
+class MediaState(BaseModel):
+    """The media playback state of one screenshot (``ScreenshotObs.media``).
+
+    ``read_before`` / ``read_after``: whether each read around the
+    screenshot answered; ``detail`` says why one did not. ``truncated``: the
+    page had more than :data:`MAX_MEDIA_ELEMENTS` media elements and only
+    the first were kept.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    read_before: MediaReadStatus
+    read_after: MediaReadStatus
+    elements: list[MediaElementState] = Field(default_factory=list)
+    unreachable_frames: list[MediaFrameState] = Field(default_factory=list)
+    truncated: bool = False
+    detail: str | None = None
+
+    @property
+    def known(self) -> bool:
+        """Whether either read answered: a state with neither tells nothing."""
+        return self.read_before == "measured" or self.read_after == "measured"
+
+
+def element_label(frame: str, order: int, tag: str) -> str:
+    return f"{frame}#{order} {tag}"
+
+
+def _clip(text: str, limit: int = _DETAIL_MAX_CHARS) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# ── reading ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MediaRead:
+    """One read's answer, or why there is none (``error``)."""
+
+    elements: tuple[dict[str, Any], ...] = ()
+    unreachable: tuple[dict[str, Any], ...] = ()
+    truncated: bool = False
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+async def _bounded(reply: Any, timeout: float) -> Any:
+    return await asyncio.wait_for(reply, max(timeout, 0.0))
+
+
+async def _world(
+    cdp: CDPCommandProtocol, session_id: str | None, frame_id: str, timeout: float
+) -> int:
+    world = await _bounded(
+        cdp.send(
+            "Page.createIsolatedWorld",
+            {"frameId": frame_id, "worldName": MEDIA_WORLD},
+            session_id=session_id,
+        ),
+        timeout,
+    )
+    context = world.get("executionContextId") if isinstance(world, dict) else None
+    if not isinstance(context, int):
+        raise ValueError("the media world has no execution context")
+    return context
+
+
+def _value(reply: Any, what: str) -> Any:
+    if not isinstance(reply, dict):
+        raise ValueError(f"the {what} returned no result")
+    if reply.get("exceptionDetails"):
+        raise ValueError(f"the {what} raised in the page")
+    return (reply.get("result") or {}).get("value")
+
+
+async def read_media(
+    cdp: CDPCommandProtocol,
+    *,
+    session_id: str | None,
+    frame_id: str | None,
+    timeout_s: float,
+    clock: Callable[[], float] = time.monotonic,
+) -> MediaRead:
+    """Read every media element of the page, within *timeout_s*; never raises for the page's sake."""
+    if frame_id is None:
+        return MediaRead(error="the tab's main frame is not known")
+    deadline = clock() + max(timeout_s, 0.0)
+    try:
+        context = await _world(cdp, session_id, frame_id, deadline - clock())
+        reply = await _bounded(
+            cdp.send(
+                "Runtime.evaluate",
+                {"expression": _READ_EXPRESSION, "contextId": context, "returnByValue": True},
+                session_id=session_id,
+            ),
+            deadline - clock(),
+        )
+        value = _value(reply, "media read")
+    except TimeoutError:
+        return MediaRead(error=f"the media read got no answer within {timeout_s:g}s")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # measuring never fails the capture
+        logger.debug("media read (sid=%s) failed: %r", session_id, exc)
+        return MediaRead(error=_clip(f"the media read failed: {exc}"))
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("elements"), list)
+        or not isinstance(value.get("unreachable_frames"), list)
+    ):
+        return MediaRead(error="the media read returned no result")
+    return MediaRead(
+        elements=tuple(e for e in value["elements"] if isinstance(e, dict)),
+        unreachable=tuple(f for f in value["unreachable_frames"] if isinstance(f, dict)),
+        truncated=bool(value.get("truncated")),
+    )
+
+
+def _reading(raw: Any) -> MediaReading | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return MediaReading.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def _element_key(raw: dict[str, Any]) -> tuple[str, int] | None:
+    frame, order = raw.get("frame"), raw.get("order")
+    if not isinstance(frame, str) or not isinstance(order, int) or isinstance(order, bool):
+        return None
+    return frame, order
+
+
+def _element(raw: dict[str, Any], before: Any, after: Any) -> MediaElementState | None:
+    try:
+        return MediaElementState(
+            frame=raw["frame"],
+            order=raw["order"],
+            tag=raw["tag"],
+            rect=MediaRect(x=raw["x"], y=raw["y"], width=raw["width"], height=raw["height"]),
+            source_kind=raw["source_kind"],
+            url=raw.get("url"),
+            duration=raw.get("duration"),
+            live=bool(raw.get("live")),
+            before=_reading(before),
+            after=_reading(after),
+        )
+    except (KeyError, TypeError, ValidationError):
+        return None
+
+
+def media_state(before: MediaRead, after: MediaRead) -> MediaState:
+    """The screenshot's media state from the reads just before and just after it.
+
+    An element is placed by its first read (before, else after); its two
+    readings are joined by frame path and order. An element only one read
+    saw has ``None`` for the other reading.
+    """
+    by_key: dict[tuple[str, int], list[dict[str, Any] | None]] = {}
+    for index, read in enumerate((before, after)):
+        for raw in read.elements:
+            key = _element_key(raw)
+            if key is None:
+                continue
+            slot = by_key.setdefault(key, [None, None])
+            slot[index] = raw
+    elements: list[MediaElementState] = []
+    for pair in by_key.values():
+        place = pair[0] if pair[0] is not None else pair[1]
+        assert place is not None
+        element = _element(
+            place,
+            pair[0].get("reading") if pair[0] is not None else None,
+            pair[1].get("reading") if pair[1] is not None else None,
+        )
+        if element is not None:
+            elements.append(element)
+    elements.sort(key=lambda e: (e.frame, e.order))
+    frames: dict[str, MediaFrameState] = {}
+    for read in (before, after):
+        for raw in read.unreachable:
+            try:
+                frame = MediaFrameState(
+                    frame=raw["frame"],
+                    rect=MediaRect(
+                        x=raw["x"], y=raw["y"], width=raw["width"], height=raw["height"]
+                    ),
+                )
+            except (KeyError, TypeError, ValidationError):
+                continue
+            frames.setdefault(frame.frame, frame)
+    problems = [
+        f"{point}: {read.error}"
+        for point, read in (("before", before), ("after", after))
+        if read.error is not None
+    ]
+    return MediaState(
+        read_before="measured" if before.ok else "unknown",
+        read_after="measured" if after.ok else "unknown",
+        elements=elements,
+        unreachable_frames=sorted(frames.values(), key=lambda f: f.frame),
+        truncated=before.truncated or after.truncated,
+        detail=_clip("; ".join(problems)) if problems else None,
+    )
+
+
+# ── matching ──────────────────────────────────────────────────────────
+
+
+def _within(a: MediaRect, b: MediaRect, tolerance_px: float) -> bool:
+    return (
+        abs(a.x - b.x) <= tolerance_px
+        and abs(a.y - b.y) <= tolerance_px
+        and abs(a.width - b.width) <= tolerance_px
+        and abs(a.height - b.height) <= tolerance_px
+    )
+
+
+def _same_source(a: MediaElementState, b: MediaElementState) -> bool:
+    if a.source_kind != b.source_kind or a.tag != b.tag:
+        return False
+    if a.source_kind == "url" and a.url is not None and b.url is not None and a.url != b.url:
+        return False
+    return not (
+        a.duration is not None
+        and b.duration is not None
+        and abs(a.duration - b.duration) > SAME_TIME_S
+    )
+
+
+@dataclass(frozen=True)
+class MediaMatch:
+    """How one element corresponds across the two states (:func:`match_media`)."""
+
+    correspondence: Literal["matched", "missing", "extra", "ambiguous"]
+    recorded: MediaElementState | None
+    restored: MediaElementState | None
+    detail: str = ""
+
+    @property
+    def label(self) -> str:
+        element = self.recorded if self.recorded is not None else self.restored
+        assert element is not None
+        return element.label
+
+
+def match_media(
+    recorded: Sequence[MediaElementState],
+    restored: Sequence[MediaElementState],
+    *,
+    tolerance_px: float,
+) -> list[MediaMatch]:
+    """Every recorded element's counterpart, then the restored elements nothing matched.
+
+    Candidates share the frame, lie within *tolerance_px* on all four box
+    values and have the same source (kind and tag; an equal URL for two
+    ``url`` sources; an equal duration when both are known). Exactly one
+    candidate at the same document order is ``matched``; none ``missing``;
+    otherwise ``ambiguous``. A restored element that is the matched
+    counterpart of no recorded one is ``extra``.
+    """
+    matches: list[MediaMatch] = []
+    used: set[tuple[str, int]] = set()
+    for element in recorded:
+        candidates = [
+            other
+            for other in restored
+            if other.frame == element.frame
+            and _within(element.rect, other.rect, tolerance_px)
+            and _same_source(element, other)
+        ]
+        if not candidates:
+            matches.append(
+                MediaMatch(
+                    "missing",
+                    element,
+                    None,
+                    "no media element in the same frame, place and source",
+                )
+            )
+        elif len(candidates) == 1 and candidates[0].order == element.order:
+            used.add((candidates[0].frame, candidates[0].order))
+            matches.append(MediaMatch("matched", element, candidates[0]))
+        else:
+            orders = ", ".join(str(c.order) for c in candidates)
+            matches.append(
+                MediaMatch(
+                    "ambiguous",
+                    element,
+                    None,
+                    f"{len(candidates)} candidate(s) at document order {orders}; "
+                    f"recorded order {element.order}",
+                )
+            )
+    for other in restored:
+        if (other.frame, other.order) not in used:
+            matches.append(
+                MediaMatch("extra", None, other, "no recorded media element corresponds to it")
+            )
+    return matches
+
+
+def _common_point(
+    recorded: MediaElementState, restored: MediaElementState
+) -> MediaReadingPoint | None:
+    for point in ("before", "after"):
+        if recorded.reading(point) is not None and restored.reading(point) is not None:
+            return point
+    return None
+
+
+def compare_media(
+    recorded: MediaState | None,
+    restored: MediaState | None,
+    *,
+    tolerance_px: float,
+) -> tuple[list[MediaComparison] | None, str]:
+    """Element by element comparison of two screenshots' media states, or ``None`` and why.
+
+    Measures only — positions and play states side by side; the restorer
+    judges them against its tolerance (``loops/restore/checks.py``).
+    """
+    if recorded is None or restored is None:
+        side = "recorded" if recorded is None else "restored"
+        return None, f"the {side} screenshot carries no media state"
+    for side, state in (("recorded", recorded), ("restored", restored)):
+        if not state.known:
+            return None, f"the {side} media state is unknown ({state.detail or 'no read answered'})"
+    comparisons: list[MediaComparison] = []
+    for match in match_media(recorded.elements, restored.elements, tolerance_px=tolerance_px):
+        if match.correspondence != "matched":
+            element = match.recorded if match.recorded is not None else match.restored
+            assert element is not None
+            comparisons.append(
+                MediaComparison(
+                    element=match.label,
+                    correspondence=match.correspondence,
+                    live=element.live,
+                    detail=match.detail,
+                )
+            )
+            continue
+        assert match.recorded is not None and match.restored is not None
+        point = _common_point(match.recorded, match.restored)
+        before = match.recorded.reading(point) if point else None
+        after = match.restored.reading(point) if point else None
+        comparisons.append(
+            MediaComparison(
+                element=match.label,
+                correspondence="matched",
+                live=match.recorded.live or match.restored.live,
+                reading=point,
+                recorded_time=before.current_time if before else None,
+                restored_time=after.current_time if after else None,
+                recorded_paused=before.paused if before else None,
+                restored_paused=after.paused if after else None,
+                detail="" if point else "no reading both sides took at the same point",
+            )
+        )
+    return comparisons, ""
+
+
+def media_evidence(
+    recorded: MediaState | None,
+    restored: MediaState | None,
+    *,
+    tolerance_px: float,
+    alignment: list[MediaAlignment] | None,
+    alignment_detail: str = "",
+) -> MediaEvidence:
+    comparisons, detail = compare_media(recorded, restored, tolerance_px=tolerance_px)
+    return MediaEvidence(
+        comparisons=comparisons,
+        detail=detail,
+        alignment=alignment,
+        alignment_detail=alignment_detail,
+    )
+
+
+# ── aligning ──────────────────────────────────────────────────────────
+
+
+@dataclass
+class AlignmentReport:
+    """What one alignment did, for the next restoration check."""
+
+    records: list[MediaAlignment] = field(default_factory=list)
+    detail: str = ""
+
+
+@dataclass
+class PendingAlignment:
+    """An alignment a restorer requested for the next observation (``align_next_observation``).
+
+    It belongs to exactly one observation cycle: the first one opened after
+    the request (:meth:`bind`). The capture of that cycle aligns once and
+    keeps the :attr:`report`; the next restoration check takes it. A request
+    still pending when a later cycle opens is dropped, so an alignment never
+    reaches an observation after the one it was requested for.
+    """
+
+    recorded: MediaState | None
+    seek_timeout_s: float
+    cycle: int | None = None
+    report: AlignmentReport | None = None
+
+    def bind(self, cycle: int) -> bool:
+        """Belong to *cycle* if unbound; whether this request still applies to *cycle*."""
+        if self.cycle is None:
+            self.cycle = cycle
+        return self.cycle == cycle
+
+    def due(self, cycle: int) -> bool:
+        """Whether the capture of *cycle* still has to align."""
+        return self.cycle == cycle and self.report is None
+
+    def take(self) -> AlignmentReport:
+        """What was aligned; a request no capture acted on says so."""
+        if self.report is not None:
+            return self.report
+        return AlignmentReport(detail="no capture ran after the alignment was requested")
+
+
+def _target(element: MediaElementState) -> MediaReading | None:
+    """The recorded reading to align to: the one just before the screenshot, else just after."""
+    for reading in (element.before, element.after):
+        if reading is not None and reading.current_time is not None and reading.paused is not None:
+            return reading
+    return None
+
+
+async def _call_align(
+    cdp: CDPCommandProtocol,
+    *,
+    session_id: str | None,
+    frame_id: str,
+    element: MediaElementState,
+    target: float | None,
+    play: bool,
+    budget_s: float,
+) -> dict[str, Any]:
+    expression = _ALIGN_PROBE % {
+        "max_elements": MAX_MEDIA_ELEMENTS,
+        "frame": json.dumps(element.frame),
+        "order": element.order,
+        "target": "null" if target is None else repr(float(target)),
+        "play": "true" if play else "false",
+        "budget_ms": max(1, round(budget_s * 1000)),
+    }
+    context = await _world(cdp, session_id, frame_id, budget_s + _REPLY_GRACE_S)
+    reply = await _bounded(
+        cdp.send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "contextId": context,
+                "awaitPromise": True,
+                "returnByValue": True,
+            },
+            session_id=session_id,
+        ),
+        2 * budget_s + _REPLY_GRACE_S,
+    )
+    value = _value(reply, "media alignment")
+    if not isinstance(value, dict):
+        raise ValueError("the media alignment returned no result")
+    return value
+
+
+async def align_media(
+    cdp: CDPCommandProtocol,
+    *,
+    session_id: str | None,
+    frame_id: str | None,
+    recorded: MediaState | None,
+    tolerance_px: float,
+    read_timeout_s: float,
+    seek_timeout_s: float,
+) -> AlignmentReport:
+    """Move every matched media element to its recorded position and play state (module docstring).
+
+    Never raises for the page's sake: what cannot be done is recorded.
+    """
+    if recorded is None:
+        return AlignmentReport(detail="the recorded screenshot carries no media state")
+    if not recorded.known:
+        return AlignmentReport(
+            detail=f"the recorded media state is unknown ({recorded.detail or 'no read answered'})"
+        )
+    live = await read_media(cdp, session_id=session_id, frame_id=frame_id, timeout_s=read_timeout_s)
+    if not live.ok:
+        return AlignmentReport(
+            records=[
+                MediaAlignment(
+                    element=e.label,
+                    outcome="unknown",
+                    detail=_clip(f"the page's media could not be read: {live.error}"),
+                )
+                for e in recorded.elements
+            ],
+            detail=_clip(f"the page's media could not be read: {live.error}"),
+        )
+    assert frame_id is not None  # read_media refuses an unknown frame
+    current = media_state(live, MediaRead(error="not read"))
+    report = AlignmentReport(
+        detail="" if recorded.elements else "no media element was recorded on this screenshot"
+    )
+    planned: list[tuple[MediaElementState, MediaElementState, MediaReading]] = []
+    for match in match_media(recorded.elements, current.elements, tolerance_px=tolerance_px):
+        if match.correspondence == "extra":
+            continue
+        element = match.recorded
+        assert element is not None
+        if match.correspondence != "matched":
+            report.records.append(
+                MediaAlignment(
+                    element=element.label,
+                    outcome="not_restorable",
+                    detail=_clip(f"{match.correspondence}: {match.detail}"),
+                )
+            )
+            continue
+        assert match.restored is not None
+        if element.live or match.restored.live:
+            report.records.append(
+                MediaAlignment(
+                    element=element.label,
+                    outcome="not_restorable",
+                    detail="a live stream has no position to align",
+                )
+            )
+            continue
+        target = _target(element)
+        now = match.restored.before
+        if target is None:
+            report.records.append(
+                MediaAlignment(
+                    element=element.label,
+                    outcome="unknown",
+                    from_time=now.current_time if now else None,
+                    from_paused=now.paused if now else None,
+                    detail="the recorded position or play state is not known",
+                )
+            )
+            continue
+        assert target.current_time is not None
+        if (
+            now is not None
+            and now.current_time is not None
+            and now.paused == target.paused
+            and abs(now.current_time - target.current_time) <= SAME_TIME_S
+        ):
+            report.records.append(
+                MediaAlignment(
+                    element=element.label,
+                    outcome="already_aligned",
+                    target_time=target.current_time,
+                    target_paused=target.paused,
+                    from_time=now.current_time,
+                    from_paused=now.paused,
+                    reached_time=now.current_time,
+                    reached_paused=now.paused,
+                    ready_state=now.ready_state,
+                    seeking=now.seeking,
+                )
+            )
+            continue
+        planned.append((element, match.restored, target))
+    # Paused targets first: a playing one aligned last drifts least before the capture.
+    planned.sort(key=lambda item: not bool(item[2].paused))
+    for element, restored, target in planned:
+        report.records.append(
+            await _align_one(
+                cdp,
+                session_id=session_id,
+                frame_id=frame_id,
+                recorded=element,
+                restored=restored,
+                target=target,
+                seek_timeout_s=seek_timeout_s,
+            )
+        )
+    return report
+
+
+def alignment_raised(recorded: MediaState | None, error: BaseException) -> AlignmentReport:
+    """The report of an alignment that raised part way: every recorded element ``failed``.
+
+    Where each element was left is not known, so none may pass.
+    """
+    detail = _clip(f"the alignment raised {type(error).__name__}: {error}")
+    elements = recorded.elements if recorded is not None else []
+    return AlignmentReport(
+        records=[
+            MediaAlignment(element=e.label, outcome="failed", detail=detail) for e in elements
+        ],
+        detail=detail,
+    )
+
+
+async def _align_one(
+    cdp: CDPCommandProtocol,
+    *,
+    session_id: str | None,
+    frame_id: str,
+    recorded: MediaElementState,
+    restored: MediaElementState,
+    target: MediaReading,
+    seek_timeout_s: float,
+) -> MediaAlignment:
+    play = target.paused is False
+    action: Literal["pause_and_seek", "seek_and_play"] = (
+        "seek_and_play" if play else "pause_and_seek"
+    )
+    base: dict[str, Any] = {
+        "element": recorded.label,
+        "action": action,
+        "target_time": target.current_time,
+        "target_paused": target.paused,
+    }
+    try:
+        result = await _call_align(
+            cdp,
+            session_id=session_id,
+            frame_id=frame_id,
+            element=restored,
+            target=target.current_time,
+            play=play,
+            budget_s=seek_timeout_s,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        now = restored.before or MediaReading()
+        rolled_back = await _roll_back(
+            cdp,
+            session_id=session_id,
+            frame_id=frame_id,
+            element=restored,
+            before=now,
+            seek_timeout_s=seek_timeout_s,
+        )
+        return MediaAlignment(
+            **base,
+            outcome="failed",
+            from_time=now.current_time,
+            from_paused=now.paused,
+            rolled_back=rolled_back,
+            detail=_clip(f"the alignment did not answer: {type(exc).__name__}: {exc}"),
+        )
+    if not result.get("found"):
+        return MediaAlignment(
+            **base,
+            outcome="not_restorable",
+            detail="the element was gone when it was to be aligned",
+        )
+    before = _reading(result.get("before")) or MediaReading()
+    reached = _reading(result.get("reached")) or MediaReading()
+    seek_ms = result.get("seek_ms")
+    seek_ms = float(seek_ms) if isinstance(seek_ms, int | float) else None
+    completed = bool(result.get("seeked")) and (not play or result.get("played") is True)
+    record: dict[str, Any] = {
+        **base,
+        "from_time": before.current_time,
+        "from_paused": before.paused,
+        "reached_time": reached.current_time,
+        "reached_paused": reached.paused,
+        "ready_state": reached.ready_state,
+        "seeking": reached.seeking,
+        "seek_ms": seek_ms,
+    }
+    if completed:
+        detail = (
+            "played after the seek; the player may show its controls"
+            if play
+            else "paused and seeked"
+        )
+        return MediaAlignment(**record, outcome="aligned", detail=detail)
+    if not result.get("seeked"):
+        why = (
+            f"the seek did not complete within {seek_timeout_s:g}s "
+            f"(seeking {reached.seeking}, readyState {reached.ready_state})"
+        )
+    else:
+        why = f"play did not start within {seek_timeout_s:g}s" + (
+            f" ({result.get('play_error')})" if result.get("play_error") else ""
+        )
+    rolled_back = await _roll_back(
+        cdp,
+        session_id=session_id,
+        frame_id=frame_id,
+        element=restored,
+        before=before,
+        seek_timeout_s=seek_timeout_s,
+    )
+    return MediaAlignment(
+        **record,
+        outcome="failed",
+        rolled_back=rolled_back,
+        detail=_clip(
+            why
+            + ("; put back where it was" if rolled_back else "; putting it back did not complete")
+        ),
+    )
+
+
+async def _roll_back(
+    cdp: CDPCommandProtocol,
+    *,
+    session_id: str | None,
+    frame_id: str,
+    element: MediaElementState,
+    before: MediaReading,
+    seek_timeout_s: float,
+) -> bool:
+    """Seek back to the position before alignment and restore its play state; whether that completed."""
+    play = before.paused is False
+    try:
+        result = await _call_align(
+            cdp,
+            session_id=session_id,
+            frame_id=frame_id,
+            element=element,
+            target=before.current_time,
+            play=play,
+            budget_s=seek_timeout_s,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.debug("media roll-back of %s failed: %r", element.label, exc)
+        return False
+    return (
+        bool(result.get("found"))
+        and bool(result.get("seeked"))
+        and (not play or result.get("played") is True)
+    )
+
+
+__all__ = [
+    "MAX_MEDIA_ELEMENTS",
+    "MAX_MEDIA_URL_CHARS",
+    "MAX_UNREACHABLE_FRAMES",
+    "MEDIA_WORLD",
+    "SAME_TIME_S",
+    "AlignmentReport",
+    "MediaElementState",
+    "MediaFrameState",
+    "MediaMatch",
+    "MediaRead",
+    "MediaReadStatus",
+    "MediaReading",
+    "MediaRect",
+    "MediaSource",
+    "MediaState",
+    "PendingAlignment",
+    "align_media",
+    "alignment_raised",
+    "compare_media",
+    "element_label",
+    "match_media",
+    "media_evidence",
+    "media_state",
+    "read_media",
+]

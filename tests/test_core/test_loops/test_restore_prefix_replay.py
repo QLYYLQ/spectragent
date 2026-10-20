@@ -92,6 +92,9 @@ class _Env:
         self.observed += 1
         return f"live-{self.observed - 1}"
 
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+        self.log.append(("align", recorded, media_seek_timeout_s))
+
     async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
         self.log.append(("verify", recorded, restored))
         step = int(str(recorded).rsplit("-", 1)[1])
@@ -142,16 +145,19 @@ class TestOrder:
         steps = await _collect(PrefixReplayRestorer(), _ctx(env, _act(log), source, 2))
 
         assert log == [
+            ("align", "recorded-0", 2.0),
             ("observe", 0),
             ("verify", "recorded-0", "live-0"),
             ("retarget", 0, "recorded-0", "live-0"),
             ("act", 1000),
             ("retarget", 1, "recorded-0", "live-0"),
             ("act", 1001),
+            ("align", "recorded-1", 2.0),
             ("observe", 1),
             ("verify", "recorded-1", "live-1"),
             ("retarget", 10, "recorded-1", "live-1"),
             ("act", 1010),
+            ("align", "recorded-2", 2.0),
             ("observe", 2),
             ("verify", "recorded-2", "live-2"),
         ]
@@ -171,7 +177,11 @@ class TestOrder:
     async def test_a_checkpoint_at_step_zero_only_observes(self) -> None:
         log: list[tuple[Any, ...]] = []
         steps = await _collect(PrefixReplayRestorer(), _ctx(_Env(log), _act(log), _Source([]), 0))
-        assert log == [("observe", 0), ("verify", "recorded-0", "live-0")]
+        assert log == [
+            ("align", "recorded-0", 2.0),
+            ("observe", 0),
+            ("verify", "recorded-0", "live-0"),
+        ]
         assert [s.step for s in steps] == [0]
         assert steps[0].check.actions == []
 
@@ -628,4 +638,58 @@ class TestTheContext:
             "verify",
             "screenshot_max_distance",
             "pace",
+            "media",
+            "media_time_tolerance_s",
+            "media_seek_timeout_s",
         }
+
+
+class TestMediaAlignment:
+    """``media: align`` requests an alignment before every restored observation, and nothing more."""
+
+    async def test_media_align_is_the_default_and_covers_the_checkpoint(self) -> None:
+        log: list[tuple[Any, ...]] = []
+        restorer = PrefixReplayRestorer(media_seek_timeout_s=0.5)
+        assert restorer.media == "align" and restorer.media_time_tolerance_s == 1.0
+        await _collect(restorer, _ctx(_Env(log), _act(log), _Source([_record(0)]), 1))
+        aligned = [entry for entry in log if entry[0] == "align"]
+        assert aligned == [("align", "recorded-0", 0.5), ("align", "recorded-1", 0.5)]
+        # Each request is followed by the observation it belongs to, and nothing after t asks.
+        assert [entry[0] for entry in log][-3:] == ["align", "observe", "verify"]
+
+    async def test_media_none_requests_nothing(self) -> None:
+        log: list[tuple[Any, ...]] = []
+        await _collect(
+            PrefixReplayRestorer(media="none"),
+            _ctx(_Env(log), _act(log), _Source([_record(0)]), 1),
+        )
+        assert [entry for entry in log if entry[0] == "align"] == []
+
+    async def test_the_media_tolerance_decides_a_position_difference(self) -> None:
+        from spectragent.schemas.restoration import MediaComparison, MediaEvidence
+
+        media = MediaEvidence(
+            comparisons=[
+                MediaComparison(
+                    element="main#0 video",
+                    correspondence="matched",
+                    reading="before",
+                    recorded_time=41.0,
+                    restored_time=10.0,
+                    recorded_paused=True,
+                    restored_paused=True,
+                )
+            ]
+        )
+        evidence = {0: RestorationEvidence(capability_id="cap", media=media)}
+
+        async def verdict(tolerance: float) -> list[Any]:
+            log: list[tuple[Any, ...]] = []
+            steps = await _collect(
+                PrefixReplayRestorer(verify="warn", media_time_tolerance_s=tolerance),
+                _ctx(_Env(log, evidence=evidence), _act(log), _Source([_record(0)]), 1),
+            )
+            return steps[0].check.reasons
+
+        assert await verdict(1.0) == ["media_mismatch"]
+        assert await verdict(60.0) == []

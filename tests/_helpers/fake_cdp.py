@@ -37,7 +37,9 @@ test fires).
 
 And the observation's settle wait (``settle.py``): its isolated world, and its
 in-page probe, which reports the page quiet at once
-(:attr:`FakeBrowser.settle_answer`, changeable per test).
+(:attr:`FakeBrowser.settle_answer`, changeable per test). And the screenshot's
+media reads (``media.py``): their isolated world and a page without audio or
+video (:attr:`FakeBrowser.media_answer`).
 
 And the measurement of the browser's defaults right after launch
 (``backends/browser_defaults.py``): its isolated world and its probe, answered
@@ -69,6 +71,7 @@ from typing import Any
 from spectragent.core.capabilities.browser.backends.browser_defaults import DEFAULTS_WORLD
 from spectragent.core.capabilities.browser.client_hints import CLIENT_HINTS_WORLD
 from spectragent.core.capabilities.browser.color_scheme import COLOR_SCHEME_WORLD
+from spectragent.core.capabilities.browser.media import MEDIA_WORLD
 from spectragent.core.capabilities.browser.platform import PLATFORM_WORLD
 from spectragent.core.capabilities.browser.settle import SETTLE_WORLD
 
@@ -356,6 +359,15 @@ class FakeBrowser:
             "waited_ms": 0,
             "mutations": 0,
             "resources": 0,
+        }
+        #: Execution contexts of the screenshot's media world, and the reads made in them.
+        self.media_contexts: set[int] = set()
+        self.media_reads = 0
+        #: What a media read returns: a page without audio or video.
+        self.media_answer: dict[str, Any] = {
+            "elements": [],
+            "unreachable_frames": [],
+            "truncated": False,
         }
         #: What the page reports to the fingerprint probe.
         self.timezone = "UTC"
@@ -651,6 +663,10 @@ class FakeBrowser:
                 context = 5000 + len(self.settle_contexts) + 1
                 self.settle_contexts.add(context)
                 return {"executionContextId": context}
+            if params.get("worldName") == MEDIA_WORLD:
+                context = 15000 + len(self.media_contexts) + 1
+                self.media_contexts.add(context)
+                return {"executionContextId": context}
             self.isolated_worlds += 1
             return {"executionContextId": 1000 + self.isolated_worlds}
         if method == "Runtime.evaluate":
@@ -666,6 +682,13 @@ class FakeBrowser:
             if params.get("contextId") in self.settle_contexts:
                 self.settle_probes += 1
                 return {"result": {"type": "object", "value": dict(self.settle_answer)}}
+            if params.get("contextId") in self.media_contexts:
+                if "framePath" in str(params.get("expression") or ""):
+                    return {"result": {"type": "object", "value": {"found": False}}}
+                self.media_reads += 1
+                return {
+                    "result": {"type": "object", "value": json.loads(json.dumps(self.media_answer))}
+                }
             expression = str(params.get("expression") or "")
             if "devicePixelRatio ||" in expression:
                 return {"result": {"type": "number", "value": self.device_pixel_ratio}}

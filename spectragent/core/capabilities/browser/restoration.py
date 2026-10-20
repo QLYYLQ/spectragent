@@ -28,8 +28,10 @@ it.
 
 **Measure** (:func:`measure`). URL equality, the multiset of interactive
 element signatures, the Hamming distance between the two screenshots'
-64-bit difference hashes (:func:`dhash`), and the main-frame document
-misses the capability counted since its last measurement. Every measure is
+64-bit difference hashes (:func:`dhash`), the main-frame document
+misses the capability counted since its last measurement, and the two
+screenshots' media playback states with the media alignment done before the
+restored capture (:func:`media_measure`, ``media.py``). Every measure is
 ``None`` when its fragment (or its bytes) is absent on either side. Never a
 verdict: thresholds and ``strict | warn`` are the restorer's.
 """
@@ -46,6 +48,7 @@ from typing import Any, Final
 from PIL import Image, UnidentifiedImageError
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMRect
+from spectragent.core.capabilities.browser.media import media_evidence
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
@@ -53,7 +56,12 @@ from spectragent.core.capabilities.browser.observations import (
 )
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import fragment_field_name
-from spectragent.schemas.restoration import RestorationEvidence, Retarget
+from spectragent.schemas.restoration import (
+    MediaAlignment,
+    MediaEvidence,
+    RestorationEvidence,
+    Retarget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -330,14 +338,48 @@ def observation_url(observation: Any) -> str | None:
     return meta.url if meta is not None and meta.url else None
 
 
+def media_measure(
+    recorded: Any,
+    restored: Any,
+    *,
+    tolerance_px: float,
+    alignment: list[MediaAlignment] | None,
+    alignment_detail: str = "",
+) -> MediaEvidence | None:
+    """The two screenshots' media states compared, with the alignment done before the restored one.
+
+    ``None`` when neither observation has a screenshot and nothing was
+    aligned: there is no media evidence to give. A screenshot without media
+    state (evidence from before the field) makes ``comparisons`` ``None``,
+    not a match.
+    """
+    shots = (screenshot_fragment(recorded), screenshot_fragment(restored))
+    if shots[0] is None and shots[1] is None and alignment is None:
+        return None
+    return media_evidence(
+        shots[0].media if shots[0] is not None else None,
+        shots[1].media if shots[1] is not None else None,
+        tolerance_px=tolerance_px,
+        alignment=alignment,
+        alignment_detail=alignment_detail,
+    )
+
+
 def measure(
-    recorded: Any, restored: Any, *, capability_id: str, document_misses: int | None
+    recorded: Any,
+    restored: Any,
+    *,
+    capability_id: str,
+    document_misses: int | None,
+    media: MediaEvidence | None,
 ) -> RestorationEvidence:
     """What the browser measures between a recorded and a restored observation.
 
     ``document_misses`` is the capability's own count of main-frame document
     misses since its last measurement (``None`` when the network is live);
-    the rest is read from the two observations.
+    ``media`` is :func:`media_measure`'s comparison with the alignment the
+    capability did since its last measurement; the rest is read from the
+    two observations.
     """
     recorded_url, restored_url = observation_url(recorded), observation_url(restored)
     url_match: bool | None = None
@@ -362,6 +404,7 @@ def measure(
         signature_extra=extra,
         screenshot_distance=screenshot_distance(recorded, restored),
         document_misses=document_misses,
+        media=media,
     )
 
 
@@ -377,6 +420,7 @@ __all__ = [
     "element_signature",
     "hamming",
     "measure",
+    "media_measure",
     "meta_fragment",
     "observation_url",
     "retarget_action",

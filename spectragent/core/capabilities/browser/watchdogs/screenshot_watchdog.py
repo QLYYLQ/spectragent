@@ -39,6 +39,7 @@ from typing import ClassVar, Literal
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
+from spectragent.core.capabilities.browser.media import MediaRead, media_state, read_media
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
@@ -89,7 +90,11 @@ class ScreenshotWatchdog(BrowserWatchdog):
         cursor: bool = False,
         cursor_size: int = 32,
         cursor_position_getter: Callable[[], tuple[int, int] | None] | None = None,
+        media_timeout_s: float = 1.0,
+        main_frame_id_getter: Callable[[], str | None] | None = None,
     ) -> None:
+        self._media_timeout_s = media_timeout_s
+        self._main_frame_id_getter = main_frame_id_getter
         self._cursor = cursor
         self._cursor_size = cursor_size
         self._cursor_position_getter = cursor_position_getter
@@ -109,6 +114,8 @@ class ScreenshotWatchdog(BrowserWatchdog):
             cursor=ctx.screenshot_cursor,
             cursor_size=ctx.screenshot_cursor_size,
             cursor_position_getter=ctx.pointer_position.snapshot,
+            media_timeout_s=ctx.media_state_timeout_s,
+            main_frame_id_getter=ctx.main_frame_id_getter,
         )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
@@ -165,7 +172,12 @@ class ScreenshotWatchdog(BrowserWatchdog):
                 if self._cursor and self._cursor_position_getter
                 else None
             )
+            # Media playback state just before and just after the pixels (§4.4
+            # "截图的媒体状态"): a read that does not answer is unknown, never a
+            # failed screenshot.
+            media_before = await self._read_media()
             screenshot = await self._capture(timeout=_SCREENSHOT_COMMAND_TIMEOUT_S)
+            media_after = await self._read_media()
             width, height = self._viewport
             image_width, image_height = image_size(screenshot)
             document = await self._document_after_capture()
@@ -187,6 +199,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
                         image_width=image_width,
                         image_height=image_height,
                         source_url=document.url if document and document.url else None,
+                        media=media_state(media_before, media_after),
                     ),
                 },
                 document=document,
@@ -194,6 +207,16 @@ class ScreenshotWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.error("Screenshot capture failed: %s", exc)
             raise
+
+    async def _read_media(self) -> MediaRead:
+        """Every media element of the tab, within ``media_state_timeout_s`` (``media.py``)."""
+        frame_id = self._main_frame_id_getter() if self._main_frame_id_getter else None
+        return await read_media(
+            self._cdp,
+            session_id=self._session_id,
+            frame_id=frame_id,
+            timeout_s=self._media_timeout_s,
+        )
 
     async def _document_after_capture(self) -> DocumentStamp | None:
         """The main frame's loader and URL, read right after the capture.

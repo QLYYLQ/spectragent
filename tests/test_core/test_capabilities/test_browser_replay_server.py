@@ -336,6 +336,39 @@ class TestAnswering:
         assert entry["kind"] == "hit" and entry["range"] == "bytes 100-199/200"
         await recorder.close()
 
+    async def test_an_uncovered_range_miss_names_the_bytes_asked_for(
+        self, source_run: Path
+    ) -> None:
+        """A retry storm on one gap reads as one requested range asked again, not as many gaps."""
+        _browser, recorder, client, server, sid = await _serving(source_run)
+        for request_id in ("qw1", "qw2"):
+            _pause(
+                client,
+                sid,
+                request_id,
+                "http://shop.test/clip.mp4",
+                resource_type="Media",
+                headers={"Range": "bytes=250-"},
+            )
+        await _settle()
+        entries = _log(server)
+        assert [(e["kind"], e["reason"], e["requested_range"]) for e in entries] == [
+            ("miss", "range_uncovered", "bytes=250-"),
+            ("miss", "range_uncovered", "bytes=250-"),
+        ]
+        assert all("range" not in e for e in entries)
+        await recorder.close()
+
+    async def test_only_an_uncovered_range_miss_carries_the_requested_range(
+        self, source_run: Path
+    ) -> None:
+        _browser, recorder, client, server, sid = await _serving(source_run)
+        _pause(client, sid, "qx", "http://shop.test/nowhere.mp4", headers={"Range": "bytes=0-"})
+        await _settle()
+        (entry,) = _log(server)
+        assert entry["reason"] == "no_match" and "requested_range" not in entry
+        await recorder.close()
+
     async def test_an_unarchived_preflight_is_synthesised(self, source_run: Path) -> None:
         _browser, recorder, client, server, sid = await _serving(source_run)
         _pause(

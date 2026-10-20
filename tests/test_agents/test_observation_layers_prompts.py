@@ -311,6 +311,68 @@ async def test_browser_agents_render_the_page_state(agent_class: type[Any]) -> N
     assert _PAGE_STATE in await _prompt(agent_class)
 
 
+# ── Media playback state ─────────────────────────────────────────────
+
+
+def _with_media(observation: SimpleNamespace) -> SimpleNamespace:
+    from spectragent.core.capabilities.browser.media import (
+        MediaElementState,
+        MediaReading,
+        MediaRect,
+        MediaState,
+    )
+
+    reading = MediaReading(current_time=19.4, paused=True, seeking=False, ready_state=4)
+    observation.screenshot = observation.screenshot.model_copy(
+        update={
+            "media": MediaState(
+                read_before="measured",
+                read_after="measured",
+                elements=[
+                    MediaElementState(
+                        frame="main",
+                        order=0,
+                        tag="video",
+                        rect=MediaRect(x=240, y=24, width=400, height=672),
+                        source_kind="blob",
+                        duration=210.769,
+                        before=reading,
+                        after=reading,
+                    )
+                ],
+            )
+        }
+    )
+    return observation
+
+
+_MEDIA_STATE = (
+    "<media_state>\nvideo 1 in frame main: at 00:19.4 of 03:30.8, paused.\n</media_state>"
+)
+
+
+@pytest.mark.parametrize("agent_class", BROWSER_AGENTS)
+async def test_media_state_is_shown_only_when_switched_on(agent_class: type[Any]) -> None:
+    """Off by default: the measured state is evidence, not prompt; on, it follows the capture state."""
+    assert make_agent(agent_class).show_media_state is False
+    off = await _prompt(agent_class, _with_media(_observation()))
+    assert off == await _prompt(agent_class)
+    on = await _prompt(agent_class, _with_media(_observation()), show_media_state=True)
+    assert f"{_CAPTURE_STATE}\n\n{_MEDIA_STATE}" in on
+    assert on.replace(f"\n\n{_MEDIA_STATE}", "") == off
+
+
+@pytest.mark.parametrize("agent_class", BROWSER_AGENTS)
+async def test_media_state_not_measured_says_so(agent_class: type[Any]) -> None:
+    text = await _prompt(agent_class, show_media_state=True)
+    assert "The media playback state was not measured this step." in text
+
+
+async def test_ui_tars_has_no_media_switch_and_renders_no_media() -> None:
+    assert not hasattr(make_agent(UITarsAgent), "show_media_state")
+    assert "media_state" not in await _prompt(UITarsAgent, _with_media(_observation()))
+
+
 # ── Negotiation demand ───────────────────────────────────────────────
 
 

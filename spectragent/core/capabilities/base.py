@@ -241,6 +241,38 @@ class RestorationSupport(Protocol):
         ...
 
 
+@runtime_checkable
+class RestorationAlignment(Protocol):
+    """Optional: put the next restored observation's state where the recording had it.
+
+    Some environment state moves on its own clock rather than with the
+    agent's actions — a video keeps playing while the model thinks — so
+    re-executing a recorded prefix reaches the right page with the player at
+    another position (``docs/architecture_design.md`` §4.14 "恢复：重定位与校验").
+    A capability that can put such state back implements this: the restorer
+    (``media: align``) calls it before each restored observation, and the
+    capability aligns inside that observation's own capture — after its
+    settle wait, right before its screenshot — and reports what it did with
+    the next ``RestorationSupport.verify_restoration``.
+
+    The request belongs to the next observation only, never a later one, and
+    this method changes nothing by itself. Separate from
+    :class:`RestorationSupport`: a capability that can retarget and verify
+    need not have anything to align. Not part of :class:`BaseCapability`;
+    ``CapabilityBase`` gives no default; the environment's fan-out skips a
+    capability without it.
+    """
+
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+        """Align the next observation's media to *recorded* (a whole observation of this run).
+
+        ``media_seek_timeout_s`` bounds each seek (and the play after it) the
+        alignment makes; one that does not complete in time is undone and
+        reported as failed.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class CaptureComparison:
     """How a recorded capture compares with what this configuration would capture.

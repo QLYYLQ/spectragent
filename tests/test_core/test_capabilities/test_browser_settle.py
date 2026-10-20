@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.media import MEDIA_WORLD
 from spectragent.core.capabilities.browser.navigation import (
     MainFrameLoad,
     MainFrameNavigation,
@@ -433,10 +434,15 @@ class TestCapabilitySettles:
             await cap.begin_observation(1)
             shot = await asyncio.wait_for(cap.resolve_fragment("browser.screenshot"), 5.0)
             assert isinstance(shot, ScreenshotObs)
+            # The media reads around the screenshot come after the wait too (media.py).
             assert _settle_methods(browser, sid) == [
                 f"Page.createIsolatedWorld:{SETTLE_WORLD}",
                 "Runtime.evaluate",
+                f"Page.createIsolatedWorld:{MEDIA_WORLD}",
+                "Runtime.evaluate",
                 "Page.captureScreenshot",
+                f"Page.createIsolatedWorld:{MEDIA_WORLD}",
+                "Runtime.evaluate",
             ]
             assert shot.settle is not None and shot.settle.outcome == "settled"
             assert browser.settle_probes == 1

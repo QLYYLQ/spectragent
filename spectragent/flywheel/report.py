@@ -461,6 +461,7 @@ def _rec_fidelity(metric: SamePathFidelity, basis: Evidence) -> Recommendation:
         _ratio_ref(metric.overall.exact_screenshot, *base, "exact_screenshot"),
         _ratio_ref(metric.overall.url_coverage, *base, "url_coverage"),
         _ratio_ref(metric.overall.signature_coverage, *base, "signature_coverage"),
+        _ratio_ref(metric.overall.media_coverage, *base, "media_coverage"),
         _ratio_ref(metric.overall.runs_reaching_checkpoint, *base, "runs_reaching_checkpoint"),
         _ratio_ref(metric.overall.runs_passing, *base, "runs_passing"),
     ]
@@ -1327,6 +1328,9 @@ def _lines_metric(name: str, metrics: Metrics) -> list[str]:
             f"- screenshot bytes equal {_ratio_md(m.overall.exact_screenshot)}; "
             f"URL comparison coverage {_ratio_md(m.overall.url_coverage)}; "
             f"element-signature comparison coverage {_ratio_md(m.overall.signature_coverage)}",
+            f"- media-state comparison coverage {_ratio_md(m.overall.media_coverage)}; "
+            f"steps failing media_mismatch: {m.overall.media_mismatches}; "
+            f"media alignment by outcome: {_fmt(m.overall.media_alignment)}",
             "- strict compares equal URLs and screenshot bytes only where both were measured; "
             "runs passing covers every checked state through the last checkpoint, not task correctness.",
         ]
@@ -1337,7 +1341,10 @@ def _lines_metric(name: str, metrics: Metrics) -> list[str]:
                 f"checkpoint check coverage {_ratio_md(item.runs_reaching_checkpoint)}, "
                 f"screenshot bytes equal {_ratio_md(item.exact_screenshot)}, "
                 f"URL coverage {_ratio_md(item.url_coverage)}, "
-                f"element-signature coverage {_ratio_md(item.signature_coverage)}"
+                f"element-signature coverage {_ratio_md(item.signature_coverage)}, "
+                f"media coverage {_ratio_md(item.media_coverage)}, "
+                f"media_mismatch steps {item.media_mismatches}, "
+                f"media alignment {_fmt(item.media_alignment)}"
             )
         for failure in m.overall.first_failures:
             lines.append(

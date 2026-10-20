@@ -38,6 +38,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     omitted_when_none,
     traced_fields,
 )
+from spectragent.core.capabilities.browser.media import MediaState
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.capabilities.browser.tabs import FocusMove, FocusMoveReason
@@ -637,6 +638,12 @@ class ScreenshotObs(BrowserCaptureFragment):
 
     #: None means disabled; a cursor with no position means enabled but unknown.
     cursor: ScreenshotCursor | None = None
+    #: Media playback state read just before and just after the capture
+    #: (``media.py``, §4.4 "截图的媒体状态"). ``None`` — and then left out of the
+    #: trace JSON — means it was not measured: evidence from before the field,
+    #: or a fragment no capture produced. Never rendered unless an Agent's
+    #: ``show_media_state`` asks.
+    media: MediaState | None = None
     _model_image_cache: tuple[tuple[Any, ...], bytes] | None = PrivateAttr(default=None)
 
     def model_image_bytes(self) -> bytes | None:
@@ -696,7 +703,10 @@ class ScreenshotObs(BrowserCaptureFragment):
         return image_suffix(self.image_bytes) or ".png", self.image_bytes
 
     def trace_json_exclude(self) -> set[str]:
-        return super().trace_json_exclude() | {"image_bytes"}
+        excluded = super().trace_json_exclude() | {"image_bytes"}
+        if self.media is None:
+            excluded.add("media")
+        return excluded
 
     @classmethod
     def from_trace(cls, payload: dict[str, Any], artifact: bytes | None) -> Self:

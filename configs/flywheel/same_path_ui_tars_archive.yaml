@@ -29,6 +29,9 @@ agent:
         restorer_id: prefix_replay
         verify: warn                     # record a failed check and go on: every step is checked
         screenshot_max_distance: 5       # Hamming distance of the 64-bit dHashes
+        media: align                     # move matched video/audio to the recorded position before each restored screenshot
+        media_time_tolerance_s: 1.0      # a media position further from the recorded one fails media_mismatch
+        media_seek_timeout_s: 2.0        # an alignment seek (and play) that does not complete in time is undone and fails
     llm:                                 # the teacher: the recording's model
       model_type: openai
       model: gpt-4o

@@ -190,6 +190,7 @@ def test_restoration_measures_clean_scene_when_only_cursor_differs() -> None:
         SimpleNamespace(screenshot=after),
         capability_id="browser",
         document_misses=None,
+        media=None,
     )
     assert evidence.screenshot_distance == 0
 

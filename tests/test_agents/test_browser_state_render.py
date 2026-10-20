@@ -41,7 +41,7 @@ def _capture_state() -> SimpleNamespace:
 
 
 def test_url_title_and_tabs_in_the_one_format() -> None:
-    assert render_browser_state(SimpleNamespace(browser_meta=_meta())) == (
+    assert render_browser_state(SimpleNamespace(browser_meta=_meta()), show_media_state=False) == (
         "URL: https://news.test/a/1\n\n"
         "Title: Article\n\n"
         "Tabs: [T1] News (https://news.test/), [T2] Article (https://news.test/a/1)"
@@ -50,7 +50,7 @@ def test_url_title_and_tabs_in_the_one_format() -> None:
 
 def test_the_capture_state_follows_the_page_state() -> None:
     observation = SimpleNamespace(browser_meta=_meta(), capture_state=_capture_state())
-    assert render_browser_state(observation) == (
+    assert render_browser_state(observation, show_media_state=False) == (
         "URL: https://news.test/a/1\n\n"
         "Title: Article\n\n"
         "Tabs: [T1] News (https://news.test/), [T2] Article (https://news.test/a/1)\n\n"
@@ -64,15 +64,20 @@ def test_the_capture_state_follows_the_page_state() -> None:
 
 
 def test_parts_with_nothing_to_say_are_left_out() -> None:
-    assert render_browser_state(SimpleNamespace(browser_meta=BrowserMetaObs())) == ""
-    assert render_browser_state(SimpleNamespace()) == ""
+    assert (
+        render_browser_state(SimpleNamespace(browser_meta=BrowserMetaObs()), show_media_state=False)
+        == ""
+    )
+    assert render_browser_state(SimpleNamespace(), show_media_state=False) == ""
     only_url = SimpleNamespace(browser_meta=BrowserMetaObs(url="https://x.test/"))
-    assert render_browser_state(only_url) == "URL: https://x.test/"
+    assert render_browser_state(only_url, show_media_state=False) == "URL: https://x.test/"
 
 
 def test_a_failed_capture_state_still_follows_the_page_state() -> None:
     failure = FragmentFailure(fragment_id="browser.capture_state", error="RuntimeError")
-    text = render_browser_state(SimpleNamespace(browser_meta=_meta(), capture_state=failure))
+    text = render_browser_state(
+        SimpleNamespace(browser_meta=_meta(), capture_state=failure), show_media_state=False
+    )
     assert text.startswith("URL: https://news.test/a/1\n\n")
     assert text.endswith(
         "<capture_state>\n"

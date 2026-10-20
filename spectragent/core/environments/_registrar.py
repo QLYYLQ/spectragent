@@ -29,6 +29,7 @@ from spectragent.core.capabilities.base import (
     CaptureCheck,
     CaptureComparison,
     PreparedSetupContext,
+    RestorationAlignment,
     RestorationSupport,
     SetupCheck,
     SetupContextPreparation,
@@ -401,6 +402,22 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             if isinstance(cap, RestorationSupport):
                 evidence.append(await cap.verify_restoration(recorded, restored))
         return evidence
+
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+        """Request, from each aligning capability, the next observation's alignment to *recorded*.
+
+        Fans out to every capability implementing
+        :class:`~spectragent.core.capabilities.base.RestorationAlignment`, one
+        at a time, in capability order; none means nothing to align. Only the
+        request is passed on: each capability aligns inside its own capture
+        of the next observation and reports it with ``verify_restoration``
+        (``docs/architecture_design.md`` §4.3).
+        """
+        for cap in self.capabilities.values():
+            if isinstance(cap, RestorationAlignment):
+                await cap.align_next_observation(
+                    recorded, media_seek_timeout_s=media_seek_timeout_s
+                )
 
     # ── Recorded capture vs this configuration (training export) ─
 

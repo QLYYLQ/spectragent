@@ -39,6 +39,7 @@ RestorationReason = Literal[
     "retarget_ambiguous",
     "action_failed",
     "signature_mismatch",
+    "media_mismatch",
     "screenshot_distance",
 ]
 
@@ -83,6 +84,103 @@ class Retarget(BaseModel):
         return self
 
 
+#: How a media element of one observation corresponds to the other's
+#: (``docs/architecture_design.md`` §4.14 "恢复：重定位与校验"). ``matched``:
+#: exactly one counterpart, in the same place and order; ``missing``: a
+#: recorded element with no counterpart; ``extra``: a restored element no
+#: recorded one corresponds to; ``ambiguous``: candidates the position and
+#: order cannot single out.
+MediaCorrespondence = Literal["matched", "missing", "extra", "ambiguous"]
+
+#: Which of the two readings around the screenshots a comparison used.
+MediaReadingPoint = Literal["before", "after"]
+
+#: What aligning one media element came to. ``aligned``: moved to the recorded
+#: position and play state, the seek (and the play) completed in time;
+#: ``already_aligned``: it was already there, nothing was done; ``failed``: the
+#: seek or the play did not complete in time, and it was put back where it
+#: was (``rolled_back``); ``not_restorable``: nothing can be aligned (a live
+#: stream, an ambiguous or missing counterpart); ``unknown``: the recorded
+#: position or play state is not known, so there was no target.
+MediaAlignmentOutcome = Literal["aligned", "already_aligned", "failed", "not_restorable", "unknown"]
+
+#: What alignment did to one element: paused and seeked, seeked and played, or nothing.
+MediaAlignmentAction = Literal["pause_and_seek", "seek_and_play", "none"]
+
+
+class MediaComparison(BaseModel):
+    """One media element compared between a recorded and a restored observation.
+
+    ``element`` is the capability's name for it (the browser's
+    ``<frame>#<order> <tag>``). ``live``: either side is a live stream, which
+    has no position to compare. The times and play states are the reading
+    both sides took at the same point (``reading``: before the screenshot
+    where both have it, else after); ``None`` where it was not measured,
+    which never decides. Measures only: the restorer applies its tolerance.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    element: str
+    correspondence: MediaCorrespondence
+    live: bool = False
+    reading: MediaReadingPoint | None = None
+    recorded_time: float | None = None
+    restored_time: float | None = None
+    recorded_paused: bool | None = None
+    restored_paused: bool | None = None
+    detail: str = ""
+
+
+class MediaAlignment(BaseModel):
+    """What aligning one media element to the recorded state did, before a restored capture.
+
+    ``target_*``: the recorded state aimed at; ``from_*``: the element before
+    alignment; ``reached_*``, ``ready_state`` and ``seeking``: where it stood
+    when alignment finished. ``seek_ms``: how long the seek took to complete
+    (``None``: it did not, or none was made). ``rolled_back`` is set only for a
+    ``failed`` alignment: whether putting the element back where it was
+    completed. ``detail`` says why, in words.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    element: str
+    outcome: MediaAlignmentOutcome
+    action: MediaAlignmentAction = "none"
+    target_time: float | None = None
+    target_paused: bool | None = None
+    from_time: float | None = None
+    from_paused: bool | None = None
+    reached_time: float | None = None
+    reached_paused: bool | None = None
+    ready_state: int | None = None
+    seeking: bool | None = None
+    seek_ms: float | None = Field(default=None, ge=0)
+    rolled_back: bool | None = None
+    detail: str = ""
+
+
+class MediaEvidence(BaseModel):
+    """Media playback state compared between two observations, and what was aligned first.
+
+    ``comparisons`` is ``None`` when no comparison could be made — a side
+    carries no media state, or both of its readings are unknown — and
+    ``detail`` says why; an empty list means neither side has a media
+    element. ``alignment`` is ``None`` when no alignment was requested for
+    the restored observation (``media: none``); otherwise one entry per
+    recorded element it considered, and ``alignment_detail`` says why it is
+    empty when it is.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    comparisons: list[MediaComparison] | None = None
+    detail: str = ""
+    alignment: list[MediaAlignment] | None = None
+    alignment_detail: str = ""
+
+
 class RestorationEvidence(BaseModel):
     """What one capability measured between a recorded and a restored observation.
 
@@ -91,7 +189,9 @@ class RestorationEvidence(BaseModel):
     ``None`` never takes part in a verdict. ``signature_missing`` /
     ``signature_extra`` detail a signature comparison: elements of the
     recorded page absent from the restored one, and the reverse (both 0
-    when no comparison was made).
+    when no comparison was made). ``media`` compares media playback state
+    and records the media alignment done before the restored capture
+    (:class:`MediaEvidence`).
     """
 
     capability_id: str
@@ -103,6 +203,7 @@ class RestorationEvidence(BaseModel):
     signature_extra: int = Field(default=0, ge=0)
     screenshot_distance: int | None = Field(default=None, ge=0)
     document_misses: int | None = Field(default=None, ge=0)
+    media: MediaEvidence | None = None
 
 
 class RestoredAction(BaseModel):
@@ -219,6 +320,13 @@ __all__ = [
     "REASON_ORDER",
     "BranchProvenance",
     "Checkpoint",
+    "MediaAlignment",
+    "MediaAlignmentAction",
+    "MediaAlignmentOutcome",
+    "MediaComparison",
+    "MediaCorrespondence",
+    "MediaEvidence",
+    "MediaReadingPoint",
     "RestorationCheck",
     "RestorationEvidence",
     "RestorationReason",
