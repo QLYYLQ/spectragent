@@ -88,6 +88,34 @@ verified. Investigate why the third source request was incomplete and define res
 sequence/availability semantics before changing the matcher. Broader URL matching cannot
 repair this exact-key failure. Evidence: `image-sequence-audit.json` in the headless batch.
 
+**Diagnosis, 2026-10-20** (`tmp/image_sequence_20261020/brief.md`): the page cancelled the
+third request itself (`net::ERR_ABORTED`, no response). The source page displayed the eggs
+from a different preview URL (`nd_prv`); the replay page ended on the larger `nd_dft` URL
+and hit the cancelled record. Why the replay page chose `nd_dft` remains unknown. Across 11
+recordings, 209 records lack a body (178 page cancellations); the same pattern occurs 14
+times in 6 runs. The current behaviour is documented design: unservable matched records
+consume the cursor, and `repeat_last` ignores availability.
+
+**User decisions, 2026-10-20 (design and implementation pending):**
+
+- Every site rule declares a required `unavailable: miss | serve_identical`, like
+  `exhaustion`; `baseline.yaml` chooses `serve_identical`; all rule files gain the field,
+  with no compatibility path.
+- Substitution only when every available record in that sequence has the same status and
+  an identical body; never for a recorded real network failure (fixed, not configurable).
+  Logged as `substituted` with both record ids and the source outcome. Substituting for a
+  page-cancelled request is a deliberate, logged deviation from the source.
+- An unavailable record keeps its sequence position. Page-cancelled and recorder-missed
+  bodies are both covered and counted separately. A later identical record may answer an
+  earlier request (check task130 screenshots).
+- `repeat_last` repeats the last available response; with none, a body-unavailable miss.
+- With nothing to substitute, keep 404 and log the source outcome. Holding a request until
+  the page cancels it is a separate later design.
+- The recorder adds a start time to still-pending lines and an end time to finished
+  exchanges; replay ordering stays as is until holding is decided.
+- Acceptance: real offline replays of 238 and 130 (eggs visible, 130 checks not worse) and
+  counterexamples that must stay unsubstituted.
+
 ## Fix — Bilibili account request matching
 
 The new Bilibili replay first diverges at step3. Its
