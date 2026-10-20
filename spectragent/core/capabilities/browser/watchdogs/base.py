@@ -190,6 +190,9 @@ class WatchdogContext:
     #: (``BrowserCapability.action_effect_timeout_s``). Probe time only; a probe
     #: that runs out records its fact as unknown.
     action_effect_timeout_s: float = 1.0
+    #: How long the ``browser.capture_state`` resolver's in-page probe may take
+    #: per observation, in seconds (``BrowserCapability.capture_state_timeout_s``).
+    capture_state_timeout_s: float = 1.0
     #: Shared only by the input controller and screenshot resolver built for this tab.
     pointer_position: PointerPosition = field(default_factory=PointerPosition)
 

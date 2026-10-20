@@ -595,6 +595,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     settle_quiet_ms: int
     settle_max_wait_s: float
     action_effect_timeout_s: float
+    capture_state_timeout_s: float
     retarget_tolerance_px: float
     new_tabs: Literal["follow", "stay"]
     expected_platform: InputPlatform | None
@@ -874,6 +875,25 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 1.0,
+        capture_state_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                le=10,
+                description=(
+                    "The most time, in seconds, the browser.capture_state fragment may "
+                    "spend on its in-page probe (the visible images that failed to load) "
+                    "in each observation. A probe that runs out is recorded as unknown, "
+                    "never as zero; the rest of the observation is unaffected. Settle and "
+                    "tab changes are read from the same capture and cost nothing here. "
+                    "The probe itself takes a few milliseconds (headless Chrome: about 1 ms "
+                    "on simple pages, at most 10 ms at the 95th percentile with 5,000 images "
+                    "or on image-heavy sites); it runs on the page's main thread, so this "
+                    "limit is reached only when page scripts hold that thread, and then it "
+                    "is what the observation pays. Default 1."
+                ),
+            ),
+        ] = 1.0,
         retarget_tolerance_px: Annotated[
             float,
             PydanticField(
@@ -953,6 +973,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.settle_quiet_ms = settle_quiet_ms
         self.settle_max_wait_s = settle_max_wait_s
         self.action_effect_timeout_s = action_effect_timeout_s
+        self.capture_state_timeout_s = capture_state_timeout_s
         self.retarget_tolerance_px = retarget_tolerance_px
         self.new_tabs = new_tabs
 
@@ -3552,6 +3573,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             screenshot_cursor=self.screenshot_cursor,
             screenshot_cursor_size=self.screenshot_cursor_size,
             action_effect_timeout_s=self.action_effect_timeout_s,
+            capture_state_timeout_s=self.capture_state_timeout_s,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,

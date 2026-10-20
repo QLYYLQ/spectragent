@@ -322,7 +322,13 @@ class TestNegotiationDrivenCost:
         env = _ProbeEnv(capabilities={"browser#0": cap})
 
         assert env.provided_fragments == frozenset(
-            {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
+            {
+                "browser.dom",
+                "browser.screenshot",
+                "browser.browser_meta",
+                "browser.platform",
+                "browser.capture_state",
+            }
         )
 
         class _Negotiated:
