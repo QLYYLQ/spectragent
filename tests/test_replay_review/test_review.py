@@ -71,8 +71,22 @@ def reviewer_block() -> dict:
     return {key: value for key, value in block.items() if key != "decision_model"}
 
 
+def refit(block: dict) -> dict:
+    """Write a new fit entry for the block's current questions and evidence options."""
+    questions = ReviewQuestionSet.model_validate(block["questions"]).sha256()
+    evidence = ReviewEvidenceOptions.model_validate(block["evidence"])
+    policy = block["policy"]
+    for thresholds in [policy["thresholds"], *policy["overrides"]]:
+        thresholds["fit"].update(
+            questions_sha256=questions,
+            evidence=evidence.model_dump(mode="json"),
+            evidence_sha256=evidence.sha256(),
+        )
+    return block
+
+
 def make_reviewer(**changes) -> JevReplayReviewer:
-    block = {**reviewer_block(), **changes}
+    block = refit({**reviewer_block(), **changes})
     return JevReplayReviewer(
         questions=ReviewQuestionSet.model_validate(block["questions"]),
         policy=ReviewPolicy.model_validate(block["policy"]),
@@ -133,11 +147,12 @@ def case():
 
 
 def fit(dataset: str = "override fixture") -> dict:
+    """A fit for the shipped questions and evidence options, on another data set."""
     return {
+        **reviewer_block()["policy"]["thresholds"]["fit"],
         "dataset": dataset,
         "dataset_sha256": "c" * 64,
         "fitted_on": "2026-10-21",
-        "policy_version": "replay-triage-2",
     }
 
 
@@ -203,16 +218,20 @@ def test_information_question_routes_and_recomputes(information, changes, route,
     assert route_result(raw, stored.settings, stored.facts) == assessment
 
 
-def test_overrides_by_host_and_task_record_their_fit():
+def site(domain: str, accept: float, investigate: float, dataset: str) -> dict:
+    return {
+        "scope": "site",
+        "domain": domain,
+        "accept_information_min": accept,
+        "investigate_information_max": investigate,
+        "fit": fit(dataset),
+    }
+
+
+def test_overrides_by_site_and_task_record_their_fit():
     policy = reviewer_block()["policy"]
     policy["overrides"] = [
-        {
-            "scope": "host",
-            "host": "www.example.test",
-            "accept_information_min": 0.8,
-            "investigate_information_max": 0.1,
-            "fit": fit("site pairs"),
-        },
+        site("example.test", 0.8, 0.1, "site pairs"),
         {
             "scope": "task",
             "benchmark": "bench",
@@ -225,11 +244,11 @@ def test_overrides_by_host_and_task_record_their_fit():
     ]
     recorded = settings(policy)
     other_task = TaskIdentity(benchmark="bench", subset="L1", task_id="8")
-    by_host = route_result(result(0.7), recorded, facts(task=other_task))
-    assert by_host.thresholds is not None and by_host.thresholds.scope == "host"
-    assert by_host.thresholds.host == "www.example.test"
-    assert by_host.thresholds.fit.dataset == "site pairs"
-    assert by_host.route == "further_review"  # 0.7 would pass the default 0.45
+    by_site = route_result(result(0.7), recorded, facts(task=other_task))
+    assert by_site.thresholds is not None and by_site.thresholds.scope == "site"
+    assert by_site.thresholds.domain == "example.test"
+    assert by_site.thresholds.fit.dataset == "site pairs"
+    assert by_site.route == "further_review"  # 0.7 would pass the default 0.45
     by_task = route_result(result(0.7), recorded, facts())
     assert by_task.thresholds is not None and by_task.thresholds.scope == "task"
     assert by_task.thresholds.task == TaskIdentity(benchmark="bench", subset="L1", task_id="7")
@@ -240,10 +259,37 @@ def test_overrides_by_host_and_task_record_their_fit():
     assert default.thresholds is not None and default.thresholds.scope == "default"
     assert default.route == "candidate_acceptable"
     persisted = json.loads(by_task.model_dump_json())
-    assert persisted["thresholds"]["fit"] == {**fit("task pairs")}
+    assert persisted["thresholds"]["fit"]["dataset"] == "task pairs"
+    assert persisted["thresholds"]["fit"]["evidence"]["max_text_chars"] == 6000
     assert persisted["settings"]["policy"]["overrides"][1]["task_id"] == "7"
     # Every override changes the recorded policy digest.
     assert recorded.policy_sha256 != settings().policy_sha256
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("bilibili.com", "bilibili.com"),
+        ("www.bilibili.com", "bilibili.com"),
+        ("account.bilibili.com", "bilibili.com"),
+        # The longest matching domain wins.
+        ("space.bilibili.com", "space.bilibili.com"),
+        ("a.space.bilibili.com", "space.bilibili.com"),
+        # A suffix that is not a whole domain label does not match.
+        ("notbilibili.com", None),
+        ("bilibili.com.evil.test", None),
+        (None, None),
+    ],
+)
+def test_site_scope_matches_the_domain_and_its_subdomains(host, expected):
+    policy = reviewer_block()["policy"]
+    policy["overrides"] = [
+        site("space.bilibili.com", 0.7, 0.2, "space pages"),
+        site("bilibili.com", 0.6, 0.3, "bilibili pages"),
+    ]
+    applied = ReviewPolicy.model_validate(policy).select(facts(site_host=host, task=None))
+    assert applied.domain == expected
+    assert applied.scope == ("default" if expected is None else "site")
 
 
 @pytest.mark.parametrize(
@@ -257,25 +303,15 @@ def test_overrides_by_host_and_task_record_their_fit():
         lambda p: p["thresholds"].update(investigate_information_max=0.45),
         lambda p: p["thresholds"].update(accept_information_min=1.2),
         lambda p: p.update(
-            overrides=[
-                {"scope": "host", "host": h, **thresholds, "fit": fit()}
-                for h in ("a.test", "a.test")
-                for thresholds in [
-                    {"accept_information_min": 0.5, "investigate_information_max": 0.2}
-                ]
-            ]
+            overrides=[site("a.test", 0.5, 0.2, "x"), site("a.test", 0.6, 0.1, "y")]
         ),
-        lambda p: p.update(
-            overrides=[
-                {
-                    "scope": "host",
-                    "host": "https://A.test",
-                    "accept_information_min": 0.5,
-                    "investigate_information_max": 0.2,
-                    "fit": fit(),
-                }
-            ]
-        ),
+        lambda p: p.update(overrides=[site("https://A.test", 0.5, 0.2, "x")]),
+        lambda p: p.update(overrides=[site(".a.test", 0.5, 0.2, "x")]),
+        lambda p: p.update(overrides=[{**site("a.test", 0.5, 0.2, "x"), "scope": "host"}]),
+        lambda p: p["thresholds"]["fit"].pop("questions_sha256"),
+        lambda p: p["thresholds"]["fit"].pop("evidence"),
+        # The recorded evidence digest must be the digest of the recorded evidence options.
+        lambda p: p["thresholds"]["fit"]["evidence"].update(max_text_chars=12000),
     ],
 )
 def test_policy_shape_is_refused_when_incomplete_or_inconsistent(mutate):
@@ -283,6 +319,48 @@ def test_policy_shape_is_refused_when_incomplete_or_inconsistent(mutate):
     mutate(policy)
     with pytest.raises(ValidationError):
         ReviewPolicy.model_validate(policy)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda b: b["questions"]["items"]["information_equivalent"]["instructions"].update(
+            question="Is the needed information the same?"
+        ),
+        lambda b: b["evidence"].update(max_text_chars=12000),
+        lambda b: b["evidence"].update(done_answer="keep"),
+    ],
+)
+def test_thresholds_fitted_on_other_questions_or_evidence_are_refused(change):
+    composer = ConfigComposer(registrars=collect_registrars())
+    root = yaml.safe_load(SHIPPED_DMX.read_text())
+    block = root["replay_reviewer"][0]
+    fitted = block["policy"]["thresholds"]["fit"]
+    change(block)
+    questions = ReviewQuestionSet.model_validate(block["questions"]).sha256()
+    evidence = ReviewEvidenceOptions.model_validate(block["evidence"]).sha256()
+    with pytest.raises(Exception) as refused:
+        composer.compose(root)
+    message = str(refused.value)
+    for digest in (fitted["questions_sha256"], fitted["evidence_sha256"], questions, evidence):
+        assert digest in message
+    assert "Re-fit" in message
+    # A new fit entry for the changed questions and evidence options is accepted.
+    refit(block)
+    assert composer.compose(root).single("replay_reviewer").settings().evidence_sha256 == evidence
+
+
+def test_a_site_override_fitted_elsewhere_is_refused_by_name():
+    policy = reviewer_block()["policy"]
+    stale = site("bilibili.com", 0.6, 0.3, "older questions")
+    stale["fit"]["questions_sha256"] = "d" * 64
+    policy["overrides"] = [stale]
+    with pytest.raises(ValueError, match="site bilibili.com thresholds were fitted on"):
+        JevReplayReviewer(
+            questions=ReviewQuestionSet.model_validate(reviewer_block()["questions"]),
+            policy=ReviewPolicy.model_validate(policy),
+            evidence=ReviewEvidenceOptions.model_validate(reviewer_block()["evidence"]),
+        )
 
 
 @pytest.mark.parametrize("field", ["questions", "policy", "evidence"])
@@ -346,13 +424,21 @@ def test_request_asks_three_independent_noul_questions_and_withholds_done_answer
     state = json.dumps(withheld.state, ensure_ascii=False)
     assert "four eggs" not in state and "browser.done" in state
     assert '"is_done": true' in state
-    kept = make_reviewer(evidence={"done_answer": "keep"}).build_request(subject)
+    kept = make_reviewer(
+        evidence={**reviewer_block()["evidence"], "done_answer": "keep"}
+    ).build_request(subject)
     assert json.dumps(kept.state, ensure_ascii=False).count("four eggs") == 4
     assert kept.questions == withheld.questions
     # Withholding works on a copy; the case keeps the source answer.
     assert subject.next_actions[0].params["extracted_content"] == "four eggs"
     shipped = yaml.safe_load(SHIPPED_DMX.read_text())["replay_reviewer"][0]
-    assert shipped["evidence"] == {"done_answer": "withhold"}
+    assert shipped["evidence"] == {
+        "done_answer": "withhold",
+        "max_text_chars": 6000,
+        "max_links": 20,
+        "include_screenshots": True,
+    }
+    assert shipped["policy"]["thresholds"]["fit"]["evidence"] == shipped["evidence"]
     assert withheld.logical_dump()["questions"] == {
         key: {**value, "type": "noul"} for key, value in shipped["questions"]["items"].items()
     }
@@ -472,7 +558,12 @@ async def test_job_roundtrip_owns_calls_and_viewer_report(tmp_path, monkeypatch)
             "sha256": reviewer.questions.sha256(),
         }
         assert recorded["policy_sha256"] == reviewer.policy.sha256()
-        assert recorded["evidence"] == {"done_answer": "withhold"}
+        assert recorded["evidence"] == {
+            "done_answer": "withhold",
+            "max_text_chars": 6000,
+            "max_links": 20,
+            "include_screenshots": True,
+        }
         assert recorded["evidence_sha256"] == reviewer.evidence.sha256()
         assert "question_version" not in snapshot
         item = store.read_json(manifest.items[0].assessment)

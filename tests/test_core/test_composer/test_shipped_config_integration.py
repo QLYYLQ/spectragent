@@ -144,7 +144,7 @@ class TestShippedConfigs:
             require_inference_protocol(
                 reviewer.decision_model, "decision", consumer="shipped replay reviewer"
             )
-            assert reviewer.max_text_chars == 12000
+            assert reviewer.evidence.max_text_chars == 6000
             return
 
         # 1. env.capabilities is a real dict of live capability instances,
@@ -1106,6 +1106,17 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                     lambda run, i=i: run.instances("replay_reviewer")[i].policy.thresholds.fit,
                 )
             )
+            blocks.append(
+                _Block(
+                    f"replay_reviewer[{i}].policy.thresholds.fit.evidence",
+                    lambda r, i=i: r["replay_reviewer"][i]["policy"]["thresholds"]["fit"][
+                        "evidence"
+                    ],
+                    lambda run, i=i: (
+                        run.instances("replay_reviewer")[i].policy.thresholds.fit.evidence
+                    ),
+                )
+            )
             for o in range(len(entry["policy"].get("overrides", []))):
                 blocks.append(
                     _Block(
@@ -1124,6 +1135,17 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                         ],
                         lambda run, i=i, o=o: (
                             run.instances("replay_reviewer")[i].policy.overrides[o].fit
+                        ),
+                    )
+                )
+                blocks.append(
+                    _Block(
+                        f"replay_reviewer[{i}].policy.overrides[{o}].fit.evidence",
+                        lambda r, i=i, o=o: r["replay_reviewer"][i]["policy"]["overrides"][o][
+                            "fit"
+                        ]["evidence"],
+                        lambda run, i=i, o=o: (
+                            run.instances("replay_reviewer")[i].policy.overrides[o].fit.evidence
                         ),
                     )
                 )
@@ -1373,6 +1395,28 @@ def _perturb(value: Any, obj: Any = None, key: str = "") -> Any:
     return None
 
 
+def _refit_review_thresholds(root: dict[str, Any]) -> None:
+    """Write new fit digests after perturbing a reviewer's questions or evidence options.
+
+    A threshold fit records the digests of the questions and evidence options it
+    was fitted on, and composition refuses any other combination. Perturbing an
+    evidence knob is therefore only a valid configuration together with a new
+    fit entry, which is what an operator would write.
+    """
+    from spectragent.replay_review.models import ReviewEvidenceOptions, ReviewQuestionSet
+
+    for entry in root.get("replay_reviewer", []):
+        questions = ReviewQuestionSet.model_validate(entry["questions"]).sha256()
+        evidence = ReviewEvidenceOptions.model_validate(entry["evidence"])
+        policy = entry["policy"]
+        for thresholds in [policy["thresholds"], *policy["overrides"]]:
+            thresholds["fit"].update(
+                questions_sha256=questions,
+                evidence=evidence.model_dump(mode="json"),
+                evidence_sha256=evidence.sha256(),
+            )
+
+
 class TestShippedValuesReachTheObjectsThatReadThem:
     """The shipped YAML, key by key, against the objects it configures."""
 
@@ -1456,6 +1500,7 @@ class TestShippedValuesReachTheObjectsThatReadThem:
 
         assert expected, f"{config_path.name} declares no perturbable knob at all"
 
+        _refit_review_thresholds(probe_root)
         probe_run = composer.compose(probe_root)
         by_path = {block.path: block for block in blocks}
         for label, (block_path, key, probe) in expected.items():

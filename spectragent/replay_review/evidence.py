@@ -135,8 +135,8 @@ async def _observation(
             cleaner_key=capability.dom_cleaner.cleaner_type,
             serializer=capability.dom_serializer,
             budget=capability.dom_budget,
-            max_text_chars=reviewer.max_text_chars,
-            max_links=reviewer.max_links,
+            max_text_chars=reviewer.evidence.max_text_chars,
+            max_links=reviewer.evidence.max_links,
             loader_id=meta.loader_id if isinstance(meta, BrowserMetaObs) else None,
         )
     except BrowserEvidenceUnavailable as exc:
@@ -149,7 +149,7 @@ async def _observation(
         ) from exc
     ref = _ref(trace, step)
     ref.files[dom.path] = dom.sha256
-    pixels = trace.screenshot(step) if reviewer.include_screenshots else None
+    pixels = trace.screenshot(step) if reviewer.evidence.include_screenshots else None
     image = _image(pixels) if pixels is not None else None
     if pixels is not None:
         ref.files["browser.screenshot"] = _digest(pixels)

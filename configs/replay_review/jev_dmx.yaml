@@ -12,12 +12,14 @@ replay_reviewer:
       base_url: https://www.dmxapi.cn/typesafe
       api_key_env: OPENAI_API_KEY
       timeout: 35
-    include_screenshots: true
-    max_text_chars: 12000
-    max_links: 64
     evidence:
       # The reviewer compares observations; the source Agent's own answer stays out.
       done_answer: withhold
+      # Per observation side. The thresholds below were fitted on this budget; a larger
+      # one also exceeded the DMX input limit on most of the fitted pairs.
+      max_text_chars: 6000
+      max_links: 20
+      include_screenshots: true
     questions:
       # Three independent Noul questions. Only information_equivalent routes; the other
       # two are recorded. The information question names failure kinds seen in earlier
@@ -99,25 +101,37 @@ replay_reviewer:
         # only: 0.45 is the conservative end and 0.25 the midpoint of the zero-false-accept
         # range found there. dataset_sha256 is the SHA-256 of the canonical JSON list of
         # {task, labels_sha256, pairs_sha256} taken from each task's label-freeze record.
+        # Composition refuses these thresholds when the question set or evidence options
+        # above no longer have the digests recorded here; re-fit, or write a new fit entry.
         accept_information_min: 0.45
         investigate_information_max: 0.25
         fit:
           dataset: >-
             Jev split-question experiment of 2026-10-20: 12 labelled replay pairs from
-            development tasks 130 and 30, one adjudicator, labels frozen on 2026-10-19
+            development tasks 130 and 30, one adjudicator, labels frozen on 2026-10-19;
+            0.45 was chosen on the run that kept the done answer, and the run with these
+            evidence options routes the same pairs identically
           dataset_sha256: 44c303b9846e6d7b4f80537bbc7441640cdb8b71b8ca2e1185a472e84daf56ce
           fitted_on: 2026-10-20
           policy_version: replay-triage-2
-      # Site or task thresholds, each with its own fit, for example:
-      #   - scope: host
-      #     host: www.bilibili.com
+          questions_sha256: 22f354537dd037c18da2c240b7f4ecc1e20f153d5059d805eab0fa3b49296897
+          evidence:
+            done_answer: withhold
+            max_text_chars: 6000
+            max_links: 20
+            include_screenshots: true
+          evidence_sha256: 6f85e1baa7fd47de1d0de14e9b525238d958e0adec502033a58f1e5fc3c0d29f
+      # Site or task thresholds, each with its own fit (same fields as above), for example:
+      #   - scope: site
+      #     domain: bilibili.com     # matches bilibili.com and any *.bilibili.com host
       #     accept_information_min: 0.5
       #     investigate_information_max: 0.2
-      #     fit: {dataset: ..., dataset_sha256: ..., fitted_on: ..., policy_version: replay-triage-2}
+      #     fit: {...}
       #   - scope: task
       #     benchmark: lexbench_browser
       #     subset: L2
       #     task_id: "220"
       #     ...
-      # A task match wins over a host match; both win over the default.
+      # A task match wins over a site match; the longest matching domain wins among sites;
+      # both win over the default.
       overrides: []

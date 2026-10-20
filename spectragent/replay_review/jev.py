@@ -127,25 +127,10 @@ class JevReplayReviewer(ReplayReviewerBase):
         ],
         evidence: Annotated[
             ReviewEvidenceOptions,
-            Field(description="What the request carries beyond the aligned observations"),
+            Field(
+                description="What the request carries: observation budget, screenshots and withheld text"
+            ),
         ],
-        max_text_chars: Annotated[
-            int,
-            Field(
-                ge=1,
-                description="Maximum clean DOM characters from each observation; truncation is recorded",
-            ),
-        ] = 12000,
-        max_links: Annotated[
-            int,
-            Field(
-                ge=1,
-                description="Maximum visible links from each observation; omissions are recorded",
-            ),
-        ] = 64,
-        include_screenshots: Annotated[
-            bool, Field(description="Include raw recorded screenshots as native Decision assets")
-        ] = True,
     ) -> None:
         if not isinstance(questions, ReviewQuestionSet):
             raise TypeError("Replay reviewer questions must be a ReviewQuestionSet")
@@ -159,21 +144,10 @@ class JevReplayReviewer(ReplayReviewerBase):
                 f"Policy information_question {policy.information_question!r} must name a "
                 "Noul question of the configured question set"
             )
-        if (
-            type(max_text_chars) is not int
-            or max_text_chars < 1
-            or type(max_links) is not int
-            or max_links < 1
-        ):
-            raise ValueError("Replay review text and link budgets must be positive integers")
-        if type(include_screenshots) is not bool:
-            raise TypeError("include_screenshots must be a boolean")
+        policy.check_fitted_on(questions, evidence)
         self.questions = questions.model_copy(deep=True)
         self.policy = policy.model_copy(deep=True)
         self.evidence = evidence.model_copy(deep=True)
-        self.max_text_chars = max_text_chars
-        self.max_links = max_links
-        self.include_screenshots = include_screenshots
 
     @property
     def name(self) -> str:
@@ -199,7 +173,7 @@ class JevReplayReviewer(ReplayReviewerBase):
         assets = {}
         for key, observation in (("reference", case.reference), ("replay", case.replay)):
             state[key] = observation.model_dump(mode="json", exclude={"image"})
-            if self.include_screenshots and observation.image is not None:
+            if self.evidence.include_screenshots and observation.image is not None:
                 asset = f"af-review-{key}-pixels"
                 state[key]["screenshot"] = asset
                 assets[asset] = observation.image
@@ -214,7 +188,7 @@ class JevReplayReviewer(ReplayReviewerBase):
         settings = self.settings()
         missing = not case.reference.available or not case.replay.available
         if case.visual_required and (
-            not self.include_screenshots
+            not self.evidence.include_screenshots
             or case.reference.image is None
             or case.replay.image is None
         ):

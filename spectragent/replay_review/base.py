@@ -20,9 +20,6 @@ class BaseReplayReviewer(ModelClientLifecycle, Protocol):
     questions: ReviewQuestionSet
     policy: ReviewPolicy
     evidence: ReviewEvidenceOptions
-    max_text_chars: int
-    max_links: int
-    include_screenshots: bool
 
     @property
     def reviewer_id(self) -> str: ...

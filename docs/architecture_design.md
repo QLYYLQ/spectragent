@@ -3646,11 +3646,11 @@ Decision 模型。`BaseReplayReviewer.review(case) -> ReviewAssessment` 只判�
 replay_reviewer:
   - reviewer_id: jev
     decision_model: {...}             # §4.7
-    include_screenshots: true
-    max_text_chars: 12000
-    max_links: 64
-    evidence:
+    evidence:                         # 请求带什么：每侧观测预算、截图、隐去的文本
       done_answer: withhold           # keep | withhold
+      max_text_chars: 6000
+      max_links: 20
+      include_screenshots: true
     questions:
       version: replay-relevance-2
       items:                          # 问题 ID → §4.7 的 Decision 问题
@@ -3668,10 +3668,13 @@ replay_reviewer:
           dataset_sha256: <64 位十六进制>
           fitted_on: 2026-10-20
           policy_version: replay-triage-2
+          questions_sha256: <拟合所用问题集的摘要>
+          evidence: {...}             # 拟合所用的证据选项全文，含预算
+          evidence_sha256: <这些证据选项的摘要>
       overrides: []                   # 可为空，不可省略；元素形状见下
 ```
 
-覆盖元素是 `{scope: host, host: <主机名>, ...}` 或
+覆盖元素是 `{scope: site, domain: <注册域>, ...}` 或
 `{scope: task, benchmark: ..., subset: ..., task_id: ..., ...}`，其余字段与 `thresholds`
 相同（两个阈值和 `fit`）。
 
@@ -3685,10 +3688,14 @@ next_actions 里的答案文字不是信息存在的证据。这些点名参考�
 换版本标签，摘要无论如何都会区分内容。构造时检查政策的 `information_question` 存在于
 问题集且是 Noul，否则组合失败。
 
-**证据选项。** `done_answer: withhold` 从请求中去掉源 `done` 动作的答案文本：动作参数
-中的 `extracted_content`，以及恢复对应关系里 done 动作参数和其结果中的同一文本；动作
-类型保留。`keep` 原样发送。出厂值为 withhold：审查判断的是观测是否相同，不应参考被测
-Agent 自己的结论。回放服务事实不进请求，确定性规则放在模型之外。
+**证据选项。** 决定请求内容的设置都在 `evidence` 块里，全部必填：每侧观测的文本字符
+上限 `max_text_chars`、链接与几何条目上限 `max_links`、是否附原始截图
+`include_screenshots`，以及 `done_answer`。出厂预算为每侧 6000 字符、20 条，即阈值拟合
+所用的预算；更大的预算在 DMX 路线上多数页面超出输入上限（用户 2026-10-20 决定）。
+`done_answer: withhold` 从请求中去掉源 `done` 动作的答案文本：动作参数中的
+`extracted_content`，以及恢复对应关系里 done 动作参数和其结果中的同一文本；动作类型保留。
+`keep` 原样发送。出厂值为 withhold：审查判断的是观测是否相同，不应参考被测 Agent 自己的
+结论。回放服务事实不进请求，确定性规则放在模型之外。
 
 **政策 `replay-triage-2`。** 路由是纯函数，输入为信息问题的原生 Noul、选中的阈值和机器
 事实。判定按以下顺序：
@@ -3705,11 +3712,17 @@ reasons 写明决定路线的条件。这三条门槛由政策版本固定，改
 
 **阈值是活参数。** 阈值是暂定的分诊参数，随标注数据增加持续重拟合，不是校准承诺；
 应在不同运行上继续拟合和检查，使误放率可以测量。政策有一个全局默认，另有可选覆盖，
-范围是站点或任务：站点按参考观测 URL 的主机名精确匹配（小写，不推断子域）；任务按源
-trace 的 `benchmark`、`subset`、`task_id` 三者精确匹配。任务覆盖优先于站点覆盖，二者都
-优先于默认；同一范围不能出现两次。每组阈值（默认和每个覆盖）都带拟合来源 `fit`：
-数据集说明、数据集摘要、拟合日期和拟合时的政策版本。两个阈值都在 [0, 1] 内，调查上限
-必须严格小于接受下限。
+范围是站点或任务。站点写明注册域 `domain`（如 `bilibili.com`），参考观测 URL 的主机名
+等于该域或以 `.` 加该域结尾时匹配；不使用公共后缀表。多个站点覆盖同时匹配时最长的域
+胜出，同一个域写两次在组合时拒绝。任务按源 trace 的 `benchmark`、`subset`、`task_id`
+三者精确匹配。任务覆盖优先于站点覆盖，二者都优先于默认（用户 2026-10-20 决定）。
+两个阈值都在 [0, 1] 内，调查上限必须严格小于接受下限。
+
+每组阈值（默认和每个覆盖）都带拟合来源 `fit`：数据集说明、数据集摘要、拟合日期、拟合时
+的政策版本、所用问题集的摘要、所用证据选项的全文（含预算）及其摘要；摘要须与记录的全文
+一致。阈值与措辞和证据绑定：当前问题集或证据选项的摘要与某组阈值的 `fit` 不同时，组合
+直接失败，错误同时写出拟合时与当前的两组摘要；修正方法是重新拟合，或为当前问题与证据
+写一条新的拟合记录。
 
 **视口内图片未被服务**（browser 包 `review_evidence.py`，回放 replay log + raw DOM）。
 只看被审查步骤自己的那次采集，并只取发生时间不晚于回放截图的决定。更早的采集不计入：

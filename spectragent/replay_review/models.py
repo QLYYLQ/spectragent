@@ -81,11 +81,24 @@ class ReviewQuestionSet(BaseModel):
 
 
 class ReviewEvidenceOptions(BaseModel):
-    """What the request carries beyond the aligned observations."""
+    """What the request carries: the observation budget and what is withheld."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     done_answer: Literal["keep", "withhold"] = Field(
         description="withhold removes the source done answer text from the request; the action type stays"
+    )
+    max_text_chars: int = Field(
+        ge=1,
+        strict=True,
+        description="Maximum clean DOM characters from each observation; truncation is recorded",
+    )
+    max_links: int = Field(
+        ge=1,
+        strict=True,
+        description="Maximum visible links and geometry entries from each observation; omissions are recorded",
+    )
+    include_screenshots: bool = Field(
+        strict=True, description="Include raw recorded screenshots as native Decision assets"
     )
 
     def sha256(self) -> str:
@@ -112,6 +125,28 @@ class ThresholdFit(BaseModel):
         min_length=1,
         description="Policy version the fit was made for",
     )
+    questions_sha256: str = trace_safe(
+        "fit provenance, not a credential",
+        pattern=r"^[0-9a-f]{64}$",
+        description="Digest of the question set the information answers came from",
+    )
+    evidence: ReviewEvidenceOptions = Field(
+        description="Evidence options, budget included, the information answers came from"
+    )
+    evidence_sha256: str = trace_safe(
+        "fit provenance, not a credential",
+        pattern=r"^[0-9a-f]{64}$",
+        description="Digest of those evidence options",
+    )
+
+    @model_validator(mode="after")
+    def check_evidence_digest(self) -> ThresholdFit:
+        if self.evidence.sha256() != self.evidence_sha256:
+            raise ValueError(
+                f"Fit evidence_sha256 {self.evidence_sha256} is not the digest of its own "
+                f"evidence options ({self.evidence.sha256()})"
+            )
+        return self
 
 
 class InformationThresholds(BaseModel):
@@ -142,21 +177,30 @@ class TaskIdentity(BaseModel):
     task_id: str
 
 
-class HostThresholds(InformationThresholds):
-    """Thresholds for pairs whose reference observation is on this host."""
+class SiteThresholds(InformationThresholds):
+    """Thresholds for pairs whose reference host is this domain or one of its subdomains."""
 
-    scope: Literal["host"]
-    host: str = trace_safe(
+    scope: Literal["site"]
+    domain: str = trace_safe(
         "threshold scope, not a credential",
         min_length=1,
-        description="Lower-case host name, matched exactly",
+        description="Lower-case domain, written explicitly; matches itself and its subdomains",
     )
 
     @model_validator(mode="after")
-    def check_host(self) -> HostThresholds:
-        if self.host != self.host.strip().lower() or any(c in self.host for c in "/:@?# "):
-            raise ValueError(f"Threshold host must be a bare lower-case host name: {self.host!r}")
+    def check_domain(self) -> SiteThresholds:
+        if (
+            self.domain != self.domain.strip().lower()
+            or self.domain.startswith(".")
+            or self.domain.endswith(".")
+            or ".." in self.domain
+            or any(c in self.domain for c in "/:@?# ")
+        ):
+            raise ValueError(f"Threshold domain must be a bare lower-case domain: {self.domain!r}")
         return self
+
+    def matches(self, host: str | None) -> bool:
+        return host is not None and (host == self.domain or host.endswith("." + self.domain))
 
 
 class TaskThresholds(InformationThresholds):
@@ -174,7 +218,7 @@ class TaskThresholds(InformationThresholds):
         return TaskIdentity(benchmark=self.benchmark, subset=self.subset, task_id=self.task_id)
 
 
-ThresholdOverride = Annotated[HostThresholds | TaskThresholds, Field(discriminator="scope")]
+ThresholdOverride = Annotated[SiteThresholds | TaskThresholds, Field(discriminator="scope")]
 
 
 class MachineFacts(BaseModel):
@@ -193,8 +237,8 @@ class AppliedThresholds(BaseModel):
     """The threshold pair one assessment used, with its scope and fit provenance."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    scope: Literal["default", "host", "task"]
-    host: str | None = None
+    scope: Literal["default", "site", "task"]
+    domain: str | None = None
     task: TaskIdentity | None = None
     accept_information_min: float
     investigate_information_max: float
@@ -221,8 +265,8 @@ class ReviewPolicy(BaseModel):
         seen: set[tuple[str, ...]] = set()
         for override in self.overrides:
             key = (
-                ("host", override.host)
-                if isinstance(override, HostThresholds)
+                ("site", override.domain)
+                if isinstance(override, SiteThresholds)
                 else ("task", override.benchmark, override.subset, override.task_id)
             )
             if key in seen:
@@ -230,8 +274,32 @@ class ReviewPolicy(BaseModel):
             seen.add(key)
         return self
 
+    def check_fitted_on(
+        self, questions: ReviewQuestionSet, evidence: ReviewEvidenceOptions
+    ) -> None:
+        """Refuse thresholds fitted on other questions or evidence options; re-fit them instead."""
+        questions_sha256, evidence_sha256 = questions.sha256(), evidence.sha256()
+        sets: list[tuple[str, InformationThresholds]] = [("default", self.thresholds)]
+        for override in self.overrides:
+            name = (
+                f"site {override.domain}"
+                if isinstance(override, SiteThresholds)
+                else f"task {override.benchmark}/{override.subset}/{override.task_id}"
+            )
+            sets.append((name, override))
+        for name, thresholds in sets:
+            fit = thresholds.fit
+            if fit.questions_sha256 != questions_sha256 or fit.evidence_sha256 != evidence_sha256:
+                raise ValueError(
+                    f"The {name} thresholds were fitted on question set {fit.questions_sha256} "
+                    f"and evidence options {fit.evidence_sha256}, but the configured question "
+                    f"set is {questions_sha256} and the evidence options are {evidence_sha256}. "
+                    "Re-fit the thresholds or write a new fit entry for these questions and "
+                    "evidence options."
+                )
+
     def select(self, facts: MachineFacts) -> AppliedThresholds:
-        """Task override, else site override, else the global default."""
+        """Task override, else the longest matching site domain, else the global default."""
         for override in self.overrides:
             if isinstance(override, TaskThresholds) and override.identity() == facts.task:
                 return AppliedThresholds(
@@ -241,15 +309,20 @@ class ReviewPolicy(BaseModel):
                     investigate_information_max=override.investigate_information_max,
                     fit=override.fit,
                 )
-        for override in self.overrides:
-            if isinstance(override, HostThresholds) and override.host == facts.site_host:
-                return AppliedThresholds(
-                    scope="host",
-                    host=override.host,
-                    accept_information_min=override.accept_information_min,
-                    investigate_information_max=override.investigate_information_max,
-                    fit=override.fit,
-                )
+        sites = [
+            override
+            for override in self.overrides
+            if isinstance(override, SiteThresholds) and override.matches(facts.site_host)
+        ]
+        if sites:
+            site = max(sites, key=lambda override: len(override.domain))
+            return AppliedThresholds(
+                scope="site",
+                domain=site.domain,
+                accept_information_min=site.accept_information_min,
+                investigate_information_max=site.investigate_information_max,
+                fit=site.fit,
+            )
         return AppliedThresholds(
             scope="default",
             accept_information_min=self.thresholds.accept_information_min,
