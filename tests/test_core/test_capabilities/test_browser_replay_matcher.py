@@ -818,6 +818,41 @@ class TestRecordsWithoutABody:
         third = [matcher.match(get(IMAGE)) for _ in range(3)][-1]
         assert (third.substitute, third.reason) == (None, "body_unavailable")
 
+    @pytest.mark.parametrize(
+        "outcome", ["recorder_timeout", "page_cancelled_during_body", "memory_cache", "unknown"]
+    )
+    @pytest.mark.parametrize("status", [500, 404])
+    def test_a_recorded_status_is_never_answered_with_another(
+        self, outcome: SourceOutcome, status: int
+    ) -> None:
+        """The headers of the consumed request arrived: the server's answer there was *status*."""
+        lost = indexed(
+            IMAGE,
+            record_id="lost",
+            order=2,
+            status=status,
+            miss_reason="body_unavailable",
+            source_outcome=outcome,
+        )
+        records = [body("ok0", 0), body("ok1", 1), lost]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        third = [matcher.match(get(IMAGE)) for _ in range(3)][-1]
+        assert (third.record, third.substitute, third.reason) == (lost, None, "body_unavailable")
+
+    def test_a_recorded_status_equal_to_the_available_one_is_substituted(self) -> None:
+        lost = indexed(
+            IMAGE,
+            record_id="lost",
+            order=2,
+            status=200,
+            miss_reason="body_unavailable",
+            source_outcome="recorder_timeout",
+        )
+        records = [body("ok0", 0), body("ok1", 1), lost]
+        matcher = build_matcher(ArchiveIndex(records), rules=unavailable_rules("serve_identical"))
+        third = [matcher.match(get(IMAGE)) for _ in range(3)][-1]
+        assert (third.record, third.substitute, third.reason) == (lost, records[1], None)
+
     def test_a_record_without_a_body_digest_proves_nothing(self) -> None:
         """A redirect is available but has no body digest: no identity to rely on."""
         records = [

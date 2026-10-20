@@ -9,8 +9,9 @@ A record without a body keeps its place in the sequence: the cursor
 consumes it like any other. The applicable rule's ``unavailable`` policy
 then decides its answer — the miss policy (``miss``), or another record of
 the same sequence (``serve_identical``) when every available record there
-has the same status and body and the source request did not fail on the
-network (never configurable). ``repeat_last`` repeats the sequence's last
+has the same status and body, the consumed record's own recorded status (if
+any) is that status, and the source request did not fail on the network
+(never configurable). ``repeat_last`` repeats the sequence's last
 available response (arch §4.14 "匹配").
 """
 
@@ -396,18 +397,27 @@ class Matcher:
         """The available record that answers for *record*, which has no body — if one may.
 
         Only for a ``body_unavailable`` record whose source request did not
-        fail on the network (an ``unknown`` outcome is eligible), and only when every available record of the
-        sequence has the same status and the same recorded body digest (a
-        record without a digest proves nothing). Among them: the affinity
-        run, the most request headers shared with the live request, the
-        nearest in recording order (the earlier on a tie).
+        fail on the network (an ``unknown`` outcome is eligible), and only
+        when every available record of the sequence has the same status and
+        the same recorded body digest (a record without a digest proves
+        nothing). A consumed record whose response status was recorded (its
+        headers arrived before the body was lost) must have that same status:
+        the source server answered it, and a different answer is never
+        substituted for it. One without a status (cancelled before any
+        response, still in flight) stays eligible. Among the available
+        records: the affinity run, the most request headers shared with the
+        live request, the nearest in recording order (the earlier on a tie).
         """
         if record.miss_reason != "body_unavailable" or record.source_outcome in NEVER_SUBSTITUTED:
             return None
         available = [r for r in group.records if r.servable]
         if not available or any(r.payload_sha256 is None for r in available):
             return None
-        if len({(r.status, r.payload_sha256) for r in available}) != 1:
+        answers = {(r.status, r.payload_sha256) for r in available}
+        if len(answers) != 1:
+            return None
+        ((status, _digest),) = answers
+        if record.status is not None and record.status != status:
             return None
         return group.nearest(available, record, self.affinity)
 

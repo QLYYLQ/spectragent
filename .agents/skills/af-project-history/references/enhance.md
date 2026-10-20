@@ -203,7 +203,9 @@ consume the cursor, and `repeat_last` ignores availability.
 visible, 130 unchanged at 30/30. Follow-ups decided 2026-10-20: records with an `unknown`
 source outcome may be substituted; count `repeat_last` reuse per site next to
 substitutions; mark repeats of a body-less record in the replay log; no headed-browser
-verification of the headed 130 recording.
+verification of the headed 130 recording. Review decision, 2026-10-20: a consumed record
+whose response status was recorded (headers arrived, body lost) is substituted only when
+that status equals the available records' status; a record with no status stays eligible.
 
 ## Fix — Bilibili account request matching
 

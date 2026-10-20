@@ -35,7 +35,9 @@ read timed out. Such a record keeps its place in its response sequence. With
 `unavailable: miss` the miss policy answers it (a subresource gets 404). With
 `unavailable: serve_identical` an available record of the same sequence
 answers for it, but only when every available record of that sequence has the
-same status and the same recorded body. A request whose source failed on the
+same status and the same recorded body, and the consumed record's own status,
+when the recorder saw one, is that status (a recorded 500 is never answered
+with a 200). A request whose source failed on the
 network (for example `net::ERR_BLOCKED_BY_ORB`) is never answered from another
 record; that is fixed, not a rule setting. The replay log records each such
 answer as `substituted`, with both record ids and how the source request
@@ -115,7 +117,7 @@ failed requests, candidates and the selected rule when investigating a change.
 | `scope` | mapping | Request constraints below; an empty mapping explicitly matches every request. |
 | `priority` | integer | Greatest matching priority wins; defaults to `0`. |
 | `exhaustion` | `repeat_last` or `miss` | Required. Reuse the last available response of the selected sequence, or report `sequence_exhausted`. |
-| `unavailable` | `miss` or `serve_identical` | Required. Answer a consumed record without a body through the miss policy, or with an available record of the same sequence when every available record there has the same status and body (never for a source network failure). |
+| `unavailable` | `miss` or `serve_identical` | Required. Answer a consumed record without a body through the miss policy, or with an available record of the same sequence when every available record there has the same status and body and the consumed record's recorded status, if any, is that status (never for a source network failure). |
 | `levels` | list of `exact`, `normalized`, `fuzzy`, or null | Restrict the run's allowed matching levels; null uses the run's set. A rule cannot enable a level forbidden by `matcher.levels`. |
 | `fuzzy` | boolean | Permit fuzzy matching for documents and non-GET requests, only when the run and rule allow `fuzzy`. Use `true` or `false`. |
 | `ignore_query` | list of name globs | Query fields omitted from the normalized key and fuzzy score. |
