@@ -72,12 +72,7 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
-from spectragent.core.capabilities.browser.input.keyboard import (
-    ALT_MODIFIER,
-    CONTROL_MODIFIER,
-    META_MODIFIER,
-    SHIFT_MODIFIER,
-)
+from spectragent.core.capabilities.browser.input.chords import parse_key_chord
 from spectragent.core.capabilities.browser.input.mouse import PointerPosition
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.sessions import TabSessions
@@ -186,35 +181,6 @@ def _inside_sensitive_control(node: DOMElementNode | None) -> bool:
     return False
 
 
-# Key name → (DOM `key`, DOM `code`, Windows virtual key code, optional
-# `char` text) for CDP Input.dispatchKeyEvent. The 4th element, when not
-# None, means this key has a text interpretation and a separate
-# ``type=char`` event should be sandwiched between keyDown and keyUp;
-# without that event Chrome won't fire ``keypress`` and many JS handlers
-# (Amazon's search-on-Enter, autosuggest selectors, contenteditable
-# inputs) treat the press as half-hearted and skip their reaction.
-# Two-event keyDown + keyUp is enough for navigation keys (arrows, Esc,
-# Home/End, Pg*). Reference: ref/browser-use/browser_use/actor/element.py:423-501.
-# No key event carries a ``nativeVirtualKeyCode``: the ``input/keyboard.py``
-# module docstring ("No native key code") says what it did on macOS.
-_KEY_INFO: dict[str, tuple[str, str, int, str | None]] = {
-    "enter": ("Enter", "Enter", 13, "\r"),
-    "tab": ("Tab", "Tab", 9, "\t"),
-    "escape": ("Escape", "Escape", 27, None),
-    "backspace": ("Backspace", "Backspace", 8, None),
-    "delete": ("Delete", "Delete", 46, None),
-    "arrowup": ("ArrowUp", "ArrowUp", 38, None),
-    "arrowdown": ("ArrowDown", "ArrowDown", 40, None),
-    "arrowleft": ("ArrowLeft", "ArrowLeft", 37, None),
-    "arrowright": ("ArrowRight", "ArrowRight", 39, None),
-    "home": ("Home", "Home", 36, None),
-    "end": ("End", "End", 35, None),
-    "pageup": ("PageUp", "PageUp", 33, None),
-    "pagedown": ("PageDown", "PageDown", 34, None),
-    "space": (" ", "Space", 32, " "),
-}
-
-
 #: What a click on a frame element that can no longer be located reports.
 _STALE_FRAME_ELEMENT = (
     "The element is inside a frame that changed since the last observation "
@@ -251,41 +217,6 @@ _CLIENT_RECT_JS = (
     "  return {x: r.x, y: r.y, w: r.width, h: r.height};"
     "}"
 )
-
-
-def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
-    """Build CDP Input.dispatchKeyEvent params for one logical key.
-
-    Returns ``(base_payload, char_text)``:
-
-    - ``base_payload`` is the shared subset (key, code,
-      windowsVirtualKeyCode) that the caller wraps with ``type=keyDown`` /
-      ``type=keyUp`` and any ``modifiers``. Never a ``nativeVirtualKeyCode``
-      (the ``input/keyboard.py`` module docstring, "No native key code").
-    - ``char_text`` is the text to dispatch as a ``type=char`` event
-      between keyDown and keyUp; ``None`` skips the char event.
-
-    Single printable characters (``"a"``, ``"5"``, ``"%"``) always emit
-    a char event with the character itself. Named navigation keys
-    (arrows, Esc, ...) skip char. Enter / Tab / Space carry their
-    canonical text representation per the table above.
-    """
-    info = _KEY_INFO.get(raw.lower())
-    if info is not None:
-        key, code, vk, char = info
-        return ({"key": key, "code": code, "windowsVirtualKeyCode": vk}, char)
-    if len(raw) == 1:
-        ch = raw
-        upper = ch.upper()
-        if ch.isalpha():
-            code = f"Key{upper}"
-        elif ch.isdigit():
-            code = f"Digit{ch}"
-        else:
-            code = upper
-        return ({"key": ch, "code": code, "windowsVirtualKeyCode": ord(upper)}, ch)
-    # Unknown multi-char key — pass through key-only.
-    return ({"key": raw}, None)
 
 
 _DEBUG_OVERLAY_JS = r"""
@@ -1161,46 +1092,29 @@ class ActionWatchdog(BrowserWatchdog):
     # -----------------------------------------------------------------------
 
     async def _on_send_keys(self, event: SendKeysEvent) -> dict[str, str] | None:
-        """Send keyboard keys, supports modifiers (e.g. 'Ctrl+a', 'Enter').
+        """Send one key or chord (``Enter``, ``a``, ``Control+A``).
 
-        Uses ``_resolve_key_event`` to fill ``code`` and
-        ``windowsVirtualKeyCode`` so the synthesized DOM ``KeyboardEvent``
-        has a non-zero ``keyCode`` and a real ``code`` string — both of
-        which JS handlers (especially React's onKeyDown) check before
-        treating the press as Enter. No ``nativeVirtualKeyCode``: on macOS
-        Chrome matched an unhandled key carrying one against its own menu
-        and opened ``chrome://settings/help`` in front of the agent's tab
-        (the ``input/keyboard.py`` module docstring, "No native key code").
+        The input is parsed by :func:`~spectragent.core.capabilities.browser.input.chords.parse_key_chord`,
+        the same parser ``browser.send_keys`` refuses with before it emits:
+        anything that is not a named key, a single character or a ``+``
+        chord of them answers an error and sends no key event at all
+        (``docs/architecture_design.md`` §4.13). The key event carries
+        ``code`` and ``windowsVirtualKeyCode`` so the synthesized DOM
+        ``KeyboardEvent`` has a non-zero ``keyCode`` and a real ``code``
+        string — both of which JS handlers (especially React's onKeyDown)
+        check before treating the press as Enter. No
+        ``nativeVirtualKeyCode``: on macOS Chrome matched an unhandled key
+        carrying one against its own menu and opened
+        ``chrome://settings/help`` in front of the agent's tab (the
+        ``input/keyboard.py`` module docstring, "No native key code").
         """
         try:
-            parts = [part.strip() for part in event.keys.split("+")]
-            if not all(parts):
-                raise ValueError("Key names and chord components must not be empty")
-            key = parts[-1]
-            modifiers = [part.lower() for part in parts[:-1]]
-
-            # Build modifier bitmask.
-            mod_mask = 0
-            aliases = {
-                "ctrl": CONTROL_MODIFIER,
-                "control": CONTROL_MODIFIER,
-                "alt": ALT_MODIFIER,
-                "option": ALT_MODIFIER,
-                "shift": SHIFT_MODIFIER,
-                "meta": META_MODIFIER,
-                "cmd": META_MODIFIER,
-                "command": META_MODIFIER,
-            }
-            for modifier in modifiers:
-                if modifier not in aliases:
-                    raise ValueError(f"Unknown modifier {modifier!r}; expected {sorted(aliases)}")
-                mod_mask |= aliases[modifier]
-
-            payload: dict[str, Any]
-            char_text: str | None
-            payload, char_text = _resolve_key_event(key)
+            chord = parse_key_chord(event.keys)
             await self._keyboard.press_key(
-                payload, modifiers=mod_mask, char_text=char_text, session_id=self._session_id
+                chord.payload,
+                modifiers=chord.modifier_mask,
+                char_text=chord.char_text,
+                session_id=self._session_id,
             )
         except Exception as e:
             logger.error("SendKeys failed: %s", e)
