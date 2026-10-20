@@ -14,8 +14,10 @@ from PIL import Image
 
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
 from spectragent.core.capabilities.browser.review_evidence import (
+    CAPTURE_STATE_FRAGMENT,
     BrowserEvidenceUnavailable,
     BrowserEvidenceUnsupported,
+    capture_state_failed_images,
     clean_recorded_dom,
     recorded_replay_facts,
     replay_images_not_served_in_viewport,
@@ -34,6 +36,7 @@ from spectragent.replay_review.models import (
     ReviewObservation,
     ReviewPair,
     TaskIdentity,
+    ViewportImageReadings,
 )
 
 
@@ -70,6 +73,16 @@ def _ref(trace: RunTrace, step: int) -> EvidenceRef:
         trace=str(trace.trace_dir),
         manifest_sha256=_digest(trace.manifest.model_dump_json().encode()),
         config_hash=trace.manifest.config_hash,
+    )
+
+
+def _capture_state_images(trace: RunTrace, step: int) -> dict[str, Any]:
+    """The step's capture_state reading of failed visible images, or why there is none."""
+    negotiation = trace.config.negotiation
+    return capture_state_failed_images(
+        trace.observation_fragment(step, CAPTURE_STATE_FRAGMENT),
+        negotiated=negotiation is not None
+        and CAPTURE_STATE_FRAGMENT in negotiation.active_fragments,
     )
 
 
@@ -248,12 +261,18 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
                 loader_id=restored.scope.get("loader_id"),
                 observed_at=observed_at,
             )
+            captured = _capture_state_images(replay, pair.replay_step)
+            source_captured = _capture_state_images(source, pair.source_step)
         except BrowserEvidenceUnavailable as exc:
             raise ReviewEvidenceError("missing_evidence", str(exc)) from exc
         except (ValueError, KeyError, TypeError, OSError) as exc:
             raise ReviewEvidenceError(
                 "corrupt_evidence", f"Cannot read recorded replay facts: {exc}"
             ) from exc
+        readings = ViewportImageReadings(
+            replay_log=images["in_viewport"] > 0 if images["measurable"] else None,
+            capture_state=captured["failed"] if captured["measurable"] else None,
+        )
         config = source.config
         facts = MachineFacts(
             site_host=urlsplit(reference.url).hostname,
@@ -263,7 +282,8 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
             if config.task_id
             else None,
             restoration_warning=current.restoration.verdict != "ok",
-            viewport_image_not_served=images["in_viewport"] > 0 if images["measurable"] else None,
+            viewport_image_not_served=readings.combined(),
+            viewport_image_sources=readings,
         )
         return ReviewCase(
             task=source.config.task,
@@ -277,10 +297,16 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
             machine_evidence={
                 "replay": replay_facts,
                 "viewport_images": {
-                    **images,
-                    "observed_at_source": "replay_screenshot"
-                    if restored.scope.get("screenshot_captured_at") is not None
-                    else "replay_dom_capture",
+                    "replay_log": {
+                        **images,
+                        "observed_at_source": "replay_screenshot"
+                        if restored.scope.get("screenshot_captured_at") is not None
+                        else "replay_dom_capture",
+                    },
+                    "capture_state": captured,
+                    # For comparison only: an image already broken in the
+                    # source fails in the replay's capture too.
+                    "source_capture_state": source_captured,
                 },
                 "restoration": current.restoration.model_dump(mode="json"),
                 "source_dom_recipe": {key: configured.get(key) for key in recipe_keys},

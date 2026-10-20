@@ -221,6 +221,30 @@ class TaskThresholds(InformationThresholds):
 ThresholdOverride = Annotated[SiteThresholds | TaskThresholds, Field(discriminator="scope")]
 
 
+class ViewportImageReadings(BaseModel):
+    """What each source read for the in-viewport image fact; None when it could not measure."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    replay_log: bool | None = Field(
+        description="An image request the replay log records as a miss is referenced by a "
+        "main-document element in the viewport"
+    )
+    capture_state: bool | None = Field(
+        description="The replay capture's capture_state counted a visible image in the viewport "
+        "that failed to load"
+    )
+
+    def combined(self) -> bool | None:
+        """True when either source reads true, False when one measured and neither reads true,
+        None when neither could measure."""
+        readings = (self.replay_log, self.capture_state)
+        if any(reading is True for reading in readings):
+            return True
+        if any(reading is False for reading in readings):
+            return False
+        return None
+
+
 class MachineFacts(BaseModel):
     """Recorded machine facts the policy reads; none of them come from the model."""
 
@@ -229,8 +253,21 @@ class MachineFacts(BaseModel):
     task: TaskIdentity | None = Field(description="Source task identity; None when unrecorded")
     restoration_warning: bool = Field(description="The restoration check did not pass")
     viewport_image_not_served: bool | None = Field(
-        description="An image the replay did not serve is referenced in the viewport; None when not measurable"
+        description="An image in the replay's viewport was not served or failed to load, by "
+        "either source; None when neither source could measure"
     )
+    viewport_image_sources: ViewportImageReadings = Field(
+        description="Each source's own reading; the sources that read the fact's value supplied it"
+    )
+
+    @model_validator(mode="after")
+    def check_viewport_image_sources(self) -> MachineFacts:
+        if self.viewport_image_not_served != self.viewport_image_sources.combined():
+            raise ValueError(
+                "viewport_image_not_served must combine its sources: true when either reads "
+                "true, None when neither measured"
+            )
+        return self
 
 
 class AppliedThresholds(BaseModel):

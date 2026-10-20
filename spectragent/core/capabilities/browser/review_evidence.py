@@ -17,6 +17,8 @@ from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 from spectragent.core.capabilities.browser.dom.serializers import DOMSerializerProtocol
 from spectragent.core.capabilities.browser.replay.replay_log import iter_decisions, replay_log
 from spectragent.core.capabilities.browser.replay.rule_snapshot import recorded_site_rules
+from spectragent.schemas.observation.capture_state import CaptureStateFragment
+from spectragent.schemas.observation.failure import FragmentFailure
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,13 @@ class BrowserEvidenceUnsupported(ValueError):
 VIEWPORT_IMAGE_RULE_NOT_COVERED = (
     "CSS background images from stylesheets",
     "references inside subframe documents",
+)
+#: The browser's capture state fragment: the second source of the viewport image fact.
+CAPTURE_STATE_FRAGMENT = "browser.capture_state"
+#: What the capture state's failed-image count cannot see; every measured reading names it.
+CAPTURE_STATE_IMAGES_NOT_COVERED = (
+    "CSS background images",
+    "images inside subframe documents",
 )
 #: Served answers: the archive record itself, its last record repeated, or an
 #: available record with the identical body answering for one without a body.
@@ -239,6 +248,8 @@ def replay_images_not_served_in_viewport(
 ) -> dict[str, Any]:
     """Image requests the replay did not serve that an element in the viewport references.
 
+    The first of the two sources of the review's in-viewport image fact
+    (§4.18); :func:`capture_state_failed_images` is the second.
     Only the reviewed step's own collection counts, keeping decisions that
     happened no later than ``observed_at`` (a folded summary counts from its
     first event). Earlier collections are left out on purpose: a single-page
@@ -352,4 +363,46 @@ def replay_images_not_served_in_viewport(
         "referenced_only_in_subframes": len(in_subframes),
         "listed": listed[:max_listed],
         "listed_total": len(listed),
+    }
+
+
+def capture_state_failed_images(fragment: object, *, negotiated: bool) -> dict[str, Any]:
+    """The capture's own count of visible images that failed to load (``capture_state``, §4.4).
+
+    The second source of the review's in-viewport image fact (§4.18), read
+    from the ``browser.capture_state`` fragment of the reviewed step, which
+    belongs to the same capture as that step's screenshot. It is the page's
+    own view: the browser counts the main document's ``<img>`` elements that
+    meet the viewport, are visible, and finished loading with nothing to
+    show, whatever the cause (a replay miss, a body that is not an image).
+    ``failed`` is true when it counted at least one.
+
+    ``measurable`` is false, with a reason, when the run did not negotiate
+    the fragment, the step recorded none, the capture failed, or the fact is
+    ``unknown`` or ``unavailable``: unknown is never zero. A recorded value
+    of any other type is corrupt evidence and raises ``TypeError``.
+    """
+    if not negotiated:
+        return {"measurable": False, "reason": "the run did not negotiate capture_state"}
+    if fragment is None:
+        return {"measurable": False, "reason": "the step recorded no capture_state"}
+    if isinstance(fragment, FragmentFailure):
+        return {"measurable": False, "reason": f"the capture failed ({fragment.error})"}
+    if not isinstance(fragment, CaptureStateFragment):
+        raise TypeError(f"{CAPTURE_STATE_FRAGMENT} holds a {type(fragment).__name__}")
+    failed = fragment.failed_visible_resources
+    if failed.status != "measured" or failed.count is None:
+        detail = f": {failed.detail}" if failed.detail else ""
+        return {
+            "measurable": False,
+            "reason": f"failed visible images are {failed.status}{detail}",
+            "captured_at": fragment.captured_at,
+        }
+    return {
+        "measurable": True,
+        "captured_at": fragment.captured_at,
+        "failed": failed.count > 0,
+        "failed_visible_images": failed.count,
+        "identifiers": list(failed.identifiers),
+        "not_covered": list(CAPTURE_STATE_IMAGES_NOT_COVERED),
     }

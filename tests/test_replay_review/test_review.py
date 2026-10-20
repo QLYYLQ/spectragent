@@ -18,7 +18,11 @@ from spectragent.core.capabilities.browser.archive import DomRawArchiver
 from spectragent.core.capabilities.browser.archive.dom_raw import read_dom_document
 from spectragent.core.capabilities.browser.archive.encoding import gzip_json
 from spectragent.core.capabilities.browser.archive.redaction import redact_raw_capture
-from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
+from spectragent.core.capabilities.browser.observations import (
+    BrowserCaptureStateObs,
+    BrowserMetaObs,
+    ScreenshotObs,
+)
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.decision import DecisionRequest, DecisionResult
 from spectragent.core.llm.providers.openai import ChatOpenAI
@@ -50,10 +54,12 @@ from spectragent.replay_review.models import (
     ReviewQuestionSet,
     ReviewSettings,
     TaskIdentity,
+    ViewportImageReadings,
 )
 from spectragent.replay_review.runner import ReplayReviewRunner, ReviewCallRecorder
 from spectragent.replay_review.storage import ReviewItem, ReviewStore, json_file
 from spectragent.schemas.action import Action
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.browser_archive import archiving_capability
@@ -118,6 +124,7 @@ def result(information=0.9, targets=0.8, sufficient=0.3):
 
 
 def facts(**changes) -> MachineFacts:
+    """Facts whose image fact comes from the replay log alone unless sources are given."""
     values = {
         "site_host": "www.example.test",
         "task": TaskIdentity(benchmark="bench", subset="L1", task_id="7"),
@@ -125,6 +132,10 @@ def facts(**changes) -> MachineFacts:
         "viewport_image_not_served": False,
         **changes,
     }
+    values.setdefault(
+        "viewport_image_sources",
+        {"replay_log": values["viewport_image_not_served"], "capture_state": None},
+    )
     return MachineFacts.model_validate(values)
 
 
@@ -216,6 +227,52 @@ def test_information_question_routes_and_recomputes(information, changes, route,
     )
     assert stored.settings is not None and stored.facts is not None
     assert route_result(raw, stored.settings, stored.facts) == assessment
+
+
+@pytest.mark.parametrize(
+    ("replay_log", "capture_state", "combined"),
+    [
+        (True, None, True),
+        (None, True, True),
+        (True, False, True),
+        (False, True, True),
+        (True, True, True),
+        (False, None, False),
+        (None, False, False),
+        (False, False, False),
+        (None, None, None),
+    ],
+)
+def test_the_viewport_image_fact_combines_its_two_sources(replay_log, capture_state, combined):
+    """Either source true makes it true; both unmeasured leave it unmeasured."""
+    readings = ViewportImageReadings(replay_log=replay_log, capture_state=capture_state)
+    assert readings.combined() is combined
+    machine = facts(viewport_image_not_served=combined, viewport_image_sources=readings)
+    stored = MachineFacts.model_validate_json(machine.model_dump_json())
+    assert stored.viewport_image_sources == readings
+    route = route_result(result(0.9), settings(), stored).route
+    assert (
+        route
+        == {
+            True: "investigate_difference",
+            False: "candidate_acceptable",
+            None: "further_review",
+        }[combined]
+    )
+
+
+@pytest.mark.parametrize(
+    ("fact", "replay_log", "capture_state"),
+    [(False, False, True), (None, None, False), (True, None, None), (None, True, None)],
+)
+def test_facts_refuse_an_image_fact_that_does_not_combine_its_sources(
+    fact, replay_log, capture_state
+):
+    with pytest.raises(ValidationError, match="must combine its sources"):
+        facts(
+            viewport_image_not_served=fact,
+            viewport_image_sources={"replay_log": replay_log, "capture_state": capture_state},
+        )
 
 
 def site(domain: str, accept: float, investigate: float, dataset: str) -> dict:
@@ -713,7 +770,22 @@ def test_commit_index_ignores_orphans_and_refuses_escape_and_tampering(tmp_path)
         store.read("items/0.json")
 
 
-async def _recorded_pair(tmp_path, replay_log: list[dict] | None = None):
+def _capture_state(failed: FailedVisibleResources | None) -> BrowserCaptureStateObs | None:
+    if failed is None:
+        return None
+    return BrowserCaptureStateObs(
+        pointer=PointerState(status="unknown"), failed_visible_resources=failed
+    )
+
+
+async def _recorded_pair(
+    tmp_path,
+    replay_log: list[dict] | None = None,
+    *,
+    capture_state: FailedVisibleResources | None = None,
+    source_capture_state: FailedVisibleResources | None = None,
+):
+    """A source and its replay at step 0; capture_state is negotiated where one is given."""
     cap, driver = archiving_capability(archivers=(DomRawArchiver(),))
     await driver.start()
     try:
@@ -738,6 +810,7 @@ async def _recorded_pair(tmp_path, replay_log: list[dict] | None = None):
         branch_group_id="group",
     )
     for name in ("source", "replay"):
+        captured = _capture_state(capture_state if name == "replay" else source_capture_state)
         wal = WALWriter(tmp_path, name)
         wal.init_run(
             TraceConfig(
@@ -746,12 +819,14 @@ async def _recorded_pair(tmp_path, replay_log: list[dict] | None = None):
                 loop_id="react",
                 resolved=redact_config(composed.top_level_cfg),
                 negotiation=TraceNegotiation(
+                    active_fragments=["browser.browser_meta", "browser.screenshot"]
+                    + (["browser.capture_state"] if captured is not None else []),
                     active_archivers=["browser.dom_raw"]
                     + (
                         ["browser.replay_log"]
                         if name == "replay" and replay_log is not None
                         else []
-                    )
+                    ),
                 ),
                 branch=provenance if name == "replay" else None,
             )
@@ -766,6 +841,8 @@ async def _recorded_pair(tmp_path, replay_log: list[dict] | None = None):
                 ),
             ),
         ]
+        if captured is not None:
+            fragments.append(encode_fragment(0, captured))
         record = StepRecord(
             step=0,
             actions=[Action(name="browser.done")],
@@ -812,7 +889,15 @@ async def test_committed_alignment_and_configured_dom_recipe(tmp_path):
     assert prepared.facts.site_host == urlsplit(prepared.reference.url).hostname
     # This replay did not bind the replay log: unknown is not "no missing image".
     assert prepared.facts.viewport_image_not_served is None
-    assert prepared.machine_evidence["viewport_images"]["measurable"] is False
+    assert prepared.facts.viewport_image_sources == ViewportImageReadings(
+        replay_log=None, capture_state=None
+    )
+    viewport_images = prepared.machine_evidence["viewport_images"]
+    assert viewport_images["replay_log"]["measurable"] is False
+    assert viewport_images["capture_state"] == {
+        "measurable": False,
+        "reason": "the run did not negotiate capture_state",
+    }
     assert prepared.reference.image is not None and prepared.source_ref.files
     assert prepared.machine_evidence["restoration"]["verdict"] == "ok"
     after = {
@@ -841,7 +926,7 @@ async def test_replay_image_facts_reach_the_case_through_the_browser_rule(tmp_pa
     }
     pair = await _recorded_pair(tmp_path, replay_log=[miss])
     prepared = await prepare_case(pair, make_reviewer())
-    images = prepared.machine_evidence["viewport_images"]
+    images = prepared.machine_evidence["viewport_images"]["replay_log"]
     assert images["measurable"] is True and images["images_not_served"] == 1
     assert images["referenced_in_main_document"] == 0 and images["in_viewport"] == 0
     assert images["observed_at_source"] == "replay_screenshot"
@@ -850,6 +935,78 @@ async def test_replay_image_facts_reach_the_case_through_the_browser_rule(tmp_pa
     (tmp_path / "empty").mkdir()
     empty = await _recorded_pair(tmp_path / "empty", replay_log=[])
     assert (await prepare_case(empty, make_reviewer())).facts.viewport_image_not_served is False
+
+
+IMAGE_MISS_OFF_PAGE = {
+    "kind": "miss",
+    "captured_at": 0.0,
+    "cycle": 1,
+    "method": "GET",
+    "url": "https://img.example.test/not-on-this-page.webp",
+    "resource_type": "Image",
+    "reason": "no_match",
+    "answer": "fulfilled",
+    "status": 404,
+}
+
+
+def failed_images(count: int) -> FailedVisibleResources:
+    names = tuple(f"image-{index}.webp" for index in range(min(count, 2)))
+    return FailedVisibleResources(status="measured", count=count, identifiers=names)
+
+
+@pytest.mark.parametrize(
+    ("replay_log", "captured", "readings", "route"),
+    [
+        # Without a replay log, the capture's own failed image decides.
+        (None, failed_images(1), (None, True), "investigate_difference"),
+        (None, failed_images(0), (None, False), "candidate_acceptable"),
+        # The sources disagree: either true makes the fact true.
+        ([IMAGE_MISS_OFF_PAGE], failed_images(2), (False, True), "investigate_difference"),
+        # An unknown capture reading leaves the replay log's measurement.
+        (
+            [IMAGE_MISS_OFF_PAGE],
+            FailedVisibleResources(status="unknown", detail="the probe got no answer within 1s"),
+            (False, None),
+            "candidate_acceptable",
+        ),
+        (
+            None,
+            FailedVisibleResources(status="unavailable"),
+            (None, None),
+            "further_review",
+        ),
+    ],
+)
+async def test_capture_state_failed_images_are_the_second_source_of_the_image_fact(
+    tmp_path, replay_log, captured, readings, route
+):
+    pair = await _recorded_pair(
+        tmp_path,
+        replay_log=replay_log,
+        capture_state=captured,
+        source_capture_state=failed_images(1),
+    )
+    prepared = await prepare_case(pair, make_reviewer())
+    expected = ViewportImageReadings(replay_log=readings[0], capture_state=readings[1])
+    assert prepared.facts.viewport_image_sources == expected
+    assert prepared.facts.viewport_image_not_served is expected.combined()
+    assert route_result(result(0.9), settings(), prepared.facts).route == route
+    evidence = prepared.machine_evidence["viewport_images"]
+    assert evidence["replay_log"]["measurable"] is (replay_log is not None)
+    reading = evidence["capture_state"]
+    assert reading["measurable"] is (captured.status == "measured")
+    if captured.status == "measured":
+        assert reading["failed_visible_images"] == captured.count
+        assert reading["identifiers"] == list(captured.identifiers)
+        assert reading["not_covered"] == [
+            "CSS background images",
+            "images inside subframe documents",
+        ]
+    else:
+        assert reading["reason"].startswith(f"failed visible images are {captured.status}")
+    # The source's own reading is kept for comparison and never enters the fact.
+    assert evidence["source_capture_state"]["failed_visible_images"] == 1
 
 
 async def test_missing_scope_corruption_and_source_are_distinct(tmp_path):

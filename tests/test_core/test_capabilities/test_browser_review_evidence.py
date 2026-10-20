@@ -1,10 +1,13 @@
-"""The in-viewport image rule of browser review evidence, on synthetic committed traces.
+"""The two sources of browser review evidence's in-viewport image fact.
 
-Each case commits one replay step: a raw DOM document whose DOMSnapshot is
-written in the shape Chrome returns (string table, per-node attribute pairs,
-``currentSourceURL`` rare strings, layout bounds and scroll offsets in device
-pixels) and that step's replay log. The rule reads both only through the
-committed reader.
+The replay-log rule runs on synthetic committed traces. Each case commits one
+replay step: a raw DOM document whose DOMSnapshot is written in the shape
+Chrome returns (string table, per-node attribute pairs, ``currentSourceURL``
+rare strings, layout bounds and scroll offsets in device pixels) and that
+step's replay log. The rule reads both only through the committed reader.
+
+The capture-state reading takes the step's recorded ``browser.capture_state``
+fragment (or its absence) and says whether it measured a failed visible image.
 """
 
 from __future__ import annotations
@@ -16,14 +19,19 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser.archive.encoding import gzip_json
+from spectragent.core.capabilities.browser.observations import BrowserCaptureStateObs, DOMObs
 from spectragent.core.capabilities.browser.review_evidence import (
+    CAPTURE_STATE_IMAGES_NOT_COVERED,
     VIEWPORT_IMAGE_RULE_NOT_COVERED,
     BrowserEvidenceUnavailable,
+    capture_state_failed_images,
     replay_images_not_served_in_viewport,
 )
 from spectragent.core.trace.models import TraceConfig, TraceNegotiation
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
+from spectragent.schemas.observation.failure import FragmentFailure
 from tests._helpers.trace_builder import archive_file, step_record
 
 PAGE = "https://shop.example.test/item/1"
@@ -313,3 +321,65 @@ def test_the_reviewed_document_must_be_one_capture(tmp_path):
         rule(trace, loader_id="ANOTHER-DOCUMENT")
     with pytest.raises(BrowserEvidenceUnavailable):
         rule(trace, url="https://shop.example.test/elsewhere")
+
+
+def captured(failed: FailedVisibleResources) -> BrowserCaptureStateObs:
+    return BrowserCaptureStateObs(
+        pointer=PointerState(status="known", x=12, y=40),
+        failed_visible_resources=failed,
+        captured_at=OBSERVED_AT,
+    )
+
+
+@pytest.mark.parametrize(
+    ("count", "identifiers", "failed"),
+    [(0, (), False), (1, ("eggs.webp",), True), (11, ("eggs.webp", "milk.webp"), True)],
+)
+def test_capture_state_reads_a_measured_count(count, identifiers, failed):
+    reading = capture_state_failed_images(
+        captured(FailedVisibleResources(status="measured", count=count, identifiers=identifiers)),
+        negotiated=True,
+    )
+    assert reading == {
+        "measurable": True,
+        "captured_at": OBSERVED_AT,
+        "failed": failed,
+        "failed_visible_images": count,
+        "identifiers": list(identifiers),
+        "not_covered": list(CAPTURE_STATE_IMAGES_NOT_COVERED),
+    }
+
+
+@pytest.mark.parametrize(
+    ("fragment", "negotiated", "reason"),
+    [
+        (None, False, "the run did not negotiate capture_state"),
+        (None, True, "the step recorded no capture_state"),
+        (
+            FragmentFailure(
+                fragment_id="browser.capture_state", error="TimeoutError", detail="no answer"
+            ),
+            True,
+            "the capture failed (TimeoutError)",
+        ),
+        (
+            captured(FailedVisibleResources(status="unknown", detail="the probe raised")),
+            True,
+            "failed visible images are unknown: the probe raised",
+        ),
+        (
+            captured(FailedVisibleResources(status="unavailable")),
+            True,
+            "failed visible images are unavailable",
+        ),
+    ],
+)
+def test_capture_state_unknown_is_never_zero(fragment, negotiated, reason):
+    reading = capture_state_failed_images(fragment, negotiated=negotiated)
+    assert reading["measurable"] is False and reading["reason"] == reason
+    assert "failed" not in reading and "failed_visible_images" not in reading
+
+
+def test_capture_state_of_another_fragment_type_is_corrupt():
+    with pytest.raises(TypeError, match="browser.capture_state"):
+        capture_state_failed_images(DOMObs(), negotiated=True)

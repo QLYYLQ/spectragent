@@ -139,6 +139,12 @@ investigate_difference; an unmeasurable missing-image fact blocks candidate acce
 site overrides use an explicit registrable domain (`domain: bilibili.com` covers its
 subdomains, longest match wins, no public-suffix list).
 
+**Integrated with the observation branch, 2026-10-20:** the replay step's `capture_state`
+failed visible images are the second source of the in-viewport missing-image fact, next to
+the replay-log + DOM rule. Either source true makes the fact true; both unmeasurable leave it
+unmeasurable; the facts keep each source's reading (`viewport_image_sources`) and the
+evidence keeps the source step's own reading for comparison. Thresholds and gates unchanged.
+
 ## Fix — keyboard argument validation
 
 Scheduled on `enhance/action-effects-and-capture-state` as its own commit; the rule is in
