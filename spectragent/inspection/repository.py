@@ -167,7 +167,7 @@ def _replay_log(trace: RunTrace) -> dict[str, Any]:
         and "browser.replay_log" in trace.config.negotiation.active_archivers
     )
     entries: list[dict[str, Any]] = []
-    counts = dict.fromkeys(("hit", "miss", "exhausted", "synthetic"), 0)
+    counts = dict.fromkeys(("hit", "miss", "exhausted", "substituted", "synthetic"), 0)
     try:
         for step, entry, weight in iter_decisions(trace):
             if entry.kind not in counts:

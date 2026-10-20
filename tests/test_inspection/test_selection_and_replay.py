@@ -124,6 +124,12 @@ def test_replay_log_counts_folded_and_trailing_decisions_only_when_committed(
         _decision(
             "summary", folded_kind="miss", count=7, first_captured_at=90.0, last_captured_at=100.0
         ),
+        _decision(
+            "substituted",
+            record_id="cancelled",
+            served_record_id="donor",
+            source_outcome="page_cancelled_before_response",
+        ),
     ]
     wal.commit_step(
         0,
@@ -151,8 +157,14 @@ def test_replay_log_counts_folded_and_trailing_decisions_only_when_committed(
     orphan.write_text(json.dumps(_decision("miss")))
     report = open_repository(tmp_path).run("replay")["replay_log"]
     assert report["recorded"] is True and report["error"] is None
-    assert report["counts"] == {"hit": 1, "miss": 8, "exhausted": 0, "synthetic": 0}
-    assert [entry["step"] for entry in report["entries"]] == [0, 0, None]
+    assert report["counts"] == {
+        "hit": 1,
+        "miss": 8,
+        "exhausted": 0,
+        "substituted": 1,
+        "synthetic": 0,
+    }
+    assert [entry["step"] for entry in report["entries"]] == [0, 0, 0, None]
     assert report["entries"][1]["weight"] == 7
 
 
