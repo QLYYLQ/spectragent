@@ -1,10 +1,16 @@
-"""A configured Gemini thinking level survives composition and SDK encoding."""
+"""A configured Gemini thinking level survives composition and SDK encoding.
+
+The level is validated in two places, on purpose. A value the Gemini API
+does not define at all (a typo) is refused when the YAML is composed; a
+defined level that one particular model refuses is refused before that
+model's first request, because only the model name decides it.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import httpx
 import pytest
@@ -13,6 +19,7 @@ from google.genai import types
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import UserMessage
+from spectragent.core.llm.model_families.gemini import ThinkingLevel
 from spectragent.core.llm.providers.google import ChatGoogle
 from spectragent.core.registries import collect_registrars
 
@@ -66,11 +73,22 @@ async def test_explicit_flash_level_from_yaml_reaches_native_wire(level: str) ->
     assert config["thinkingConfig"] == {"thinking_level": level.upper()}
 
 
-@pytest.mark.parametrize("level", ["minimal", "lowest"])
-async def test_unsupported_flash_level_is_refused_before_any_request(level: str) -> None:
-    chat = _composed_google("gemini-3.8-flash", thinking_level=level)
+async def test_a_level_the_model_refuses_is_refused_before_any_request() -> None:
+    chat = _composed_google("gemini-3.8-flash", thinking_level="minimal")
     with pytest.raises(ValueError, match="choose one of low, medium, high"):
         await _wire_config(chat)
+
+
+@pytest.mark.parametrize("level", ["lo", "lowest", "LOW"])
+def test_a_level_the_api_does_not_define_fails_at_config_time(level: str) -> None:
+    with pytest.raises(Exception, match="thinking_level"):
+        _composed_google("gemini-3.8-flash", thinking_level=level)
+
+
+def test_every_level_is_one_the_sdk_sends() -> None:
+    """The YAML values are the SDK's ``ThinkingLevel`` members, minus "unspecified"."""
+    sdk_levels = {level.value.lower() for level in types.ThinkingLevel}
+    assert set(get_args(ThinkingLevel)) == sdk_levels - {"thinking_level_unspecified"}
 
 
 @pytest.mark.parametrize(

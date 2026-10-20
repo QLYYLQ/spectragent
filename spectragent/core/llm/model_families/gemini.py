@@ -1,6 +1,14 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from spectragent.core.llm.model_families._base import ModelFamily
+
+#: Every thinking level the Gemini API defines: its ``ThinkingLevel`` enum
+#: (``MINIMAL``, ``LOW``, ``MEDIUM``, ``HIGH``) without
+#: ``THINKING_LEVEL_UNSPECIFIED``, spelled the way YAML writes it.
+#: https://ai.google.dev/api/generate-content#ThinkingLevel
+#: Which of them one model accepts is narrower; that is the policy below.
+ThinkingLevel = Literal["minimal", "low", "medium", "high"]
 
 
 @dataclass(frozen=True)
@@ -12,11 +20,11 @@ class GeminiThinkingPolicy:
     """
 
     supports_level: bool = False
-    accepted_levels: tuple[str, ...] | None = None
-    default_level: str | None = None
+    accepted_levels: tuple[ThinkingLevel, ...] | None = None
+    default_level: ThinkingLevel | None = None
     default_budget: int | None = None
     ignores_budget: bool = False
-    fallback_to_low: tuple[str, ...] = ()
+    fallback_to_low: tuple[ThinkingLevel, ...] = ()
 
 
 # Gemini 3.8 Flash's published native contract accepts low/medium/high,

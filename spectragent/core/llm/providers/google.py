@@ -19,7 +19,7 @@ from spectragent.core.llm.exceptions import ModelOutputTruncatedError, ModelProv
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
-from spectragent.core.llm.model_families.gemini import gemini_thinking_policy
+from spectragent.core.llm.model_families.gemini import ThinkingLevel, gemini_thinking_policy
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
@@ -128,11 +128,13 @@ class ChatGoogle(ChatModelBase):
         ),
     ] = None
     thinking_level: Annotated[
-        str | None,
+        ThinkingLevel | None,
         Field(
             description=(
-                "Thinking level (minimal/low/medium/high), for Gemini 3 models. None (the "
-                "default): low on Gemini 3 Pro; Gemini 3 Flash then uses thinking_budget."
+                "Thinking level for Gemini 3 models: minimal, low, medium or high, the "
+                "levels the Gemini API defines. A model may accept only some of them; "
+                "one it refuses fails before the request is sent. None (the default): "
+                "low on Gemini 3 Pro; Gemini 3 Flash then uses thinking_budget."
             )
         ),
     ] = None
@@ -349,7 +351,7 @@ class ChatGoogle(ChatModelBase):
             if thinking_level is not None:
                 if (
                     policy.accepted_levels is not None
-                    and thinking_level.lower() not in policy.accepted_levels
+                    and thinking_level not in policy.accepted_levels
                 ):
                     raise ValueError(
                         f"thinking_level={self.thinking_level!r} is not supported for {self.model}; "
