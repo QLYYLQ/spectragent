@@ -46,8 +46,9 @@ VIEWPORT_IMAGE_RULE_NOT_COVERED = (
     "CSS background images from stylesheets",
     "references inside subframe documents",
 )
-#: Served answers: the archive record itself, or its last record repeated.
-_SERVED_KINDS = frozenset({"hit", "exhausted"})
+#: Served answers: the archive record itself, its last record repeated, or an
+#: available record with the identical body answering for one without a body.
+_SERVED_KINDS = frozenset({"hit", "exhausted", "substituted"})
 
 
 def recorded_replay_facts(reader: ArchiveReader, step: int) -> dict[str, Any]:

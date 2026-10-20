@@ -216,6 +216,22 @@ def test_misses_out_of_view_unreferenced_served_or_later_are_not_found(
     assert found["referenced_in_main_document"] == referenced
 
 
+def test_an_answer_from_an_identical_record_counts_as_served(tmp_path):
+    """The miss still decides the fact; the identical record's answer is listed as served."""
+    substituted = decision(
+        "substituted",
+        at=995.0,
+        status=200,
+        record_id="eggs-cancelled",
+        served_record_id="eggs-available",
+        source_outcome="page_cancelled_before_response",
+    )
+    trace = replay_trace(tmp_path, dom_document([IMAGE_IN_VIEW]), [decision("miss"), substituted])
+    found = rule(trace)
+    assert found["in_viewport"] == 1
+    assert (found["listed"][0]["misses"], found["listed"][0]["served"]) == (1, 1)
+
+
 def test_a_folded_summary_counts_from_its_first_event(tmp_path):
     summary = decision(
         "summary",
