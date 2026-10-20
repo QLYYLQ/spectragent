@@ -213,7 +213,18 @@ passed step 19 at screenshot distance 4 against threshold 5 although the content
   behind an Agent YAML switch `show_media_state`, default off (an explicit experiment variable).
 - Byte coverage is not extended; `range_uncovered` misses log the requested range.
 - A real-Chrome probe of the site's player (seek and pause reliability) comes first; if it
-  fails, land recording and checking first and defer alignment. The unexplained self-pause
+  fails, land recording and checking first and defer alignment.
+- Probe result, 2026-10-20 (`tmp/media_playback_20261020/probe/report.md`): alignment is
+  feasible live and in offline replay within recorded bytes (exact position, 16-60 ms;
+  checkpoint distances 9 -> 0 and the step-19 miss -> 0). Beyond recorded bytes a seek hangs
+  silently: `currentTime` reports the target while `seeking` stays true and the frame does
+  not change. Implementation consequences: success requires `seeked`, `seeking == false` and
+  `readyState >= 2` within a YAML budget (default 2 s); record exact `currentTime`; compare
+  paused state separately (screenshot hashes cannot); for a playing source, seek, play, then
+  capture immediately (the player's control bar shows; note it in the alignment record);
+  `range_uncovered` counts do not decide alignment.
+- User decision: after a failed seek, seek back to the pre-alignment position and play state
+  (stops the retry storm) and mark the step non-restorable. The unexplained self-pause
   in the headed run is investigated after media facts exist.
 
 ## Execution preference
