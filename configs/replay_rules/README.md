@@ -74,7 +74,9 @@ were recomputed from those fields, so the signature carries nothing else. The pr
 is selected by `mid`, which stays in the key with `wts` and every other field. Without
 the rule, the profile page showed an error, a later click missed its target and the
 replay ended behind a login dialog. In two candidate replays every profile request hit
-in recorded order and restoration passed 24 and 25 of 30 checks, against 2 and 3 without it. The evidence
+in recorded order and restoration passed 24 and 25 of 30 checks, against 2 and 3 without it. Those
+replays ran before rules declared `unavailable`; the rule now repeats the baseline's `serve_identical`,
+which changes nothing for this request, because all eight recorded profile responses have a body. The evidence
 is one recording of one account; changed `mid` and `wts` values still miss. The
 profile's video-list request (`/x/space/wbi/arc/search`) changes the same two fields,
 but its recorded answer was an empty list: serving it changed no restoration check or

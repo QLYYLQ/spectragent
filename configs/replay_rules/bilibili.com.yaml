@@ -15,6 +15,7 @@ rules:
     port: 443
   priority: 0
   exhaustion: repeat_last
+  unavailable: serve_identical
   levels:
   - exact
   - normalized
