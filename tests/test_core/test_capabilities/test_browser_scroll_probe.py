@@ -114,6 +114,7 @@ async def test_the_inner_box_moved_and_is_named() -> None:
 async def test_nothing_moved_at_the_edge_is_a_measured_zero_without_waiting() -> None:
     page = ScriptedPage([[_item(2280, 2280, page=True)]])
     effect = await _measure(page)
+    # Every held container was at its edge: no move could come, so zero is measured.
     assert effect.delta == ScrollOffset(x=0, y=0)
     assert effect.at_boundary is True
     # One read before, one after, one to confirm: no polling for a move that cannot come.
@@ -207,7 +208,11 @@ async def test_the_action_carries_the_measured_effect() -> None:
 
 
 async def test_a_wheel_that_never_lands_costs_no_more_than_the_budget() -> None:
-    """Room to move but nothing moves (a page that cancels wheel events): the wait is bounded."""
+    """Room to move but nothing moves (a late wheel, or a page that cancels wheel events).
+
+    The wait is bounded, and what happened after it is unknown, never a measured
+    zero: the wheel may land after the budget.
+    """
     import time
 
     page = ScriptedPage([[_item(0, 2280, page=True)]])
@@ -215,5 +220,22 @@ async def test_a_wheel_that_never_lands_costs_no_more_than_the_budget() -> None:
     effect = await _measure(page, budget=0.2)
     elapsed = time.monotonic() - started
     assert elapsed < 0.35, f"the measurement took {elapsed:.3f} s on a 0.2 s budget"
-    assert effect.delta == ScrollOffset(x=0, y=0)
-    assert effect.at_boundary is False
+    assert effect.container == "page"
+    assert effect.before == ScrollOffset(x=0, y=0)
+    assert effect.after == effect.at_boundary == "unknown"
+    assert effect.delta is None
+    assert effect.describe() == (
+        "Scroll down went to the page; how far it moved is unknown; "
+        "whether it is at its bottom edge is unknown."
+    )
+
+
+async def test_a_still_box_with_room_is_unknown_even_when_the_page_is_at_its_edge() -> None:
+    """Only every held container being at its edge makes nothing-moved a measured zero."""
+    page = ScriptedPage(
+        [[_item(0, 1000, page=False, name="Results"), _item(2280, 2280, page=True)]]
+    )
+    effect = await _measure(page, budget=0.2)
+    assert effect.container == "element"
+    assert effect.element == ElementFacts(role="generic", name="Results")
+    assert effect.after == effect.at_boundary == "unknown"

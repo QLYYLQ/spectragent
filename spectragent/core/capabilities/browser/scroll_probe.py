@@ -14,9 +14,14 @@ element outwards, through open shadow roots and same-origin frames, then each
 document's scrolling element — reads their offsets before the wheel, waits
 after it until the offsets stop changing (smooth scrolling animates over
 several frames), and reports the innermost container that moved. When none
-moved it reports the one the wheel was aimed at, with a measured ``0``
-displacement. A point over a frame of another site, where nothing on this
-side moved, is ``"unavailable"``. Everything is bounded by the action's
+moved it reports the one the wheel was aimed at: with a measured ``0``
+displacement only when every held container was already at its edge in that
+direction, so no move could come. When one still had room and no change was
+seen before the budget ran out, the wheel may simply not have landed yet (a
+first wheel was measured landing ~0.9 s late), so the position after and the
+edge are ``"unknown"`` — never a measured zero. A point over a frame of
+another site, where nothing on this side moved, is ``"unavailable"``.
+Everything is bounded by the action's
 :class:`~spectragent.core.capabilities.browser.effect_probes.ProbeBudget`.
 """
 
@@ -212,8 +217,10 @@ class ScrollProbe:
         the budget ends), then until two reads :data:`_STABLE_INTERVAL_S`
         apart agree. When every container is already at its edge nothing is
         waited for beyond one interval. The waiting is charged to the budget,
-        so the whole measurement ends within it; the last read stands when the
-        budget ends, and what it shows is what had moved by then.
+        so the whole measurement ends within it. A move seen before the
+        budget ends is reported from the last read; when a container had room
+        and nothing moved by then, the position after and the edge are
+        unknown (:meth:`_choose`).
         """
         facts: dict[str, Any] = {
             "direction": self.direction,
@@ -257,7 +264,7 @@ class ScrollProbe:
                 break
         if len(last[1]) != len(before):
             return facts
-        return self._choose(before, last[1], frame=self._frame)
+        return self._choose(before, last[1], frame=self._frame, room=room)
 
     async def release(self) -> None:
         if self._object_id is not None:
@@ -265,8 +272,15 @@ class ScrollProbe:
             self._object_id = None
 
     def _choose(
-        self, before: list[_Reading], after: list[_Reading], *, frame: bool
+        self, before: list[_Reading], after: list[_Reading], *, frame: bool, room: bool
     ) -> dict[str, Any]:
+        """The facts of the container that moved, or of the one the wheel was aimed at.
+
+        *room*: some held container could still move in this direction before
+        the wheel. Then nothing having moved is not a measured zero — the wheel
+        may land after the budget — and the position after and the edge are
+        unknown; the container and its position before are still measured.
+        """
         moved = [
             i
             for i, (b, a) in enumerate(zip(before, after, strict=True))
@@ -290,13 +304,14 @@ class ScrollProbe:
                 len(before) - 1,
             )
         b, a = before[index], after[index]
+        unseen = not moved and room
         return {
             "direction": self.direction,
             "container": "page" if b.page else "element",
             "element": None if b.page else b.facts,
             "before": ScrollOffset(x=b.x, y=b.y),
-            "after": ScrollOffset(x=a.x, y=a.y),
-            "at_boundary": _at_edge(a, self.direction),
+            "after": UNKNOWN if unseen else ScrollOffset(x=a.x, y=a.y),
+            "at_boundary": UNKNOWN if unseen else _at_edge(a, self.direction),
         }
 
     async def _read(self, *, with_facts: bool) -> tuple[bool, list[_Reading]] | None:

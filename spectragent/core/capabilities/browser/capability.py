@@ -871,7 +871,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "press spends 2-4 ms (at most ~26 ms), a navigation ~5 ms, a scroll "
                     "40-80 ms waiting for the wheel to land (the first wheel on a fresh page "
                     "was seen landing after ~0.9 s). Default 1, which covers that first "
-                    "wheel and bounds a scroll that never lands."
+                    "wheel and bounds a scroll that never lands: a scroll that could still "
+                    "move but was not seen moving by then reports its position after as "
+                    "unknown, not as zero."
                 ),
             ),
         ] = 1.0,

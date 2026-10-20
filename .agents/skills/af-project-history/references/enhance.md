@@ -35,7 +35,7 @@ User decisions in the 2026-10-20 design discussion:
 - `capture_state` is a separate fragment, not fields on the screenshot, so a failing
   measurement cannot degrade the required screenshot.
 - Scope this round: pointer, text-input, scroll, navigation, select and wait effects
-  (17 browser actions minus done, screenshot, extract_content). Media playback time is
+  (13 of the 16 browser actions: all but done, screenshot, extract_content). Media playback time is
   deferred to the media restoration fix. The `send_keys` validation fix lands on the
   same branch as its own commit.
 - No hidden configuration. Measurement budgets are BrowserCapability YAML fields
@@ -69,6 +69,11 @@ head `a2d868b`). User decisions on its open points, 2026-10-20:
 - Fix the Skyvern index click whose element centre was off-screen (scroll into view first),
   and reword UI-TARS's platform block as a computer-use agent operating a browser, keeping
   browser-operation semantics.
+
+Review decision, 2026-10-20: a scroll with no container moving is a measured zero only when
+every container the wheel could reach was already at its edge; when one still had room and
+no move was seen within `action_effect_timeout_s`, the position after and the edge fact are
+`unknown` (the wheel may land after the budget).
 
 ## Enhance — Jev questions and calibration
 

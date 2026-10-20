@@ -254,8 +254,12 @@ class ScrollEffect(ActionEffect):
     nothing moved, the one the wheel was aimed at. ``"unavailable"``: the
     wheel went into a frame whose scrolling cannot be read. ``before`` /
     ``after``: that container's offsets around the action; their difference is
-    :attr:`delta`, ``(0, 0)`` when nothing moved. ``at_boundary``: after the
-    action, the container cannot scroll further in ``direction``.
+    :attr:`delta`, ``(0, 0)`` when nothing moved because every container the
+    wheel could reach was already at its edge. When one still had room and no
+    move was seen within the measurement budget, the wheel may land later:
+    ``after`` and ``at_boundary`` are then ``"unknown"``, never a measured zero.
+    ``at_boundary``: after the action, the container cannot scroll further in
+    ``direction``.
     """
 
     direction: Literal["up", "down", "left", "right"]
