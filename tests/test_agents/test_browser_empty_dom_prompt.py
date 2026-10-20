@@ -15,7 +15,8 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
         serialized_dom="",
     )
     observation = SimpleNamespace(
-        platform=SimpleNamespace(operating_system="macos"), dom=SimpleNamespace(element_tree=state)
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
+        dom=SimpleNamespace(element_tree=state),
     )
 
     browser_use = BrowserUseAgent.__new__(BrowserUseAgent)

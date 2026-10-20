@@ -56,7 +56,7 @@ def _png(width: int, height: int) -> bytes:
 def _observation(dpr: int) -> Any:
     image = (1280 * dpr, 720 * dpr)
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         history=SimpleNamespace(items=[]),
         task=SimpleNamespace(user_request="tick the box"),
         screenshot=ScreenshotObs(
@@ -366,7 +366,9 @@ class TestUnrepresentable:
         (
             await agent.build_react_prompt(
                 SimpleNamespace(
-                    platform=SimpleNamespace(operating_system="macos"),
+                    platform=SimpleNamespace(
+                        operating_system="macos", fragment_id="browser.platform"
+                    ),
                     history=SimpleNamespace(items=[]),
                     task=SimpleNamespace(user_request="t"),
                     screenshot=None,

@@ -69,7 +69,7 @@ class _FakeObservation:
     ) -> None:
         self.screenshot = screenshot
         self.task = task or _FakeTask()
-        self.platform = SimpleNamespace(operating_system="macos")
+        self.platform = SimpleNamespace(operating_system="macos", fragment_id="browser.platform")
         self.history = SimpleNamespace(items=[])
 
 

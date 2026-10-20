@@ -467,7 +467,7 @@ class TestStepTimings:
             SimpleNamespace(
                 task=TaskObs(user_request="continue"),
                 history=HistoryObs(items=[plain]),
-                platform=SimpleNamespace(operating_system="linux"),
+                platform=SimpleNamespace(operating_system="linux", fragment_id="browser.platform"),
             ),
             context=context,
         )
@@ -475,7 +475,7 @@ class TestStepTimings:
             SimpleNamespace(
                 task=TaskObs(user_request="continue"),
                 history=HistoryObs(items=[stamped]),
-                platform=SimpleNamespace(operating_system="linux"),
+                platform=SimpleNamespace(operating_system="linux", fragment_id="browser.platform"),
             ),
             context=context,
         )
@@ -552,7 +552,7 @@ class TestStepTimings:
             SimpleNamespace(
                 task=TaskObs(user_request="continue"),
                 history=HistoryObs(items=[plain]),
-                platform=SimpleNamespace(operating_system="linux"),
+                platform=SimpleNamespace(operating_system="linux", fragment_id="browser.platform"),
             ),
             context=context,
         )
@@ -560,7 +560,7 @@ class TestStepTimings:
             SimpleNamespace(
                 task=TaskObs(user_request="continue"),
                 history=HistoryObs(items=[restored]),
-                platform=SimpleNamespace(operating_system="linux"),
+                platform=SimpleNamespace(operating_system="linux", fragment_id="browser.platform"),
             ),
             context=context,
         )

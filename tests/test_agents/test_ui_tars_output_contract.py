@@ -243,7 +243,7 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
     class _Env:
         async def observe(self, _negotiated: Any) -> Any:
             return SimpleNamespace(
-                platform=SimpleNamespace(operating_system="macos"),
+                platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
                 task=SimpleNamespace(user_request="t"),
                 history=SimpleNamespace(items=[]),
                 screenshot=ScreenshotObs(

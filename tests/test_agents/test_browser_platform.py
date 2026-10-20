@@ -40,7 +40,7 @@ SOURCE_URL = "https://capture-source.test/must-not-enter-vision-prompt"
 
 def _observation(operating_system: Any = "macos") -> Any:
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system=operating_system),
+        platform=SimpleNamespace(operating_system=operating_system, fragment_id="browser.platform"),
         task=TaskObs(user_request="Select all text in the focused editor."),
         history=SimpleNamespace(items=[]),
         screenshot=ScreenshotObs(
@@ -80,7 +80,13 @@ async def test_actual_platform_and_literal_modifiers_are_rendered(
             _observation(operating_system), context=ReactPromptContext(step=0, phase="policy")
         )
     )
-    assert f"Actual browser input platform: {label} ({operating_system})" in text
+    if agent_class is UITarsAgent:
+        # A computer-use agent: the environment comes from the fragment's own key.
+        assert "Computer-use agent; environment: browser." in text
+        assert f"Actual input platform: {label} ({operating_system})" in text
+        assert "browser input platform" not in text
+    else:
+        assert f"Actual browser input platform: {label} ({operating_system})" in text
     assert "Ctrl/Control sends Control" in text
     assert "Cmd/Command/Meta sends Meta" in text
     if operating_system == "macos":
@@ -138,7 +144,10 @@ async def test_visual_page_input_does_not_gain_dom_or_screenshot_source_url(agen
     )
     assert SOURCE_URL not in text
     assert "<input value=" not in text
-    assert "Actual browser input platform: macOS" in text
+    if isinstance(agent, UITarsAgent):
+        assert "Computer-use agent; environment: browser.\nActual input platform: macOS" in text
+    else:
+        assert "Actual browser input platform: macOS" in text
 
 
 @pytest.mark.parametrize("agent_class", AGENTS)
@@ -257,3 +266,19 @@ async def test_composed_runtime_delivers_platform_to_the_model(
     assert "Keyboard modifiers are literal" in text
     if agent_id == "ui_tars":
         assert SOURCE_URL not in text
+
+
+async def test_ui_tars_names_the_environment_from_the_fragment_key_not_a_browser_type() -> None:
+    """The same words serve any environment whose capability provides ``<env>.platform``."""
+    from spectragent.agents._input_platform import render_computer_use_platform
+
+    android = SimpleNamespace(
+        platform=SimpleNamespace(operating_system="linux", fragment_id="android.platform")
+    )
+    text = render_computer_use_platform(android)
+    assert "Computer-use agent; environment: android." in text
+    assert "Actual input platform: Linux (linux)." in text
+    with pytest.raises(ValueError, match="names no environment"):
+        render_computer_use_platform(
+            SimpleNamespace(platform=SimpleNamespace(operating_system="linux"))
+        )

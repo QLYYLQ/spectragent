@@ -71,7 +71,7 @@ def _observation(
     viewport: tuple[int, int] = (1280, 720),
 ) -> Any:
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         task=SimpleNamespace(user_request="tick the checkbox"),
         history=SimpleNamespace(items=[]),
         screenshot=ScreenshotObs(
@@ -186,7 +186,7 @@ class TestTheFieldIsTheSharedGrid:
         """An assembly error, not something the model can fix one step at a time."""
         agent = _agent()
         observation = SimpleNamespace(
-            platform=SimpleNamespace(operating_system="macos"),
+            platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
             history=SimpleNamespace(items=[]),
             task=SimpleNamespace(user_request="t"),
             screenshot=SimpleNamespace(image_bytes=b"\x89PNG\r\n\x1a\n"),
@@ -363,7 +363,9 @@ class TestTheFrameIsPerStep:
         (
             await agent.build_react_prompt(
                 SimpleNamespace(
-                    platform=SimpleNamespace(operating_system="macos"),
+                    platform=SimpleNamespace(
+                        operating_system="macos", fragment_id="browser.platform"
+                    ),
                     history=SimpleNamespace(items=[]),
                     task=SimpleNamespace(user_request="t"),
                 ),

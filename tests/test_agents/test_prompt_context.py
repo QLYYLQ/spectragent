@@ -32,14 +32,16 @@ AGENT_CLASSES = (BrowserUseAgent, SkyvernAgent, UITarsAgent)
 ORIGINAL_PROMPT_DIGESTS = {
     BrowserUseAgent: "d89b121aa6319adcc31f2032e14b19a73d0a021459d3ea8248820d06d12a8451",
     SkyvernAgent: "bf357a0c812a20adaef9d691207e1a2720d6df5310bfbd7b1df7e26c1a577eb1",
-    UITarsAgent: "5d483e7921a2f646023f5f9d7d66506a712e8f08abce863001c146e2dc4d0a41",
+    # UI-TARS's platform block now names it a computer-use agent operating a
+    # browser environment (the user's 2026-10-20 decision); the rest is unchanged.
+    UITarsAgent: "8adf8cbf432c4c669d8a4cded683557fcfcf9b2959954810b0c31d0ed4b9bdec",
 }
 
 
 def observation() -> Any:
     return SimpleNamespace(
         task=SimpleNamespace(user_request="Open the live result", follow_ups=[]),
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         history=SimpleNamespace(items=[]),
         dom=SimpleNamespace(element_tree="[29]<button>Live result</button>"),
         screenshot=ScreenshotObs(

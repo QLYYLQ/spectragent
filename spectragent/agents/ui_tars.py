@@ -60,12 +60,12 @@ from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
 from spectragent.agents._action_effects import result_facts
-from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._capture_state import (
     CAPTURE_STATE_KEY,
     capture_state_demand,
     render_capture_state,
 )
+from spectragent.agents._input_platform import render_computer_use_platform
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompt_context import (
     place_prompt_contributions,
@@ -834,7 +834,7 @@ class UITarsAgent(AgentBase):
                 here instead of feeding the model a parse error per step
                 that it has no way to fix.
         """
-        platform_text = render_browser_platform(observation)
+        platform_text = render_computer_use_platform(observation)
         if self._input_platform_text is not None and platform_text != self._input_platform_text:
             raise ValueError(
                 "UI-TARS input platform changed within an execution; prepare a new run"

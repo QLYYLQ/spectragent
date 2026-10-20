@@ -120,7 +120,7 @@ class _FakeObservation:
         self.screenshot = screenshot
         self.browser_meta = browser_meta
         self.task = task or _FakeTask()
-        self.platform = SimpleNamespace(operating_system="macos")
+        self.platform = SimpleNamespace(operating_system="macos", fragment_id="browser.platform")
         self.step_info = step_info
         self.history = history
 

@@ -60,7 +60,7 @@ def _observation(*, image: tuple[int, int], viewport: tuple[int, int] = (1280, 7
         image_height=image[1],
     )
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         task=SimpleNamespace(user_request="tick the checkbox", follow_ups=[]),
         screenshot=shot,
     )
@@ -249,7 +249,9 @@ class TestRefusals:
         (
             await agent.build_react_prompt(
                 SimpleNamespace(
-                    platform=SimpleNamespace(operating_system="macos"),
+                    platform=SimpleNamespace(
+                        operating_system="macos", fragment_id="browser.platform"
+                    ),
                     task=SimpleNamespace(user_request="t", follow_ups=[]),
                 ),
                 context=ReactPromptContext(step=0, phase="policy"),
@@ -293,7 +295,7 @@ class TestScreenshotGeometry:
     async def test_fragment_without_image_size_refuses_to_guess(self, harness) -> None:
         agent = harness["agent"]
         obs = SimpleNamespace(
-            platform=SimpleNamespace(operating_system="macos"),
+            platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
             task=SimpleNamespace(user_request="t", follow_ups=[]),
             screenshot=ScreenshotObs(
                 image_bytes=_png(1280, 720), viewport_width=1280, viewport_height=720

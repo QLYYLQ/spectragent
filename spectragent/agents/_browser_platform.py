@@ -2,36 +2,22 @@
 
 from typing import Any
 
+from spectragent.agents._input_platform import keyboard_rules, platform_fragment
+
 
 def render_browser_platform(observation: Any) -> str:
     """The required relative ``platform`` fragment and literal keyboard semantics.
 
-    Negotiation normally guarantees this fragment. An old trace or a
-    hand-built observation without it must not silently acquire a platform.
-    The structural field is sufficient; agents do not import a concrete
-    capability or resolver class.
+    For browser-specific Agents (Skyvern, BrowserUse). A cross-platform
+    computer-use Agent renders the same fragment with
+    ``_input_platform.render_computer_use_platform``. Negotiation normally
+    guarantees this fragment; an observation without it raises rather than
+    acquiring a platform.
     """
-    fragment = getattr(observation, "platform", None)
-    operating_system = getattr(fragment, "operating_system", None)
-    labels = {"macos": "macOS", "windows": "Windows", "linux": "Linux"}
-    if not isinstance(operating_system, str) or operating_system not in labels:
-        raise ValueError(
-            "Browser input platform observation is missing or invalid; "
-            "platform.operating_system must be macos, windows or linux."
-        )
-    label = labels[operating_system]
-    shortcut = (
-        "On macOS, Command is Meta: use Meta+A for Select All. "
-        "Ctrl+A still sends Control+A; it is not rewritten to Command+A."
-        if operating_system == "macos"
-        else f"On {label}, use Control+A for Select All. "
-        "Meta is a different modifier; it is not rewritten to Control."
-    )
+    _fragment, operating_system, label = platform_fragment(observation)
     return (
         "<input_platform>\n"
         f"Actual browser input platform: {label} ({operating_system}).\n"
-        "Keyboard modifiers are literal: Ctrl/Control sends Control; "
-        "Cmd/Command/Meta sends Meta. "
-        f"{shortcut}\n"
+        f"{keyboard_rules(operating_system, label)}\n"
         "</input_platform>"
     )

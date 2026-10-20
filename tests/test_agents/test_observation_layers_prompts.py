@@ -113,7 +113,7 @@ def _capture_state() -> SimpleNamespace:
 def _observation(*, effects: bool = True, capture_state: bool = True) -> SimpleNamespace:
     observation = SimpleNamespace(
         task=TaskObs(user_request="Open"),
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         history=HistoryObs(items=_history(effects=effects)),
         step_info=StepInfoObs(step=2, max_steps=10, today="2026-10-20"),
         dom=SimpleNamespace(element_tree="[29]<button>Live</button>"),

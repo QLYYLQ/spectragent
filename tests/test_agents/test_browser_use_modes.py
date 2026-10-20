@@ -151,7 +151,7 @@ def _observation(*, with_dom: bool = True) -> Any:
     a DOM it was handed, not merely fail to find one.
     """
     return SimpleNamespace(
-        platform=SimpleNamespace(operating_system="macos"),
+        platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         task=SimpleNamespace(user_request="tick the checkbox", follow_ups=[]),
         screenshot=ScreenshotObs(
             image_bytes=_png(),
