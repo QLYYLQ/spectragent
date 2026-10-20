@@ -1100,6 +1100,10 @@ optional：环境提供就激活，不提供照常运行；采集失败按 optio
 浏览器 fragment 上作为 trace 证据。指针读同 tab 的 `PointerPosition`。BrowserCapability 本身不改：新增
 fragment 就是新增一个 Resolver watchdog。
 
+配置全部在 YAML 里：探测类事实（例如可见图片加载失败）的时间上限是 BrowserCapability 的
+`capture_state_timeout_s`，超时记为 unknown；每个 Agent 的 `show_capture_state`（默认 `true`）为 `false`
+时，经“实例在类声明空间内收窄”排除 optional 的 `capture_state`，这个 fragment 不采集也不渲染，协商规则不变。
+
 #### 截图的原图与模型视图
 
 浏览器 capability 的 `screenshot_cursor`（默认 False）与 `screenshot_cursor_size`（默认 32 CSS px，16–96）决定模型图片里是否显示放大、高亮的光标。它们属于 capability 的 `Annotated` 标量配置与实验身份，不属于 Agent 或 profile，也不改变 DOM 的 `debug_highlight`。
@@ -1562,7 +1566,8 @@ class ActionResult(BaseModel):
 - **`describe()` 合同。** 只由本对象的类型化字段确定性派生，一行英文事实，不含任务判断；敏感字段既不回显内容，也不报长度；unknown / unavailable 要明说。所有 Agent 渲染这一行，不把效果字段直接 dump 进 prompt：跨平台 Agent 因此不需要认识任何具体效果类型，浏览器专用 Agent 仍可另读字段。
 - **测量语义。** 效果在这一个动作执行期间、执行前后测得，所以能归因到它；批次之后的页面状态属于 observation。`success` / `error` 仍只表示执行成败：测量失败只把对应字段记为 unknown，不改变成败，也不中止动作。测得为零、unknown、unavailable 三者区分。测量有时间上限，不能明显拖长动作。
 - **浏览器本轮范围。** 指针类 `click`、`click_coordinate`、`drag`：实际落点、命中元素（角色与可读名）、执行后焦点。文本输入类 `type`、`type_coordinate`、`send_keys`：实际进入的控件、值是否变化（不回显内容）、实际发出的键、执行后焦点。`scroll`：被滚动的是页面还是元素、前后位置与位移、是否到边界。导航类 `navigate`、`go_back`、`go_forward`、`switch_tab`：前后 URL 或目标 tab、文档是否加载完成。`select_dropdown`：当前选中项。`wait`：实际等待时长。`done`、`screenshot`、`extract_content` 不产出效果。
-- **历史、分叉与导出。** 效果随 `StepRecord.action_results` 持久化，Agent 经 `loop.history` 读到。`history_source: restored` 使用恢复执行时实际测得的效果，不复制源记录；导出与离线渲染读已提交的效果，不重新测量。本轮不提供关闭效果渲染的开关，与改动前的比较按代码版本区分。
+- **历史、分叉与导出。** 效果随 `StepRecord.action_results` 持久化，Agent 经 `loop.history` 读到。`history_source: restored` 使用恢复执行时实际测得的效果，不复制源记录；导出与离线渲染读已提交的效果，不重新测量。
+- **配置全部可见。** 测量上限是 BrowserCapability 的 YAML 字段 `action_effect_timeout_s`，超时的字段记为 unknown。是否把效果那一行渲染进 prompt，是每个 Agent 的 YAML 字段 `show_action_effects`（默认 `true`）；关掉时 trace 照样记录效果，所以消融的两组测量开销相同。开关归渲染模型输入的一方：截图里的光标由 capability 画，所以 `screenshot_cursor` 在 capability 上；效果文本由 Agent 渲染，所以这个开关在 Agent 上。默认值按实现时实测的开销定，写进字段说明。
 
 #### Capability 持有 action 实例
 

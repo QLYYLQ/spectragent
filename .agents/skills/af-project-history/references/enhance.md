@@ -38,6 +38,11 @@ User decisions in the 2026-10-20 design discussion:
   (17 browser actions minus done, screenshot, extract_content). Media playback time is
   deferred to the media restoration fix. The `send_keys` validation fix lands on the
   same branch as its own commit.
+- No hidden configuration. Measurement budgets are BrowserCapability YAML fields
+  (`action_effect_timeout_s`, `capture_state_timeout_s`); what the model sees is an
+  Agent YAML switch (`show_action_effects`, `show_capture_state`, default true). The
+  switch belongs to whoever renders the model input, as `screenshot_cursor` does on the
+  capability; turning effects off keeps them in the trace so ablation arms cost the same.
 - Acceptance includes real model runs: UI-TARS + DeepSeek v4.1 flash headless on the
   five frozen L2 tasks against the 2026-10-19 batch as baseline, same-path replays, and
   one short live task each for Skyvern and BrowserUse. Raw trajectories judged to have
