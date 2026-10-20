@@ -105,6 +105,17 @@ catches the missing-image pair without false alarms.
   and policy version it was fitted on. Keep fitting and checking on different runs so an
   error rate stays measurable; this replaces the earlier "two-annotator holdout before use".
 
+**Implemented on `enhance/jev-split-review-questions`** (`tmp/jev_split_impl_20261020/report.md`):
+required `evidence` / `questions` / `policy` YAML blocks with content digests, fitted
+threshold provenance, the in-viewport image 404 rule, viewer update; the 28-pair job
+reproduced the experiment's requests byte for byte and its routes 28/28. User decisions on
+the follow-ups, 2026-10-20: shipped evidence budget 6000 characters / 20 links (the fit
+budget); fit provenance records question-set and evidence-option digests and composition
+refuses a mismatch; a failed model call with a true in-viewport missing image routes to
+investigate_difference; an unmeasurable missing-image fact blocks candidate acceptance;
+site overrides use an explicit registrable domain (`domain: bilibili.com` covers its
+subdomains, longest match wins, no public-suffix list).
+
 ## Fix — keyboard argument validation
 
 Bilibili source `deepseek-hl-l2-220-baseline`, trace step20, submits a whole URL as
