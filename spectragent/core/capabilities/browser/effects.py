@@ -75,7 +75,8 @@ class ElementFacts(_Fact):
     says). ``name`` is its accessible name as far as the page states it
     (``aria-label``, a ``<label>``, ``alt``, ``title``, ``placeholder``, its own
     text), whitespace collapsed, at most 80 characters; ``""`` when it has none.
-    A field's value is never its name.
+    A field's value is never its name, and neither is the text of editable
+    content (``contenteditable``), which is what was typed into it.
     """
 
     role: str

@@ -14,7 +14,9 @@ actions, against the local effects site (``tests/_helpers/effects_site.py``):
   the effect or its line;
 - ``send_keys`` with either select-all chord is measured, and a URL is
   refused with no effect;
-- a drag reports its press and release points and the button it pressed on.
+- a drag reports its press and release points and the button it pressed on;
+- text typed into an unlabelled ``contenteditable`` editor never names it: not
+  in the typing's effect, nor in a later click's or key press's.
 
 Every action's measurement stays inside its budget; the probe time per
 action is recorded on each case (``spent_s``). Unit counterparts:
@@ -51,6 +53,8 @@ pytestmark = pytest.mark.requires_chrome
 _TIMEOUT_S = 180
 #: What the password field is given; neither it nor its length may be shown.
 SECRET = "hunter2-correct-horse"
+#: What the editor is given; an editor's text is its value and never its name.
+DIARY = "my private diary entry"
 GO = ElementFacts(role="button", name="Go")
 NAME = ElementFacts(role="textbox", name="Name")
 PASSWORD = ElementFacts(role="textbox", name="Password")
@@ -189,6 +193,27 @@ def _session() -> Session:
                 await _load(cap, site, "click.html")
                 ux, uy = centre("under")
                 await act("drag", "drag", start_x=gx, start_y=gy, end_x=ux, end_y=uy)
+
+                await _load(cap, site, "editor.html")
+                ex, ey = centre("editor")
+                await act(
+                    "type into editor",
+                    "type_coordinate",
+                    coordinate_x=ex,
+                    coordinate_y=ey,
+                    text=DIARY,
+                )
+                await act("click editor", "click_coordinate", coordinate_x=ex, coordinate_y=ey)
+                await act("key into editor", "send_keys", keys="End")
+                session.steps["editor text"] = Step(
+                    ActionResult(
+                        success=True,
+                        extracted_content=str(
+                            await _evaluate(cap, "document.getElementById('editor').innerText")
+                        ),
+                    ),
+                    None,
+                )
         return session
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
@@ -319,3 +344,18 @@ def test_every_measurement_stays_inside_its_budget(session: Session) -> None:
     measured = {label: step.spent_s for label, step in session.steps.items() if step.spent_s}
     assert measured, "no action measured anything"
     assert all(spent < session.budget_s for spent in measured.values()), measured
+
+
+def test_text_typed_into_an_editor_never_names_it(session: Session) -> None:
+    """An editor's text is what was typed: it is its value, not a name for it."""
+    assert DIARY in str(session.steps["editor text"].result.extracted_content), "it went in"
+    typed = _text(session, "type into editor")
+    editor = ElementFacts(role="textbox", name="")
+    assert (typed.target, typed.value_changed, typed.focus_after) == (editor, True, editor)
+    clicked = _pointer(session, "click editor")
+    assert clicked.focus_after == editor
+    assert isinstance(clicked.hit, ElementFacts) and clicked.hit.name == ""
+    pressed = _text(session, "key into editor")
+    for effect in (typed, clicked, pressed):
+        for shown in (effect.model_dump_json(), effect.describe()):
+            assert DIARY not in shown and "Draft" not in shown, shown

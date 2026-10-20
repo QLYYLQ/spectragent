@@ -15,6 +15,8 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   puts an element labelled ``Cookie banner`` over ``#under``;
 - ``image.html`` — a visible image that fails to load (``missing.png``, a 404),
   a visible one that loads (``ok.png``) and a failing one far below the fold;
+- ``editor.html`` — an unlabelled ``contenteditable`` editor ``#editor`` whose
+  text sits in a paragraph, as rich-text editors keep it;
 - ``opener.html`` — a ``target=_blank`` link ``#newtab`` to ``second.html``;
 - ``busy.html`` — text that changes every 50 ms, so the page never goes quiet;
 - ``a.html`` / ``b.html`` — two pages for navigation and history;
@@ -59,6 +61,7 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "broken": (20, 20, 200, 150),
     "ok": (240, 20, 200, 150),
     "newtab": (20, 20, 200, 40),
+    "editor": (20, 20, 400, 120),
     "link_b": (20, 20, 200, 40),
 }
 
@@ -141,6 +144,14 @@ def _pages() -> dict[str, tuple[str, bytes]]:
                 '<img id="below" src="missing-below.png" alt="Footer"'
                 ' style="position:absolute;left:20px;top:2400px;width:200px;height:150px">'
                 '<div style="height:3000px"></div>',
+            ),
+        ),
+        "editor.html": (
+            "text/html; charset=utf-8",
+            _page(
+                "Editor",
+                f'<div id="editor" contenteditable="true" style="{_box("editor")}'
+                'border:1px solid #888"><p>Draft:</p></div>',
             ),
         ),
         "opener.html": (

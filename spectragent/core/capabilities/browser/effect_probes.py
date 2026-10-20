@@ -74,7 +74,9 @@ class _NoAnswer:
 NO_ANSWER = _NoAnswer()
 
 #: ``facts(el)``: an element's role and readable name; never its value. Shared by
-#: every script below, which embed it.
+#: every script below, which embed it. The text of editable content
+#: (``contenteditable``) is that editor's value — what was typed into it — so it
+#: never names an element: an editor without a label is named ``""``.
 ELEMENT_FACTS_JS = r"""
 function facts(el) {
   if (!el || el.nodeType !== 1) return null;
@@ -123,7 +125,9 @@ function facts(el) {
     let length = 0;
     while (length < 160 && walker.nextNode()) {
       const node = walker.currentNode;
-      const parent = node.parentElement ? node.parentElement.tagName : '';
+      const host = node.parentElement;
+      if (host && host.isContentEditable) continue;
+      const parent = host ? host.tagName : '';
       if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(parent)) continue;
       const text = node.nodeValue.trim();
       if (text) { parts.push(text); length += text.length + 1; }
