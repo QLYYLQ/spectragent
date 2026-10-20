@@ -35,6 +35,8 @@ from agent_cdp import ConnectionType, EventScope, ScopeGroup, WatchdogRegistrar
 # composer's recursive ``discover()``; these tests build watchdogs directly.
 import spectragent.core.capabilities.browser.dom.cleaning.browser_use  # noqa: F401
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
+from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES
 from spectragent.core.capabilities.browser.watchdogs import (
@@ -50,7 +52,14 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
 )
+from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops.react import ReactLoop
+from spectragent.core.negotiation.observation import (
+    ObservationNegotiationResult,
+    negotiate_observation,
+)
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
+from tests._helpers.assembly import make_env
 from tests._helpers.browser_platform import PlatformProbe
 
 # CDP methods that only a DOM extraction issues. Presence of any of these
@@ -107,6 +116,18 @@ class _RecordingCDP:
 
     def dom_calls(self) -> list[str]:
         return [m for m in self.sent if m in _DOM_CDP_METHODS]
+
+
+def _negotiate(agent: Any, cap: BrowserCapability) -> ObservationNegotiationResult:
+    """Negotiate *agent* under a ReAct loop against an environment holding *cap*.
+
+    The real three-party negotiation, not a hand-picked fragment set; the
+    result is handed to the capability the way its ``setup()`` hands it.
+    """
+    env = make_env(BrowserEnvironment, {"browser#0": cap})
+    negotiation = negotiate_observation(agent, ReactLoop(), env)
+    cap.apply_negotiation(negotiation)
+    return negotiation
 
 
 async def _observe_once(
@@ -233,24 +254,25 @@ class TestNegotiationDrivenCost:
     """The measurable payoff: a vision-only agent stops paying for DOM."""
 
     async def test_vision_only_agent_never_extracts_dom(self) -> None:
-        cap = BrowserCapability(profile="standard")
-        # Exactly what negotiation produces for a screenshot-only agent
-        # (UI-TARS) running against a DOM-capable profile.
-        cap.apply_negotiation({"browser.screenshot"})
+        cap = BrowserCapability()
+        # The default profile can serve the DOM; a screenshot-only agent
+        # (UI-TARS) does not ask for it.
+        assert "browser.dom" in cap.declared_fragments
+        _negotiate(UITarsAgent(), cap)
         cdp = _RecordingCDP()
 
         fragment, group = await _observe_once(cap, cdp, "browser.screenshot")
         try:
             assert fragment.image_bytes == b"hi"
             assert cdp.dom_calls() == [], "a vision-only agent must not trigger DOM extraction"
-            # The capture plus its document stamp (M18) — nothing for the DOM.
+            # The capture plus its document stamp — nothing for the DOM.
             assert cdp.sent == ["Page.captureScreenshot", "Page.getFrameTree"]
         finally:
             await group.close_all()
 
     async def test_dom_agent_still_extracts_dom(self) -> None:
-        cap = BrowserCapability(profile="standard")
-        cap.apply_negotiation({"browser.dom", "browser.screenshot"})
+        cap = BrowserCapability()
+        _negotiate(BrowserUseAgent(), cap)
         cdp = _RecordingCDP()
 
         fragment, group = await _observe_once(cap, cdp, "browser.dom")
@@ -267,7 +289,7 @@ class TestNegotiationDrivenCost:
         resolve, which is precisely what the include flags used to be
         computed from unconditionally.
         """
-        cap = BrowserCapability(profile="standard")
+        cap = BrowserCapability()
         assert cap._negotiated_fragments is None
         cdp = _RecordingCDP()
 
@@ -281,9 +303,9 @@ class TestNegotiationDrivenCost:
             await group.close_all()
 
     def test_event_carries_exactly_the_negotiated_set(self) -> None:
-        cap = BrowserCapability(profile="standard")
-        cap.apply_negotiation({"browser.screenshot"})
-        assert cap.provided_fragments == frozenset({"browser.screenshot"})
+        cap = BrowserCapability()
+        negotiation = _negotiate(UITarsAgent(), cap)
+        assert cap.provided_fragments == negotiation.env_sourced
 
         event = BrowserStateRequestEvent(fragments=cap.provided_fragments)
         assert not (event.fragments & DOMWatchdog.provides)
@@ -311,27 +333,18 @@ class TestNegotiationDrivenCost:
         capability. Without that hop the capability never learns the
         active set and falls back to resolving everything.
         """
-        from spectragent.core.environments._registrar import EnvironmentBase
-
-        class _ProbeEnv(EnvironmentBase):
-            __wiring__ = {"capabilities": "capability"}
-            __registry_key__ = "probe_env_negotiation"
-
-        cap = BrowserCapability(profile="standard")
+        cap = BrowserCapability()
         cap._inject_cdp_client(_RecordingCDP())  # type: ignore[arg-type]
-        env = _ProbeEnv(capabilities={"browser#0": cap})
+        env = make_env(BrowserEnvironment, {"browser#0": cap})
 
         assert env.provided_fragments == frozenset(
             {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
         )
 
-        class _Negotiated:
-            env_sourced = frozenset({"browser.screenshot"})
-            active_fragments = frozenset({"browser.screenshot", "loop.task"})
-
-        await env.setup(negotiation=_Negotiated())
+        negotiation = negotiate_observation(UITarsAgent(), ReactLoop(), env)
+        await env.setup(negotiation=negotiation)
         try:
-            assert env.provided_fragments == frozenset({"browser.screenshot"})
+            assert env.provided_fragments == frozenset({"browser.screenshot", "browser.platform"})
         finally:
             await env.teardown()
 
