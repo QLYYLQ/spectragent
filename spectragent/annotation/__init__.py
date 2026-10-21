@@ -35,6 +35,7 @@ from spectragent.annotation.store import (
     AnnotationError,
     AnnotationStore,
     LoadedQueue,
+    QueueChangedError,
     QueueListing,
     write_queue,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "Question",
     "QueueImage",
     "QueueItem",
+    "QueueChangedError",
     "QueueListing",
     "Region",
     "RegionKind",

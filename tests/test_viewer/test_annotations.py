@@ -61,8 +61,25 @@ def client(workspace) -> TestClient:
     return TestClient(app, base_url=ORIGIN)
 
 
+def version(client: TestClient, queue_id: str) -> str | None:
+    """The queue version this client loads, as the page does before it labels."""
+    response = client.get("/api/review/queue", params={"queue_id": queue_id})
+    return response.json()["sha256"] if response.status_code == 200 else None
+
+
 def post(client: TestClient, path: str, body: dict, headers=WRITE):
+    if path == "/api/review/label" and "queue_sha256" not in body and "queue_id" in body:
+        loaded = version(client, body["queue_id"])
+        body = {**body, "queue_sha256": loaded or "0" * 64}
     return client.post(path, content=json.dumps(body), headers=headers)
+
+
+def image(client: TestClient, params: dict):
+    """An item image, requested with the version the page loaded, as the page does."""
+    return client.get(
+        "/api/review/image",
+        params={"queue_sha256": version(client, params["queue_id"]) or "", **params},
+    )
 
 
 def test_without_annotations_the_viewer_stays_read_only(workspace):
@@ -92,7 +109,7 @@ def test_the_default_annotator_is_the_os_user(workspace, monkeypatch):
 
     traces, annotations, _ = workspace
     monkeypatch.setattr(server.getpass, "getuser", lambda: "os-user")
-    client = TestClient(create_app(traces, annotations=annotations))
+    client = TestClient(create_app(traces, annotations=annotations), base_url=ORIGIN)
     assert client.get("/api/workspace").json()["annotations"]["annotator"] == "os-user"
 
 
@@ -199,14 +216,19 @@ def test_cross_origin_and_form_writes_are_refused(client, workspace, headers, st
     assert not (annotations / "labels").exists()
 
 
-def test_a_host_name_that_could_be_rebound_cannot_write(workspace):
+def test_a_host_name_that_could_be_rebound_can_neither_read_nor_write(workspace):
     traces, annotations, run = workspace
     app = create_app(traces, annotations=annotations, annotator="ana")
     rebound = TestClient(app, base_url="http://attacker.example:8765")
     body = {"queue_id": "fork-judge", "item_id": f"{run.key}/s0", "choice": "reasonable"}
     headers = {"Origin": "http://attacker.example:8765", "Content-Type": "application/json"}
-    response = post(rebound, "/api/review/label", body, headers=headers)
+    response = post(rebound, "/api/review/label", {**body, "queue_sha256": "0" * 64}, headers)
     assert response.status_code == 403 and "localhost" in response.json()["detail"]
+    for path in ["/api/workspace", "/api/runs", "/api/review/queues"]:
+        assert rebound.get(path).status_code == 403
+    read_only = TestClient(create_app(traces), base_url="http://attacker.example:8765")
+    assert read_only.get("/api/runs").status_code == 403
+    assert read_only.get("/").status_code == 200
     local = TestClient(app, base_url="http://localhost:8765")
     headers = {"Origin": "http://localhost:8765", "Content-Type": "application/json"}
     assert post(local, "/api/review/label", body, headers=headers).status_code == 200
@@ -215,12 +237,12 @@ def test_a_host_name_that_could_be_rebound_cannot_write(workspace):
 def test_item_images_resolve_observations_and_archived_frames(client, workspace):
     _, _, run = workspace
     params = {"queue_id": "gold-evidence", "item_id": "first"}
-    before = client.get("/api/review/image", params={**params, "role": "before"})
+    before = image(client, {**params, "role": "before"})
     assert before.status_code == 200 and before.headers["content-type"] == "image/png"
-    frame = client.get("/api/review/image", params={**params, "role": "frame"})
+    frame = image(client, {**params, "role": "frame"})
     assert frame.status_code == 200 and frame.content == png(color=(1, 2, 3))
     assert frame.headers["cache-control"] == "no-store"
-    missing = client.get("/api/review/image", params={**params, "role": "after"})
+    missing = image(client, {**params, "role": "after"})
     assert missing.status_code == 404
 
 
@@ -234,12 +256,12 @@ def test_only_raster_archive_files_are_served(client, workspace):
     _, annotations, run = workspace
     params = {"queue_id": "gold-evidence", "item_id": "first", "role": "frame"}
     _queue_with_frame(annotations, run.key, name="frames.json")
-    response = client.get("/api/review/image", params=params)
+    response = image(client, params)
     assert response.status_code == 400 and "not a raster image" in response.json()["detail"]
     _queue_with_frame(annotations, run.key, name="frame-9.png")
-    assert client.get("/api/review/image", params=params).status_code == 404
+    assert image(client, params).status_code == 404
     _queue_with_frame(annotations, run.key, step=None, name="frame-tail.png")
-    tail = client.get("/api/review/image", params=params)
+    tail = image(client, params)
     assert tail.status_code == 200 and tail.content == png((16, 10))
 
 
@@ -247,10 +269,7 @@ def test_only_raster_archive_files_are_served(client, workspace):
 def test_queue_run_keys_stay_inside_the_viewer_root(client, workspace, run):
     _, annotations, _ = workspace
     _queue_with_frame(annotations, "run-review", run=run)
-    response = client.get(
-        "/api/review/image",
-        params={"queue_id": "gold-evidence", "item_id": "first", "role": "frame"},
-    )
+    response = image(client, {"queue_id": "gold-evidence", "item_id": "first", "role": "frame"})
     assert response.status_code == 400
 
 
@@ -331,3 +350,126 @@ def test_a_question_queue_is_answered_per_question(client, workspace):
     assert saved.json()["label"]["verdict"] == "corrected"
     line = json.loads((annotations / "labels" / "fork-questions.jsonl").read_text())
     assert line["answers"] == answers and "choice" not in line
+
+
+# ── the queue version a label answers ─────────────────────────
+
+
+def _rewrite(annotations: Path, run_key: str) -> None:
+    save(annotations, fork_judge_queue(run_key, title="Rewritten by its tool"))
+
+
+def test_a_label_for_a_queue_rewritten_since_it_was_loaded_is_refused(client, workspace):
+    _, annotations, run = workspace
+    loaded = version(client, "fork-judge")
+    _rewrite(annotations, run.key)
+    body = {"queue_id": "fork-judge", "item_id": f"{run.key}/s0", "choice": "reasonable"}
+    response = post(client, "/api/review/label", {**body, "queue_sha256": loaded})
+    assert response.status_code == 409
+    assert "changed since you opened it" in response.json()["detail"]
+    assert not (annotations / "labels").exists()
+    current = version(client, "fork-judge")
+    saved = post(client, "/api/review/label", {**body, "queue_sha256": current})
+    assert saved.status_code == 200 and saved.json()["label"]["queue_sha256"] == current
+    missing = client.post("/api/review/label", content=json.dumps(body), headers=WRITE)
+    assert missing.status_code == 422
+
+
+def test_an_image_requested_for_an_earlier_queue_version_is_refused(client, workspace):
+    _, annotations, run = workspace
+    params = {"queue_id": "fork-judge", "item_id": f"{run.key}/s0", "role": "before"}
+    loaded = version(client, "fork-judge")
+    _rewrite(annotations, run.key)
+    stale = client.get("/api/review/image", params={**params, "queue_sha256": loaded})
+    assert stale.status_code == 409
+    assert client.get("/api/review/image", params=params).status_code == 422
+
+
+def test_removed_items_are_counted_once_however_many_labels_they_have(client, workspace):
+    _, annotations, run = workspace
+    for choice in ["reasonable", "unreasonable", "reasonable"]:
+        body = {"queue_id": "fork-judge", "item_id": f"{run.key}/s1", "choice": choice}
+        assert post(client, "/api/review/label", body).status_code == 200
+    queue = fork_judge_queue(run.key).model_dump(mode="json")
+    queue["items"] = queue["items"][:1]
+    (annotations / "queues" / "fork-judge.json").write_text(json.dumps(queue))
+    data = client.get("/api/review/queue", params={"queue_id": "fork-judge"}).json()
+    assert data["removed_items_with_labels"] == 1
+
+
+# ── run identity, numbers, startup ────────────────────────────
+
+
+def test_one_run_step_has_one_adhoc_identity_however_its_key_is_spelled(client, workspace):
+    _, annotations, run = workspace
+    for spelling, note in [(run.key, "a"), (f"./{run.key}", "b"), (f"{run.key}/.", "c")]:
+        response = post(client, "/api/review/step", {"run": spelling, "step": 0, "note": note})
+        assert response.status_code == 200, response.text
+    lines = [
+        json.loads(line)
+        for line in (annotations / "labels" / "_adhoc.jsonl").read_text().splitlines()
+    ]
+    assert {line["run"] for line in lines} == {run.key}
+    state = client.get("/api/review/step", params={"run": f"./{run.key}/", "step": 0}).json()
+    assert state["mine"]["note"] == "c" and len(state["history"]) == 3
+
+
+def test_a_note_alone_never_reads_the_screenshot(client, workspace, monkeypatch):
+    from spectragent.inspection import repository
+
+    _, _, run = workspace
+
+    def unreadable(*args, **kwargs):
+        raise AssertionError("a note-only label read the screenshot")
+
+    monkeypatch.setattr(repository._FileRepository, "screenshot", unreadable)
+    response = post(client, "/api/review/step", {"run": run.key, "step": 0, "note": "only words"})
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_box_numbers_are_refused(client, workspace, value):
+    _, annotations, run = workspace
+    region = f'{{"image": "screenshot", "kind": "problem", "box": [0, 0, {value}, 5]}}'
+    raw = f'{{"run": "{run.key}", "step": 0, "regions": [{region}]}}'
+    response = client.post("/api/review/step", content=raw, headers=WRITE)
+    assert response.status_code == 422
+    assert not (annotations / "labels").exists()
+
+
+def test_labeling_refuses_a_non_loopback_host_and_names_both_options(workspace, monkeypatch):
+    from spectragent.viewer import server
+
+    traces, annotations, _ = workspace
+    monkeypatch.setattr(server.uvicorn.Server, "run", lambda self, **kwargs: None)
+    for host in ["0.0.0.0", "192.168.1.5", "example.com"]:
+        with pytest.raises(AnnotationError, match="--annotations") as error:
+            server.serve(traces, host=host, port=0, annotations=annotations)
+        assert f"--host {host}" in str(error.value)
+    server.serve(traces, host="127.0.0.1", port=0, annotations=annotations)
+    server.serve(traces, host="::1", port=0, annotations=annotations)
+    server.serve(traces, host="0.0.0.0", port=0)
+
+
+def test_startup_says_what_is_written(workspace, monkeypatch, capsys):
+    from spectragent.viewer import server
+
+    traces, annotations, _ = workspace
+    monkeypatch.setattr(server.uvicorn.Server, "run", lambda self, **kwargs: None)
+    server.serve(traces, port=0, annotations=annotations, annotator="ana")
+    labeling = capsys.readouterr().out
+    assert "Read-only local evidence" not in labeling
+    assert f"Labels by ana are appended under {annotations.resolve()}" in labeling
+    server.serve(traces, port=0)
+    assert "Read-only local evidence." in capsys.readouterr().out
+
+
+def test_only_a_run_trace_counts_as_inside_a_trace(workspace):
+    traces, _, _ = workspace
+    dataset = traces / "exported"
+    dataset.mkdir()
+    (dataset / "manifest.json").write_text('{"exporter": "openai_messages", "samples": []}')
+    labels = dataset / "labels"
+    labels.mkdir()
+    client = TestClient(create_app(traces, annotations=labels), base_url=ORIGIN)
+    assert client.get("/api/workspace").json()["annotations"]["directory"] == str(labels.resolve())
