@@ -25,6 +25,11 @@ import {
   draftProblems,
   draftsEqual,
   askedQuestions,
+  confirmPress,
+  discardsWork,
+  draftStorageKey,
+  emptyDraft,
+  staleDraftKeys,
   isBlank,
   nextOpenQuestion,
   toggleAnswer,
@@ -55,8 +60,8 @@ const time = (value) =>
       })
     : "";
 
-const imageSource = (queueId, itemId, role) =>
-  query("review/image", { queue_id: queueId, item_id: itemId, role });
+const imageSource = (queueId, itemId, role, version) =>
+  query("review/image", { queue_id: queueId, item_id: itemId, role, queue_sha256: version });
 
 const STATUS_TEXT = {
   unlabeled: "Not labeled",
@@ -298,22 +303,45 @@ function QueueRow({ row }) {
 }
 
 export function ReviewSession({ route, revision, annotations }) {
-  const remote = useRemote(query("review/queue", { queue_id: route.queue }), revision);
+  const [reloads, setReloads] = useState(0);
+  const remote = useRemote(
+    query("review/queue", { queue_id: route.queue }),
+    `${revision}:${reloads}`,
+  );
   return (
     <RemoteState state={remote}>
       {(data) => (
+        // One session per queue version: a rewritten queue starts afresh.
         <Session
-          key={data.queue_id}
+          key={`${data.queue_id}:${data.sha256}`}
           data={data}
           route={route}
           annotations={annotations}
+          onReload={() => setReloads((value) => value + 1)}
         />
       )}
     </RemoteState>
   );
 }
 
-function Session({ data, route, annotations }) {
+/** Drafts this tab kept for the queue version, after dropping other versions' drafts. */
+function loadDrafts(queueId, version) {
+  try {
+    const storage = window.sessionStorage;
+    const keys = Array.from({ length: storage.length }, (_, i) => storage.key(i));
+    let dropped = 0;
+    for (const key of staleDraftKeys(keys, queueId, version)) {
+      dropped += Object.keys(JSON.parse(storage.getItem(key) || "{}")).length;
+      storage.removeItem(key);
+    }
+    const drafts = JSON.parse(storage.getItem(draftStorageKey(queueId, version)) || "{}");
+    return { drafts, dropped };
+  } catch {
+    return { drafts: {}, dropped: 0 };
+  }
+}
+
+function Session({ data, route, annotations, onReload }) {
   const spec = data.label;
   const [states, setStates] = useState(data.items);
   const [progress, setProgress] = useState(data.progress);
@@ -337,15 +365,11 @@ function Session({ data, route, annotations }) {
     if (state && route.item !== itemId) go(index);
   }, [route.item, itemId]);
 
-  // Unsaved drafts survive leaving the queue and reloading the tab.
-  const draftKey = `review-drafts:${data.queue_id}:${data.sha256}`;
-  const [drafts, setDrafts] = useState(() => {
-    try {
-      return JSON.parse(window.sessionStorage.getItem(draftKey) || "{}");
-    } catch {
-      return {};
-    }
-  });
+  // Unsaved drafts survive leaving the queue and reloading the tab, for this
+  // queue version only: a rewritten queue drops them and says so.
+  const draftKey = draftStorageKey(data.queue_id, data.sha256);
+  const [initial] = useState(() => loadDrafts(data.queue_id, data.sha256));
+  const [drafts, setDrafts] = useState(initial.drafts);
   useEffect(() => {
     try {
       if (Object.keys(drafts).length)
@@ -390,8 +414,10 @@ function Session({ data, route, annotations }) {
   const [message, setMessage] = useState(null);
   const [help, setHelp] = useState(false);
   const [focused, setFocused] = useState(0);
+  const [pending, setPending] = useState(null);
   const note = useRef(null);
   useEffect(() => {
+    setPending(null);
     setSelected(null);
     setFlipIndex(0);
     setMessage((old) => (old?.kind === "saved" ? old : null));
@@ -453,7 +479,7 @@ function Session({ data, route, annotations }) {
           height: probe.naturalHeight,
         };
       };
-      probe.src = imageSource(data.queue_id, itemId, image.role);
+      probe.src = imageSource(data.queue_id, itemId, image.role, data.sha256);
     }
   }, [itemId]);
 
@@ -477,7 +503,7 @@ function Session({ data, route, annotations }) {
   const images = item.images.map((image) => ({
     role: image.role,
     text: image.text,
-    src: imageSource(data.queue_id, item.item_id, image.role),
+    src: imageSource(data.queue_id, item.item_id, image.role, data.sha256),
     detail:
       image.source.kind === "archive"
         ? `${image.source.archiver} · ${image.source.step == null ? "trailing" : `step ${image.source.step}`}`
@@ -508,7 +534,7 @@ function Session({ data, route, annotations }) {
     try {
       const response = await postJSON(
         "/api/review/label",
-        labelRequest(data.queue_id, itemId, use, spec, { skipped }),
+        labelRequest(data.queue_id, itemId, use, spec, { skipped, version: data.sha256 }),
       );
       const next = states.map((old, i) => (i === index ? response.item : old));
       setStates(next);
@@ -542,25 +568,54 @@ function Session({ data, route, annotations }) {
               : "That was the last item in this filter.",
         });
     } catch (error) {
-      setMessage({ kind: "problem", text: error.message });
+      setMessage(
+        error.status === 409
+          ? {
+              kind: "changed",
+              text: "This queue changed since you opened it, so nothing was saved. Reload to label the current version.",
+            }
+          : { kind: "problem", text: error.message },
+      );
     } finally {
       setSaving(false);
     }
   }
 
-  const accept = () =>
-    save({ use: { ...draftFromSuggestion(suggestion), note: draft.note } });
-  const edit = () => setDraft({ ...draftFromSuggestion(suggestion), note: draft.note });
+  // Accept, edit, skip and reject replace the answer. When that would drop
+  // unsaved work, the first press only asks for a second one.
+  const guarded = (action, replacement, run, prompt) => {
+    if (!discardsWork(draft, saved, replacement)) {
+      setPending(null);
+      return run();
+    }
+    const result = confirmPress(pending, action, Date.now());
+    setPending(result.pending);
+    if (result.run) return run();
+    setMessage({ kind: "confirm", text: `${prompt} again to ${action} and drop your unsaved answer.` });
+  };
+  const proposed = { ...draftFromSuggestion(suggestion), note: draft.note };
+  const accept = () => guarded("accept", proposed, () => save({ use: proposed }), "Press A or click Accept");
+  const edit = () =>
+    guarded(
+      "replace it with the suggestion",
+      proposed,
+      () => setDraft(proposed),
+      "Press E or click Edit",
+    );
+  const skip = () =>
+    guarded("skip", { ...emptyDraft(), note: draft.note }, () => save({ skipped: true }), "Press S or click Skip");
+  const reject = () =>
+    draft.reject
+      ? setDraft(toggleReject(draft))
+      : guarded("reject", toggleReject(draft), () => setDraft(toggleReject(draft)), "Press R or click Reject");
   const regions = draft.regions;
 
   handler.current = (event) => {
     if (help && event.key === "Escape") return setHelp(false);
     const target = event.target;
-    if (
-      event.key === "Enter" &&
-      target?.closest?.("a, summary, button:not([data-answer])") &&
-      !isTextTarget(target)
-    )
+    // Enter saves, whatever review control has focus; only a link or a
+    // disclosure keeps its own Enter.
+    if (event.key === "Enter" && target?.closest?.("a, summary") && !isTextTarget(target))
       return;
     const action = keyAction(
       {
@@ -570,6 +625,7 @@ function Session({ data, route, annotations }) {
         altKey: event.altKey,
         ctrlKey: event.ctrlKey,
         metaKey: event.metaKey,
+        repeat: event.repeat,
         inText: isTextTarget(target),
       },
       {
@@ -605,12 +661,12 @@ function Session({ data, route, annotations }) {
       case "edit":
         return edit();
       case "reject":
-        return setDraft(toggleReject(draft));
+        return reject();
       case "save":
         target?.blur?.();
         return save();
       case "skip":
-        return save({ skipped: true });
+        return skip();
       case "next":
         return move(1);
       case "previous":
@@ -729,6 +785,21 @@ function Session({ data, route, annotations }) {
         onJump={(target) => go(target)}
       />
       <ProgressLegend progress={progress} />
+      {initial.dropped > 0 && (
+        <div className="notice">
+          This queue was rewritten by its tool after you started editing.{" "}
+          {initial.dropped} unsaved {initial.dropped === 1 ? "draft" : "drafts"} for the
+          earlier version {initial.dropped === 1 ? "was" : "were"} dropped; nothing you saved
+          is affected.
+        </div>
+      )}
+      {data.removed_items_with_labels > 0 && (
+        <p className="muted small">
+          Labels exist for {data.removed_items_with_labels}{" "}
+          {data.removed_items_with_labels === 1 ? "item" : "items"} no longer in this queue.
+          They stay in labels/{data.queue_id}.jsonl and are not shown here.
+        </p>
+      )}
       {data.label_errors.length > 0 && (
         <div className="notice error">
           {data.label_errors.length} lines of labels/{data.queue_id}.jsonl
@@ -746,7 +817,6 @@ function Session({ data, route, annotations }) {
                 {COMPARE_MODES.map((mode) => (
                   <button
                     key={mode.value}
-                    data-answer
                     aria-pressed={compare === mode.value}
                     onClick={() => setCompare(mode.value)}
                   >
@@ -792,6 +862,7 @@ function Session({ data, route, annotations }) {
             )}
           </div>
           <ImageBoard
+            key={itemId}
             images={images}
             regions={regions}
             suggested={suggestion?.regions || []}
@@ -816,7 +887,7 @@ function Session({ data, route, annotations }) {
               spec={spec}
               onAccept={accept}
               onEdit={edit}
-              onReject={() => setDraft(toggleReject(draft))}
+              onReject={reject}
               rejected={draft.reject}
               saving={saving}
             />
@@ -853,7 +924,6 @@ function Session({ data, route, annotations }) {
                   return (
                     <button
                       key={choice.value}
-                      data-answer
                       className={`choice ${on ? "on" : ""} ${suggestion && (suggestion.choice === choice.value || suggestion.choices?.includes(choice.value)) ? "suggested" : ""}`}
                       aria-pressed={on}
                       onClick={() => setDraft(toggleChoice(draft, spec, choice.value))}
@@ -924,17 +994,23 @@ function Session({ data, route, annotations }) {
                 {saving ? "Saving…" : dirty || !state.mine ? "Save and next" : "Next"}
                 <Keycap>Enter</Keycap>
               </button>
-              <button
-                className="button"
-                onClick={() => save({ skipped: true })}
-                disabled={saving}
-              >
+              <button className="button" onClick={skip} disabled={saving}>
                 Skip <Keycap>S</Keycap>
               </button>
             </div>
             <p className="save-status" role="status">
               {message ? (
-                <span className={`save-message ${message.kind}`}>{message.text}</span>
+                <span className={`save-message ${message.kind}`}>
+                  {message.text}
+                  {message.kind === "changed" && (
+                    <>
+                      {" "}
+                      <button className="text-button" onClick={onReload}>
+                        Reload the queue
+                      </button>
+                    </>
+                  )}
+                </span>
               ) : verdict && !isBlank(draft) && (dirty || !state.mine) ? (
                 <>
                   Saves as <Badge value={verdict} />
@@ -1024,7 +1100,6 @@ function QuestionRows({ asked, draft, focused, suggestion, onFocus, onAnswer }) 
               {question.choices.map((choice, i) => (
                 <button
                   key={choice.value}
-                  data-answer
                   className={`choice compact ${mine === choice.value ? "on" : ""} ${proposed === choice.value ? "suggested" : ""}`}
                   aria-pressed={mine === choice.value}
                   onClick={(event) => {
@@ -1101,7 +1176,6 @@ function KindPicker({ kinds, activeKind, onPick }) {
       {kinds.map((kind, i) => (
         <button
           key={kind.value}
-          data-answer
           role="radio"
           aria-checked={activeKind === kind.value}
           className={`kind ${activeKind === kind.value ? "on" : ""}`}
@@ -1126,7 +1200,7 @@ function RegionList({ regions, kinds, images, selected, onSelect, onDelete }) {
     <ol className="region-list">
       {regions.map((region, i) => (
         <li key={i} className={selected === i ? "selected" : ""}>
-          <button className="region-pick" data-answer onClick={() => onSelect(i)}>
+          <button className="region-pick" onClick={() => onSelect(i)}>
             <span className="kind-swatch" style={{ "--kind": kindOf[region.kind]?.color }} />
             <span>{kindOf[region.kind]?.text || region.kind}</span>
             <span className="muted small">

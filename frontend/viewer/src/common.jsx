@@ -220,8 +220,8 @@ export async function postJSON(path, body) {
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok)
-    throw new Error(
+  if (!response.ok) {
+    const error = new Error(
       typeof data.detail === "string"
         ? data.detail
         : data.detail
@@ -230,6 +230,9 @@ export async function postJSON(path, body) {
               .join("; ")
           : `The viewer answered ${response.status}`,
     );
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 

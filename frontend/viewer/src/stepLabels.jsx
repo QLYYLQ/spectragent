@@ -1,10 +1,33 @@
 /** Notes and boxes on one run step, outside any review queue. */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Icon, Keycap, RemoteState, postJSON, query, useRemote } from "./common.jsx";
 import { ImageBoard } from "./board.jsx";
 import { sameRegions } from "./boxes.js";
 import { isTextTarget, keyAction } from "./keys.js";
-import { kindColor } from "./labels.js";
+import { kindColor, refreshDraft } from "./labels.js";
+
+const savedDraft = (mine) => ({ regions: mine?.regions || [], note: mine?.note || "" });
+const sameStepDraft = (a, b) =>
+  sameRegions(a.regions, b.regions) && a.note.trim() === b.note.trim();
+const storageKey = (run, step) => `step-label-draft:${run}#${step}`;
+
+function storedDraft(run, step) {
+  try {
+    const value = window.sessionStorage.getItem(storageKey(run, step));
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeDraft(run, step, draft) {
+  try {
+    if (draft) window.sessionStorage.setItem(storageKey(run, step), JSON.stringify(draft));
+    else window.sessionStorage.removeItem(storageKey(run, step));
+  } catch {
+    // Without storage, unsaved edits last as long as this step stays open.
+  }
+}
 
 export function StepLabels({ runKey, index, revision, annotations, hasScreenshot }) {
   const [saved, setSaved] = useState(null);
@@ -29,17 +52,40 @@ export function StepLabels({ runKey, index, revision, annotations, hasScreenshot
 
 function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSaved }) {
   const kinds = data.spec.regions.kinds.map((kind, i) => ({ ...kind, color: kindColor(i) }));
-  const initial = { regions: data.mine?.regions || [], note: data.mine?.note || "" };
-  const [draft, setDraft] = useState(initial);
+  const initial = savedDraft(data.mine);
+  // Unsaved edits of this step survive leaving it and reloading the tab.
+  const [restored] = useState(() => storedDraft(runKey, index));
+  const [draft, setDraft] = useState(restored || initial);
   const [activeKind, setActiveKind] = useState(kinds[0].value);
   const [selected, setSelected] = useState(null);
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState(
+    restored && !sameStepDraft(restored, initial)
+      ? { kind: "info", text: "Your unsaved edits to this step were restored." }
+      : null,
+  );
   const [saving, setSaving] = useState(false);
+  // A refresh re-reads the saved label every few seconds: a clean draft
+  // follows it, unsaved edits are never replaced.
+  const before = useRef(initial);
   useEffect(() => {
-    setDraft({ regions: data.mine?.regions || [], note: data.mine?.note || "" });
+    const after = savedDraft(data.mine);
+    const result = refreshDraft(draft, before.current, after, sameStepDraft);
+    before.current = after;
+    if (result.draft !== draft) setDraft(result.draft);
+    if (result.conflict)
+      setStatus({
+        kind: "confirm",
+        text: "Your saved label for this step changed elsewhere; your unsaved edits are kept and saving replaces it.",
+      });
   }, [data]);
-  const dirty =
-    !sameRegions(draft.regions, initial.regions) || draft.note.trim() !== initial.note.trim();
+  const dirty = !sameStepDraft(draft, initial);
+  useEffect(() => {
+    storeDraft(runKey, index, dirty ? draft : null);
+    if (!dirty) return;
+    const warn = (event) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [draft, dirty, runKey, index]);
 
   async function save(body) {
     setSaving(true);
@@ -64,6 +110,7 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
         altKey: event.altKey,
         ctrlKey: event.ctrlKey,
         metaKey: event.metaKey,
+        repeat: event.repeat,
         inText: isTextTarget(event.target),
       },
       { choices: 0, kinds: kinds.length, suggestion: false, selection: selected != null },

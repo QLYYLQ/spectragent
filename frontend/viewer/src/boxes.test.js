@@ -73,3 +73,16 @@ test("regions compare as a multiset", () => {
   assert.equal(sameRegions([a], [{ ...a, box: [0, 0, 10, 11] }]), false);
   assert.equal(sameRegions([], undefined), true);
 });
+
+test("resizing from the box at pointer-down follows the pointer past the opposite edge", () => {
+  const origin = [100, 100, 200, 160];
+  const path = [150, 90, 60, 20, 120].map((x) => resizeBox(origin, "e", { x, y: 0 }, size));
+  assert.deepEqual(path, [
+    [100, 100, 150, 160],
+    [90, 100, 100, 160],
+    [60, 100, 100, 160],
+    [20, 100, 100, 160],
+    [100, 100, 120, 160],
+  ]);
+  assert.deepEqual(resizeBox(origin, "se", { x: 40, y: 30 }, size), [40, 30, 100, 100]);
+});

@@ -43,7 +43,17 @@ export function ImageBoard({
   zoom = "fit",
   fit = "window",
 }) {
-  const [sizes, setSizes] = useState({});
+  // Sizes belong to the images on show; a new set starts unmeasured, so a
+  // drag never maps through the previous item's image size.
+  const signature = images.map((image) => image.src).join("\n");
+  const [measured, setMeasured] = useState({ signature, sizes: {} });
+  const sizes = measured.signature === signature ? measured.sizes : {};
+  const setSizes = (update) =>
+    setMeasured((old) => {
+      const base = old.signature === signature ? old.sizes : {};
+      const next = update(base);
+      return next === base && old.signature === signature ? old : { signature, sizes: next };
+    });
   const comparable =
     images.length >= 2 &&
     sizes[images[0].role] &&
@@ -172,10 +182,12 @@ function ImagePanel({
       const index = Number(box.dataset.box);
       onSelect(index);
       if (!editable) return;
+      // Both gestures work from the box as it was at pointer-down.
+      const origin = regions[index].box;
       setDrag(
         handle
-          ? { mode: "resize", index, handle: handle.dataset.handle, box: regions[index].box }
-          : { mode: "move", index, start: at, origin: regions[index].box, box: regions[index].box },
+          ? { mode: "resize", index, handle: handle.dataset.handle, origin, box: origin }
+          : { mode: "move", index, start: at, origin, box: origin },
       );
     } else {
       onSelect(null);
@@ -194,7 +206,7 @@ function ImagePanel({
         ? boxFromDrag(drag.start, at, size)
         : drag.mode === "move"
           ? moveBox(drag.origin, at.x - drag.start.x, at.y - drag.start.y, size)
-          : resizeBox(drag.box, drag.handle, at, size);
+          : resizeBox(drag.origin, drag.handle, at, size);
     setDrag({ ...drag, box });
   }
 

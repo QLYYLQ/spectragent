@@ -859,6 +859,13 @@
 .save-message.info {
   color: var(--muted);
 }
+.save-message.confirm {
+  color: #a64d00;
+  font-weight: 600;
+}
+.save-message.changed {
+  color: #b44f4d;
+}
 .saved-line {
   margin: 4px 0 0;
   color: #5f6f78;

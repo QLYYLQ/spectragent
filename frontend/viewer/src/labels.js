@@ -151,10 +151,12 @@ export function toggleReject(draft) {
     : { ...draft, choice: null, choices: [], answers: {}, regions: [], reject: true };
 }
 
-export function labelRequest(queueId, itemId, draft, spec, { skipped = false } = {}) {
+/** The body of a label save; `version` is the sha256 of the queue the person loaded. */
+export function labelRequest(queueId, itemId, draft, spec, { skipped = false, version } = {}) {
   const answered = !skipped && !draft.reject;
   return {
     queue_id: queueId,
+    queue_sha256: version,
     item_id: itemId,
     choice: answered && !spec.multi && !spec.questions ? draft.choice : null,
     choices: answered && spec.multi && !spec.questions ? draft.choices : null,
@@ -258,4 +260,54 @@ export function answerSummary(answer, spec) {
     );
   else if (answer.regions != null && spec.regions) parts.push("No boxes");
   return parts.join(" · ");
+}
+
+/** The answer a draft gives, without its note (which every action keeps). */
+function answerOf(draft) {
+  return { ...draft, note: "" };
+}
+
+/**
+ * Whether replacing `draft` with `replacement` (an accept, a skip, an edit or a
+ * reject) would throw away unsaved work: the draft differs from what is saved
+ * and its answer differs from the replacement's.
+ */
+export function discardsWork(draft, saved, replacement) {
+  const answer = answerOf(draft);
+  return (
+    !draftsEqual(draft, saved) &&
+    !isBlank({ ...answer, reject: false }) &&
+    !draftsEqual(answer, answerOf(replacement))
+  );
+}
+
+/** Two presses of the same action within `window` ms confirm it. */
+export const CONFIRM_MS = 1500;
+
+export function confirmPress(pending, action, now, window = CONFIRM_MS) {
+  if (pending && pending.action === action && now - pending.at <= window)
+    return { run: true, pending: null };
+  return { run: false, pending: { action, at: now } };
+}
+
+/** Where unsaved drafts of one queue version are kept for the tab. */
+export function draftStorageKey(queueId, version) {
+  return `review-drafts:${queueId}:${version}`;
+}
+
+/** Stored draft keys of the same queue made for another version of it. */
+export function staleDraftKeys(keys, queueId, version) {
+  const prefix = `review-drafts:${queueId}:`;
+  return keys.filter((key) => key.startsWith(prefix) && key !== draftStorageKey(queueId, version));
+}
+
+/**
+ * The draft to show after the saved label is read again. A clean draft
+ * follows the saved label; edits the person has not saved are kept, and
+ * `conflict` says the saved label changed underneath them.
+ */
+export function refreshDraft(draft, before, after, equal) {
+  if (equal(before, after)) return { draft, conflict: false };
+  if (equal(draft, before) || equal(draft, after)) return { draft: after, conflict: false };
+  return { draft, conflict: true };
 }
