@@ -650,13 +650,21 @@ class _AlignCDP:
         return {"result": {"value": frame_value("main", self.live)}}
 
 
-def _answer(time: float, paused: bool, *, seeked: bool = True, played: bool | None = None) -> dict:
+def _answer(
+    time: float,
+    paused: bool,
+    *,
+    seeked: bool = True,
+    played: bool | None = None,
+    landed: float | None = None,
+) -> dict:
     reading = {"current_time": time, "paused": paused, "seeking": not seeked, "ready_state": 4}
     return {
         "found": True,
         "before": {"current_time": 10.0, "paused": False},
         "seeked": seeked,
         "seek_ms": 40.0 if seeked else None,
+        "landed": (time if landed is None else landed) if seeked else None,
         "played": played,
         "reached": reading,
     }
@@ -706,6 +714,18 @@ async def test_a_failed_seek_is_undone_to_the_position_and_play_state_before() -
     assert record.seek_ms is None and record.seeking is True
     assert record.detail.startswith("the seek did not complete within 2s")
     # The undo targets where the element stood before: 10 s, playing.
+    assert cdp.calls[1] == '"main", 0, 10.0, true, 2000)'
+
+
+async def test_a_seek_that_lands_elsewhere_is_a_failed_seek() -> None:
+    """Measured on Xiaohongshu: aimed at 31.04 s, the seek completed at 26.66 s."""
+    cdp = _AlignCDP(
+        raw(reading={"current_time": 10.0, "paused": False}),
+        [_answer(26.66, True, landed=26.66), _answer(10.0, False, played=True)],
+    )
+    (record,) = await _align(cdp, state(element(time=31.04, paused=True)))
+    assert record.outcome == "failed" and record.rolled_back is True
+    assert record.detail.startswith("the seek landed at 26.66 s, not at the target")
     assert cdp.calls[1] == '"main", 0, 10.0, true, 2000)'
 
 

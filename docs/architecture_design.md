@@ -3387,7 +3387,7 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 
 1. 在 `af-media` 里读一次恢复出的页面的媒体状态（上限 `media_state_timeout_s`），按上面的规则与录下的截图媒体状态对应。录下的观测没有媒体状态（旧证据）时什么也不做，对齐记录为空列表、`detail` 说明。
 2. 每个 `matched` 元素以录下的截图之前那次读数（没有就用之后那次）为目标：精确的 `current_time` 与 `paused`。已经在同一位置（差不超过 1 ms）、同一暂停状态的是 `already_aligned`，不动。录下的位置或状态不知道的是 `unknown`，不动。
-3. 先对齐录下是暂停的元素：`pause()`，设 `currentTime` 为目标，等到 `seeked` 已经发生、`seeking` 为 false、`readyState ≥ 2`，上限 `media_seek_timeout_s`（默认 2 s）。只看 `currentTime` 不算成功：跳到录下字节之外时 `currentTime` 立刻报目标值，`seeking` 却一直为 true、画面不变（实测）。
+3. 先对齐录下是暂停的元素：`pause()`，设 `currentTime` 为目标，等到 `seeked` 已经发生、`seeking` 为 false、`readyState ≥ 2`，上限 `media_seek_timeout_s`（默认 2 s），并且跳转完成时停在目标位置上（差不超过 1 ms）。只看 `currentTime` 不算成功：跳到录下字节之外时 `currentTime` 立刻报目标值，`seeking` 却一直为 true、画面不变（实测）；反过来跳转完成了也不一定停在目标上：页面脚本喂数据的播放器在数据还没加完时，跳到 31.04 s 的请求完成在 26.66 s（2026-10-21 实测），这算跳转失败。
 4. 再对齐录下是在播放的元素：同样暂停、跳转、等跳转完成，然后 `play()`，等到 `playing`（同一上限），随即采集——不再落定一次，否则在播的视频又会走掉最多一个落定上限。播放器在脚本跳转、播放之后可能露出控制条（小红书的 xgplayer 实测如此），对齐记录照实写 `seek_and_play`。
 5. 跳转或播放没在上限内完成是 `failed`：立刻把元素跳回对齐之前的位置、恢复对齐之前的播放或暂停状态（同一上限；这也让播放器停止对未录字节的重试风暴），`rolled_back` 记回滚是否完成。这一步不能恢复：判定里的 `media_mismatch`。
 6. `missing`、`ambiguous` 的录下元素与直播是 `not_restorable`，不动它们。`extra` 元素不动（录下的没有它的状态），比较里照样不通过。

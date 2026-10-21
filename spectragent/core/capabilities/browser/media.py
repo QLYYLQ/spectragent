@@ -42,7 +42,8 @@ arrives). Exactly one candidate at the same document order is
 **Aligning** (:func:`align_media`). Before a restored observation's
 screenshot, after the settle wait, each matched element is moved to the
 recorded position and play state: paused targets first (pause, seek, wait for
-``seeked``, ``seeking == false`` and ``readyState >= 2``), then playing ones
+``seeked``, ``seeking == false`` and ``readyState >= 2``, and the position it
+landed on must be the target), then playing ones
 (the same, then ``play()`` and wait for ``playing``), and the capture follows
 at once. ``currentTime`` alone is no proof: a seek into bytes the recording
 never fetched reports the target at once while ``seeking`` stays true and the
@@ -225,6 +226,7 @@ _ALIGN_PROBE = (
   const before = afMediaReading(el);
   let seeked = target === null;
   let seekMs = null;
+  let landed = null;
   const seekStarted = performance.now();
   if (target !== null) {
     let fired = false;
@@ -242,6 +244,7 @@ _ALIGN_PROBE = (
       el.removeEventListener('seeked', onSeeked);
     }
     seeked = seekMs !== null;
+    landed = afMediaNumber(el.currentTime);
   } else if (!play) {
     el.pause();
   }
@@ -272,7 +275,7 @@ _ALIGN_PROBE = (
     }
     played = playError === null && playing && started && !el.paused;
   }
-  return {found: true, before: before, seeked: seeked, seek_ms: seekMs,
+  return {found: true, before: before, seeked: seeked, seek_ms: seekMs, landed: landed,
           played: played, play_error: playError, reached: afMediaReading(el)};
 })(%(frame)s, %(order)d, %(target)s, %(play)s, %(budget_ms)d)
 """
@@ -1203,7 +1206,16 @@ async def _align_one(
     reached = _reading(result.get("reached")) or MediaReading()
     seek_ms = result.get("seek_ms")
     seek_ms = float(seek_ms) if isinstance(seek_ms, int | float) else None
-    completed = bool(result.get("seeked")) and (not play or result.get("played") is True)
+    landed = result.get("landed")
+    landed = float(landed) if isinstance(landed, int | float) else None
+    # A completed seek is not enough: it must have landed on the target. A seek
+    # past what a script-fed player has appended completes somewhere else
+    # (measured on Xiaohongshu: aimed at 31.04 s, landed at 26.66 s).
+    on_target = target.current_time is None or (
+        landed is not None and abs(landed - target.current_time) <= SAME_TIME_S
+    )
+    seeked = bool(result.get("seeked"))
+    completed = seeked and on_target and (not play or result.get("played") is True)
     record: dict[str, Any] = {
         **base,
         "from_time": before.current_time,
@@ -1221,11 +1233,13 @@ async def _align_one(
             else "paused and seeked"
         )
         return MediaAlignment(**record, outcome="aligned", detail=detail)
-    if not result.get("seeked"):
+    if not seeked:
         why = (
             f"the seek did not complete within {seek_timeout_s:g}s "
             f"(seeking {reached.seeking}, readyState {reached.ready_state})"
         )
+    elif not on_target:
+        why = f"the seek landed at {landed} s, not at the target"
     else:
         why = f"play did not start within {seek_timeout_s:g}s" + (
             f" ({result.get('play_error')})" if result.get("play_error") else ""
