@@ -293,6 +293,26 @@ async def test_a_child_frame_whose_read_does_not_answer_is_unreachable(failure: 
     assert [f.frame for f in state.unreachable_frames] == ["main/0"]
 
 
+def test_a_frame_that_answered_either_read_is_not_unreachable() -> None:
+    """Its media is known from the read it answered; only a frame neither read reached is unknown."""
+    frame_box = {"frame": "main/1", "x": 0, "y": 200, "width": 300, "height": 150}
+    before = MediaRead(
+        elements=(raw(), raw(frame="main/1", y=200.0)),
+        addresses={"main": ("S", "F"), "main/1": ("C", "OOPIF")},
+    )
+    after = MediaRead(elements=(raw(),), unreachable=(frame_box,), addresses={"main": ("S", "F")})
+    media = media_state(before, after)
+    assert media.unreachable_frames == []
+    framed = next(e for e in media.elements if e.frame == "main/1")
+    assert framed.before is not None and framed.after is None
+
+    neither = media_state(
+        MediaRead(elements=(raw(),), unreachable=(frame_box,), addresses={"main": ("S", "F")}),
+        after,
+    )
+    assert [f.frame for f in neither.unreachable_frames] == ["main/1"]
+
+
 async def test_a_cross_site_frame_is_read_on_its_own_session() -> None:
     from spectragent.core.capabilities.browser.dom.capture import FrameTarget
 

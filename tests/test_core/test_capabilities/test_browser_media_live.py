@@ -101,6 +101,16 @@ _FRAMED = _page(
 )
 
 
+#: A same-origin frame holding an audio element, inside an open shadow root: not
+#: in the window's frame list (``window[i]``), so it cannot name its own path.
+_SHADOW = _page(
+    "<div id=host></div><script>"
+    "const root = document.getElementById('host').attachShadow({mode: 'open'});"
+    "root.innerHTML = \"<iframe src='/inner.html' style='position:absolute;left:10px;"
+    "top:20px;width:300px;height:100px;border:0'></iframe>\";</script>"
+)
+
+
 #: A page whose main thread is held for a while, soon after it loads: a frame
 #: read sent then gets no answer.
 _BUSY = _page(
@@ -130,6 +140,7 @@ class _Media(BaseHTTPRequestHandler):
             "/cross-busy.html": _cross_site(self.server.cross_origin, "busy.html"),  # type: ignore[attr-defined]
             "/busy.html": _BUSY,
             "/framed.html": _FRAMED,
+            "/shadow.html": _SHADOW,
             "/cross-framed.html": _cross_site(self.server.cross_origin, "framed.html"),  # type: ignore[attr-defined]
         }
         if path in pages:
@@ -553,6 +564,34 @@ async def test_a_cross_site_frame_is_read_when_the_dom_capture_also_reads_it(
         assert shot.media.unreachable_frames == []
         assert [e.label for e in shot.media.elements] == ["main/0#0 video"]
         assert "framed-button" in str(dom.selector_map)
+
+
+async def test_a_frame_inside_a_shadow_root_is_unreachable_never_empty(origin: str) -> None:
+    """Its media cannot be read, so it is unknown: the step is not restorable.
+
+    Before, the parent skipped it and its own read could not name itself, so
+    its audio was simply absent from both sides and the step passed.
+    """
+    browser = await _open(origin, "shadow.html")
+    try:
+        await asyncio.sleep(0.5)
+        shot = await browser.screenshot()
+    finally:
+        await browser.cap.teardown()
+
+    assert shot.media is not None and shot.media.known
+    assert shot.media.elements == []
+    (frame,) = shot.media.unreachable_frames
+    assert frame.frame == "main/unplaced-0"
+    assert (frame.rect.x, frame.rect.y) == (pytest.approx(10, abs=1), pytest.approx(20, abs=1))
+    evidence = RestorationEvidence(
+        capability_id="browser",
+        media=_media_evidence(_observation(shot), _observation(shot)),
+    )
+    check = judge(
+        1, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
+    )
+    assert check.reasons == ["media_mismatch"]
 
 
 async def test_a_cross_site_frame_that_does_not_answer_is_unreachable(origin: str) -> None:

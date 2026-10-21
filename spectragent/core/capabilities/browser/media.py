@@ -18,14 +18,17 @@ frame on that frame's own session (``FrameTargets``, the capability's per-tab
 discovery). Each frame names itself by its path from the top — ``main``, or
 the index of each frame in its parent's frame list (``main/1``), which a
 cross-origin parent exposes too — and reports its own media elements (open
-shadow roots included) in document order and where its child frames sit.
+shadow roots included) in document order and where its child frames sit. A
+frame inside a shadow root is not in its parent's frame list, so it cannot
+name itself: its parent lists it as ``<parent>/unplaced-<k>``, which no read
+claims, so it is unreachable (its media unknown, never "no media").
 Each element records its frame, its order among that frame's media elements,
 its box in the top viewport, its source kind (``url`` / ``blob`` / ``stream``
 / ``none`` / ``other``), the URL of a ``url`` source, its duration and whether
 it is live (an infinite duration or a stream), and a :class:`MediaReading`
 from each read: the exact ``currentTime``, ``paused``, ``seeking``,
-``readyState`` and ``ended``. A child frame whose own read did not answer is
-listed as unreachable — the restoration check then calls the step
+``readyState`` and ``ended``. A child frame that answered neither of the two
+reads is listed as unreachable — the restoration check then calls the step
 unrestorable. A main-frame read that runs out of ``media_state_timeout_s``,
 fails or answers with something else is ``unknown`` — never a reason for the
 screenshot to fail.
@@ -190,10 +193,15 @@ _READ_PROBE = (
     };
   });
   const children = [];
+  let unplaced = 0;
   for (const frameEl of doc.frames) {
+    if (!frameEl.contentWindow) continue;  // no document of its own, so no media
     let index = -1;
     try { index = doc.indexIn(window, frameEl.contentWindow); } catch (error) { index = -1; }
-    if (index < 0) continue;
+    // A frame missing from this window's frame list (one inside a shadow root)
+    // cannot name itself, so its own read never answers: listed under a name no
+    // read claims, it stays unreachable — its media unknown, never "none".
+    const frame = index < 0 ? doc.path + '/unplaced-' + (unplaced++) : doc.path + '/' + index;
     const box = frameEl.getBoundingClientRect();
     let padX = 0, padY = 0;
     try {
@@ -201,7 +209,7 @@ _READ_PROBE = (
       padX = parseFloat(style.paddingLeft) || 0;
       padY = parseFloat(style.paddingTop) || 0;
     } catch (error) {}
-    children.push({frame: doc.path + '/' + index,
+    children.push({frame: frame,
                    x: box.x + frameEl.clientLeft + padX, y: box.y + frameEl.clientTop + padY,
                    width: frameEl.clientWidth, height: frameEl.clientHeight});
   }
@@ -353,7 +361,7 @@ class MediaElementState(BaseModel):
 
 
 class MediaFrameState(BaseModel):
-    """A child frame the read could not enter (a cross-site iframe): its media, if any, is unknown."""
+    """A child frame neither read reached (no answer, or in a shadow root): its media is unknown."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -420,6 +428,11 @@ class MediaRead:
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def answered(self) -> frozenset[str]:
+        """The frame paths whose own read answered (those an alignment can reach)."""
+        return frozenset(self.addresses)
 
 
 async def _bounded(reply: Any, timeout: float) -> Any:
@@ -688,7 +701,8 @@ def media_state(before: MediaRead, after: MediaRead) -> MediaState:
 
     An element is placed by its first read (before, else after); its two
     readings are joined by frame path and order. An element only one read
-    saw has ``None`` for the other reading.
+    saw has ``None`` for the other reading. A frame is unreachable when it
+    answered neither read: one that answered either has its media known.
     """
     by_key: dict[tuple[str, int], list[dict[str, Any] | None]] = {}
     for index, read in enumerate((before, after)):
@@ -710,9 +724,14 @@ def media_state(before: MediaRead, after: MediaRead) -> MediaState:
         if element is not None:
             elements.append(element)
     elements.sort(key=lambda e: (e.frame, e.order))
+    # A frame is unreachable only when no read answered for it: one that
+    # answered the other read has its media known, with that reading.
+    answered = before.answered | after.answered
     frames: dict[str, MediaFrameState] = {}
     for read in (before, after):
         for raw in read.unreachable:
+            if raw.get("frame") in answered:
+                continue
             try:
                 frame = MediaFrameState(
                     frame=raw["frame"],
