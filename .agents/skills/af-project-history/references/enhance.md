@@ -346,10 +346,32 @@ of task 238, two per arm (the same results within each arm):
 | Playing-source steps (6, 7, 9, 14, 16, 20) | +0.04-0.12 s, distance 0-1 | 1-13 s off, distance 2-12 |
 | Ended-source steps 21-30 | position matches, distance 6-7 | from step 23 the replay video ends by itself, distance 0 |
 
-Open, recommended next: a recorded *ended* state aligned by seeking to the end shows a stale
-frame and no end screen (distance 6-7 on xgplayer), while a video that plays to its end
-matches. Recommendation: for an ended target, seek shortly before the end and play to the
-natural end, with the same success rules.
+**User decisions, 2026-10-21 (after the real-site run):**
+
+- Confirmed: duration confirms a match only when both sides are ordinary URL sources.
+- Confirmed: a seek counts only if it lands on the target; otherwise it fails and is
+  rolled back.
+- Ended video: a recorded element that had ended is aligned by seeking a short lead
+  before the recorded end and playing through to its natural end, under the same success
+  rules (seeked, not seeking, `readyState >= 2`, landing on the lead point, `ended` reached
+  within `media_seek_timeout_s`; otherwise fail and roll back). Implemented with the
+  restorer field `media_end_lead_s` (default 0.5 s, refused unless shorter than
+  `media_seek_timeout_s`), action `seek_and_play_to_end`.
+
+**Result** (two `media: align` replays of the task-238 recording, `replay/media-l2-238-replay-v4-align-{1,2}`):
+steps 21-30 (source ended at 31.04 s) went from screenshot distance 6-7 to 0 — step 21
+plays from 30.54 s into the natural end, steps 22-30 are already aligned. Over the 27 video
+steps: 26 pass, 0 screenshot failures; the one `media_mismatch` is step 15, where the seek
+to 30.54 s landed at 26.66 s (the replayed player had not appended the end yet), failed and
+was rolled back.
+
+## Pending — Bilibili search `vt` parameter
+
+Found 2026-10-21 (`tmp/media_restoration_20261021/delivery.json`, recording attempt 2): the
+Bilibili search page puts a client-generated `vt` parameter in its URL that differs every
+run (`vt=58530967` recorded, `vt=58531417` replayed), so a same-path replay of the task-118
+recording diverges at step 2 (`url_mismatch`, then screenshot distance 20+ from step 3) and
+never restores the video page it opened at steps 24-26. Replay-rule work, not media.
 
 ## Pending — source captures of half-loaded pages
 
