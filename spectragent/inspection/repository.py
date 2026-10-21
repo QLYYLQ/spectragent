@@ -25,7 +25,9 @@ from spectragent.inspection.restoration import (
     restoration_overview,
     restoration_results,
 )
-from spectragent.schemas.observation.image import read_model_image
+from spectragent.schemas.observation.image import image_media_type, read_model_image
+
+_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 
 class RepositoryError(ValueError):
@@ -42,6 +44,8 @@ class RunRepository(Protocol):
     def screenshot(
         self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
     ) -> bytes | None: ...
+    def has_step(self, key: str, index: int) -> bool: ...
+    def archive_image(self, key: str, step: int | None, archiver: str, name: str) -> bytes: ...
     def compare(self, keys: list[str]) -> dict[str, Any]: ...
     def compare_groups(self, left: str, right: str, evaluator: str) -> dict[str, Any]: ...
     def reports(self) -> list[dict[str, Any]]: ...
@@ -571,6 +575,42 @@ class _FileRepository:
             return None
         except (TraceSchemaError, TypeError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
+
+    def has_step(self, key: str, index: int) -> bool:
+        trace = self._trace(key)
+        return any(entry.step == index for entry in trace.manifest.steps)
+
+    def archive_image(self, key: str, step: int | None, archiver: str, name: str) -> bytes:
+        """One committed archive image of *archiver* named *name*; ``step=None`` is trailing.
+
+        Resolved only through the trace's archive index, never a path; a
+        file whose declared media type or bytes are not a raster image is
+        refused rather than served.
+        """
+        trace = self._trace(key)
+        try:
+            if step is None:
+                records = [
+                    record
+                    for at, record in trace.iter_archive(archiver, include_trailing=True)
+                    if at is None
+                ]
+            else:
+                records = trace.archive_files(step, archiver)
+            record = next((record for record in records if record.name == name), None)
+            where = "the trailing evidence" if step is None else f"step {step}"
+            if record is None:
+                raise FileNotFoundError(f"Run {key} has no {archiver} file {name!r} at {where}")
+            if record.media_type not in _IMAGE_TYPES:
+                raise RepositoryError(
+                    f"{archiver} file {name!r} is {record.media_type}, not a raster image"
+                )
+            data = trace.read_extra(record.path)
+        except (TraceSchemaError, KeyError) as exc:
+            raise RepositoryError(str(exc)) from exc
+        if image_media_type(data) != record.media_type:
+            raise RepositoryError(f"{archiver} file {name!r} does not hold {record.media_type}")
+        return data
 
     def compare(self, keys: list[str]) -> dict[str, Any]:
         if len(keys) < 2 or len(keys) > 8 or len(set(keys)) != len(keys):

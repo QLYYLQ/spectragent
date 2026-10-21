@@ -3735,7 +3735,7 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 
 Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例时展开其声明的默认动作及参数，`actions: []` 和显式子集原义不变；有匹配的顶层 action 实例则保留受体的 null/adoption 语义并完整展开池中实例，不复制成第二套动作。trace writer 的默认 `RecordingPlan` 也显式展开。模板前后均经同一 Composer 校验；生成不启动环境、不调用模型、不打开任务的回放证据，任务相关 prepare 继续交给 `config check` / `run --dry-run`。缺少必填字段时点名路径，失败不写输出。默认 stdout 仅为 YAML，`--json` 包含 YAML 字符串；`--output PATH` 只创建新文件，拒绝覆盖已有文件。`--from` 保留用户明确填写的值，不修改源文件；模板是可执行配置，不是 explain 的脱敏报告。
 
-**一个读侧，多个界面。** `spectragent/inspection/` 提供结构化查询 Protocol，CLI、Textual 和 FastAPI/React 本地查看器共用它。运行目录发现可以列目录；一个 run 的全部记录与附件只经 `RunTrace`，不绕过 manifest。每次刷新建立新的 reader 快照，不复用缓存的 manifest。路径必须在用户指定根目录之内，损坏或不支持的 trace 在列表中显示原因，不静默消失。网页只读，默认监听回环地址；远端使用 SSH 转发。前端资源随 Python 包分发，不依赖运行时 CDN 或 Node。
+**一个读侧，多个界面。** `spectragent/inspection/` 提供结构化查询 Protocol，CLI、Textual 和 FastAPI/React 本地查看器共用它。运行目录发现可以列目录；一个 run 的全部记录与附件只经 `RunTrace`，不绕过 manifest。每次刷新建立新的 reader 快照，不复用缓存的 manifest。路径必须在用户指定根目录之内，损坏或不支持的 trace 在列表中显示原因，不静默消失。网页对 trace 只读，唯一可写的是下文显式给出的标注目录；默认监听回环地址，远端使用 SSH 转发。前端资源随 Python 包分发，不依赖运行时 CDN 或 Node。
 
 `view` 是前台进程，`serve` 显式持有监听 socket，启动或关闭异常也在作用域退出时关闭；先成功绑定再报告 URL 或安排打开网页。Ctrl-C/SIGTERM 沿 Uvicorn 的信号处理关闭，未完成请求最多有 2 秒 graceful-shutdown 宽限。此预算限制请求等待，不声称能中断 OS 中阻塞的文件 I/O；查看器不写 trace。已脱离终端的旧 viewer 不会收到另一个终端的 Ctrl-C，不能在启动时擅自杀掉占用端口的进程。
 
@@ -3750,6 +3750,16 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 **批量任务清单。** CLI 在 trace 根的 `.sessions/` 下原子写入本次任务选择、逐任务进度、结果引用和停止原因；不保存凭据、原始 YAML 或环境副本。它描述命令选择了哪些任务、哪些尚未启动，不替代 RunTrace 中的 agent/eval 事实，也不是进程心跳。取消、协议否决及 token 限额停止必须保留尚未启动任务；token 阈值仍在任务结束后检查。
 
 **查看内容。** 运行列表、步骤时间线、截图、任意 observation fragment、每步全部模型调用及 trailing 调用、请求 schema、动作与错误、评测依据、源/分叉关系和配置比较；不同 evaluator 不混算。已有独立评测、飞轮、诊断和数据集报告直接读取各自产物，保留原来的分母和不可测原因。浏览历史与主动网络回放是两种操作；查看器不启动浏览器环境、不重新判分。
+
+**人工标注与审阅（2026-10-21）。** 用户要求查看器不只供人查看数据，也供人标注与审阅数据。`spectragent view --annotations DIR [--annotator NAME]` 打开写入；省略 `--annotations` 时查看器与以前完全一样只读，所有写接口拒绝。查看器只写这个显式给出的目录，从不写 trace（目录位于某个 run 目录之内时启动即拒绝），也不改动队列文件。布局固定：`DIR/queues/<queue_id>.json`（`review-queue-1`）由产生待审数据的工具写入，查看器只读；`DIR/labels/<queue_id>.jsonl` 与 `DIR/labels/_adhoc.jsonl`（`review-label-1`，一行一个 JSON）由查看器追加。存储、校验与判定在 `spectragent/annotation/`，与网页无关，工具和测试可直接使用。
+
+队列每次请求重新读取并校验：条目 id 唯一，条目内图片角色唯一，建议所用的选项、区域类别与图片都存在于规格和条目中，队列 id 与文件名一致且不以 `_` 开头。损坏的队列在列表中带原因显示，不消失。标签只追加：对标签文件加排他锁，整行写入、flush、fsync，历史行永不改写；当前标签是同一 `(item_id, annotator)` 在文件中的最后一行，按文件顺序而不按各自时钟，不同标注者互不覆盖，也不合成多数票。每行记录写入时队列文件字节的 sha256；队列之后被工具重写时，旧标签照常显示并标明针对早先版本。不可读的标签行逐行报告，不影响其它行，条目已从队列删除的标签也单独计数。
+
+标签按队列的 label 规格校验：`multi` 决定填 `choice` 还是 `choices`，值必须在 `choices` 中，单选规格要求选择（跳过和驳回除外）；区域类别必须在 `regions.kinds` 中，`regions: null` 的队列不接受区域；框 `[x0, y0, x1, y1]` 以所引用图片的原始像素计，面积非零且在图片之内，尺寸由服务器从图片本身读取；`note: false` 不接受备注。`verdict` 由存储层计算，网页不能指定：没有建议、或建议没有给出 `choice`/`choices`/`regions` 中任何一项、或标注被跳过时为 `null`；标注者显式驳回建议且不给替代答案时为 `rejected`；否则只比较建议实际给出的答案字段（区域按 (图片, 类别, 框) 的多重集合精确比较，备注不参与），相同为 `accepted`，不同为 `corrected`。
+
+条目图片按 `source.kind` 解析，且只服务队列条目引用的图片，不提供任意文件接口：`observation` 走既有截图读取（Browser state 原图）；`archive` 只经 `RunTrace.archive_files(step, archiver)` 按 `name` 找到已提交文件（`step: null` 表示 trailing 证据，经 `iter_archive`），声明的 media type 与文件头都必须是 PNG/JPEG/GIF/WEBP。run 键与查看器的其它路径一样必须在根目录之内。随手标注可附在任何 run 的任一步：备注和画在该步 Browser state 截图上的框（类别固定为 needed information / problem / other），写入 `_adhoc.jsonl`，带 `run`、`step`、`queue_id: "_adhoc"`，无 `item_id`，当前值按 `(run, step, annotator)`。
+
+标注者身份由启动参数决定（默认操作系统用户名），网页请求不能改写。写请求必须是 `application/json`，`Origin` 必须与请求的 Host 同源，Host 必须是 IP 字面量或 `localhost`，防止跨站提交和 DNS rebinding；默认仍只监听回环地址。网页的审阅模式与运行浏览并列：队列列表与进度、逐条审阅（多图并排、缩放与对比、按图画框/移动/删除、选项数字键、备注、建议及其来源和理由、一键接受、驳回、跳过、前后翻页、未标/我已标/与建议不一致筛选、跳转到 run 与步骤），步骤视图内可随手标注。
 
 **回放与恢复显示。** 只由已录事实标记网络来源与分叉关系，不从目录名推测 same-path 或 fork 业务角色。分叉的来源链接指向源 run 的检查点；源缺失、ID 歧义或根外来源明确显示，查看器不越界打开。恢复步的普通 actions/action_results 是本次恢复中实际返回结果的配对；所有执行尝试、异常和重定位保存在 `restoration.actions`。旧回复与源动作只在 `source_history` 中作为来源材料展示，不能冒充本次新思考；顶层无返回结果的失败尝试也必须从完整恢复证据中显示。实时 TUI 显示配置的 max_steps 上限与 branch continue_steps，不能把 max_steps 当作分叉实际策略预算。浏览器回放决定通过既有 `iter_decisions` 读取和按权重计数，包含 trailing 的决定；未绑定日志、日志为空与已提交日志不可读三种情况分开，未知不能画成零 miss。
 

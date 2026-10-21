@@ -1,7 +1,12 @@
-"""HTTP presentation of the shared inspection repository; no runtime or writers."""
+"""HTTP presentation of the shared inspection repository.
+
+No runtime and no trace writer: the one thing it writes is label lines, into
+the annotation directory it was started with.
+"""
 
 from __future__ import annotations
 
+import getpass
 import webbrowser
 from pathlib import Path, PurePosixPath
 from threading import Timer
@@ -12,7 +17,9 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from spectragent.annotation import AnnotationError, AnnotationStore
 from spectragent.inspection.repository import RepositoryError, open_repository
+from spectragent.viewer.annotations import annotation_router, write_refusal
 
 
 def _key(value: str) -> str:
@@ -41,11 +48,19 @@ def create_app(
     *,
     config_source: Path | str | None = None,
     config_hash: str | None = None,
+    annotations: Path | str | None = None,
+    annotator: str | None = None,
 ) -> FastAPI:
-    """Create an isolated app exposing only the repository's read operations."""
+    """Create an isolated app: the repository's reads, plus label writes into *annotations*.
+
+    Without *annotations* the app is read-only. With it, label lines are
+    appended inside that directory and nowhere else; *annotator* (default:
+    the OS user name) is who every line is attributed to.
+    """
     root = Path(root).expanduser().resolve()
     source = Path(config_source).expanduser().resolve() if config_source is not None else None
     repository = open_repository(root, config_source=source, config_hash=config_hash)
+    store = _annotation_store(annotations, annotator)
     if initial_run is not None:
         # A focus is validated before binding the server. It does not narrow
         # the repository: sibling runs and source-run links stay available.
@@ -61,7 +76,16 @@ def create_app(
 
     @app.middleware("http")
     async def response_headers(request: Request, call_next: Any) -> Response:
-        response = await call_next(request)
+        writes = request.method not in {"GET", "HEAD"} and request.url.path.startswith(
+            "/api/review/"
+        )
+        refusal = write_refusal(request) if writes else None
+        if refusal is not None:
+            response: Response = JSONResponse(
+                status_code=refusal[0], content={"detail": refusal[1]}
+            )
+        else:
+            response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
@@ -77,6 +101,10 @@ def create_app(
     async def repository_error(request: Request, exc: RepositoryError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    @app.exception_handler(AnnotationError)
+    async def annotation_error(request: Request, exc: AnnotationError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     @app.exception_handler(FileNotFoundError)
     async def missing_record(request: Request, exc: FileNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -88,6 +116,9 @@ def create_app(
             "initial_run": initial_run,
             "config_source": str(source) if source is not None else None,
             "config_hash": config_hash,
+            "annotations": None
+            if store is None
+            else {"directory": str(store.directory), "annotator": store.annotator},
         }
 
     @app.get("/api/runs")
@@ -127,6 +158,9 @@ def create_app(
     def report(key: str) -> dict[str, Any]:
         return repository.report(_key(key))
 
+    app.state.annotations = store
+    app.include_router(annotation_router(repository, store, _key, _image_type))
+
     static = Path(__file__).parent / "static"
 
     @app.get("/", include_in_schema=False)
@@ -149,6 +183,21 @@ def create_app(
     return app
 
 
+def _annotation_store(
+    directory: Path | str | None, annotator: str | None
+) -> AnnotationStore | None:
+    if directory is None:
+        return None
+    path = Path(directory).expanduser().resolve()
+    for folder in (path, *path.parents):
+        if (folder / "manifest.json").is_file():
+            raise AnnotationError(
+                f"The annotation directory {path} is inside the recorded run {folder}; "
+                "labels never go into a trace"
+            )
+    return AnnotationStore(path, annotator=annotator or getpass.getuser())
+
+
 def serve(
     root: Path,
     host: str = "127.0.0.1",
@@ -158,13 +207,20 @@ def serve(
     *,
     config_source: Path | str | None = None,
     config_hash: str | None = None,
+    annotations: Path | str | None = None,
+    annotator: str | None = None,
 ) -> None:
     """Run the local viewer; opening a browser is always an explicit choice."""
     app = create_app(
-        root, initial_run=initial_run, config_source=config_source, config_hash=config_hash
+        root,
+        initial_run=initial_run,
+        config_source=config_source,
+        config_hash=config_hash,
+        annotations=annotations,
+        annotator=annotator,
     )
     url_host = f"[{host}]" if ":" in host else host
-    # These requests only read evidence. Do not wait indefinitely for a slow
+    # Requests read evidence or append one label line. Do not wait indefinitely for a slow
     # client or query on exit. Own the listener outside the server lifecycle
     # as well, so an interrupted startup/shutdown cannot retain the port.
     config = uvicorn.Config(
@@ -176,6 +232,13 @@ def serve(
             "Read-only local evidence. Press Ctrl-C to stop (up to 2s for active requests).",
             flush=True,
         )
+        store = app.state.annotations
+        if store is not None:
+            print(
+                f"Labels by {store.annotator} are appended under {store.directory}; "
+                "traces stay read-only.",
+                flush=True,
+            )
         timer = None
         if open_browser:
             browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
