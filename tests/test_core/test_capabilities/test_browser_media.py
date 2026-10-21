@@ -351,12 +351,23 @@ def test_blob_urls_are_never_compared_ordinary_urls_are() -> None:
 
 
 def test_a_different_duration_or_place_is_not_the_same_element() -> None:
-    assert match_media([element()], [element(duration=99.0)], tolerance_px=2.0)[
-        0
-    ].correspondence == ("missing")
-    assert match_media([element()], [element(duration=None)], tolerance_px=2.0)[
-        0
-    ].correspondence == ("matched")
+    def url(**fields: Any) -> MediaElementState:
+        return element(source="url", url="https://cdn.test/a.mp4", **fields)
+
+    assert match_media([url()], [url(duration=99.0)], tolerance_px=2.0)[0].correspondence == (
+        "missing"
+    )
+    assert match_media([url()], [url(duration=None)], tolerance_px=2.0)[0].correspondence == (
+        "matched"
+    )
+    # A script-fed source's duration moves as data arrives (measured on Xiaohongshu:
+    # 30.93 s, then 31.04 s once the last segment was appended): it identifies nothing.
+    assert (
+        match_media([element(duration=31.043741)], [element(duration=30.93)], tolerance_px=2.0)[
+            0
+        ].correspondence
+        == "matched"
+    )
     assert match_media([element(x=240)], [element(x=243)], tolerance_px=2.0)[0].correspondence == (
         "missing"
     )

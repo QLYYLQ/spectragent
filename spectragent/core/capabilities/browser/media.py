@@ -32,9 +32,10 @@ screenshot to fail.
 
 **Matching** (:func:`match_media`). Across two observations an element
 corresponds to the candidates in the same frame whose box lies within the
-retarget tolerance, of the same source kind, with an equal URL when both are
-``url`` sources (``blob:`` URLs change on every load) and an equal duration
-when both are known. Exactly one candidate at the same document order is
+retarget tolerance, of the same source kind, and — for two ``url`` sources —
+with an equal URL and an equal duration when both are known (a ``blob:`` URL
+changes on every load, and a script-fed source's duration changes as data
+arrives). Exactly one candidate at the same document order is
 ``matched``; none is ``missing``; several, or one at another order, is
 ``ambiguous``. A restored element nothing corresponds to is ``extra``.
 
@@ -737,9 +738,18 @@ def _within(a: MediaRect, b: MediaRect, tolerance_px: float) -> bool:
 
 
 def _same_source(a: MediaElementState, b: MediaElementState) -> bool:
+    """Same kind and tag; for two ``url`` sources also the same URL and duration.
+
+    A ``url`` source's duration is the file's own. A script-fed (``blob:``)
+    source's is whatever the page's script sets, and it changes as data
+    arrives: Xiaohongshu's player reports 30.93 s until the last segment is
+    appended and 31.04 s after (measured), so it identifies nothing.
+    """
     if a.source_kind != b.source_kind or a.tag != b.tag:
         return False
-    if a.source_kind == "url" and a.url is not None and b.url is not None and a.url != b.url:
+    if a.source_kind != "url":
+        return True
+    if a.url is not None and b.url is not None and a.url != b.url:
         return False
     return not (
         a.duration is not None
@@ -774,7 +784,7 @@ def match_media(
 
     Candidates share the frame, lie within *tolerance_px* on all four box
     values and have the same source (kind and tag; an equal URL for two
-    ``url`` sources; an equal duration when both are known). Exactly one
+    ``url`` sources, and an equal duration when both of those are known). Exactly one
     candidate at the same document order is ``matched``; none ``missing``;
     otherwise ``ambiguous``. A restored element that is the matched
     counterpart of no recorded one is ``extra``.
