@@ -306,8 +306,12 @@ async def drive(
     id_offset: int = 100,
     checkpoint: Checkpoint | None = None,
     task: str = TASK,
+    extra_hooks: Sequence[Any] = (),
 ) -> Outcome:
-    """One run of a real browser agent against the fake site, traced (under *task*)."""
+    """One run of a real browser agent against the fake site, traced (under *task*).
+
+    *extra_hooks* are woven alongside the trace writer.
+    """
     agent = make_agent(kind)
     built: list[Any] = []
     original = agent.build_react_prompt
@@ -330,7 +334,7 @@ async def drive(
         env=make_env(FakeBrowserEnv, {"browser": cap}),
         llm=teacher,
         memory=make_memory(memory),
-        hooks=[writer],
+        hooks=[writer, *extra_hooks],
     )
     run = dataclasses.replace(run, top_level_cfg=_config(agent, memory))
     outcome = Outcome(None, None, teacher, agent, cap, built)

@@ -30,6 +30,7 @@ import pytest
 
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.hooks.restored_history import OmitSourceRepliesHook
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
@@ -368,3 +369,57 @@ async def test_ui_tars_restored_branch_under_a_task_variant_sees_the_source_thou
     assert '"recorded_reply": "Thought: to put the blue kettle in the cart' in quoting[0]
     assert any("now on to the checkout" in text for _role, text in texts), "step 1's thought"
     assert not any("the cart holds the kettle" in text for _role, text in texts)
+
+
+async def test_omit_source_replies_keeps_the_source_thoughts_out_of_a_restored_prompt(
+    tmp_path: Path,
+) -> None:
+    """The ablation hook: the restored actions stay, the source model's replies do not.
+
+    Same source and variant branch as above, with ``omit_source_replies`` woven: no
+    recorded reply reaches the first policy prompt (so the source task, which only a
+    reply quoted, is gone too), the actually restored execution is still described, and
+    the trace keeps the replies as provenance in ``source_history``.
+    """
+    source_outcome = await drive(
+        tmp_path / "src",
+        kind="ui_tars",
+        memory="simple",
+        loop=source_loop(),
+        replies=list(QUOTING_SOURCE),
+        run_id="src",
+    )
+    assert source_outcome.run_dir is not None
+    loop = branch_loop()
+    loop.history_source = "restored"
+    outcome = await drive(
+        tmp_path / "variant-branch",
+        kind="ui_tars",
+        memory="simple",
+        loop=loop,
+        replies=["Action: finished(content='two years')"],
+        run_id="variant-branch",
+        id_offset=500,
+        checkpoint=Checkpoint(
+            trace_dir=str(source_outcome.run_dir.resolve()), step=2, task_variant="warranty"
+        ),
+        task=VARIANT_TASK,
+        extra_hooks=[OmitSourceRepliesHook()],
+    )
+    assert outcome.result is not None and outcome.result.error is None, outcome.result
+    texts = [text for _role, text in _message_texts(outcome.teacher.prompts[0])]
+
+    assert not any(TASK in text for text in texts), "no reply quoting the source task"
+    assert not any("now on to the checkout" in text for text in texts)
+    restored = [text for text in texts if "Restored execution history" in text]
+    assert len(restored) == 2, "both restored steps are still described"
+    assert all('"recorded_reply": ""' in text for text in restored)
+    assert all('"actual_restored_execution"' in text for text in restored)
+
+    assert outcome.run_dir is not None
+    trace = RunTrace(outcome.run_dir)
+    kept = [record.source_history for record in trace.step_records if record.origin == "restored"]
+    assert [history.source_reply.splitlines()[0] for history in kept if history is not None] == [
+        "Thought: to put the blue kettle in the cart, I open the blue one.",
+        "Thought: now on to the checkout.",
+    ]
