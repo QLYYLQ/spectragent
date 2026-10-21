@@ -5,8 +5,11 @@ each of the agent's actions, captured on the recorder connection and waited
 for before the action runs; a frame ``after_observation_delay_s`` after each
 committed cycle, superseded by an action or a new observation that starts
 first, and finished by a collection that finds it still waiting; failures and
-timeouts as explicit index entries; a boundary that overruns its budget fails
-the next collection, never the action; the index and its images read back
+timeouts as explicit index entries; a bounded wait for every action, released
+at once on a tab whose captures keep timing out, and a boundary over its
+budget that costs only its own frame (a ``timeout`` entry), never the
+collection; every ``env.act`` call announced and numbered, a closed tab's
+included, before the follow window opens; the index and its images read back
 through the pure readers over a committed trace.
 """
 
@@ -26,10 +29,10 @@ from PIL import Image
 from spectragent.core.archive import ArchiveBatch, ArchiveFile
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import (
+    ActionBoundary,
     FramesArchiver,
     NetworkArchiver,
     ReplayLogArchiver,
-    StorageArchiver,
 )
 from spectragent.core.capabilities.browser.archive.frames import (
     FRAMES_ARCHIVER_ID,
@@ -46,7 +49,6 @@ from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
 )
-from spectragent.core.capabilities.browser.recorder import ActionBoundary, ArchiveChannelError
 from spectragent.core.capabilities.browser.replay import (
     ArchiveNetworkSource,
     PinnedReplayability,
@@ -174,6 +176,22 @@ class TestBeforeAction:
             assert result.success and len(ran) == 1
             (frame,) = _index(await cap.collect_archive())
             assert frame["outcome"] == "captured" and frame["captured_at"] <= ran[0]
+            assert frame["requested_at"] <= frame["captured_at"] <= frame["released_at"] <= ran[0]
+        finally:
+            await cap.teardown()
+
+    async def test_the_follow_window_opens_after_the_frame(self) -> None:
+        """A tab the page opens while the archive captures is not the agent's to follow."""
+        cap, driver, _ = await _frames(after_observation_delay_s=None)
+        try:
+            await driver.observe()
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            acting = asyncio.ensure_future(driver.act())
+            await settle()
+            assert cap._follow_window is None, "opened before the frame was taken"
+            held.set()
+            assert (await acting).success
+            assert cap._follow_window is not None
         finally:
             await cap.teardown()
 
@@ -215,6 +233,71 @@ class TestBeforeAction:
             cap.bind_archivers([archiver])
             await driver.act()
             assert len(_recorder_screenshots(driver)) == 1
+            (frame,) = _index(await cap.collect_archive())
+            assert frame["action_index"] == 1, "the call made while unbound still counts"
+        finally:
+            await cap.teardown()
+
+
+class TestEveryCallIsAnnounced:
+    """``action_index`` is the ordinal of the ``env.act`` call since the cycle."""
+
+    async def test_an_action_on_a_tab_that_closed_itself(self) -> None:
+        cap, driver, _ = await _frames(after_observation_delay_s=None)
+        try:
+            await driver.observe()
+            driver.browser.close_target("page-1")
+            result = await driver.act()
+            assert result.success is False and "closed itself" in (result.error or "")
+            assert cap._follow_window is None
+            (frame,) = _index(await cap.collect_archive())
+            assert (frame["action_index"], frame["outcome"], frame["tab"]) == (
+                0,
+                "no_tab",
+                "page-1",
+            )
+            assert "closed itself" in frame["detail"]
+            assert frame["released_at"] is not None
+            assert _recorder_screenshots(driver) == []
+        finally:
+            await cap.teardown()
+
+    async def test_a_tab_that_closes_while_its_frame_is_taken(self) -> None:
+        cap, driver, _ = await _frames(after_observation_delay_s=None)
+        try:
+            await driver.observe()
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            acting = asyncio.ensure_future(driver.act())
+            await settle()
+            driver.browser.close_target("page-1")
+            await settle()
+            held.set()
+            result = await acting
+            assert result.success is False and "closed itself" in (result.error or "")
+            assert cap._follow_window is None, "no follow window for an action that never ran"
+            (frame,) = _index(await cap.collect_archive())
+            assert frame["action_index"] == 0
+        finally:
+            await cap.teardown()
+
+    async def test_the_ordinals_match_the_calls_whatever_became_of_them(self) -> None:
+        cap, driver, _ = await _frames(after_observation_delay_s=None, capture_timeout_s=0.05)
+        try:
+            await driver.observe()
+            await driver.act()
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            await driver.act()
+            held.set()
+            driver.browser.fail(
+                "Page.captureScreenshot", RuntimeError("busy"), session_id=driver.page_session()
+            )
+            await driver.act()
+            frames = _index(await cap.collect_archive())
+            assert [(f["action_index"], f["outcome"]) for f in frames] == [
+                (0, "captured"),
+                (1, "timeout"),
+                (2, "failed"),
+            ]
         finally:
             await cap.teardown()
 
@@ -302,6 +385,33 @@ class TestAfterObservation:
         finally:
             await cap.teardown()
 
+    async def test_a_collection_waits_the_rest_of_the_delay_plus_the_capture_timeout(
+        self,
+    ) -> None:
+        """No more than that; a frame still in flight lands, once, in a later batch."""
+        cap, driver, _ = await _frames(
+            before_action=False, after_observation_delay_s=0.05, capture_timeout_s=0.1
+        )
+        try:
+            driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            await driver.observe()
+            started = time.perf_counter()
+            first = _frame_files(await cap.collect_archive())
+            assert time.perf_counter() - started < 0.05 + 0.1 + 0.05
+            await asyncio.sleep(0.2)
+            second = _frame_files(await cap.collect_archive())
+            frames = [
+                frame
+                for files in (first, second)
+                for item in files
+                if item.name == FRAMES_INDEX_NAME
+                for frame in json.loads(item.data)["frames"]
+            ]
+            assert [(f["kind"], f["outcome"]) for f in frames] == [("after_observation", "timeout")]
+            assert "0.1s" in frames[0]["detail"]
+        finally:
+            await cap.teardown()
+
     async def test_off_schedules_nothing(self) -> None:
         cap, driver, _ = await _frames(before_action=False, after_observation_delay_s=None)
         try:
@@ -336,6 +446,7 @@ class TestFailuresAreListed:
             (frame,) = _index(batch)
             assert frame["outcome"] == "timeout" and "0.05s" in frame["detail"]
             assert frame["name"] is None and frame["captured_at"] is None
+            assert frame["released_at"] - frame["requested_at"] == pytest.approx(0.05, abs=0.1)
             assert _images(batch) == {}
             held.set()
         finally:
@@ -371,16 +482,17 @@ class TestFailuresAreListed:
     async def test_a_tab_the_recorder_does_not_know(self) -> None:
         session, recorder = open_session(FramesArchiver(after_observation_delay_s=None))
         recorder.add_target("page-s", "page-1")
-        await session.on_action_boundary(
-            ActionBoundary(
-                target_id="gone", control_session_id="c", action="browser.click", requested_at=1.0
+        for index, target in enumerate(("gone", None)):
+            await session.on_action_boundary(
+                ActionBoundary(
+                    target_id=target,
+                    control_session_id="c",
+                    action="browser.click",
+                    requested_at=1.0 + index,
+                    cycle=1,
+                    action_index=index,
+                )
             )
-        )
-        await session.on_action_boundary(
-            ActionBoundary(
-                target_id=None, control_session_id="c", action="browser.click", requested_at=2.0
-            )
-        )
         files = await session.collect()
         (index,) = files
         frames = json.loads(index.data)["frames"]
@@ -391,47 +503,115 @@ class TestFailuresAreListed:
         assert "gone" in frames[0]["detail"] and "(unknown)" in frames[1]["detail"]
         assert recorder.methods() == []
 
-    async def test_a_boundary_over_its_budget_fails_the_next_collection_not_the_action(
+    async def test_a_cancelled_action_still_lists_its_frame(self) -> None:
+        cap, driver, _ = await _frames(after_observation_delay_s=None)
+        try:
+            await driver.observe()
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            acting = asyncio.ensure_future(driver.act())
+            await settle()
+            acting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await acting
+            (frame,) = _index(await cap.collect_archive())
+            assert (frame["action_index"], frame["outcome"]) == (0, "timeout")
+            assert frame["detail"].startswith("the action stopped waiting after")
+            held.set()
+        finally:
+            await cap.teardown()
+
+    async def test_a_boundary_over_its_budget_costs_only_its_frame(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        cap, driver, _ = await _frames(after_observation_delay_s=None)
+        """The run cancels a session past its budget: the frame is a timeout, the step is whole."""
+        cap, driver, _ = await _frames(after_observation_delay_s=None, max_action_wait_s=0.05)
         try:
             await driver.observe()
             monkeypatch.setattr(
                 "spectragent.core.capabilities.browser.archive.run.ACTION_BOUNDARY_GRACE_S", 0.0
             )
-            monkeypatch.setattr(FramesSession, "action_boundary_budget_s", property(lambda _: 0.05))
 
-            async def hang(self: FramesSession, boundary: ActionBoundary) -> None:
+            async def hang(self: FramesSession, boundary: ActionBoundary, deadline: float) -> Any:
                 await asyncio.Event().wait()
 
-            monkeypatch.setattr(FramesSession, "on_action_boundary", hang)
+            monkeypatch.setattr(FramesSession, "_before_action", hang)
             started = time.time()
             result = await driver.act()
             assert result.success and time.time() - started < 1.0
-            with pytest.raises(ArchiveChannelError, match="handler"):
-                await cap.collect_archive()
+            batch = await cap.collect_archive()  # does not raise
+            (frame,) = _index(batch)
+            assert (frame["action_index"], frame["outcome"]) == (0, "timeout")
+            assert frame["detail"].startswith("the action stopped waiting after")
+            assert frame["released_at"] >= frame["requested_at"]
+            assert cap._archive is not None and cap._archive.channel.errors == 0
         finally:
             await cap.teardown()
 
 
-class TestNoSilentGap:
-    async def test_a_tab_bound_without_the_boundary_connection_fails_the_collection(
+class TestTheActionsWaitIsBounded:
+    async def test_a_slow_capture_holds_the_action_at_most_max_action_wait_s(self) -> None:
+        cap, driver, _ = await _frames(
+            after_observation_delay_s=None, capture_timeout_s=5.0, max_action_wait_s=0.1
+        )
+        try:
+            await driver.observe()
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            started = time.perf_counter()
+            assert (await driver.act()).success
+            assert time.perf_counter() - started < 0.6
+            (frame,) = _index(await cap.collect_archive())
+            assert frame["outcome"] == "timeout" and "action's wait (0.1s)" in frame["detail"]
+            held.set()
+        finally:
+            await cap.teardown()
+
+    async def test_a_due_frame_and_the_actions_own_share_one_wait(self) -> None:
+        cap, driver, _ = await _frames(
+            after_observation_delay_s=0.02, capture_timeout_s=5.0, max_action_wait_s=0.2
+        )
+        try:
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            await driver.observe()
+            await asyncio.sleep(0.1)  # the after-observation frame is due and stuck
+            started = time.perf_counter()
+            assert (await driver.act()).success
+            assert time.perf_counter() - started < 0.7
+            after, before = _index(await cap.collect_archive())
+            assert (after["kind"], after["outcome"]) == ("after_observation", "timeout")
+            assert "action's wait" in after["detail"] and after["released_at"] is None
+            assert (before["kind"], before["outcome"]) == ("before_action", "timeout")
+            held.set()
+        finally:
+            await cap.teardown()
+
+    async def test_after_two_timeouts_a_tab_is_not_waited_on_until_a_capture_succeeds(
         self,
     ) -> None:
-        """A tab opened while no bound archiver wanted boundaries has no connection for them."""
-        frames = FramesArchiver(after_observation_delay_s=None)
-        storage = StorageArchiver()
-        cap, driver = archiving_capability(archivers=(frames, storage))
-        await driver.start()
+        cap, driver, _ = await _frames(after_observation_delay_s=None, capture_timeout_s=0.05)
         try:
-            cap.bind_archivers([storage])
-            sid = await cap.create_tab()
-            await cap.switch_tab(cap._session_to_target[sid])
-            cap.bind_archivers([storage, frames])
-            assert (await driver.act()).success, "the action runs all the same"
-            with pytest.raises(ArchiveChannelError, match="handler"):
-                await cap.collect_archive()
+            await driver.observe()
+            held = driver.browser.hold("Page.captureScreenshot", session_id=driver.page_session())
+            await driver.act()
+            await driver.act()
+            sent = len(_recorder_screenshots(driver))
+            started = time.perf_counter()
+            await driver.act()
+            assert time.perf_counter() - started < 0.04, "not waited for"
+            assert len(_recorder_screenshots(driver)) == sent + 1, "a probe went out"
+            await driver.act()
+            assert len(_recorder_screenshots(driver)) == sent + 1, "one probe at a time"
+            held.set()  # the tab answers again: the probe succeeds
+            await settle()
+            await driver.act()
+            frames = _index(await cap.collect_archive())
+            assert [f["outcome"] for f in frames] == [
+                "timeout",
+                "timeout",
+                "timeout",
+                "timeout",
+                "captured",
+            ]
+            assert all(f["detail"].startswith("not waited for") for f in frames[2:4])
         finally:
             await cap.teardown()
 
@@ -481,6 +661,7 @@ class TestTheIndex:
             "tab",
             "requested_at",
             "captured_at",
+            "released_at",
             "outcome",
             "superseded_by",
             "name",

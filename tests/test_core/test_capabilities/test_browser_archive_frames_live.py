@@ -19,9 +19,10 @@ Every frame has the observation screenshot's pixel size, and everything is
 read back through the pure readers over the committed trace.
 
 The second test measures what a frame costs: the capture latency of
-``before_action`` and ``after_observation`` frames, and the time an action
-waits for its frame, against the same action with the archiver unbound. Both
-print their numbers.
+``before_action`` and ``after_observation`` frames, the recording's share of
+each action (``released_at - requested_at``), and the time an action waits
+for its frame, against the same action with the archiver unbound. Both print
+their numbers.
 """
 
 from __future__ import annotations
@@ -209,6 +210,14 @@ async def test_a_recorded_run_keeps_the_screens_between_actions(
     ], third
     assert [f.kind for f in read_frames(trace, 2)] == ["after_observation", "before_action"]
 
+    # Each before_action entry says when the action was let go; nothing else has one.
+    for _, frame in everything:
+        if frame.kind == "before_action":
+            assert frame.released_at is not None and frame.captured_at is not None
+            assert frame.requested_at <= frame.captured_at <= frame.released_at
+        else:
+            assert frame.released_at is None
+
     captured = [frame for _, frame in everything if frame.outcome == "captured"]
     latency = {
         kind: _quantiles_ms(
@@ -220,6 +229,13 @@ async def test_a_recorded_run_keeps_the_screens_between_actions(
         )
         for kind in ("before_action", "after_observation")
     }
+    latency["recording_share_of_each_action"] = _quantiles_ms(
+        [
+            f.released_at - f.requested_at
+            for _, f in everything
+            if f.kind == "before_action" and f.released_at is not None
+        ]
+    )
     print("\nbrowser.frames in a recorded run (capture latency):", latency)
 
 
@@ -269,6 +285,9 @@ async def test_what_a_frame_costs() -> None:
         ),
         "after_observation_capture": _quantiles_ms(
             [f["captured_at"] - f["requested_at"] for f in after if f["outcome"] == "captured"]
+        ),
+        "recording_share_of_each_action": _quantiles_ms(
+            [f["released_at"] - f["requested_at"] for f in before]
         ),
         "action_with_frame": _quantiles_ms(with_frames),
         "action_without_frame": _quantiles_ms(without),

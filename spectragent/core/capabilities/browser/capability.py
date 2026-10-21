@@ -2456,20 +2456,20 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     async def execute_action(self, action: Action) -> ActionResult:
         """Run one of the agent's actions on the focused tab (:meth:`_run_action`).
 
-        It is the agent's action, so it opens the follow window when none is
-        open (§4.14 "页面新开的标签页"): a tab the focused page opens from now
-        until the next observation captures is followed (``new_tabs:
-        follow``). An action on a focused tab that has closed itself fails at
-        once, naming the tab; the next observation moves the focus off it.
-
-        Before the action touches the page, the archive side announces it on
-        the focused tab (the ``action_boundary`` channel, §4.14
-        ``browser.frames``) and the action waits for the archivers that want
-        it, within their budget. Only the agent's actions are announced:
-        setup's start page goes through :meth:`_run_action` directly.
+        First the archive side announces the call (:meth:`_announce_action`,
+        the ``action_boundary`` channel, §4.14 ``browser.frames``): every
+        call, so the archive numbers them exactly as the trace's action spans
+        are numbered. Then the tab is checked: an action on a focused tab
+        that has closed itself — before the announcement or while it was
+        being waited for — fails at once, naming the tab; the next
+        observation moves the focus off it. Only then does it open the
+        follow window when none is open (§4.14 "页面新开的标签页"): a tab the
+        focused page opens from now until the next observation captures is
+        followed (``new_tabs: follow``), and one the page opened while the
+        archive was capturing is not the agent's.
         """
         self._ensure_environment()
-        self._open_follow_window()
+        await self._announce_action(action, closed=self._focused_tab_closed())
         closed = self._focused_tab_closed()
         if closed is not None:
             return ActionResult(
@@ -2479,11 +2479,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     f"observation shows the tab the focus moves to"
                 ),
             )
-        archive = self._archive
-        sid = self._default_session_id
-        if archive is not None and sid is not None:
-            await archive.action_boundary(self._scopes.get(sid), action=action.name)
+        self._open_follow_window()
         return await self._run_action(action)
+
+    async def _announce_action(self, action: Action, *, closed: str | None) -> None:
+        """Tell the archive side an action is about to run on the focused tab (*closed*: it is gone).
+
+        Only the agent's actions are announced: setup's start page goes
+        through :meth:`_run_action` directly. The action waits for the
+        archivers that want boundaries, within their budget; nothing here
+        depends on what they captured.
+        """
+        archive = self._archive
+        if archive is None:
+            return
+        sid = self._default_session_id
+        tab = closed if closed is not None else self._session_to_target.get(sid) if sid else None
+        await archive.action_boundary(
+            tab=tab,
+            control_session_id=sid or "",
+            action=action.name,
+            tab_open=closed is None and sid is not None,
+        )
 
     async def _run_action(self, action: Action) -> ActionResult:
         """Delegate action execution to the registered action instance.

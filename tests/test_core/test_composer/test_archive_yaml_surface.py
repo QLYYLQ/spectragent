@@ -109,12 +109,14 @@ class TestWhatARunRecords:
                 "before_action": False,
                 "after_observation_delay_s": 0.5,
                 "capture_timeout_s": 2.0,
+                "max_action_wait_s": 0.5,
             }
         ]
         (frames,) = _writer(composer, raw).archive
         assert isinstance(frames, FramesArchiver)
         assert (frames.before_action, frames.after_observation_delay_s) == (False, 0.5)
         assert (frames.capture_timeout_s, frames.allow_session_state) == (2.0, False)
+        assert frames.max_action_wait_s == 0.5
 
     def test_null_turns_the_after_observation_frame_off(self, composer: ConfigComposer) -> None:
         raw = _base()
@@ -175,9 +177,17 @@ class TestWhatIsRefused:
             composer.compose(raw)
 
     @pytest.mark.parametrize(
-        "knob", [{"after_observation_delay_s": 0}, {"capture_timeout_s": -1.0}], ids=str
+        "knob",
+        [
+            {"after_observation_delay_s": 0},
+            {"capture_timeout_s": -1.0},
+            {"capture_timeout_s": 5.5},
+            {"max_action_wait_s": 0},
+            {"max_action_wait_s": 6.0},
+        ],
+        ids=str,
     )
-    def test_a_non_positive_frames_time(
+    def test_a_frames_time_out_of_range(
         self, composer: ConfigComposer, knob: dict[str, float]
     ) -> None:
         raw = _base()

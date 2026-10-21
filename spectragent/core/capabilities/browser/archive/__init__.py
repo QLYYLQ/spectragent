@@ -14,6 +14,7 @@ browser's privacy rules.
 
 from spectragent.core.capabilities.browser.archive.base import (
     SELF_CAPTURE,
+    ActionBoundary,
     ArchiveNeed,
     BrowserArchiveContext,
     BrowserArchiverBase,
@@ -40,6 +41,7 @@ from spectragent.core.capabilities.browser.archive.storage import StorageArchive
 __all__ = [
     "BROWSER_REDACTION_POLICY",
     "SELF_CAPTURE",
+    "ActionBoundary",
     "ParkedRaw",
     "ArchiveNeed",
     "BrowserArchiveContext",
