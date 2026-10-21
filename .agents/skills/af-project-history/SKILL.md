@@ -22,10 +22,16 @@ compromise or silently refresh the historical claim.
 
 ## Read only the relevant reference
 
-- Formal Jev integration, implemented on `feature/jev-add` on 2026-10-19: start with
-  [jev-integration-handoff.md](references/jev-integration-handoff.md) for current delivery
-  evidence and preserved earlier decisions. Independent review is implemented; calibrated
-  dynamic replay participation remains a separate future task.
+- Current work (since 2026-10-19: enhancements and fixes after Jev): start with
+  [enhance.md](references/enhance.md). Its status block says what is merged into `main`,
+  what is implemented on a branch, and what is pending; each entry records the user's
+  decisions and points to the design section and the local delivery evidence.
+- Formal Jev integration, implemented on `feature/jev-add` on 2026-10-19 and since
+  revised to split questions with fitted triage thresholds (merged 2026-10-20):
+  [jev-integration-handoff.md](references/jev-integration-handoff.md) for delivery
+  evidence and preserved earlier decisions; the current review contract is
+  `docs/architecture_design.md` §4.18. Calibrated dynamic replay participation remains a
+  separate future task.
 - The later, harder LexBench L2 comparison with Luna and DeepSeek 1017:
   [jev-l2-validation.md](references/jev-l2-validation.md). It preserves task failures,
   replay divergence, native thinking coverage and independent Jev triage; the earlier

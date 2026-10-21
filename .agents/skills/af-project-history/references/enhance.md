@@ -5,6 +5,17 @@ Subsequent work focuses on enhancements and fixes. This ledger records that queu
 `docs/architecture_design.md` remains design authority and `docs/execution_dag.md`
 continues to govern dependencies. These items are not implemented by recording them.
 
+**Status, 2026-10-21.** Merged into `main` (head `4991c64`): action effects and capture
+state (`6db1d3e`), keyboard argument validation (`9de7649`, plus key `201e136`), image
+response availability (`c7a4e97`), Bilibili account request matching (`3893b39`), Jev split
+questions and information triage (`f5cd0df`), and the integration review's fixes (up to
+`201e136`). Implemented on `enhance/media-playback-restoration`, not merged yet: media
+playback restoration, with the 2026-10-21 final review's fixes
+(`tmp/final_pass_20261021/review.json`). Still pending: the Bilibili search `vt` parameter,
+`/nav` answers in recorded order, and source captures of half-loaded pages. Decided with no
+framework change: host appearance (documented in `docs/browser_agent_runbook.md`). Current
+docs and skills were synchronised with all of this on 2026-10-21.
+
 ## Enhance — action effects and observation layered by consumer
 
 **Design settled 2026-10-20; implementation on `enhance/action-effects-and-capture-state`.**
@@ -56,7 +67,7 @@ scrolling: measured offsets increased from 0 to 2100. The earlier contrary infer
 corrected; use actual displacement as evidence, not pointer location alone.
 
 **Implemented on `enhance/action-effects-and-capture-state`** (`tmp/action_effects_20261020/report.md`,
-head `a2d868b`). User decisions on its open points, 2026-10-20:
+head `a2d868b`; merged into `main` as `6db1d3e`, review fixes up to `201e136`). User decisions on its open points, 2026-10-20:
 - capture_state never fails the batched capture; probe problems become `unknown` inside the
   fragment. Keep this; update the design text and leave a short TODO in the capture code for
   allowing partial captures of optional fragments later.
@@ -133,7 +144,9 @@ catches the missing-image pair without false alarms.
   and policy version it was fitted on. Keep fitting and checking on different runs so an
   error rate stays measurable; this replaces the earlier "two-annotator holdout before use".
 
-**Implemented on `enhance/jev-split-review-questions`** (`tmp/jev_split_impl_20261020/report.md`):
+**Implemented on `enhance/jev-split-review-questions`** (`tmp/jev_split_impl_20261020/report.md`;
+merged into `main` as `f5cd0df`; current contract `docs/architecture_design.md` §4.18 and
+`af-improve-replay-rules/references/jev-workflow.md`):
 required `evidence` / `questions` / `policy` YAML blocks with content digests, fitted
 threshold provenance, the in-viewport image 404 rule, viewer update; the 28-pair job
 reproduced the experiment's requests byte for byte and its routes 28/28. User decisions on
@@ -162,7 +175,7 @@ need an explicit evidence option and a re-fit.
 
 ## Fix — keyboard argument validation
 
-Scheduled on `enhance/action-effects-and-capture-state` as its own commit; the rule is in
+**Implemented** (`9de7649`, merged with the action-effects branch); the rule is in
 `docs/architecture_design.md` §4.13. Review decision, 2026-10-20: the plus key is accepted as
 `+` alone or as the final `++` of a chord (`Control++`); other empty parts stay refused.
 
@@ -211,7 +224,7 @@ consume the cursor, and `repeat_last` ignores availability.
   counterexamples that must stay unsubstituted.
 
 **Implemented on `fix/replay-serve-identical-for-unavailable-records`**
-(`tmp/replay_unavailable_20261020/report.md`): 238 step 11 distance 21 -> 0 with the eggs
+(`tmp/replay_unavailable_20261020/report.md`; merged into `main` as `c7a4e97`): 238 step 11 distance 21 -> 0 with the eggs
 visible, 130 unchanged at 30/30. Follow-ups decided 2026-10-20: records with an `unknown`
 source outcome may be substituted; count `repeat_last` reuse per site next to
 substitutions; mark repeats of a body-less record in the replay log; no headed-browser
@@ -247,6 +260,12 @@ candidate rule raised restoration from 3/30 to 24/30 and 25/30 in two replays.
 - Do not chase the unidentified signing key of four first-visit requests until one blocks a task.
 - `/nav` answers differ by requesting page but are served in recorded order. Design that
   after the image-sequence implementation lands (same sequence code), then ask the user.
+
+**Implemented** (merged into `main` as `3893b39`): the `acc/info` rule and its regression
+test are in `configs/replay_rules/bilibili.com.yaml`. The `arc/search` rule was validated
+and not added: its recorded answer was an empty list, and serving it changed no check or
+page text (`configs/replay_rules/README.md`). Still pending: the `/nav` ordering design (the
+image-sequence code it waited for has landed) and the unidentified first-visit signing key.
 
 ## Fix — media playback restoration
 
@@ -365,6 +384,18 @@ steps: 26 pass, 0 screenshot failures; the one `media_mismatch` is step 15, wher
 to 30.54 s landed at 26.66 s (the replayed player had not appended the end yet), failed and
 was rolled back.
 
+**Final review, 2026-10-21** (`tmp/final_pass_20261021/review.json`). Fixed on the branch:
+the media reads kept a frame registry of their own beside the DOM resolver's, and Chrome
+reports a tab's existing cross-site frames only to the first auto-attach on it, so with the
+standard profile (Skyvern, BrowserUse) every cross-site frame was listed unreachable and
+every step on such a page failed `media_mismatch` (now one registry per tab); a frame that
+answered one of the two reads is no longer unreachable; an iframe inside a shadow root was
+silently skipped (now listed as unreachable); the live cross-site test no longer waits for
+media while its start page loads. Open questions with recommendations are in the review:
+the report format string after adding media keys, playing-video drift behind the DOM
+capture for DOM agents (0.6 s at 5,000 elements, 3.5 s at 30,000), shadow-root frames, and
+the sum of capture budgets against the 30 s capture event.
+
 ## Pending — Bilibili search `vt` parameter
 
 Found 2026-10-21 (`tmp/media_restoration_20261021/delivery.json`, recording attempt 2): the
@@ -382,7 +413,8 @@ Waiting cannot make a replay less loaded; reproducing the source state would nee
 timing replay, the kind of time control previously judged not worth shipping.
 
 User direction, 2026-10-20 (decide after the observation branch lands, when `capture_state`
-records capped settles):
+records capped settles; that branch has landed and `capture_state` records `capped`, so the
+decision is now unblocked and still the user's):
 - When generating data, avoid decisions on half-loaded pages: the Agent sees the capped
   settle and can call `wait` explicitly.
 - With definite evidence of an incomplete load, filter such steps (e.g. do not choose them
@@ -402,9 +434,10 @@ scrollbar strip. Runs pin the page colour scheme to dark, but the headless Chrom
 apparently follows the Mac's automatic light/dark appearance, which no run records. Earlier
 session frames differed from the source by 10,800 pixels (screenshot distance about 4); this
 session by 0. Restoration counts across sessions are therefore not directly comparable.
-User decision, 2026-10-20: no framework change now. The README states the limit (host
-appearance is neither pinned nor recorded; keep it fixed for production runs and compare
-restoration results only under the same appearance). Cause is inferred, not proven.
+User decision, 2026-10-20: no framework change now. `docs/browser_agent_runbook.md`
+states the limit (added 2026-10-21: host appearance is neither pinned nor recorded; keep it
+fixed for production runs and compare restoration results only under the same appearance).
+Cause is inferred, not proven.
 
 ## Execution preference
 
