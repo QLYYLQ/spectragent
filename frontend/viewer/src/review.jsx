@@ -337,7 +337,24 @@ function Session({ data, route, annotations }) {
     if (state && route.item !== itemId) go(index);
   }, [route.item, itemId]);
 
-  const [drafts, setDrafts] = useState({});
+  // Unsaved drafts survive leaving the queue and reloading the tab.
+  const draftKey = `review-drafts:${data.queue_id}:${data.sha256}`;
+  const [drafts, setDrafts] = useState(() => {
+    try {
+      return JSON.parse(window.sessionStorage.getItem(draftKey) || "{}");
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      if (Object.keys(drafts).length)
+        window.sessionStorage.setItem(draftKey, JSON.stringify(drafts));
+      else window.sessionStorage.removeItem(draftKey);
+    } catch {
+      // Storage may be unavailable (private windows); drafts then last for this page.
+    }
+  }, [drafts, draftKey]);
   const saved = draftFromLabel(state?.mine);
   const draft = drafts[itemId] ?? saved;
   const dirty = !draftsEqual(draft, saved);
@@ -541,7 +558,7 @@ function Session({ data, route, annotations }) {
     const target = event.target;
     if (
       event.key === "Enter" &&
-      target?.closest?.("button, a, summary") &&
+      target?.closest?.("a, summary, button:not([data-answer])") &&
       !isTextTarget(target)
     )
       return;
@@ -729,6 +746,7 @@ function Session({ data, route, annotations }) {
                 {COMPARE_MODES.map((mode) => (
                   <button
                     key={mode.value}
+                    data-answer
                     aria-pressed={compare === mode.value}
                     onClick={() => setCompare(mode.value)}
                   >
@@ -767,7 +785,7 @@ function Session({ data, route, annotations }) {
                 Suggested boxes <Keycap>G</Keycap>
               </label>
             )}
-            {kinds && (
+            {kinds && !(multiImage && compare === "difference") && (
               <span className="muted small stage-hint">
                 Drag on an image to draw · Alt-drag to draw over a box
               </span>
@@ -835,6 +853,7 @@ function Session({ data, route, annotations }) {
                   return (
                     <button
                       key={choice.value}
+                      data-answer
                       className={`choice ${on ? "on" : ""} ${suggestion && (suggestion.choice === choice.value || suggestion.choices?.includes(choice.value)) ? "suggested" : ""}`}
                       aria-pressed={on}
                       onClick={() => setDraft(toggleChoice(draft, spec, choice.value))}
@@ -1005,6 +1024,7 @@ function QuestionRows({ asked, draft, focused, suggestion, onFocus, onAnswer }) 
               {question.choices.map((choice, i) => (
                 <button
                   key={choice.value}
+                  data-answer
                   className={`choice compact ${mine === choice.value ? "on" : ""} ${proposed === choice.value ? "suggested" : ""}`}
                   aria-pressed={mine === choice.value}
                   onClick={(event) => {
@@ -1081,6 +1101,7 @@ function KindPicker({ kinds, activeKind, onPick }) {
       {kinds.map((kind, i) => (
         <button
           key={kind.value}
+          data-answer
           role="radio"
           aria-checked={activeKind === kind.value}
           className={`kind ${activeKind === kind.value ? "on" : ""}`}
@@ -1105,7 +1126,7 @@ function RegionList({ regions, kinds, images, selected, onSelect, onDelete }) {
     <ol className="region-list">
       {regions.map((region, i) => (
         <li key={i} className={selected === i ? "selected" : ""}>
-          <button className="region-pick" onClick={() => onSelect(i)}>
+          <button className="region-pick" data-answer onClick={() => onSelect(i)}>
             <span className="kind-swatch" style={{ "--kind": kindOf[region.kind]?.color }} />
             <span>{kindOf[region.kind]?.text || region.kind}</span>
             <span className="muted small">
