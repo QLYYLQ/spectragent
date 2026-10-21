@@ -20,7 +20,8 @@ hook or Loop usage tally exists.
 calls before invoking and settles success, failure and cancellation without changing the
 result or exception. `around_act` does the same for each `env.act` call, as a wall-clock
 `ActionSpan` in the executing step's `action_spans`; in an env-less run the writer does not
-declare it (`EnvironmentInterceptor`, told by Runtime before weaving), because the Weaver
+declare it (`EnvironmentInterceptor`, told through `declare_environment_presence` by Runtime
+before weaving and by `config explain` before listing), because the Weaver
 refuses an intercept that cannot fire. Every recording error is isolated; actual execution
 errors propagate.
 

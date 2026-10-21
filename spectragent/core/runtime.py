@@ -34,7 +34,11 @@ from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.composer import ComposedRun, ComposeError
-from spectragent.core.hooks.base import EnvironmentInterceptor, PromptModelOwner, RuntimeHook
+from spectragent.core.hooks.base import (
+    PromptModelOwner,
+    RuntimeHook,
+    declare_environment_presence,
+)
 from spectragent.core.llm.base import require_inference_protocol
 from spectragent.core.llm.call_context import RunCallContext
 from spectragent.core.llm.lifecycle import close_models
@@ -442,9 +446,7 @@ class AgentRuntime:
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
         # A hook that intercepts the environment only when there is one
         # declares those interceptions now, before the Weaver reads them.
-        for hook in self._hooks:
-            if isinstance(hook, EnvironmentInterceptor):
-                hook.intercept_environment(env is not None)
+        declare_environment_presence(self._hooks, present=env is not None)
         weaver = Weaver(self._hooks, background=self._background)
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")

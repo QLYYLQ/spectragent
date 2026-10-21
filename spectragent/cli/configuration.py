@@ -15,6 +15,7 @@ from spectragent.cli.configuration_errors import inspection_stage
 from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.hooks.base import declare_environment_presence
 from spectragent.core.registries import collect_registrars
 from spectragent.core.run_cli import task_context
 from spectragent.core.runtime import AgentRuntime
@@ -75,6 +76,11 @@ def explain_config(
             descriptor.model_dump(mode="json") for descriptor in runtime.active_descriptors
         ]
         checked = "configuration_and_prepare"
+    else:
+        # ``prepare()`` made this decision above; without an agent nothing
+        # is prepared, so the listed interceptions follow the same rule on
+        # the configuration's own environments.
+        declare_environment_presence(run.hooks, present=bool(run.instances("environment")))
     full = redact_config(run.top_level_cfg, record_secrets=True)
     digest = hashlib.sha256(
         json.dumps(full, sort_keys=True, separators=(",", ":")).encode()
