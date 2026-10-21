@@ -607,6 +607,47 @@ class TestCheckpointCompatibility:
         out = await run_branch(tmp_path, source, 1, ["done ok"], loop=BranchLoop(max_steps=50))
         assert out.result is not None and out.result.agent_done == "done"
 
+    async def test_a_task_variant_with_source_history_is_refused_before_setup(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        """Source history replays the source's prompts, which carry its task."""
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(
+                tmp_path,
+                source,
+                2,
+                ["done ok"],
+                cap=cap,
+                run_id="refused",
+                task="check the warranty",
+                task_variant="warranty",
+            )
+        assert cap.setups == 0
+        assert not (tmp_path / "branches" / "refused").exists()
+        message = str(caught.value)
+        assert "task variant 'warranty'" in message
+        assert "task_variants" in message
+        assert "history_source: source" in message and "history_source: restored" in message
+
+    async def test_a_task_variant_runs_with_restored_history_under_its_own_task(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        out = await run_branch(
+            tmp_path,
+            source,
+            2,
+            ["done ok"],
+            loop=BranchLoop(history_source="restored"),
+            task="check the warranty",
+            task_variant="warranty",
+        )
+        assert out.result is not None and out.result.agent_done.value == "done"
+        seed = str(out.llm.prompts[0][0].content)
+        assert "task: check the warranty" in seed and "blue kettle" not in seed
+        assert out.run_dir is not None
+        assert RunTrace(out.run_dir).config.task == "check the warranty"
+
     async def test_the_seed_catches_a_setting_the_source_did_not_record(
         self, tmp_path: Path, source: Path
     ) -> None:

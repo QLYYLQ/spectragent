@@ -459,6 +459,7 @@ async def _drive(
     env_context: dict[str, Any] | None = None,
     action_filter: list[str] | None = None,
     extra_hooks: Sequence[Any] = (),
+    task: str = TASK,
 ) -> BranchRunOutcome:
     run, writer, llm = build_run(
         trace_root,
@@ -475,7 +476,7 @@ async def _drive(
     outcome = BranchRunOutcome(result=None, run_dir=None, llm=llm, cap=cap, agent=agent)
     try:
         outcome.result = await AgentRuntime.for_agent(run, RUN_AGENT_ID).execute(
-            TASK,
+            task,
             task_id=task_id,
             benchmark="branchfake",
             subset="all",
@@ -551,8 +552,15 @@ async def run_branch(
     env_cls: type[EnvironmentBase] = BranchFakeEnv,
     action_filter: list[str] | None = None,
     extra_hooks: Sequence[Any] = (),
+    task: str = TASK,
+    task_variant: str | None = None,
 ) -> BranchRunOutcome:
-    """Branch *source* at *step* with a scripted teacher."""
+    """Branch *source* at *step* with a scripted teacher.
+
+    *task* is the branch's task; a *task_variant* id marks it as decided under
+    a task variant (``Checkpoint.task_variant``), as the ``trace_branches``
+    loader does for one.
+    """
     return await _drive(
         tmp_path / "branches",
         loop=loop if loop is not None else BranchLoop(),
@@ -563,11 +571,16 @@ async def run_branch(
         window=window,
         run_id=run_id or f"branch-s{step}",
         task_id=f"src/s{step}/b0",
-        loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source.resolve()), step=step)},
+        loop_inputs={
+            "checkpoint": Checkpoint(
+                trace_dir=str(source.resolve()), step=step, task_variant=task_variant
+            )
+        },
         branch=branch,
         config_agent_id=config_agent_id,
         raise_on_error=raise_on_error,
         env_cls=env_cls,
         action_filter=action_filter,
         extra_hooks=extra_hooks,
+        task=task,
     )

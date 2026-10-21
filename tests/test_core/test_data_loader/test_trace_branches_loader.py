@@ -18,7 +18,7 @@ from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.data_loader.task.step_selector import EveryKSteps, ExplicitSteps, LastStep
 from spectragent.core.trace.models import TraceStatus
 from spectragent.schemas._types import AgentDoneStatus
-from spectragent.schemas.restoration import BranchProvenance, Checkpoint
+from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.task import BrowserSetup, TaskContext
 from tests._helpers.branch_sources import (
     START_URL,
@@ -670,3 +670,308 @@ class TestKnobs:
         ):
             with pytest.raises(ValidationError):
                 TraceBranchesTask_LoaderConfig.model_validate(bad)
+
+
+# ── task variants: same page, different need ─────────────────────────
+
+
+VARIANT_TEXT = "find the kettle's warranty terms"
+
+
+def variant(
+    source_run_id: str = "run-a",
+    step: int = 1,
+    variant_id: str = "v1",
+    task_text: str = VARIANT_TEXT,
+    **extra: Any,
+) -> dict[str, Any]:
+    """One entry of a task-variants file."""
+    return {
+        "source_run_id": source_run_id,
+        "step": step,
+        "variant_id": variant_id,
+        "task_text": task_text,
+        **extra,
+    }
+
+
+def variants_file(root: Path, *entries: dict[str, Any], **document: Any) -> Path:
+    """A ``task-variants-1`` file listing *entries* (``document`` overrides its top level)."""
+    path = root / "variants.json"
+    path.write_text(
+        json.dumps({"format": "task-variants-1", "variants": list(entries), **document})
+    )
+    return path
+
+
+class TestTaskVariants:
+    def test_each_variant_is_a_group_of_branches_under_its_own_task(self, tmp_path: Path) -> None:
+        source = write_source(tmp_path / "src", "run-a", steps=3)
+        path = variants_file(
+            tmp_path,
+            variant(step=2, variant_id="warranty"),
+            variant(step=1, variant_id="v1", note="written by a model"),
+            variant(step=1, variant_id="v2", task_text="compare the kettle with the red one"),
+        )
+        tasks = loader(tmp_path / "src", task_variants=str(path), branches_per_step=2)
+        # Sources by path, steps ascending, the variants of one step in file order.
+        assert tasks.task_ids() == [
+            "run-a/s1/vv1/b0",
+            "run-a/s1/vv1/b1",
+            "run-a/s1/vv2/b0",
+            "run-a/s1/vv2/b1",
+            "run-a/s2/vwarranty/b0",
+            "run-a/s2/vwarranty/b1",
+        ]
+        task = tasks["run-a/s1/vv1/b1"]
+        assert task.task_text == VARIANT_TEXT
+        assert task.setup == BrowserSetup(start_url=START_URL)
+        assert (task.difficulty, task.tags) == ("hard", ["cart"])
+        assert tasks["run-a/s1/vv2/b0"].task_text == "compare the kettle with the red one"
+
+        context = tasks.get_task_context("run-a/s1/vv1/b1")
+        # Everything but the task stays the source's.
+        assert context.env == {"start_url": START_URL, "replay_archive": str(source)}
+        assert context.loop == {
+            "checkpoint": Checkpoint(trace_dir=str(source), step=1, task_variant="v1")
+        }
+        assert context.branch == BranchProvenance(
+            source_run_id="run-a",
+            source_trace="run-a",
+            source_benchmark="online_mind2web",
+            source_subset="Hard",
+            source_task_id="task-001",
+            checkpoint_step=1,
+            branch_index=1,
+            branch_group_id="run-a/s1/vv1",
+            task_variant=BranchTaskVariant(
+                variant_id="v1",
+                task_text=VARIANT_TEXT,
+                source_task_text=TASK_TEXT,
+                note="written by a model",
+            ),
+        )
+        assert dict(tasks.skipped) == {}
+
+    def test_the_provenance_records_both_tasks(self, tmp_path: Path) -> None:
+        """What a trace's ``config.json`` carries: the variant with both task texts."""
+        write_source(tmp_path / "src", "run-a", steps=2)
+        path = variants_file(tmp_path, variant())
+        tasks = loader(tmp_path / "src", task_variants=str(path))
+        branch = tasks.get_task_context("run-a/s1/vv1/b0").branch
+        assert branch is not None
+        assert branch.model_dump(mode="json")["task_variant"] == {
+            "variant_id": "v1",
+            "task_text": VARIANT_TEXT,
+            "source_task_text": TASK_TEXT,
+            "note": None,
+        }
+        # A branch that keeps its source's task writes no task_variant at all.
+        plain = loader(tmp_path / "src").get_task_context("run-a/s1/b0").branch
+        assert plain is not None and "task_variant" not in plain.model_dump(mode="json")
+
+    def test_the_file_names_the_checkpoints(self, tmp_path: Path) -> None:
+        """A candidate no variant names gives no task, and no reason: nothing was asked."""
+        write_source(tmp_path / "src", "run-a", steps=4)
+        write_source(tmp_path / "src", "run-b", steps=2)
+        path = variants_file(tmp_path, variant(step=3), variant("run-b", step=0))
+        tasks = loader(tmp_path / "src", task_variants=str(path))
+        assert tasks.task_ids() == ["run-a/s3/vv1/b0", "run-b/s0/vv1/b0"]
+        assert dict(tasks.skipped) == {}
+
+    def test_the_selector_still_chooses_among_the_candidates(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=4)
+        path = variants_file(tmp_path, variant(step=1), variant(step=3))
+        tasks = loader(tmp_path / "src", task_variants=str(path), step_selector=LastStep())
+        assert tasks.task_ids() == ["run-a/s3/vv1/b0"]
+        assert tasks.skipped == {
+            "run-a/s1/vv1": "run-a: step 1 is a candidate step_selector 'last' did not choose"
+        }
+
+    @pytest.mark.parametrize(
+        ("entries", "key", "reason"),
+        [
+            (
+                [variant(), variant(task_text="another text"), variant(variant_id="v2")],
+                "run-a/s1/vv1",
+                "task variant 'v1' is listed 2 times for run 'run-a' step 1",
+            ),
+            (
+                [variant(task_text="  \n"), variant(variant_id="v2")],
+                "run-a/s1/vv1",
+                "empty task_text",
+            ),
+            (
+                [variant("run-zz"), variant(variant_id="v2")],
+                "run-zz/s1/vv1",
+                "no readable source run under",
+            ),
+            (
+                [variant(step=3), variant(variant_id="v2")],
+                "run-a/s3/vv1",
+                "run-a: step 3 is a terminal step",
+            ),
+            (
+                [variant(step=9), variant(variant_id="v2")],
+                "run-a/s9/vv1",
+                "run-a: step 9 is not committed (its last committed step is 3)",
+            ),
+            (
+                [variant(step=2), variant(variant_id="v2")],
+                "run-a/s2/vv1",
+                "run-a: step 2's observation was not recorded",
+            ),
+        ],
+        ids=[
+            "duplicate",
+            "empty_task",
+            "unknown_run",
+            "terminal",
+            "past_the_end",
+            "no_observation",
+        ],
+    )
+    def test_a_variant_that_cannot_be_used_is_left_out_with_its_reason(
+        self, tmp_path: Path, entries: list[dict[str, Any]], key: str, reason: str
+    ) -> None:
+        write_source(
+            tmp_path / "src",
+            "run-a",
+            steps=[Step(), Step(), Step(error_phase="observe"), Step("terminal")],
+        )
+        tasks = loader(tmp_path / "src", task_variants=str(variants_file(tmp_path, *entries)))
+        assert tasks.task_ids() == ["run-a/s1/vv2/b0"], "the rest of the file still branches"
+        assert reason in tasks.skipped[key]
+        assert set(tasks.skipped) == {key}
+
+    def test_every_copy_of_a_duplicate_is_left_out(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2)
+        path = variants_file(tmp_path, variant(), variant(task_text="another text"))
+        tasks = loader(tmp_path / "src", task_variants=str(path))
+        assert tasks.task_ids() == [] and "listed 2 times" in tasks.skipped["run-a/s1/vv1"]
+
+    def test_a_variant_of_a_source_left_out_says_why(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2, agent_done=AgentDoneStatus.ERROR)
+        write_source(tmp_path / "src", "run-b", steps=2, archivers=())
+        path = variants_file(tmp_path, variant(), variant("run-b"))
+        tasks = loader(
+            tmp_path / "src",
+            task_variants=str(path),
+            agent_outcome="done",
+            on_unbranchable="skip",
+        )
+        assert tasks.task_ids() == []
+        assert tasks.skipped["run-a/s1/vv1"].startswith(
+            "its source run 'run-a' is left out (run-a: filtered: its agent ended "
+        )
+        assert "(run-b: it did not record 'browser.network'" in tasks.skipped["run-b/s1/vv1"]
+
+    def test_with_no_source_every_variant_is_left_out(self, tmp_path: Path) -> None:
+        path = variants_file(tmp_path, variant())
+        tasks = loader(tmp_path / "empty", task_variants=str(path))
+        assert tasks.task_ids() == []
+        assert "no readable source run under" in tasks.skipped["run-a/s1/vv1"]
+
+    @pytest.mark.parametrize(
+        ("content", "problem"),
+        [
+            ("not json", "is not JSON"),
+            ("[]", "must be a JSON object"),
+            (json.dumps({"variants": []}), "has format None"),
+            (json.dumps({"format": "task-variants-2", "variants": []}), "'task-variants-2'"),
+            (json.dumps({"format": "task-variants-1"}), "variants: Field required"),
+            (
+                json.dumps({"format": "task-variants-1", "variants": [], "by": "me"}),
+                "by: Extra inputs are not permitted",
+            ),
+            (
+                json.dumps({"format": "task-variants-1", "variants": [{**variant(), "step": "1"}]}),
+                "variants.0.step",
+            ),
+            (
+                json.dumps({"format": "task-variants-1", "variants": [variant(why="x")]}),
+                "variants.0.why: Extra inputs are not permitted",
+            ),
+            (
+                json.dumps({"format": "task-variants-1", "variants": [variant(), {"step": 1}]}),
+                "variants.1.source_run_id: Field required",
+            ),
+            (
+                json.dumps({"format": "task-variants-1", "variants": [variant(variant_id="a/b")]}),
+                "variants.0.variant_id",
+            ),
+            (
+                json.dumps({"format": "task-variants-1", "variants": [variant(variant_id="")]}),
+                "variants.0.variant_id",
+            ),
+        ],
+        ids=[
+            "not_json",
+            "not_an_object",
+            "no_format",
+            "unknown_format",
+            "no_variants",
+            "unknown_top_level_field",
+            "step_not_an_integer",
+            "unknown_entry_field",
+            "missing_entry_field",
+            "variant_id_with_a_slash",
+            "empty_variant_id",
+        ],
+    )
+    def test_a_malformed_file_fails_the_scan_naming_the_problem(
+        self, tmp_path: Path, content: str, problem: str
+    ) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2)
+        path = tmp_path / "variants.json"
+        path.write_text(content)
+        tasks = loader(tmp_path / "src", task_variants=str(path))
+        with pytest.raises(BenchmarkDataError) as info:
+            tasks.task_ids()
+        assert problem in str(info.value)
+        assert "task_variants file" in str(info.value) and str(path) in str(info.value)
+
+    def test_a_missing_file_fails_the_scan(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2)
+        tasks = loader(tmp_path / "src", task_variants=str(tmp_path / "nope.json"))
+        with pytest.raises(BenchmarkDataError, match="cannot be read"):
+            tasks.task_ids()
+
+    def test_constructing_reads_no_variants_file(self, tmp_path: Path) -> None:
+        built = TraceBranchesTaskLoader(task_variants=str(tmp_path / "not-yet.json"))
+        assert built.task_variants == str(tmp_path / "not-yet.json")
+        assert built.task_variants_path() == (tmp_path / "not-yet.json").resolve()
+        assert TraceBranchesTaskLoader().task_variants_path() is None
+
+    def test_a_relative_path_is_relative_to_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2)
+        variants_file(tmp_path, variant())
+        monkeypatch.chdir(tmp_path)
+        tasks = TraceBranchesTaskLoader(data_dir="src", task_variants="variants.json")
+        assert tasks.task_ids() == ["run-a/s1/vv1/b0"]
+
+    def test_the_yaml_surface(self, tmp_path: Path) -> None:
+        from spectragent.core.benchmark_runner import build_composer
+
+        write_source(tmp_path / "src", "run-a", steps=2)
+        path = variants_file(tmp_path, variant(step=0))
+        built = (
+            build_composer()
+            .compose(
+                {
+                    "task_loader": [
+                        {
+                            "benchmark_name": "trace_branches",
+                            "data_dir": str(tmp_path / "src"),
+                            "step_selector": {"selector_id": "all"},
+                            "task_variants": str(path),
+                        }
+                    ]
+                }
+            )
+            .optional_single("task_loader")
+        )
+        assert isinstance(built, TraceBranchesTaskLoader)
+        assert built.task_ids() == ["run-a/s0/vv1/b0"]

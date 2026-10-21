@@ -36,6 +36,7 @@ from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt
 from spectragent.schemas.restoration import (
     REASON_ORDER,
     BranchProvenance,
+    BranchTaskVariant,
     Checkpoint,
     RestorationCheck,
     RestorationEvidence,
@@ -75,6 +76,7 @@ __all__ = [
     # Restoration (branch runs)
     "REASON_ORDER",
     "BranchProvenance",
+    "BranchTaskVariant",
     "Checkpoint",
     "RestorationCheck",
     "RestorationEvidence",
