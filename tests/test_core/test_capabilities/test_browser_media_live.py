@@ -8,6 +8,14 @@ its seek index at the front, no audio, 74 KB, made with
         -b:v 40k -g 10 -keyint_min 10 -pix_fmt yuv420p -cues_to_front 1 -an clip.webm
 
 No third-party media. A local server answers ``Range`` requests with 206.
+Every media element gets its source only once its own document has loaded
+(``data-src``, :data:`_LATE_SOURCES`): a media element delays its document's
+load event until it has data, and a frame's load delays its parent's, so a
+framed video would put another renderer's start-up and decoding on the path
+of the setup's start navigation, which waits for the top page's load
+(measured: a video response held 6 s made setup take 3.7 s instead of 0.5 s,
+in a cross-site frame too; under full-suite load the cross-site test's start
+page once did not load within 30 s). No test here is about page loading.
 ``/clip.webm`` serves every byte; ``/limited.webm`` is the same file of which
 only the first :data:`LIMIT_FRACTION` is ever sent — a request for any later
 byte is held unanswered, the way a replay cannot serve bytes the recording
@@ -55,16 +63,27 @@ LIMIT_FRACTION = 0.6
 _STYLE = "<style>body{margin:0}video{position:absolute;width:320px;height:180px}</style>"
 
 
+#: Gives every ``data-src`` media element its source once the document has loaded.
+_LATE_SOURCES = (
+    "<script>addEventListener('load', () => {"
+    "for (const el of document.querySelectorAll('[data-src]')) el.src = el.dataset.src;"
+    "});</script>"
+)
+
+
 def _page(body: str) -> str:
-    return f"<!doctype html><title>media</title><link rel=icon href='data:,'>{_STYLE}{body}"
+    return (
+        f"<!doctype html><title>media</title><link rel=icon href='data:,'>{_STYLE}{body}"
+        f"{_LATE_SOURCES}"
+    )
 
 
 #: Two videos in the main document (one paused at 3 s, one playing), a same-origin
 #: iframe holding an audio element, and a cross-site iframe (another host name).
 def _two_videos(cross_origin: str) -> str:
     return _page(
-        "<video id=a src=/clip.webm muted preload=auto style='left:0;top:0'></video>"
-        "<video id=b src=/clip.webm muted autoplay loop style='left:340px;top:0'></video>"
+        "<video id=a data-src=/clip.webm muted preload=auto style='left:0;top:0'></video>"
+        "<video id=b data-src=/clip.webm muted autoplay loop style='left:340px;top:0'></video>"
         "<iframe src=/inner.html style='position:absolute;left:0;top:200px;width:300px;"
         "height:100px;border:0'></iframe>"
         f"<iframe src='{cross_origin}/inner.html' style='position:absolute;left:340px;top:200px;"
@@ -75,14 +94,15 @@ def _two_videos(cross_origin: str) -> str:
     )
 
 
-_INNER = _page("<audio src=/clip.webm preload=auto></audio>")
+_INNER = _page("<audio data-src=/clip.webm preload=auto></audio>")
 #: One video, paused at 1 s once its metadata is in.
-_ONE = _page(
-    "<video id=v src=%s muted preload=auto style='left:0;top:0'></video>"
+_ONE_BODY = (
+    "<video id=v data-src=%s muted preload=auto style='left:0;top:0'></video>"
     "<script>const v = document.getElementById('v');"
     "v.addEventListener('loadedmetadata', () => { v.currentTime = 1; }, {once: true});"
     "</script>"
 )
+_ONE = _page(_ONE_BODY)
 
 
 #: A cross-site frame (the same server under another host name) holding a video
@@ -97,7 +117,7 @@ def _cross_site(cross_origin: str, inner: str = "one.html") -> str:
 #: A video paused at 1 s and a button, for a cross-site frame the DOM capture reads too.
 _FRAMED = _page(
     "<button style='position:absolute;left:0;top:190px'>framed-button</button>"
-    + (_ONE % "/clip.webm").split("</style>", 1)[1]
+    + _ONE_BODY % "/clip.webm"
 )
 
 
@@ -114,14 +134,14 @@ _SHADOW = _page(
 #: A page whose main thread is held for a while, soon after it loads: a frame
 #: read sent then gets no answer.
 _BUSY = _page(
-    "<video src=/clip.webm muted preload=auto style='left:0;top:0'></video>"
+    "<video data-src=/clip.webm muted preload=auto style='left:0;top:0'></video>"
     "<script>window.addEventListener('load', () => setTimeout(() => {"
     "const end = performance.now() + 6000; while (performance.now() < end) {}"
     "}, 1500));</script>"
 )
 #: One video, playing from the start.
 _PLAYING = _page(
-    "<video id=v src=/clip.webm muted autoplay loop preload=auto style='left:0;top:0'></video>"
+    "<video id=v data-src=/clip.webm muted autoplay loop preload=auto style='left:0;top:0'></video>"
 )
 
 
@@ -221,7 +241,7 @@ class _Browser:
         )
         return reply.get("result", {}).get("value")
 
-    async def wait_until(self, expression: str, timeout_s: float = 10.0) -> None:
+    async def wait_until(self, expression: str, timeout_s: float = 30.0) -> None:
         deadline = time.monotonic() + timeout_s
         while not await self.evaluate(expression):
             assert time.monotonic() < deadline, f"page never satisfied: {expression}"
@@ -482,9 +502,10 @@ def _media_evidence(recorded: Any, restored: Any) -> Any:
 async def test_a_cross_site_frame_is_read_and_aligned_on_its_own_session(origin: str) -> None:
     browser = await _open(origin, "cross.html")
     try:
-        await asyncio.sleep(0.5)
         first = await browser.screenshot()
-        deadline = time.monotonic() + 10
+        # The framed video loads in its own renderer after its frame did: give
+        # it the same readiness budget as the tab's own pages.
+        deadline = time.monotonic() + 30
         while not (
             first.media
             and first.media.elements
