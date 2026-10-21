@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  confirmPress,
+  discardsWork,
+  draftStorageKey,
+  refreshDraft,
+  staleDraftKeys,
   answerSummary,
   askedQuestions,
   nextOpenQuestion,
@@ -93,8 +98,9 @@ test("a single-choice queue needs a choice, a blank label is never saved by acci
 
 test("the request carries one answer field and never an answer with skip or reject", () => {
   const draft = { ...emptyDraft(), choice: "yes", note: "ok" };
-  assert.deepEqual(labelRequest("q", "i", draft, single), {
+  assert.deepEqual(labelRequest("q", "i", draft, single, { version: "abc" }), {
     queue_id: "q",
+    queue_sha256: "abc",
     item_id: "i",
     choice: "yes",
     choices: null,
@@ -217,4 +223,45 @@ test("the highlight moves to the next unanswered question", () => {
 
 test("question answers summarize in question order", () => {
   assert.equal(answerSummary({ answers: { reasonable: "no", same_intent: "yes" } }, questions), "Yes / No");
+});
+
+test("an action that would replace unsaved work needs a second press", () => {
+  const saved = emptyDraft();
+  const mine = { ...emptyDraft(), choice: "no", note: "why" };
+  const suggestion = draftFromSuggestion({ choice: "yes" });
+  assert.equal(discardsWork(mine, saved, suggestion), true);
+  assert.equal(discardsWork(saved, saved, suggestion), false, "a clean draft loses nothing");
+  assert.equal(discardsWork({ ...emptyDraft(), choice: "yes", note: "n" }, saved, suggestion), false);
+  assert.equal(discardsWork(mine, saved, emptyDraft()), true, "a skip drops the answer");
+  assert.equal(discardsWork({ ...emptyDraft(), note: "only a note" }, saved, emptyDraft()), false);
+});
+
+test("a second press of the same action inside the window confirms it", () => {
+  let state = confirmPress(null, "skip", 1000);
+  assert.deepEqual(state, { run: false, pending: { action: "skip", at: 1000 } });
+  assert.equal(confirmPress(state.pending, "skip", 2400).run, true);
+  assert.equal(confirmPress(state.pending, "skip", 2600).run, false, "too late");
+  assert.equal(confirmPress(state.pending, "accept", 1100).run, false, "another action");
+});
+
+test("drafts are stored per queue version and other versions are found", () => {
+  const keys = [
+    draftStorageKey("q", "v1"),
+    draftStorageKey("q", "v2"),
+    draftStorageKey("other", "v1"),
+    "unrelated",
+  ];
+  assert.deepEqual(staleDraftKeys(keys, "q", "v2"), ["review-drafts:q:v1"]);
+  assert.deepEqual(staleDraftKeys(keys, "q-longer", "v2"), []);
+});
+
+test("a refreshed saved label replaces a clean draft but never unsaved edits", () => {
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const before = { note: "old" };
+  const after = { note: "new" };
+  assert.deepEqual(refreshDraft(before, before, before, same), { draft: before, conflict: false });
+  assert.deepEqual(refreshDraft({ note: "typing" }, before, before, same), { draft: { note: "typing" }, conflict: false });
+  assert.deepEqual(refreshDraft(before, before, after, same), { draft: after, conflict: false });
+  assert.deepEqual(refreshDraft({ note: "typing" }, before, after, same), { draft: { note: "typing" }, conflict: true });
+  assert.deepEqual(refreshDraft(after, before, after, same), { draft: after, conflict: false }, "what was just saved");
 });

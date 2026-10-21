@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from spectragent.annotation import (
     AnnotationError,
     AnnotationStore,
     LabelDraft,
+    QueueChangedError,
     Region,
     ReviewQueue,
     write_queue,
@@ -36,7 +38,10 @@ def store(tmp_path: Path) -> AnnotationStore:
 
 
 def label(store: AnnotationStore, queue: str, item: str, **draft) -> dict:
-    line = store.append_label(queue, item, LabelDraft(**draft), image_size=sizes)
+    loaded = store.load_queue(queue).sha256
+    line = store.append_label(
+        queue, item, LabelDraft(**draft), queue_sha256=loaded, image_size=sizes
+    )
     return json.loads(line.to_json_line())
 
 
@@ -251,7 +256,8 @@ def test_notes_are_refused_where_the_queue_takes_none(tmp_path: Path):
     store = AnnotationStore(tmp_path, annotator="a")
     draft = LabelDraft(choice="reasonable", note="hi")
     with pytest.raises(AnnotationError, match="does not take notes"):
-        store.append_label("fork-judge", "run/s0", draft, image_size=sizes)
+        loaded = store.load_queue("fork-judge").sha256
+        store.append_label("fork-judge", "run/s0", draft, queue_sha256=loaded, image_size=sizes)
 
 
 def test_unknown_items_are_not_labeled(store: AnnotationStore):
@@ -317,6 +323,7 @@ def test_concurrent_appends_keep_every_line_whole(store: AnnotationStore):
                 "fork-judge",
                 "run/s0",
                 LabelDraft(choice="reasonable", note="x" * 3000),
+                queue_sha256=own.load_queue("fork-judge").sha256,
                 image_size=sizes,
             )
 
@@ -510,3 +517,88 @@ def test_question_queues_are_checked_when_loaded(change, reason):
     change(data)
     with pytest.raises(ValueError, match=re.escape(reason)):
         ReviewQueue.model_validate(data)
+
+
+# ── review fixes: versions, torn lines, numbers, locking ──────
+
+
+def test_a_label_for_a_rewritten_queue_is_refused(store: AnnotationStore):
+    seen = store.load_queue("fork-judge").sha256
+    write_queue(store.directory, fork_judge_queue("run", title="Rewritten"))
+    draft = LabelDraft(choice="reasonable")
+    with pytest.raises(QueueChangedError, match="changed since you opened it"):
+        store.append_label("fork-judge", "run/s0", draft, queue_sha256=seen, image_size=sizes)
+    assert not (store.directory / "labels" / "fork-judge.jsonl").exists()
+    now = store.load_queue("fork-judge").sha256
+    line = store.append_label("fork-judge", "run/s0", draft, queue_sha256=now, image_size=sizes)
+    assert line.queue_sha256 == now
+
+
+def test_a_partly_written_last_line_is_skipped_without_an_error(store: AnnotationStore):
+    label(store, "fork-judge", "run/s0", choice="reasonable")
+    path = store.directory / "labels" / "fork-judge.jsonl"
+    with path.open("a") as handle:
+        handle.write('{"format": "review-label-1", "queue_id": "fork-ju')
+    log = store.labels("fork-judge")
+    assert [line.item_id for line in log.lines] == ["run/s0"] and not log.errors
+
+
+def test_a_suggestion_with_no_answers_breaks_the_queue(tmp_path: Path):
+    data = questions_queue("run").model_dump(mode="json")
+    data["items"][0]["suggestion"]["answers"] = {}
+    data["items"][0]["suggestion"]["reasons"] = None
+    (tmp_path / "queues").mkdir()
+    (tmp_path / "queues" / "fork-questions.json").write_text(json.dumps(data))
+    [listing] = AnnotationStore(tmp_path, annotator="a").list_queues()
+    assert listing.loaded is None and "suggestion with no answers" in (listing.error or "")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_box_numbers_must_be_finite(value):
+    with pytest.raises(ValueError):
+        Region(image="before", kind="evidence", box=[0, 0, value, 5])
+    with pytest.raises(ValueError):
+        token = {"nan": "NaN", "inf": "Infinity", "-inf": "-Infinity"}[str(value)]
+        Region.model_validate_json(
+            f'{{"image": "before", "kind": "evidence", "box": [0, 0, {token}, 5]}}'
+        )
+
+
+def test_queue_files_with_non_finite_numbers_are_broken(tmp_path: Path):
+    data = evidence_queue("run", "frame.png").model_dump(mode="json")
+    text = json.dumps(data).replace("[1, 2, 30, 20]", "[1, 2, NaN, 20]")
+    (tmp_path / "queues").mkdir()
+    (tmp_path / "queues" / "gold-evidence.json").write_text(text)
+    [listing] = AnnotationStore(tmp_path, annotator="a").list_queues()
+    assert listing.loaded is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is the POSIX lock")
+def test_an_append_waits_for_another_holder_of_the_lock(store: AnnotationStore):
+    import fcntl
+
+    path = store.directory / "labels" / "fork-judge.jsonl"
+    path.parent.mkdir()
+    path.touch()
+    finished = threading.Event()
+
+    def append() -> None:
+        label(store, "fork-judge", "run/s0", choice="reasonable")
+        finished.set()
+
+    with path.open("rb") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        writer = threading.Thread(target=append)
+        writer.start()
+        # Without the lock the append would be done long before this.
+        assert not finished.wait(0.5)
+        assert path.read_bytes() == b""
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+    writer.join(5)
+    assert finished.is_set() and len(store.labels("fork-judge").lines) == 1
+
+
+def test_the_store_imports_no_posix_only_module_at_load():
+    import spectragent.annotation.store as module
+
+    assert "fcntl" not in vars(module)

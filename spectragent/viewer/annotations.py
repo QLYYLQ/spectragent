@@ -28,6 +28,7 @@ from spectragent.annotation import (
     LabelLine,
     LabelLog,
     LoadedQueue,
+    QueueChangedError,
     QueueItem,
     Region,
 )
@@ -43,10 +44,12 @@ DISABLED = (
 class QueueLabelRequest(LabelDraft):
     queue_id: str
     item_id: str
+    #: The digest of the queue version the person loaded and labeled.
+    queue_sha256: str = Field(min_length=64, max_length=64)
 
 
 class StepLabelRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     run: str
     step: int = Field(ge=0)
@@ -118,8 +121,25 @@ def _progress(states: list[dict[str, Any]]) -> dict[str, int]:
     return progress
 
 
+def host_refusal(request: Request) -> tuple[int, str] | None:
+    """Why an API request is refused for its Host, or ``None``.
+
+    Only an IP literal or ``localhost`` is answered: another site could point
+    any other name at this local server (DNS rebinding) and read or label
+    through it.
+    """
+    name = urlsplit(f"//{request.headers.get('host', '')}").hostname or ""
+    if name == "localhost":
+        return None
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return 403, "Open the viewer at an IP address or localhost; host names are refused"
+    return None
+
+
 def write_refusal(request: Request) -> tuple[int, str] | None:
-    """Why a write request is refused, or ``None``: JSON, same origin, a host that cannot be rebound.
+    """Why a write request is refused, or ``None``: JSON from this page's own origin.
 
     Checked before the body is read, for every review request that is not a read.
     """
@@ -134,13 +154,6 @@ def write_refusal(request: Request) -> tuple[int, str] | None:
         or parts.netloc.lower() != host.lower()
     ):
         return 403, "Label writes are accepted only from the viewer page"
-    name = urlsplit(f"//{host}").hostname or ""
-    if name != "localhost":
-        try:
-            ipaddress.ip_address(name)
-        except ValueError:
-            # A name could be re-pointed at this loopback server by another site.
-            return 403, "Open the viewer by IP address or localhost to save labels"
     return None
 
 
@@ -169,8 +182,15 @@ def annotation_router(
     def image_size(source: ImageSource) -> tuple[int, int]:
         return _size(image_bytes(source))
 
-    def item(queue_id: str, item_id: str) -> tuple[LoadedQueue, QueueItem]:
+    def item(
+        queue_id: str, item_id: str, queue_sha256: str | None = None
+    ) -> tuple[LoadedQueue, QueueItem]:
         loaded = require().load_queue(queue_id)
+        if queue_sha256 is not None and loaded.sha256 != queue_sha256:
+            raise QueueChangedError(
+                f"Queue {queue_id!r} changed since you opened it; reload it to see the "
+                "current version"
+            )
         found = loaded.queue.item(item_id)
         if found is None:
             raise FileNotFoundError(f"Queue {queue_id!r} has no item {item_id!r}")
@@ -223,7 +243,8 @@ def annotation_router(
             "items": states,
             "progress": _progress(states),
             "label_errors": [{"line": e.line, "error": e.error} for e in log.errors],
-            "orphan_labels": sum(target(line) not in known for line in log.lines),
+            # Items that have labels but are no longer in the queue, counted once each.
+            "removed_items_with_labels": len({target(line) for line in log.lines} - known),
         }
 
     @router.get("/history")
@@ -233,8 +254,8 @@ def annotation_router(
         return {"labels": [_label(line, loaded.sha256) for line in lines]}
 
     @router.get("/image")
-    def image(queue_id: str, item_id: str, role: str) -> Response:
-        _, found = item(queue_id, item_id)
+    def image(queue_id: str, item_id: str, role: str, queue_sha256: str) -> Response:
+        _, found = item(queue_id, item_id, queue_sha256)
         picture = found.image(role)
         if picture is None:
             raise FileNotFoundError(f"Item {item_id!r} has no image {role!r}")
@@ -244,8 +265,16 @@ def annotation_router(
     @router.post("/label")
     def label(body: QueueLabelRequest) -> dict[str, Any]:
         current = require()
-        draft = LabelDraft.model_validate(body.model_dump(exclude={"queue_id", "item_id"}))
-        line = current.append_label(body.queue_id, body.item_id, draft, image_size=image_size)
+        draft = LabelDraft.model_validate(
+            body.model_dump(exclude={"queue_id", "item_id", "queue_sha256"})
+        )
+        line = current.append_label(
+            body.queue_id,
+            body.item_id,
+            draft,
+            queue_sha256=body.queue_sha256,
+            image_size=image_size,
+        )
         loaded = current.load_queue(body.queue_id)
         states = _item_states(loaded, current.labels(body.queue_id), current.annotator)
         state = next(state for state in states if state["item"]["item_id"] == body.item_id)
@@ -279,7 +308,9 @@ def annotation_router(
         key = run_key(body.run)
         if not repository.has_step(key, body.step):
             raise FileNotFoundError(f"Run {key} has no committed step {body.step}")
-        screenshot = repository.screenshot(key, body.step, view="browser")
+        # A committed step never changes, so an ad-hoc label needs no version;
+        # its screenshot is read only to check boxes drawn on it.
+        screenshot = repository.screenshot(key, body.step, view="browser") if body.regions else None
         current.append_adhoc(
             key,
             body.step,

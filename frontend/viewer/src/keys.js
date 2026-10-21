@@ -35,11 +35,18 @@ const ARROWS = {
 /**
  * The action a key press asks for, or null to leave the key to the browser.
  *
- * `event`: { key, code, shiftKey, altKey, ctrlKey, metaKey, inText }
+ * `event`: { key, code, shiftKey, altKey, ctrlKey, metaKey, repeat, inText }
  * `context`: { choices, kinds, suggestion, selection, questions }
  * (`choices` counts the highlighted question's choices when there are questions)
  */
 export function keyAction(event, context) {
+  const action = decide(event, context);
+  // A held key repeats: only nudging a box may repeat, never a decision.
+  if (action && event.repeat && action.type !== "nudge") return null;
+  return action;
+}
+
+function decide(event, context) {
   const command = event.ctrlKey || event.metaKey;
   if (event.inText) {
     if (event.key === "Escape") return { type: "leaveText" };

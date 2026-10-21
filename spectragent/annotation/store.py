@@ -13,11 +13,11 @@ the current label, and earlier lines are its history.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -71,6 +71,10 @@ class AnnotationError(ValueError):
     """A queue, label or request that cannot be used, with an actionable reason."""
 
 
+class QueueChangedError(AnnotationError):
+    """The queue file was rewritten after the person loaded the version they labeled."""
+
+
 @dataclass(frozen=True)
 class LoadedQueue:
     queue: ReviewQueue
@@ -108,7 +112,7 @@ def check_annotator(name: str) -> str:
 def write_queue(directory: Path, queue: ReviewQueue) -> Path:
     """Write *queue* atomically as ``DIR/queues/<queue_id>.json`` (for the tools that make queues)."""
     path = Path(directory) / "queues" / f"{queue.queue_id}.json"
-    data = json.dumps(queue.model_dump(mode="json"), ensure_ascii=False, indent=2)
+    data = json.dumps(queue.model_dump(mode="json"), ensure_ascii=False, indent=2, allow_nan=False)
     atomic_write(path, data.encode() + b"\n")
     return path
 
@@ -187,12 +191,18 @@ class AnnotationStore:
             return LabelLog((), ())
         lines: list[LabelLine] = []
         errors: list[LabelError] = []
-        for number, raw in enumerate(path.read_bytes().splitlines(), start=1):
+        data = path.read_bytes()
+        raws = data.split(b"\n")
+        for number, raw in enumerate(raws, start=1):
             if not raw.strip():
                 continue
             try:
                 line = LabelLine.model_validate(json.loads(raw))
             except (UnicodeError, ValueError) as exc:
+                if number == len(raws):
+                    # The last line has no newline yet: an append still being
+                    # written (or cut off by a crash). It is not a label yet.
+                    continue
                 message = validation_message(exc) if isinstance(exc, ValidationError) else str(exc)
                 errors.append(LabelError(number, message))
                 continue
@@ -213,14 +223,23 @@ class AnnotationStore:
         item_id: str,
         draft: LabelDraft,
         *,
+        queue_sha256: str,
         image_size: Callable[[ImageSource], tuple[int, int]],
     ) -> LabelLine:
-        """Validate *draft* against the queue as it is now, then append it.
+        """Validate *draft* against the queue version the person labeled, then append it.
 
-        *image_size* reads the (width, height) of an item image; it is
-        called only for the images the draft's regions are drawn on.
+        *queue_sha256* is the digest of the queue file the person loaded;
+        a rewritten queue is refused rather than labeled with a version the
+        person never saw. *image_size* reads the (width, height) of an item
+        image; it is called only for the images the draft's regions are
+        drawn on.
         """
         loaded = self.load_queue(queue_id)
+        if loaded.sha256 != queue_sha256:
+            raise QueueChangedError(
+                f"Queue {queue_id!r} changed since you opened it; reload it to label the "
+                "current version"
+            )
         spec, item = loaded.queue.label, loaded.queue.item(item_id)
         if item is None:
             raise FileNotFoundError(f"Queue {queue_id!r} has no item {item_id!r}")
@@ -343,19 +362,35 @@ class AnnotationStore:
         path = self._labels_path(queue_id)
         created = not path.exists()
         data = line.to_json_line().encode() + b"\n"
-        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o666)
+        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
         try:
             # One writer at a time across threads and processes. A line torn
             # by an earlier crash stays an unreadable line of its own.
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_exclusive(fd)
             size = os.fstat(fd).st_size
-            if size and os.pread(fd, 1, size - 1) != b"\n":
-                data = b"\n" + data
+            if size:
+                os.lseek(fd, size - 1, os.SEEK_SET)
+                if os.read(fd, 1) != b"\n":
+                    data = b"\n" + data
             view = memoryview(data)
             while view:
                 view = view[os.write(fd, view) :]
             os.fsync(fd)
         finally:
-            os.close(fd)
+            os.close(fd)  # also releases the lock
         if created:
             fsync_dir(folder)
+
+
+def lock_exclusive(fd: int) -> None:
+    """Hold an exclusive lock on the open file *fd* until it is closed."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        # A one-byte lock at offset 0 is the mutex; appends still go to the end.
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX)

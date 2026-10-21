@@ -7,6 +7,7 @@ the annotation directory it was started with.
 from __future__ import annotations
 
 import getpass
+import ipaddress
 import webbrowser
 from pathlib import Path, PurePosixPath
 from threading import Timer
@@ -14,20 +15,29 @@ from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
-from spectragent.annotation import AnnotationError, AnnotationStore
+from spectragent.annotation import AnnotationError, AnnotationStore, QueueChangedError
+from spectragent.core.trace.models import TraceManifest
 from spectragent.inspection.repository import RepositoryError, open_repository
-from spectragent.viewer.annotations import annotation_router, write_refusal
+from spectragent.viewer.annotations import annotation_router, host_refusal, write_refusal
+
+_LOOPBACK_NAMES = {"localhost"}
 
 
 def _key(value: str) -> str:
-    """Accept repository-relative identifiers, never a filesystem URL or path."""
+    """A repository-relative identifier in its one canonical spelling.
+
+    Never a filesystem URL or path; ``./run``, ``run/.`` and ``run/`` are all
+    ``run``, so one run has one identity (ad-hoc labels are keyed by it).
+    """
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or "\\" in value or "\x00" in value:
         raise HTTPException(400, "Expected a relative repository key")
-    return value
+    return path.as_posix()
 
 
 def _image_type(data: bytes) -> str:
@@ -76,10 +86,13 @@ def create_app(
 
     @app.middleware("http")
     async def response_headers(request: Request, call_next: Any) -> Response:
+        api = request.url.path.startswith("/api/")
         writes = request.method not in {"GET", "HEAD"} and request.url.path.startswith(
             "/api/review/"
         )
-        refusal = write_refusal(request) if writes else None
+        refusal = (host_refusal(request) if api else None) or (
+            write_refusal(request) if writes else None
+        )
         if refusal is not None:
             response: Response = JSONResponse(
                 status_code=refusal[0], content={"detail": refusal[1]}
@@ -97,13 +110,24 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Located problems only: never echo a request's values (they may not
+        # even be JSON, such as a NaN box coordinate).
+        problems = [
+            {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": problems})
+
     @app.exception_handler(RepositoryError)
     async def repository_error(request: Request, exc: RepositoryError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(AnnotationError)
     async def annotation_error(request: Request, exc: AnnotationError) -> JSONResponse:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        status = 409 if isinstance(exc, QueueChangedError) else 400
+        return JSONResponse(status_code=status, content={"detail": str(exc)})
 
     @app.exception_handler(FileNotFoundError)
     async def missing_record(request: Request, exc: FileNotFoundError) -> JSONResponse:
@@ -190,12 +214,33 @@ def _annotation_store(
         return None
     path = Path(directory).expanduser().resolve()
     for folder in (path, *path.parents):
-        if (folder / "manifest.json").is_file():
+        if _is_run_trace(folder):
             raise AnnotationError(
                 f"The annotation directory {path} is inside the recorded run {folder}; "
                 "labels never go into a trace"
             )
     return AnnotationStore(path, annotator=annotator or getpass.getuser())
+
+
+def _is_run_trace(folder: Path) -> bool:
+    """Whether *folder* holds a run trace (a trace manifest), not just any manifest.json."""
+    manifest = folder / "manifest.json"
+    if not manifest.is_file():
+        return False
+    try:
+        TraceManifest.model_validate_json(manifest.read_bytes())
+    except (OSError, ValidationError):
+        return False
+    return True
+
+
+def _is_loopback(host: str) -> bool:
+    if host in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def serve(
@@ -211,6 +256,12 @@ def serve(
     annotator: str | None = None,
 ) -> None:
     """Run the local viewer; opening a browser is always an explicit choice."""
+    if annotations is not None and not _is_loopback(host):
+        raise AnnotationError(
+            f"--annotations writes labels, so the viewer must listen on a loopback address; "
+            f"--host {host} is not one. Drop --host (or use 127.0.0.1) to label, or drop "
+            "--annotations to share a read-only view; reach a remote viewer through SSH forwarding"
+        )
     app = create_app(
         root,
         initial_run=initial_run,
@@ -228,17 +279,16 @@ def serve(
     )
     with config.bind_socket() as listener:
         print(f"All4One viewer: http://{url_host}:{listener.getsockname()[1]}/", flush=True)
-        print(
-            "Read-only local evidence. Press Ctrl-C to stop (up to 2s for active requests).",
-            flush=True,
-        )
         store = app.state.annotations
-        if store is not None:
+        if store is None:
+            print("Read-only local evidence.", flush=True)
+        else:
             print(
-                f"Labels by {store.annotator} are appended under {store.directory}; "
-                "traces stay read-only.",
+                f"Traces stay read-only. Labels by {store.annotator} are appended under "
+                f"{store.directory}.",
                 flush=True,
             )
+        print("Press Ctrl-C to stop (up to 2s for active requests).", flush=True)
         timer = None
         if open_browser:
             browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host

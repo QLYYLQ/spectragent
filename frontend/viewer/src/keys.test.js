@@ -66,3 +66,9 @@ test("up and down move between questions when there are several", () => {
   assert.equal(keyAction(press("ArrowDown"), context), null);
   assert.deepEqual(keyAction(press("ArrowDown"), { ...many, selection: true }), { type: "nudge", dx: 0, dy: 1 });
 });
+
+test("a held key never repeats a decision, only a nudge", () => {
+  for (const key of ["a", "s", "r", "e", "Enter", "j"]) assert.equal(keyAction(press(key, { repeat: true }), context), null);
+  assert.equal(keyAction(press("1", { code: "Digit1", repeat: true }), context), null);
+  assert.deepEqual(keyAction(press("ArrowLeft", { repeat: true }), { ...context, selection: true }), { type: "nudge", dx: -1, dy: 0 });
+});

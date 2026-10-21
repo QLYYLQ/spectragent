@@ -35,7 +35,8 @@ Verdict = Literal["accepted", "corrected", "rejected"]
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # NaN and infinity are not numbers a label or queue can mean.
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class LabelChoice(_Strict):
@@ -262,6 +263,11 @@ class ReviewQueue(_Strict):
             if self.label.questions is not None and not asked_questions(self.label, item):
                 raise ValueError(f"item {item.item_id!r} asks none of the queue's questions")
             if item.suggestion is not None:
+                if item.suggestion.answers == {}:
+                    raise ValueError(
+                        f"item {item.item_id!r} has a suggestion with no answers; "
+                        "leave 'answers' out when nothing is suggested"
+                    )
                 problems = answer_problems(
                     self.label,
                     item,
@@ -322,13 +328,13 @@ class LabelLine(_Strict):
         omit += ["choice", "choices"] if self.answers is not None else ["answers"]
         for name in omit:
             del data[name]
-        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
 class LabelDraft(BaseModel):
     """What a person submits for one item; the annotator, time and verdict are the store's."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     choice: str | None = None
     choices: list[str] | None = None
