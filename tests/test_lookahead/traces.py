@@ -223,6 +223,7 @@ def frame(
         tab="TAB1",
         requested_at=requested_at,
         captured_at=requested_at + 0.05 if image is not None else None,
+        released_at=requested_at + 0.06 if kind == "before_action" else None,
         outcome=outcome,
         superseded_by=superseded_by,
         name=frame_name(kind, cycle, action_index) if image is not None else None,

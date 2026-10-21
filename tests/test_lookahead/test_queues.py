@@ -108,6 +108,7 @@ def test_labels_are_accepted_against_each_queue(world: World, annotation_dir: Pa
         forks.queue.queue_id,
         item.item_id,
         LabelDraft(answers=dict(item.suggestion.answers or {})),
+        queue_sha256=forks.sha256,
         image_size=image_size,
     )
     assert line.verdict == "accepted" and line.answers == {
@@ -125,6 +126,7 @@ def test_labels_are_accepted_against_each_queue(world: World, annotation_dir: Pa
             choice="result_list",
             regions=[Region(image="next", kind="evidence", box=[0, 0, 32, 32])],
         ),
+        queue_sha256=gold.sha256,
         image_size=image_size,
     )
     assert line.choice == "result_list" and line.verdict is None  # nothing was suggested
@@ -137,6 +139,7 @@ def test_labels_are_accepted_against_each_queue(world: World, annotation_dir: Pa
         stability.queue.queue_id,
         item.item_id,
         LabelDraft(choice=item.suggestion.choice, regions=list(item.suggestion.regions or [])),
+        queue_sha256=stability.sha256,
         image_size=image_size,
     )
     assert line.verdict == "accepted"

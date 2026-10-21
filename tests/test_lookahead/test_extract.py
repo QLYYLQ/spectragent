@@ -137,7 +137,11 @@ def test_before_action_frames_join_their_env_act_call_through_the_spans(world: W
     assert joined == {0: SPANS[0], 1: SPANS[1]}
     delayed = first.frame("after_observation")
     assert delayed is not None and delayed.span is None
-    assert all(frame.released_at is None for frame in first.frames)  # the reader gives none yet
+    # The recording's share of an action is released_at - requested_at; only before-action
+    # frames hold an action back, so only they carry it.
+    assert all(
+        (frame.released_at is not None) == (frame.kind == "before_action") for frame in first.frames
+    )
     # spans measured, no env.act call: nothing to join
     assert all(frame.span is None for frame in _rows(world)[("record/rec-1", 1)].frames)
 
