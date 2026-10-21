@@ -3632,6 +3632,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._session_to_target.pop(cdp_session_id, None)
         self._cycle_cache.pop(cdp_session_id, None)
         self._main_frame_ids.pop(cdp_session_id, None)
+        # The tab's frame registry is the capability's, not a watchdog's: the
+        # watchdogs' detach above leaves it watching, so it is closed here.
+        frame_targets = self._frame_targets.pop(cdp_session_id, None)
+        if frame_targets is not None:
+            frame_targets.close()
 
         if self._cdp is not None:
             try:
