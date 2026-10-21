@@ -20,6 +20,19 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
 - ``opener.html`` — a ``target=_blank`` link ``#newtab`` to ``second.html``;
 - ``busy.html`` — text that changes every 50 ms, so the page never goes quiet;
 - ``a.html`` / ``b.html`` — two pages for navigation and history;
+- ``fields.html`` — where typing can and cannot go: a text field
+  ``#text_input`` (``Name``), a textarea ``#text_area`` (``Notes``), a
+  ``contenteditable`` ``#text_editable`` (``Editor``), a same-site
+  ``<iframe>`` ``#text_frame`` filled by a text field (``Inner``) and one,
+  ``#text_frame_editor``, whose body is the editor (as iframe rich-text
+  editors are), a read-only field ``#text_readonly`` (``From``, holding
+  ``Shanghai``), a button ``#text_button`` (``Search``), a button
+  ``#text_opener`` (``Open search``) whose click focuses the field
+  ``#text_late`` (``Late``) :data:`FIELDS_FOCUS_DELAY_MS` later, a ``div``
+  with role ``textbox`` ``#text_custom`` (``Custom``), and a paragraph of text;
+  :data:`FIELDS_EMPTY_POINT` is on none of them. A capture-phase listener keeps
+  the ``key`` of every keydown the page's own document sees in
+  ``window.__keys``;
 - ``far.html`` — a button ``#far`` (``Far button``) at :data:`FAR_LEFT` px from
   the left of a page wider than the viewport, so its centre starts outside it;
   ``far_hidden.html`` is the same page with horizontal overflow hidden, as some
@@ -40,6 +53,7 @@ import io
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -51,6 +65,10 @@ SCROLL_PAGE_HEIGHT = 3000
 INNER_CONTENT_HEIGHT = 1200
 #: How far from the left edge, CSS px, the off-viewport button of the ``far`` pages sits.
 FAR_LEFT = 1700
+#: How long after ``fields.html``'s ``Open search`` click its ``Late`` field takes focus, ms.
+FIELDS_FOCUS_DELAY_MS = 150
+#: A point of ``fields.html`` on no control and no text, in CSS px of the viewport.
+FIELDS_EMPTY_POINT = (900, 600)
 #: ``(left, top, width, height)`` in CSS px of every control a test aims at.
 BOXES: dict[str, tuple[int, int, int, int]] = {
     "inner": (40, 120, 300, 200),
@@ -64,6 +82,16 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "newtab": (20, 20, 200, 40),
     "editor": (20, 20, 400, 120),
     "link_b": (20, 20, 200, 40),
+    "text_input": (20, 20, 300, 32),
+    "text_area": (20, 70, 300, 64),
+    "text_editable": (20, 150, 300, 64),
+    "text_frame": (20, 230, 300, 48),
+    "text_frame_editor": (20, 295, 300, 64),
+    "text_readonly": (20, 375, 300, 32),
+    "text_button": (20, 425, 140, 32),
+    "text_opener": (180, 425, 140, 32),
+    "text_late": (20, 475, 300, 32),
+    "text_custom": (20, 525, 300, 32),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -217,8 +245,45 @@ def _pages() -> dict[str, tuple[str, bytes]]:
                 ),
             )
         },
+        "fields.html": ("text/html; charset=utf-8", _fields_page()),
         "ok.png": ("image/png", _png((30, 120, 200))),
     }
+
+
+def _fields_page() -> bytes:
+    frame_input = (
+        '<!doctype html><body style="margin:0"><input id="inner" aria-label="Inner"'
+        ' style="position:absolute;left:0;top:0;width:100%;height:100%;box-sizing:border-box">'
+        "</body>"
+    )
+    frame_editor = (
+        '<!doctype html><html style="height:100%">'
+        '<body contenteditable="true" style="margin:0;height:100%"></body></html>'
+    )
+    prose = " ".join(f"Sentence {n} of the page's own text." for n in range(12))
+    return _page(
+        "Fields",
+        f'<input id="text_input" aria-label="Name" style="{_box("text_input")}">'
+        f'<textarea id="text_area" aria-label="Notes" style="{_box("text_area")}"></textarea>'
+        f'<div id="text_editable" contenteditable="true" aria-label="Editor" '
+        f'style="{_box("text_editable")}border:1px solid #888"></div>'
+        f'<iframe id="text_frame" srcdoc="{escape(frame_input)}" '
+        f'style="{_box("text_frame")}border:0"></iframe>'
+        f'<iframe id="text_frame_editor" srcdoc="{escape(frame_editor)}" '
+        f'style="{_box("text_frame_editor")}border:1px solid #888"></iframe>'
+        f'<input id="text_readonly" aria-label="From" readonly value="Shanghai" '
+        f'style="{_box("text_readonly")}">'
+        f'<button id="text_button" type="button" style="{_box("text_button")}">Search</button>'
+        f'<button id="text_opener" type="button" style="{_box("text_opener")}" '
+        "onclick=\"setTimeout(() => document.getElementById('text_late').focus(), "
+        f'{FIELDS_FOCUS_DELAY_MS})">Open search</button>'
+        f'<input id="text_late" aria-label="Late" style="{_box("text_late")}">'
+        f'<div id="text_custom" role="textbox" tabindex="0" aria-label="Custom" '
+        f'style="{_box("text_custom")}border:1px solid #888"></div>'
+        f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
+        "<script>window.__keys = [];"
+        " addEventListener('keydown', e => window.__keys.push(e.key), true);</script>",
+    )
 
 
 class _Handler(BaseHTTPRequestHandler):

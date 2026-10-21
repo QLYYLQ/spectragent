@@ -7,7 +7,9 @@ was entered, and the focused element afterwards. A sensitive field's content
 and length appear nowhere. Measured by the executor around its own dispatch;
 a probe that fails or runs out of ``action_effect_timeout_s`` leaves its fact
 unknown and never changes the action's outcome; a failed action reports no
-effect.
+effect. One failure does: typing finds no text field with focus (nothing, or
+an element that takes no typed text), sends no key and no text, and reports
+the focus it found.
 
 Every test runs the real action against a real ``ActionWatchdog`` on a
 scripted CDP (``_effect_tab.py``). The real-Chrome counterpart is
@@ -27,6 +29,7 @@ from spectragent.core.capabilities.browser.actions.type_coordinate import TypeCo
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 from spectragent.core.capabilities.browser.effects import ElementFacts, TextInputEffect
 from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.watchdogs.action_watchdog import FOCUS_SETTLE_S
 from spectragent.schemas.action import ActionResult
 from tests.test_core.test_capabilities.test_browser_actions._effect_tab import (
     ProbeCDP,
@@ -67,12 +70,15 @@ async def type_into(
         return await TypeAction(post_delay_ms=0).execute(params, capability=tab)  # type: ignore[arg-type]
 
 
-async def type_at(cdp: ProbeCDP, text: str = "Ada", **watchdog_kwargs: Any) -> ActionResult:
+async def type_at(
+    cdp: ProbeCDP, text: str = "Ada", *, clear: bool | None = None, **watchdog_kwargs: Any
+) -> ActionResult:
+    """``browser.type_coordinate`` at (100, 150)."""
+    params: dict[str, Any] = {"coordinate_x": 100, "coordinate_y": 150, "text": text}
+    if clear is not None:
+        params["clear"] = clear
     async with effect_tab(cdp, **watchdog_kwargs) as tab:
-        return await TypeCoordinateAction(post_delay_ms=0).execute(
-            {"coordinate_x": 100, "coordinate_y": 150, "text": text},
-            capability=tab,  # type: ignore[arg-type]
-        )
+        return await TypeCoordinateAction(post_delay_ms=0).execute(params, capability=tab)  # type: ignore[arg-type]
 
 
 async def press(cdp: ProbeCDP, keys: str, **watchdog_kwargs: Any) -> ActionResult:
@@ -200,18 +206,126 @@ class TestTypeCoordinate:
         assert "hit" not in cdp.kinds()
         assert cdp.index("mouseReleased") < cdp.index("field_ref")
 
-    async def test_nothing_focused_after_the_click(self) -> None:
+
+#: What typing at (100, 150) answers when the click left nothing focused.
+NOTHING_FOCUSED = "No text field took focus at (100, 150): nothing has focus, so no text was typed."
+
+
+def refused(result: ActionResult, error: str) -> TextInputEffect:
+    """A typing action that found no text field: failed, with the focus it found as its effect."""
+    assert (result.success, result.error) == (False, error)
+    # No text went in, so there is no field whose sensitivity the text met.
+    assert result.typed_into_sensitive_field is None
+    assert isinstance(result.effect, TextInputEffect)
+    assert (result.effect.keys, result.effect.text_entered) == ((), False)
+    return result.effect
+
+
+def keys_and_text(cdp: ProbeCDP) -> list[str]:
+    """Every key event and text insertion sent: what reached the page as typing."""
+    return [c.method for c in cdp.inputs() if c.method != "Input.dispatchMouseEvent"]
+
+
+class TestTypingNeedsATextField:
+    """No text field has focus: no clear, no text, and the action fails saying what has focus.
+
+    A select-all with nothing editable focused selects the whole page's text,
+    and the text then goes nowhere.
+    """
+
+    async def test_a_click_that_focused_nothing_types_nothing(self) -> None:
         cdp = ProbeCDP(field="null")
-        effect = text_input(await type_at(cdp))
-        assert (effect.target, effect.sensitive, effect.value_changed) == (
+        effect = refused(await type_at(cdp), NOTHING_FOCUSED)
+        assert (effect.target, effect.sensitive, effect.value_changed, effect.focus_after) == (
             "nothing",
             False,
             "unavailable",
+            "nothing",
         )
-        assert effect.describe() == (
-            "Pressed Control+A, Backspace, then typed text with nothing focused; "
-            "nothing is focused now."
+        assert "mouseReleased" in [c.params.get("type") for c in cdp.inputs()]
+        assert keys_and_text(cdp) == []
+
+    async def test_without_a_clear_nothing_is_typed_either(self) -> None:
+        cdp = ProbeCDP(field="null")
+        refused(await type_at(cdp, clear=False), NOTHING_FOCUSED)
+        assert keys_and_text(cdp) == []
+
+    async def test_an_element_that_is_not_a_text_field_is_named(self) -> None:
+        node = page_node(42)
+        node.element_index = 3
+        cdp = ProbeCDP(
+            field="node",
+            readings=[reading("button", "Search", digest="6:1", tag="BUTTON", entry="none")],
+            focus={"facts": facts("button", "Search")},
         )
+        effect = refused(
+            await type_into(cdp, node=node),
+            'Element 3 is not a text field: focus is on button "Search", which does not '
+            "take typed text, so no text was typed.",
+        )
+        search = ElementFacts(role="button", name="Search")
+        assert (effect.target, effect.value_changed, effect.focus_after) == (search, False, search)
+        assert cdp.inputs() == []
+        # The element was focused, and the field reference is let go.
+        assert "DOM.focus" in cdp.kinds()
+        assert "release" in cdp.kinds()
+
+    async def test_a_read_only_field_is_said_to_be_one(self) -> None:
+        cdp = ProbeCDP(
+            field="node", readings=[reading("textbox", "From", digest="8:1", entry="read-only")]
+        )
+        effect = refused(
+            await type_at(cdp),
+            'No text field took focus at (100, 150): focus is on textbox "From", which is '
+            "read-only, so no text was typed.",
+        )
+        assert effect.target == ElementFacts(role="textbox", name="From")
+        assert keys_and_text(cdp) == []
+
+    async def test_focus_that_lands_a_moment_later_is_waited_for(self) -> None:
+        # A widget that focuses its input on a timer after the click.
+        cdp = ProbeCDP(field=["null", "null", "node"], readings=name_field("0:1", "3:2"))
+        effect = text_input(await type_at(cdp))
+        assert (effect.target, effect.keys, effect.value_changed) == (
+            NAME,
+            ("Control+A", "Backspace"),
+            True,
+        )
+        assert cdp.kinds().count("field_ref") == 3
+
+    async def test_the_wait_for_focus_is_bounded(self) -> None:
+        cdp = ProbeCDP(field="null")
+        started = time.monotonic()
+        refused(await type_at(cdp), NOTHING_FOCUSED)
+        elapsed = time.monotonic() - started
+        assert FOCUS_SETTLE_S <= elapsed < FOCUS_SETTLE_S + 0.5
+        assert cdp.kinds().count("field_ref") > 1
+
+    async def test_a_reading_that_cannot_tell_does_not_undo_one_that_could(self) -> None:
+        # Nothing focused, then a focused element whose reading fails: the
+        # last measured verdict stands, and the effect says what the last
+        # reading could not tell.
+        cdp = ProbeCDP(field=["null", "node"], readings=name_field("0:1"), fail={"field_read"})
+        effect = refused(await type_at(cdp), NOTHING_FOCUSED)
+        assert effect.target == "unknown"
+        assert keys_and_text(cdp) == []
+
+    @pytest.mark.parametrize(
+        ("field", "readings"),
+        [
+            # Focus inside a frame of another site: it cannot be looked into.
+            ("opaque", []),
+            # A custom element whose shadow root is closed: it may hold the field.
+            ("node", [reading("generic", "", digest=None, tag="X-FIELD", entry=None)]),
+        ],
+        ids=["frame of another site", "closed shadow root"],
+    )
+    async def test_a_reading_that_cannot_tell_types_as_asked(
+        self, field: str, readings: list[dict[str, Any]]
+    ) -> None:
+        cdp = ProbeCDP(field=field, readings=readings)
+        text_input(await type_at(cdp))
+        assert keys_and_text(cdp) == ["Input.dispatchKeyEvent"] * 6 + ["Input.insertText"]
 
 
 class TestSendKeys:
