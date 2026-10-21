@@ -27,6 +27,7 @@ def test_workspace_without_initial_focus_keeps_the_root_scope(client, tmp_path: 
         "initial_run": None,
         "config_source": None,
         "config_hash": None,
+        "annotations": None,
     }
 
 

@@ -1,4 +1,4 @@
-"""Read-only local experiment viewer.
+"""Local experiment viewer: read-only over traces, optionally labeling into its own directory.
 
 Importing this package does not import optional web dependencies.
 """
@@ -16,12 +16,19 @@ def create_app(
     *,
     config_source: Path | str | None = None,
     config_hash: str | None = None,
+    annotations: Path | str | None = None,
+    annotator: str | None = None,
 ) -> "FastAPI":
     """Create a local HTTP view of the committed evidence below ``root``."""
     from spectragent.viewer.server import create_app as create
 
     return create(
-        root, initial_run=initial_run, config_source=config_source, config_hash=config_hash
+        root,
+        initial_run=initial_run,
+        config_source=config_source,
+        config_hash=config_hash,
+        annotations=annotations,
+        annotator=annotator,
     )
 
 
@@ -34,6 +41,8 @@ def serve(
     *,
     config_source: Path | str | None = None,
     config_hash: str | None = None,
+    annotations: Path | str | None = None,
+    annotator: str | None = None,
 ) -> None:
     """Serve the viewer until interrupted; the default bind is loopback only."""
     from spectragent.viewer.server import serve as start
@@ -46,4 +55,6 @@ def serve(
         initial_run=initial_run,
         config_source=config_source,
         config_hash=config_hash,
+        annotations=annotations,
+        annotator=annotator,
     )
