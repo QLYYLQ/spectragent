@@ -1459,7 +1459,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
     # ── Checkpoint restoration: media alignment (RestorationAlignment, §4.9 / §4.14) ──
 
-    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+    async def align_next_observation(
+        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
+    ) -> None:
         """Align the next observation's media to *recorded*'s, inside its capture.
 
         Only the request is kept here — the page is not touched. The next
@@ -1472,6 +1474,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._media_alignment = PendingAlignment(
             recorded=screenshot.media if screenshot is not None else None,
             seek_timeout_s=media_seek_timeout_s,
+            end_lead_s=media_end_lead_s,
         )
 
     def _document_misses_since_last_check(self) -> int | None:
@@ -2800,6 +2803,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 tolerance_px=self.retarget_tolerance_px,
                 read_timeout_s=self.media_state_timeout_s,
                 seek_timeout_s=pending.seek_timeout_s,
+                end_lead_s=pending.end_lead_s,
             )
         except asyncio.CancelledError:
             raise

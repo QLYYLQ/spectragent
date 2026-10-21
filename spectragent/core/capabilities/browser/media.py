@@ -45,7 +45,10 @@ recorded position and play state: paused targets first (pause, seek, wait for
 ``seeked``, ``seeking == false`` and ``readyState >= 2``, and the position it
 landed on must be the target), then playing ones
 (the same, then ``play()`` and wait for ``playing``), and the capture follows
-at once. ``currentTime`` alone is no proof: a seek into bytes the recording
+at once. A recorded element that had ended is sought a short lead before its
+end (``media_end_lead_s``) and played through to its natural end (``ended``
+fired), because a seek straight to the end leaves a stale frame and no end
+screen. ``currentTime`` alone is no proof: a seek into bytes the recording
 never fetched reports the target at once while ``seeking`` stays true and the
 frame never changes (measured on the site's player). A seek or play that does
 not complete within ``media_seek_timeout_s`` is ``failed``, and the element is
@@ -213,10 +216,11 @@ _READ_EXPRESSION: Final = _READ_PROBE % {
 }
 
 #: Seek one element of this frame (by its path and order) to a position,
-#: optionally play it, and report. ``target`` may be ``null``: only the play
-#: state is set. A frame that is not the expected one finds nothing.
+#: optionally play it — with ``toEnd``, play it through to its natural end —
+#: and report. ``target`` may be ``null``: only the play state is set. A frame
+#: that is not the expected one finds nothing.
 _ALIGN_PROBE = (
-    "(async (framePath, order, target, play, budgetMs) => {"
+    "(async (framePath, order, target, play, toEnd, budgetMs) => {"
     + _DOCUMENT
     + """
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -250,11 +254,14 @@ _ALIGN_PROBE = (
   }
   let played = null;
   let playError = null;
+  let endedFired = false;
   if (seeked && play) {
     let playing = false;
     let started = false;
     const onPlaying = () => { playing = true; };
+    const onEnded = () => { endedFired = true; };
     el.addEventListener('playing', onPlaying);
+    el.addEventListener('ended', onEnded);
     const playStarted = performance.now();
     try {
       const promise = el.play();
@@ -266,18 +273,21 @@ _ALIGN_PROBE = (
       }
       for (;;) {
         if (playError !== null) break;
-        if (playing && started && !el.paused) break;
+        if (toEnd ? (endedFired && el.ended) : (playing && started && !el.paused)) break;
         if (performance.now() - playStarted >= budgetMs) break;
         await sleep(5);
       }
     } finally {
       el.removeEventListener('playing', onPlaying);
+      el.removeEventListener('ended', onEnded);
     }
-    played = playError === null && playing && started && !el.paused;
+    played = playError === null && (toEnd ? (endedFired && el.ended)
+                                          : (playing && started && !el.paused));
   }
   return {found: true, before: before, seeked: seeked, seek_ms: seekMs, landed: landed,
-          played: played, play_error: playError, reached: afMediaReading(el)};
-})(%(frame)s, %(order)d, %(target)s, %(play)s, %(budget_ms)d)
+          played: played, ended_fired: endedFired, play_error: playError,
+          reached: afMediaReading(el)};
+})(%(frame)s, %(order)d, %(target)s, %(play)s, %(to_end)s, %(budget_ms)d)
 """
 )
 
@@ -940,6 +950,7 @@ class PendingAlignment:
 
     recorded: MediaState | None
     seek_timeout_s: float
+    end_lead_s: float
     cycle: int | None = None
     report: AlignmentReport | None = None
 
@@ -976,13 +987,15 @@ async def _call_align(
     target: float | None,
     play: bool,
     budget_s: float,
+    to_end: bool = False,
 ) -> dict[str, Any]:
     session_id, frame_id = address
     expression = _ALIGN_PROBE % {
         "frame": json.dumps(element.frame),
         "order": element.order,
         "target": "null" if target is None else repr(float(target)),
-        "play": "true" if play else "false",
+        "play": "true" if play or to_end else "false",
+        "to_end": "true" if to_end else "false",
         "budget_ms": max(1, round(budget_s * 1000)),
     }
     context = await _world(cdp, session_id, frame_id, budget_s + _REPLY_GRACE_S)
@@ -1015,6 +1028,7 @@ async def align_media(
     tolerance_px: float,
     read_timeout_s: float,
     seek_timeout_s: float,
+    end_lead_s: float,
 ) -> AlignmentReport:
     """Move every matched media element to its recorded position and play state (module docstring).
 
@@ -1091,6 +1105,7 @@ async def align_media(
             and now.current_time is not None
             and now.paused == target.paused
             and abs(now.current_time - target.current_time) <= SAME_TIME_S
+            and (not target.ended or now.ended is True)
         ):
             report.records.append(
                 MediaAlignment(
@@ -1129,6 +1144,7 @@ async def align_media(
                 restored=restored,
                 target=target,
                 seek_timeout_s=seek_timeout_s,
+                end_lead_s=end_lead_s,
             )
         )
     return report
@@ -1157,10 +1173,18 @@ async def _align_one(
     restored: MediaElementState,
     target: MediaReading,
     seek_timeout_s: float,
+    end_lead_s: float,
 ) -> MediaAlignment:
+    assert target.current_time is not None  # _target only returns a known position
+    # A recorded end is reached the way the source reached it: by playing into
+    # it. Seeking straight to the end leaves a stale frame and no end screen
+    # (measured on Xiaohongshu's player), so seek a short lead before it and
+    # play through to the natural end.
+    to_end = target.ended is True
     play = target.paused is False
-    action: Literal["pause_and_seek", "seek_and_play"] = (
-        "seek_and_play" if play else "pause_and_seek"
+    seek_to = max(0.0, target.current_time - end_lead_s) if to_end else target.current_time
+    action: Literal["pause_and_seek", "seek_and_play", "seek_and_play_to_end"] = (
+        "seek_and_play_to_end" if to_end else "seek_and_play" if play else "pause_and_seek"
     )
     base: dict[str, Any] = {
         "element": recorded.label,
@@ -1173,9 +1197,10 @@ async def _align_one(
             cdp,
             address=address,
             element=restored,
-            target=target.current_time,
+            target=seek_to,
             play=play,
             budget_s=seek_timeout_s,
+            to_end=to_end,
         )
     except asyncio.CancelledError:
         raise
@@ -1211,11 +1236,9 @@ async def _align_one(
     # A completed seek is not enough: it must have landed on the target. A seek
     # past what a script-fed player has appended completes somewhere else
     # (measured on Xiaohongshu: aimed at 31.04 s, landed at 26.66 s).
-    on_target = target.current_time is None or (
-        landed is not None and abs(landed - target.current_time) <= SAME_TIME_S
-    )
+    on_target = landed is not None and abs(landed - seek_to) <= SAME_TIME_S
     seeked = bool(result.get("seeked"))
-    completed = seeked and on_target and (not play or result.get("played") is True)
+    completed = seeked and on_target and (not (play or to_end) or result.get("played") is True)
     record: dict[str, Any] = {
         **base,
         "from_time": before.current_time,
@@ -1227,11 +1250,12 @@ async def _align_one(
         "seek_ms": seek_ms,
     }
     if completed:
-        detail = (
-            "played after the seek; the player may show its controls"
-            if play
-            else "paused and seeked"
-        )
+        if to_end:
+            detail = f"seeked to {seek_to:g} s and played through to its natural end"
+        elif play:
+            detail = "played after the seek; the player may show its controls"
+        else:
+            detail = "paused and seeked"
         return MediaAlignment(**record, outcome="aligned", detail=detail)
     if not seeked:
         why = (
@@ -1239,7 +1263,12 @@ async def _align_one(
             f"(seeking {reached.seeking}, readyState {reached.ready_state})"
         )
     elif not on_target:
-        why = f"the seek landed at {landed} s, not at the target"
+        why = f"the seek landed at {landed} s, not at {seek_to:g} s"
+    elif to_end:
+        why = (
+            f"the end was not reached within {seek_timeout_s:g}s of playing from {seek_to:g} s"
+            + (f" ({result.get('play_error')})" if result.get("play_error") else "")
+        )
     else:
         why = f"play did not start within {seek_timeout_s:g}s" + (
             f" ({result.get('play_error')})" if result.get("play_error") else ""

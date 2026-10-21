@@ -298,7 +298,9 @@ async def test_alignment_pauses_and_seeks_to_the_exact_recorded_position(origin:
             first, element, MediaReading(current_time=7.3, paused=True, ready_state=4)
         )
 
-        await browser.cap.align_next_observation(recorded, media_seek_timeout_s=2.0)
+        await browser.cap.align_next_observation(
+            recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5
+        )
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
         # The request belonged to that one observation: the next one is not aligned.
@@ -342,7 +344,9 @@ async def test_a_playing_source_is_seeked_played_and_captured_at_once(origin: st
         recorded = _recorded(
             first, element, MediaReading(current_time=6.0, paused=False, ready_state=4)
         )
-        await browser.cap.align_next_observation(recorded, media_seek_timeout_s=2.0)
+        await browser.cap.align_next_observation(
+            recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5
+        )
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
     finally:
@@ -376,12 +380,16 @@ async def test_a_seek_beyond_the_served_bytes_fails_and_is_undone(origin: str) -
         (element,) = first.media.elements
         # Within the served bytes: completes.
         within = _recorded(first, element, MediaReading(current_time=2.0, paused=True))
-        await browser.cap.align_next_observation(within, media_seek_timeout_s=2.0)
+        await browser.cap.align_next_observation(
+            within, media_seek_timeout_s=2.0, media_end_lead_s=0.5
+        )
         inside = await browser.screenshot()
         inside_evidence = await browser.cap.verify_restoration(within, _observation(inside))
         # Far past them: the seek never completes.
         beyond = _recorded(first, element, MediaReading(current_time=10.5, paused=True))
-        await browser.cap.align_next_observation(beyond, media_seek_timeout_s=1.0)
+        await browser.cap.align_next_observation(
+            beyond, media_seek_timeout_s=1.0, media_end_lead_s=0.5
+        )
         outside = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(beyond, _observation(outside))
         state = await browser.evaluate(
@@ -471,7 +479,9 @@ async def test_a_cross_site_frame_is_read_and_aligned_on_its_own_session(origin:
         assert first.media is not None
         (element,) = first.media.elements
         recorded = _recorded(first, element, MediaReading(current_time=4.0, paused=True))
-        await browser.cap.align_next_observation(recorded, media_seek_timeout_s=2.0)
+        await browser.cap.align_next_observation(
+            recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5
+        )
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
     finally:
@@ -527,3 +537,90 @@ async def test_a_cross_site_frame_that_does_not_answer_is_unreachable(origin: st
         1, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
     )
     assert check.reasons == ["media_mismatch"]
+
+
+_PLAY_TO_END = (
+    "(async () => { const v = document.getElementById('v');"
+    " v.currentTime = 11; await v.play();"
+    " while (!v.ended) await new Promise((r) => setTimeout(r, 20)); return v.currentTime; })()"
+)
+_BACK_TO_ONE = (
+    "(async () => { const v = document.getElementById('v'); v.pause(); v.currentTime = 1;"
+    " while (v.seeking || v.readyState < 2) await new Promise((r) => setTimeout(r, 20));"
+    " return v.currentTime; })()"
+)
+
+
+async def test_an_ended_source_is_played_through_to_its_natural_end(origin: str) -> None:
+    """The recording saw the video at its end: seek a lead before it and play into it."""
+    from spectragent.core.capabilities.browser.restoration import dhash, hamming
+
+    browser = await _open(origin, "one.html")
+    try:
+        await browser.wait_until(
+            "document.getElementById('v').readyState >= 2"
+            " && document.getElementById('v').currentTime === 1"
+        )
+        assert await browser.evaluate(_PLAY_TO_END) == pytest.approx(12.0)
+        ended = await browser.screenshot()  # the "recorded" observation: ended naturally
+        assert await browser.evaluate(_BACK_TO_ONE) == 1
+        await browser.cap.align_next_observation(
+            _observation(ended), media_seek_timeout_s=2.0, media_end_lead_s=0.5
+        )
+        aligned = await browser.screenshot()
+        evidence = await browser.cap.verify_restoration(_observation(ended), _observation(aligned))
+    finally:
+        await browser.cap.teardown()
+
+    assert ended.media is not None
+    (source,) = ended.media.elements
+    assert source.before is not None and source.before.ended is True
+    media = _media_of(evidence)
+    (record,) = media.alignment
+    assert (record.outcome, record.action) == ("aligned", "seek_and_play_to_end")
+    assert record.from_time == 1.0 and record.from_paused is True
+    assert record.reached_time == pytest.approx(12.0) and record.reached_paused is True
+    assert aligned.media is not None
+    (now,) = aligned.media.elements
+    assert now.before is not None and now.before.ended is True
+    assert ended.image_bytes and aligned.image_bytes
+    assert hamming(dhash(ended.image_bytes) or 0, dhash(aligned.image_bytes) or 0) == 0
+    check = judge(
+        3, [evidence], [], verify="warn", screenshot_max_distance=0, media_time_tolerance_s=1.0
+    )
+    assert check.verdict == "ok"
+
+
+async def test_an_end_beyond_the_served_bytes_fails_and_is_undone(origin: str) -> None:
+    browser = await _open(origin, "one-limited.html")
+    try:
+        await browser.wait_until(
+            "document.getElementById('v').readyState >= 2"
+            " && document.getElementById('v').currentTime === 1"
+        )
+        first = await browser.screenshot()
+        assert first.media is not None
+        (element,) = first.media.elements
+        recorded = _recorded(
+            first, element, MediaReading(current_time=12.0, paused=True, ended=True)
+        )
+        await browser.cap.align_next_observation(
+            recorded, media_seek_timeout_s=1.0, media_end_lead_s=0.5
+        )
+        shot = await browser.screenshot()
+        evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
+        state = await browser.evaluate(
+            "(() => { const v = document.getElementById('v');"
+            " return {t: v.currentTime, seeking: v.seeking, paused: v.paused}; })()"
+        )
+    finally:
+        await browser.cap.teardown()
+
+    (record,) = _media_of(evidence).alignment
+    assert (record.outcome, record.action) == ("failed", "seek_and_play_to_end")
+    assert record.rolled_back is True
+    assert state == {"t": 1.0, "seeking": False, "paused": True}
+    check = judge(
+        3, [evidence], [], verify="strict", screenshot_max_distance=64, media_time_tolerance_s=1.0
+    )
+    assert check.verdict == "diverged" and "media_mismatch" in check.reasons

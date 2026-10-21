@@ -403,7 +403,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 evidence.append(await cap.verify_restoration(recorded, restored))
         return evidence
 
-    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+    async def align_next_observation(
+        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
+    ) -> None:
         """Request, from each aligning capability, the next observation's alignment to *recorded*.
 
         Fans out to every capability implementing
@@ -416,7 +418,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         for cap in self.capabilities.values():
             if isinstance(cap, RestorationAlignment):
                 await cap.align_next_observation(
-                    recorded, media_seek_timeout_s=media_seek_timeout_s
+                    recorded,
+                    media_seek_timeout_s=media_seek_timeout_s,
+                    media_end_lead_s=media_end_lead_s,
                 )
 
     # ── Recorded capture vs this configuration (training export) ─

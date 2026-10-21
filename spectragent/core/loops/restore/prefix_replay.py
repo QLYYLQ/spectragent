@@ -35,7 +35,10 @@ Knobs:
   restored position may lie from the recorded one and still pass (default 1);
 - ``media_seek_timeout_s`` — how long each alignment seek, and the play
   after it, may take to complete (default 2); one that does not is undone
-  and the step fails ``media_mismatch``.
+  and the step fails ``media_mismatch``;
+- ``media_end_lead_s`` — a recorded element that had ended is sought this
+  long before its end and played through to the natural end (default 0.5;
+  shorter than ``media_seek_timeout_s``).
 """
 
 import asyncio
@@ -149,6 +152,31 @@ class PrefixReplayRestorer(RestorerBase):
             ),
         ),
     ] = 2.0
+    media_end_lead_s: Annotated[
+        float,
+        Field(
+            default=0.5,
+            gt=0,
+            le=10,
+            description=(
+                "With media: align, a media element the recording showed at its end "
+                "(ended) is sought this many seconds before the recorded end and played "
+                "through to its natural end, so the player shows what it shows at an end; "
+                "a seek straight to the end leaves a stale frame and no end screen. The "
+                "play to the end must finish within media_seek_timeout_s, so this must be "
+                "shorter than that."
+            ),
+        ),
+    ] = 0.5
+
+    def __post_init__(self) -> None:
+        if self.media_end_lead_s >= self.media_seek_timeout_s:
+            raise ValueError(
+                f"media_end_lead_s ({self.media_end_lead_s:g} s) is not shorter than "
+                f"media_seek_timeout_s ({self.media_seek_timeout_s:g} s): playing the last "
+                "media_end_lead_s seconds to a recorded end could never finish in time. "
+                "Shorten the lead or raise the timeout."
+            )
 
     async def restore(self, ctx: RestorationContext) -> AsyncGenerator[RestoredStep, None]:
         """Restore steps ``0 .. t-1``, then hand back step *t*'s verified observation."""
@@ -239,7 +267,9 @@ class PrefixReplayRestorer(RestorerBase):
         """Under ``media: align``, have the next observation aligned to *recorded_obs*."""
         if self.media == "align":
             await ctx.env.align_next_observation(
-                recorded_obs, media_seek_timeout_s=self.media_seek_timeout_s
+                recorded_obs,
+                media_seek_timeout_s=self.media_seek_timeout_s,
+                media_end_lead_s=self.media_end_lead_s,
             )
 
     def _judge(

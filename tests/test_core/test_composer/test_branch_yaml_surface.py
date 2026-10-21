@@ -90,6 +90,7 @@ class TestNestedUnions:
                     "media": "none",
                     "media_time_tolerance_s": 2.5,
                     "media_seek_timeout_s": 4.0,
+                    "media_end_lead_s": 1.5,
                 }
             ),
         )
@@ -99,9 +100,24 @@ class TestNestedUnions:
             2.5,
             4.0,
         )
+        assert restorer.media_end_lead_s == 1.5
         defaulted = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"})).restorer
         assert (defaulted.media, defaulted.media_time_tolerance_s) == ("align", 1.0)
         assert defaulted.media_seek_timeout_s == 2.0
+        assert defaulted.media_end_lead_s == 0.5
+
+    def test_an_end_lead_that_cannot_finish_in_time_is_refused(
+        self, composer: ConfigComposer
+    ) -> None:
+        raw = _branch(
+            restorer={
+                "restorer_id": "prefix_replay",
+                "media_seek_timeout_s": 1.0,
+                "media_end_lead_s": 1.0,
+            }
+        )
+        with pytest.raises(Exception, match="media_end_lead_s"):
+            composer.compose(raw)
 
     @pytest.mark.parametrize(
         "knob",
@@ -109,8 +125,9 @@ class TestNestedUnions:
             {"media": "aligned"},
             {"media_time_tolerance_s": -1},
             {"media_seek_timeout_s": 0},
+            {"media_end_lead_s": 0},
         ],
-        ids=["media-value", "tolerance-range", "seek-timeout-range"],
+        ids=["media-value", "tolerance-range", "seek-timeout-range", "end-lead-range"],
     )
     def test_a_media_knob_outside_its_range_is_refused(
         self, composer: ConfigComposer, knob: dict[str, Any]

@@ -599,7 +599,7 @@ def test_the_capability_offers_alignment_beside_restoration() -> None:
 
 
 def test_a_request_belongs_to_the_next_cycle_only() -> None:
-    pending = PendingAlignment(recorded=None, seek_timeout_s=2.0)
+    pending = PendingAlignment(recorded=None, seek_timeout_s=2.0, end_lead_s=0.5)
     assert pending.bind(4) and pending.due(4)
     assert not pending.bind(5) and not pending.due(5)
     assert pending.take().detail == "no capture ran after the alignment was requested"
@@ -608,7 +608,7 @@ def test_a_request_belongs_to_the_next_cycle_only() -> None:
 async def test_the_capability_keeps_a_request_for_one_observation() -> None:
     cap = BrowserCapability()
     recorded = observation(state(element()))
-    await cap.align_next_observation(recorded, media_seek_timeout_s=1.5)
+    await cap.align_next_observation(recorded, media_seek_timeout_s=1.5, media_end_lead_s=0.5)
     await cap.begin_observation(1)
     pending = cap._media_alignment
     assert pending is not None and pending.cycle == 1 and pending.seek_timeout_s == 1.5
@@ -621,7 +621,7 @@ async def test_the_capability_keeps_a_request_for_one_observation() -> None:
 async def test_the_check_takes_the_request_whether_or_not_a_capture_used_it() -> None:
     cap = BrowserCapability()
     recorded = observation(state(element()))
-    await cap.align_next_observation(recorded, media_seek_timeout_s=2.0)
+    await cap.align_next_observation(recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5)
     evidence = await cap.verify_restoration(recorded, observation(state(element())))
     assert evidence.media is not None and evidence.media.alignment == []
     assert evidence.media.alignment_detail == "no capture ran after the alignment was requested"
@@ -680,6 +680,7 @@ async def _align(cdp: _AlignCDP, recorded: MediaState) -> list[MediaAlignment]:
         tolerance_px=2.0,
         read_timeout_s=1.0,
         seek_timeout_s=2.0,
+        end_lead_s=0.5,
     )
     return report.records
 
@@ -693,7 +694,7 @@ async def test_a_paused_source_is_paused_and_seeked() -> None:
         41.0,
     )
     assert (record.from_time, record.from_paused, record.reached_time) == (10.0, False, 41.0)
-    assert cdp.calls == ['"main", 0, 41.0, false, 2000)']
+    assert cdp.calls == ['"main", 0, 41.0, false, false, 2000)']
 
 
 async def test_a_playing_source_is_seeked_then_played() -> None:
@@ -701,7 +702,7 @@ async def test_a_playing_source_is_seeked_then_played() -> None:
     (record,) = await _align(cdp, state(element(time=72.0, paused=False)))
     assert (record.outcome, record.action) == ("aligned", "seek_and_play")
     assert "controls" in record.detail
-    assert cdp.calls == ['"main", 0, 72.0, true, 2000)']
+    assert cdp.calls == ['"main", 0, 72.0, true, false, 2000)']
 
 
 async def test_a_failed_seek_is_undone_to_the_position_and_play_state_before() -> None:
@@ -714,7 +715,7 @@ async def test_a_failed_seek_is_undone_to_the_position_and_play_state_before() -
     assert record.seek_ms is None and record.seeking is True
     assert record.detail.startswith("the seek did not complete within 2s")
     # The undo targets where the element stood before: 10 s, playing.
-    assert cdp.calls[1] == '"main", 0, 10.0, true, 2000)'
+    assert cdp.calls[1] == '"main", 0, 10.0, true, false, 2000)'
 
 
 async def test_a_seek_that_lands_elsewhere_is_a_failed_seek() -> None:
@@ -725,8 +726,49 @@ async def test_a_seek_that_lands_elsewhere_is_a_failed_seek() -> None:
     )
     (record,) = await _align(cdp, state(element(time=31.04, paused=True)))
     assert record.outcome == "failed" and record.rolled_back is True
-    assert record.detail.startswith("the seek landed at 26.66 s, not at the target")
-    assert cdp.calls[1] == '"main", 0, 10.0, true, 2000)'
+    assert record.detail.startswith("the seek landed at 26.66 s, not at 31.04 s")
+    assert cdp.calls[1] == '"main", 0, 10.0, true, false, 2000)'
+
+
+def _ended(time: float = 31.04) -> MediaElementState:
+    reading = MediaReading(current_time=time, paused=True, seeking=False, ready_state=4, ended=True)
+    return element(time=time).model_copy(update={"before": reading, "after": reading})
+
+
+async def test_an_ended_source_is_played_through_to_its_end() -> None:
+    """Seeking straight to the end leaves a stale frame; play the last lead instead."""
+    ended = _answer(31.04, True, played=True, landed=30.54)
+    ended["reached"]["ended"] = True
+    cdp = _AlignCDP(raw(reading={"current_time": 10.0, "paused": False}), [ended])
+    (record,) = await _align(cdp, state(_ended()))
+    assert (record.outcome, record.action) == ("aligned", "seek_and_play_to_end")
+    assert record.target_time == 31.04 and record.reached_time == 31.04
+    assert record.detail == "seeked to 30.54 s and played through to its natural end"
+    # Seek half a second (the lead) before the recorded end, play, and play to the end.
+    assert cdp.calls == ['"main", 0, 30.54, true, true, 2000)']
+
+
+async def test_an_end_not_reached_in_time_is_a_failed_seek() -> None:
+    cdp = _AlignCDP(
+        raw(reading={"current_time": 10.0, "paused": False}),
+        [_answer(30.9, False, played=False, landed=30.54), _answer(10.0, False, played=True)],
+    )
+    (record,) = await _align(cdp, state(_ended()))
+    assert record.outcome == "failed" and record.rolled_back is True
+    assert record.detail.startswith("the end was not reached within 2s of playing from 30.54 s")
+    assert cdp.calls[1] == '"main", 0, 10.0, true, false, 2000)'
+
+
+async def test_an_element_already_at_the_end_but_not_ended_is_aligned_again() -> None:
+    """Paused at the end by a seek is not ended: the player shows no end screen."""
+    at_end = _AlignCDP(raw(reading={"current_time": 31.04, "paused": True, "ended": False}), [])
+    at_end.answers.append({**_answer(31.04, True, played=True, landed=30.54)})
+    at_end.answers[0]["reached"]["ended"] = True
+    (record,) = await _align(at_end, state(_ended()))
+    assert record.action == "seek_and_play_to_end" and record.outcome == "aligned"
+    really = _AlignCDP(raw(reading={"current_time": 31.04, "paused": True, "ended": True}), [])
+    (same,) = await _align(really, state(_ended()))
+    assert same.outcome == "already_aligned" and really.calls == []
 
 
 async def test_what_cannot_be_aligned_is_recorded_never_attempted() -> None:
@@ -754,6 +796,7 @@ async def test_old_evidence_aligns_nothing_and_says_so() -> None:
         tolerance_px=2.0,
         read_timeout_s=1.0,
         seek_timeout_s=2.0,
+        end_lead_s=0.5,
     )
     assert (
         report.records == [] and report.detail == "the recorded screenshot carries no media state"

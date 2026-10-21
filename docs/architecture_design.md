@@ -478,7 +478,7 @@ class RestorationContext:            # 窄的：没有 LLM、没有 memory、没
 
 恢复器只恢复**环境**，从不碰 memory，所以以后的 `capability_checkpoint`（Docker 的 snapshot/restore、Android 模拟器快照，经新增的 `RestorableCapability` 协议接入）是同一个接口下的另一个策略。逐条交回而不是最后一次性返回，是为了每恢复一步就提交一步：恢复到一半超时或崩溃，trace 里也已经有前面的步。
 
-`prefix_replay`（v1）对每个 k < t：（`media: align` 时先 `env.align_next_observation(recorded_obs_k, media_seek_timeout_s=…)`，为下一次观测预约媒体对齐，§4.3 / §4.14）→ `env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency`（后者在执行第 k 步动作之前等待第 k 步录下的模型等待时间，让异步加载有与源 run 相同的时间落定；默认 `none`。它只能近似媒体的播放位置——起播延迟与落定抖动消不掉，源视频自己停住也复现不了——不是媒体恢复的手段）、`media: none | align`（默认 `align`：每一个被恢复的观测，含检查点 t 的那一个，在采集里落定之后、截图之前把对应上的媒体元素对齐到录下的状态；`none` 不对齐，留作对照；发布的原路径与分叉配置显式写 `align`）、`media_time_tolerance_s`（媒体位置差的容差，默认 1 s）、`media_seek_timeout_s`（一次对齐跳转必须完成的上限，默认 2 s）。对齐只在恢复前缀里发生：恢复器在第 t 步交回之后不再预约，Loop 从不碰页面上的媒体，检查点之后的策略步与终止观测都是真实时间。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
+`prefix_replay`（v1）对每个 k < t：（`media: align` 时先 `env.align_next_observation(recorded_obs_k, media_seek_timeout_s=…, media_end_lead_s=…)`，为下一次观测预约媒体对齐，§4.3 / §4.14）→ `env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency`（后者在执行第 k 步动作之前等待第 k 步录下的模型等待时间，让异步加载有与源 run 相同的时间落定；默认 `none`。它只能近似媒体的播放位置——起播延迟与落定抖动消不掉，源视频自己停住也复现不了——不是媒体恢复的手段）、`media: none | align`（默认 `align`：每一个被恢复的观测，含检查点 t 的那一个，在采集里落定之后、截图之前把对应上的媒体元素对齐到录下的状态；`none` 不对齐，留作对照；发布的原路径与分叉配置显式写 `align`）、`media_time_tolerance_s`（媒体位置差的容差，默认 1 s）、`media_seek_timeout_s`（一次对齐跳转必须完成的上限，默认 2 s）、`media_end_lead_s`（录下时已经播完的元素，从结尾前这么多秒开始播到自然结束，默认 0.5 s，必须短于 `media_seek_timeout_s`，否则构造时报错并点名两个旋钮）。对齐只在恢复前缀里发生：恢复器在第 t 步交回之后不再预约，Loop 从不碰页面上的媒体，检查点之后的策略步与终止观测都是真实时间。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
 
 ### 4.2 AgentRuntime（通用编排）
 
@@ -1011,7 +1011,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - `retarget(action, recorded, restored) -> Retarget`：与 `act()` 同一套前缀路由（`action.name` 的第一段经 `_by_capability_id()` 找 capability）。路由到的 capability 实现了 `RestorationSupport` 就交给它；没实现、前缀不带点、或前缀找不到 capability 时返回恒等的 `Retarget(action=<原动作的副本>, method="identity")`。重放要复现源 run 的执行，连同它被 `guarded_act` 拒绝的那些动作：原样交给 `act_fn`，由它再拒绝一次，成败比较照样成立。`retarget` 从不执行动作，也不改环境。
 - `verify_restoration(recorded, restored) -> list[RestorationEvidence]`：按 capability 顺序扇出到每个实现了 `RestorationSupport` 的 capability，各交回一份证据（带自己的 `capability_id`）；没有任何实现者时是空列表，即"没有可校验的"。`recorded` 与 `restored` 都是本次协商的整个 `NegotiatedObservation`，capability 按自己 fragment 的本地名读它要的那几个（协商保证本地名不撞）。
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
-- `align_next_observation(recorded, *, media_seek_timeout_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
+- `align_next_observation(recorded, *, media_seek_timeout_s, media_end_lead_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
 
 **录下的采集与本配置是否一致（M32）**（`core/environments/_registrar.py`）：训练导出用学生的运行配置组装一个从不 setup 的环境，再问它"你按现在的配置采，会不会采出源 trace 录下的那种观测"：`compare_capture(recorded: Mapping[str, FragmentBase]) -> CaptureComparison`（`recorded` 是一步录下的 env 来源 fragment，键全限定）。按每个键的前缀经 `_by_capability_id()` 分给 capability，交给实现了 §4.9 `CaptureCheck` 的那些，按 capability 顺序合并它们的 `mismatches` 与 `unchecked`；没实现的 capability、找不到 capability 的键都不贡献（"没有可比的"）。只读配置与传进来的 fragment：不 setup、不连浏览器、不缓存。
 
@@ -2184,7 +2184,8 @@ class RestorationSupport(Protocol):
 class RestorationAlignment(Protocol):
     # 下一次观测是恢复出的、要对照 recorded 的那一次：在它的采集里、落定之后、截图之前，
     # 把能对应上的媒体元素对齐到 recorded 里录下的状态。这里只记下预约，不碰环境
-    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None: ...
+    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float,
+                                     media_end_lead_s: float) -> None: ...
 ```
 
 - 为什么在采集里做：对齐若在落定之前做，在播的视频会在落定的几秒里又走掉；若在 Loop 里做，Loop 就得认识页面上的媒体。capability 在自己的采集周期里做，恰好落在"等页面落定"与"截图"之间。
@@ -3389,8 +3390,9 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 2. 每个 `matched` 元素以录下的截图之前那次读数（没有就用之后那次）为目标：精确的 `current_time` 与 `paused`。已经在同一位置（差不超过 1 ms）、同一暂停状态的是 `already_aligned`，不动。录下的位置或状态不知道的是 `unknown`，不动。
 3. 先对齐录下是暂停的元素：`pause()`，设 `currentTime` 为目标，等到 `seeked` 已经发生、`seeking` 为 false、`readyState ≥ 2`，上限 `media_seek_timeout_s`（默认 2 s），并且跳转完成时停在目标位置上（差不超过 1 ms）。只看 `currentTime` 不算成功：跳到录下字节之外时 `currentTime` 立刻报目标值，`seeking` 却一直为 true、画面不变（实测）；反过来跳转完成了也不一定停在目标上：页面脚本喂数据的播放器在数据还没加完时，跳到 31.04 s 的请求完成在 26.66 s（2026-10-21 实测），这算跳转失败。
 4. 再对齐录下是在播放的元素：同样暂停、跳转、等跳转完成，然后 `play()`，等到 `playing`（同一上限），随即采集——不再落定一次，否则在播的视频又会走掉最多一个落定上限。播放器在脚本跳转、播放之后可能露出控制条（小红书的 xgplayer 实测如此），对齐记录照实写 `seek_and_play`。
-5. 跳转或播放没在上限内完成是 `failed`：立刻把元素跳回对齐之前的位置、恢复对齐之前的播放或暂停状态（同一上限；这也让播放器停止对未录字节的重试风暴），`rolled_back` 记回滚是否完成。这一步不能恢复：判定里的 `media_mismatch`。
-6. `missing`、`ambiguous` 的录下元素与直播是 `not_restorable`，不动它们。`extra` 元素不动（录下的没有它的状态），比较里照样不通过。
+5. 录下时已经播完的元素（截图前那次读数 `ended` 为 true，2026-10-21 裁决）不直接跳到结尾：直接跳到结尾时，小红书的播放器停在一帧旧画面上、也不出结束画面（截图距离 6–7，实测），而自己播完的视频与源一致。所以先暂停、跳到录下的结尾之前 `media_end_lead_s`（默认 0.5 s），跳转同样要 `seeked`、不在跳转、`readyState ≥ 2` 并停在这个位置上；然后播放，直到 `ended` 事件发生、元素处于结束状态（同一上限 `media_seek_timeout_s`），随即采集。对齐记录写 `seek_and_play_to_end`。已经自然播完、停在同一位置的元素是 `already_aligned`；靠跳转停在结尾、没有结束状态的不算。
+6. 跳转或播放没在上限内完成、跳转停在了目标之外、或没在上限内播到结束，是 `failed`：立刻把元素跳回对齐之前的位置、恢复对齐之前的播放或暂停状态（同一上限；这也让播放器停止对未录字节的重试风暴），`rolled_back` 记回滚是否完成。这一步不能恢复：判定里的 `media_mismatch`。
+7. `missing`、`ambiguous` 的录下元素与直播是 `not_restorable`，不动它们。`extra` 元素不动（录下的没有它的状态），比较里照样不通过。
 
 每一个动作——哪个元素、从哪里到哪里、做了什么、跳转用了多久、结果、回滚——都进对齐记录，由下一次 `verify_restoration` 交回，写进那一步 `RestorationCheck.evidence` 的 `media.alignment`，从不悄悄发生。回放日志里 `range_uncovered` 的次数从不决定对齐成败：播放器暂停时也会向后预取，越过录下的范围产生大量 miss，而对齐本身完全成功（实测：跳到 130 秒成功，随后 5 秒里 69 次 miss）。对齐只看元素自己的状态。
 

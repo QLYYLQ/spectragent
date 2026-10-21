@@ -104,8 +104,10 @@ MediaReadingPoint = Literal["before", "after"]
 #: position or play state is not known, so there was no target.
 MediaAlignmentOutcome = Literal["aligned", "already_aligned", "failed", "not_restorable", "unknown"]
 
-#: What alignment did to one element: paused and seeked, seeked and played, or nothing.
-MediaAlignmentAction = Literal["pause_and_seek", "seek_and_play", "none"]
+#: What alignment did to one element: paused and seeked; seeked and played; seeked a
+#: short lead before the end and played through to the natural end (a recorded
+#: element that had ended); or nothing.
+MediaAlignmentAction = Literal["pause_and_seek", "seek_and_play", "seek_and_play_to_end", "none"]
 
 
 class MediaComparison(BaseModel):

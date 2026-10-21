@@ -399,6 +399,7 @@ agent_loop:
     media: align                    # none: leave media where the replay put it (control arm)
     media_time_tolerance_s: 1.0     # seconds a media position may differ and still pass
     media_seek_timeout_s: 2.0       # seconds an alignment seek (and play) may take
+    media_end_lead_s: 0.5           # a video recorded at its end is played into it from this far before
 
 task_loader:
   - benchmark_name: trace_branches
@@ -444,8 +445,10 @@ task_loader:
   checkpoint's included, first moves every matched video or audio element to the position
   and play state recorded with that step's screenshot — inside the capture, after the page
   settles and right before the screenshot — and each action is kept with the step's check;
-  a seek that does not complete in `media_seek_timeout_s` is undone and the step fails
-  `media_mismatch`. Nothing is aligned after the checkpoint. A tab
+  a seek that does not complete in `media_seek_timeout_s` (or lands elsewhere) is undone
+  and the step fails `media_mismatch`. A video the recording showed at its end is sought
+  `media_end_lead_s` before it and played through to its natural end, so the player shows
+  its end screen. Nothing is aligned after the checkpoint. A tab
   the recording's actions opened is followed again by the same rule (`new_tabs`, above), so
   the restored observation is of the same tab. The restored steps are recorded as
   `origin: restored` with their check; step *t* and the `continue_steps` after it are the

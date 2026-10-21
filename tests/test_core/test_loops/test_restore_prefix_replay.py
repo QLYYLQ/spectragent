@@ -92,8 +92,10 @@ class _Env:
         self.observed += 1
         return f"live-{self.observed - 1}"
 
-    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
-        self.log.append(("align", recorded, media_seek_timeout_s))
+    async def align_next_observation(
+        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
+    ) -> None:
+        self.log.append(("align", recorded, media_seek_timeout_s, media_end_lead_s))
 
     async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
         self.log.append(("verify", recorded, restored))
@@ -145,19 +147,19 @@ class TestOrder:
         steps = await _collect(PrefixReplayRestorer(), _ctx(env, _act(log), source, 2))
 
         assert log == [
-            ("align", "recorded-0", 2.0),
+            ("align", "recorded-0", 2.0, 0.5),
             ("observe", 0),
             ("verify", "recorded-0", "live-0"),
             ("retarget", 0, "recorded-0", "live-0"),
             ("act", 1000),
             ("retarget", 1, "recorded-0", "live-0"),
             ("act", 1001),
-            ("align", "recorded-1", 2.0),
+            ("align", "recorded-1", 2.0, 0.5),
             ("observe", 1),
             ("verify", "recorded-1", "live-1"),
             ("retarget", 10, "recorded-1", "live-1"),
             ("act", 1010),
-            ("align", "recorded-2", 2.0),
+            ("align", "recorded-2", 2.0, 0.5),
             ("observe", 2),
             ("verify", "recorded-2", "live-2"),
         ]
@@ -178,7 +180,7 @@ class TestOrder:
         log: list[tuple[Any, ...]] = []
         steps = await _collect(PrefixReplayRestorer(), _ctx(_Env(log), _act(log), _Source([]), 0))
         assert log == [
-            ("align", "recorded-0", 2.0),
+            ("align", "recorded-0", 2.0, 0.5),
             ("observe", 0),
             ("verify", "recorded-0", "live-0"),
         ]
@@ -641,6 +643,7 @@ class TestTheContext:
             "media",
             "media_time_tolerance_s",
             "media_seek_timeout_s",
+            "media_end_lead_s",
         }
 
 
@@ -649,11 +652,14 @@ class TestMediaAlignment:
 
     async def test_media_align_is_the_default_and_covers_the_checkpoint(self) -> None:
         log: list[tuple[Any, ...]] = []
-        restorer = PrefixReplayRestorer(media_seek_timeout_s=0.5)
+        restorer = PrefixReplayRestorer(media_seek_timeout_s=0.5, media_end_lead_s=0.25)
         assert restorer.media == "align" and restorer.media_time_tolerance_s == 1.0
         await _collect(restorer, _ctx(_Env(log), _act(log), _Source([_record(0)]), 1))
         aligned = [entry for entry in log if entry[0] == "align"]
-        assert aligned == [("align", "recorded-0", 0.5), ("align", "recorded-1", 0.5)]
+        assert aligned == [
+            ("align", "recorded-0", 0.5, 0.25),
+            ("align", "recorded-1", 0.5, 0.25),
+        ]
         # Each request is followed by the observation it belongs to, and nothing after t asks.
         assert [entry[0] for entry in log][-3:] == ["align", "observe", "verify"]
 

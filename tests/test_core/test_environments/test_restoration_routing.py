@@ -151,7 +151,7 @@ class _Aligning(CapabilityBase):
 
     __registry_key__ = "restore_route_aligning"
 
-    requests: list[tuple[Any, float]]
+    requests: list[tuple[Any, float, float]]
 
     def get_action_descriptors(self, **ctx: Any) -> list[ActionDescriptor]:
         return []
@@ -159,8 +159,10 @@ class _Aligning(CapabilityBase):
     async def execute_action(self, action: Action, **kw: Any) -> ActionResult:
         raise AssertionError("an alignment request must never execute an action")
 
-    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
-        self.requests.append((recorded, media_seek_timeout_s))
+    async def align_next_observation(
+        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
+    ) -> None:
+        self.requests.append((recorded, media_seek_timeout_s, media_end_lead_s))
 
 
 class _SecondAligning(_Aligning):
@@ -184,10 +186,10 @@ class TestAlignNextObservation:
             {"a": first, "plain": _Plain(), "restore_route_cap": _restoring(), "b": second},
         )
         recorded = object()
-        await env.align_next_observation(recorded, media_seek_timeout_s=1.5)
-        assert first.requests == [(recorded, 1.5)]
-        assert second.requests == [(recorded, 1.5)]
+        await env.align_next_observation(recorded, media_seek_timeout_s=1.5, media_end_lead_s=0.4)
+        assert first.requests == [(recorded, 1.5, 0.4)]
+        assert second.requests == [(recorded, 1.5, 0.4)]
 
     async def test_nothing_happens_without_an_implementer(self) -> None:
         env = make_env(EnvironmentBase, {"plain": _Plain()})
-        await env.align_next_observation(object(), media_seek_timeout_s=2.0)
+        await env.align_next_observation(object(), media_seek_timeout_s=2.0, media_end_lead_s=0.5)

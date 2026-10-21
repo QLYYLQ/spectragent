@@ -263,12 +263,16 @@ class RestorationAlignment(Protocol):
     capability without it.
     """
 
-    async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float) -> None:
+    async def align_next_observation(
+        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
+    ) -> None:
         """Align the next observation's media to *recorded* (a whole observation of this run).
 
         ``media_seek_timeout_s`` bounds each seek (and the play after it) the
         alignment makes; one that does not complete in time is undone and
-        reported as failed.
+        reported as failed. ``media_end_lead_s`` is how far before its end a
+        recorded element that had ended is sought, to be played through to
+        its natural end.
         """
         ...
 
