@@ -305,8 +305,9 @@ async def drive(
     run_id: str,
     id_offset: int = 100,
     checkpoint: Checkpoint | None = None,
+    task: str = TASK,
 ) -> Outcome:
-    """One run of a real browser agent against the fake site, traced."""
+    """One run of a real browser agent against the fake site, traced (under *task*)."""
     agent = make_agent(kind)
     built: list[Any] = []
     original = agent.build_react_prompt
@@ -335,7 +336,7 @@ async def drive(
     outcome = Outcome(None, None, teacher, agent, cap, built)
     try:
         outcome.result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
-            TASK,
+            task,
             task_id=run_id,
             run_id=run_id,
             timeout=60,

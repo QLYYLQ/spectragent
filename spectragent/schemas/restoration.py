@@ -13,9 +13,11 @@ the way:
 - :class:`RestoredAction` / :class:`RestorationCheck` — the restorer's
   verdict on one step, carried on that step's ``StepRecord.restoration``
   (§5.3);
-- :class:`Checkpoint` — the Loop input naming the source run and *t*;
+- :class:`Checkpoint` — the Loop input naming the source run and *t*
+  (and the task variant the branch decides under, when it has one);
 - :class:`BranchProvenance` — the per-task record of where a branch came
-  from (``TraceConfig.branch``, kept out of the configuration digest).
+  from (``TraceConfig.branch``, kept out of the configuration digest), with
+  :class:`BranchTaskVariant` when the branch's task replaced the source's.
 
 Nothing here carries a price: token counts are the only cost the framework
 records.
@@ -285,12 +287,20 @@ class Checkpoint(BaseModel):
     The Loop input ``checkpoint`` of ``BranchLoop`` (``TaskContext.loop``).
     ``trace_dir`` is absolute: a branch sweep may run from another working
     directory than the one that listed the sources.
+
+    ``task_variant`` is the id of the task variant the branch decides under
+    instead of the source's task (the ``trace_branches`` loader's
+    ``task_variants`` file), or ``None`` when it keeps the source's task. The
+    variant's text reaches the agent as the run's task, like any task; the
+    Loop reads only the id, to refuse ``history_source: source``, which
+    replays the source's exact prompts and so its task (§4.1).
     """
 
     model_config = ConfigDict(frozen=True)
 
     trace_dir: str
     step: int = Field(ge=0)
+    task_variant: str | None = None
 
     @field_validator("trace_dir")
     @classmethod
@@ -300,15 +310,45 @@ class Checkpoint(BaseModel):
         return value
 
 
+class BranchTaskVariant(BaseModel):
+    """The task a branch decided under in place of its source's ("same page, different need").
+
+    One entry of the ``trace_branches`` loader's ``task_variants`` file,
+    recorded on :class:`BranchProvenance` so a reader of the branch trace
+    alone knows both tasks: ``task_text`` is the run's own task
+    (``TraceConfig.task``), ``source_task_text`` the source run's.
+
+    Attributes:
+        variant_id: The variant's id in the file, unique per source run and
+            step; the task id carries it (``…/s<t>/v<variant_id>/b<i>``).
+        task_text: The variant's task — the task this branch ran.
+        source_task_text: The source run's task, as its trace recorded it.
+        note: The file's free-form note (how the variant was generated), or
+            ``None`` when it gave none.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    variant_id: str
+    task_text: str
+    source_task_text: str
+    note: str | None = None
+
+
 class BranchProvenance(BaseModel):
     """Where a branch run came from — recorded as ``TraceConfig.branch``.
 
-    Per task (the task id itself is ``<source_run_id>/s<t>/b<i>``), so it is
+    Per task (the task id itself is ``<source_run_id>/s<t>/b<i>``, or
+    ``<source_run_id>/s<t>/v<variant_id>/b<i>`` for a task variant), so it is
     not part of the configuration digest: every task of one branch sweep
     shares a ``config_hash``. ``source_trace`` is the source run directory
     relative to the sources root (POSIX), so a reader holding the same root
     finds the source trace; the source benchmark / subset / task id join
     the branch back to the source task's reference.
+
+    ``branch_group_id`` names the branches given identical inputs: the task
+    id without its ``/b<i>``. ``task_variant`` is ``None`` (not written) when
+    the branch kept its source's task.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -321,11 +361,15 @@ class BranchProvenance(BaseModel):
     checkpoint_step: int = Field(ge=0)
     branch_index: int = Field(ge=0)
     branch_group_id: str
+    task_variant: BranchTaskVariant | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 __all__ = [
     "REASON_ORDER",
     "BranchProvenance",
+    "BranchTaskVariant",
     "Checkpoint",
     "MediaAlignment",
     "MediaAlignmentAction",

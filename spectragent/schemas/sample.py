@@ -181,7 +181,8 @@ class BranchSampleMeta(_Record):
     """Where a branch run's sample came from (a neutral record: no verdict, no preference).
 
     Attributes:
-        branch_group_id: ``<source_run_id>/s<t>`` — every branch of one
+        branch_group_id: ``<source_run_id>/s<t>`` (``…/v<variant_id>`` for a
+            task variant) — every branch given the same inputs at one
             checkpoint, and its source task, share it.
         source_run_id: The run the branch resumed.
         checkpoint_step: ``t``, the step the branch decided again.

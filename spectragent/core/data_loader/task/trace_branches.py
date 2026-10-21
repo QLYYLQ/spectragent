@@ -34,6 +34,22 @@ default) raises one :class:`BenchmarkDataError` listing every such source;
 ``skip`` leaves them out. Every source or step left out is in
 :attr:`TraceBranchesTaskLoader.skipped` with its reason.
 
+**Task variants.** With ``task_variants`` (a ``task-variants-1`` file,
+:mod:`~spectragent.core.data_loader.task.task_variants`), each branch task
+decides under another task that starts from the same screen: the file names
+the checkpoints (``source_run_id``, ``step``) and each one's task text. A
+variant at a step that is a branchable candidate the ``step_selector`` chose
+becomes ``branches_per_step`` tasks ``<source_run_id>/s<t>/v<variant_id>/b<i>``
+whose task text is the variant's, whose Loop input ``checkpoint`` names the
+variant (so ``BranchLoop`` refuses ``history_source: source``, which replays
+the source's prompts and so its task), and whose provenance carries a
+:class:`~spectragent.schemas.restoration.BranchTaskVariant`; the setup
+context, the replay archive and everything else stay the source's. A file
+that does not read as that format fails the scan; a variant it lists that
+cannot be used (listed twice, an empty task text, a run id no kept source
+has, a step that is not a chosen candidate) is left out, in ``skipped`` under
+its key ``<source_run_id>/s<t>/v<variant_id>``.
+
 **Lazy.** The constructor touches no file: the CLI composes the whole YAML
 once per task, and a sweep over a thousand sources must not rescan them a
 thousand times. The sources are scanned on first use (``task_ids``,
@@ -51,6 +67,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
@@ -68,6 +85,7 @@ from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — 
     StepSelector,
     default_step_selector,
 )
+from spectragent.core.data_loader.task.task_variants import TaskVariantEntry, read_task_variants
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import TraceConfig, TraceManifest
 from spectragent.core.trace.reader import RunTrace
@@ -80,7 +98,7 @@ from spectragent.core.trace.sources import (
     past_complete_reason,
     source_pattern_problem,
 )
-from spectragent.schemas.restoration import BranchProvenance, Checkpoint
+from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import (
     REPLAY_ARCHIVE_KEY,
@@ -97,7 +115,10 @@ _REQUIRE_EVAL: TypeAdapter[RequireEval] = TypeAdapter(RequireEval)
 
 
 class TraceBranchesTaskLoader(TaskLoaderBase):
-    """Branch tasks from recorded runs: ``<source_run_id>/s<t>/b<i>`` (module docstring)."""
+    """Branch tasks from recorded runs: ``<source_run_id>/s<t>/b<i>`` (module docstring).
+
+    With ``task_variants``, ``<source_run_id>/s<t>/v<variant_id>/b<i>`` instead.
+    """
 
     __registry_key__ = "trace_branches"
     __wiring__: ClassVar[dict[str, Any]] = {
@@ -115,6 +136,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
     require_eval: RequireEval | None
     require_archive: tuple[str, ...]
     on_unbranchable: Literal["raise", "skip"]
+    task_variants: str | None
     _contexts: dict[str, TaskContext]
     _skipped: dict[str, str]
     _scanned: bool
@@ -193,6 +215,20 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
                 ),
             ),
         ] = "raise",
+        task_variants: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "A task-variants file (JSON, format 'task-variants-1'; '~' expanded, "
+                    "relative to the working directory): each entry gives a source run id, a "
+                    "step and a different task that starts from that step's screen. Set, the "
+                    "file names the checkpoints (among the candidates step_selector chose), "
+                    "and every task is '<source_run_id>/s<t>/v<variant_id>/b<i>' with the "
+                    "variant's task text; it needs the branch loop's history_source: "
+                    "restored. None: every branch keeps its source's task."
+                ),
+            ),
+        ] = None,
     ) -> None:
         # The receptor's in-Python default; the Composer injects the configured one.
         self.step_selector = default_step_selector()
@@ -226,6 +262,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         )
         self.require_archive = tuple(require_archive)
         self.on_unbranchable = on_unbranchable
+        self.task_variants = task_variants
         self._tasks = {}
         self._contexts = {}
         self._skipped = {}
@@ -264,7 +301,9 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
 
         Keyed by the source's path relative to the sources root (POSIX); a
         single selected step a source cannot branch at is keyed
-        ``<path>#s<t>``. Filtered sources are here too (``filtered: …``).
+        ``<path>#s<t>``; a task variant left out, by its
+        ``<source_run_id>/s<t>/v<variant_id>``. Filtered sources are here too
+        (``filtered: …``).
         """
         self._scan_once()
         return MappingProxyType(self._skipped)
@@ -274,6 +313,12 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
     def root(self) -> Path:
         """The sources root, absolute (``data_dir``, or ``traces`` in the working directory)."""
         return Path(self.data_dir if self.data_dir is not None else "traces").expanduser().resolve()
+
+    def task_variants_path(self) -> Path | None:
+        """The ``task_variants`` file, absolute, or ``None`` when every branch keeps its task."""
+        if self.task_variants is None:
+            return None
+        return Path(self.task_variants).expanduser().resolve()
 
     def _scan_once(self) -> None:
         if self._scanned:
@@ -288,6 +333,17 @@ class _Unbranchable(Exception):
     """A source that passed the filters but cannot be branched; the message says why."""
 
 
+@dataclass(frozen=True)
+class _Placement:
+    """What every branch task of one source shares: where it is, its configuration and setup."""
+
+    rel: str
+    directory: Path
+    run_id: str
+    config: TraceConfig
+    env: dict[str, Any]
+
+
 class _Scan:
     """One scan of the sources root — what the loader publishes only when it succeeds."""
 
@@ -298,10 +354,19 @@ class _Scan:
         self.skipped: dict[str, str] = {}
         #: Source benchmark loaders built to re-resolve setup contexts, by (benchmark, subset).
         self._source_loaders: dict[tuple[str, str], Any] = {}
+        #: The usable task variants still to place, by source run id, then step
+        #: (``None``: no ``task_variants`` — every branch keeps its source's task).
+        self._variants: dict[str, dict[int, list[TaskVariantEntry]]] | None = None
+        #: Every readable matched source's run id → its paths, to say why a
+        #: variant whose source was left out was left out.
+        self._sources_by_run_id: dict[str, list[str]] = {}
 
     def run(self) -> None:
         loader = self.loader
         root = loader.root()
+        variants_path = loader.task_variants_path()
+        if variants_path is not None:
+            self._variants = self._usable_variants(read_task_variants(variants_path))
         matched = match_runs(root, loader.sources)
         if not matched:
             logger.warning(
@@ -309,6 +374,7 @@ class _Scan:
                 root,
                 list(loader.sources),
             )
+            self._leave_out_unplaced_variants(root)
             return
 
         unbranchable: dict[str, str] = {}
@@ -316,6 +382,7 @@ class _Scan:
         for rel, directory in matched:
             try:
                 trace = RunTrace(directory)
+                self._sources_by_run_id.setdefault(trace.run_id, []).append(rel)
                 reason = self._filtered_out(trace)
             except TraceSchemaError as exc:
                 unbranchable[rel] = f"not a readable trace: {exc}"
@@ -354,6 +421,59 @@ class _Scan:
         for rel, why in sorted(unbranchable.items()):
             logger.warning("trace_branches: skipping %s: %s", rel, why)
             self.skipped[rel] = why
+        self._leave_out_unplaced_variants(root)
+
+    # ── task variants ────────────────────────────────────────────────
+
+    def _usable_variants(
+        self, entries: list[TaskVariantEntry]
+    ) -> dict[str, dict[int, list[TaskVariantEntry]]]:
+        """*entries* by run id and step, in file order — less the ones no source can fix.
+
+        A ``(source_run_id, step, variant_id)`` listed more than once is left
+        out in every copy (nothing says which one is meant), and so is a
+        variant whose task text is empty.
+        """
+        counts: dict[str, int] = {}
+        for entry in entries:
+            counts[entry.key] = counts.get(entry.key, 0) + 1
+        usable: dict[str, dict[int, list[TaskVariantEntry]]] = {}
+        for entry in entries:
+            if counts[entry.key] > 1:
+                self.skipped[entry.key] = (
+                    f"task variant {entry.variant_id!r} is listed {counts[entry.key]} times for "
+                    f"run {entry.source_run_id!r} step {entry.step} in the task_variants file; "
+                    f"variant ids must be unique per run and step"
+                )
+                continue
+            if not entry.task_text.strip():
+                self.skipped[entry.key] = (
+                    f"task variant {entry.variant_id!r} has an empty task_text"
+                )
+                continue
+            usable.setdefault(entry.source_run_id, {}).setdefault(entry.step, []).append(entry)
+        return usable
+
+    def _leave_out_unplaced_variants(self, root: Path) -> None:
+        """Every variant no expanded source took, with why its source was not there."""
+        if not self._variants:
+            return
+        for run_id, by_step in self._variants.items():
+            rels = self._sources_by_run_id.get(run_id)
+            if rels:
+                why = "; ".join(
+                    f"{rel}: {self.skipped.get(rel, 'left out')}" for rel in sorted(rels)
+                )
+                reason = f"its source run {run_id!r} is left out ({why})"
+            else:
+                reason = (
+                    f"no readable source run under {root} matching {list(self.loader.sources)} "
+                    f"has run id {run_id!r}"
+                )
+            for entries in by_step.values():
+                for entry in entries:
+                    self.skipped[entry.key] = reason
+        self._variants = {}
 
     def _filtered_out(self, trace: RunTrace) -> str | None:
         """Why a filter leaves *trace* out, or ``None`` when it is kept."""
@@ -411,12 +531,47 @@ class _Scan:
                 "whose observation was recorded and that the trace is complete through)"
             )
             return
-        for step in self.loader.step_selector.select(candidates):
+        source = _Placement(rel, directory, trace.run_id, config, env)
+        selected = self.loader.step_selector.select(candidates)
+        if self._variants is not None:
+            self._expand_variants(source, by_step, manifest, candidates, selected)
+            return
+        for step in selected:
             if step not in candidates:
                 self.skipped[f"{rel}#s{step}"] = _why_not_a_candidate(by_step, step, manifest)
                 continue
             for index in range(self.loader.branches_per_step):
-                self._add_task(trace.run_id, rel, directory, config, env, step, index)
+                self._add_task(source, step, index)
+
+    def _expand_variants(
+        self,
+        source: _Placement,
+        by_step: Mapping[int, StepRecord],
+        manifest: TraceManifest,
+        candidates: list[int],
+        selected: list[int],
+    ) -> None:
+        """The source's branch tasks under its task variants: the file names the steps.
+
+        A variant's step must be a candidate the selector chose; otherwise
+        the variant is left out with the reason, keyed by the variant.
+        """
+        assert self._variants is not None
+        chosen = set(selected)
+        selector = self.loader.step_selector.selector_id
+        for step, entries in sorted(self._variants.pop(source.run_id, {}).items()):
+            if step not in candidates:
+                reason = _why_not_a_candidate(by_step, step, manifest)
+            elif step not in chosen:
+                reason = f"step {step} is a candidate step_selector {selector!r} did not choose"
+            else:
+                reason = None
+            for entry in entries:
+                if reason is not None:
+                    self.skipped[entry.key] = f"{source.rel}: {reason}"
+                    continue
+                for index in range(self.loader.branches_per_step):
+                    self._add_task(source, step, index, variant=entry)
 
     def _require_archive(self, trace: RunTrace, config: TraceConfig) -> None:
         negotiation = config.negotiation
@@ -479,21 +634,22 @@ class _Scan:
 
     def _add_task(
         self,
-        run_id: str,
-        rel: str,
-        directory: Path,
-        config: TraceConfig,
-        env: dict[str, Any],
+        source: _Placement,
         step: int,
         index: int,
+        *,
+        variant: TaskVariantEntry | None = None,
     ) -> None:
-        task_id = f"{run_id}/s{step}/b{index}"
+        """One branch task: *source* at *step*, branch *index*, under *variant* when given."""
+        run_id, rel, config, env = source.run_id, source.rel, source.config, source.env
+        group_id = f"{run_id}/s{step}" if variant is None else variant.key
+        task_id = f"{group_id}/b{index}"
         env_type = config.env_type or self.loader.env_type
         fields: dict[str, Any] = {
             "task_id": task_id,
             "benchmark": self.loader.benchmark_name,
             "env_type": env_type,
-            "task_text": config.task,
+            "task_text": config.task if variant is None else variant.task_text,
             "difficulty": config.extra.get("difficulty"),
             "domain": config.extra.get("domain"),
             "tags": list(config.extra.get("tags") or []),
@@ -502,10 +658,16 @@ class _Scan:
         if setup is not None:
             fields["setup"] = setup
         self.tasks[task_id] = TaskDefinition(**fields)
-        source_dir = str(directory)
+        source_dir = str(source.directory)
         self.contexts[task_id] = TaskContext(
             env={**env, REPLAY_ARCHIVE_KEY: source_dir},
-            loop={CHECKPOINT_KEY: Checkpoint(trace_dir=source_dir, step=step)},
+            loop={
+                CHECKPOINT_KEY: Checkpoint(
+                    trace_dir=source_dir,
+                    step=step,
+                    task_variant=variant.variant_id if variant is not None else None,
+                )
+            },
             branch=BranchProvenance(
                 source_run_id=run_id,
                 source_trace=rel,
@@ -514,7 +676,17 @@ class _Scan:
                 source_task_id=config.task_id,
                 checkpoint_step=step,
                 branch_index=index,
-                branch_group_id=f"{run_id}/s{step}",
+                branch_group_id=group_id,
+                task_variant=(
+                    BranchTaskVariant(
+                        variant_id=variant.variant_id,
+                        task_text=variant.task_text,
+                        source_task_text=config.task,
+                        note=variant.note,
+                    )
+                    if variant is not None
+                    else None
+                ),
             ),
         )
 

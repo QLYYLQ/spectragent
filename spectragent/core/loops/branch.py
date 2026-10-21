@@ -176,7 +176,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             description=(
                 "History before the checkpoint: exact source conversation, or actual "
                 "restored observations, retargeted actions and results. Independent of "
-                "the restorer's strict/warn environment verification."
+                "the restorer's strict/warn environment verification. A branch under a "
+                "task variant (trace_branches task_variants) needs 'restored'."
             ),
         ),
     ] = "source"
@@ -273,6 +274,16 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             problems.append(
                 "the source is itself a branch run (its prefix made no model calls to replay); "
                 f"branch from its source run {config.branch.source_run_id!r} instead"
+            )
+        variant = source.checkpoint.task_variant
+        if variant is not None and self.history_source == "source":
+            # Decided by configuration and task data, so refused here, before
+            # setup: the seed check would only fail once the run had started.
+            problems.append(
+                f"the checkpoint decides under task variant {variant!r} (the trace_branches "
+                "loader's task_variants), but history_source: source replays the source's "
+                "exact prompts, which carry the source's task; set the branch loop's "
+                "history_source: restored"
             )
 
         mismatches: dict[str, tuple[Any, Any]] = {}

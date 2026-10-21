@@ -419,6 +419,7 @@ task_loader:
     require_eval: null                 # {evaluator_id, label: 1, slug: null}
     require_archive: null              # null: [browser.network]; []: none
     on_unbranchable: raise             # skip
+    task_variants: null                # a task-variants-1 file: another task per checkpoint
 ```
 
 ```bash
@@ -426,7 +427,8 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
 ```
 
-- A task id is `<source_run_id>/s<t>/b<i>`. Its context carries the source's setup context
+- A task id is `<source_run_id>/s<t>/b<i>` (`<source_run_id>/s<t>/v<variant_id>/b<i>` under
+  `task_variants`). Its context carries the source's setup context
   (re-resolved through the source benchmark's loader when it is missing or carries
   redactions), `replay_archive`, the `checkpoint` Loop input, and the branch provenance that
   only the trace receives.
@@ -467,6 +469,23 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   regenerates them. Helper calls carry `purpose=prompt_helper`, count toward experiment
   usage, and never become Agent replies or teacher thoughts. Code references, parameters,
   scope and helper configuration are experimental inputs, not recorder settings.
+- Task variants ("same page, different need", architecture §4.10): `task_variants` names a
+  JSON file `{"format": "task-variants-1", "variants": [{source_run_id, step, variant_id,
+  task_text, note?}]}`. The file names the checkpoints, among the candidates the selector
+  chose (`all` lets the file decide alone); each variant becomes `branches_per_step` tasks
+  whose task text is the variant's, whose `checkpoint` carries `task_variant` (the id), and
+  whose provenance carries `BranchTaskVariant{variant_id, task_text, source_task_text, note}`;
+  `branch_group_id` is the task id without `/b<i>`, so different variants of one checkpoint
+  are never compared as duplicates. Everything else is the source's. A file that does not
+  read as that format fails the first scan naming the problem; an entry that cannot be used
+  (listed twice, empty text, no such source, the source left out, not a chosen candidate)
+  is in `skipped` under `<source_run_id>/s<t>/v<variant_id>`. A variant needs
+  `history_source: restored`: `BranchLoop.weave` refuses `source` (it replays the source's
+  prompts, which carry the source's task) with an `IncompatibleCheckpointError` naming
+  both settings, so the bench pre-flight stops before any setup. Restored history still
+  renders every restored step's source reply, thought included
+  (`agents/prompt_context.py::restored_history_message`, `source_material.recorded_reply`),
+  and those thoughts were written for the source's task.
 - `trace_branches` has no eval loader: pass `--no-eval`. A configured evaluator is refused
   before the sweep starts.
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's

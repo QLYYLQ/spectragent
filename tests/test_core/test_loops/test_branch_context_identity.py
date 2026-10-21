@@ -34,7 +34,14 @@ from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.schemas.restoration import Checkpoint
-from tests._helpers.branch_browser import AgentKind, Outcome, branch_loop, drive, source_loop
+from tests._helpers.branch_browser import (
+    TASK,
+    AgentKind,
+    Outcome,
+    branch_loop,
+    drive,
+    source_loop,
+)
 from tests._helpers.trace_builder import as_chat
 
 
@@ -286,3 +293,78 @@ async def test_cursor_model_view_follows_source_or_restored_history(
     ]
     expected = source_image if history_source == "source" else live_image
     assert base64.b64decode(images[0].split(",", 1)[1]) == expected.model_image_bytes()
+
+
+#: A UI-TARS source whose first thought quotes its task (as real thoughts do), and
+#: whose checkpoint-step thought is the one a branch at step 2 must decide anew.
+QUOTING_SOURCE = [
+    "Thought: to put the blue kettle in the cart, I open the blue one.\n"
+    "Action: click(point='(10,20)')",
+    "Thought: now on to the checkout.\nAction: click(point='(20,20)')",
+    "Thought: the cart holds the kettle.\nAction: finished(content='bought')",
+]
+VARIANT_TASK = "find out how long the kettle's warranty lasts"
+
+
+def _message_texts(messages: list[Any]) -> list[tuple[str, str]]:
+    """Each message's role and its text parts (images left out)."""
+    texts: list[tuple[str, str]] = []
+    for message in recorded_form(messages):
+        content = message["content"]
+        if isinstance(content, list):
+            content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+        texts.append((message["role"], str(content)))
+    return texts
+
+
+async def test_ui_tars_restored_branch_under_a_task_variant_sees_the_source_thoughts(
+    tmp_path: Path,
+) -> None:
+    """What the first policy prompt of a task-variant branch holds (UI-TARS, restored history).
+
+    - The task is the variant's: it is the one task in the system seed.
+    - The source's task text appears only where the source's own replies quoted it: restored
+      history renders each restored step's recorded reply, thought included, as
+      ``source_material.recorded_reply`` (``spectragent/agents/prompt_context.py``
+      ``restored_history_message``, which ``UITarsAgent.build_restored_history`` appends).
+    - The checkpoint step's own source reply is not rendered: the Loop hands it only to
+      prompt-contribution functions (``ReactPromptContext.source_reply``).
+    """
+    source_outcome = await drive(
+        tmp_path / "src",
+        kind="ui_tars",
+        memory="simple",
+        loop=source_loop(),
+        replies=list(QUOTING_SOURCE),
+        run_id="src",
+    )
+    assert source_outcome.result is not None and source_outcome.result.agent_done.value == "done"
+    assert source_outcome.run_dir is not None
+    loop = branch_loop()
+    loop.history_source = "restored"
+    outcome = await drive(
+        tmp_path / "variant-branch",
+        kind="ui_tars",
+        memory="simple",
+        loop=loop,
+        replies=["Action: finished(content='two years')"],
+        run_id="variant-branch",
+        id_offset=500,
+        checkpoint=Checkpoint(
+            trace_dir=str(source_outcome.run_dir.resolve()), step=2, task_variant="warranty"
+        ),
+        task=VARIANT_TASK,
+    )
+    assert outcome.result is not None and outcome.result.error is None, outcome.result
+    texts = _message_texts(outcome.teacher.prompts[0])
+
+    seed_role, seed = texts[0]
+    assert seed_role == "system" and VARIANT_TASK in seed and TASK not in seed
+    assert [role for role, text in texts if VARIANT_TASK in text] == ["system"]
+
+    quoting = [text for _role, text in texts if TASK in text]
+    assert len(quoting) == 1, "the source task appears once: in step 0's recorded reply"
+    assert "Restored execution history" in quoting[0]
+    assert '"recorded_reply": "Thought: to put the blue kettle in the cart' in quoting[0]
+    assert any("now on to the checkout" in text for _role, text in texts), "step 1's thought"
+    assert not any("the cart holds the kettle" in text for _role, text in texts)
