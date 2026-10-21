@@ -39,7 +39,8 @@ And the observation's settle wait (``settle.py``): its isolated world, and its
 in-page probe, which reports the page quiet at once
 (:attr:`FakeBrowser.settle_answer`, changeable per test). And the screenshot's
 media reads (``media.py``): their isolated world and a page without audio or
-video (:attr:`FakeBrowser.media_answer`).
+video (:attr:`FakeBrowser.media_answer`); a session-level ``Target.setAutoAttach``
+honours its type filter, as Chrome does (frame discovery adopts iframes only).
 
 And the measurement of the browser's defaults right after launch
 (``backends/browser_defaults.py``): its isolated world and its probe, answered
@@ -363,10 +364,11 @@ class FakeBrowser:
         #: Execution contexts of the screenshot's media world, and the reads made in them.
         self.media_contexts: set[int] = set()
         self.media_reads = 0
-        #: What a media read returns: a page without audio or video.
+        #: What a media read of a frame returns: the main document, without audio or video.
         self.media_answer: dict[str, Any] = {
+            "path": "main",
             "elements": [],
-            "unreachable_frames": [],
+            "children": [],
             "truncated": False,
         }
         #: What the page reports to the fingerprint probe.
@@ -478,6 +480,9 @@ class FakeBrowser:
             settings = client.auto_attach.get(scope)
             if not settings or not settings.get("autoAttach"):
                 continue
+            allowed = {entry.get("type") for entry in settings.get("filter") or []}
+            if allowed and type_ not in allowed:
+                continue  # e.g. a frame-discovery auto-attach (iframes only) never adopts a tab
             sid = self.new_session(f"c{client.id}")
             target.sessions[client.id] = sid
             waiting = bool(settings.get("waitForDebuggerOnStart"))

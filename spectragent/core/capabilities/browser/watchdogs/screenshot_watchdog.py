@@ -39,6 +39,7 @@ from typing import ClassVar, Literal
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
+from spectragent.core.capabilities.browser.dom.capture import FrameTargets
 from spectragent.core.capabilities.browser.media import MediaRead, media_state, read_media
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -92,9 +93,11 @@ class ScreenshotWatchdog(BrowserWatchdog):
         cursor_position_getter: Callable[[], tuple[int, int] | None] | None = None,
         media_timeout_s: float = 1.0,
         main_frame_id_getter: Callable[[], str | None] | None = None,
+        media_frames: FrameTargets | None = None,
     ) -> None:
         self._media_timeout_s = media_timeout_s
         self._main_frame_id_getter = main_frame_id_getter
+        self._media_frames = media_frames
         self._cursor = cursor
         self._cursor_size = cursor_size
         self._cursor_position_getter = cursor_position_getter
@@ -116,6 +119,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
             cursor_position_getter=ctx.pointer_position.snapshot,
             media_timeout_s=ctx.media_state_timeout_s,
             main_frame_id_getter=ctx.main_frame_id_getter,
+            media_frames=ctx.media_frames,
         )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
@@ -209,12 +213,13 @@ class ScreenshotWatchdog(BrowserWatchdog):
             raise
 
     async def _read_media(self) -> MediaRead:
-        """Every media element of the tab, within ``media_state_timeout_s`` (``media.py``)."""
+        """Every media element of the tab, its cross-site frames' included, within the budget."""
         frame_id = self._main_frame_id_getter() if self._main_frame_id_getter else None
         return await read_media(
             self._cdp,
             session_id=self._session_id,
             frame_id=frame_id,
+            frames=self._media_frames,
             timeout_s=self._media_timeout_s,
         )
 

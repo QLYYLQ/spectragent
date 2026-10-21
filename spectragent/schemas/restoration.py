@@ -167,16 +167,21 @@ class MediaEvidence(BaseModel):
     ``comparisons`` is ``None`` when no comparison could be made — a side
     carries no media state, or both of its readings are unknown — and
     ``detail`` says why; an empty list means neither side has a media
-    element. ``alignment`` is ``None`` when no alignment was requested for
-    the restored observation (``media: none``); otherwise one entry per
-    recorded element it considered, and ``alignment_detail`` says why it is
-    empty when it is.
+    element. ``recorded_unreachable_frames`` / ``restored_unreachable_frames``
+    name the embedded frames whose own media read did not answer on each
+    side: what media they hold is unknown, so the step cannot be restored.
+    ``alignment`` is ``None`` when no alignment was requested for the
+    restored observation (``media: none``); otherwise one entry per recorded
+    element it considered, and ``alignment_detail`` says why it is empty
+    when it is.
     """
 
     model_config = ConfigDict(frozen=True)
 
     comparisons: list[MediaComparison] | None = None
     detail: str = ""
+    recorded_unreachable_frames: list[str] = Field(default_factory=list)
+    restored_unreachable_frames: list[str] = Field(default_factory=list)
     alignment: list[MediaAlignment] | None = None
     alignment_detail: str = ""
 

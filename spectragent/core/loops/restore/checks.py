@@ -14,8 +14,9 @@ same rules (``docs/architecture_design.md`` §5.3 ``RestorationCheck``):
 - ``signature_mismatch`` — the interactive elements differ;
 - ``media_mismatch`` — a media element is missing, extra, ambiguous or a
   live stream; a matched one is further from its recorded position than the
-  media tolerance or differs in its paused state; or the media alignment
-  before the capture failed or could not be done
+  media tolerance or differs in its paused state; an embedded frame's media
+  could not be read; or the media alignment before the capture failed or
+  could not be done
   (:func:`media_failed`);
 - ``screenshot_distance`` — the screenshots are further apart than the
   threshold.
@@ -48,11 +49,17 @@ def media_failed(media: MediaEvidence, *, time_tolerance_s: float) -> bool:
     Fails on an element present on one side only, an ambiguous
     correspondence, a live stream, a matched element whose two known
     positions are more than *time_tolerance_s* apart or whose two known
-    paused states differ, and on an alignment that failed or could not be
-    done. Unknown values — a comparison that could not be made, a position
-    or state not measured, an alignment with no recorded target — never
-    decide.
+    paused states differ, an embedded frame whose own media read did not
+    answer on either side (what it holds is unknown, so the step cannot be
+    restored), and on an alignment that failed or could not be done.
+    Unknown values — a comparison that could not be made, a position or
+    state not measured, an alignment with no recorded target — never decide;
+    without a comparison the unreachable frames do not decide either.
     """
+    if media.comparisons is not None and (
+        media.recorded_unreachable_frames or media.restored_unreachable_frames
+    ):
+        return True
     for item in media.comparisons or []:
         if item.correspondence != "matched" or item.live:
             return True

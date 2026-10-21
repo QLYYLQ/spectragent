@@ -311,6 +311,7 @@ def test_media_differences_and_alignment_problems_are_listed_unknowns_kept_apart
                     "screenshot_distance": 4,
                     "document_misses": 0,
                     "media": {
+                        "restored_unreachable_frames": ["main/2"],
                         "comparisons": [
                             {
                                 "element": "main#0 video",
@@ -340,6 +341,7 @@ def test_media_differences_and_alignment_problems_are_listed_unknowns_kept_apart
     assert gap is not None and gap["status"] == "changed"
     media = [line for line in gap["differences"] if "media" in line]
     assert media == [
+        "browser: media in restored frame main/2 could not be read",
         "browser: media main#0 video at 22.600 s, recorded 73.600 s",
         "browser: media main#0 video paused state changed",
         "browser: media main#1 video extra",

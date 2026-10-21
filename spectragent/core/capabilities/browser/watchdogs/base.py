@@ -40,6 +40,7 @@ from spectragent.core.capabilities.browser.sessions import TabSessions
 if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
 
+    from spectragent.core.capabilities.browser.dom.capture import FrameTargets
     from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
     from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, TargetCapture
     from spectragent.core.capabilities.browser.dom.serializers import (
@@ -197,6 +198,11 @@ class WatchdogContext:
     #: seconds (``BrowserCapability.media_state_timeout_s``); one that runs out
     #: is recorded as unknown.
     media_state_timeout_s: float = 1.0
+    #: The tab's out-of-process frames as CDP sessions, for the media reads
+    #: around a screenshot (``media.py``): owned by the capability, one per
+    #: tab, shared with the media alignment of a restored capture. ``None``
+    #: for browser-level watchdogs and hand-built contexts.
+    media_frames: FrameTargets | None = None
     #: Shared only by the input controller and screenshot resolver built for this tab.
     pointer_position: PointerPosition = field(default_factory=PointerPosition)
 

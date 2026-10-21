@@ -112,6 +112,10 @@ def _media_gap(
     comparisons = media.get("comparisons")
     if comparisons is None:
         unknown.append(f"{prefix}: media state not compared ({media.get('detail') or 'unknown'})")
+    for side in ("recorded", "restored"):
+        for frame in media.get(f"{side}_unreachable_frames") or []:
+            line = f"{prefix}: media in {side} frame {frame} could not be read"
+            (differences if comparisons is not None else unknown).append(line)
     for item in comparisons or []:
         element = item.get("element", "?")
         if item.get("correspondence") != "matched":

@@ -158,32 +158,74 @@ def test_malformed_elements_are_dropped_not_guessed() -> None:
 # ── reading through CDP ───────────────────────────────────────────────
 
 
-class _ScriptedCDP:
-    """Answers the media world and the read; can stall or fail."""
+def frame_value(path: str = "main", *elements: dict[str, Any], children: Any = ()) -> dict:
+    """One frame's own read, as the in-page probe returns it."""
+    return {
+        "path": path,
+        "elements": [{k: v for k, v in e.items() if k != "frame"} for e in elements],
+        "children": list(children),
+        "truncated": False,
+    }
 
-    def __init__(self, value: Any = None, *, stall: bool = False, world: Any = None) -> None:
-        self.value = value if value is not None else {"elements": [raw()], "unreachable_frames": []}
+
+class _ScriptedCDP:
+    """Answers the media world, the frame tree and each frame's read; can stall or fail.
+
+    *frames* maps a frame id to its read (a value, or an exception to raise);
+    *tree* is the tab session's frame ids.
+    """
+
+    def __init__(
+        self,
+        value: Any = None,
+        *,
+        stall: bool = False,
+        world: Any = None,
+        frames: dict[str, Any] | None = None,
+        tree: list[str] | None = None,
+    ) -> None:
+        self.frames = frames or {"F": value if value is not None else frame_value("main", raw())}
+        self.tree = tree
         self.stall = stall
         self.world = world if world is not None else {"executionContextId": 42}
-        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.sent: list[tuple[str, dict[str, Any], str | None]] = []
+        self._contexts: dict[int, str] = {}
 
     async def send(self, method: str, params: dict[str, Any], session_id: str | None = None) -> Any:
-        self.sent.append((method, params))
+        self.sent.append((method, params, session_id))
         if self.stall:
             await asyncio.sleep(10)
+        if method == "Page.getFrameTree":
+            ids = self.tree or ["F"]
+            return {
+                "frameTree": {
+                    "frame": {"id": ids[0]},
+                    "childFrames": [{"frame": {"id": i}} for i in ids[1:]],
+                }
+            }
         if method == "Page.createIsolatedWorld":
-            return self.world
-        return {"result": {"type": "object", "value": self.value}}
+            if self.world.get("executionContextId") is None:
+                return self.world
+            context = 100 + len(self._contexts)
+            self._contexts[context] = params["frameId"]
+            return {"executionContextId": context}
+        frame = self._contexts.get(int(params.get("contextId") or 0), "")
+        answer = self.frames.get(frame, ["no"])
+        if isinstance(answer, BaseException):
+            raise answer
+        if answer == "hang":
+            await asyncio.sleep(10)
+        return {"result": {"type": "object", "value": answer}}
 
 
-async def test_the_read_runs_in_its_own_isolated_world() -> None:
+async def test_each_frame_is_read_in_its_own_isolated_world() -> None:
     cdp = _ScriptedCDP()
-    read = await read_media(cdp, session_id="S", frame_id="F", timeout_s=1.0)  # type: ignore[arg-type]
+    read = await read_media(cdp, session_id="S", frame_id="F", frames=None, timeout_s=1.0)  # type: ignore[arg-type]
     assert read.ok and len(read.elements) == 1
-    (world_method, world), (method, evaluate) = cdp.sent
-    assert world_method == "Page.createIsolatedWorld"
-    assert world == {"frameId": "F", "worldName": MEDIA_WORLD}
-    assert method == "Runtime.evaluate" and evaluate["contextId"] == 42
+    assert read.addresses == {"main": ("S", "F")}
+    worlds = [p for m, p, _s in cdp.sent if m == "Page.createIsolatedWorld"]
+    assert worlds == [{"frameId": "F", "worldName": MEDIA_WORLD}]
+    (evaluate,) = [p for m, p, _s in cdp.sent if m == "Runtime.evaluate"]
     assert evaluate["returnByValue"] is True
 
 
@@ -197,12 +239,98 @@ async def test_the_read_runs_in_its_own_isolated_world() -> None:
             "F",
             "the media read failed: the media world has no execution context",
         ),
-        (_ScriptedCDP(value=["no"]), "F", "the media read returned no result"),
+        (
+            _ScriptedCDP(value=["no"]),
+            "F",
+            "the media read failed: the media read returned no result",
+        ),
     ],
 )
 async def test_a_read_that_cannot_be_made_says_why(cdp: Any, frame: str | None, why: str) -> None:
-    read = await read_media(cdp, session_id="S", frame_id=frame, timeout_s=0.05)
+    read = await read_media(cdp, session_id="S", frame_id=frame, frames=None, timeout_s=0.05)
     assert read.error == why and not read.elements
+
+
+async def test_child_frames_are_placed_in_the_top_viewport() -> None:
+    cdp = _ScriptedCDP(
+        frames={
+            "F": frame_value(
+                "main",
+                raw(x=10.0, y=20.0),
+                children=[{"frame": "main/0", "x": 100, "y": 200, "width": 300, "height": 150}],
+            ),
+            "G": frame_value("main/0", raw(x=5.0, y=6.0)),
+        },
+        tree=["F", "G"],
+    )
+    read = await read_media(cdp, session_id="S", frame_id="F", frames=None, timeout_s=1.0)  # type: ignore[arg-type]
+    placed = {(e["frame"], e["order"]): (e["x"], e["y"]) for e in read.elements}
+    assert placed == {("main", 0): (10.0, 20.0), ("main/0", 0): (105.0, 206.0)}
+    assert read.unreachable == ()
+    assert read.addresses == {"main": ("S", "F"), "main/0": ("S", "G")}
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("frame gone"), "hang"], ids=["fails", "hangs"])
+async def test_a_child_frame_whose_read_does_not_answer_is_unreachable(failure: Any) -> None:
+    cdp = _ScriptedCDP(
+        frames={
+            "F": frame_value(
+                "main",
+                raw(),
+                children=[{"frame": "main/0", "x": 100, "y": 200, "width": 300, "height": 150}],
+            ),
+            "G": failure,
+        },
+        tree=["F", "G"],
+    )
+    read = await read_media(cdp, session_id="S", frame_id="F", frames=None, timeout_s=0.2)  # type: ignore[arg-type]
+    assert read.ok, "the main frame answered: the read stands"
+    assert [e["frame"] for e in read.elements] == ["main"]
+    assert read.unreachable == (
+        {"frame": "main/0", "x": 100.0, "y": 200.0, "width": 300.0, "height": 150.0},
+    )
+    state = media_state(read, read)
+    assert [f.frame for f in state.unreachable_frames] == ["main/0"]
+
+
+async def test_a_cross_site_frame_is_read_on_its_own_session() -> None:
+    from spectragent.core.capabilities.browser.dom.capture import FrameTarget
+
+    class _Frames:
+        watched: list[str] = []
+
+        def watch(self, root_session_id: str) -> None:
+            self.watched.append(root_session_id)
+
+        async def children(self, session_id: str) -> list[FrameTarget]:
+            if session_id == "S":
+                return [FrameTarget(target_id="OOPIF", session_id="C", namespace=1)]
+            return []
+
+    cdp = _ScriptedCDP(
+        frames={
+            "F": frame_value(
+                "main",
+                children=[{"frame": "main/1", "x": 340, "y": 200, "width": 300, "height": 100}],
+            ),
+            "OOPIF": frame_value("main/1", raw(x=0.0, y=0.0)),
+        },
+        tree=["F"],
+    )
+    read = await read_media(
+        cdp,  # type: ignore[arg-type]
+        session_id="S",
+        frame_id="F",
+        frames=_Frames(),  # type: ignore[arg-type]
+        timeout_s=1.0,
+    )
+    (only,) = read.elements
+    assert (only["frame"], only["x"], only["y"]) == ("main/1", 340.0, 200.0)
+    assert read.addresses["main/1"] == ("C", "OOPIF")
+    sessions = {s for m, p, s in cdp.sent if m == "Runtime.evaluate"}
+    assert sessions == {"S", "C"}
+    assert _Frames.watched == ["S"], "the tab's first read starts its frame discovery"
+    assert read.unreachable == ()
 
 
 # ── matching across runs ──────────────────────────────────────────────
@@ -502,11 +630,13 @@ class _AlignCDP:
     async def send(self, method: str, params: dict[str, Any], session_id: str | None = None) -> Any:
         if method == "Page.createIsolatedWorld":
             return {"executionContextId": 7}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": "F"}}}
         expression = params["expression"]
         if "framePath" in expression:
             self.calls.append(expression.rsplit("})(", 1)[1].strip())
             return {"result": {"value": self.answers.pop(0)}}
-        return {"result": {"value": {"elements": [self.live], "unreachable_frames": []}}}
+        return {"result": {"value": frame_value("main", self.live)}}
 
 
 def _answer(time: float, paused: bool, *, seeked: bool = True, played: bool | None = None) -> dict:
@@ -526,6 +656,7 @@ async def _align(cdp: _AlignCDP, recorded: MediaState) -> list[MediaAlignment]:
         cdp,  # type: ignore[arg-type]
         session_id="S",
         frame_id="F",
+        frames=None,
         recorded=recorded,
         tolerance_px=2.0,
         read_timeout_s=1.0,
@@ -587,6 +718,7 @@ async def test_old_evidence_aligns_nothing_and_says_so() -> None:
         _AlignCDP(raw(), []),  # type: ignore[arg-type]
         session_id="S",
         frame_id="F",
+        frames=None,
         recorded=None,
         tolerance_px=2.0,
         read_timeout_s=1.0,
@@ -641,7 +773,7 @@ async def test_every_observation_screenshot_carries_the_media_reads() -> None:
     from tests._helpers.fake_cdp import FakeBrowser
 
     browser = FakeBrowser()
-    browser.media_answer = {"elements": [raw()], "unreachable_frames": [], "truncated": False}
+    browser.media_answer = frame_value("main", raw())
     cap = await _fake_capability(browser)
     try:
         await cap.begin_observation(1)
@@ -668,7 +800,8 @@ async def test_a_media_read_that_fails_never_fails_the_screenshot() -> None:
     assert isinstance(shot, ScreenshotObs) and shot.image_bytes
     assert shot.media is not None and not shot.media.known
     assert shot.media.detail == (
-        "before: the media read returned no result; after: the media read returned no result"
+        "before: the media read failed: the media read returned no result; "
+        "after: the media read failed: the media read returned no result"
     )
 
 
@@ -679,3 +812,22 @@ def test_an_alignment_that_raised_lets_nothing_pass() -> None:
     assert [r.outcome for r in report.records] == ["failed", "failed"]
     assert report.detail == "the alignment raised RuntimeError: socket closed"
     assert media_failed(MediaEvidence(alignment=report.records), time_tolerance_s=1.0)
+
+
+def test_an_unreachable_frame_makes_a_compared_step_unrestorable() -> None:
+    from spectragent.core.capabilities.browser.media import MediaFrameState, media_evidence
+
+    frame = MediaFrameState(frame="main/1", rect=MediaRect(x=340, y=200, width=300, height=100))
+    readable = state(element())
+    blocked = state(element(), unreachable_frames=[frame])
+    for recorded, restored in ((blocked, readable), (readable, blocked)):
+        media = media_evidence(recorded, restored, tolerance_px=2.0, alignment=None)
+        assert (media.recorded_unreachable_frames or media.restored_unreachable_frames) == [
+            "main/1"
+        ]
+        assert _reasons(media) == ["media_mismatch"]
+    assert _reasons(media_evidence(readable, readable, tolerance_px=2.0, alignment=None)) == []
+    # Without a comparison (a side with no media state) nothing decides, these frames included.
+    unknown = media_evidence(None, blocked, tolerance_px=2.0, alignment=None)
+    assert unknown.comparisons is None and unknown.restored_unreachable_frames == ["main/1"]
+    assert _reasons(unknown) == []

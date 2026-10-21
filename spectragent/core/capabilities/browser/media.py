@@ -10,19 +10,25 @@ compared during restoration, and aligned to the recording where it can be.
 
 **Measuring** (:func:`read_media`, :func:`media_state`). The screenshot
 resolver reads every ``<video>`` / ``<audio>`` element just before and just
-after ``Page.captureScreenshot``, in the isolated world :data:`MEDIA_WORLD`
-(one per document, reused by name; page scripts neither see nor disturb it).
-A read walks the main document and every same-origin child frame it can enter
-(open shadow roots included), in document order. Each element records its
-frame (``main``, or a path of frame-element indexes such as ``main/1``), its
-order among the media elements of that frame, its box in the top viewport,
-its source kind (``url`` / ``blob`` / ``stream`` / ``none`` / ``other``), the
-URL of a ``url`` source, its duration and whether it is live (an infinite
-duration or a stream), and a :class:`MediaReading` from each read: the exact
-``currentTime``, ``paused``, ``seeking``, ``readyState`` and ``ended``. A
-frame the walk cannot enter (a cross-site iframe) is listed as unreachable.
-A read that runs out of ``media_state_timeout_s``, fails or answers with
-something else is ``unknown`` — never a reason for the screenshot to fail.
+after ``Page.captureScreenshot``. Every frame is read in its own isolated
+world :data:`MEDIA_WORLD` (one per document, reused by name; page scripts
+neither see nor disturb it), on the session that serves it: the frames the
+tab renders itself on the tab's session, each out-of-process (cross-site)
+frame on that frame's own session (``FrameTargets``, the capability's per-tab
+discovery). Each frame names itself by its path from the top — ``main``, or
+the index of each frame in its parent's frame list (``main/1``), which a
+cross-origin parent exposes too — and reports its own media elements (open
+shadow roots included) in document order and where its child frames sit.
+Each element records its frame, its order among that frame's media elements,
+its box in the top viewport, its source kind (``url`` / ``blob`` / ``stream``
+/ ``none`` / ``other``), the URL of a ``url`` source, its duration and whether
+it is live (an infinite duration or a stream), and a :class:`MediaReading`
+from each read: the exact ``currentTime``, ``paused``, ``seeking``,
+``readyState`` and ``ended``. A child frame whose own read did not answer is
+listed as unreachable — the restoration check then calls the step
+unrestorable. A main-frame read that runs out of ``media_state_timeout_s``,
+fails or answers with something else is ``unknown`` — never a reason for the
+screenshot to fail.
 
 **Matching** (:func:`match_media`). Across two observations an element
 corresponds to the candidates in the same frame whose box lies within the
@@ -51,13 +57,14 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 from agent_cdp import CDPCommandProtocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from spectragent.core.capabilities.browser.dom.capture import MAX_FRAME_DEPTH, FrameTargets
 from spectragent.schemas.restoration import (
     MediaAlignment,
     MediaComparison,
@@ -94,55 +101,48 @@ MediaReadStatus = Literal["measured", "unknown"]
 
 # ── the in-page half ──────────────────────────────────────────────────
 
-#: Walks the documents it can enter and returns ``{frame path, element}`` pairs.
-#: Shared by the read and the alignment, so both find the same element by the
-#: same path and order.
-_WALK = """
-const afMediaWalk = (maxElements, maxFrames) => {
-  const media = [];
-  const unreachable = [];
-  let truncated = false;
-  const visit = (doc, path, offsetX, offsetY) => {
-    const found = [];
-    const frames = [];
-    const collect = (root) => {
-      for (const el of root.querySelectorAll('*')) {
-        const tag = el.tagName;
-        if (tag === 'VIDEO' || tag === 'AUDIO') found.push(el);
-        else if (tag === 'IFRAME' || tag === 'FRAME') frames.push(el);
-        if (el.shadowRoot) collect(el.shadowRoot);
-      }
-    };
-    collect(doc);
-    found.forEach((el, order) => {
-      if (media.length >= maxElements) { truncated = true; return; }
-      media.push({frame: path, order: order, el: el, offsetX: offsetX, offsetY: offsetY});
-    });
-    frames.forEach((frameEl, index) => {
-      const childPath = path + '/' + index;
-      let child = null;
-      try { child = frameEl.contentDocument; } catch (error) { child = null; }
-      const box = frameEl.getBoundingClientRect();
-      if (!child) {
-        if (unreachable.length < maxFrames) {
-          unreachable.push({frame: childPath, x: box.x + offsetX, y: box.y + offsetY,
-                            width: box.width, height: box.height});
-        }
-        return;
-      }
-      let padX = 0, padY = 0;
-      try {
-        const style = frameEl.ownerDocument.defaultView.getComputedStyle(frameEl);
-        padX = parseFloat(style.paddingLeft) || 0;
-        padY = parseFloat(style.paddingTop) || 0;
-      } catch (error) {}
-      visit(child, childPath,
-            offsetX + box.x + frameEl.clientLeft + padX,
-            offsetY + box.y + frameEl.clientTop + padY);
-    });
+#: Runs in one frame's own isolated world and describes that document only:
+#: its frame path from the top (each step the frame's index in its parent's
+#: frame list, ``window[i]`` — readable across origins, so a cross-site frame
+#: names itself the way its parent names it), its media elements in document
+#: order (open shadow roots included) and its child frame elements. Shared by
+#: the read and the alignment, so both find the same element by the same path
+#: and order.
+_DOCUMENT = """
+const afMediaDocument = () => {
+  const indexIn = (parentWindow, childWindow) => {
+    for (let i = 0; i < parentWindow.length; i++) {
+      if (parentWindow[i] === childWindow) return i;
+    }
+    return -1;
   };
-  visit(document, 'main', 0, 0);
-  return {media: media, unreachable: unreachable, truncated: truncated};
+  let path = 'main';
+  try {
+    const parts = [];
+    let win = window;
+    while (win !== win.top) {
+      const parent = win.parent;
+      const index = indexIn(parent, win);
+      if (index < 0) return null;
+      parts.unshift(index);
+      win = parent;
+    }
+    path = ['main', ...parts].join('/');
+  } catch (error) {
+    return null;
+  }
+  const media = [];
+  const frames = [];
+  const collect = (root) => {
+    for (const el of root.querySelectorAll('*')) {
+      const tag = el.tagName;
+      if (tag === 'VIDEO' || tag === 'AUDIO') media.push(el);
+      else if (tag === 'IFRAME' || tag === 'FRAME') frames.push(el);
+      if (el.shadowRoot) collect(el.shadowRoot);
+    }
+  };
+  collect(document);
+  return {path: path, media: media, frames: frames, indexIn: indexIn};
 };
 const afMediaNumber = (value) =>
   (typeof value === 'number' && Number.isFinite(value)) ? value : null;
@@ -157,9 +157,10 @@ const afMediaReading = (el) => ({
 
 _READ_PROBE = (
     "(() => {"
-    + _WALK
+    + _DOCUMENT
     + """
-  const walked = afMediaWalk(%(max_elements)d, %(max_frames)d);
+  const doc = afMediaDocument();
+  if (!doc) return {path: null};
   const kind = (el) => {
     if (el.srcObject) return 'stream';
     const src = el.currentSrc || el.src || '';
@@ -168,50 +169,58 @@ _READ_PROBE = (
     if (/^https?:/i.test(src)) return 'url';
     return 'other';
   };
-  return {
-    elements: walked.media.map((item) => {
-      const el = item.el;
-      const box = el.getBoundingClientRect();
-      const source = kind(el);
-      const duration = el.duration;
-      return {
-        frame: item.frame,
-        order: item.order,
-        tag: el.tagName.toLowerCase(),
-        x: box.x + item.offsetX,
-        y: box.y + item.offsetY,
-        width: box.width,
-        height: box.height,
-        source_kind: source,
-        url: source === 'url' ? String(el.currentSrc || el.src).slice(0, %(max_url)d) : null,
-        duration: afMediaNumber(duration),
-        live: source === 'stream' || duration === Infinity,
-        reading: afMediaReading(el),
-      };
-    }),
-    unreachable_frames: walked.unreachable,
-    truncated: walked.truncated,
-  };
+  const elements = doc.media.slice(0, %(max_elements)d).map((el, order) => {
+    const box = el.getBoundingClientRect();
+    const source = kind(el);
+    const duration = el.duration;
+    return {
+      order: order,
+      tag: el.tagName.toLowerCase(),
+      x: box.x, y: box.y, width: box.width, height: box.height,
+      source_kind: source,
+      url: source === 'url' ? String(el.currentSrc || el.src).slice(0, %(max_url)d) : null,
+      duration: afMediaNumber(duration),
+      live: source === 'stream' || duration === Infinity,
+      reading: afMediaReading(el),
+    };
+  });
+  const children = [];
+  for (const frameEl of doc.frames) {
+    let index = -1;
+    try { index = doc.indexIn(window, frameEl.contentWindow); } catch (error) { index = -1; }
+    if (index < 0) continue;
+    const box = frameEl.getBoundingClientRect();
+    let padX = 0, padY = 0;
+    try {
+      const style = getComputedStyle(frameEl);
+      padX = parseFloat(style.paddingLeft) || 0;
+      padY = parseFloat(style.paddingTop) || 0;
+    } catch (error) {}
+    children.push({frame: doc.path + '/' + index,
+                   x: box.x + frameEl.clientLeft + padX, y: box.y + frameEl.clientTop + padY,
+                   width: frameEl.clientWidth, height: frameEl.clientHeight});
+  }
+  return {path: doc.path, elements: elements, children: children,
+          truncated: doc.media.length > %(max_elements)d};
 })()
 """
 )
 _READ_EXPRESSION: Final = _READ_PROBE % {
     "max_elements": MAX_MEDIA_ELEMENTS,
-    "max_frames": MAX_UNREACHABLE_FRAMES,
     "max_url": MAX_MEDIA_URL_CHARS,
 }
 
-#: Seek one element (by frame path and order) to a position, optionally play it,
-#: and report. ``target`` may be ``null``: only the play state is set.
+#: Seek one element of this frame (by its path and order) to a position,
+#: optionally play it, and report. ``target`` may be ``null``: only the play
+#: state is set. A frame that is not the expected one finds nothing.
 _ALIGN_PROBE = (
     "(async (framePath, order, target, play, budgetMs) => {"
-    + _WALK
+    + _DOCUMENT
     + """
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const walked = afMediaWalk(%(max_elements)d, 0);
-  const item = walked.media.find((m) => m.frame === framePath && m.order === order);
-  if (!item) return {found: false};
-  const el = item.el;
+  const doc = afMediaDocument();
+  const el = doc && doc.path === framePath ? doc.media[order] : undefined;
+  if (!el) return {found: false};
   const before = afMediaReading(el);
   let seeked = target === null;
   let seekMs = null;
@@ -373,14 +382,26 @@ def _clip(text: str, limit: int = _DETAIL_MAX_CHARS) -> str:
 # ── reading ───────────────────────────────────────────────────────────
 
 
+#: Where a frame's document is read and aligned: its CDP session and frame id.
+FrameAddress = tuple[str | None, str]
+
+
 @dataclass(frozen=True)
 class MediaRead:
-    """One read's answer, or why there is none (``error``)."""
+    """One read's answer, or why there is none (``error``).
+
+    ``elements`` carry their frame path and a box in the top viewport;
+    ``unreachable`` are the child frames some read saw but whose own read did
+    not answer. ``addresses`` say where each frame read was made — the
+    session and frame id an alignment of that frame's elements goes to; they
+    are never recorded.
+    """
 
     elements: tuple[dict[str, Any], ...] = ()
     unreachable: tuple[dict[str, Any], ...] = ()
     truncated: bool = False
     error: str | None = None
+    addresses: Mapping[str, FrameAddress] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -416,47 +437,202 @@ def _value(reply: Any, what: str) -> Any:
     return (reply.get("result") or {}).get("value")
 
 
+async def _read_frame(
+    cdp: CDPCommandProtocol, session_id: str | None, frame_id: str, timeout: float
+) -> dict[str, Any]:
+    """One frame's document, read in its own isolated world (``_READ_PROBE``)."""
+    context = await _world(cdp, session_id, frame_id, timeout)
+    reply = await cdp.send(
+        "Runtime.evaluate",
+        {"expression": _READ_EXPRESSION, "contextId": context, "returnByValue": True},
+        session_id=session_id,
+    )
+    value = _value(reply, "media read")
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("path"), str)
+        or not isinstance(value.get("elements"), list)
+        or not isinstance(value.get("children"), list)
+    ):
+        raise ValueError("the media read returned no result")
+    return value
+
+
+def _frame_ids(tree: Any) -> list[str]:
+    """Every frame id of a ``Page.getFrameTree`` reply, depth first."""
+    ids: list[str] = []
+    pending = [((tree or {}).get("frameTree") if isinstance(tree, dict) else None)]
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict):
+            continue
+        frame_id = (node.get("frame") or {}).get("id")
+        if isinstance(frame_id, str) and frame_id:
+            ids.append(frame_id)
+        pending.extend(reversed(node.get("childFrames") or []))
+    return ids
+
+
+async def _frames_of(
+    cdp: CDPCommandProtocol, session_id: str | None, root_frame_id: str
+) -> list[FrameAddress]:
+    """The frames one session serves: its frame tree, else just its root frame."""
+    try:
+        ids = _frame_ids(await cdp.send("Page.getFrameTree", {}, session_id=session_id))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.debug("media read: frame tree of session %s failed: %r", session_id, exc)
+        ids = []
+    if root_frame_id not in ids:
+        ids.insert(0, root_frame_id)
+    return [(session_id, frame_id) for frame_id in ids]
+
+
+async def _addresses(
+    cdp: CDPCommandProtocol,
+    session_id: str | None,
+    frame_id: str,
+    frames: FrameTargets | None,
+) -> list[FrameAddress]:
+    """Every frame of the tab: those it renders itself, then each out-of-process frame's own."""
+    found = await _frames_of(cdp, session_id, frame_id)
+    if frames is None or session_id is None:
+        return found
+    frames.watch(session_id)  # idempotent: the tab's first read starts the discovery
+    pending = [(session_id, 0)]
+    while pending:
+        parent, depth = pending.pop(0)
+        if depth >= MAX_FRAME_DEPTH:
+            continue
+        for child in await frames.children(parent):
+            found.extend(await _frames_of(cdp, child.session_id, child.target_id))
+            pending.append((child.session_id, depth + 1))
+    return found
+
+
+def _depth(path: str) -> int:
+    return path.count("/")
+
+
+def _compose(reads: dict[str, tuple[FrameAddress, dict[str, Any]]]) -> MediaRead:
+    """Frame reads put together: top-viewport boxes, element cap, frames that did not answer."""
+    # Each child frame's content box, as its parent's read placed it.
+    placed: dict[str, dict[str, Any]] = {}
+    for path, (_address, value) in reads.items():
+        for child in value["children"]:
+            if isinstance(child, dict) and isinstance(child.get("frame"), str):
+                placed.setdefault(child["frame"], {**child, "parent": path})
+    offsets: dict[str, tuple[float, float]] = {"main": (0.0, 0.0)}
+    for path in sorted(placed, key=_depth):
+        box = placed[path]
+        parent = offsets.get(box["parent"])
+        if parent is None:
+            continue
+        try:
+            offsets[path] = (parent[0] + float(box["x"]), parent[1] + float(box["y"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    elements: list[dict[str, Any]] = []
+    truncated = False
+    for path in sorted(reads, key=lambda p: (_depth(p), p)):
+        _address, value = reads[path]
+        truncated = truncated or bool(value.get("truncated"))
+        dx, dy = offsets.get(path, (0.0, 0.0))
+        for raw in value["elements"]:
+            if not isinstance(raw, dict):
+                continue
+            if len(elements) >= MAX_MEDIA_ELEMENTS:
+                truncated = True
+                break
+            try:
+                elements.append(
+                    {**raw, "frame": path, "x": float(raw["x"]) + dx, "y": float(raw["y"]) + dy}
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+    unreachable: list[dict[str, Any]] = []
+    for path in sorted(placed, key=lambda p: (_depth(p), p)):
+        if path in reads or len(unreachable) >= MAX_UNREACHABLE_FRAMES:
+            continue
+        box = placed[path]
+        parent = offsets.get(box["parent"], (0.0, 0.0))
+        try:
+            unreachable.append(
+                {
+                    "frame": path,
+                    "x": float(box["x"]) + parent[0],
+                    "y": float(box["y"]) + parent[1],
+                    "width": float(box["width"]),
+                    "height": float(box["height"]),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return MediaRead(
+        elements=tuple(elements),
+        unreachable=tuple(unreachable),
+        truncated=truncated,
+        addresses={path: address for path, (address, _value) in reads.items()},
+    )
+
+
 async def read_media(
     cdp: CDPCommandProtocol,
     *,
     session_id: str | None,
     frame_id: str | None,
+    frames: FrameTargets | None,
     timeout_s: float,
     clock: Callable[[], float] = time.monotonic,
 ) -> MediaRead:
-    """Read every media element of the page, within *timeout_s*; never raises for the page's sake."""
+    """Read every media element of the tab, every frame in its own world, within *timeout_s*.
+
+    The main frame and the frames the tab renders itself are read on the
+    tab's session; each out-of-process frame (a cross-site iframe) on its own
+    session (*frames*, ``dom/capture.py``'s ``FrameTargets``). All reads run
+    together against one deadline. A child frame whose own read did not
+    answer is listed as unreachable; a main frame that did not answer makes
+    the whole read unknown. Never raises for the page's sake.
+    """
     if frame_id is None:
         return MediaRead(error="the tab's main frame is not known")
     deadline = clock() + max(timeout_s, 0.0)
+    main = asyncio.ensure_future(_read_frame(cdp, session_id, frame_id, timeout_s))
+    tasks: dict[asyncio.Future[dict[str, Any]], FrameAddress] = {main: (session_id, frame_id)}
     try:
-        context = await _world(cdp, session_id, frame_id, deadline - clock())
-        reply = await _bounded(
-            cdp.send(
-                "Runtime.evaluate",
-                {"expression": _READ_EXPRESSION, "contextId": context, "returnByValue": True},
-                session_id=session_id,
-            ),
-            deadline - clock(),
-        )
-        value = _value(reply, "media read")
-    except TimeoutError:
+        try:
+            addresses = await _bounded(
+                _addresses(cdp, session_id, frame_id, frames), deadline - clock()
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # the main frame's read may still answer
+            logger.debug("media read (sid=%s): frame discovery failed: %r", session_id, exc)
+            addresses = []
+        for address in addresses:
+            if address != (session_id, frame_id) and address not in tasks.values():
+                task = asyncio.ensure_future(_read_frame(cdp, address[0], address[1], timeout_s))
+                tasks[task] = address
+        await asyncio.wait(list(tasks), timeout=max(deadline - clock(), 0.0))
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+    if main.cancelled() or not main.done() or isinstance(main.exception(), TimeoutError):
         return MediaRead(error=f"the media read got no answer within {timeout_s:g}s")
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # measuring never fails the capture
+    if main.exception() is not None:
+        exc = main.exception()
         logger.debug("media read (sid=%s) failed: %r", session_id, exc)
         return MediaRead(error=_clip(f"the media read failed: {exc}"))
-    if (
-        not isinstance(value, dict)
-        or not isinstance(value.get("elements"), list)
-        or not isinstance(value.get("unreachable_frames"), list)
-    ):
+    reads: dict[str, tuple[FrameAddress, dict[str, Any]]] = {}
+    for task, address in tasks.items():
+        if task.done() and not task.cancelled() and task.exception() is None:
+            value = task.result()
+            reads.setdefault(value["path"], (address, value))
+    if "main" not in reads:
         return MediaRead(error="the media read returned no result")
-    return MediaRead(
-        elements=tuple(e for e in value["elements"] if isinstance(e, dict)),
-        unreachable=tuple(f for f in value["unreachable_frames"] if isinstance(f, dict)),
-        truncated=bool(value.get("truncated")),
-    )
+    return _compose(reads)
 
 
 def _reading(raw: Any) -> MediaReading | None:
@@ -716,9 +892,15 @@ def media_evidence(
     return MediaEvidence(
         comparisons=comparisons,
         detail=detail,
+        recorded_unreachable_frames=_unreachable(recorded),
+        restored_unreachable_frames=_unreachable(restored),
         alignment=alignment,
         alignment_detail=alignment_detail,
     )
+
+
+def _unreachable(state: MediaState | None) -> list[str]:
+    return [frame.frame for frame in state.unreachable_frames] if state is not None else []
 
 
 # ── aligning ──────────────────────────────────────────────────────────
@@ -776,15 +958,14 @@ def _target(element: MediaElementState) -> MediaReading | None:
 async def _call_align(
     cdp: CDPCommandProtocol,
     *,
-    session_id: str | None,
-    frame_id: str,
+    address: FrameAddress,
     element: MediaElementState,
     target: float | None,
     play: bool,
     budget_s: float,
 ) -> dict[str, Any]:
+    session_id, frame_id = address
     expression = _ALIGN_PROBE % {
-        "max_elements": MAX_MEDIA_ELEMENTS,
         "frame": json.dumps(element.frame),
         "order": element.order,
         "target": "null" if target is None else repr(float(target)),
@@ -816,6 +997,7 @@ async def align_media(
     *,
     session_id: str | None,
     frame_id: str | None,
+    frames: FrameTargets | None,
     recorded: MediaState | None,
     tolerance_px: float,
     read_timeout_s: float,
@@ -823,7 +1005,9 @@ async def align_media(
 ) -> AlignmentReport:
     """Move every matched media element to its recorded position and play state (module docstring).
 
-    Never raises for the page's sake: what cannot be done is recorded.
+    Each element is aligned in its own frame's world, on the session that
+    frame was read on — a cross-site frame's own session included. Never
+    raises for the page's sake: what cannot be done is recorded.
     """
     if recorded is None:
         return AlignmentReport(detail="the recorded screenshot carries no media state")
@@ -831,7 +1015,9 @@ async def align_media(
         return AlignmentReport(
             detail=f"the recorded media state is unknown ({recorded.detail or 'no read answered'})"
         )
-    live = await read_media(cdp, session_id=session_id, frame_id=frame_id, timeout_s=read_timeout_s)
+    live = await read_media(
+        cdp, session_id=session_id, frame_id=frame_id, frames=frames, timeout_s=read_timeout_s
+    )
     if not live.ok:
         return AlignmentReport(
             records=[
@@ -844,7 +1030,6 @@ async def align_media(
             ],
             detail=_clip(f"the page's media could not be read: {live.error}"),
         )
-    assert frame_id is not None  # read_media refuses an unknown frame
     current = media_state(live, MediaRead(error="not read"))
     report = AlignmentReport(
         detail="" if recorded.elements else "no media element was recorded on this screenshot"
@@ -913,11 +1098,20 @@ async def align_media(
     # Paused targets first: a playing one aligned last drifts least before the capture.
     planned.sort(key=lambda item: not bool(item[2].paused))
     for element, restored, target in planned:
+        address = live.addresses.get(restored.frame)
+        if address is None:
+            report.records.append(
+                MediaAlignment(
+                    element=element.label,
+                    outcome="not_restorable",
+                    detail="the frame it is in was not read",
+                )
+            )
+            continue
         report.records.append(
             await _align_one(
                 cdp,
-                session_id=session_id,
-                frame_id=frame_id,
+                address=address,
                 recorded=element,
                 restored=restored,
                 target=target,
@@ -945,8 +1139,7 @@ def alignment_raised(recorded: MediaState | None, error: BaseException) -> Align
 async def _align_one(
     cdp: CDPCommandProtocol,
     *,
-    session_id: str | None,
-    frame_id: str,
+    address: FrameAddress,
     recorded: MediaElementState,
     restored: MediaElementState,
     target: MediaReading,
@@ -965,8 +1158,7 @@ async def _align_one(
     try:
         result = await _call_align(
             cdp,
-            session_id=session_id,
-            frame_id=frame_id,
+            address=address,
             element=restored,
             target=target.current_time,
             play=play,
@@ -978,8 +1170,7 @@ async def _align_one(
         now = restored.before or MediaReading()
         rolled_back = await _roll_back(
             cdp,
-            session_id=session_id,
-            frame_id=frame_id,
+            address=address,
             element=restored,
             before=now,
             seek_timeout_s=seek_timeout_s,
@@ -1031,8 +1222,7 @@ async def _align_one(
         )
     rolled_back = await _roll_back(
         cdp,
-        session_id=session_id,
-        frame_id=frame_id,
+        address=address,
         element=restored,
         before=before,
         seek_timeout_s=seek_timeout_s,
@@ -1051,8 +1241,7 @@ async def _align_one(
 async def _roll_back(
     cdp: CDPCommandProtocol,
     *,
-    session_id: str | None,
-    frame_id: str,
+    address: FrameAddress,
     element: MediaElementState,
     before: MediaReading,
     seek_timeout_s: float,
@@ -1062,8 +1251,7 @@ async def _roll_back(
     try:
         result = await _call_align(
             cdp,
-            session_id=session_id,
-            frame_id=frame_id,
+            address=address,
             element=element,
             target=before.current_time,
             play=play,

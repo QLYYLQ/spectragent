@@ -83,6 +83,25 @@ _ONE = _page(
     "v.addEventListener('loadedmetadata', () => { v.currentTime = 1; }, {once: true});"
     "</script>"
 )
+
+
+#: A cross-site frame (the same server under another host name) holding a video
+#: paused at 1 s, placed at (100, 200) with a 2 px border.
+def _cross_site(cross_origin: str, inner: str = "one.html") -> str:
+    return _page(
+        f"<iframe src='{cross_origin}/{inner}' style='position:absolute;left:100px;top:200px;"
+        "width:400px;height:240px;border:2px solid #000;padding:0'></iframe>"
+    )
+
+
+#: A page whose main thread is held for a while, soon after it loads: a frame
+#: read sent then gets no answer.
+_BUSY = _page(
+    "<video src=/clip.webm muted preload=auto style='left:0;top:0'></video>"
+    "<script>window.addEventListener('load', () => setTimeout(() => {"
+    "const end = performance.now() + 6000; while (performance.now() < end) {}"
+    "}, 1500));</script>"
+)
 #: One video, playing from the start.
 _PLAYING = _page(
     "<video id=v src=/clip.webm muted autoplay loop preload=auto style='left:0;top:0'></video>"
@@ -100,6 +119,9 @@ class _Media(BaseHTTPRequestHandler):
             "/one.html": _ONE % "/clip.webm",
             "/one-limited.html": _ONE % "/limited.webm",
             "/playing.html": _PLAYING,
+            "/cross.html": _cross_site(self.server.cross_origin),  # type: ignore[attr-defined]
+            "/cross-busy.html": _cross_site(self.server.cross_origin, "busy.html"),  # type: ignore[attr-defined]
+            "/busy.html": _BUSY,
         }
         if path in pages:
             self._send(200, pages[path].encode(), "text/html; charset=utf-8")
@@ -230,7 +252,8 @@ async def test_the_screenshot_records_every_media_element_around_the_capture(ori
     assert media is not None
     assert (media.read_before, media.read_after) == ("measured", "measured")
     by_label = {element.label: element for element in media.elements}
-    assert sorted(by_label) == ["main#0 video", "main#1 video", "main/0#0 audio"]
+    # The cross-site frame's audio is read on that frame's own session.
+    assert sorted(by_label) == ["main#0 video", "main#1 video", "main/0#0 audio", "main/1#0 audio"]
 
     paused = by_label["main#0 video"]
     assert (paused.rect.x, paused.rect.y, paused.rect.width, paused.rect.height) == (
@@ -259,8 +282,9 @@ async def test_the_screenshot_records_every_media_element_around_the_capture(ori
     # Placed in the top viewport: the same-origin frame's offset is added.
     assert audio.rect.y == pytest.approx(200, abs=1)
 
-    assert [frame.frame for frame in media.unreachable_frames] == ["main/1"]
-    assert media.unreachable_frames[0].rect.x == pytest.approx(340, abs=1)
+    cross = by_label["main/1#0 audio"]
+    assert cross.before is not None and cross.before.paused is True
+    assert media.unreachable_frames == []
 
 
 async def test_alignment_pauses_and_seeks_to_the_exact_recorded_position(origin: str) -> None:
@@ -425,3 +449,81 @@ def _media_evidence(recorded: Any, restored: Any) -> Any:
     from spectragent.core.capabilities.browser.restoration import media_measure
 
     return media_measure(recorded, restored, tolerance_px=2.0, alignment=None)
+
+
+async def test_a_cross_site_frame_is_read_and_aligned_on_its_own_session(origin: str) -> None:
+    browser = await _open(origin, "cross.html")
+    try:
+        await asyncio.sleep(0.5)
+        first = await browser.screenshot()
+        deadline = time.monotonic() + 10
+        while not (
+            first.media
+            and first.media.elements
+            and first.media.elements[0].before
+            and first.media.elements[0].before.current_time == 1.0
+        ):
+            assert time.monotonic() < deadline, (
+                f"the framed video never stood at 1 s: {first.media}"
+            )
+            await asyncio.sleep(0.2)
+            first = await browser.screenshot()
+        assert first.media is not None
+        (element,) = first.media.elements
+        recorded = _recorded(first, element, MediaReading(current_time=4.0, paused=True))
+        await browser.cap.align_next_observation(recorded, media_seek_timeout_s=2.0)
+        shot = await browser.screenshot()
+        evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
+    finally:
+        await browser.cap.teardown()
+
+    assert element.label == "main/0#0 video"
+    # Placed in the top viewport: the frame's content box starts at (102, 202).
+    assert (element.rect.x, element.rect.y) == (
+        pytest.approx(102, abs=1),
+        pytest.approx(202, abs=1),
+    )
+    assert first.media.unreachable_frames == []
+    media = _media_of(evidence)
+    (record,) = media.alignment
+    assert record.outcome == "aligned" and record.reached_time == 4.0
+    assert shot.media is not None
+    (aligned,) = shot.media.elements
+    assert aligned.before is not None and aligned.before.current_time == 4.0
+    assert media.recorded_unreachable_frames == media.restored_unreachable_frames == []
+    check = judge(
+        3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
+    )
+    assert "media_mismatch" not in check.reasons
+
+
+async def test_a_cross_site_frame_that_does_not_answer_is_unreachable(origin: str) -> None:
+    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0, media_state_timeout_s=0.5)
+    cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
+    await asyncio.wait_for(
+        cap.setup(negotiation={"browser.screenshot"}, start_url=f"{origin}/cross-busy.html"), 60
+    )
+    browser = _Browser(cap)
+    try:
+        calm = await browser.screenshot()
+        await asyncio.sleep(2.0)  # the framed page now holds its main thread for 6 s
+        busy = await browser.screenshot()
+    finally:
+        await cap.teardown()
+
+    assert calm.media is not None and calm.media.unreachable_frames == []
+    assert [e.label for e in calm.media.elements] == ["main/0#0 video"]
+    assert busy.media is not None and busy.media.known, "the main frame still answered"
+    assert [f.frame for f in busy.media.unreachable_frames] == ["main/0"]
+    assert busy.media.unreachable_frames[0].rect.x == pytest.approx(102, abs=1)
+    assert busy.media.elements == []
+    evidence = RestorationEvidence(
+        capability_id="browser",
+        media=_media_evidence(_observation(calm), _observation(busy)),
+    )
+    assert evidence.media is not None
+    assert evidence.media.restored_unreachable_frames == ["main/0"]
+    check = judge(
+        1, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
+    )
+    assert check.reasons == ["media_mismatch"]
