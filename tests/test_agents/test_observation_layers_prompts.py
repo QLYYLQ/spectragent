@@ -31,7 +31,13 @@ from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import demand_of, negotiate_observation
-from spectragent.schemas.action import Action, ActionEffect, ActionResult
+from spectragent.schemas.action import (
+    Action,
+    ActionEffect,
+    ActionResult,
+    PointWriter,
+    write_viewport_point,
+)
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
     FailedVisibleResources,
@@ -68,6 +74,9 @@ _CAPTURE_STATE = (
     "Failed visible resources: none failed.\n"
     "</capture_state>"
 )
+#: UI-TARS writes the pointer on its own grid: here the screenshot's pixels,
+#: 2000x1000 over a 1000x500 viewport, so the viewport's (1, 2) is (2, 4).
+_UI_TARS_CAPTURE_STATE = _CAPTURE_STATE.replace("(1, 2) in viewport pixels.", "(2, 4).")
 _PAGE_STATE = "URL: https://f.test/\n\nTitle: F\n\nTabs: [T1] F (https://f.test/)"
 
 
@@ -77,7 +86,7 @@ class ProbeEffect(ActionEffect):
     moved: int
     raw_marker: str = RAW
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         return f"Probe moved {self.moved} px."
 
 
@@ -185,7 +194,11 @@ async def _prompt(agent_class: type[Any], observation: Any = None, **switches: A
 
 
 async def test_ui_tars_step_text() -> None:
-    """Effects inside each returned result; the capture state after the feedback."""
+    """Effects inside each returned result; the capture state after the feedback.
+
+    Each action is the call UI-TARS writes for it; one it has no verb for
+    (``browser.click`` by index) keeps its JSON.
+    """
     feedback = {
         "actions_without_returned_results": [],
         "discarded_action_count": 0,
@@ -203,7 +216,7 @@ async def test_ui_tars_step_text() -> None:
                 },
             },
             {
-                "action": {"name": "browser.scroll", "params": {"direction": "down"}},
+                "action": "scroll(direction='down')",
                 "result": {
                     "effect": "Probe moved 600 px.",
                     "error": "blocked",
@@ -220,7 +233,7 @@ async def test_ui_tars_step_text() -> None:
         "<action_results>\n"
         + json.dumps(feedback, ensure_ascii=False, sort_keys=True)
         + "\n</action_results>\n"
-        + _CAPTURE_STATE
+        + _UI_TARS_CAPTURE_STATE
         + "\nScreenshot: 2000x1000 pixels."
     )
 
@@ -294,9 +307,10 @@ async def test_no_capture_state_renders_no_block(agent_class: type[Any]) -> None
     """What ``show_capture_state: false`` leaves the agent: no fragment, so no block."""
     shown = await _prompt(agent_class)
     absent = await _prompt(agent_class, _observation(capture_state=False))
-    assert _CAPTURE_STATE in shown
+    block = _UI_TARS_CAPTURE_STATE if agent_class is UITarsAgent else _CAPTURE_STATE
+    assert block in shown
     separator = "\n" if agent_class is UITarsAgent else "\n\n"
-    assert absent == shown.replace(separator + _CAPTURE_STATE, "")
+    assert absent == shown.replace(separator + block, "")
 
 
 async def test_ui_tars_never_renders_browser_page_state() -> None:

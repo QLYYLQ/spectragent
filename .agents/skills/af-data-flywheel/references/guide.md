@@ -462,6 +462,10 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   actual observations, retargeted actions and results through the Agent's public async
   `build_restored_history` contract. Missing results or unsupported history are errors
   regardless of `verify: warn`. Both decide on the live restored checkpoint observation.
+  Because `source` compares prompts exactly, a recording can be branched with source
+  history only by the prompt writing it was recorded with: UI-TARS recordings made before
+  its feedback moved onto the model's grid (2026-10-22, architecture §4.1) stop at the
+  seed check. Re-record them or branch with `restored`; there is no compatibility path.
 - Explicit `prompt_contribution` hooks wrap the async `build_react_prompt` slot. A stable
   Python function receives `PromptRequest`, optionally uses its wired helper, and returns
   text or `PromptContribution`; the Agent owns system/turn placement. The default scope
@@ -1051,6 +1055,16 @@ value on an existing one.
   `format_react_output`, then `parse_react_output`. Historical rendering passes
   `phase="history"` and recorded contributions; it never regenerates them with a helper
   model. The same input gives the same text.
+- The student's execution feedback reuses the same per-verb writing (architecture §4.1,
+  "every point the model sees is on the grid it writes"): UI-TARS shows an earlier batch
+  as the calls it would write, its effect lines and the pointer through a `write_point`
+  for its grid, so an exported context shows the previous target turn's call again, not
+  the trace's CSS pixels. It finds an earlier step's grid in per-run state keyed by step
+  number, which `prepare` (each segment's `seed_messages`) clears and each
+  `build_react_prompt` fills; a segment builds its steps in order, so nothing else is
+  needed. A new student format with its own grid does the same: pass a `write_point` to
+  `ActionEffect.describe` (through `result_facts` / `effect_line`) and to
+  `render_capture_state`, and an action writer to `restored_history_message`.
 - `StudentRenderer.render` is async. Its callers await it; the synchronous
   `ExportRunner.run` drives the entire async rendering phase with one `asyncio.run`.
   Segment seeding still uses `AgentRuntime.seed_messages`, and assistant history uses

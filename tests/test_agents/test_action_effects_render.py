@@ -17,7 +17,13 @@ from spectragent.agents._action_effects import (
 )
 from spectragent.agents.prompt_context import restored_history_message
 from spectragent.core.capabilities.browser.effects import ScrollEffect, ScrollOffset
-from spectragent.schemas.action import Action, ActionEffect, ActionResult
+from spectragent.schemas.action import (
+    Action,
+    ActionEffect,
+    ActionResult,
+    PointWriter,
+    write_viewport_point,
+)
 from spectragent.schemas.prompt import RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 
@@ -30,7 +36,7 @@ class ProbeEffect(ActionEffect):
     moved: int
     raw_marker: str = RAW
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         return f"Probe moved {self.moved} px."
 
 

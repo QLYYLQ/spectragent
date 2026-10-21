@@ -3,6 +3,7 @@
 See docs/architecture_design.md §4.5 for the full Action design.
 """
 
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
@@ -14,6 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validat
 #: ``0``: a measured zero is a value, and the three stay distinct in the trace
 #: and in :meth:`ActionEffect.describe`.
 Unmeasured = Literal["unknown", "unavailable"]
+
+#: How a prompt writes a point it states: the point's ``(x, y)`` in the
+#: capability's viewport units in, its text out. The facts stay in viewport
+#: units; only the writing is the renderer's. An Agent whose model writes
+#: points on another grid passes a writer for that grid, so every point the
+#: model reads is on the grid it writes (``docs/architecture_design.md`` §4.1,
+#: "模型看到的每个点都写在它写点的那个网格上").
+PointWriter = Callable[[int, int], str]
+
+
+def write_viewport_point(x: int, y: int) -> str:
+    """The default :data:`PointWriter`: ``(x, y)`` in viewport units, as written before."""
+    return f"({x}, {y})"
 
 
 class ActionEffect(BaseModel):
@@ -38,14 +52,25 @@ class ActionEffect(BaseModel):
     line rather than dumping fields, so an Agent that is not specific to a
     platform never has to know a concrete effect type
     (``docs/architecture_design.md`` §4.5, "动作效果").
+
+    Every *point* the line states is written by the caller's ``write_point``
+    (:data:`PointWriter`), so an Agent whose model writes points on its own
+    grid reads them on that grid; the default writes viewport units as
+    before. A distance (a scroll's offset) is not a point and stays in the
+    viewport's pixels, its unit stated.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     effect_id: str = Field(min_length=1)
 
-    def describe(self) -> str:
-        """One deterministic English line of the measured facts, for a prompt."""
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
+        """One deterministic English line of the measured facts, for a prompt.
+
+        Args:
+            write_point: Writes every point the line states (see the class
+                docstring). Every override accepts it: Agents always pass one.
+        """
         raise NotImplementedError(f"{type(self).__name__} must implement describe()")
 
 

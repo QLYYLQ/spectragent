@@ -36,7 +36,10 @@ measured value too: no element at the point, or no element focused.
 No fact echoes what was typed or how long it was: a text-input effect says
 whether the field's value changed, and a sensitive field (the shared rule in
 ``dom/sensitivity.py``) is marked so. :meth:`describe` derives one English line
-from these fields alone; Agents render that line.
+from these fields alone; Agents render that line. The facts are CSS px of the
+viewport; every *point* a line states (where a pointer pressed and released) is
+written by the caller's ``write_point``, so an Agent shows it on the grid its
+model writes points on. Scroll offsets are distances, not points: they stay in px.
 """
 
 from __future__ import annotations
@@ -45,7 +48,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spectragent.schemas.action import ActionEffect, Unmeasured
+from spectragent.schemas.action import (
+    ActionEffect,
+    PointWriter,
+    Unmeasured,
+    write_viewport_point,
+)
 
 #: Measured: no element at the point, or no element focused.
 Nothing = Literal["nothing"]
@@ -63,8 +71,9 @@ class ViewportPoint(_Fact):
     x: int
     y: int
 
-    def text(self) -> str:
-        return f"({self.x}, {self.y})"
+    def text(self, write_point: PointWriter = write_viewport_point) -> str:
+        """The point as *write_point* writes it (the renderer's grid; viewport units by default)."""
+        return write_point(self.x, self.y)
 
 
 class ElementFacts(_Fact):
@@ -181,14 +190,15 @@ class PointerEffect(ActionEffect):
     on_target: bool | Unmeasured | None = None
     focus_after: ElementFact
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         point = (
-            self.point.text()
+            self.point.text(write_point)
             if isinstance(self.point, ViewportPoint)
             else f"a point that is {_gap(self.point)}"
         )
         if self.release_point is not None:
-            head = f"Dragged from {point} to {self.release_point.text()}, pressing on "
+            release = self.release_point.text(write_point)
+            head = f"Dragged from {point} to {release}, pressing on "
         else:
             head = f"Clicked at {point} on "
         head += _element(self.hit, nothing="no element")
@@ -223,7 +233,7 @@ class TextInputEffect(ActionEffect):
     text_entered: bool
     focus_after: ElementFact
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         target = _element(self.target, nothing="nothing focused")
         if self.sensitive is True:
             target += " (a sensitive field; its content is not shown)"
@@ -276,7 +286,7 @@ class ScrollEffect(ActionEffect):
             return ScrollOffset(x=self.after.x - self.before.x, y=self.after.y - self.before.y)
         return None
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         if self.container == "page":
             what = "the page"
         elif self.container == "element":
@@ -313,7 +323,7 @@ class NavigationEffect(ActionEffect):
     after: Location | Unmeasured
     document_loaded: bool | Unmeasured
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         if isinstance(self.before, Location) and isinstance(self.after, Location):
             if self.before.url == self.after.url:
                 line = f"The URL stayed {_clip(self.after.url)}"
@@ -334,7 +344,7 @@ class TabSwitchEffect(ActionEffect):
     after: TabFacts | Unmeasured
     document_loaded: bool | Unmeasured
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         before = (
             f"tab {self.before.tab_id}"
             if isinstance(self.before, TabFacts)
@@ -353,7 +363,7 @@ class SelectionEffect(ActionEffect):
     selected: OptionFacts | Unmeasured
     value_changed: bool | Unmeasured
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         if isinstance(self.selected, OptionFacts):
             text = (
                 f'"{_clip(self.selected.text)}"'
@@ -377,7 +387,7 @@ class WaitEffect(ActionEffect):
 
     waited_ms: int = Field(ge=0)
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         return f"Waited {self.waited_ms} ms."
 
 

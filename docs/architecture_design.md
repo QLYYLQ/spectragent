@@ -258,7 +258,7 @@ class ReactLoop(AgentLoopBase):
 
 后两个都是 ReAct 的 slot，所以写在 `ReactLoop.__optional_slots__` 里（`BranchLoop` 继承）；不另立 `__inverse_slots__` 之类的新机制，也没有导出专用的错误类型。
 
-- **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `await build_react_prompt(obs, context=...)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。
+- **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `await build_react_prompt(obs, context=...)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。UI-TARS 的执行反馈与 restored 历史用同一套逐动词写法写已执行的动作，点在那批动作所依据的截图的网格上（§4.1"模型看到的每个点都写在它写点的那个网格上"）。
 - **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止）；`skyvern`：每个动作的 `reasoning` 按顺序以换行连接。
 - **校验**：导出器组装学生之后先照常 `loop.validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`。`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
 
@@ -428,7 +428,19 @@ ReAct 的公开 `cap_actions`、`remember_rejected`、`remember_reply`、`today_
 
 **UI-TARS 的稳定上下文与执行反馈。** Task 只写入 `prepare` 生成的 system 种子；首次观测的实测 `browser.platform` 另生成一次 system 消息，后续轮次不重复 Task 或平台段。每次 `prepare` 重置平台声明，因此执行、source/restored 历史重建及从非零步开始的独立导出段都得到自己的平台上下文；同一执行的平台变化明确拒绝，不能使用旧值继续。平台仍经环境 fragment 提供、记录，不从宿主机推断。
 
-UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项返回结果渲染到 user 观测消息，与本轮截图和步数一起交给模型。返回结果按动作次序配对；没有返回结果的动作单列，不能伪造成功；截断数量、错误阶段及错误保留。`typed_into_sensitive_field` 不进入提示。执行参数的坐标明确为 CSS viewport pixels，模型输出继续使用其配置网格。`success` 是执行器结果，不是页面目标实现的断言。单动作 `loop.action_result` 不扩展成另一份批次协议；Loop 不负责拼提示文字。
+UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项返回结果渲染到 user 观测消息，与本轮截图和步数一起交给模型。返回结果按动作次序配对；没有返回结果的动作单列，不能伪造成功；截断数量、错误阶段及错误保留。`typed_into_sensitive_field` 不进入提示。`success` 是执行器结果，不是页面目标实现的断言。单动作 `loop.action_result` 不扩展成另一份批次协议；Loop 不负责拼提示文字。
+
+**模型看到的每个点都写在它写点的那个网格上**（用户 2026-10-22 的裁决，取代原来的"执行参数的坐标明确为 CSS viewport pixels，模型输出继续使用其配置网格"）。事实不变：trace 里的动作参数、动作效果（§4.5）与 `capture_state`（§4.4）照旧是 capability 的 viewport 单位（浏览器为 CSS px）；变的只是 Agent 怎么呈现它们（呈现归 Agent，§4.4"观测增强按消费方分层"）。原因是实测：`coordinate_space: normalized_1000` 教模型在 0–1000 网格上写点，而反馈里的每个点都是 CSS px，teacher 模型（deepseek）于是把像素数写到网格上：输入框的像素 y 是 604，它写 `(500, 604)`，在 y=435 的空白处执行；一个金融站点上 25 次失败的文本输入有 15 次按像素读就落在输入框里，越靠屏幕下方偏得越远。UI-TARS 因此：
+
+- **上一批动作**写成它自己的动作语法，例如 `click(point='(500, 858)')`：与 `format_react_output` 用同一个逐动词写法（`_Verb.write`），点经 `PointGrid.to_grid` 写在那一批动作所依据的截图（上一步的截图）的网格上，所以模型看到的正是它在那张截图上会写出的那一行。批次的其余事实（每个结果的成败与错误、没有返回结果的动作、截断数量、错误阶段及错误）照旧。这个语法写不出来的动作（没有对应动词、本 run 没协商、参数值写不出——只出现在训练导出 `keep_as_text` 之后的历史里）保留原来的 `{"name", "params"}` 对象，其中成对的 `<name>_x` / `<name>_y` 点参数同样换成网格点。
+- **效果行**由 `describe(write_point=...)`（§4.5）把它陈述的每个点写在同一个网格上；**`capture_state` 的指针**由 `render_capture_state(observation, write_point=...)`（§4.4）写在本轮截图的网格上。本轮没有可测尺寸的截图时（这一步模型本来也写不了点），指针只说位置在这一步无法给出。
+- **restored 历史**（下文"restored 历史"）里实际执行的动作和源材料里录下的动作，都写在本次恢复观测截图的网格上（每个恢复步的动作就是在这张截图之后执行的）；原来的 "Executed coordinate parameters use CSS viewport pixels." 前缀删除。源回复 `recorded_reply` 本来就是 UI-TARS 在网格上写的原文，现在与录下的动作同一个网格。
+- **系统提示**删除 "Execution feedback coordinates are CSS viewport pixels; write new action points on the output grid specified above."，改为一句：执行反馈里的点与模型写的点在同一个网格上。`screenshot_pixels` 的网格就是图像像素，所以同一条路径写出的是图像像素：DPR 1 时数字与以前相同；DPR 2 时是 CSS px 的两倍，这也修正了以前反馈写 CSS px、模型写图像像素的不一致。
+- **距离不是点**：滚动的位移与滚动位置照旧是 viewport 的 px，位移写明单位（§4.5）。
+
+**较早一步的网格从哪里来。** `loop.history` 里的 `StepRecord` 不带截图几何（Loop 不认识截图，§4.4），所以 UI-TARS 保留一份按步号的 per-run 状态：每次 `build_react_prompt` 记下本步截图的网格（没有可测尺寸的截图时记 `None`），渲染上一批时按那条记录的 `step` 取。`prepare` 清空它。每条渲染路径都在 `prepare` 之后按步序构建 prompt：实时执行；branch 的 source 历史重建（逐步用源观测）；restored 历史（`build_restored_history` 先对本次恢复观测构建本步 prompt，再写恢复执行）；训练导出的每一段（段首经 `seed_messages` 调 `prepare`，段首没有上一批，段内逐步构建）。所以上一批的网格总在。取不到——那一步不是这个 Agent 实例在 `prepare` 之后构建的，或那一步没有可测尺寸的截图——而那一批有要写的点时，渲染明确报错，从不退回像素。
+
+**这次改动之前的 UI-TARS 录制不能用 source 历史分叉。** `history_source: source` 先比较种子、再逐次精确比较重建的 prompt 与源录下的 prompt，而系统提示与反馈里的点都变了，所以这样的分叉在种子检查就以 `IncompatibleCheckpointError` 停下。没有兼容路径（测试数据可丢弃）：重新录制，或用 `history_source: restored`（它不比较源 prompt，按新的写法渲染）。训练导出照常读旧录制，学生的上下文按新的写法渲染，只是与源 run 录下的调用不再逐条相同（§4.15"identity 导出的期望"）。
 
 #### 终止观测：`terminal_observation`（M31）
 
@@ -448,7 +460,7 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 
 **source 历史**：先验证 prepare 种子，按源观测、原始提示贡献及其位置重建每步 prompt。只重放 `purpose=agent_decision` 的主决策及解析重试；每次主调用前精确比较 prompt，调用后校验解析动作、截断及回复。helper 的回复不进入 Agent parser。恢复历史不执行贡献函数、不调用 helper；源贡献证据缺失时明确拒绝。种子和重建不符不受环境 `warn` 影响。然后恢复环境，第一策略步始终使用恢复器已经校验的 live 观测，不额外重拍。
 
-**restored 历史**：恢复器交回本次 live 观测、retarget 后实际执行动作及完整实际结果（含恢复时实际测得的动作效果）。每条恢复事实交给 Agent 的公开历史槽，Agent 按自己的消息格式表达，Loop 不改私有字段；恢复步记录随后进入 `loop.history`，Skyvern 的动作历史窗口就从这里读出实际执行的动作、结果与效果行，不另存一份 Agent 私有状态。源回复、thought 和动作作为带来源的材料保留，不能改编号伪造新回复；实际结果不能被源结果覆盖。缺失动作结果、时序或目标身份不一致、Agent 不能表达时明确失败，不能回退 source。所有前缀步骤仍是 `origin=restored`，没有本次模型调用，也不继承源 usage。恢复校验及发散始终保存。恢复步骤的顶层 `actions` / `action_results` 只保存实际返回结果的精确配对；抛异常而无返回值的动作尝试仍完整保留在 `restoration.actions`，不伪造返回结果、不把后一个结果配到前一个动作。任务变体的分叉也是这样：每个恢复步的源回复（含 thought）照样作为源材料进入历史（UI-TARS 与 Skyvern、browser-use 共用的 `agents/prompt_context.py::restored_history_message` 把它写成 `source_material.recorded_reply`），而那些回复是为源任务做的决定，源任务文本只会经它们引用而出现；检查点那一步的源回复只给提示贡献函数（`ReactPromptContext.source_reply`），Agent 不渲染。消息不说明源材料服务的是另一份任务；历史格式在变体功能里没有改（2026-10-21 实测，`tests/test_core/test_loops/test_branch_context_identity.py`）。要去掉这些源回复，在 hook 里配 `omit_source_replies`（2026-10-22，用户的做法：挂在 Agent 的提示构建上，不改历史格式）：它 blocking `around` 拦截 Agent 的 `build_restored_history`，交给 Agent 的历史副本 `source_reply` 为空，录下的源动作与实际恢复执行照常；trace 不变，步记录的 `source_history` 由 Loop 写、仍带源回复作出处，已录的模型调用就是模型实际看到的提示。它是对照臂，不是默认。
+**restored 历史**：恢复器交回本次 live 观测、retarget 后实际执行动作及完整实际结果（含恢复时实际测得的动作效果）。每条恢复事实交给 Agent 的公开历史槽，Agent 按自己的消息格式表达（三个 Agent 共用的 `agents/prompt_context.py::restored_history_message` 接受 Agent 的动作写法 `write_action` 与点写法 `write_point`，默认是动作的 JSON 与 viewport 单位的点；UI-TARS 传入自己的，见上文"模型看到的每个点都写在它写点的那个网格上"），Loop 不改私有字段；恢复步记录随后进入 `loop.history`，Skyvern 的动作历史窗口就从这里读出实际执行的动作、结果与效果行，不另存一份 Agent 私有状态。源回复、thought 和动作作为带来源的材料保留，不能改编号伪造新回复；实际结果不能被源结果覆盖。缺失动作结果、时序或目标身份不一致、Agent 不能表达时明确失败，不能回退 source。所有前缀步骤仍是 `origin=restored`，没有本次模型调用，也不继承源 usage。恢复校验及发散始终保存。恢复步骤的顶层 `actions` / `action_results` 只保存实际返回结果的精确配对；抛异常而无返回值的动作尝试仍完整保留在 `restoration.actions`，不伪造返回结果、不把后一个结果配到前一个动作。任务变体的分叉也是这样：每个恢复步的源回复（含 thought）照样作为源材料进入历史（UI-TARS 与 Skyvern、browser-use 共用的 `agents/prompt_context.py::restored_history_message` 把它写成 `source_material.recorded_reply`），而那些回复是为源任务做的决定，源任务文本只会经它们引用而出现；检查点那一步的源回复只给提示贡献函数（`ReactPromptContext.source_reply`），Agent 不渲染。消息不说明源材料服务的是另一份任务；历史格式在变体功能里没有改（2026-10-21 实测，`tests/test_core/test_loops/test_branch_context_identity.py`）。要去掉这些源回复，在 hook 里配 `omit_source_replies`（2026-10-22，用户的做法：挂在 Agent 的提示构建上，不改历史格式）：它 blocking `around` 拦截 Agent 的 `build_restored_history`，交给 Agent 的历史副本 `source_reply` 为空，录下的源动作与实际恢复执行照常；trace 不变，步记录的 `source_history` 由 Loop 写、仍带源回复作出处，已录的模型调用就是模型实际看到的提示。它是对照臂，不是默认。
 
 **恢复步骤的公开执行边界**：`BranchLoop.execute_step` 在本 run 的恢复迭代器有效时推进一个恢复步骤，恢复结束后委托 ReAct 策略步；迭代器与检查点结果只保存在 `BranchRun`。两种历史来源、有无记录器都经过同一入口。AOP 在真实步骤开始计时，到 `record_step` 交接为止；恢复失败和取消也交出本步记录。检查点 capture 属于第 t 步，随后 policy 同编号继续，只有一个步骤提交；记录器保留已开启的起点，不能重新起表丢掉 capture，也不能多算一条检查点步。记录采集和持久化开销另归对应步，不滚入下一恢复步。
 
@@ -1074,9 +1086,12 @@ capability 的 Observation 强加浏览器字段：
 | 浏览器页面状态：URL、标题、tabs | 现有 `browser.browser_meta` | 仅浏览器专用 Agent，required |
 | 媒体播放状态：每个媒体元素的位置、暂停、总时长（2026-10-20 裁决） | `browser.screenshot` 的 `media` 元数据（下文“截图的媒体状态”） | 恢复校验与对齐；浏览器专用 Agent 仅在 `show_media_state: true` 时渲染 |
 
-呈现归 Agent，但同一事实只有一种写法：跨平台事实由 `agents/_capture_state.py::render_capture_state(observation)`
+呈现归 Agent，但同一事实只有一种写法：跨平台事实由 `agents/_capture_state.py::render_capture_state(observation, *, write_point=...)`
 渲染，浏览器页面状态由 `agents/_browser_state.py::render_browser_state(observation)` 渲染并在内部复用前者，
-先例是 `render_browser_platform`。两个函数按相对名结构化读取 fragment，不 import capability 或 resolver
+先例是 `render_browser_platform`。点是唯一由 Agent 决定写法的部分（2026-10-22 裁决，§4.1"模型看到的每个点都写在它写点的那个网格上"）：
+`write_point` 是一个把 viewport 点写成文本的函数（`schemas/action.py::PointWriter`，与动作效果的 `describe` 共用），
+指针经它写出；默认写 `(x, y) in viewport pixels.`，所以 Skyvern、BrowserUse 的提示词不变；UI-TARS 传入本轮截图网格的写法，
+指针与它写的点在同一个网格上。事实本身仍是 viewport 单位，trace 不变。两个函数按相对名结构化读取 fragment，不 import capability 或 resolver
 类；Skyvern、BrowserUse 删除各自的 `browser_meta` 渲染，改用后者。ActionResult 的执行成败、动作效果、
 后续观测和任务是否达成保持独立；未测量不等于零，批次后的状态不归因到其中某一个动作，敏感值不回显。
 媒体播放状态（2026-10-20 裁决）是 `browser.screenshot` 的附带元数据（下文“截图的媒体状态”），
@@ -1099,7 +1114,7 @@ optional：环境提供就激活，不提供照常运行。**它从不让采集�
 |---|---|---|
 | 落定 | 采集前等待的结果 `settled` / `capped` / `unknown`、等待时长、尚未落定的项（capability 自定义标签）；`unknown` 时附读不到状态的原因 `detail` | 等待关闭时为 `None` |
 | 前台界面变化 | 采集前 capability 因环境自身行为移动了焦点：页面打开了新界面，或当前界面自行关闭；从哪到哪 | 没有移动为 `None`；Agent 自己的切换动作不算 |
-| 指针 | 同一界面最后一次确认的指针位置（viewport 单位），状态 `known` / `unknown` / `unavailable`（平台没有指针） | 与截图光标展示开关无关 |
+| 指针 | 同一界面最后一次确认的指针位置（viewport 单位；提示里由 Agent 的 `write_point` 写，见上文），状态 `known` / `unknown` / `unavailable`（平台没有指针） | 与截图光标展示开关无关 |
 | 可见资源加载失败 | 采集时视口内加载失败的可见资源数量及简短标识；本轮浏览器只测可见图片 | 测不到为 `unknown`，平台不支持为 `unavailable`；`0` 只表示测得为零 |
 
 离线回放审查也读回放步骤记下的“可见资源加载失败”（只数源步骤没有的），作为视口内缺图事实的第二个来源（§4.18）。
@@ -1574,10 +1589,16 @@ class ScrollAction(ActionBase):
 `Params` 是动作的输入合同，`Effect` 是它的输出事实合同。动作类可以声明嵌套的 `Effect` 模型，执行时自己测量，放进 `ActionResult.effect`。`ActionResult` 只多这一个通用槽位，不出现任何 capability 的字段：
 
 ```python
+PointWriter = Callable[[int, int], str]     # schemas/action.py：viewport 点 → 它在提示里的写法
+
+def write_viewport_point(x: int, y: int) -> str:
+    return f"({x}, {y})"                     # 默认写法：viewport 单位，今天的文本
+
 class ActionEffect(BaseModel):              # schemas/action.py，通用基类
     model_config = ConfigDict(frozen=True, extra="forbid")
     effect_id: str                           # 产出它的动作的全限定 key，如 "browser.scroll"
-    def describe(self) -> str: ...          # 一行确定性的事实文本，供 prompt 使用
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str: ...
+                                             # 一行确定性的事实文本，供 prompt 使用
 
 class ActionResult(BaseModel):
     success: bool
@@ -1588,6 +1609,7 @@ class ActionResult(BaseModel):
 
 - **读回不新增注册表。** `effect_id` 就是产出它的动作 key。trace 读取侧（`RunTrace` 读 `steps/NNN.json`）按 `effect_id` 在现有 `ActionRegistrar` 查到动作类，用它的 `Effect` 还原类型；查不到或校验失败是 `TraceSchemaError`，不降级成 dict。`schemas/` 不 import 动作类。多个动作可以共用一个效果类（`click`、`click_coordinate`、`drag` 共用指针效果）。trace 格式版本不变：缺少 `effect` 与“不产出效果”同义，旧测试数据按 2026-10-14 的裁决重新生成。
 - **`describe()` 合同。** 只由本对象的类型化字段确定性派生，一行英文事实，不含任务判断；敏感字段既不回显内容，也不报长度；unknown / unavailable 要明说。所有 Agent 渲染这一行，不把效果字段直接 dump 进 prompt：跨平台 Agent 因此不需要认识任何具体效果类型，浏览器专用 Agent 仍可另读字段。
+- **点由渲染方决定写法**（2026-10-22 裁决，§4.1"模型看到的每个点都写在它写点的那个网格上"）。`describe` 接受可选的关键字参数 `write_point`：效果陈述的**每一个点**（指针效果的落点与拖拽的松开点）都经它写出，其余文字不变；默认 `write_viewport_point` 写 viewport 单位的 `(x, y)`，与以前逐字相同，所以 Skyvern、BrowserUse 的提示词不变。UI-TARS 传入它的网格写法（`PointGrid.to_grid`，上一批动作所依据的截图的网格），效果行与它写的点在同一个网格上。**距离不是点**：滚动的位移与滚动位置不经 `write_point`，照旧是 viewport 的 px，位移写明单位（`moved the page by 600 px (y 0 → 600)`）。合同的其余部分不变：同一个 `write_point` 下仍是确定性的一行英文事实，`write_point` 只改点的写法，不加判断。每个 `Effect` 的 `describe` 都必须接受这个关键字（Agent 统一传它），`tests/test_core/test_actions/test_action_effect_contract.py` 对每个已注册动作的 `Effect` 检查。
 - **命中元素与焦点写角色和可读名，所有 Agent 都一样**（2026-10-20 裁决）。UI-TARS 这样的纯视觉、跨平台 Agent 也照样渲染；桌面与 Android 的无障碍接口给出同类事实，这不是浏览器专有信息。没有单独控制这部分细节的开关，要去掉只能用 `show_action_effects` 关掉整行。
 - **测量语义。** 效果在这一个动作执行期间、执行前后测得，所以能归因到它；批次之后的页面状态属于 observation。`success` / `error` 仍只表示执行成败：测量失败只把对应字段记为 unknown，不改变成败，也不中止动作。测得为零、unknown、unavailable 三者区分。测量有时间上限，不能明显拖长动作。
 - **浏览器本轮范围。** 指针类 `click`、`click_coordinate`、`drag`：实际落点、命中元素（角色与可读名）、执行后焦点。按编号寻址的点击和滚动，先把元素滚进视口再按：`DOM.scrollIntoViewIfNeeded` 后若元素中心仍在视口外（部分可见、比视口还高），用脚本把它居中再量；仍在视口外（例如固定在屏幕外的已收起面板）就拒绝并说明原因，不在视口外派发一次 Chrome 会丢掉、却报告成功的按下。文本输入类 `type`、`type_coordinate`、`send_keys`：实际进入的控件、值是否变化（不回显内容）、实际发出的键、执行后焦点。`scroll`：被滚动的是页面还是元素、前后位置与位移、是否到边界；没有容器移动时，只有滚轮能到的每个容器原本都已在该方向的边界上，才记测得的零位移，若还有容器有余量而在测量上限内没看到移动，之后的位置与是否到边界记 unknown（滚轮可能在上限之后才到，用户 2026-10-20 的裁决）。导航类 `navigate`、`go_back`、`go_forward`、`switch_tab`：前后 URL 或目标 tab、文档是否加载完成。`select_dropdown`：当前选中项。`wait`：实际等待时长。`done`、`screenshot`、`extract_content` 不产出效果。

@@ -45,7 +45,9 @@ _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: with no move and the measured macOS platform. A deliberate change to
 #: UI-TARS's prompt updates it; nothing in this package may.
 #: Updated 2026-10-20: the platform block names a computer-use agent and its environment.
-UI_TARS_PROMPT_SHA256 = "9dd76b8b0b19339ba6565ba9defd8051047b64c65f3cf715f871acd315392d29"
+#: Updated 2026-10-22: the system prompt says feedback points are on the model's own grid
+#: (the only difference: the old digest comes back with the old sentence put back).
+UI_TARS_PROMPT_SHA256 = "58d6602dc5e8a3fdc9a182b858b2fc559be14f8b53158921daaff3deb536d137"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:

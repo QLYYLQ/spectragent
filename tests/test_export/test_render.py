@@ -9,6 +9,7 @@ canonicalises and translates it with the real pipeline pieces, and renders it.
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,23 @@ class TestAssembly:
             assert base64.b64decode(url.partition(",")[2]) == shot.image_bytes  # type: ignore[union-attr]
         assert [r.context_steps for r in rendered] == [(), (0,), (0, 1)]
         assert {r.segment for r in rendered} == {0}
+
+    async def test_the_feedback_writes_an_earlier_action_as_its_target_turn_did(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """Every point the student reads is on its grid (arch §4.1): the call it wrote, again."""
+        first, second, third = await _renderer(composer).render(_trajectory(_three_steps(tmp_path)))
+        for earlier, later in ((first, second), (second, third)):
+            observation = later.context[-1]
+            assert isinstance(observation, UserMessage) and isinstance(observation.content, list)
+            text = observation.content[0].text  # type: ignore[union-attr]
+            feedback = json.loads(
+                text.split("<action_results>\n")[1].split("\n</action_results>")[0]
+            )
+            written = earlier.target.split("Action: ", 1)[1]
+            assert [entry["action"] for entry in feedback["returned_results"]] == [written]
+            assert "viewport pixels" not in text
+        assert second.target.endswith("click(point='(78, 278)')")  # (100, 200) on 1280x720
 
     async def test_the_target_label_is_the_quantised_point(
         self, composer: ConfigComposer, tmp_path: Path
