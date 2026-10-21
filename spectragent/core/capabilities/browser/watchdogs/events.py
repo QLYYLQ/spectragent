@@ -350,6 +350,23 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
     execution_timeout: float = 30.0
 
 
+class ActionBoundaryEvent(BaseEvent[None]):
+    """One of the agent's actions is about to run on this tab (§4.14 ``browser.frames``).
+
+    Emitted on the tab's observation scope by the archive side before the
+    action does anything to the page, and only while a bound archiver needs
+    the ``action_boundary`` channel. Its one receiver is the
+    ``ArchiveWatchdog``'s cross-scope handler, which runs in the archive
+    scope; the action waits for it within the participants' budget. No
+    observation watchdog connects to it, and it carries no result.
+    """
+
+    #: The fully-qualified action name (``browser.click``).
+    action_name: str
+    #: Wall-clock seconds at which the action started.
+    requested_at: float
+
+
 class ExecuteJavaScriptEvent(BaseEvent[dict[str, Any]]):
     """Run one permitted CDP JavaScript command for the named tab session.
 

@@ -1396,7 +1396,7 @@ def build_observation_model(active_fragments: set[str]) -> type[BaseModel]:
 |---|---|---|---|
 | 注册器 | `ObservationRegistrar` (`"observation"`) | `ActionRegistrar` (`"action"`) | `ArchiverRegistrar` (`"archiver"`, `discriminator_field="archiver_id"`, `key_separator="."`) |
 | 基类 | `FragmentBase` (pydantic bridge) | `ActionBase` (dataclass + conscribe metaclass) | `ArchiverBase`（普通类 + conscribe metaclass；框架层只有身份与声明：`archiver_id`、`source`、`privacy_markers`；旋钮是子类的 `Annotated` 构造参数；采集行为由所属 capability 自己的 archiver 基类定义，框架从不调用） |
-| 注册单元 | 每个 fragment 一个类 (`DOMObs` / `ScreenshotObs` / ...) | 每个 action 一个类 (`ClickAction` / `ScrollAction` / ...) | 每个归档器一个类（M29：`browser.network` / `browser.storage` / `browser.dom_raw`；回放日志 `browser.replay_log`，§4.14） |
+| 注册单元 | 每个 fragment 一个类 (`DOMObs` / `ScreenshotObs` / ...) | 每个 action 一个类 (`ClickAction` / `ScrollAction` / ...) | 每个归档器一个类（M29：`browser.network` / `browser.storage` / `browser.dom_raw`；只作标签的截图 `browser.frames`；回放日志 `browser.replay_log`，§4.14） |
 | 注册 key 命名空间 | `source.id` dotted key (`browser.dom` / `browser.screenshot` / `docker.terminal` / `loop.action_result`) | `source.id` dotted key (`browser.click` / `browser.scroll` / `sandbox.bash`) | `source.id` dotted key（`browser.network`） |
 | Agent wiring | `"observation": ("observation", [required], [optional])` — 默认写 capability-relative 短名（`screenshot`），写全限定键即钉死 provider | `"action": ("action", [required], [optional])` — 同左（`click_coordinate` / `browser.click_coordinate`） | 无。requires 不在任何类的 `__wiring__` 上，而是 `ArchiveConsumer.archive`——trace hook 实例的归档器列表（YAML `hook[].archive`，M29 起），**永远全限定**，没有 relative key |
 | Capability wiring | `"observation": ("observation", [provides])` | `"action": ("action", [provides])` | `"archiver": ("archiver", [provides])` |
@@ -2344,7 +2344,7 @@ class BrowserCapability(CapabilityBase):
                               "done"]),
         # 归档 provides（全限定键，M29 起）：没有 slot；requires 在 trace hook 的 archive 列表里
         "archiver": ("archiver", ["browser.network", "browser.storage", "browser.dom_raw",
-                                  "browser.replay_log"]),
+                                  "browser.frames", "browser.replay_log"]),
         # 回放档位受体（M29，§4.14）：策略即开关，none 是默认；YAML 必须写一个
         "replayability": ("replayability", ["none", "pinned"]),
         "backend": "browser_provider",
@@ -2806,7 +2806,7 @@ numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时�
 
 ### 4.14 回放与归档中间层（recorder 连接、`replayability`、browser 归档器）
 
-Browser 实现了 §4.5 的第三条 provides 轴（`browser.network` / `browser.storage` / `browser.dom_raw`；回放 run 用 `browser.replay_log` 代替 `browser.network`），另有三根自己的环境策略轴：`replayability`（`none` / `pinned`，录制的可回放档位）、`network_source`（`live` / `archive`，网络从哪里来，M30）与挂在 `archive` 来源上的 `miss_policy`（`strict`，M30）。它们共用一条独立于 agent 的 CDP 连接，即 **recorder 连接**（也叫 early-attach 连接）。这一层的设计依据来自两轮实测（S1、S2a，Chrome 153.0.8010.53，headless，macOS；探针脚本在本地的 `tmp/flywheel/spikes/`）。前半部分是录制（M29），"回放"之后的几节是离线回放（M30）。下面引用的 Chrome 行为都会随版本变化，`requires_chrome` 的回归测试把它们钉成版本金丝雀。
+Browser 实现了 §4.5 的第三条 provides 轴（`browser.network` / `browser.storage` / `browser.dom_raw` / `browser.frames`；回放 run 用 `browser.replay_log` 代替 `browser.network`），另有三根自己的环境策略轴：`replayability`（`none` / `pinned`，录制的可回放档位）、`network_source`（`live` / `archive`，网络从哪里来，M30）与挂在 `archive` 来源上的 `miss_policy`（`strict`，M30）。它们共用一条独立于 agent 的 CDP 连接，即 **recorder 连接**（也叫 early-attach 连接）。这一层的设计依据来自两轮实测（S1、S2a，Chrome 153.0.8010.53，headless，macOS；探针脚本在本地的 `tmp/flywheel/spikes/`）。前半部分是录制（M29），"回放"之后的几节是离线回放（M30）。下面引用的 Chrome 行为都会随版本变化，`requires_chrome` 的回归测试把它们钉成版本金丝雀。
 
 ```
 BrowserCapability
@@ -2905,7 +2905,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 3. 先写出，再 resume，最后才等回复。等待中的 target：整批命令按收集的顺序一条接一条写到 socket（`CDPClient.post`：写出就返回它的回复，回复之后再等；同一个 task 里先后写出的命令按这个顺序到 Chrome，不靠 task 的启动顺序），紧接着写 `Runtime.runIfWaitingForDebugger`，写之前一条回复也不等。之后等每一条回复，resume 的也在内，最长等到 recorder 自己可能扣住这个 target 第一个文档的时间（最长的贡献者预算加 1 s 宽限，或默认的 15 s）再加 15 s（`RESUMED_REPLY_MARGIN_S`）：没有页面进程的 target 等第一个文档提交才应答，而那个文档的 Response 阶段暂停正是 recorder 扣着的。失败与超时记日志、记在 target 上（`RecorderConnection.failures`，只作诊断），从不抛错；`close()` 取消时，没等到的回复丢掉。不在等待的 target（`open()` 时已存在的，ready barrier 等它们）照旧：整批写出，逐条在命令超时（1 s）之内等。`Runtime.runIfWaitingForDebugger` 用 `PausedTarget` 模式 B 放在 `finally` 里：命令建不出来、写不出去也照样 resume。实测（2026-10-14，Chrome 155，fixture，每种打开方式 3 次，从点击动作开始计到 fixture 收到文档请求）：打不到 opener 的 tab 21–70 ms（以前 1.02–1.05 s），每个 tab 0 条超时失败（以前 10 条；文档 2 s 才回的那个以前还多一条 resume 超时）；保留 opener 的 tab 与以前一样 20–55 ms，各有一条真实的失败（`setLocaleOverride` "already in effect"，上面的事实表）。Playwright 的 `FrameSession._initialize`（`crPage.ts`）也是把 `Page.enable`、注入脚本、各种 override 与 `Runtime.runIfWaitingForDebugger` 一起发出、再一起等。
 4. capability 自己开的 tab（`create_tab(url)`）在 `about:blank` 建，`RecorderConnection.wait_prepared` 等到 recorder 准备完它（attach、整批应答、resume）再导航，所以第一个请求被扣住、录下、pin 住（上面的事实表）。
 
-贡献者互不认识，recorder 也不按归档器 id 分支：它只问每个贡献者"这个 target 要发什么""你要哪些事件"。贡献者实现 recorder 的 `RecorderParticipant` 协议（`target_commands`、`fetch_patterns`、`event_methods`、`admit_event`、`on_event`、`pause_budget_s`、`on_paused`、`on_cycle`、`serves_requests`（M30），基类全部默认 no-op / `False`）：`replayability` 的本 run 计划是一个，回放服务是一个（M30），每个已绑定归档器的运行期会话各是一个。recorder 交给 archive scope 一侧的东西叫 `ArchiveChannel`（scope、贡献者、发出 / 处理计数与收集屏障），它只在绑定了归档器时存在。
+贡献者互不认识，recorder 也不按归档器 id 分支：它只问每个贡献者"这个 target 要发什么""你要哪些事件"。贡献者实现 recorder 的 `RecorderParticipant` 协议（`target_commands`、`fetch_patterns`、`event_methods`、`admit_event`、`on_event`、`pause_budget_s`、`on_paused`、`on_cycle`、`serves_requests`（M30），以及动作边界的 `wants_action_boundaries` / `action_boundary_budget_s` / `on_action_boundary`（下面 `browser.frames`），基类全部默认 no-op / `False` / `None`）：`replayability` 的本 run 计划是一个，回放服务是一个（M30），每个已绑定归档器的运行期会话各是一个。recorder 交给 archive scope 一侧的东西叫 `ArchiveChannel`（scope、贡献者、发出 / 处理计数与收集屏障），它只在绑定了归档器时存在。
 
 #### 事件：暂停的进 task，元数据进 scope，字节进侧存储
 
@@ -2976,13 +2976,13 @@ class ReplayabilityProtocol(Protocol):
 
 #### Browser 归档器：配置实例与运行期会话
 
-- **`BrowserArchiverBase(ArchiverBase)`**（`archive/base.py`）：配置实例只持有旋钮（YAML 构造、trace hook 持有、`bind_archivers` 交给 capability），从不持有 session 或 scope。它声明要哪些通道（`needs: ClassVar[frozenset[ArchiveNeed]]`，取值 `"fetch_response"`（线上流量：拦截的网络来源拒绝有它的归档器）/ `"raw_dom"` / `"observation_cycle"` / `"replay_log"`（M30：记下回放服务的决定，`browser.replay_log` 有它；回放的协作检查按它找记录回放日志的归档器，live 来源拒绝有它的归档器）），并用 `open(ctx) -> BrowserArchiveSession` 造出本 run 的运行期会话（纯构造，不发 CDP）。每个 browser 归档器都有 `allow_session_state: bool = False` 旋钮。
+- **`BrowserArchiverBase(ArchiverBase)`**（`archive/base.py`）：配置实例只持有旋钮（YAML 构造、trace hook 持有、`bind_archivers` 交给 capability），从不持有 session 或 scope。它声明要哪些通道（`needs: ClassVar[frozenset[ArchiveNeed]]`，取值 `"fetch_response"`（线上流量：拦截的网络来源拒绝有它的归档器）/ `"raw_dom"` / `"observation_cycle"` / `"replay_log"`（M30：记下回放服务的决定，`browser.replay_log` 有它；回放的协作检查按它找记录回放日志的归档器，live 来源拒绝有它的归档器）/ `"action_boundary"`（agent 的每个动作碰页面之前先通知会话、等它做完，`browser.frames` 有它；见下面 `browser.frames`）），并用 `open(ctx) -> BrowserArchiveSession` 造出本 run 的运行期会话（纯构造，不发 CDP）。每个 browser 归档器都有 `allow_session_state: bool = False` 旋钮。
 - **`BrowserArchiveContext`**（frozen，仿 `WatchdogContext`，capability 在 setup 时组装）：recorder 句柄（按 session 发命令、target ↔ session 映射、浏览器版本）、archive scope、原始采集仓库、tab 列表、当前 cycle、时钟、隐私事实（profile 是否新建）、回放服务的日志（`replay_log: ReplayLogFeed | None`，M30，只在回放时有：`drain()` 交出可直接写成 JSON 行的条目，归档一侧因此不 import 回放的类型）。
-- **`BrowserArchiveSession`**（运行期会话的基类，是一个 `RecorderParticipant`，方法默认 no-op）：`target_commands(target)` / `fetch_patterns(target)`（准备流水线的贡献）、`on_event(event)`（archive scope 里的元数据，同步）、`on_paused(paused)`（暂停的主人才收到：Response 阶段是要 `fetch_response` 的会话）、`on_cycle(cycle)`（只给要 `observation_cycle` 的会话）、`collect() -> list[ArchiveFile]`、`aclose()`。
+- **`BrowserArchiveSession`**（运行期会话的基类，是一个 `RecorderParticipant`，方法默认 no-op）：`target_commands(target)` / `fetch_patterns(target)`（准备流水线的贡献）、`on_event(event)`（archive scope 里的元数据，同步）、`on_paused(paused)`（暂停的主人才收到：Response 阶段是要 `fetch_response` 的会话）、`on_cycle(cycle)`（只给要 `observation_cycle` 的会话）、`on_action_boundary(boundary)`（只给 `wants_action_boundaries` 的会话）、`on_cycle_committed(cycle)`（cycle 提交时由 `BrowserArchiveRun.cycle_committed` 同步告知每个会话，失败的 cycle 不告知）、`collect() -> list[ArchiveFile]`、`aclose()`。
 - capability 遍历已绑定的实例与它们的会话，**不按 `archiver_id` 分支，不查注册表**（receptor hygiene Rule 2）。通道在 setup 时按当时绑定的需求并集打开；setup 之后再绑定只改变谁收事件、谁被收集（会话按实例保留，新实例开新会话，解绑的会话随 run 关闭），不给已准备好的 target 补开通道（runtime 只在 setup 之前绑定）。setup 时没有绑定任何归档器、没有开 archive 通道的 capability，之后再绑定归档器在 `bind_archivers` 报错，因为那样的绑定什么也采不到。
 - **运行期的归档侧**（`archive/run.py`，`BrowserArchiveRun`）：capability 在 setup 时建它、teardown 时关它；它持有 channel、本 run 的会话、`RawCaptureStore` 与指纹状态，`collect` 按下面的顺序收集。capability 只负责接线（建 scope、组装 context、调用它），不在自己的模块里写归档逻辑。
 - **原始 DOM 的待定槽位**在 `_ObserveCycleCache.raw`（§4.12）：DOM resolver 的 sink 与 dom_raw 自采（经 context 的 `park_raw`）都放进当前 cycle 的槽位；每次尝试开始时清空（重发的那次替换上一次），`_populate_cycle` 成功时由 `BrowserArchiveRun.commit_raw` 补上 cycle、tab、viewport、cleaner 键后提交进 `RawCaptureStore`，失败的 cycle 什么也不留。sink 只在 setup 时打开了 `raw_dom` 通道时才装；装了之后，当前没有绑定要 `raw_dom` 的归档器时它什么也不放。
-- **ArchiveWatchdog**（`watchdogs/archive_watchdog.py`，`level="shared"`，`provides=∅`，先例是 `JavaScriptExecutionWatchdog`）：**按绑定安装，不按 profile**。`BrowserWatchdog.should_install(ctx)` 是新的类方法（默认 True），capability 在建 watchdog 的地方求值；ArchiveWatchdog 只在 `ctx.archive` 存在（recorder 开着且绑定了归档器）时返回 True，从没有 recorder 的 context 也能惰性地建出来。它在 archive scope 上把准入的事件交给准入它的会话（target 簿记交给每个会话），并给每一个记一次"已处理"（屏障由 `ArchiveChannel` 自己应答）；某个会话处理事件时抛错，记进 `ArchiveChannel.errors`，不打断别的会话。有会话要 `observation_cycle` 时，它覆盖 `bind_tab_scopes(observation_scope, js_scope, *, session_id)`，把 tab 观测 scope 的 `BrowserStateRequestEvent` 跨 scope 连到 archive scope（`target_scope=`），`unbind_tab` 丢掉每 tab 的状态。tab 的 scope 仍然只有观测与 JS 两个，为每 tab 第三个 scope 设计的 `TabScopes` 组合对象不做：archive scope 是 browser 级的（弹窗的流量在控制连接接管它之前就到了），那个动机已经不存在，到下一个真正 per-tab 的 scope 再泛化 `bind_tab_scopes`。
+- **ArchiveWatchdog**（`watchdogs/archive_watchdog.py`，`level="shared"`，`provides=∅`，先例是 `JavaScriptExecutionWatchdog`）：**按绑定安装，不按 profile**。`BrowserWatchdog.should_install(ctx)` 是新的类方法（默认 True），capability 在建 watchdog 的地方求值；ArchiveWatchdog 只在 `ctx.archive` 存在（recorder 开着且绑定了归档器）时返回 True，从没有 recorder 的 context 也能惰性地建出来。它在 archive scope 上把准入的事件交给准入它的会话（target 簿记交给每个会话），并给每一个记一次"已处理"（屏障由 `ArchiveChannel` 自己应答）；某个会话处理事件时抛错，记进 `ArchiveChannel.errors`，不打断别的会话。有会话要 `observation_cycle` 时，它覆盖 `bind_tab_scopes(observation_scope, js_scope, *, session_id)`，把 tab 观测 scope 的 `BrowserStateRequestEvent` 跨 scope 连到 archive scope（`target_scope=`）；有会话要动作边界时，同样把 tab 观测 scope 的 `ActionBoundaryEvent` 连过去（它是这个事件唯一的 handler）；`unbind_tab` 丢掉每 tab 的状态。tab 的 scope 仍然只有观测与 JS 两个，为每 tab 第三个 scope 设计的 `TabScopes` 组合对象不做：archive scope 是 browser 级的（弹窗的流量在控制连接接管它之前就到了），那个动机已经不存在，到下一个真正 per-tab 的 scope 再泛化 `bind_tab_scopes`。
 - **`collect_archive()`**：没 setup 或什么都没绑定 → 空批次；否则入口查存活 → 屏障 → 上次收集以来有会话处理事件时抛过错（`ArchiveChannel.errors` 增加了）就抛错 → 按绑定顺序收集每个会话（每个会话在一条同步语句里换出自己的缓冲区）→ 指纹 run 记录（内容变了才再发）→ 批次。每一步都有界；采不到就抛错。
 - **实测开销**（Chrome 155，fixture 站点除 `nested_worker` 外的 12 个场景、在同一个浏览器里各访问两次，`none` 档位，DOM agent，三个归档器全开；`test_browser_archive_live.py::test_overhead_benchmark` 写出 `ArchiveOverheadReport`）：每步（导航 + 观测 + 收集）p50 多 ≈ 10–25 ms、p95 多 ≈ 90–100 ms；上限 p50 300 ms（`core/archive/budget.py::ARCHIVE_MAX_P50_OVERHEAD_MS`，度量报告的归档开销规则用的是同一个常量，§4.16；基准可用 `SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS` 临时覆盖）。字节（这次 run 收集到的全部证据，含收尾那次收集，除以步数）：去重前每步 ≈ 1061 KB，去重后 ≈ 537 KB（2026-10-13 起两个 6 MB 的 body——`large` 场景的脚本与 XHR——都边下边收、存下；之前只补取脚本、XHR 记 `too_large`，那时是 537 / 275 KB）。去重前的算法：每份内容寻址文件都计入，每条 revisit 记录按它指向的那条完整 response 记录的存储长度计入（payload 与压缩相同，只差几个头部字节）。省下的字节几乎全来自内容寻址：两个 6 MB 的 body 两次访问各收一遍，各只存一份（每步 ≈ 524 KB）。revisit 每步只净省 ≈ 83 B：gzip 后一条 revisit 记录约 510–530 B，比几十字节的 JSON 或脚本的完整记录还大，这些 payload 写成 revisit 反而各多花 50–90 B；净省主要来自 Range 视频的 206 body 和较大的 HTML 页面。
 
@@ -3046,6 +3046,33 @@ Chrome 155 的 fixture 回归 `test_browser_storage_seed_live.py` 验证首请�
 - Skyvern 的 JS 路径归档 JS 的原始输出。
 - 落盘：每个提交的 cycle 一份 gzip 的 JSON（键排序、集合转成有序列表，`mtime=0`），内容寻址，带 tab、loaderId、url、viewport、DPR、cleaner 键；cycle 与采集时间在来源信封（`ArchiveProvenance`）里、不在内容里，所以没变的文档跨步只存一次；重新导航之后 node id 都变了，同一个页面不会去重（实测）。脱敏在构造 `ArchiveFile` 之前完成（下面的隐私一节）。`archive/dom_raw.py` 的 `capture_from_document` 把归档内容还原成 `TargetCapture`，离线换 cleaner 用；JSON 的键都是字符串，它把 Skyvern 按整数 ref 建的两张表（`skyvern_nodes`、`skyvern_hit_tests`，`skyvern_capture.INTEGER_KEYED_MAPS`）还原成整数键，否则两个 Skyvern cleaner 按 ref 查节点全部落空（测试：归档往返之后，两个 cleaner 离线清洗出的序列化文本、选择器表的 backend id 与命中测试都与在线相同）。
 - 用途：离线换 cleaner / serializer 重算观测（BrowserUse cleaner 在给定 capture、viewport、DPR、前一步 selector map 时是纯函数）；用 paint order 离线判断遮挡（M32）。
+
+#### `browser.frames`
+
+训练"前瞻观测"模型要的标签证据，agent 自己从来看不到（用户 2026-10-21 的需求）：一步里多个动作之间的中间画面（UI-TARS 一步最多发 4 个动作，每步只观测一次，后面几个动作之前的画面没有任何观测拍到），以及观测之后大约 1 s 的第二张截图，用像素判断观测到的那一帧当时是不是还在变（上面"观测之前等页面落定"只看 DOM 变动和资源加载，从不比较图像）。它是一个归档器、不是 observation fragment：绑定在 `trace_writer.archive` 里才录，从不渲染进 prompt，恢复校验也从不读它（2026-10-13 的裁决：恢复只比较 agent 看到的东西）。
+
+- **两种帧**，都是聚焦 tab 视口的干净截图（`Page.captureScreenshot {format: png}`，不画光标：光标只画进给模型的那份副本，§4.4），在 recorder 连接上这个 tab 的 session 里拍，所以和观测截图同样的像素尺寸，也不占控制连接：
+  - `before_action`：agent 的每个动作碰页面之前（任何滚动到可见、指针移动、按键之前）拍一张。一步的第一张是"模型想完之后的画面"，后面的是动作之间的画面。
+  - `after_observation`：每个提交了的观测 cycle 之后 `after_observation_delay_s`（默认 1.0 s，`null` 关掉）再拍一张。
+- **新通道 `action_boundary`**（`ArchiveNeed` 的第五个值，`browser.frames` 有它）。`BrowserCapability.execute_action` 在动作执行之前调 `BrowserArchiveRun.action_boundary(scope, action=...)`：只在当前绑定的归档器要这个通道时，把 `ActionBoundaryEvent`（动作名、动作开始的墙钟时间）发到被操作 tab 的观测 scope；ArchiveWatchdog 在 `bind_tab_scopes` 里把它跨 scope 连到 archive scope（它是这个事件唯一的 handler，和 `observation_cycle` 同一种接法），在 archive scope 里把 `ActionBoundary`（tab 的 target id、控制 session、动作名、开始时间）交给每个 `wants_action_boundaries` 的会话，依次等它们做完。动作最多等这些会话的 `action_boundary_budget_s` 之和再加 1 s（`ACTION_BOUNDARY_GRACE_S`）；超时、出错或者没有任何 handler 收到（这个 tab 绑定时没有会话要边界）都记进 `ArchiveChannel.errors`（超时的取消），下一次收集因此报错，动作照常执行：归档从不决定 agent 的结果。只有 agent 的动作会通知（`execute_action`）；setup 打开起始页走 `_run_action`，不通知。capability 不按归档器 id 分支，也从不知道步号。
+- **提交的 cycle**：`_populate_cycle` 成功时，`BrowserArchiveRun.commit_raw` 之后紧接着 `cycle_committed(cycle, tab, control_session_id)`，同步告知每个会话（`on_cycle_committed(CommittedCycle)`，默认 no-op）；失败的 cycle 不告知。
+- **时序与作废规则**：`after_observation` 帧的请求时间是 cycle 提交时刻加延迟。到点之前开始了一个动作（动作开始时间早于请求时间），或者开始了新的观测 cycle，它就作废：取消，在索引里记 `superseded`，`superseded_by` 是 `action` 或 `observation`，没有图像。动作开始时已经到点的帧先拍完，动作才执行。收集时还在等的帧，收集先等它（最多剩余的延迟加 `capture_timeout_s`），所以第 *t* 步观测之后的那一帧落在第 *t* 步的批次里；只在一步没有任何动作、而且模型比延迟答得快时才真的要等（UI-TARS 的 `finished()` 也是一个动作，`browser.done`）。即便如此仍在途的帧恰好进后面某一个批次一次，`cycle` 说明它跟在哪次观测之后。teardown 取消还在等的帧。
+- **失败照实记**：每个 capture 有 `capture_timeout_s`（默认 3 s）。tab 在 recorder 连接上没有 session 记 `no_tab`，超时记 `timeout`，其他失败（CDP 报错、回复里没有图像）记 `failed`，都带 `detail`，都不是悄悄少一帧，也都不让收集失败。recorder 连接丢了，收集照常以 `RecorderLostError` 报错。
+- **落盘**：每次非空的收集交出每张拍到的 PNG（内容寻址，`media_type: image/png`，名字 `frame-<cycle>-before-<i>.png` / `frame-<cycle>-after.png`，在一个 run 里唯一；同样的画面只存一份）和一份步级索引 `frames.json`：
+
+  ```json
+  {"format": "browser-frames-1",
+   "frames": [{"kind": "before_action", "cycle": 12, "action_index": 0, "action": "browser.click",
+               "tab": "<target id>", "requested_at": 1761000000.123, "captured_at": 1761000000.180,
+               "outcome": "captured", "superseded_by": null, "name": "frame-12-before-0.png",
+               "sha256": "...", "width": 1280, "height": 720, "detail": null}]}
+  ```
+
+  `kind` 是 `before_action` / `after_observation`；`cycle` 是这一帧跟在后面的观测 cycle；`action_index` 是从那次 cycle 起第几个动作（从 0 起，`after_observation` 为 `null`），`action` 是动作名（`after_observation` 为 `null`）；`requested_at` 是动作开始时间或 cycle 提交时间加延迟，`captured_at` 是截图回复到达的墙钟时间（没拍到为 `null`）；`outcome` 是 `captured` / `superseded` / `timeout` / `failed` / `no_tab`；`name`、`sha256`、`width`、`height` 只在拍到时有值（PNG 头读不出尺寸时宽高为 `null`）。条目按定下结果的先后排列。索引文件的 `captured_at` 是最后一条定下结果的时刻。
+- **读取**：`archive/frames.py` 里的纯函数，只经 `ArchiveReader`（不 import `core.trace`，`test_archive_boundaries.py` 规则 5）：`read_frames(reader, step) -> list[FrameRecord]`、`iter_frames(reader, *, include_trailing=True)`（收尾批次的 step 是 `None`）、`read_frame_image(reader, step, record) -> bytes`（按名字和 sha256 在那一步的文件里找；没拍到的帧报 `ValueError`）。
+- **协作**：任何网络来源都允许（录制，以及离线回放和分叉的 `archive` 来源）；`requires_replayable` 为 False；隐私标记沿用基类（截图不带 cookie 与 storage）；`allow_session_state` 与其他归档器同义。截图拍的是页面当时的样子：`debug_highlight`（默认关）打开时它画进页面的提示也会出现在帧里。
+- **实测开销**（Chrome 155.0.8059.86，headless，1280x720 PNG，fixture 的 `frames` 页；`test_browser_archive_frames_live.py::test_what_a_frame_costs`）：`before_action` 拍摄 p50 ≈ 33 ms、最大 ≈ 50 ms，动作因此多等同样的时间（不绑定时 ≈ 0）；同一 session 上直接连发 `Page.captureScreenshot` 也是 p50 ≈ 31–34 ms，所以几乎全是 Chrome 出一帧的时间，通知本身可以忽略；`after_observation` 拍摄 p50 ≈ 15 ms。UI-TARS 一步 4 个动作约多 130 ms。字节：每帧一张视口 PNG，与观测截图同样大（`screenshot_watchdog.py` 实测 1280x720 的维基百科文章约 240 KB），相同的画面只存一份。
+- 验证：`test_browser_archive_frames.py`（fake CDP：动作等它的帧、作废、超时、失败、`no_tab`、预算超时让下一次收集报错而不影响动作、收集补完在等的帧、读回）；`test_browser_archive_frames_live.py`（真实 Chrome 上跑发布的录制配置加 `browser.frames`，脚本化模型先点后等：点击前的帧与这一步的观测截图逐像素相同，等待前的帧是点击之后的画面、与下一步的观测相同，尺寸与观测截图相同；模型比延迟慢时 `after_observation` 拍到，快时被动作作废）。
 
 #### `browser.replay_log`
 
@@ -4680,7 +4707,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
-| `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，回放的 `browser.replay_log`（§4.14），进 `collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
+| `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，只作标签的截图 `browser.frames`，回放的 `browser.replay_log`（§4.14），进 `collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
 | `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
 | `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
 | `MissPolicyRegistrar` | `miss_policy_id` (flat) | 回放 miss 的应答策略（v1 只有 `strict`），`core/capabilities/browser/replay/miss_policy.py`；`ArchiveNetworkSource.__wiring__["miss_policy"]` 受体（嵌套在 `network_source` 里），`archive` 块里必填（§4.14 "回放"） | ✅ M30（browser 内部） |
@@ -5005,7 +5032,8 @@ Browser Capability
 │   │   ├── browser EventScope → CrashWatchdog
 │   │   ├── archive EventScope（browser 级，随 recorder 连接建与关；只在绑定了归档器时）
 │   │   │   ├── ← ArchiveWatchdog（shared，provides ∅，按绑定安装）→ 已绑定归档器的运行期会话
-│   │   │   └── ← tab 观测 scope 的 BrowserStateRequestEvent（target_scope；纯视觉 run 的 dom_raw 自采）
+│   │   │   ├── ← tab 观测 scope 的 BrowserStateRequestEvent（target_scope；纯视觉 run 的 dom_raw 自采）
+│   │   │   └── ← tab 观测 scope 的 ActionBoundaryEvent（target_scope；动作之前 browser.frames 拍一帧）
 │   │   └── 每个已接管 tab（同一 tab/CDP session）
 │   │       ├── 观测 EventScope → DOM / Action / Screenshot / Meta 等 Watchdogs
 │   │       └── JS 执行 EventScope ← 跨 scope QUEUED 连接
@@ -5014,7 +5042,7 @@ Browser Capability
 │   │    └── raw_capture_sink → 本 cycle 缓存 → 提交的 cycle → browser.dom_raw（§4.12）
 │   ├── 回放 replay/（ReplayabilityRegistrar：none / pinned；NetworkSourceRegistrar：live / archive；
 │   │    MissPolicyRegistrar：strict；canonical / matcher / site_rules / archive_index / responder / server，§4.14）
-│   ├── 归档器 archive/（browser.network / browser.storage / browser.dom_raw / browser.replay_log + 环境指纹，§4.14）
+│   ├── 归档器 archive/（browser.network / browser.storage / browser.dom_raw / browser.frames / browser.replay_log + 环境指纹，§4.14）
 │   └── Input 拟人化层 (input/, §4.13)
 │        ├── MouseTrajectoryRegistrar  → HumanMouse    → Input.dispatchMouseEvent
 │        ├── TypingRhythmRegistrar     → HumanKeyboard → Input.dispatchKeyEvent

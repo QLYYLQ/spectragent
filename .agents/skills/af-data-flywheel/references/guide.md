@@ -139,6 +139,7 @@ hook:
 | `browser.network` | `max_inline_body_bytes` (5 000 000, at most 64 MiB: a larger body streams while the page reads it, any type except a document; over 64 MiB is `too_large`), `body_read_timeout_s` (10), `command_timeout_s` (1), `drain_timeout_s` (2), `max_post_data_size` (65536), `strip_request_headers` (null; added to `Cookie`, `Authorization`, `Proxy-Authorization`), `require_replayable` (true), `allow_session_state` (false) |
 | `browser.storage` | `allow_session_state` (false: refuse a non-fresh profile; values are stored as they are either way), `command_timeout_s` (1) |
 | `browser.dom_raw` | `allow_session_state` (false), `self_capture_timeout_s` (10) |
+| `browser.frames` | `before_action` (true), `after_observation_delay_s` (1.0; null turns it off), `capture_timeout_s` (3), `allow_session_state` (false). Label-only screenshots, never shown to the agent; read them with `archive/frames.py` (`read_frames`, `iter_frames`, `read_frame_image`) |
 
 `browser.network`'s `index.jsonl` has one `exchange` line per exchange (its `body_status`,
 the wall-clock `started_at` / `ended_at` of the request — `ended_at` is `null` when the line
@@ -762,12 +763,15 @@ For a browser archiver:
 - Hand-write `__init__` with `Annotated` knobs, `allow_session_state` among them. Every
   browser archiver has it, and the non-fresh-profile check reads it.
 - Declare `needs`, the capture channels the capability opens for archivers (`ArchiveNeed` in
-  `archive/base.py`: `fetch_response`, `raw_dom`, `observation_cycle`, `replay_log`). They
-  open at setup from the union of the bound archivers' needs; binding after setup cannot
-  open one. A new channel extends `ArchiveNeed` and the capability's setup. The
-  cooperation check also reads two of them: `fetch_response` marks live traffic (refused
-  under an `archive` source) and `replay_log` the replay's log (required under an `archive`
-  source, refused under `live`).
+  `archive/base.py`: `fetch_response`, `raw_dom`, `observation_cycle`, `replay_log`,
+  `action_boundary`). They open at setup from the union of the bound archivers' needs;
+  binding after setup cannot open one. A new channel extends `ArchiveNeed` and the
+  capability's setup. The cooperation check also reads two of them: `fetch_response` marks
+  live traffic (refused under an `archive` source) and `replay_log` the replay's log
+  (required under an `archive` source, refused under `live`). `action_boundary`
+  (`browser.frames`) announces each of the agent's actions on its tab before it touches the
+  page and makes the action wait for the sessions that want it, within their
+  `action_boundary_budget_s` (architecture §4.14 `browser.frames`).
 - An archiver that only consumes CDP events (`Runtime.consoleAPICalled`, say) needs no
   channel. It declares `needs = frozenset()`, as `browser.storage` does, lists the events in
   its session's `event_methods()`, and sends what enables them from `target_commands`
@@ -780,8 +784,10 @@ For a browser archiver:
 - The session is a recorder participant. Every member defaults to a no-op in
   `RecorderParticipantBase`, and `collect()` returns `[]`, so override only what you use:
   `target_commands`, `fetch_patterns`, `event_methods`, `admit_event`, `on_event`,
-  `on_paused` (with `pause_budget_s`), `wants_cycles` and `on_cycle`, then `collect()` and
-  `aclose()`.
+  `on_paused` (with `pause_budget_s`), `wants_cycles` and `on_cycle`,
+  `wants_action_boundaries` and `on_action_boundary` (with `action_boundary_budget_s`), and
+  the archive-side `on_cycle_committed` (a committed observation cycle, told synchronously),
+  then `collect()` and `aclose()`.
 - `admit_event(method, params, session_id) -> RecorderEvent | None` runs synchronously in the
   client's receive loop. Return small metadata only, because the archive scope keeps its last
   1000 events; return `None` to admit nothing; never modify `params`, which the other

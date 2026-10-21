@@ -1524,6 +1524,19 @@ class _CycleParticipant(_Participant):
         self.cycles.append(cycle)
 
 
+class _BoundaryParticipant(_Participant):
+    @property
+    def wants_action_boundaries(self) -> bool:
+        return True
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.boundaries: list[Any] = []
+
+    async def on_action_boundary(self, boundary: Any) -> None:
+        self.boundaries.append(boundary)
+
+
 class TestArchiveWatchdog:
     async def _channel(self, participants: list[Any]) -> tuple[ScopeGroup, ArchiveChannel]:
         group = ScopeGroup("t")
@@ -1654,6 +1667,65 @@ class TestArchiveWatchdog:
         obs.emit(again)
         await again
         assert len(cycler.cycles) == 1
+        await group.close_all()
+
+    async def test_action_boundaries_reach_only_participants_that_want_them(self) -> None:
+        from spectragent.core.capabilities.browser.watchdogs import ArchiveWatchdog
+        from spectragent.core.capabilities.browser.watchdogs.events import (
+            ActionBoundaryEvent,
+            BrowserStateRequestEvent,
+        )
+
+        framer, plain = _BoundaryParticipant("frames"), _Participant("network")
+        group, channel = await self._channel([framer, plain])
+        obs = await group.create_scope("T1", metadata={"target_id": "T1"})
+        js = await group.create_scope("T1:js", metadata={"target_id": "T1"})
+        watchdog = ArchiveWatchdog(channel)
+        watchdog.bind_tab_scopes(obs, js, session_id="ctl-1")
+
+        event = ActionBoundaryEvent(action_name="browser.click", requested_at=12.5)
+        obs.emit(event)
+        await event
+        (boundary,) = framer.boundaries
+        assert (
+            boundary.target_id,
+            boundary.control_session_id,
+            boundary.action,
+            boundary.requested_at,
+        ) == ("T1", "ctl-1", "browser.click", 12.5)
+        (result,) = event.event_results.values()
+        assert result.result is None and result.error is None
+        # Nobody wants cycles: no cycle connection beside the boundary one.
+        cycle = BrowserStateRequestEvent(fragments=frozenset({"browser.dom"}))
+        obs.emit(cycle)
+        await cycle
+        assert cycle.event_results == {}
+
+        watchdog.unbind_tab("ctl-1")
+        again = ActionBoundaryEvent(action_name="browser.click", requested_at=13.0)
+        obs.emit(again)
+        await again
+        assert len(framer.boundaries) == 1
+        await group.close_all()
+
+    async def test_a_failing_boundary_participant_is_counted_not_fatal(self) -> None:
+        from spectragent.core.capabilities.browser.watchdogs import ArchiveWatchdog
+        from spectragent.core.capabilities.browser.watchdogs.events import ActionBoundaryEvent
+
+        class _Bad(_BoundaryParticipant):
+            async def on_action_boundary(self, boundary: Any) -> None:
+                raise RuntimeError("broken frames")
+
+        good = _BoundaryParticipant("good")
+        group, channel = await self._channel([_Bad("bad"), good])
+        obs = await group.create_scope("T1", metadata={"target_id": "T1"})
+        js = await group.create_scope("T1:js", metadata={"target_id": "T1"})
+        watchdog = ArchiveWatchdog(channel)
+        watchdog.bind_tab_scopes(obs, js, session_id="ctl-1")
+        event = ActionBoundaryEvent(action_name="browser.wait", requested_at=1.0)
+        obs.emit(event)
+        await event
+        assert channel.errors == 1 and len(good.boundaries) == 1
         await group.close_all()
 
     async def test_no_cycle_connection_when_nobody_wants_cycles(self) -> None:

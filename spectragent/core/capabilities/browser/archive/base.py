@@ -51,10 +51,15 @@ if TYPE_CHECKING:
 #:   scope (a self-capture when no DOM fragment was negotiated);
 #: - ``replay_log`` — the replay server's decisions (``browser.replay_log`` has
 #:   it): a replay refuses to run without an archiver with it, and a live
-#:   source refuses one, since it replays nothing.
+#:   source refuses one, since it replays nothing;
+#: - ``action_boundary`` — the start of each of the agent's actions, delivered
+#:   into the archive scope before the action touches the page, the action
+#:   waiting for it (``browser.frames`` has it).
 #:
 #: The cooperation check finds archivers by these needs, never by archiver id.
-ArchiveNeed = Literal["fetch_response", "raw_dom", "observation_cycle", "replay_log"]
+ArchiveNeed = Literal[
+    "fetch_response", "raw_dom", "observation_cycle", "replay_log", "action_boundary"
+]
 
 
 class RecorderHandle(Protocol):
@@ -126,6 +131,25 @@ class RawCapture:
     #: ``observation`` — the DOM resolver's own capture, handed over by its
     #: sink; ``archive`` — dom_raw's self-capture in a vision-only run.
     source: Literal["observation", "archive"]
+
+
+@dataclass(frozen=True)
+class CommittedCycle:
+    """An observation cycle that succeeded, as the capability tells the archive side.
+
+    Told once per committed cycle, right after the capture every fragment of
+    the cycle came from (:meth:`BrowserArchiveSession.on_cycle_committed`);
+    a failed cycle is never told.
+    """
+
+    #: The cycle's number (the environment's counter).
+    cycle: int
+    #: The tab's target id (``""`` when the capability did not know it).
+    tab: str
+    #: The control connection's session for the tab.
+    control_session_id: str
+    #: Wall-clock seconds at which the cycle committed.
+    committed_at: float
 
 
 class RawCaptureStore:
@@ -207,10 +231,12 @@ class BrowserArchiveSession(RecorderParticipantBase):
     """One bound archiver's run-time session — a recorder participant.
 
     Every participant member (``target_commands``, ``fetch_patterns``,
-    ``on_event``, ``on_paused``, ``on_cycle``, ``wants_cycles``) defaults to a
-    no-op; :meth:`collect` hands over everything captured since the previous
-    collection and forgets it, swapping its buffers in one synchronous
-    statement; :meth:`aclose` releases anything still running.
+    ``on_event``, ``on_paused``, ``on_cycle``, ``wants_cycles``,
+    ``on_action_boundary``, ``wants_action_boundaries``) defaults to a
+    no-op, and so does :meth:`on_cycle_committed`; :meth:`collect` hands over
+    everything captured since the previous collection and forgets it,
+    swapping its buffers in one synchronous statement; :meth:`aclose`
+    releases anything still running.
     """
 
     def __init__(self, archiver: "BrowserArchiverBase", ctx: BrowserArchiveContext) -> None:
@@ -220,6 +246,10 @@ class BrowserArchiveSession(RecorderParticipantBase):
     @property
     def archiver_id(self) -> str:
         return self.archiver.archiver_id
+
+    def on_cycle_committed(self, cycle: CommittedCycle) -> None:
+        """An observation cycle committed. Synchronous, on the capability's loop; never blocks."""
+        return None
 
     async def collect(self) -> list[ArchiveFile]:
         """Hand over what was captured since the last collection; raise if it cannot."""

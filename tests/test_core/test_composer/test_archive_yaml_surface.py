@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from spectragent.core.archive import ArchiverRegistrar
 from spectragent.core.capabilities.browser.archive import (
     DomRawArchiver,
+    FramesArchiver,
     NetworkArchiver,
     ReplayLogArchiver,
     StorageArchiver,
@@ -100,6 +101,30 @@ class TestWhatARunRecords:
         assert archive[0].self_capture_timeout_s == 3.0  # type: ignore[attr-defined]
         assert archive[1].strip_request_headers == ["X-Api-Key"]  # type: ignore[attr-defined]
 
+    def test_the_frames_knobs_reach_the_instance(self, composer: ConfigComposer) -> None:
+        raw = _base()
+        _trace_entry(raw)["archive"] = [
+            {
+                "archiver_id": "browser.frames",
+                "before_action": False,
+                "after_observation_delay_s": 0.5,
+                "capture_timeout_s": 2.0,
+            }
+        ]
+        (frames,) = _writer(composer, raw).archive
+        assert isinstance(frames, FramesArchiver)
+        assert (frames.before_action, frames.after_observation_delay_s) == (False, 0.5)
+        assert (frames.capture_timeout_s, frames.allow_session_state) == (2.0, False)
+
+    def test_null_turns_the_after_observation_frame_off(self, composer: ConfigComposer) -> None:
+        raw = _base()
+        _trace_entry(raw)["archive"] = [
+            {"archiver_id": "browser.frames", "after_observation_delay_s": None}
+        ]
+        (frames,) = _writer(composer, raw).archive
+        assert frames.after_observation_delay_s is None  # type: ignore[attr-defined]
+        assert frames.before_action is True  # type: ignore[attr-defined]
+
 
 class TestWhatIsRefused:
     @pytest.mark.parametrize(
@@ -149,6 +174,17 @@ class TestWhatIsRefused:
         with pytest.raises(ValidationError, match="max_inline_body_bytes"):
             composer.compose(raw)
 
+    @pytest.mark.parametrize(
+        "knob", [{"after_observation_delay_s": 0}, {"capture_timeout_s": -1.0}], ids=str
+    )
+    def test_a_non_positive_frames_time(
+        self, composer: ConfigComposer, knob: dict[str, float]
+    ) -> None:
+        raw = _base()
+        _trace_entry(raw)["archive"] = [{"archiver_id": "browser.frames", **knob}]
+        with pytest.raises(ValidationError, match=next(iter(knob))):
+            composer.compose(raw)
+
     def test_a_capability_level_archiver_block(self, composer: ConfigComposer) -> None:
         raw = _base()
         raw["environment"][0]["capabilities"][0]["archiver"] = "browser.network"
@@ -159,7 +195,13 @@ class TestWhatIsRefused:
 def test_every_archiver_knob_reaches_the_generated_config() -> None:
     from spectragent.generated import _composed
 
-    for cls in (NetworkArchiver, StorageArchiver, DomRawArchiver, ReplayLogArchiver):
+    for cls in (
+        NetworkArchiver,
+        StorageArchiver,
+        DomRawArchiver,
+        FramesArchiver,
+        ReplayLogArchiver,
+    ):
         knobs = {name for name in inspect.signature(cls.__init__).parameters if name != "self"}
         model = next(
             getattr(_composed, attr)
@@ -174,5 +216,6 @@ def test_every_archiver_knob_reaches_the_generated_config() -> None:
         "browser.network",
         "browser.storage",
         "browser.dom_raw",
+        "browser.frames",
         "browser.replay_log",
     }

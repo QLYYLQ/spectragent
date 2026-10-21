@@ -86,6 +86,7 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
     BrowserArchiverBase,
     BrowserArchiveRun,
     DomRawArchiver,
+    FramesArchiver,
     NetworkArchiver,
     ParkedRaw,
     ReplayLogArchiver,
@@ -577,7 +578,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # the keys resolve when conscribe reads this entry).
         "archiver": {
             "registry": "archiver",
-            "keys": ["browser.dom_raw", "browser.network", "browser.replay_log", "browser.storage"],
+            "keys": [
+                "browser.dom_raw",
+                "browser.frames",
+                "browser.network",
+                "browser.replay_log",
+                "browser.storage",
+            ],
             "declare_only": True,
         },
         # ``browser_provider`` is the existing conscribe registrar for
@@ -2454,6 +2461,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         until the next observation captures is followed (``new_tabs:
         follow``). An action on a focused tab that has closed itself fails at
         once, naming the tab; the next observation moves the focus off it.
+
+        Before the action touches the page, the archive side announces it on
+        the focused tab (the ``action_boundary`` channel, §4.14
+        ``browser.frames``) and the action waits for the archivers that want
+        it, within their budget. Only the agent's actions are announced:
+        setup's start page goes through :meth:`_run_action` directly.
         """
         self._ensure_environment()
         self._open_follow_window()
@@ -2466,6 +2479,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     f"observation shows the tab the focus moves to"
                 ),
             )
+        archive = self._archive
+        sid = self._default_session_id
+        if archive is not None and sid is not None:
+            await archive.action_boundary(self._scopes.get(sid), action=action.name)
         return await self._run_action(action)
 
     async def _run_action(self, action: Action) -> ActionResult:
@@ -2676,16 +2693,18 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         cache.fired = True
         if self._archive is not None:
             # Only a successful cycle's capture reaches the archive (§4.12).
+            tab = self._session_to_target.get(sid, "")
             self._archive.commit_raw(
                 cache.raw,
                 cycle=cache.cycle,
-                tab=self._session_to_target.get(sid, ""),
+                tab=tab,
                 viewport=(self.viewport_width, self.viewport_height),
                 cleaner=str(
                     getattr(self.dom_cleaner, "cleaner_type", type(self.dom_cleaner).__name__)
                 ),
             )
             cache.raw.clear()
+            self._archive.cycle_committed(cycle=cache.cycle, tab=tab, control_session_id=sid)
         return sid
 
     async def _capture_once(self, sid: str) -> tuple[str, _StateEventOutcome]:

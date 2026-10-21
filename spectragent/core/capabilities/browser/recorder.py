@@ -105,6 +105,12 @@ AUTO_ATTACH_PARAMS: Mapping[str, Any] = {
 #: (:attr:`RecorderParticipant.pause_budget_s`) before the recorder settles
 #: the request without it.
 PAUSE_OWNER_GRACE_S = 1.0
+#: Seconds an action waits for an action boundary beyond the participants'
+#: declared budgets (:attr:`RecorderParticipant.action_boundary_budget_s`)
+#: before it gives up on them and runs anyway.
+ACTION_BOUNDARY_GRACE_S = 1.0
+#: The budget of a participant that wants action boundaries and declares none.
+DEFAULT_ACTION_BOUNDARY_BUDGET_S = 5.0
 #: How the recorder settles a Request-stage pause nobody answered while a
 #: participant serves requests: ``Failed``, the reason that keeps Chrome's
 #: http fallback alive (a 404 or ``BlockedByClient`` cuts it off — measured, arch §4.14).
@@ -236,6 +242,26 @@ class CycleRequest:
     request_id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ActionBoundary:
+    """The start of one of the agent's actions on one tab, for participants that want it.
+
+    Delivered from the tab's observation scope through the archive scope
+    before the action does anything to the page; the action waits for every
+    participant that wants boundaries (bounded by their
+    :attr:`RecorderParticipant.action_boundary_budget_s`).
+    """
+
+    #: The tab's target id — the recorder's session for it is found by this.
+    target_id: str | None
+    #: The control connection's session for the tab.
+    control_session_id: str
+    #: The fully-qualified action name (``browser.click``).
+    action: str
+    #: Wall-clock seconds at which the action started.
+    requested_at: float
+
+
 class RecorderEvent(BaseEvent[None]):
     """A metadata event from the recorder connection, with its session id.
 
@@ -267,6 +293,22 @@ class RecorderParticipant(Protocol):
     @property
     def wants_cycles(self) -> bool:
         """Whether :meth:`on_cycle` should be called for observation cycles."""
+        ...
+
+    @property
+    def wants_action_boundaries(self) -> bool:
+        """Whether :meth:`on_action_boundary` should be called before each action."""
+        ...
+
+    @property
+    def action_boundary_budget_s(self) -> float | None:
+        """Most seconds :meth:`on_action_boundary` may take, or ``None`` for the default.
+
+        The action waits the sum over the participants that want boundaries
+        (they are served one after the other) plus
+        :data:`ACTION_BOUNDARY_GRACE_S`, then runs anyway; a boundary that
+        overran fails the next collection.
+        """
         ...
 
     def target_commands(self, target: RecorderTarget) -> Sequence[CDPCommand]:
@@ -337,6 +379,10 @@ class RecorderParticipant(Protocol):
         """An observation cycle (only when :attr:`wants_cycles`)."""
         ...
 
+    async def on_action_boundary(self, boundary: ActionBoundary) -> None:
+        """An action about to run (only when :attr:`wants_action_boundaries`)."""
+        ...
+
 
 class RecorderParticipantBase:
     """No-op defaults for every :class:`RecorderParticipant` member."""
@@ -344,6 +390,14 @@ class RecorderParticipantBase:
     @property
     def wants_cycles(self) -> bool:
         return False
+
+    @property
+    def wants_action_boundaries(self) -> bool:
+        return False
+
+    @property
+    def action_boundary_budget_s(self) -> float | None:
+        return None
 
     def target_commands(self, target: RecorderTarget) -> Sequence[CDPCommand]:
         return ()
@@ -374,6 +428,9 @@ class RecorderParticipantBase:
         return None
 
     async def on_cycle(self, cycle: CycleRequest) -> None:
+        return None
+
+    async def on_action_boundary(self, boundary: ActionBoundary) -> None:
         return None
 
 
