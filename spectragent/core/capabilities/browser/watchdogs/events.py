@@ -338,6 +338,14 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
     """
 
     fragments: frozenset[str] = frozenset()
+    #: The screenshot resolver answers before every other fragment of this
+    #: capture. Set only for a restored capture whose media alignment left an
+    #: element the recording showed playing at its target, playing
+    #: (§4.14 "媒体对齐"): a tab captures its fragments one after another, and
+    #: a playing video moves on through a DOM capture taken first (measured:
+    #: 0.6 s at 5,000 elements, 3.5 s at 30,000). Every other capture keeps
+    #: the connection order (DOM, then screenshot).
+    screenshot_first: bool = False
     event_timeout: float = 30.0
     execution_timeout: float = 30.0
 

@@ -11,7 +11,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -897,6 +897,97 @@ async def test_a_media_read_that_fails_never_fails_the_screenshot() -> None:
         "before: the media read failed: the media read returned no result; "
         "after: the media read failed: the media read returned no result"
     )
+
+
+def _report(*records: MediaAlignment) -> Any:
+    from spectragent.core.capabilities.browser.media import AlignmentReport
+
+    return AlignmentReport(records=list(records))
+
+
+def test_only_an_element_left_playing_at_its_target_asks_for_the_screenshot_first() -> None:
+    playing = MediaAlignment(
+        element="main#0 video", outcome="aligned", action="seek_and_play", target_paused=False
+    )
+    assert _report(playing).left_playing
+    assert _report(playing.model_copy(update={"outcome": "already_aligned"})).left_playing
+    paused = playing.model_copy(update={"action": "pause_and_seek", "target_paused": True})
+    ended = playing.model_copy(update={"action": "seek_and_play_to_end", "target_paused": True})
+    failed = playing.model_copy(update={"outcome": "failed", "rolled_back": True})
+    unknown = MediaAlignment(element="main#0 video", outcome="unknown")
+    for report in (_report(), _report(paused), _report(ended), _report(failed), _report(unknown)):
+        assert not report.left_playing
+
+
+def _capture_order(browser: Any, since: int) -> list[str]:
+    """Which of the DOM and the screenshot the capture sent first, from the CDP log."""
+    order: list[str] = []
+    for sent in browser.control.sent[since:]:
+        kind = (
+            "screenshot"
+            if sent.method == "Page.captureScreenshot"
+            else "dom"
+            if sent.method in ("DOM.getDocument", "DOMSnapshot.captureSnapshot")
+            else None
+        )
+        if kind is not None and kind not in order:
+            order.append(kind)
+    return order
+
+
+@pytest.mark.parametrize(
+    ("alignment", "expected"),
+    [
+        (None, ["dom", "screenshot"]),
+        ("pause_and_seek", ["dom", "screenshot"]),
+        ("seek_and_play", ["screenshot", "dom"]),
+    ],
+    ids=["no-alignment", "paused-target", "playing-target"],
+)
+async def test_a_capture_that_left_a_video_playing_takes_the_screenshot_first(
+    monkeypatch: pytest.MonkeyPatch,
+    alignment: Literal["pause_and_seek", "seek_and_play"] | None,
+    expected: list[str],
+) -> None:
+    """A tab captures its fragments one after another: the DOM first would let it play on."""
+    from tests._helpers.browser_archive import OwnedBrowser
+    from tests._helpers.fake_cdp import FakeBrowser
+
+    record = MediaAlignment(
+        element="main#0 video",
+        outcome="aligned",
+        action=alignment or "none",
+        target_time=6.0,
+        target_paused=alignment != "seek_and_play",
+    )
+
+    async def aligned(*_args: Any, **_kwargs: Any) -> Any:
+        return _report(record)
+
+    monkeypatch.setattr("spectragent.core.capabilities.browser.capability.align_media", aligned)
+    browser = FakeBrowser()
+    cap = BrowserCapability()
+    cap.backend = OwnedBrowser()  # type: ignore[assignment]
+    cap._inject_cdp_factory(browser.client)
+    await cap.setup()
+    cap.apply_negotiation({"browser.dom", "browser.screenshot"})
+    try:
+        if alignment is not None:
+            await cap.align_next_observation(
+                observation(state(element())), media_seek_timeout_s=2.0, media_end_lead_s=0.5
+            )
+        since = len(browser.control.sent)
+        await cap.begin_observation(1)
+        await cap.resolve_fragment("browser.screenshot")
+        assert _capture_order(browser, since) == expected
+        # The next capture is not aligned: back to the connection order.
+        await cap.verify_restoration(observation(state(element())), observation(None))
+        since = len(browser.control.sent)
+        await cap.begin_observation(2)
+        await cap.resolve_fragment("browser.screenshot")
+        assert _capture_order(browser, since) == ["dom", "screenshot"]
+    finally:
+        await cap.teardown()
 
 
 def test_an_alignment_that_raised_lets_nothing_pass() -> None:

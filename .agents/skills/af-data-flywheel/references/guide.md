@@ -485,8 +485,9 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   unknown, never a failed screenshot). The restorer compares it (`media_mismatch`, judged
   before the screenshot distance) and, under `media: align`, has each restored observation
   (the checkpoint's included) aligned inside its capture, after the settle wait and before
-  the screenshot: a paused source is paused and sought; a playing one sought and played; an
-  ended one sought `media_end_lead_s` before its end and played into it. A seek that does
+  the screenshot: a paused source is paused and sought; a playing one sought and played, and
+  that capture takes its screenshot before the DOM (otherwise the video plays on through the
+  DOM capture); an ended one sought `media_end_lead_s` before its end and played into it. A seek that does
   not complete within `media_seek_timeout_s`, or lands off target, is rolled back and fails
   the step. `media_end_lead_s` not shorter than `media_seek_timeout_s` is refused at
   construction. Nothing is aligned after the checkpoint; `pace` only approximates a position.

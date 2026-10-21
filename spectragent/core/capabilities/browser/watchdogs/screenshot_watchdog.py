@@ -74,6 +74,12 @@ ScreenshotFormat = Literal["png", "jpeg"]
 #: ``browser.screenshot`` action is not bounded here.
 _SCREENSHOT_COMMAND_TIMEOUT_S = 10.0
 
+#: Connection priority of the capture that must come first
+#: (``BrowserStateRequestEvent.screenshot_first``): ahead of the DOM resolver
+#: (agent-cdp's default 0), so a media element aligned to a playing recording
+#: is captured right after it started, not after the DOM capture.
+FIRST = 50
+
 
 class ScreenshotWatchdog(BrowserWatchdog):
     """Captures screenshots via CDP."""
@@ -135,19 +141,29 @@ class ScreenshotWatchdog(BrowserWatchdog):
                 "Screenshot executor returned no image",
             ),
         )
-        connection = scope.connect(
-            BrowserStateRequestEvent,
-            self._on_browser_state_request,
-            mode=ConnectionType.QUEUED,
-            participation=Participation.HANDLER,
-            filter=lambda event: (
-                isinstance(event, BrowserStateRequestEvent)
-                and bool(event.fragments & self.provides)
-            ),
-            receiver_key="browser.screenshot",
-            result_contract=ResultContract(lambda value: isinstance(value, BrowserStateSummary)),
+        # One handler, two connections with complementary filters, so exactly
+        # one answers each capture: in the connection order (after the DOM
+        # resolver), or first when the capture asks for it (``FIRST``).
+        in_order, first = (
+            scope.connect(
+                BrowserStateRequestEvent,
+                self._on_browser_state_request,
+                mode=ConnectionType.QUEUED,
+                priority=priority,
+                participation=Participation.HANDLER,
+                filter=lambda event, wants_first=wants_first: (
+                    isinstance(event, BrowserStateRequestEvent)
+                    and bool(event.fragments & self.provides)
+                    and event.screenshot_first is wants_first
+                ),
+                receiver_key="browser.screenshot",
+                result_contract=ResultContract(
+                    lambda value: isinstance(value, BrowserStateSummary)
+                ),
+            )
+            for priority, wants_first in ((0, False), (FIRST, True))
         )
-        self.track_binding(scope, session_id, connections=[screenshot_connection, connection])
+        self.track_binding(scope, session_id, connections=[screenshot_connection, in_order, first])
 
     async def _on_screenshot_request(self, event: ScreenshotRequestEvent) -> bytes:
         """Capture screenshot and return the raw encoded bytes.

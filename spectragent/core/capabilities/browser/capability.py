@@ -2730,7 +2730,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             # A restored observation's media is aligned to the recording here:
             # after the waits, right before the screenshot (§4.14). Once per cycle.
             await self._align_media(sid)
-            outcome = await self._fire_state_event(sid, scope, wanted)
+            outcome = await self._fire_state_event(
+                sid, scope, wanted, screenshot_first=self._aligned_playing_media()
+            )
             # A recorder lost during the capture: nothing of it is served,
             # and the error says why rather than "no watchdog produced …".
             self._ensure_environment()
@@ -2791,6 +2793,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             f"{outcome.handler_count}. Errors: {detail}."
         )
 
+    def _aligned_playing_media(self) -> bool:
+        """Whether this cycle's alignment left a recorded-playing element playing (§4.14).
+
+        Its capture takes the screenshot first: the tab captures fragments one
+        after another, and a playing video moves on through a DOM capture taken
+        before the pixels (measured: 0.6 s at 5,000 elements, 3.5 s at 30,000,
+        past the restorer's 1 s tolerance). Every other capture keeps its order.
+        """
+        pending = self._media_alignment
+        return (
+            pending is not None
+            and pending.cycle == self._observation_cycle
+            and pending.report is not None
+            and pending.report.left_playing
+        )
+
     async def _align_media(self, sid: str) -> None:
         """Run the media alignment requested for this cycle, if any (``align_next_observation``)."""
         pending = self._media_alignment
@@ -2844,7 +2862,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return settle
 
     async def _fire_state_event(
-        self, sid: str, scope: EventScope, wanted: frozenset[str]
+        self,
+        sid: str,
+        scope: EventScope,
+        wanted: frozenset[str],
+        *,
+        screenshot_first: bool = False,
     ) -> _StateEventOutcome:
         """Emit one ``BrowserStateRequestEvent`` and aggregate the replies.
 
@@ -2858,8 +2881,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         to be computed from the capability's full provides set, which
         meant a vision-only agent paid for a full DOM extraction every
         step and negotiation saved nothing.
+
+        ``screenshot_first`` puts the screenshot ahead of the DOM capture
+        (:meth:`_aligned_playing_media`); otherwise the order is unchanged.
         """
-        event = BrowserStateRequestEvent(fragments=wanted)
+        event = BrowserStateRequestEvent(fragments=wanted, screenshot_first=screenshot_first)
         self._cycle_entry(sid).active_request_id = event.event_id
 
         # Hide the debug-highlight overlay (cursor / click marker /

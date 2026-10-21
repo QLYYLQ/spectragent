@@ -247,7 +247,12 @@ async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: f
 - **Aligned inside that observation's own capture**, after the settle wait and right
   before the capture fires (the browser: `_capture_once` → `_align_media`, once per cycle,
   on the first attempt). Earlier, a playing video drifts during the settle; in the Loop,
-  the Loop would have to know about page media.
+  the Loop would have to know about page media. A tab captures its fragments one after
+  another, DOM first, so a capture whose alignment left a recorded-playing element playing
+  asks for the screenshot first (`BrowserStateRequestEvent.screenshot_first`, served by a
+  second, higher-priority connection of the screenshot resolver with the complementary
+  filter); every other capture keeps the connection order. Measured: with the DOM first a
+  playing video moved 0.6 s at 5,000 elements and 3.5 s at 30,000, past the 1 s tolerance.
 - **Belongs to one observation only.** Bind the request to the next cycle
   (`begin_observation`); a later cycle drops it, and the next `verify_restoration` takes
   the report whether or not a capture acted on it. So nothing is ever aligned after the

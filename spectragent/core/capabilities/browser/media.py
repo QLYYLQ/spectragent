@@ -48,7 +48,7 @@ recorded position and play state: paused targets first (pause, seek, wait for
 ``seeked``, ``seeking == false`` and ``readyState >= 2``, and the position it
 landed on must be the target), then playing ones
 (the same, then ``play()`` and wait for ``playing``), and the capture follows
-at once. A recorded element that had ended is sought a short lead before its
+at once, its screenshot before any other fragment. A recorded element that had ended is sought a short lead before its
 end (``media_end_lead_s``) and played through to its natural end (``ended``
 fired), because a seek straight to the end leaves a stale frame and no end
 screen. ``currentTime`` alone is no proof: a seek into bytes the recording
@@ -954,6 +954,19 @@ class AlignmentReport:
 
     records: list[MediaAlignment] = field(default_factory=list)
     detail: str = ""
+
+    @property
+    def left_playing(self) -> bool:
+        """Whether an element the recording showed playing now plays from its target.
+
+        The capture then takes its screenshot before every other fragment
+        (``BrowserStateRequestEvent.screenshot_first``): anything captured
+        in between moves the element on.
+        """
+        return any(
+            record.target_paused is False and record.outcome in ("aligned", "already_aligned")
+            for record in self.records
+        )
 
 
 @dataclass

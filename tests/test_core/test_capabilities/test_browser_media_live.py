@@ -143,6 +143,17 @@ _BUSY = _page(
 _PLAYING = _page(
     "<video id=v data-src=/clip.webm muted autoplay loop preload=auto style='left:0;top:0'></video>"
 )
+#: How many buttons :data:`_PLAYING_LARGE` carries: enough that capturing its
+#: DOM takes seconds (measured: 30,000 take about 3.5 s), past the restorer's
+#: 1 s media tolerance.
+LARGE_DOM_BUTTONS = 30_000
+#: The playing video on a page whose DOM is slow to capture.
+_PLAYING_LARGE = _page(
+    "<video id=v data-src=/clip.webm muted autoplay loop preload=auto style='left:0;top:0'></video>"
+    "<div style='position:absolute;top:200px'>"
+    + "".join(f"<button>b{i}</button>" for i in range(LARGE_DOM_BUTTONS))
+    + "</div>"
+)
 
 
 class _Media(BaseHTTPRequestHandler):
@@ -156,6 +167,7 @@ class _Media(BaseHTTPRequestHandler):
             "/one.html": _ONE % "/clip.webm",
             "/one-limited.html": _ONE % "/limited.webm",
             "/playing.html": _PLAYING,
+            "/playing-large.html": _PLAYING_LARGE,
             "/cross.html": _cross_site(self.server.cross_origin),  # type: ignore[attr-defined]
             "/cross-busy.html": _cross_site(self.server.cross_origin, "busy.html"),  # type: ignore[attr-defined]
             "/busy.html": _BUSY,
@@ -456,6 +468,58 @@ async def test_a_seek_beyond_the_served_bytes_fails_and_is_undone(origin: str) -
         3, [evidence], [], verify="strict", screenshot_max_distance=64, media_time_tolerance_s=1.0
     )
     assert check.verdict == "diverged" and "media_mismatch" in check.reasons
+
+
+async def test_a_playing_target_is_captured_before_a_slow_dom(origin: str) -> None:
+    """Seek, play, capture at once: the screenshot comes before the DOM capture.
+
+    A tab captures its fragments one after another, the DOM first. With the
+    DOM first, the video played on through its capture (seconds on this
+    page) and stood past the tolerance in the screenshot although the
+    alignment had succeeded. A capture with nothing to keep playing keeps
+    the DOM first.
+    """
+    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0)
+    cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
+    await asyncio.wait_for(
+        cap.setup(
+            negotiation={"browser.dom", "browser.screenshot"},
+            start_url=f"{origin}/playing-large.html",
+        ),
+        60,
+    )
+    browser = _Browser(cap)
+    try:
+        await browser.wait_until("document.getElementById('v').currentTime > 0.5")
+        first = await browser.screenshot()
+        plain_dom = await cap.resolve_fragment("browser.dom")
+        assert first.media is not None
+        (element,) = first.media.elements
+        recorded = _recorded(
+            first, element, MediaReading(current_time=6.0, paused=False, ready_state=4)
+        )
+        await cap.align_next_observation(recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5)
+        shot = await browser.screenshot()
+        aligned_dom = await cap.resolve_fragment("browser.dom")
+        evidence = await cap.verify_restoration(recorded, _observation(shot))
+    finally:
+        await cap.teardown()
+
+    # The ordinary capture: the DOM first, then the screenshot.
+    assert plain_dom.captured_at < first.captured_at
+    # The aligned one: the screenshot first, while the video stood at its target.
+    assert shot.captured_at < aligned_dom.captured_at
+    (record,) = _media_of(evidence).alignment
+    assert (record.outcome, record.action) == ("aligned", "seek_and_play")
+    assert shot.media is not None
+    (playing,) = shot.media.elements
+    assert playing.before is not None and playing.before.paused is False
+    assert playing.before.current_time is not None
+    assert 6.0 <= playing.before.current_time < 6.5
+    check = judge(
+        3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
+    )
+    assert "media_mismatch" not in check.reasons
 
 
 async def test_without_alignment_position_and_paused_state_differences_fail(origin: str) -> None:
