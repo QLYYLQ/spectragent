@@ -9,7 +9,10 @@ This module holds the measurements every executor shares:
   (``BrowserCapability.action_effect_timeout_s``). Only probe time counts; a
   probe that fails or runs past what is left returns ``"unknown"``, and a
   spent budget answers ``"unknown"`` without sending anything. A probe never
-  raises into the action: measuring cannot change an action's outcome.
+  raises into the action, and a probe that gives no answer never changes an
+  action's outcome. One measured answer does: typing refuses when
+  :class:`FieldProbe` measured that no text field has focus (``type`` /
+  ``type_coordinate``, ``docs/architecture_design.md`` §4.5).
 - :func:`element_at` — the element the page hit-tests at a viewport point,
   and whether it is a given target element or inside it.
 - :func:`focused_element` — the element that has keyboard focus.
@@ -36,7 +39,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar
 
@@ -152,7 +156,7 @@ function deepFocus() {
   let el = document.activeElement;
   for (let hops = 0; el && hops < 64; hops += 1) {
     if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
-    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+    if (el.localName === 'iframe' || el.localName === 'frame') {
       let inner = null;
       try { inner = el.contentDocument; } catch (e) { inner = null; }
       if (!inner) return {opaque: true};
@@ -161,34 +165,42 @@ function deepFocus() {
     }
     break;
   }
-  if (!el || ((el.tagName === 'BODY' || el.tagName === 'HTML') && !el.isContentEditable)) {
+  if (!el || ((el.localName === 'body' || el.localName === 'html') && !el.isContentEditable)) {
     return {el: null};
   }
   return {el: el};
 }
 """
 
-#: ``textEntry(el)``: whether typed text goes into *el* — ``'text'`` for an
-#: editable ``<input>`` of a text-like type, an editable ``<textarea>``,
-#: editable content (``contenteditable``, ``plaintext-only``, ``designMode``)
-#: and an element whose own ARIA role is ``textbox`` or ``searchbox`` (a
-#: widget that takes the keys itself); ``'read-only'`` for such an input or
-#: textarea that is read-only or disabled; ``'none'`` for anything else.
-#: ``null`` (cannot tell) for a custom element whose shadow root script cannot
-#: open: a closed shadow root can hold the field that has focus.
+#: ``textEntry(el)``: whether typed text goes into *el*, by its own markup.
+#: ``'text'``: an editable ``<input>`` of a type that takes typed text, an
+#: editable ``<textarea>``, editable content (``contenteditable``,
+#: ``plaintext-only``, ``designMode``) — the browser's own editor takes the
+#: text. ``'widget'``: an element that is none of those but whose own ARIA
+#: role is ``textbox`` or ``searchbox`` — a widget that takes the keys itself.
+#: ``'read-only'``: such an input, textarea or widget that is read-only or
+#: disabled (``aria-readonly`` / ``aria-disabled`` for the widget).
+#: ``'none'``: any other element with an explicit ARIA role. ``'no-role'``: any
+#: other element without one — no text control, unless focus sits in a closed
+#: shadow root inside it, which script cannot see (:class:`FieldProbe` asks
+#: the DOM agent). ``null`` (cannot tell): ``<embed>``, ``<object>`` and
+#: ``<fencedframe>``, whose content keeps its own focus.
 _TEXT_ENTRY_JS = r"""
 function textEntry(el) {
-  if (el.isContentEditable) return 'text';
   const tag = el.localName;
+  if (tag === 'embed' || tag === 'object' || tag === 'fencedframe') return null;
+  if (el.isContentEditable) return 'text';
   const noText = ['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range',
                   'reset', 'submit'];
   if (tag === 'textarea' || (tag === 'input' && !noText.includes(el.type))) {
     return (el.readOnly || el.disabled) ? 'read-only' : 'text';
   }
   const role = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
-  if (role === 'textbox' || role === 'searchbox') return 'text';
-  if (tag.includes('-') && !el.shadowRoot) return null;
-  return 'none';
+  if (role === 'textbox' || role === 'searchbox') {
+    const on = name => (el.getAttribute(name) || '').trim().toLowerCase() === 'true';
+    return (on('aria-readonly') || on('aria-disabled')) ? 'read-only' : 'widget';
+  }
+  return role ? 'none' : 'no-role';
 }
 """
 
@@ -202,7 +214,7 @@ function deepHit(x, y) {
       const inner = el.shadowRoot.elementFromPoint(x, y);
       if (inner && inner !== el) { el = inner; continue; }
     }
-    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+    if (el.localName === 'iframe' || el.localName === 'frame') {
       let inner = null;
       try { inner = el.contentDocument; } catch (e) { inner = null; }
       if (!inner) break;
@@ -268,10 +280,17 @@ _FIELD_FN = (
 )
 
 #: Whether typed text goes into an element (``textEntry`` above): ``"text"``
-#: it does, ``"read-only"`` a text control that refuses it, ``"none"`` an
-#: element that is no text control.
-TextEntry = Literal["text", "read-only", "none"]
-_TEXT_ENTRIES: dict[str, TextEntry] = {"text": "text", "read-only": "read-only", "none": "none"}
+#: the browser's editor takes it, ``"widget"`` a ``textbox`` / ``searchbox``
+#: widget that is no editor takes the keys itself, ``"read-only"`` a text
+#: control or widget that refuses it, ``"none"`` an element that is no text
+#: control.
+TextEntry = Literal["text", "widget", "read-only", "none"]
+_TEXT_ENTRIES: dict[str, TextEntry] = {
+    "text": "text",
+    "widget": "widget",
+    "read-only": "read-only",
+    "none": "none",
+}
 
 
 @dataclass
@@ -284,10 +303,26 @@ class ProbeBudget:
 
     seconds: float
     spent: float = 0.0
+    #: Kept out of reach for later probes (:meth:`keeping`).
+    held: float = 0.0
 
     @property
     def remaining(self) -> float:
-        return max(0.0, self.seconds - self.spent)
+        return max(0.0, self.seconds - self.spent - self.held)
+
+    @contextmanager
+    def keeping(self, seconds: float) -> Iterator[None]:
+        """Within the block, keep *seconds* of what is left for the probes after it.
+
+        A wait inside the block (polling until something lands) cannot spend
+        the time the measurements that follow it still need.
+        """
+        held = max(0.0, seconds)
+        self.held += held
+        try:
+            yield
+        finally:
+            self.held -= held
 
     async def sleep(self, seconds: float) -> None:
         """Pause as part of a measurement (waiting for an effect to land), charged to the budget.
@@ -450,10 +485,15 @@ class FieldProbe:
     the same element — wherever focus went meanwhile — and :meth:`release`
     drops the reference. The value itself never leaves the page.
 
-    ``entry`` is ``"none"`` when nothing is focused, ``"unavailable"`` when
-    the focus is in a frame this session cannot look into, and ``"unknown"``
-    when the reading failed or the page cannot tell (a custom element whose
-    shadow root is closed).
+    ``located``: the read of where focus is answered — nothing, a frame of
+    another site, or an element, whether or not that element's own reading
+    then answered. ``entry`` is ``"none"`` when nothing is focused,
+    ``"unavailable"`` when the focus is in a frame this session cannot look
+    into, and ``"unknown"`` when a reading failed or the page cannot tell: an
+    element whose own reading gave no answer, an ``<embed>`` / ``<object>`` /
+    ``<fencedframe>``, an element that is no text control but holds a closed
+    shadow root (``DOM.describeNode`` sees it; the field that has focus may be
+    inside it).
     """
 
     cdp: CDPCommandProtocol
@@ -462,6 +502,7 @@ class FieldProbe:
     target: ElementFact = UNKNOWN
     sensitive: bool | Unmeasured = UNKNOWN
     entry: TextEntry | Unmeasured = UNKNOWN
+    located: bool = False
     _object_id: str | None = field(default=None, repr=False)
     _digest_before: str | None = field(default=None, repr=False)
     _has_value: bool = field(default=False, repr=False)
@@ -482,21 +523,23 @@ class FieldProbe:
             return
         if result.get("value") == "opaque":
             self.target = self.sensitive = self.entry = "unavailable"
+            self.located = True
             return
         object_id = result.get("objectId")
         if not isinstance(object_id, str):
             if result.get("subtype") == "null":
                 # Nothing is focused; the keys go to the page itself.
                 self.target, self.sensitive, self.entry = "nothing", False, "none"
+                self.located = True
             # Anything else is a reply that does not say: left unknown.
             return
         self._object_id = object_id
+        self.located = True
         reading = await self._read()
         if not isinstance(reading, dict):
             return
         self.target = element_facts(reading.get("facts")) or UNKNOWN
-        entry = reading.get("entry")
-        self.entry = _TEXT_ENTRIES.get(entry, UNKNOWN) if isinstance(entry, str) else UNKNOWN
+        self.entry = await self._entry(reading.get("entry"))
         attrs = reading.get("attrs")
         self.sensitive = is_sensitive_control(
             str(reading.get("tag") or ""),
@@ -505,6 +548,42 @@ class FieldProbe:
         digest = reading.get("digest")
         self._has_value = isinstance(digest, str)
         self._digest_before = digest if isinstance(digest, str) else None
+
+    async def _entry(self, reading: Any) -> TextEntry | Unmeasured:
+        """The element's ``entry`` from its ``textEntry`` reading."""
+        if reading == "no-role":
+            # No text control by its markup and no role saying what it is:
+            # unless focus sits in a closed shadow root inside it.
+            closed = await self._holds_closed_shadow_root()
+            return "none" if closed is False else UNKNOWN
+        return _TEXT_ENTRIES.get(reading, UNKNOWN) if isinstance(reading, str) else UNKNOWN
+
+    async def _holds_closed_shadow_root(self) -> bool | None:
+        """Whether the held element hosts a closed shadow root; ``None`` when the DOM agent did not say.
+
+        Script cannot see a closed shadow root, and the page's focus stays on
+        its host while a field inside it has focus. The DOM agent lists it
+        (``DOM.describeNode``, measured: ``shadowRootType`` ``"closed"``,
+        without enabling the DOM domain).
+        """
+        object_id = self._object_id
+
+        async def describe() -> bool:
+            reply = await self.cdp.send(
+                "DOM.describeNode",
+                {"objectId": object_id, "depth": 0},
+                session_id=self.session_id,
+            )
+            node = reply.get("node") if isinstance(reply, dict) else None
+            if not isinstance(node, dict):
+                raise RuntimeError(f"no node described: {reply!r:.200}")
+            roots = node.get("shadowRoots") or []
+            return any(
+                isinstance(root, dict) and root.get("shadowRootType") == "closed" for root in roots
+            )
+
+        answer = await self.budget.run(describe, "shadow roots")
+        return answer if isinstance(answer, bool) else None
 
     async def after(self) -> bool | Unmeasured:
         """Whether the value changed: unmeasured when the field had no value or could not be read."""

@@ -343,7 +343,9 @@ class HumanKeyboard:
                 await self._cdp.send(method, params, session_id=session_id)
             unsent = i + 1
 
-    async def clear_focused(self, *, session_id: str | None = None) -> None:
+    async def clear_focused(
+        self, *, session_id: str | None = None, select_all_command: bool = True
+    ) -> None:
         """Select all and delete with observable, physically possible keys.
 
         CDP does not run the platform's select-all accelerator from a bare
@@ -351,22 +353,22 @@ class HumanKeyboard:
         ``selectAll`` editing command is therefore attached to the real
         Ctrl/Meta+A keydown; the page still sees the complete modifier, A,
         and Backspace press/release sequence with proper code and keyCode.
+
+        *select_all_command* ``False`` sends the same keys without the
+        command: for a widget that handles the keys itself and is no editor
+        Chrome could select inside, where the command would select the
+        whole page.
         """
         key, code, vk, mask = self.select_all_modifier
         modifier = {"key": key, "code": code, "windowsVirtualKeyCode": vk}
         letter = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65}
         backspace = {"key": "Backspace", "code": "Backspace", "windowsVirtualKeyCode": 8}
+        select_all_down: dict[str, Any] = {**letter, "type": "keyDown", "modifiers": mask}
+        if select_all_command:
+            select_all_down["commands"] = self.editing_commands("a", mask)
         events: list[tuple[str, dict[str, Any]] | None] = [
             ("Input.dispatchKeyEvent", {**modifier, "type": "keyDown", "modifiers": mask}),
-            (
-                "Input.dispatchKeyEvent",
-                {
-                    **letter,
-                    "type": "keyDown",
-                    "modifiers": mask,
-                    "commands": self.editing_commands("a", mask),
-                },
-            ),
+            ("Input.dispatchKeyEvent", select_all_down),
             ("Input.dispatchKeyEvent", {**letter, "type": "keyUp", "modifiers": mask}),
             ("Input.dispatchKeyEvent", {**modifier, "type": "keyUp", "modifiers": 0}),
             ("Input.dispatchKeyEvent", {**backspace, "type": "keyDown"}),

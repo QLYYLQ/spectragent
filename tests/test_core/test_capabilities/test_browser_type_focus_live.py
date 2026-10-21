@@ -12,12 +12,17 @@ each case on a freshly loaded page:
   fails, the page saw no keydown (no Backspace), nothing is selected and no
   field changed; the select-all chord the clear would have sent does select
   the page's text there (the control case);
-- a button, by coordinate and by index, and a read-only field: refused the
-  same way, naming the element;
+- a button, by coordinate and by index, a read-only field, a ``textbox``
+  widget marked ``aria-readonly`` and a light-DOM component with role
+  ``combobox``: refused the same way, naming the element;
 - a text field, a textarea, a ``contenteditable``, a text field in a same-site
   ``<iframe>``, an ``<iframe>`` whose body is the editor, a field a widget
-  focuses a moment after the click, a ``div`` with role ``textbox``, and a text
-  field by index: typed into as before.
+  focuses a moment after the click, a text field inside a closed shadow root
+  (which script cannot see: typed into as asked), and a text field by index:
+  typed into as before;
+- a ``div`` with role ``textbox`` that is no editor and handles keys itself:
+  it gets the clear's keys without Chrome's select-all command, so it empties
+  itself and nothing on the page is selected.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
 (``TestTypingNeedsATextField``).
@@ -53,6 +58,10 @@ UNTOUCHED = {
     "frame_editor": "",
     "readonly": "Shanghai",
     "late": "",
+    "custom": "Old",
+    "locked": "Fixed",
+    "component": "Beijing",
+    "closed": "",
 }
 #: The page's state: its selection, the keys its document saw, and every field's content.
 STATE = """(() => {
@@ -69,6 +78,10 @@ STATE = """(() => {
       frame_editor: inner('text_frame_editor').body.innerText.trim(),
       readonly: $('text_readonly').value,
       late: $('text_late').value,
+      custom: $('text_custom').textContent,
+      locked: $('text_locked').textContent,
+      component: $('text_component').textContent,
+      closed: window.__closedField.value,
     },
   };
 })()"""
@@ -174,6 +187,8 @@ def _session() -> Session:
                 await at("button", centre("text_button"))
                 await by_index("button by index", 1, "text_button")
                 await at("read-only", centre("text_readonly"))
+                await at("locked", centre("text_locked"))
+                await at("component", centre("text_component"))
 
                 await at("input", centre("text_input"))
                 await at("textarea", centre("text_area"))
@@ -182,6 +197,7 @@ def _session() -> Session:
                 await at("frame editor", centre("text_frame_editor"))
                 await at("late", centre("text_opener"))
                 await at("custom", centre("text_custom"))
+                await at("closed", centre("text_closed"))
                 await by_index("input by index", 2, "text_input")
         return session
 
@@ -210,7 +226,6 @@ def _refused(case: Case, error: str) -> TextInputEffect:
 def test_typing_where_no_field_has_focus_fails_and_sends_nothing(
     session: Session, label: str
 ) -> None:
-    x, y = FIELDS_EMPTY_POINT
     effect = _refused(
         session.cases[label],
         "No text field took focus at the clicked point: nothing has focus, so no text was typed.",
@@ -226,7 +241,6 @@ def test_the_clears_select_all_there_would_have_selected_the_page(session: Sessi
 
 def test_a_button_by_coordinate_is_refused_and_named(session: Session) -> None:
     case = session.cases["button"]
-    x, y = centre("text_button")
     effect = _refused(
         case,
         'No text field took focus at the clicked point: focus is on button "Search", which does '
@@ -240,14 +254,13 @@ def test_a_button_by_index_is_refused_and_named(session: Session) -> None:
     case = session.cases["button by index"]
     effect = _refused(
         case,
-        f'Element {case.aim} is not a text field: focus is on button "Search", which does '
-        "not take typed text, so no text was typed.",
+        f"Typing into element {case.aim} found no text field with focus: focus is on "
+        'button "Search", which does not take typed text, so no text was typed.',
     )
     assert effect.target == ElementFacts(role="button", name="Search")
 
 
 def test_a_read_only_field_is_refused_and_said_to_be_one(session: Session) -> None:
-    x, y = centre("text_readonly")
     effect = _refused(
         session.cases["read-only"],
         'No text field took focus at the clicked point: focus is on textbox "From", which is '
@@ -281,12 +294,50 @@ def test_a_text_field_takes_the_text(session: Session, label: str, where: str) -
     assert case.state["selection"] == ""
 
 
-def test_an_element_that_says_it_is_a_textbox_is_typed_into(session: Session) -> None:
-    # A widget with role textbox handles keys itself; the action does not
-    # second-guess it. (Under the instant rhythm its text has no editor to go
-    # into, which the effect reports.)
+def test_a_read_only_textbox_widget_is_refused(session: Session) -> None:
+    effect = _refused(
+        session.cases["locked"],
+        'No text field took focus at the clicked point: focus is on textbox "Locked", which is '
+        "read-only, so no text was typed.",
+    )
+    assert effect.target == ElementFacts(role="textbox", name="Locked")
+
+
+def test_a_component_whose_role_is_no_text_role_is_refused(session: Session) -> None:
+    # A light-DOM component (a hyphenated tag with no shadow root): its role
+    # says what it is.
+    effect = _refused(
+        session.cases["component"],
+        'No text field took focus at the clicked point: focus is on combobox "City", which '
+        "does not take typed text, so no text was typed.",
+    )
+    assert effect.target == ElementFacts(role="combobox", name="City")
+
+
+def test_a_field_in_a_closed_shadow_root_is_typed_into(session: Session) -> None:
+    # Script sees only the host; the DOM agent sees its closed shadow root, so
+    # whether a text field has focus cannot be told and the text is typed.
+    case = session.cases["closed"]
+    assert case.result.success, case.result.error
+    effect = case.result.effect
+    assert isinstance(effect, TextInputEffect)
+    assert (effect.target, effect.text_entered) == (ElementFacts(role="generic", name=""), True)
+    assert case.state["fields"] == {**UNTOUCHED, "closed": TEXT}
+    assert case.state["selection"] == ""
+
+
+def test_a_textbox_widget_gets_the_keys_but_the_page_is_not_selected(session: Session) -> None:
+    # A widget with role textbox that is no editor handles keys itself: the
+    # clear's chord and Backspace reach it (it empties itself), without
+    # Chrome's select-all command, which would select the whole page. Under
+    # the instant rhythm the text itself has no editor to go into.
     case = session.cases["custom"]
     assert case.result.success, case.result.error
     effect = case.result.effect
     assert isinstance(effect, TextInputEffect)
     assert effect.target == ElementFacts(role="textbox", name="Custom")
+    select_all = "Meta" if session.platform == "macos" else "Control"
+    assert effect.keys == (f"{select_all}+A", "Backspace")
+    assert case.state["selection"] == ""
+    assert case.state["fields"] == {**UNTOUCHED, "custom": ""}
+    assert case.state["keys"] == [select_all, "a", "Backspace"]

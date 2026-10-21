@@ -11,10 +11,12 @@ handler decides when to ask.
 
 Probe kinds: ``hit`` (the hit test, by point or on the target), ``focus``
 (the focused element), ``field_ref`` / ``field_read`` (``FieldProbe``: the
-focused control by reference, then its readings), ``sensitivity`` (the typing
-handler's own focused-field read), ``rect`` (the live box of a page element),
-``resolve`` (``DOM.resolveNode``) and ``release``. A kind in ``fail`` raises;
-a kind in ``hang`` never answers, so only the measurement budget ends it.
+focused control by reference, then its readings), ``describe``
+(``DOM.describeNode``: whether that control hosts a closed shadow root),
+``sensitivity`` (the typing handler's own focused-field read), ``rect`` (the
+live box of a page element), ``resolve`` (``DOM.resolveNode``) and
+``release``. A kind in ``fail`` raises; a kind in ``hang`` never answers, so
+only the measurement budget ends it.
 """
 
 from __future__ import annotations
@@ -64,7 +66,8 @@ def reading(
     """One ``FieldProbe`` reading: facts, sensitivity attributes, text entry, and a value hash.
 
     *entry* is what ``textEntry(el)`` answers: ``"text"`` (the default, a text
-    field), ``"read-only"``, ``"none"``, or ``None`` (the page cannot tell).
+    field), ``"widget"``, ``"read-only"``, ``"none"``, ``"no-role"`` (then the
+    ``describe`` probe decides), or ``None`` (the page cannot tell).
     """
     return {
         "facts": facts(role, name),
@@ -96,7 +99,11 @@ def probe_kind(method: str, params: dict[str, Any]) -> str | None:
         if "getBoundingClientRect" in function:
             return "rect"
         return None
-    return {"DOM.resolveNode": "resolve", "Runtime.releaseObject": "release"}.get(method)
+    return {
+        "DOM.resolveNode": "resolve",
+        "DOM.describeNode": "describe",
+        "Runtime.releaseObject": "release",
+    }.get(method)
 
 
 class ProbeCDP:
@@ -105,8 +112,11 @@ class ProbeCDP:
     ``hit``: the hit test's value (``{"facts": ..., "on_target": ...}`` or
     ``{"nothing": True}``). ``focus``: the focus read's value. ``field``:
     the focused control by reference — ``"node"`` (then ``readings``, one per
-    read, the last repeated), ``"null"`` or ``"opaque"``; a sequence of them is
-    one per reference read, the last repeated (focus that lands late).
+    read, the last repeated), ``"null"``, ``"opaque"``, or ``"fail"`` /
+    ``"hang"`` (that read raises / never answers); a sequence of them is one
+    per reference read, the last repeated (focus that lands late).
+    ``shadow_root``: the type of the shadow root ``DOM.describeNode`` lists on
+    that control (``"closed"``, ``"open"``), or ``None`` for none.
     ``fail_methods``: CDP methods that raise, as a closed target's would.
     """
 
@@ -120,8 +130,10 @@ class ProbeCDP:
         fail: Iterable[str] = (),
         hang: Iterable[str] = (),
         fail_methods: Iterable[str] = (),
+        shadow_root: str | None = None,
     ) -> None:
         self.calls: list[Call] = []
+        self.shadow_root = shadow_root
         self.hit = hit if hit is not None else {"nothing": True}
         self.focus = focus if focus is not None else {"nothing": True}
         self.fields = [field] if isinstance(field, str) else list(field)
@@ -151,6 +163,10 @@ class ProbeCDP:
             return {"result": {"type": "object", "value": self.focus}}
         if kind == "field_ref":
             self.field = self.fields.pop(0) if len(self.fields) > 1 else self.fields[0]
+            if self.field == "fail":
+                raise RuntimeError("injected failure: the focus read")
+            if self.field == "hang":
+                await asyncio.Event().wait()
             if self.field == "node":
                 return {"result": {"type": "object", "subtype": "node", "objectId": "field"}}
             if self.field == "opaque":
@@ -173,6 +189,9 @@ class ProbeCDP:
             return {"result": {"type": "object", "value": dict(RECT)}}
         if kind == "resolve":
             return {"object": {"objectId": "target"}}
+        if kind == "describe":
+            roots = [{"shadowRootType": self.shadow_root}] if self.shadow_root else []
+            return {"node": {"nodeType": 1, "localName": "div", "shadowRoots": roots}}
         if method == "DOM.getContentQuads":
             x, y, w, h = RECT["x"], RECT["y"], RECT["w"], RECT["h"]
             return {"quads": [[x, y, x + w, y, x + w, y + h, x, y + h]]}

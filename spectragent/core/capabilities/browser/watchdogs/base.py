@@ -191,6 +191,9 @@ class WatchdogContext:
     #: (``BrowserCapability.action_effect_timeout_s``). Probe time only; a probe
     #: that runs out records its fact as unknown.
     action_effect_timeout_s: float = 1.0
+    #: How much of that typing may spend waiting for focus to land on a text
+    #: field, in seconds (``BrowserCapability.type_focus_wait_s``).
+    type_focus_wait_s: float = 0.5
     #: How long the ``browser.capture_state`` resolver's in-page probe may take
     #: per observation, in seconds (``BrowserCapability.capture_state_timeout_s``).
     capture_state_timeout_s: float = 1.0

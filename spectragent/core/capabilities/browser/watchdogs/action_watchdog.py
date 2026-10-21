@@ -137,7 +137,7 @@ _FOCUSED_FIELD_JS = """(() => {
       el = el.shadowRoot.activeElement;
       continue;
     }
-    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+    if (el.localName === 'iframe' || el.localName === 'frame') {
       let inner = null;
       try { inner = el.contentDocument; } catch (e) { inner = null; }
       if (!inner) return {opaque: true};
@@ -181,20 +181,19 @@ def _focused_field_verdict(reply: Any) -> bool | None:
     )
 
 
-#: How long typing waits for focus to land on a text field after the click or
-#: ``DOM.focus`` that should have put it there, before it refuses: a widget
-#: may focus its input on a timer or after an opening animation.
-FOCUS_SETTLE_S = 0.3
-#: How often the focused element is read again while typing waits for it.
+#: How often the focused element is read again while typing waits for focus
+#: to land on a text field (``BrowserCapability.type_focus_wait_s``).
 FOCUS_POLL_S = 0.05
 
 
 def _no_text_entry(field: FieldProbe) -> str | None:
     """Why the focus *field* read takes no typed text, or ``None``.
 
-    ``None`` when it does, and when the reading cannot tell (unknown, or a
-    frame of another site): only a measured "nothing focused" or "no text
-    control" stops a typing action.
+    ``None`` when it does (a text field, or a ``textbox`` widget that takes
+    the keys itself), and when the reading cannot tell (it gave no answer, a
+    frame of another site, an element whose own reading failed, a closed
+    shadow root, embedded content): only a measured "nothing focused" or "no
+    text control" stops a typing action.
     """
     if field.target == "nothing":
         return "nothing has focus"
@@ -435,6 +434,7 @@ class ActionWatchdog(BrowserWatchdog):
             sessions=ctx.tab_sessions,
             pointer_position=ctx.pointer_position,
             action_effect_timeout_s=ctx.action_effect_timeout_s,
+            type_focus_wait_s=ctx.type_focus_wait_s,
         )
 
     @property
@@ -457,10 +457,14 @@ class ActionWatchdog(BrowserWatchdog):
         sessions: TabSessions | None = None,
         pointer_position: PointerPosition | None = None,
         action_effect_timeout_s: float = 1.0,
+        type_focus_wait_s: float = 0.5,
     ) -> None:
         self._cdp = cdp
         # How long each action may spend measuring its own effect (probe time).
         self._effect_timeout_s = action_effect_timeout_s
+        # How much of that typing may spend waiting for focus to land on a
+        # text field; the rest stays for the probes after the wait.
+        self._focus_wait_s = type_focus_wait_s
         self._sessions = sessions
         self._selector_map_getter = selector_map_getter
         # Per-tab main frame id, used by _on_navigate to filter sub-frame
@@ -863,9 +867,9 @@ class ActionWatchdog(BrowserWatchdog):
                 budget=self._effect_budget(),
                 session_id=sid,
                 no_field=(
-                    "The element is not a text field"
+                    "Typing into the element found no text field with focus"
                     if index is None
-                    else f"Element {index} is not a text field"
+                    else f"Typing into element {index} found no text field with focus"
                 ),
             )
         except Exception as e:
@@ -931,19 +935,30 @@ class ActionWatchdog(BrowserWatchdog):
         no text — and the handler answers with an ``error`` that begins with
         *no_field* and says what has focus instead, plus the effect it
         measured. A select-all with nothing editable focused selects the whole
-        page's text, and the text then goes nowhere. Focus moved by the page a
-        moment after the click or ``DOM.focus`` (a widget that focuses its
-        input on a timer) is waited for, up to :data:`FOCUS_SETTLE_S`. A
-        reading that cannot tell — it failed or ran out of the budget, the
-        focus is in a frame of another site, or in a closed shadow root — does
-        not stop the typing: only a measured "no text field" does.
+        page's text, and the text then goes nowhere.
+
+        Focus the page moves a moment after the click or ``DOM.focus`` (a
+        widget that focuses its input on a timer or after an opening
+        animation) is waited for: the focus is read again every
+        :data:`FOCUS_POLL_S` for up to ``type_focus_wait_s``, which the wait
+        spends from *budget* while the rest of it stays for the probes after
+        the wait. A reading that cannot even say where focus is (it failed or
+        ran out) is dropped, and the last one that could stands, for the
+        verdict and the effect alike. A reading that cannot tell whether the
+        focused element takes text — the element's own reading failed, focus
+        is in a frame of another site, in a closed shadow root or embedded
+        content — does not stop the typing: only a measured "no text field"
+        does.
 
         The text itself belongs to :class:`HumanKeyboard`: one bulk
         ``Input.insertText`` under the ``instant`` rhythm (the default), a
         real key event per character on modelled timings under any other.
         The clear is also keyboard input: ``HumanKeyboard`` sends a complete
         select-all shortcut followed by Backspace, with the configured
-        rhythm deciding its timing.
+        rhythm deciding its timing. The shortcut carries Chrome's
+        ``selectAll`` editing command only into a field the browser edits; a
+        ``textbox`` widget that is no editor gets the same keys without it,
+        to handle them itself, because the command would select the page.
 
         Right before the text goes in, the focused element is judged by the
         sensitivity rule; the verdict comes back as ``sensitive`` and the
@@ -962,18 +977,31 @@ class ActionWatchdog(BrowserWatchdog):
         keys: tuple[str, ...] = ()
         try:
             await field.before()
-            settle_until = time.monotonic() + FOCUS_SETTLE_S
             refused = _no_text_entry(field)
-            while refused is not None and time.monotonic() < settle_until and budget.remaining > 0:
-                await budget.sleep(FOCUS_POLL_S)
-                await budget.run(field.release, "release field")
-                field = FieldProbe(self._cdp, sid, budget)
-                await field.before()
-                if field.target == UNKNOWN:
-                    # A reading that could not tell leaves the last one that
-                    # could standing.
-                    break
-                refused = _no_text_entry(field)
+            if refused is not None:
+                # The wait spends at most ``type_focus_wait_s`` of the budget;
+                # the rest is kept for the probes after it.
+                wait_until = time.monotonic() + self._focus_wait_s
+                kept = min(budget.remaining, budget.seconds - self._focus_wait_s)
+                with budget.keeping(kept):
+                    while (
+                        refused is not None
+                        and time.monotonic() < wait_until
+                        and budget.remaining > 0
+                    ):
+                        await budget.sleep(min(FOCUS_POLL_S, wait_until - time.monotonic()))
+                        again = FieldProbe(self._cdp, sid, budget)
+                        adopted = False
+                        try:
+                            await again.before()
+                            if again.located:
+                                field, again, adopted = again, field, True
+                        finally:
+                            # The reading not kept: the one replaced, or one
+                            # that could not say where focus is.
+                            await budget.run(again.release, "release field")
+                        if adopted:
+                            refused = _no_text_entry(field)
             if refused is not None:
                 error = f"{no_field}: {refused}, so no text was typed."
                 logger.info("Not typing: %s", error)
@@ -991,7 +1019,9 @@ class ActionWatchdog(BrowserWatchdog):
                     },
                 }
             if clear:
-                await self._keyboard.clear_focused(session_id=sid)
+                await self._keyboard.clear_focused(
+                    session_id=sid, select_all_command=field.entry != "widget"
+                )
                 select_all = parse_key_chord(f"{self._keyboard.select_all_modifier[0]}+a")
                 keys = (select_all.text, "Backspace")
                 # The clear's keystrokes can move focus (a code box that steps

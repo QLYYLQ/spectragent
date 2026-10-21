@@ -109,11 +109,12 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
                 # (it then types nothing, and still answers the effect it
                 # measured), or when the typing after it failed: the text never
                 # went in, so the action failed.
-                return ActionResult(
-                    success=False,
-                    error=str(exc),
-                    effect=effect_from(self, handler_field(event, "effect_facts")),
-                )
+                effect = effect_from(self, handler_field(event, "effect_facts"))
+                if effect is not None:
+                    # Refused after the click: the click ran, and the page
+                    # gets the same settle any clicked page gets.
+                    await self.settle()
+                return ActionResult(success=False, error=str(exc), effect=effect)
             effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
             return ActionResult(

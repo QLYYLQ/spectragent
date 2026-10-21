@@ -164,6 +164,35 @@ class TestTheStrategyReachesTheWatchdog:
         assert watchdog._keyboard.humanized is False
 
 
+class TestTheFocusWaitIsConfig:
+    """``type_focus_wait_s``: how long typing waits for focus to land on a text field.
+
+    A YAML knob of the capability, part of ``action_effect_timeout_s`` and
+    refused when it would leave the probes after the wait nothing.
+    """
+
+    def test_the_capability_hands_its_wait_to_the_watchdog(self) -> None:
+        cap = BrowserCapability(type_focus_wait_s=0.25)
+        cap._cdp = FakeCDP()  # type: ignore[assignment]
+        cap._input_platform = "linux"
+        assert cap._watchdog_context("sid").type_focus_wait_s == 0.25
+        assert ActionWatchdog.build(cap._watchdog_context("sid"))._focus_wait_s == 0.25
+
+    def test_the_default_waits_half_a_second(self) -> None:
+        assert BrowserCapability().type_focus_wait_s == 0.5
+
+    @pytest.mark.parametrize(("wait_s", "budget_s"), [(1.0, 1.0), (0.6, 0.5)])
+    def test_a_wait_that_leaves_the_budget_nothing_is_refused(
+        self, wait_s: float, budget_s: float
+    ) -> None:
+        with pytest.raises(ValueError, match="type_focus_wait_s .* action_effect_timeout_s"):
+            BrowserCapability(type_focus_wait_s=wait_s, action_effect_timeout_s=budget_s)
+
+    def test_a_wait_under_the_budget_is_kept(self) -> None:
+        cap = BrowserCapability(type_focus_wait_s=1.5, action_effect_timeout_s=2.0)
+        assert (cap.type_focus_wait_s, cap.action_effect_timeout_s) == (1.5, 2.0)
+
+
 class TestTheActionSeamIsUnchanged:
     """§2.5: what the agent emits is what ``descriptor().params`` declares.
 
