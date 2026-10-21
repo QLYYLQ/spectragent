@@ -27,6 +27,7 @@ from spectragent.core.archive import (
     ArchiveFile,
     ArchiveProvenance,
     ArchiverBase,
+    ArchiverRegistrar,
 )
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.core.trace.encoding import sha256_hex
@@ -183,6 +184,29 @@ def test_every_shipped_archiving_capability_has_a_harness() -> None:
         f"tests/_helpers/archive_contract.py — the archiving contract is a framework rule, "
         f"and a capability that breaks it records an archive that lies."
     )
+
+
+def test_the_browser_harness_binds_every_recording_archiver() -> None:
+    """The browser's harness runs the clauses over every archiver a recording can bind.
+
+    A browser archiver left out of the harness default set is one the
+    contract never checks. Only the replay's own log is left out: it needs a
+    replay, and a recording refuses it.
+    """
+    from spectragent.core.capabilities.browser import BrowserCapability
+    from spectragent.core.capabilities.browser.archive import BrowserArchiverBase
+    from tests._helpers.archive_contract import browser_archive_harness
+
+    harness = browser_archive_harness()
+    provided = BrowserCapability().provided_archivers
+    replay_only = {
+        key
+        for key in provided
+        if "replay_log" in ArchiverRegistrar.get(key).needs  # type: ignore[union-attr]
+    }
+    assert all(isinstance(a, BrowserArchiverBase) for a in harness.archivers)
+    assert {a.archiver_id for a in harness.archivers} == provided - replay_only
+    assert replay_only == {"browser.replay_log"}
 
 
 class _ComputedProvides:

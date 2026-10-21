@@ -2,7 +2,8 @@
 
 ``browser_archive_harness`` is the browser's entry in the archiving contract's
 ``HARNESS_FACTORIES`` (``tests/_helpers/archive_contract.py``): a real
-:class:`BrowserCapability` with all three archivers, set up against
+:class:`BrowserCapability` with the four recording archivers (network,
+storage, raw DOM, frames), set up against
 :class:`~tests._helpers.fake_cdp.FakeBrowser` through ``_inject_cdp_factory``
 (the transport only: ownership is still decided by a backend that declares
 ``NETWORK_CAPTURE``), so every clause runs in milliseconds with no Chrome.
@@ -16,7 +17,10 @@
   its ExtraInfo and ``loadingFinished`` — fired on the recorder's client the
   way its receive loop would;
 - a cookie and a localStorage item whose values change, so ``browser.storage``
-  has a new state to record.
+  has a new state to record;
+- one of the agent's actions (``browser.wait`` for no time) — its action
+  boundary gives ``browser.frames`` a frame to capture before it, and
+  supersedes the cycle's ``after_observation`` frame.
 
 The setup is lazy (the first ``produce``) and opens every capture channel:
 the contract binds and unbinds archivers after setup, which changes who
@@ -32,6 +36,7 @@ from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import (
     BrowserArchiverBase,
     DomRawArchiver,
+    FramesArchiver,
     NetworkArchiver,
     StorageArchiver,
 )
@@ -42,6 +47,7 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     NETWORK_CAPTURE,
     NETWORK_ISOLATION,
 )
+from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.provider_session import ProviderSession
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient
 
@@ -163,6 +169,12 @@ class BrowserDriver:
         for fragment in sorted(self.fragments):
             await self.capability.resolve_fragment(fragment)
 
+    async def act(self, name: str = "browser.wait", **params: Any) -> ActionResult:
+        """One of the agent's actions on the focused tab (default: wait for no time)."""
+        if name == "browser.wait":
+            params.setdefault("seconds", 0)
+        return await self.capability.execute_action(Action(name=name, params=params))
+
     async def exchange(
         self,
         *,
@@ -278,6 +290,7 @@ class BrowserDriver:
         """One step of activity, for whichever archivers are bound."""
         await self.ensure_setup()
         await self.observe()
+        await self.act()
         await self.exchange()
         self.change_storage()
         await settle()
@@ -306,7 +319,7 @@ def archiving_capability(
     backend: OwnedBrowser | None = None,
     fragments: frozenset[str] = frozenset({"browser.dom"}),
 ) -> tuple[BrowserCapability, BrowserDriver]:
-    """A capability on the fake browser with *archivers* (default: all three, none tier)."""
+    """A capability on the fake browser with *archivers* (default: all four recording ones, none tier)."""
     browser = browser or FakeBrowser()
     capability = BrowserCapability()
     capability.backend = backend or OwnedBrowser()  # type: ignore[assignment]
@@ -315,5 +328,6 @@ def archiving_capability(
         NetworkArchiver(require_replayable=False, drain_timeout_s=0.2),
         StorageArchiver(),
         DomRawArchiver(),
+        FramesArchiver(),
     )
     return capability, BrowserDriver(capability, browser, chosen, fragments=fragments)

@@ -836,11 +836,12 @@ def fake_archive_harness() -> ArchiveHarness:
 
 
 def browser_archive_harness() -> ArchiveHarness:
-    """``BrowserCapability`` and its three archivers, against the fake browser (M29).
+    """``BrowserCapability`` and its four recording archivers, against the fake browser.
 
     ``none`` tier with ``require_replayable: false`` (a pinned tier adds
     nothing the contract checks); ``produce`` runs one committed cycle, one
-    network exchange and a storage change; ``break_collect`` drops the
+    action (``browser.frames`` captures before it), one network exchange and
+    a storage change; ``break_collect`` drops the
     recorder connection; ``change_run_record`` changes the user agent the
     fingerprint measures. See ``tests/_helpers/browser_archive.py``.
     """

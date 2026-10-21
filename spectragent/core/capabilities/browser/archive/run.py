@@ -11,6 +11,12 @@ the sessions:
   order. Binding again after setup changes who receives events and who is
   collected; it opens no capture channel that setup did not (the runtime
   binds before setup).
+- :meth:`BrowserArchiveRun.cycle_committed` tells every session that an
+  observation cycle committed (after :meth:`BrowserArchiveRun.commit_raw`).
+- :meth:`BrowserArchiveRun.action_boundary` announces one of the agent's
+  actions on its tab before it runs, and waits, within the sessions'
+  budgets, for the sessions that want boundaries (the ``action_boundary``
+  channel).
 - :meth:`BrowserArchiveRun.collect` is ``collect_archive`` after the
   capability's liveness check: the channel flush (every metadata event
   emitted so far was handled, or the collection fails), then each session in
@@ -19,8 +25,12 @@ the sessions:
 """
 
 import asyncio
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+
+from agent_cdp import EventScope
 
 from spectragent.core.archive import ArchiveBatch, ArchiveFile
 from spectragent.core.capabilities.browser.archive.base import (
@@ -29,6 +39,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     BrowserArchiveContext,
     BrowserArchiverBase,
     BrowserArchiveSession,
+    CommittedCycle,
     ParkedRaw,
     RawCapture,
     RawCaptureStore,
@@ -37,7 +48,15 @@ from spectragent.core.capabilities.browser.archive.base import (
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.platform import InputPlatform
-from spectragent.core.capabilities.browser.recorder import ArchiveChannel, ArchiveChannelError
+from spectragent.core.capabilities.browser.recorder import (
+    ACTION_BOUNDARY_GRACE_S,
+    DEFAULT_ACTION_BOUNDARY_BUDGET_S,
+    ArchiveChannel,
+    ArchiveChannelError,
+)
+from spectragent.core.capabilities.browser.watchdogs.events import ActionBoundaryEvent
+
+logger = logging.getLogger(__name__)
 
 #: Seconds the collection flush may wait for the archive scope to drain.
 FLUSH_TIMEOUT_S = 5.0
@@ -124,6 +143,76 @@ class BrowserArchiveRun:
             )
             for item in parked
         )
+
+    def cycle_committed(self, *, cycle: int, tab: str, control_session_id: str) -> None:
+        """Tell every bound session that observation cycle *cycle* committed on *tab*."""
+        committed = CommittedCycle(
+            cycle=cycle,
+            tab=tab,
+            control_session_id=control_session_id,
+            committed_at=time.time(),
+        )
+        for _, session in self._sessions:
+            try:
+                session.on_cycle_committed(committed)
+            except Exception:
+                # Counted like a failed handler: the next collection fails
+                # rather than look complete without what this session missed.
+                self.channel.errors += 1
+                logger.exception("archive: %s failed on committed cycle %d", session, cycle)
+
+    async def action_boundary(self, scope: EventScope | None, *, action: str) -> None:
+        """Announce one of the agent's actions on the tab of *scope*, before it runs.
+
+        Only while a bound archiver needs ``action_boundary``. The
+        ``ActionBoundaryEvent`` goes onto the tab's observation scope, whose
+        ``ArchiveWatchdog`` handler hands it to the sessions in the archive
+        scope; the action waits for them, at most the sum of their
+        :attr:`~.recorder.RecorderParticipant.action_boundary_budget_s` plus
+        :data:`~.recorder.ACTION_BOUNDARY_GRACE_S`. A boundary that overran
+        or failed is cancelled and counted on the channel, so the next
+        collection fails instead of looking complete; the action runs either
+        way — archiving never decides the agent's outcome.
+        """
+        if scope is None or scope.closed or not self.wants("action_boundary"):
+            return
+        wanting = [session for session in self.sessions if session.wants_action_boundaries]
+        if not wanting:
+            return
+        budget = ACTION_BOUNDARY_GRACE_S + sum(
+            session.action_boundary_budget_s or DEFAULT_ACTION_BOUNDARY_BUDGET_S
+            for session in wanting
+        )
+        event = ActionBoundaryEvent(
+            action_name=action,
+            requested_at=time.time(),
+            event_timeout=budget,
+            execution_timeout=budget,
+        )
+        try:
+            scope.emit(event)
+            await event.wait(timeout=budget)
+        except asyncio.CancelledError:
+            event.cancel_execution(include_running=True)
+            raise
+        except Exception as exc:
+            event.cancel_execution(include_running=True)
+            self.channel.errors += 1
+            logger.warning(
+                "archive: the boundary of %s did not complete within %gs: %s", action, budget, exc
+            )
+            return
+        if not event.event_results:
+            # The tab was bound while no session wanted boundaries: nobody
+            # received this one, and its frame would be a silent gap.
+            self.channel.errors += 1
+            logger.warning("archive: nobody received the boundary of %s on this tab", action)
+        elif any(
+            result.error is not None or result.business_error is not None
+            for result in event.event_results.values()
+        ):
+            self.channel.errors += 1
+            logger.warning("archive: the boundary of %s failed in the archive scope", action)
 
     # ── collection ────────────────────────────────────────────────────
 
