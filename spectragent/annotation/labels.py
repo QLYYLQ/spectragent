@@ -14,6 +14,7 @@ def compute_verdict(
     *,
     choice: str | None,
     choices: list[str] | None,
+    answers: dict[str, str] | None,
     regions: list[Region] | None,
     skipped: bool,
     reject: bool,
@@ -23,8 +24,9 @@ def compute_verdict(
     ``None`` without a suggestion that gives an answer, or for a skipped
     item. ``rejected`` when the person marked the suggestion wrong without a
     replacement. Otherwise only the answer fields the suggestion sets are
-    compared — regions as a multiset of (image, kind, box), the note never —
-    and equal is ``accepted``, different ``corrected``.
+    compared — each suggested question's answer, regions as a multiset of
+    (image, kind, box), the note never — and equal is ``accepted``,
+    different ``corrected``.
     """
     if suggestion is None or not suggestion.has_answer or skipped:
         return None
@@ -35,6 +37,9 @@ def compute_verdict(
         same &= choice == suggestion.choice
     if suggestion.choices is not None:
         same &= set(choices or []) == set(suggestion.choices)
+    if suggestion.answers is not None:
+        given = answers or {}
+        same &= all(given.get(key) == value for key, value in suggestion.answers.items())
     if suggestion.regions is not None:
         same &= Counter(region.key() for region in regions or []) == Counter(
             region.key() for region in suggestion.regions

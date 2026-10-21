@@ -195,6 +195,52 @@ def evidence_queue(run: str, frame: str, **overrides: Any) -> ReviewQueue:
     return ReviewQueue.model_validate(data)
 
 
+YES_NO = [
+    {"value": "yes", "text": "Yes"},
+    {"value": "no", "text": "No"},
+    {"value": "uncertain", "text": "Cannot tell"},
+]
+
+
+def questions_queue(run: str, **overrides: Any) -> ReviewQueue:
+    """Several separate questions per item, one answer each."""
+    data: dict[str, Any] = {
+        "format": "review-queue-1",
+        "queue_id": "fork-questions",
+        "title": "Branched actions, three questions",
+        "label": {
+            "questions": [
+                {"key": "same_intent", "text": "Same immediate goal?", "choices": YES_NO},
+                {"key": "reasonable", "text": "Reasonable next step?", "choices": YES_NO},
+                {
+                    "key": "executed_as_intended",
+                    "text": "Executed as intended?",
+                    "choices": YES_NO,
+                    "applies_to": ["executed"],
+                },
+            ],
+            "regions": None,
+            "note": True,
+        },
+        "items": [
+            {
+                "item_id": "planned",
+                "run": run,
+                "step": 0,
+                "suggestion": {
+                    "answers": {"same_intent": "yes", "reasonable": "no"},
+                    "reasons": {"reasonable": "It leaves the task's city."},
+                    "source": "judge-model",
+                },
+            },
+            {"item_id": "executed", "run": run, "step": 1},
+            {"item_id": "only-reasonable", "run": run, "step": 1, "questions": ["reasonable"]},
+        ],
+    }
+    data.update(overrides)
+    return ReviewQueue.model_validate(data)
+
+
 def save(directory: Path, *queues: ReviewQueue) -> None:
     for queue in queues:
         write_queue(directory, queue)

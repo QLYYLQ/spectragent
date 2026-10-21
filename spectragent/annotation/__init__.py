@@ -20,6 +20,7 @@ from spectragent.annotation.models import (
     LabelLine,
     LabelSpec,
     ObservationImage,
+    Question,
     QueueImage,
     QueueItem,
     Region,
@@ -27,6 +28,7 @@ from spectragent.annotation.models import (
     RegionSpec,
     ReviewQueue,
     Suggestion,
+    asked_questions,
 )
 from spectragent.annotation.store import (
     ADHOC_SPEC,
@@ -57,6 +59,7 @@ __all__ = [
     "LabelSpec",
     "LoadedQueue",
     "ObservationImage",
+    "Question",
     "QueueImage",
     "QueueItem",
     "QueueListing",
@@ -65,6 +68,7 @@ __all__ = [
     "RegionSpec",
     "ReviewQueue",
     "Suggestion",
+    "asked_questions",
     "compute_verdict",
     "write_queue",
 ]

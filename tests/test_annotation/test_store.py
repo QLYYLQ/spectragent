@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from spectragent.annotation import (
     ReviewQueue,
     write_queue,
 )
-from tests._helpers.review_queues import evidence_queue, fork_judge_queue
+from tests._helpers.review_queues import evidence_queue, fork_judge_queue, questions_queue
 
 SIZE = (64, 40)
 
@@ -30,6 +31,7 @@ def sizes(source) -> tuple[int, int]:
 def store(tmp_path: Path) -> AnnotationStore:
     write_queue(tmp_path, fork_judge_queue("run"))
     write_queue(tmp_path, evidence_queue("run", "frame.png"))
+    write_queue(tmp_path, questions_queue("run"))
     return AnnotationStore(tmp_path, annotator="ana")
 
 
@@ -233,9 +235,14 @@ def test_labels_are_validated_against_the_queue_spec(store, queue, item, draft, 
     assert not (store.directory / "labels" / f"{queue}.jsonl").exists()
 
 
-def test_boxes_must_have_area(store: AnnotationStore):
+def test_boxes_must_have_area_and_be_numbers(store: AnnotationStore):
     with pytest.raises(ValueError, match="0 <= x0 < x1"):
         Region(image="before", kind="evidence", box=[5, 5, 5, 9])
+    for box in ([True, 0, 3, 4], ["1", 0, 3, 4], [0, 0, 3]):
+        with pytest.raises(ValueError):
+            Region.model_validate({"image": "before", "kind": "evidence", "box": box})
+    whole = Region(image="before", kind="evidence", box=[1, 2.5, 3, 4])
+    assert json.loads(whole.model_dump_json())["box"] == [1, 2.5, 3, 4]
 
 
 def test_notes_are_refused_where_the_queue_takes_none(tmp_path: Path):
@@ -394,3 +401,112 @@ def test_adhoc_labels_name_a_run_step_and_an_empty_one_clears(store: AnnotationS
 def test_adhoc_labels_are_validated(store, draft, size, reason):
     with pytest.raises(AnnotationError, match=reason):
         store.append_adhoc("run", 0, LabelDraft(**draft), screenshot_size=size)
+
+
+# ── several questions per item ────────────────────────────────
+
+
+def test_each_item_asks_its_own_questions(store: AnnotationStore):
+    from spectragent.annotation import asked_questions
+
+    queue = store.load_queue("fork-questions").queue
+    asked = {
+        item.item_id: [q.key for q in asked_questions(queue.label, item)] for item in queue.items
+    }
+    assert asked == {
+        "planned": ["same_intent", "reasonable"],
+        "executed": ["same_intent", "reasonable", "executed_as_intended"],
+        "only-reasonable": ["reasonable"],
+    }
+
+
+def test_a_question_label_line_carries_answers_instead_of_choices(store: AnnotationStore):
+    line = label(
+        store, "fork-questions", "planned", answers={"same_intent": "yes", "reasonable": "no"}
+    )
+    assert line["answers"] == {"same_intent": "yes", "reasonable": "no"}
+    assert "choice" not in line and "choices" not in line
+    assert line["verdict"] == "accepted"
+    plain = label(store, "fork-judge", "run/s0", choice="reasonable")
+    assert "answers" not in plain
+
+
+@pytest.mark.parametrize(
+    ("answers", "verdict"),
+    [
+        ({"same_intent": "yes", "reasonable": "no"}, "accepted"),
+        ({"same_intent": "yes", "reasonable": "uncertain"}, "corrected"),
+        ({"same_intent": "no", "reasonable": "no"}, "corrected"),
+    ],
+)
+def test_the_verdict_compares_every_suggested_answer(store, answers, verdict):
+    assert label(store, "fork-questions", "planned", answers=answers)["verdict"] == verdict
+
+
+def test_questions_without_a_suggestion_have_no_verdict_and_skips_carry_no_answers(store):
+    answers = {"same_intent": "yes", "reasonable": "yes", "executed_as_intended": "no"}
+    assert label(store, "fork-questions", "executed", answers=answers)["verdict"] is None
+    skipped = label(store, "fork-questions", "planned", skipped=True)
+    assert skipped["answers"] == {} and skipped["verdict"] is None
+    rejected = label(store, "fork-questions", "planned", reject=True, note="all wrong")
+    assert rejected["answers"] == {} and rejected["verdict"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("item", "draft", "reason"),
+    [
+        ("planned", {"answers": {"same_intent": "yes"}}, "missing ['reasonable']"),
+        (
+            "planned",
+            {"answers": {"same_intent": "maybe", "reasonable": "no"}},
+            "not one of the choices",
+        ),
+        (
+            "planned",
+            {"answers": {"same_intent": "yes", "reasonable": "no", "executed_as_intended": "yes"}},
+            "does not ask question 'executed_as_intended'",
+        ),
+        ("only-reasonable", {"choice": "yes", "answers": {"reasonable": "yes"}}, "send 'answers'"),
+        ("planned", {"skipped": True, "answers": {"reasonable": "no"}}, "carries no answer"),
+    ],
+)
+def test_question_labels_are_validated(store, item, draft, reason):
+    with pytest.raises(AnnotationError, match=re.escape(reason)):
+        label(store, "fork-questions", item, **draft)
+
+
+def test_answers_are_refused_by_a_single_question_queue(store):
+    with pytest.raises(AnnotationError, match="asks no separate questions"):
+        label(store, "fork-judge", "run/s0", choice="reasonable", answers={"x": "y"})
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        (lambda data: data["label"].update(choices=[{"value": "x"}]), "not both"),
+        (lambda data: data["label"].update(questions=[]), "at least one question"),
+        (
+            lambda data: data["label"]["questions"].append(data["label"]["questions"][0]),
+            "question key must be unique",
+        ),
+        (lambda data: data["items"][2].update(questions=["unknown"]), "asks unknown questions"),
+        (lambda data: data["items"][2].update(questions=[]), "asks none of the queue's questions"),
+        (
+            lambda data: data["items"][0]["suggestion"]["answers"].update(
+                executed_as_intended="yes"
+            ),
+            "does not ask question",
+        ),
+        (
+            lambda data: data["items"][0]["suggestion"].update(
+                reasons={"executed_as_intended": "x"}
+            ),
+            "which this item does not ask",
+        ),
+    ],
+)
+def test_question_queues_are_checked_when_loaded(change, reason):
+    data = questions_queue("run").model_dump(mode="json")
+    change(data)
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        ReviewQueue.model_validate(data)

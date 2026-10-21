@@ -243,6 +243,7 @@ class AnnotationStore:
                 item.suggestion,
                 choice=draft.choice,
                 choices=draft.choices,
+                answers=draft.answers,
                 regions=draft.regions,
                 skipped=draft.skipped,
                 reject=draft.reject,
@@ -255,7 +256,13 @@ class AnnotationStore:
         self, run: str, step: int, draft: LabelDraft, *, screenshot_size: tuple[int, int] | None
     ) -> LabelLine:
         """Append a note and regions for one run step; an empty draft clears the current one."""
-        if draft.choice is not None or draft.choices is not None or draft.skipped or draft.reject:
+        if (
+            draft.choice is not None
+            or draft.choices is not None
+            or draft.answers is not None
+            or draft.skipped
+            or draft.reject
+        ):
             raise AnnotationError("An ad-hoc label carries only a note and regions")
         self._check_draft(ADHOC_SPEC, None, draft)
         if draft.regions:
@@ -283,7 +290,7 @@ class AnnotationStore:
         if draft.skipped and draft.reject:
             raise AnnotationError("Skip an item or reject its suggestion, not both")
         if (draft.skipped or draft.reject) and (
-            draft.choice is not None or draft.choices or draft.regions
+            draft.choice is not None or draft.choices or draft.answers or draft.regions
         ):
             raise AnnotationError(
                 "A skipped item or a rejected suggestion carries no answer; only a note"
@@ -298,6 +305,7 @@ class AnnotationStore:
                 item,
                 choice=draft.choice,
                 choices=draft.choices,
+                answers=draft.answers,
                 regions=draft.regions,
                 require_choice=not (draft.skipped or draft.reject),
             )
@@ -315,6 +323,9 @@ class AnnotationStore:
                 "at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "choice": draft.choice if answered and not spec.multi else None,
                 "choices": list(draft.choices or []) if answered and spec.multi else None,
+                "answers": (dict(draft.answers or {}) if answered else {})
+                if spec.questions is not None
+                else None,
                 "regions": list(draft.regions) if spec.regions is not None else None,
                 "note": draft.note,
                 "verdict": verdict,

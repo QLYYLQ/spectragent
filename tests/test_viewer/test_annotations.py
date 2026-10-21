@@ -16,6 +16,7 @@ from tests._helpers.review_queues import (
     evidence_queue,
     fork_judge_queue,
     png,
+    questions_queue,
     save,
 )
 
@@ -44,7 +45,12 @@ def workspace(tmp_path: Path):
     )
     annotations = tmp_path / "annotations"
     annotations.mkdir()
-    save(annotations, fork_judge_queue(run.key), evidence_queue(run.key, "frame-0.png"))
+    save(
+        annotations,
+        fork_judge_queue(run.key),
+        evidence_queue(run.key, "frame-0.png"),
+        questions_queue(run.key),
+    )
     return traces, annotations, run
 
 
@@ -304,3 +310,24 @@ def test_an_annotation_directory_inside_a_run_is_refused(workspace):
         create_app(traces, annotations=inside)
     with pytest.raises(FileNotFoundError, match="does not exist"):
         create_app(traces, annotations=traces.parent / "absent")
+
+
+def test_a_question_queue_is_answered_per_question(client, workspace):
+    _, annotations, _ = workspace
+    queue = client.get("/api/review/queue", params={"queue_id": "fork-questions"}).json()
+    assert [q["key"] for q in queue["label"]["questions"]] == [
+        "same_intent",
+        "reasonable",
+        "executed_as_intended",
+    ]
+    assert queue["items"][2]["item"]["questions"] == ["reasonable"]
+    body = {"queue_id": "fork-questions", "item_id": "planned"}
+    partial = post(client, "/api/review/label", {**body, "answers": {"same_intent": "yes"}})
+    assert partial.status_code == 400 and "missing ['reasonable']" in partial.json()["detail"]
+    answers = {"same_intent": "yes", "reasonable": "yes"}
+    saved = post(client, "/api/review/label", {**body, "answers": answers})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["label"]["answers"] == answers
+    assert saved.json()["label"]["verdict"] == "corrected"
+    line = json.loads((annotations / "labels" / "fork-questions.jsonl").read_text())
+    assert line["answers"] == answers and "choice" not in line
