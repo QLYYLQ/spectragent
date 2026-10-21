@@ -15,7 +15,7 @@ Read [references/guide.md](references/guide.md) by task:
 - Before calling it done: §4, the invariants and traps.
 - An error, a refusal or a surprising number: §5.
 
-The mechanics this guide points to live in sibling skills: `af-add-a-receptor` (receptor shapes and the conscribe traps), `af-regenerate-and-verify` (proving a knob reached YAML), `af-add-a-capability` (the archive contract, `RestorationSupport`), `af-add-a-loop` (`BranchLoop`, optional slots) and `af-trace-and-hooks` (the WAL, `env/`, privacy).
+The mechanics this guide points to live in sibling skills: `af-add-a-receptor` (receptor shapes and the conscribe traps), `af-regenerate-and-verify` (proving a knob reached YAML), `af-add-a-capability` (the archive contract, `RestorationSupport`, `RestorationAlignment`), `af-add-a-loop` (`BranchLoop`, optional slots) and `af-trace-and-hooks` (the WAL, `env/`, privacy).
 
 For recording/replay diagnosis, scoped URL/API rule proposals and baseline/candidate
 validation, use [af-improve-replay-rules](../af-improve-replay-rules/SKILL.md).

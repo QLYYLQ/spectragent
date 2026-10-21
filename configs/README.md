@@ -308,6 +308,16 @@ network_source:
 
 - `matcher` is typed: a misspelled key (`levelz`), an unknown level or a threshold
   outside `[0, 1]` is refused at validation, like a misspelled `source_id`.
+- Every site rule declares both of its policies, with no framework default:
+  `exhaustion: repeat_last | miss` (after its response sequence is used up, repeat the
+  last available response or miss) and `unavailable: miss | serve_identical` (a recorded
+  request kept without a body — cancelled by the page, still in flight at the end, served
+  from the memory cache, or a body read that timed out — is answered by the miss policy,
+  or by an available record of the same sequence when every available record there has
+  the same status and body, the consumed record's own recorded status, if any, is that
+  status, and the source request did not fail on the network). The shipped `baseline.yaml`
+  chooses `repeat_last` and `serve_identical`; `configs/replay_rules/README.md` has the
+  schema.
 - A recorded JSONP answer served to a request that asks for another callback name
   calls the name this request asks for: the replay rewrites the leading function name
   when the wrapper is provable, and the hit's replay-log entry says so
@@ -362,9 +372,14 @@ replay's trace records the source run by absolute path.
   with `network_source: live`. `shift_dates: none` (default) serves recorded dates as they
   were and pairs with it; `all` shifts `Date` / `Expires` / `Last-Modified` and cookie
   expiry together and pairs with `base_time: run_start`.
-- **The replay log**: every decision (hit, exhausted repeat, synthesised CORS preflight,
-  miss) goes into the step's `env/steps/NNN/browser.replay_log/replay.jsonl`; a step whose log
-  holds a main-frame document miss has diverged from the recording. Read it with
+- **The replay log**: every decision (`hit`, `exhausted` repeat, `substituted` answer for a
+  record without a body, synthesised CORS preflight, `miss`) goes into the step's
+  `env/steps/NNN/browser.replay_log/replay.jsonl`; a step whose log holds a main-frame
+  document miss has diverged from the recording. A `substituted` entry names the consumed
+  record (`record_id`), the one served (`served_record_id`) and how the source request ended
+  (`source_outcome`); a `body_unavailable` miss carries `source_outcome` too, `repeated: true`
+  when it repeats an exhausted sequence's body-less last record, and a `range_uncovered`
+  miss the page's `Range` header (`requested_range`). Read it with
   `spectragent.core.capabilities.browser.replay.replay_log` / `iter_replay_log` /
   `diverged_steps` over `spectragent.core.archive.source.open_archive(run_dir)`.
 - Not replayed (v1): WebSocket traffic and a nested dedicated worker's script (both are
@@ -448,7 +463,9 @@ task_loader:
   a seek that does not complete in `media_seek_timeout_s` (or lands elsewhere) is undone
   and the step fails `media_mismatch`. A video the recording showed at its end is sought
   `media_end_lead_s` before it and played through to its natural end, so the player shows
-  its end screen. Nothing is aligned after the checkpoint. A tab
+  its end screen; the lead must be shorter than `media_seek_timeout_s`, or the restorer is
+  refused at construction, naming both. Nothing is aligned after the checkpoint, and with
+  `media: none` the media state is still compared. A tab
   the recording's actions opened is followed again by the same rule (`new_tabs`, above), so
   the restored observation is of the same tab. The restored steps are recorded as
   `origin: restored` with their check; step *t* and the `continue_steps` after it are the
@@ -664,16 +681,62 @@ opened. The other benchmarks already write complete URLs and are not changed.
 After registering a new action / capability / provider:
 
 ```bash
-uv run python spectragent/scripts/generate_all.py
+uv run spectragent config generate
 ```
 
-This rewrites `spectragent/generated/_composed.py` and per-class `.pyi` stubs.
+This rewrites `spectragent/generated/_composed.py`, `_composed.schema.json` and
+`.fingerprint.json`, and prunes obsolete per-class `.pyi` stubs.
 
 
 ## Independent replay review
 
-The three files under `configs/replay_review/` compose an independent `replay_reviewer` job.
-Its `decision_model` receptor accepts TypeSafe native and OpenRouter Decisions providers;
-Chat `llm` receptors remain separate. See `docs/data_flywheel_runbook.md` for the paired-input
-JSON, command, route roots, recording format and result interpretation. All shipped run
-YAML now explicitly sets `max_actions_per_step: 4`, including record/replay/branch/student.
+The three files under `configs/replay_review/` compose an independent `replay_reviewer` job
+(`docs/architecture_design.md` §4.18). Its `decision_model` receptor accepts TypeSafe native
+and OpenRouter Decisions providers; Chat `llm` receptors remain separate. The three files
+differ only in the route; their review blocks are identical.
+
+```yaml
+replay_reviewer:
+  - reviewer_id: jev
+    decision_model: {...}              # the route
+    evidence:                          # what a request carries
+      done_answer: withhold            # keep | withhold: the source done answer's text
+      max_text_chars: 6000             # per observation side; the budget the thresholds were fitted on
+      max_links: 20
+      include_screenshots: true
+    questions:
+      version: replay-relevance-2      # a label; the content digest is what counts
+      items: {targets_equivalent: ..., information_equivalent: ..., evidence_sufficient: ...}
+    policy:
+      version: replay-triage-2         # fixes the gates below
+      information_question: information_equivalent
+      thresholds:
+        accept_information_min: 0.45
+        investigate_information_max: 0.25
+        fit: {dataset, dataset_sha256, fitted_on, policy_version, questions_sha256, evidence, evidence_sha256}
+      overrides: []                    # required, may be empty
+```
+
+- **All three blocks are required**; the code has no defaults and keeps no older version.
+  Every job snapshot records each block's text and content digest, and every assessment
+  records the question-set version and digest, the whole policy and its digest, the evidence
+  options and their digest, the thresholds it used and the machine facts, so
+  `route_result(result, settings, facts)` re-routes offline.
+- **Questions.** Three independent native Noul questions. Only `information_question` routes;
+  the other two are recorded. There is no overall Choice, confidence or verdict.
+- **Routes.** `investigate_difference` when the replay left an in-viewport image unserved or
+  the information value is at or below `investigate_information_max` (the image gate holds
+  even when the model call failed); `candidate_acceptable` when it is at or above
+  `accept_information_min`, the restoration check passed and no such image was measured;
+  `further_review` otherwise. `reasons` names the deciding conditions.
+  `candidate_acceptable` only orders human review; it never skips it.
+- **Thresholds are fitted.** Each threshold set carries its `fit` provenance; composition
+  refuses a set whose `questions_sha256` or `evidence_sha256` differs from the configured
+  blocks' digests — re-fit, or write a new fit entry. An override is
+  `{scope: site, domain: <registrable domain>, ...}` (the domain and its subdomains; the
+  longest matching domain wins) or `{scope: task, benchmark, subset, task_id, ...}`, with the
+  same threshold fields; a task match wins over a site match, both over the default.
+
+See `docs/data_flywheel_runbook.md` for the paired-input JSON, command, route roots, the
+missing-image fact's two sources and result interpretation. All shipped run YAML explicitly
+sets `max_actions_per_step: 4`, including record/replay/branch/student.

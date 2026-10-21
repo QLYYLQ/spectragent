@@ -86,14 +86,14 @@ recording:
 | 路径 | 内容 |
 |---|---|
 | `env/steps/NNN/browser.network/exchanges.warc.gz` | 第 NNN 步的提交收集到的交换，WARC/1.1，body 是解码后的字节；同一收集批次里重复的 payload 写成 revisit 记录 |
-| `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`），`kind: body`（边下边收的大 body 收完时一行，指向它的 blob），`kind: pending`（收集时还在途） |
+| `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`、请求开始与结束的墙钟时间 `started_at` / `ended_at`，以及结局事实 `error_text`、`body_note`、`from_cache`），`kind: body`（边下边收的大 body 收完时一行，指向它的 blob，带这次请求的 `ended_at` 与 `error_text`），`kind: pending`（收集时还在途，带 `started_at`） |
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
 | `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |
 | `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，边下边收的大 body `body-<sha>.bin` |
 | `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、浏览器的默认时区与语言（`browser_defaults`：没有 override 够得着的 frame 读到的值，启动后实测）、UA 与 pinned 带的 client hints、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要（含启动设的 `TZ`）、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
 | `env/trailing/KK/<archiver_id>/<name>` | run 结束时那次收集的证据，不归任何一步 |
 
-`body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
+`body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。`started_at` / `ended_at` 是墙钟 Unix 秒，与步记录的时间可比；`exchange` 行写出时请求还没结束的（body 在 Response 阶段就读完了、终结事件还没到），`ended_at` 是 `null`。没有正文的记录在回放时怎么答，由这些结局事实推出的源结局决定（见"离线回放一个 run"）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
 
 pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`；写普通 Chrome 标识时版本要写本机 Chrome 的大版本，见下）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
 
@@ -162,7 +162,8 @@ network_source:
 - `prepare()` 打开源 run（只读已提交的部分），拿它的环境指纹比较本次配置（setup 启动 Chrome 之前再比一次）：档位和参数（`base_time` 除外）、shim、viewport、启动开关摘要。有一项不符就拒绝运行，每条点名两边的值。启动开关摘要只覆盖 provider（`local_chrome`）拼出的启动参数，调试端口和 profile 目录换成占位符，网络路由开关两边都去掉，可执行文件路径和 Chrome 版本都不在里面。`headless: true` 会加上 `--headless=new`，所以只改 `headless` 也会不符；要看着浏览器回放，录制和回放都得写 `headless: false`，也就是重新录制。Chrome 版本不同、档位没固定 UA 而浏览器 UA 不同、脱敏策略不同只警告，写进回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `isolation: required`（默认）给 `local_chrome` 加 `--host-resolver-rules=MAP * ~NOTFOUND` 和 `--no-proxy-server`（没有例外，`localhost` 也断：对着本机网站录的 run 照样从归档回放，回放时那个服务开着也连不上），并拒绝会绕过它们的旋钮：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的路由开关、不是 `about:blank` 的 `startup_url`。写 `isolation: none_acknowledged` 时只靠 Fetch 拦截，preconnect 和 WebSocket 会连到真实网络。
 - `base_time` 与 `shift_dates` 是独立变量，`from_archive/none`、`run_start/all`、`run_start/none`、`from_archive/all` 都可表达。`from_archive` 需要归档来源及可用源 T0；`all` 每个响应用同一偏移调整 Date、Expires、Last-Modified 和 cookie 绝对过期属性，偏移按服务时刻与录制 Date（缺失时用 WARC-Date）计算。缺 Date 时两种模式都会补锚点；正文中的日期、定时器与浏览器内部时间不因此一起平移。
-- `matcher.levels` 是允许集合，固定按 exact → normalized → fuzzy 尝试；规则只能收窄，Range 同样遵守。通用规范化只整理格式，不猜时间戳、产品编号、尺寸或随机参数的内容语义。每个请求必须有显式 `exhaustion: repeat_last | miss` 策略；最强候选耗尽不向弱级别换资源。规则可按 host、path/URL、method、port 和明确优先级选择；冲突或未声明策略具名拒绝。规则文件格式见[README](../configs/replay_rules/README.md)。
+- `matcher.levels` 是允许集合，固定按 exact → normalized → fuzzy 尝试；规则只能收窄，Range 同样遵守。通用规范化只整理格式，不猜时间戳、产品编号、尺寸或随机参数的内容语义。每条规则都必须显式写两项策略：`exhaustion: repeat_last | miss`（序列用尽之后：重复最后一条**可用**的响应，或记 `sequence_exhausted`）与 `unavailable: miss | serve_identical`（录下了却没有正文的记录怎么答，下一条）；最强候选耗尽不向弱级别换资源。规则可按 host、path/URL、method、port 和明确优先级选择；冲突或少写一项策略具名拒绝，框架不给默认值。发布的 `baseline.yaml` 写的是 `repeat_last` 与 `serve_identical`。规则文件格式见[README](../configs/replay_rules/README.md)。
+- 没有正文的记录（页面自己取消的、run 结束时还在途的、浏览器从内存缓存复用的、recorder 读 body 超时的）照样占它在序列里的位置。`unavailable: miss` 交给 miss 策略（子资源回 404）。`serve_identical` 在下面几条都成立时用同一序列里一条可用记录**代答**：源里不是真实的网络失败（`network_failed`，例如被跨站读取保护拦下；这一条写死，不是开关）、序列里至少有一条可用记录、所有可用记录状态相同且正文摘要相同、被消耗那条若录下了状态码也与之相同（录下的 500 不会被 200 代答）。代答记录可以是录得更晚的那条。对页面取消的请求代答是有意的偏离：源页面没收到这次成功，回放页面收到了，日志与度量都单列。
 - 规则在准备回放时读取并冻结；正文、逐文件摘要、集合摘要与来源随环境 run 记录提交。修改原目录不会改变当前 run，历史规则可从 RunTrace 读回并核对。改规则时同时检查错误命中反例，不能只看命中率。
 - JSONP 回调名：页面按请求里的回调名（`?callback=NAME`）取回一段调用 `NAME(数据)` 的脚本，名字是页面自己起的（jQuery 是 `jQuery<随机数字>_<计数>`），回放时常与录制时不同。回放送出这样的应答时，把开头的函数名换成这次请求的回调名，否则页面拿不到数据。只在能确定是这种包装时才换：请求是脚本、XHR 或 fetch，应答以 `NAME(`、`typeof NAME === 'function' && NAME(`、`NAME && NAME(` 开头（前面可以有空白、注释、`;`，可以包在 `try {` 里），录下的请求里恰好一个参数的值是 `NAME`，这次请求的这个参数是一个合法的名字。其余情况原样送出。改写后 `Content-Length` 按新的字节算，`Content-MD5`、`Digest` 这类摘要头去掉。所以名字带随机部分的回调参数（豆瓣广告的 `callback`、乐视登录的 `jsonp`）可以放心写进站点规则的 `ignore_query`。设计见 [architecture_design.md](architecture_design.md) §4.14 "JSONP 回调名"。
 - `strict` 处理归档里没有的请求：主 frame 的文档 `Fetch.failRequest` 并标 `diverged`；子 frame 的文档同样失败；beacon、ping、CSP 报告、内置的分析类主机、`extra_benign_hosts` 和站点规则 `synthesize_204` 命中的回 204；其余子资源回 404。回放编出来的应答都带 `x-replay-miss: 1` 头。归档里没有的 CORS 预检合成 204。
@@ -182,7 +183,7 @@ for step, entry in iter_replay_log(reader):     # 含收尾批次（step 为 Non
         print(step, entry.reason, entry.request_class, entry.frame, entry.url)
 ```
 
-每行是一个 `ReplayLogEntry`。`kind` 是 `hit`、`exhausted`、`synthetic`（合成的预检）、`miss` 或 `summary`（仅显式 `log_mode: summary` 时同一次收集里相同语义条目超过 `log_repeat_limit` 后折叠，保留 `count`、`folded_kind`、`first_captured_at`、`last_captured_at`；默认 `full` 保留逐次事件）。决定带 `rule_id` 与 `exhaustion_policy`；命中带 `record_id` 和 `level`，改写了 JSONP 回调名的还带 `callback_rewrite`（`parameter` 是哪个参数，`recorded` 是录下的名字，`requested` 是这次请求要的名字）。miss 带 `reason`（`no_match`、`sequence_exhausted`、`match_level_disallowed`、`too_large`、`body_unavailable`、`archive_unreadable`、`range_uncovered`、`websocket`、`unservable`）、`request_class`（`document`、`benign`、`subresource`）、`frame`（`main`、`sub`）、`answer` 和 `status`、`match_key`，以及最近的 3 个候选 `candidates`。
+每行是一个 `ReplayLogEntry`。`kind` 是 `hit`、`exhausted`（序列用尽后，按 `repeat_last` 重复了最后一条可用的响应）、`substituted`（被消耗的记录没有正文，按 `serve_identical` 用同一序列一条正文相同的记录代答）、`synthetic`（合成的预检）、`miss` 或 `summary`（仅显式 `log_mode: summary` 时同一次收集里相同语义条目超过 `log_repeat_limit` 后折叠，保留 `count`、`folded_kind`、`first_captured_at`、`last_captured_at`；默认 `full` 保留逐次事件）。决定带 `rule_id`、`exhaustion_policy` 与 `unavailable_policy`；命中带 `record_id`、`run_id` 和 `level`，改写了 JSONP 回调名的还带 `callback_rewrite`（`parameter` 是哪个参数，`recorded` 是录下的名字，`requested` 是这次请求要的名字）。`substituted` 的 `record_id` 是被消耗的那条（没有正文），`served_record_id` 是实际送出的那条，`source_outcome` 是被消耗那条的源结局（`page_cancelled_before_response`、`page_cancelled_during_body`、`in_flight_at_run_end`、`memory_cache`、`recorder_timeout`、`network_failed`、`unknown`），`status` 是送出的状态。miss 带 `reason`（`no_match`、`sequence_exhausted`、`match_level_disallowed`、`too_large`、`body_unavailable`、`archive_unreadable`、`range_uncovered`、`websocket`、`unservable`）、`request_class`（`document`、`benign`、`subresource`）、`frame`（`main`、`sub`）、`answer` 和 `status`、`match_key`，以及最近的 3 个候选 `candidates`；`body_unavailable` 另带 `record_id` 与 `source_outcome`，`range_uncovered` 另带 `requested_range`（页面这次请求的 `Range` 头原文：一次缺口和它引起的几百次重试由此分得开），`repeated: true` 标出这次 miss 来自 `repeat_last` 在序列用尽之后的重复（被重复的那条没有可送出的正文），第一次落到这条记录的 miss 不带它。
 
 统计时用 `iter_decisions(reader)` 的第三项代表次数，不能把摘要行数当请求数；`entry.occurrence_times_complete` 表示是否保留逐次时间。
 
@@ -234,9 +235,15 @@ agent_loop:
     verify: strict                 # warn：记下不通过的检查，继续
     screenshot_max_distance: 5     # 两张截图 64 位 dHash 的汉明距离上限
     pace: none                     # recorded_llm_latency：执行动作前等源 run 当时等模型的时长
+    media: align                   # none：不对齐媒体（对照组），媒体状态照样比较
+    media_time_tolerance_s: 1.0    # 媒体播放位置与录下的差多少秒以内算通过
+    media_seek_timeout_s: 2.0      # 一次对齐跳转（及随后的播放）必须完成的上限
+    media_end_lead_s: 0.5          # 录下时已播完的视频从结尾前这么多秒播到结束；必须短于上一项
 ```
 
 `branch` loop 默认 `terminal_observation: true`。capability 的 `retarget_tolerance_px`（默认 2.0 CSS px）决定录下的元素在恢复出的页面里偏移多少还能被认出。
+
+每张观测截图都带 `media` 元数据：截图前后各读一次页面上每个 `<video>` / `<audio>` 的精确播放位置、是否暂停、总时长、所在 frame、文档顺序与位置（读数上限是 capability 的 `media_state_timeout_s`，默认 1 s；读不到记为 unknown，从不让截图失败，录制时不改动页面）。视频在源 run 里按真实时间播放，模型思考时也在播；原路径回放不等模型，同一步的画面会停在别的位置，截图距离却可能在阈值之内。所以恢复校验比较媒体状态，`media: align`（默认，发布的两份分叉配置显式写出）在每一个被恢复的观测（含检查点）的采集里、页面落定之后、截图之前，把对应上的元素对齐到录下的状态：录下暂停的暂停并跳到精确位置；录下在播的跳转、播放，随即截图；录下已播完的跳到结尾前 `media_end_lead_s` 再播到自然结束。跳转要在 `media_seek_timeout_s` 之内完成（`seeked`、不再 seeking、有可显示的帧）并停在目标上，否则跳回对齐之前的位置与播放状态、判这一步 `media_mismatch`。检查点之后的策略步和终止观测不对齐。`pace: recorded_llm_latency` 只能近似播放位置，不是媒体恢复的手段。
 
 一个分叉 run 按这个顺序执行：
 
@@ -374,18 +381,18 @@ uv run spectragent flywheel report --root traces/chains/first-live --evidence li
 |---|---|---|
 | `archive_overhead` | 开着归档每步多花多少时间和字节 | `record` 与 `control` 每步环境侧时间（`duration_ms` 减 `llm_latency_ms`，策略步，从第 1 步起）的 p50、p95 之差，没有对照组或两组档位不同时为 `null`；`env/` 去重前后的每步字节；`settle_wait`：每个跑过的角色，观测之前等页面落定的 p50、p95、被上限截断的占比和读不到页面状态的次数（从每个观测 fragment 的 `settle` 记录读，环境侧时间里包含这段等待） |
 | `body_completeness` | 录下的交换有没有 body | `index.jsonl` 每条记录的最终状态：有 body，不需要 body（`redirect`、`websocket`），明确没有（`too_large`、`incomplete`） |
-| `same_path_fidelity` | 原样重放时，恢复出的每一步与录制是否一致（按站点） | 恢复器判 `ok` 的步的占比；严格版另要求 URL 不变（量得到时）且截图 sha256 与源 run 同一步相同；每个 run 第一个不通过的步与原因 |
+| `same_path_fidelity` | 原样重放时，恢复出的每一步与录制是否一致（按站点） | 恢复器判 `ok` 的步的占比；严格版另要求 URL 不变（量得到时）且截图 sha256 与源 run 同一步相同；每个 run 第一个不通过的步与原因；URL、元素签名与媒体状态的比较覆盖（`media_coverage`：真正比较了媒体状态的步占被校验步的比例）、原因里有 `media_mismatch` 的步数（`media_mismatches`）与媒体对齐结果按 `outcome` 的计数（`media_alignment`），总体与按站点都给 |
 | `restoration` | 分叉的前缀恢复得对不对 | `branch` 段校验通过的占比；不通过的按原因计数，重定位失败按 `not_found`、`ambiguous` 计 |
 | `branch_coverage` | 分叉之后是否还留在归档里 | 检查点及之后没有主 frame 文档 miss 的分叉占比；其余 miss 按动作、resourceType、host、原因分布 |
 | `replay_determinism` | 同样的输入回放两遍，结局是否一样 | 同一源 run、同一检查点、执行动作相同的分支两两比较终止截图的 sha256，另比较检查点步恢复出的截图 |
 | `export_determinism` | 同样的 run 导出两遍是否逐字节相同 | `datasets/first` 与 `datasets/second` 的目录树摘要；`repeat: 1` 时为 `null` |
 | `privacy` | 凭证有没有发给模型、写进数据集 | 分两道门计数。`model_requests`：每个 run 录下的每一次模型请求的 messages 里的文字（内联图片的 base64 不算文字）；`datasets`：`<root>/datasets` 下每个文件（gzip 先解开）。每道门报每个植入值出现的次数和含有它的请求数或文件数，以及凭证形状的命中数。`env/` 和 trace 的其余文件（步记录、观测、配置）留在本机，不扫描，所以站点页面里自带的公开 key 不算泄漏。读不回来的 run 列在 `skipped` 里 |
 
-分母为 0 的值是 `null` 加原因，从不写成 0。`sections` 另有：按站点的统计（含回放改写了多少个 JSONP 回调名，`callback_rewrites`）和剔除名单（被 anti-bot 拦截、原路径保真低于 0.8、录制在第 0 步环境就失败的站点；模型调用失败从不让站点进名单），anti-bot 拦截（文档应答 403、429 或 503，且带 `cf-mitigated: challenge` 或 `server: cloudflare` 加 `cf-ray`），重复分叉率，POST 分叉的 miss，按角色和类别的存储字节与 gzip 压缩比，每个任务的字节和 10、20、300 个任务的投影，导出产出。`decisions` 是四个待决问题的建议：`miss_policy`（动了手的分叉里零文档 miss 的占比不低于 0.9 就保留 `strict`），`recording_coverage`（动了手的分叉的文档 miss 里 GET 未录 URL 的占比达到 0.5 就扩大录制时的覆盖），`site_rules`（一个 host 有 2 次以上近邻 miss 就建议生成 `ignore_query` 规则供人审），`retention`（每个任务占多少磁盘，与 `sections.retention` 是同一条建议）。
+分母为 0 的值是 `null` 加原因，从不写成 0。`sections` 另有：按站点的统计（含回放改写了多少个 JSONP 回调名，`callback_rewrites`；按源结局分开计数的代答次数，`substitutions`；序列用尽之后 `repeat_last` 重复送出的次数，`reuses`；后两者都不算命中，原路径回放与分叉合计）和剔除名单（被 anti-bot 拦截、原路径保真低于 0.8、录制在第 0 步环境就失败的站点；模型调用失败从不让站点进名单），anti-bot 拦截（文档应答 403、429 或 503，且带 `cf-mitigated: challenge` 或 `server: cloudflare` 加 `cf-ray`），重复分叉率，POST 分叉的 miss，按角色和类别的存储字节与 gzip 压缩比，每个任务的字节和 10、20、300 个任务的投影，导出产出。`decisions` 是四个待决问题的建议：`miss_policy`（动了手的分叉里零文档 miss 的占比不低于 0.9 就保留 `strict`），`recording_coverage`（动了手的分叉的文档 miss 里 GET 未录 URL 的占比达到 0.5 就扩大录制时的覆盖），`site_rules`（一个 host 有 2 次以上近邻 miss 就建议生成 `ignore_query` 规则供人审），`retention`（每个任务占多少磁盘，与 `sections.retention` 是同一条建议）。
 
 空分叉是从检查点起一个动作也没执行的分叉：teacher 的模型调用失败、回复没有动作（解析失败和解析出零个动作在记录里看起来一样），或者 teacher 决定之前 run 就结束了（恢复失败、观测失败）。它说明不了 teacher 的选择会走到哪里，所以不计入 `branch_coverage` 的占比和 miss、也不计入 `miss_policy` 与 `recording_coverage` 依据的数，按原因记在 `metrics.branch_coverage.empty`；重复分叉率不比较检查点步没有动作的分叉（`sections.duplicate_branches.not_compared`）。
 
-每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-7`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
+每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-8`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
 
 链在报告之前导出，不会套用报告给出的剔除名单。`sections.sites.yaml` 是 `filters.exclude_sites` 形状的片段：把它放进导出 YAML，换一个 `output_dir`，手动再导一次。
 
@@ -484,7 +491,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 回放一致性不符：同一个错误里以 `source run '<id>'` 开头的行，例如 `replayability random_seed=7 ↔ this run's random_seed=1`、`viewport 1280x720 ↔ this run's viewport ...`、`launch_flags_sha256=... ↔ this run's planned launch flags ...`、`the source run is itself a replay`、`recorded no browser.network evidence`、`has no environment fingerprint`。让回放配置的档位参数、viewport 和 backend 块与录制一致，回放原始录制而不是回放 run。只警告的差异看回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `source run '<id>' browser default locale='zh-CN' ↔ this browser's default locale='en-US' (read from this host before launch)`（或 `timezone`，或结尾是 `(measured after launch)`）：这台机器上的浏览器会落回与录制不同的默认语言或时区。`read from this host before launch` 在 `prepare()` 就报，`measured after launch` 是启动浏览器之后、准备任何 tab 之前报的（系统设置在启动前说不出的那一项，比如 macOS 以外的语言），这时 trace 已经打开，记为环境失败。在默认语言（macOS 的系统语言）与录制相同的机器上回放；pinned 的时区由 `TZ` 定，档位参数相同就相同。`recorded no browser defaults`：源 run 是这一规则之前录的，没有记默认值，重新录制。
 - `ArchiveOpenError: replay archive ... is not a directory`：`--replay-archive` 要指向源 run 目录，也就是含 `manifest.json` 的那个。`ReplayArchiveError` 说明源 run 的索引行读不回来，或者指向的 WARC 记录对不上，消息点名文件和记录 id；源归档已损坏，重新录制。
-- 回放里有 miss：用 `diverged_steps` 找出有主 frame 文档 miss 的步，再看这些步的 `replay.jsonl`。`no_match` 而 `candidates` 里有同 host、同 path、只差查询参数的记录，说明参数是每次访问都会变的值（时间戳、会话 id），给这个站点写 `ignore_query` 规则；文档 URL 本身带每次访问不同的值时，回放必然在那一步发散。`too_large`：body 超过 `max_fulfill_body_bytes`，或录制时就是 `too_large`。`body_unavailable`：录制时 body 没读完。`range_uncovered`：录制没覆盖请求的字节区间。`websocket` 和 `unservable` 见"已知限制"。报告的 `decision_inputs.site_rule_candidates` 汇总了所有回放 run 的近邻 miss。候选只差一个回调参数（`callback`、`cb`、`jsonp` 这类，值是页面起的函数名）时，忽略它是安全的：回放会把应答里的函数名换成这次请求的。
+- 回放里有 miss：用 `diverged_steps` 找出有主 frame 文档 miss 的步，再看这些步的 `replay.jsonl`。`no_match` 而 `candidates` 里有同 host、同 path、只差查询参数的记录，说明参数是每次访问都会变的值（时间戳、会话 id），给这个站点写 `ignore_query` 规则；文档 URL 本身带每次访问不同的值时，回放必然在那一步发散。`too_large`：body 超过 `max_fulfill_body_bytes`，或录制时就是 `too_large`。`body_unavailable`：录下的记录没有正文，`source_outcome` 说源里这个请求怎么结束；规则写了 `serve_identical` 却没有代答，说明序列里没有可用记录、可用记录的正文或状态不一致，或者源里就是网络失败；带 `repeated: true` 的是用尽之后的重复，不是新的缺口。`range_uncovered`：录制没覆盖请求的字节区间，`requested_range` 是页面要的区间；视频跳到录下字节之外时，播放器会以每秒十几次的速度重试同一个起点，按 `requested_range` 归并就分得出是一个缺口还是很多个。`websocket` 和 `unservable` 见"已知限制"。报告的 `decision_inputs.site_rule_candidates` 汇总了所有回放 run 的近邻 miss。候选只差一个回调参数（`callback`、`cb`、`jsonp` 这类，值是页面起的函数名）时，忽略它是安全的：回放会把应答里的函数名换成这次请求的。
 - 回放日志里是命中，页面上却少了 JSONP 取来的内容（热门搜索、广告、搜索结果是空的）：看这个请求的日志条目有没有 `callback_rewrite`。没有而回调名与录下的不同，说明应答的包装不在能改写的形状里（回调名在路径里、`window.NAME(` 这类写法），或者命中的是同一接口不带回调参数的记录；这种请求只能照录下的字节送。报告的 `sections.sites.by_site.<站点>.callback_rewrites` 是每个站点改写的应答数。
 - 恢复发散：`strict` 下 run 以 `RestorationDivergedError` 结束，`warn` 下那一步的 `restoration.verdict` 是 `warn`。`reasons` 列出这一步所有不通过的检查，按下面的顺序排列，第一个同时记在 `reason`：
   - `document_miss`：自上一次校验以来回放日志里有主 frame 文档 miss，处理同上一条。
@@ -493,6 +500,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
   - `retarget_ambiguous`：候选不止一个，常见于嵌套的相同元素。
   - `action_failed`：动作的成败与录制不同，或者执行时抛错。
   - `signature_mismatch`：两边可交互元素的签名多重集不同。
+  - `media_mismatch`：媒体状态对不上，看 `restoration.evidence[*].media`。`comparisons` 是逐元素的对应（`matched` / `missing` / `extra` / `ambiguous`，元素记作 `<frame>#<顺序> <标签>`）和比较用的那次读数里两边的位置与暂停状态；位置差超过 `media_time_tolerance_s`、暂停状态不同、元素缺失或多出（隐藏的、视口外的也算）、对应有歧义、直播，都不通过。`recorded_unreachable_frames` / `restored_unreachable_frames` 是两次读数都没有应答的子 frame（其中有没有媒体不知道），比较成立时有一个就不通过。`alignment` 是这次观测之前做的每一个对齐动作：`aligned`、`already_aligned`、`failed`（跳转或播放没在上限内完成，或停在了目标之外；`rolled_back` 说回滚是否完成）、`not_restorable`（直播、对应有歧义或缺失）、`unknown`（录下的位置不知道，不参与判定）；`media: none` 时为 `null`。`comparisons` 为 `null`（`detail` 说为什么）是没比成：在截图带媒体元数据之前录的源永远不做媒体校验，只靠截图距离。对齐 `failed` 而回放日志里同一个媒体 URL 有 `range_uncovered`，是跳到了录下字节之外，录制时视频没播到那里，回放救不回来。
   - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`）。常见于动画和依赖时钟的内容。观测之前的落定等待（见"前提与限制"）在录制和回放里都等异步加载，比较的就是两边 agent 看到的观测；仍然不同时，看这一步观测 fragment 的 `settle` 记录：有一边 `capped`，说明那边的页面一直没静下来，被上限截断时还在变。还可以试 `pace: recorded_llm_latency`。
 
   每一步的 `restoration.evidence` 记着各项的测量值，`restoration.actions` 记着每个录下动作的重定位方式和结果。值为 `null` 的项不参与判定，所以 UI-TARS 这类纯视觉 run 主要靠截图距离、文档 miss 和动作成败来判。
@@ -519,7 +527,9 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 时区与语言 override 的所有者：同一个渲染进程里只有最先设它的 frame 是所有者。所有者走了之后，同进程的其余 frame（同一个站点的第二个跨源 iframe、保留 opener 的同站弹窗）在 0.2–0.3 s 内落回浏览器的默认值；保留 opener 的跨站弹窗从第一个文档起就读默认语言。时区因为 `TZ` 仍是 pin 的；语言是机器的系统语言，录在指纹里，回放要求它相同，但落回发生在哪一次观测之前，录制和回放之间可能不同。
 - `user_agent` 写的不是 Chrome 自己的写法时（自定义字符串、Edge、Firefox 的标识），pinned 不带 client hints：打不到 opener 的新 tab（不带 `rel` 的 `target=_blank`、`rel=noopener`、`window.open(..., 'noopener')`）的第一个请求带着 Chrome 自己的 `Sec-CH-UA`，之后的请求都不带，录制和回放相同，回放时这个请求不出浏览器。不写 `user_agent` 或写普通 Chrome 标识时没有这个问题。
 - 写了 `user_agent` 的 pinned 用 `--user-agent` 启动 Chrome，Chrome 这时自己就把 client hints 的高熵值（架构、位数、完整版本列表、平台版本、形态）报成空的，override 带的也是空的。调用 `getHighEntropyValues` 或用 `Accept-CH` 要这些头的站点看得出它与真实的 Chrome 不同；brands、平台、是否移动端是一致的。
-- 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；耗尽由显式规则选择复用最后响应（`exhausted`）或缺失（`sequence_exhausted`）。
+- 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；耗尽由显式规则选择复用最后一条可用响应（`exhausted`）或缺失（`sequence_exhausted`）。
+- `serve_identical` 代答页面在源里取消的请求时，回放页面收到了源页面没收到的一次成功；页面为什么取消（例如图片地址 2 ms 后换成了别的），网络证据看不到，回放页面可能因此走上源里没走的路。日志的 `substituted` 与报告的 `substitutions` 把它们单列。
+- 媒体恢复的边界：直播、画布自己画的播放器、跳进录下字节之外的位置、对应有歧义或缺失的元素都不恢复，判 `media_mismatch`；影子树里的 iframe 与读数没有应答的跨站 frame 里的媒体不知道，这一步同样不可恢复。脚本跳转、播放之后播放器可能露出控制条，感知哈希看不出来。源页面在模型思考时播完、自动跳到下一条的，对齐救不回这次导航，表现为 URL 不同。
 - JSONP 回调名只在几种确定的包装里改写（见"离线回放一个 run"）。回调名在路径或请求体里、包装是别的写法的，照录下的字节送出，页面拿不到数据，日志里却是普通的命中。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
 - 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，不等它，下一步才看到结果。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。
@@ -537,11 +547,12 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 运行示例统一使用 `max_actions_per_step: 4`；record、same-path replay、branch 和学生配置保持相同预算。
 当前 trace 为 v6，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
 新 reader 不自动补 `kind` 或转换旧格式。独立审查只读 source/replay，不改变恢复校验、源 token 计数或任务正确性评分。
+设计见 [architecture_design.md](architecture_design.md) §4.18。
 
 审查配置为普通组合根中的 `replay_reviewer` 层，模型从 `decision_model` 受体注入：
 `configs/replay_review/jev_dmx.yaml`、`jev_direct.yaml`、`jev_openrouter.yaml`。
 DMX 根为 `https://www.dmxapi.cn/typesafe`，官方根为 `https://api.typesafe.ai`；都由 provider 拼接 `/v1/systemone`。
-OpenRouter 根为 `https://openrouter.ai/api`，拼接 `/alpha/decisions`。凭证由配置指定的环境变量提供。
+OpenRouter 根为 `https://openrouter.ai/api`，拼接 `/alpha/decisions`。凭证由配置指定的环境变量提供；CLI 会读 `.env`。
 
 输入 JSON 示例（路径相对输入文件所在目录）：
 
@@ -568,21 +579,56 @@ uv run spectragent view --root reviews
 源配置须与 trace 中记录的 cleaner、serializer 和 DOM budget 一致。审查器使用这些已组合实例重建 raw DOM，
 保留裁剪范围、链接/几何、原始截图及机器恢复证据；不读光标装饰后的模型图片。输入不足、损坏、对齐错误、
 模型超时/HTTP/答案错误分别报告。目标是当前任务及下一批动作范围内的相关性，不是预测未录制的后续页面。
+标签、预期答案和开发/留出划分放在另外的文件里，永不进入请求。
 
-新目录中的 `review-manifest.json` 索引配置、逐项判断、证据和调用。每个模型调用只有一份 latency/usage，
-一个批次的问题数不等于调用数；未知 usage 单独列出。`status` 是审查是否执行成功，`verdict` 是语义判断，
-`route` 是候选接受、调查差异或进一步复核。阈值是可配置分诊政策，没有校准保证。可通过
-`replay_review.jev.route_result(result, policy)` 离线重算路由；不会自动调用强模型。
-查看器的 Reports & datasets 中可查看该 job、原生分布、Score legend、Noul、Box 和图片。
+**三个必填块。** `jev` 审查器的 `evidence`、`questions`、`policy` 都必须在 YAML 里写全，代码不给默认值：
+
+- `evidence`：每侧观测的文本字符上限 `max_text_chars`、链接与几何条目上限 `max_links`、是否附原始截图
+  `include_screenshots`，以及 `done_answer: keep | withhold`。出厂为 `withhold`（去掉源 `done` 动作的答案文本，
+  动作类型保留）和每侧 6000 字符、20 条：阈值就是在这个预算上拟合的，更大的预算在 DMX 路线上多数页面超出输入上限。
+  回放服务事实和恢复对应关系里每条结果的动作效果（`effect`）不进请求；要让模型看到效果须新增一个证据选项并重新拟合。
+- `questions`：版本标签 `version` 和问题 ID → 原生 Decision 问题的映射 `items`。出厂 `replay-relevance-2` 是三个独立的
+  Noul：目标是否相同（`targets_equivalent`）、任务所需信息是否相同（`information_equivalent`）、证据是否足以比较
+  （`evidence_sufficient`）。没有总体 Choice、置信度或 `verdict`；三个答案分别保存，不求平均。改写措辞时换版本标签。
+- `policy`：`version: replay-triage-2`、参与路由的问题 `information_question`（必须是问题集里的 Noul）、默认阈值
+  `thresholds{accept_information_min, investigate_information_max, fit}` 和覆盖列表 `overrides`（可为 `[]`，不可省略）。
+  覆盖元素是 `{scope: site, domain: <注册域>, ...}` 或 `{scope: task, benchmark, subset, task_id, ...}`，其余字段与
+  `thresholds` 相同。站点按参考观测 URL 的主机名等于该域或以 `.` 加该域结尾匹配（不用公共后缀表，多个命中时最长的域胜出）；
+  任务按源 trace 的 benchmark、subset、task_id 精确匹配；任务覆盖优先于站点覆盖，二者都优先于默认。
+
+每组阈值都带拟合来源 `fit`：数据集说明与摘要、拟合日期、拟合时的政策版本、所用问题集的摘要、所用证据选项全文及其摘要。
+当前问题集或证据选项的摘要与某组 `fit` 不同时，组合直接失败并写出两组摘要：改了措辞或预算，就要重新拟合，或为当前
+问题与证据写一条新的拟合记录。出厂默认阈值 0.45 / 0.25 来自开发任务上的 12 对标注，是暂定的分诊参数，随标注数据增加重新拟合，
+不是准确率承诺。
+
+**路由（`replay-triage-2`）。** 只有信息问题的原生 Noul 参与，门槛由政策版本固定，按顺序判定：
+
+| 路线 | 条件 |
+|---|---|
+| `investigate_difference` | 回放有视口内图片未被服务（`viewport_image_not_served`），或信息值 ≤ `investigate_information_max`。缺图门槛先于阈值，模型调用失败或答案不合合同时也照样生效 |
+| `candidate_acceptable` | 信息值 ≥ `accept_information_min`、恢复检查结论为 `ok`（`warn` 与 `diverged` 都算恢复警告），并且已测得没有视口内缺图 |
+| `further_review` | 其余：介于两阈值之间、恢复警告、缺图事实无法测得、证据缺失、服务故障、答案合同错误 |
+
+`reasons` 写明决定路线的条件（如 `viewport_image_not_served`、`information_at_or_below_investigate_max`、
+`information_between_thresholds`、`restoration_warning`、`viewport_images_not_measurable`）。`candidate_acceptable`
+只决定人工复核的先后（最后复核），从不跳过复核，也不在运行时放行或改变恢复结论。
+
+视口内缺图事实有两个来源，都只看被审查回放步骤自己的那次采集：一是回放日志加 raw DOM（这次采集里被判 miss 的
+`Image` 请求，其 URL 被主文档中与视口相交的元素引用；没有绑定 `browser.replay_log` 或 raw DOM 没有布局快照时无法测得）；
+二是回放步骤的 `capture_state` 里可见图片加载失败，只数源步骤自己没有失败的那些（源步骤没有可用读数时全部计入，记
+`capture_state_baseline: none`）。任一来源为真即为真；两个都无法测得时事实为 `null`，不当作没有缺图。
+`facts.viewport_image_sources` 保存两个来源各自的读数。样式表里的 CSS 背景图与子框架里的图片两个来源都不覆盖。
+
+新目录中的 `review-manifest.json` 索引配置、逐项判断、证据和调用。job 快照记录三个块的全文与摘要；每条 assessment 记录
+`status`（审查是否执行成功，与路线分开）、`route`、`reasons`、信息值 `information`、实际使用的阈值 `thresholds`
+（范围 `default` / `site` / `task`、数值与 `fit`）、机器事实 `facts` 和三个块的版本与摘要。汇总给出各 `status`、`routes`、
+`reasons` 与 `threshold_scopes` 的计数。每个模型调用只有一份 latency/usage，一个批次的问题数不等于调用数；未知 usage
+单独列出。`spectragent.replay_review.jev.route_result(result, settings, facts)` 可以离线重算路由，不需要浏览器、模型或源文件；
+不会自动调用强模型。查看器的 Reports & datasets 中可查看该 job、信息值、所用阈值范围、路线、Noul、Box 和图片。
+复审规则改动的效果时，用问题集、政策和证据选项摘要都相同的配置，两次结果才可比。
 
 图片/Box 使用固定模型版本并校验尺寸。实测发现各路由对 null 的准入不同：Score 等级和 Noul criteria
-不接受显式 null；OpenRouter instructions 也不能为 null。Choice 选项描述可为 null。
-不支持的组合请求前报错；没有自动网络重试，不为了通过而改写描述或删除模态。
-
-
-2026-10-19 的三任务实测使用 `gpt-6-luna`，OpenAI 原生路线，并显式设置
-`frequency_penalty: null`、`temperature: null`、`reasoning_effort: low`；该路线拒绝默认 frequency_penalty。
-7 对页面在独立 Jev 审查中用 `max_text_chars: 6000`、`max_links: 20` 完成有效判定；更大的示例预算
-在 Wikipedia 上触发了模型上下文上限。预算裁剪记录在输入 scope，原始失败与复测分别保存。
-这组样本只有 2/7 达到候选接受阈值，其余进入进一步复核，不能当作运行期门控的校准证明。
+不接受显式 null；OpenRouter instructions 也不能为 null。不支持的组合请求前报错；没有自动网络重试，
+不为了通过而改写描述或删除模态。
 页内锚点对齐保留完整导航 URL；截图/DOM 的文档 URL 只在 base URL 与 loader 都对应时允许省略 fragment。
+在回放规则要求 `unavailable` 之前录的回放读不回它记下的规则快照，准备证据时报 `corrupt_evidence`：复审这些对要重新回放。

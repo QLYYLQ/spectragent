@@ -74,11 +74,14 @@ public reports, or infer that every suggested name is a real parameter.
 | Evidence | Next decision |
 |---|---|
 | `no_match` with a near candidate | Compare actual requests/responses and endpoint semantics before proposing normalization. |
-| Unrecorded URL, unavailable/corrupt body, uncovered Range | Repair capture/coverage or report missing evidence; rules cannot supply a missing response. |
+| Unrecorded URL, corrupt body | Repair capture/coverage or report missing evidence; rules cannot supply a missing response. |
+| `body_unavailable` miss or `substituted` entry (a recorded request kept without a body) | Read `source_outcome`: page-cancelled, in flight at run end, memory-cache and recorder-timeout records may be answered by an identical available record under `unavailable: serve_identical`; `network_failed` never is. A miss despite `serve_identical` means no available record, differing bodies or statuses, or a recorded status that differs. `repeated: true` marks repeats of an exhausted body-less record, not new gaps. A substitution for a page-cancelled request is a deliberate, logged deviation; check the page did not take a path the source did not. |
+| `range_uncovered` | Group by `requested_range`: one start requested hundreds of times is one gap and a player's retries (often a media seek past the recorded bytes), not many gaps. Extend recording coverage or accept the gap; a rule cannot invent bytes. |
 | `too_large` | Distinguish a missing recorded body from a serving-size limit. |
 | `sequence_exhausted` | Inspect polling/state progression and whether last-response reuse is justified. |
 | `match_level_disallowed` | Inspect both permissions and semantic correctness before enabling a weaker match. |
 | URL/signature/action/retarget/screenshot mismatch without a causal miss | Inspect active tab, focus, geometry, DOM, action outcome, settle evidence and timing. |
+| `media_mismatch` | Read `restoration.evidence[*].media` (comparisons, alignment outcomes, unreachable frames). A failed alignment beside `range_uncovered` for the media URL is missing recorded bytes, not a rule problem; compare `media: none` and `media: align` replays before blaming the matcher. |
 | Challenge/login, lost session, unsupported worker/WebSocket behavior | Diagnose that boundary; synthetic success does not fix it. |
 
 ## Use Jev to triage task relevance
@@ -95,17 +98,22 @@ The job derives the task, next actions, configured clean DOM views, link/geometr
 raw screenshots and explicit evidence gaps through committed readers. Keep prior
 judgments and expected labels out of the request. Mark visual comparisons with
 `visual_required: true`; missing pixels must not become a text-only acceptance.
-For missing evidence, low confidence or disagreeing answers, continue with the
-screenshot/DOM review below. If the route is unavailable,
+For missing evidence, a failed call or an information value between the thresholds,
+continue with the screenshot/DOM review below. If the route is unavailable,
 report the failure and continue that evidence review; do not block independent diagnosis
 or silently substitute a model.
 
-`candidate_acceptable` means the difference may be non-blocking for the stated task;
-`investigate_difference` prioritizes causal diagnosis; `further_review` calls for deeper
-inspection by the agent conducting this skill. None authorizes dropping a meaningful
-request field. The provisional confidence cutoff is a review-routing knob, not a
-calibrated accuracy claim or a new runtime acceptance threshold. Further review does
-not inherently require another user permission question.
+The route comes from one native Noul, the information question, against fitted
+thresholds, plus deterministic gates; there is no overall Choice or confidence.
+`investigate_difference` (an unserved in-viewport image, or information at or below the
+investigate maximum) prioritizes causal diagnosis; `candidate_acceptable` (information at
+or above the accept minimum, a passing restoration check, no such image measured) means
+the difference may be non-blocking for the stated task and only orders human review —
+it is reviewed last, never skipped; `further_review` calls for deeper inspection by the
+agent conducting this skill. None authorizes dropping a meaningful request field. The
+thresholds are provisional, re-fitted as labelled pairs accumulate, not a calibrated
+accuracy claim or a runtime acceptance threshold. Further review does not inherently
+require another user permission question.
 
 ## Complete the evidence review
 
@@ -157,9 +165,9 @@ thresholds merely to make a report green.
 
 When testing a decision model, freeze expected labels separately before submitting cases;
 send actual task/evidence without prior conclusions. Preserve raw responses, input
-selection, model identity, latency and usage. A choice, its confidence, a probability
-distribution and a separate yes/no answer are distinct outputs; conflicting answers or
-low confidence require further review. Oversized input is an evaluation failure, not a
+selection, model identity, latency and usage. Native outputs of different questions or
+kinds (a Noul, a choice and its probabilities) are distinct; never average them, and keep
+disagreement visible for review. Oversized input is an evaluation failure, not a
 negative verdict. Reduce irrelevant evidence explicitly and retain the failed attempt.
 
 ## Review what may change
@@ -175,11 +183,15 @@ can select content. Evidence at one telemetry endpoint does not cover its domain
 Use `keep_*` for meaningful fields where useful. If the schema cannot express the needed
 distinction, report the limitation rather than broadening the rule to fit it.
 
-Each rule has a unique identity, explicit priority and exhaustion policy. One complete
-winning rule applies; narrower rules do not inherit the broad rule's content settings.
+Each rule has a unique identity, explicit priority, and both required policies:
+`exhaustion: repeat_last | miss` and `unavailable: miss | serve_identical` (a rule
+missing either is refused; the framework supplies no default). One complete winning rule
+applies; narrower rules do not inherit the broad rule's content settings, so a narrow
+rule repeats both policies.
 Recorded/live requests must select the same rule identity. Run-level match permissions
 bound rule permissions. Inspect `repeat_last`, fuzzy, synthetic 204, response echo and
-JSONP rewriting as separate assumptions. Never add live fallback to the archive source.
+JSONP rewriting and `serve_identical` substitution as separate assumptions. Never add
+live fallback to the archive source.
 
 Keep two kinds of change separate:
 
@@ -209,11 +221,14 @@ the conclusion as local. Do not require a full Agent × benchmark matrix.
    Discover the current same-path YAML/CLI from the runbook: `spectragent run` does not
    supply BranchLoop checkpoints. Count any new policy calls separately from restoration.
 4. Compare first divergence, reached/planned checks, complete prefix, all reasons and raw
-   measurements, document/subresource misses, synthetic replies and exhausted reuse.
+   measurements, document/subresource misses, synthetic replies, exhausted reuse and
+   substitutions by source outcome.
    Include task-specific semantic evidence and recording health. Unreached steps stay
    visible in the denominator. Test criterion changes separately from rule changes.
-5. For cases triaged by Jev, review the candidate with the same task, questions, model
-   and evidence-selection policy used for the baseline. Preserve both reviews and any
+5. For cases triaged by Jev, review the candidate with the same task and model and a
+   configuration whose question-set, policy and evidence-option digests equal the
+   baseline job's (each assessment records them); otherwise the two routes are not
+   comparable. Preserve both reviews and any
    visual adjudication. A changed model label alone does not establish a repaired replay;
    the matched responses, task evidence and negative cases still decide the rule change.
 

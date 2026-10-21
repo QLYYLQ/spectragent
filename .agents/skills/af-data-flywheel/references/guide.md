@@ -140,6 +140,13 @@ hook:
 | `browser.storage` | `allow_session_state` (false: refuse a non-fresh profile; values are stored as they are either way), `command_timeout_s` (1) |
 | `browser.dom_raw` | `allow_session_state` (false), `self_capture_timeout_s` (10) |
 
+`browser.network`'s `index.jsonl` has one `exchange` line per exchange (its `body_status`,
+the wall-clock `started_at` / `ended_at` of the request — `ended_at` is `null` when the line
+was written before the request ended — and the outcome facts `error_text`, `body_note`,
+`from_cache`), a `body` line when a streamed body finishes (with that request's `ended_at` and
+`error_text`) and a `pending` line per collection while it is in flight (with `started_at`).
+A replay derives each body-less record's source outcome from these facts (§2.2).
+
 Run it like any benchmark config, or record one task:
 
 ```bash
@@ -328,9 +335,18 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   `max_fulfill_body_bytes`.
 - Every rule file contains a `rules` list. Explicit scopes constrain host, URL/path,
   method and effective port. Highest priority wins; equal-priority matches are refused,
-  and files do not implicitly select host suffixes. Rules never merge. `exhaustion` is
-  required (`repeat_last` or `miss`); the published baseline explicitly selects reuse,
-  while the framework supplies no fallback. Every served candidate must choose the same
+  and files do not implicitly select host suffixes. Rules never merge. Two policies are
+  required on every rule, with no framework fallback: `exhaustion` (`repeat_last`: repeat
+  the sequence's last *available* response; `miss`: `sequence_exhausted`) and `unavailable`
+  (`miss` or `serve_identical`, for a consumed record without a body); the published
+  baseline selects `repeat_last` and `serve_identical`. A body-less record keeps its place
+  in the sequence. `serve_identical` answers it with an available record of the same
+  sequence only when every available record there has the same status and body digest, the
+  consumed record's own recorded status (if any) is that status, and its source outcome is
+  not `network_failed` (fixed in code); the answering record may be a later one. Source
+  outcomes (`replay/archive_index.py::SourceOutcome`): `in_flight_at_run_end`,
+  `page_cancelled_before_response`, `page_cancelled_during_body`, `network_failed`,
+  `memory_cache`, `recorder_timeout`, `unknown`. Every served candidate must choose the same
   rule identity as its request. `matcher.levels` is an upper bound, tried in fixed strength
   order, including Range; a stronger sequence's exhaustion never selects a weaker resource.
   Canonicalisation performs formatting only: no global timestamp, size, random-number or
@@ -355,6 +371,15 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   path. Everything else is served byte for byte. That is what makes ignoring a random-part
   callback parameter in a site rule safe (`douban.com.yaml` `callback`, `le.com.yaml`
   `jsonp`).
+- Log kinds (`replay/replay_log.py::ReplayLogEntry`): `hit`, `exhausted` (`repeat_last`
+  served the last available response again), `substituted` (`record_id` the consumed
+  body-less record, `served_record_id` the one sent, `source_outcome`), `synthetic`,
+  `miss`, `summary`. Every decision records `rule_id`, `exhaustion_policy` and
+  `unavailable_policy`. A `body_unavailable` miss carries `record_id` and `source_outcome`,
+  and `repeated: true` when it repeats an exhausted sequence's body-less last record; a
+  `range_uncovered` miss carries `requested_range`, the page's `Range` header, which tells
+  one coverage gap from a player's retries of it. Neither `substituted` nor `exhausted`
+  counts as a hit in the metrics.
 - Read the log with `replay_log(reader, step)`, `iter_replay_log(reader)` or
   `diverged_steps(reader)` over `spectragent.core.archive.source.open_archive(run_dir)`.
   They find it under `browser.replay_log`; a file named `replay.jsonl` under another
@@ -377,6 +402,10 @@ agent:
         verify: strict                 # warn: record failed checks and go on
         screenshot_max_distance: 5     # 0-64, Hamming distance of 64-bit dHashes
         pace: none                     # recorded_llm_latency: wait as the source waited
+        media: align                   # none: compare media state, align nothing (control arm)
+        media_time_tolerance_s: 1.0    # seconds a media position may differ and still pass
+        media_seek_timeout_s: 2.0      # each alignment seek, and the play after it
+        media_end_lead_s: 0.5          # an ended source is played into its end from here; < seek timeout
     llm: { ..., temperature: 0.8 }     # the teacher; model and sampling may differ (shipped: 0.8)
 # the browser block is the replay block plus retarget_tolerance_px (2.0 CSS px), and
 # trace_writer.archive is the replay's: browser.replay_log, browser.storage, browser.dom_raw
@@ -449,6 +478,19 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   reproduced shows as `url_mismatch` or `screenshot_distance`. `browser.switch_tab` is
   re-targeted by the tab's position in `browser_meta.tabs`, which lists tabs in the order they
   opened, the same order in both runs.
+- Media playback (architecture §4.4 "截图的媒体状态", §4.14 "恢复：重定位与校验"). Every
+  observation screenshot carries `media`: each `<video>` / `<audio>` element's exact
+  position, paused state, duration, frame, order and box, read just before and just after
+  the pixels within the capability's `media_state_timeout_s` (1 s; a read that runs out is
+  unknown, never a failed screenshot). The restorer compares it (`media_mismatch`, judged
+  before the screenshot distance) and, under `media: align`, has each restored observation
+  (the checkpoint's included) aligned inside its capture, after the settle wait and before
+  the screenshot: a paused source is paused and sought; a playing one sought and played; an
+  ended one sought `media_end_lead_s` before its end and played into it. A seek that does
+  not complete within `media_seek_timeout_s`, or lands off target, is rolled back and fails
+  the step. `media_end_lead_s` not shorter than `media_seek_timeout_s` is refused at
+  construction. Nothing is aligned after the checkpoint; `pace` only approximates a position.
+  Sources recorded before the field are never media-checked.
 - Same-path replay is a branch sweep (`configs/flywheel/same_path_ui_tars_archive.yaml`):
   `step_selector: last`, `continue_steps: 0`, `verify: warn` so every step gets a check,
   `branches_per_step: 2` for replay determinism, `agent_outcome: any`,
@@ -602,7 +644,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-7` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-8` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
   browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit
@@ -610,7 +652,12 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `limit_reached`; `report --root` has no spec, so its `limit` is `null`; `-6` added each
   site's `callback_rewrites`: the replayed responses, same-path and branch, served under the
   JSONP callback name the page asked for, counted from the replay log with folded repeats
-  weighted). Report keys,
+  weighted; `-7` reports exact screenshot bytes, URL-and-screenshot equality and the
+  URL / element-signature evidence coverage separately; `-8` added each site's
+  `substitutions`, by source outcome, and `reuses`, the `repeat_last` repeats after
+  exhaustion, neither counted as a hit). The same-path fidelity also gives `media_coverage`
+  (verified steps with an actual media comparison), `media_mismatches` and
+  `media_alignment` (alignment records by outcome), overall and per site. Report keys,
   headings and rule texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's
   ruling of 2026-10-13): what was sent to the model (`model_requests`: the text in the
@@ -857,7 +904,13 @@ already collected; regenerate all the same.
   step *t*'s verified observation. The Loop commits each one as it arrives, so an
   interrupted restore still leaves its earlier steps in the trace.
 - Call `env.verify_restoration` exactly once per restored observation, in order: a
-  capability may report a count as the increase since its previous call. Judge with
+  capability may report a count as the increase since its previous call, and the media
+  alignment it did since then.
+- To have state that moves on its own clock (media playback) put back, call
+  `env.align_next_observation(recorded, media_seek_timeout_s=..., media_end_lead_s=...)`
+  right before the observation it is for. It only books the alignment; a capability
+  implementing `RestorationAlignment` acts inside that one capture and reports it with the
+  next `verify_restoration`, which clears the booking. Never book one after the checkpoint. Judge with
   `restore/checks.py::judge`, whose reason order is fixed (architecture §5.3,
   `RestorationCheck`).
 - Under `strict`, raise `RestorationDivergedError(check, observation)` at the first failed
@@ -1160,6 +1213,7 @@ value on an existing one.
 | A main-frame document miss (`diverged`) | The page asked for a document the recording never fetched, such as a time-stamped URL. A restored step shows `document_miss` |
 | `IncompatibleCheckpointError` | The branch's agent, closed-set or numeric knobs, memory, `max_actions_per_step`, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |
+| A restored step fails `media_mismatch` | Read `restoration.evidence[*].media`: `comparisons` (per element `matched` / `missing` / `extra` / `ambiguous`, the two positions and paused states at the reading both sides took), `recorded_unreachable_frames` / `restored_unreachable_frames` (a frame neither read reached: its media is unknown, so the step cannot be restored), `alignment` (`aligned`, `already_aligned`, `failed` with `rolled_back`, `not_restorable`, `unknown`; `null` under `media: none`). A `failed` seek beside `range_uncovered` misses for the same media URL means the recording never fetched those bytes. `comparisons: null` with a `detail` means no comparison was made (a source recorded before the field) |
 | A restored step right after a click shows `url_mismatch` against a URL from another tab | Compare the step's `focus_moved` in the source and the branch (any browser fragment of that step's observation): the branch's `new_tabs` differs from the recording's, or the tab opened later than the observation captured in one of the runs. Record, replay and branch keep one `new_tabs` |
 | An agent keeps clicking a link that opens a new tab and sees no change | The run has `new_tabs: stay`, or the tab never finished its first navigation within 10 s (a WARNING `the focus cannot move to tab ...`), or Chrome reported it opened without the user's activation (the tab is listed in `browser_meta.tabs`, the trace has no `focus_moved`) |
 | A branch sweep refuses its sources, or lists no tasks | The reasons in `loader.skipped` (`spectragent bench --list`); `on_unbranchable: skip`. Branch and replay runs are never sources |
@@ -1186,13 +1240,30 @@ value on an existing one.
 
 The optional `replay_reviewer` layer and `spectragent replay-review` read aligned committed
 source/replay observations with the source configuration's DOM recipe. `decision_model`
-is a separate model axis. The job stores its own calls, native answers, policy/question
-versions, evidence references and recording health; it does not append Agent calls or
-change restoration results. `docs/data_flywheel_runbook.md` and architecture §4.18 define
-the input and result contracts. All shipped run YAML uses four actions per step.
+is a separate model axis. The job stores its own calls, native answers, evidence
+references and recording health; it does not append Agent calls or change restoration
+results. `docs/data_flywheel_runbook.md` and architecture §4.18 define the input and
+result contracts. All shipped run YAML uses four actions per step.
+
+- The `jev` reviewer's `evidence`, `questions` and `policy` blocks are required YAML with no
+  code defaults. Each has a content digest (canonical JSON, SHA-256); the job snapshot keeps
+  the three blocks and digests, and every assessment its question-set version and digest,
+  policy and digest, evidence options and digest, applied thresholds and machine facts.
+- Only the policy's `information_question` (a native Noul) routes; there is no overall
+  Choice, confidence or verdict. `replay-triage-2` fixes the gates:
+  `investigate_difference` for an unserved in-viewport image or information at or below
+  `investigate_information_max`; `candidate_acceptable` for information at or above
+  `accept_information_min` with a passing restoration check and a measured absence of such
+  images; `further_review` otherwise. `candidate_acceptable` only orders human review.
+- Every threshold set carries `fit` provenance; composition refuses a set fitted on other
+  question or evidence digests. Overrides are scoped by registrable `domain` or by task.
+- The missing-image fact combines the replay log + raw DOM with the replay step's
+  `capture_state` failed images that the source step did not already have; both
+  unmeasurable is `null`, which blocks candidate acceptance. Action effects never enter the
+  request.
 
 Current traces use format 6, including explicit Chat/Decision call kinds. Keep historical
 trace originals and use frozen prepared inputs or their original-version reader; do not
 add a missing-kind-as-Chat compatibility path. Candidate acceptance, further review and
-execution failure are separate facts; low confidence or missing evidence never becomes
-a task-correctness failure or automatic runtime permission.
+execution failure are separate facts; missing evidence or a failed call never becomes a
+task-correctness failure or an automatic runtime permission.
