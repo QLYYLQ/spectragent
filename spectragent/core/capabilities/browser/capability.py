@@ -623,6 +623,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     settle_quiet_ms: int
     settle_max_wait_s: float
     action_effect_timeout_s: float
+    type_focus_wait_s: float
     capture_state_timeout_s: float
     media_state_timeout_s: float
     retarget_tolerance_px: float
@@ -905,9 +906,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "there, the focused control, whether a field's value changed, scroll "
                     "positions, the URL and load state around a navigation. Only the "
                     "probes count against it, not the action itself; waiting for a wheel "
-                    "to land counts. A fact whose probe runs out of it is recorded as "
-                    "unknown; the action's success or error never depends on the "
-                    "measurement. Measured in headless Chrome: a click, a type or a key "
+                    "to land counts, and so does type's wait for focus to land on a text "
+                    "field (type_focus_wait_s). A fact whose probe runs out of it is "
+                    "recorded as unknown, and an unknown fact never decides the action's "
+                    "success or error. One measured fact does: type and type_coordinate "
+                    "fail, sending no key, when the focus reading found that no text "
+                    "field has focus (a reading that runs out types as asked). Measured "
+                    "in headless Chrome: a click, a type or a key "
                     "press spends 2-4 ms (at most ~26 ms), a navigation ~5 ms, a scroll "
                     "40-80 ms waiting for the wheel to land (the first wheel on a fresh page "
                     "was seen landing after ~0.9 s). Default 1, which covers that first "
@@ -917,6 +922,24 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 1.0,
+        type_focus_wait_s: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                le=5,
+                description=(
+                    "How long, in seconds, type and type_coordinate wait for focus to "
+                    "land on a text field after the click or focus that should have put "
+                    "it there, before they fail without sending a key: a widget may "
+                    "focus its input on a timer or after an opening animation. Spent "
+                    "only when no text field has focus yet (a field that already has "
+                    "focus is typed into at once), read again every 50 ms. It is part "
+                    "of action_effect_timeout_s and must be less than it, so the "
+                    "probes after the wait keep the rest; a larger value is refused, "
+                    "naming both fields. Default 0.5, at most 5."
+                ),
+            ),
+        ] = 0.5,
         capture_state_timeout_s: Annotated[
             float,
             PydanticField(
@@ -1042,6 +1065,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.settle_quiet_ms = settle_quiet_ms
         self.settle_max_wait_s = settle_max_wait_s
         self.action_effect_timeout_s = action_effect_timeout_s
+        if type_focus_wait_s >= action_effect_timeout_s:
+            raise ValueError(
+                f"type_focus_wait_s ({type_focus_wait_s:g} s) is not less than "
+                f"action_effect_timeout_s ({action_effect_timeout_s:g} s): the wait for "
+                "focus is spent from that budget, and the probes after it (whether the "
+                "field changed, the focus afterwards) need the rest. Lower the wait or "
+                "raise the budget."
+            )
+        self.type_focus_wait_s = type_focus_wait_s
         probes = capture_state_timeout_s + 2 * media_state_timeout_s
         if probes >= CAPTURE_PROBE_ROOM_S:
             raise ValueError(
@@ -3804,6 +3836,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             screenshot_cursor=self.screenshot_cursor,
             screenshot_cursor_size=self.screenshot_cursor_size,
             action_effect_timeout_s=self.action_effect_timeout_s,
+            type_focus_wait_s=self.type_focus_wait_s,
             capture_state_timeout_s=self.capture_state_timeout_s,
             media_state_timeout_s=self.media_state_timeout_s,
             frame_targets=frame_targets,

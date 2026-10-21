@@ -29,10 +29,16 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   ``Shanghai``), a button ``#text_button`` (``Search``), a button
   ``#text_opener`` (``Open search``) whose click focuses the field
   ``#text_late`` (``Late``) :data:`FIELDS_FOCUS_DELAY_MS` later, a ``div``
-  with role ``textbox`` ``#text_custom`` (``Custom``), and a paragraph of text;
-  :data:`FIELDS_EMPTY_POINT` is on none of them. A capture-phase listener keeps
-  the ``key`` of every keydown the page's own document sees in
-  ``window.__keys``;
+  with role ``textbox`` ``#text_custom`` (``Custom``, holding ``Old``) that is
+  no editor and handles keys itself (a printable key adds its character,
+  Backspace after Ctrl/Meta+A empties it; it never prevents the default), the
+  same widget marked ``aria-readonly`` ``#text_locked`` (``Locked``), a light-DOM
+  component ``<x-select>`` ``#text_component`` with role ``combobox``
+  (``City``), a ``div`` ``#text_closed`` hosting a closed shadow root filled by
+  a text field (``window.__closedField``; the host delegates focus to it), and
+  a paragraph of text; :data:`FIELDS_EMPTY_POINT` is on none of them. A
+  capture-phase listener keeps the ``key`` of every keydown the page's own
+  document sees in ``window.__keys``;
 - ``far.html`` — a button ``#far`` (``Far button``) at :data:`FAR_LEFT` px from
   the left of a page wider than the viewport, so its centre starts outside it;
   ``far_hidden.html`` is the same page with horizontal overflow hidden, as some
@@ -66,7 +72,7 @@ INNER_CONTENT_HEIGHT = 1200
 #: How far from the left edge, CSS px, the off-viewport button of the ``far`` pages sits.
 FAR_LEFT = 1700
 #: How long after ``fields.html``'s ``Open search`` click its ``Late`` field takes focus, ms.
-FIELDS_FOCUS_DELAY_MS = 150
+FIELDS_FOCUS_DELAY_MS = 350
 #: A point of ``fields.html`` on no control and no text, in CSS px of the viewport.
 FIELDS_EMPTY_POINT = (900, 600)
 #: ``(left, top, width, height)`` in CSS px of every control a test aims at.
@@ -92,6 +98,9 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "text_opener": (180, 425, 140, 32),
     "text_late": (20, 475, 300, 32),
     "text_custom": (20, 525, 300, 32),
+    "text_locked": (400, 300, 300, 32),
+    "text_component": (400, 350, 300, 32),
+    "text_closed": (400, 400, 300, 32),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -279,10 +288,26 @@ def _fields_page() -> bytes:
         f'{FIELDS_FOCUS_DELAY_MS})">Open search</button>'
         f'<input id="text_late" aria-label="Late" style="{_box("text_late")}">'
         f'<div id="text_custom" role="textbox" tabindex="0" aria-label="Custom" '
-        f'style="{_box("text_custom")}border:1px solid #888"></div>'
+        f'style="{_box("text_custom")}border:1px solid #888">Old</div>'
+        f'<div id="text_locked" role="textbox" aria-readonly="true" tabindex="0" '
+        f'aria-label="Locked" style="{_box("text_locked")}border:1px solid #888">Fixed</div>'
+        f'<x-select id="text_component" role="combobox" tabindex="0" aria-label="City" '
+        f'style="{_box("text_component")}display:block;border:1px solid #888">Beijing</x-select>'
+        f'<div id="text_closed" style="{_box("text_closed")}"></div>'
         f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
         "<script>window.__keys = [];"
-        " addEventListener('keydown', e => window.__keys.push(e.key), true);</script>",
+        " addEventListener('keydown', e => window.__keys.push(e.key), true);"
+        " const custom = document.getElementById('text_custom');"
+        " custom.addEventListener('keydown', e => {"
+        "  if ((e.ctrlKey || e.metaKey) && e.key === 'a') { custom.dataset.all = '1'; return; }"
+        "  if (e.key === 'Backspace' && custom.dataset.all) {"
+        "   custom.textContent = ''; delete custom.dataset.all; return; }"
+        "  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) custom.textContent += e.key; });"
+        " const closed = document.getElementById('text_closed')"
+        "  .attachShadow({mode: 'closed', delegatesFocus: true});"
+        ' closed.innerHTML = \'<input aria-label="Closed" style="width:100%;height:100%;'
+        "box-sizing:border-box;margin:0\">';"
+        " window.__closedField = closed.querySelector('input');</script>",
     )
 
 

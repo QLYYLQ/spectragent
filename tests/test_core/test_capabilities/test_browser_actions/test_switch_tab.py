@@ -83,7 +83,8 @@ class TabsCDP:
 
 async def _capability(cdp: TabsCDP, *, effect_timeout_s: float = 1.0) -> BrowserCapability:
     """A capability focused on ``T1`` of *cdp*'s tabs, all of them adopted."""
-    cap = BrowserCapability(action_effect_timeout_s=effect_timeout_s)
+    # Typing's focus wait is part of the measurement budget and must stay under it.
+    cap = BrowserCapability(action_effect_timeout_s=effect_timeout_s, type_focus_wait_s=0)
     cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
     cap._cdp = cdp  # type: ignore[assignment]
     cap._scope_group = ScopeGroup("switch-tab-effects")  # type: ignore[assignment]

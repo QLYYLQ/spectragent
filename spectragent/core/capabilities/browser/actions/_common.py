@@ -95,9 +95,11 @@ def effect_from(action: ActionBase, facts: Any) -> ActionEffect | None:
     *facts* is the ``effect_facts`` mapping a watchdog handler answered with
     (:func:`handler_field`) or that the action measured itself: every field of
     ``action.Effect`` but ``effect_id``, which is the action's own key. No
-    facts, or an action without an ``Effect``, is ``None``. Facts the model
-    refuses are a programming error in the executor; they are logged and the
-    action still returns its outcome — measuring never changes it
+    facts, or an action without an ``Effect``, is ``None``. A failed action
+    may carry facts too: typing that found no text field with focus answers
+    the focus it measured along with its error. Facts the model refuses are a
+    programming error in the executor; they are logged and the action still
+    returns its outcome — building the effect never changes it
     (``docs/architecture_design.md`` §4.5, "动作效果").
     """
     effect_cls = action.Effect

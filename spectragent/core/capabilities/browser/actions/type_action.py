@@ -96,7 +96,7 @@ class TypeAction(SettleableAction, ActionBase):
                 await dispatch_request(scope, event)
             except RuntimeError as exc:
                 # The handler answers with an ``error`` when focusing or typing
-                # failed, or when the element is not a text field (it then
+                # failed, or when no text field had focus (it then
                 # types nothing, and still answers the effect it measured).
                 return ActionResult(
                     success=False,
