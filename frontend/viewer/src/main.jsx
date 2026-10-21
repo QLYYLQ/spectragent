@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useContext, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { startupRoute } from "./routing.js";
 import {
@@ -13,205 +13,25 @@ import {
   modelCallTitle,
   decisionAnswerRows,
 } from "./evidence.js";
+import {
+  number,
+  text,
+  duration,
+  date,
+  query,
+  routeFromHash,
+  navigate,
+  runRoute,
+  Icon,
+  useRemote,
+  Badge,
+  Empty,
+  RemoteState,
+  AnnotationContext,
+} from "./common.jsx";
+import { ReviewDisabled, ReviewHome, ReviewSession } from "./review.jsx";
+import { StepLabels } from "./stepLabels.jsx";
 import "./styles.css";
-
-const number = (value) =>
-  value == null ? "—" : Number(value).toLocaleString();
-const text = (value) =>
-  value == null || value === ""
-    ? "—"
-    : typeof value === "object"
-      ? JSON.stringify(value)
-      : String(value);
-const duration = (ms) =>
-  ms == null
-    ? "—"
-    : ms < 1000
-      ? `${ms} ms`
-      : ms < 60000
-        ? `${(ms / 1000).toFixed(1)} s`
-        : `${(ms / 60000).toFixed(1)} min`;
-const date = (value) => (!value ? "—" : new Date(value).toLocaleString());
-const query = (path, params = {}) =>
-  `/api/${path}?${new URLSearchParams(params)}`;
-const routeFromHash = () =>
-  Object.fromEntries(new URLSearchParams(window.location.hash.slice(1)));
-const navigate = (route) => {
-  window.location.hash = new URLSearchParams(route).toString();
-};
-const runRoute = (key, extra = {}) => ({ view: "run", key, ...extra });
-
-function Icon({ name, ...props }) {
-  const paths = {
-    runs: (
-      <>
-        <rect x="3" y="3" width="7" height="7" rx="1" />
-        <rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" />
-        <rect x="14" y="14" width="7" height="7" rx="1" />
-      </>
-    ),
-    reports: (
-      <>
-        <path d="M5 3h10l4 4v14H5z" />
-        <path d="M14 3v5h5M8 12h8M8 16h6" />
-      </>
-    ),
-    refresh: (
-      <>
-        <path d="M20 7v5h-5M4 17v-5h5" />
-        <path d="M6 7a7 7 0 0 1 12-2l2 3M4 16l2 3a7 7 0 0 0 12-2" />
-      </>
-    ),
-    back: <path d="m14 6-6 6 6 6" />,
-    search: (
-      <>
-        <circle cx="10" cy="10" r="6" />
-        <path d="m15 15 6 6" />
-      </>
-    ),
-    arrow: <path d="m9 6 6 6-6 6" />,
-    compare: (
-      <>
-        <path d="M8 3v18M16 3v18M4 7l4-4 4 4M12 17l4 4 4-4" />
-      </>
-    ),
-    image: (
-      <>
-        <rect x="3" y="3" width="18" height="18" rx="2" />
-        <circle cx="8" cy="8" r="1" />
-        <path d="m3 17 6-6 4 4 3-3 5 5" />
-      </>
-    ),
-  };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="18"
-      height="18"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      {paths[name] || paths.runs}
-    </svg>
-  );
-}
-
-function useRemote(url, revision) {
-  const [state, setState] = useState({
-    data: null,
-    error: null,
-    loading: Boolean(url),
-    url,
-  });
-  useEffect(() => {
-    if (!url) {
-      setState({ data: null, error: null, loading: false, url });
-      return;
-    }
-    const controller = new AbortController();
-    let active = true;
-    setState((previous) =>
-      previous.url === url && previous.data !== null
-        ? { ...previous, error: null, loading: false }
-        : { data: null, error: null, loading: true, url },
-    );
-    fetch(url, { signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok)
-          throw new Error(
-            typeof data.detail === "string"
-              ? data.detail
-              : JSON.stringify(data.detail || data),
-          );
-        return data;
-      })
-      .then((data) => {
-        if (active) setState({ data, error: null, loading: false, url });
-      })
-      .catch((error) => {
-        if (active && error.name !== "AbortError")
-          setState({ data: null, error: error.message, loading: false, url });
-      });
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [url, revision]);
-  // Effects run after rendering. A new route must never render the previous
-  // request's evidence (or a null idle value) under its new identifiers.
-  return state.url === url
-    ? state
-    : { data: null, error: null, loading: Boolean(url), url };
-}
-
-function Badge({ value, kind = "" }) {
-  const label =
-    value == null || value === ""
-      ? "not recorded"
-      : String(value).replaceAll("_", " ");
-  const tone = [
-    "incomplete",
-    "error",
-    "failed",
-    "failure",
-    "vetoed",
-    "diverged",
-    "miss",
-  ].includes(String(value))
-    ? "bad"
-    : [
-          "writing",
-          "timeout",
-          "cancelled",
-          "max_steps",
-          "restored",
-          "warn",
-          "exhausted",
-          "substituted",
-        ].includes(String(value))
-      ? "warn"
-      : ["complete", "completed", "success", "policy", "ok", "hit"].includes(
-            String(value),
-          )
-        ? "good"
-        : "neutral";
-  return <span className={`badge ${tone} ${kind}`}>{label}</span>;
-}
-
-function Empty({ title, children }) {
-  return (
-    <div className="empty">
-      <Icon name="runs" width="30" height="30" />
-      <h3>{title}</h3>
-      <p>{children}</p>
-    </div>
-  );
-}
-
-function RemoteState({ state, children }) {
-  if (state.error)
-    return (
-      <div role="alert" className="notice error">
-        <strong>Could not read this evidence</strong>
-        <p>{state.error}</p>
-      </div>
-    );
-  if (state.loading)
-    return (
-      <div className="loading" role="status">
-        <span className="spinner" />
-        Reading committed evidence…
-      </div>
-    );
-  return children(state.data);
-}
 
 function downloadJSON(value, filename) {
   const blob = new Blob([JSON.stringify(value, null, 2)], {
@@ -1312,6 +1132,7 @@ function StepActions({ record }) {
 function StepDetail({ runKey, index, revision }) {
   const state = useRemote(query("step", { key: runKey, index }), revision);
   const [tab, setTab] = useState("observation");
+  const annotations = useContext(AnnotationContext);
   return (
     <RemoteState state={state}>
       {(step) => (
@@ -1361,6 +1182,7 @@ function StepDetail({ runKey, index, revision }) {
                   : "Model calls",
               ],
               ["archive", `Archive (${step.archive.length})`],
+              ...(annotations ? [["labels", "Labels"]] : []),
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -1440,6 +1262,15 @@ function StepDetail({ runKey, index, revision }) {
                 />
               </>
             ))}
+          {tab === "labels" && annotations && (
+            <StepLabels
+              runKey={runKey}
+              index={index}
+              revision={revision}
+              annotations={annotations}
+              hasScreenshot={step.has_screenshot}
+            />
+          )}
           {tab === "archive" && (
             <>
               <p className="muted small">
@@ -2888,8 +2719,11 @@ function App() {
     return () => clearInterval(timer);
   }, [live]);
   const view = route.view || "runs";
+  const annotations = workspace.data?.annotations || null;
+  const reviewing = view === "review" && Boolean(route.queue) && Boolean(annotations);
   return (
-    <div className="app">
+    <AnnotationContext.Provider value={annotations}>
+    <div className={`app ${reviewing ? "focus-mode" : ""}`}>
       <a
         className="skip-link"
         href="#main-content"
@@ -2916,11 +2750,18 @@ function App() {
         <div className="nav-label">Workspace</div>
         <nav aria-label="Main navigation">
           <button
-            className={view !== "reports" ? "active" : ""}
+            className={!["reports", "review"].includes(view) ? "active" : ""}
             onClick={() => navigate({ view: "runs" })}
           >
             <Icon name="runs" />
             Runs
+          </button>
+          <button
+            className={view === "review" ? "active" : ""}
+            onClick={() => navigate({ view: "review" })}
+          >
+            <Icon name="review" />
+            Review
           </button>
           <button
             className={view === "reports" ? "active" : ""}
@@ -2933,11 +2774,19 @@ function App() {
         <div className="sidebar-bottom">
           <span className="connection-dot" />
           Local workspace
-          <p>
-            Read-only evidence
-            <br />
-            No agent execution
-          </p>
+          {annotations ? (
+            <p>
+              Traces read-only
+              <br />
+              Labeling as {annotations.annotator}
+            </p>
+          ) : (
+            <p>
+              Read-only evidence
+              <br />
+              No agent execution
+            </p>
+          )}
         </div>
       </aside>
       <div className="workspace">
@@ -2947,7 +2796,9 @@ function App() {
             <Icon name="arrow" />
             {view === "reports"
               ? "Reports & datasets"
-              : view === "run"
+              : view === "review"
+                ? "Review"
+                : view === "run"
                 ? "Run details"
                 : ["compare", "groups"].includes(view)
                   ? "Comparison"
@@ -2976,7 +2827,7 @@ function App() {
           <RemoteState state={workspace}>
             {() => (
               <>
-                <WorkspaceScope workspace={workspace.data} />
+                {view !== "review" && <WorkspaceScope workspace={workspace.data} />}
                 {view === "run" && route.key ? (
                   <RunDetail route={route} revision={revision} />
                 ) : view === "compare" ? (
@@ -2989,6 +2840,18 @@ function App() {
                     revision={revision}
                     workspace={workspace.data}
                   />
+                ) : view === "review" ? (
+                  !annotations ? (
+                    <ReviewDisabled root={workspace.data.root} />
+                  ) : route.queue ? (
+                    <ReviewSession
+                      route={route}
+                      revision={revision}
+                      annotations={annotations}
+                    />
+                  ) : (
+                    <ReviewHome revision={revision} annotations={annotations} />
+                  )
                 ) : (
                   <RunList
                     revision={revision}
@@ -3003,6 +2866,7 @@ function App() {
         </main>
       </div>
     </div>
+    </AnnotationContext.Provider>
   );
 }
 

@@ -11,7 +11,7 @@ See docs/architecture_design.md §4.6 for the full Hook design.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from spectragent.core.llm.base import BaseChatModel
@@ -243,3 +243,31 @@ class PromptModelOwner(Protocol):
     def bind_prompt_models(
         self, models: Sequence[BaseChatModel], call_context: RunCallContext
     ) -> None: ...
+
+
+@runtime_checkable
+class EnvironmentInterceptor(Protocol):
+    """A hook that intercepts the environment only in a run that has one.
+
+    The Weaver refuses an interception that can never fire, and an ``env``
+    one in an env-less run is exactly that (``Weaver.audit_intercepts``).
+    A hook whose environment interceptions belong to its job whenever there
+    is an environment, and whose job is complete without one, is told by
+    Runtime before the Weaver reads its ``__intercepts__``: *present* says
+    whether this run has an environment, and the hook declares its ``env``
+    interceptions only when it does. ``TraceWriter`` times ``env.act`` so.
+    """
+
+    def intercept_environment(self, present: bool) -> None: ...
+
+
+def declare_environment_presence(hooks: Iterable[Any], *, present: bool) -> None:
+    """Tell every :class:`EnvironmentInterceptor` among *hooks* whether the run has an environment.
+
+    The one decision both the runtime (before it builds the Weaver) and
+    ``config explain`` (listing what a run would weave) make, so the two
+    can never disagree about a hook's ``env`` interceptions.
+    """
+    for hook in hooks:
+        if isinstance(hook, EnvironmentInterceptor):
+            hook.intercept_environment(present)

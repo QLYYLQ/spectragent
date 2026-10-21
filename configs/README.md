@@ -426,6 +426,7 @@ task_loader:
     # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
     # require_archive: [browser.network]   (default; [] requires none)
     on_unbranchable: raise          # skip: leave such a source out, with its reason
+    # task_variants: variants.json  # another task per checkpoint (needs history_source: restored)
 ```
 
 - **The tasks.** Every committed policy step of every selected source run whose prefix is
@@ -482,6 +483,15 @@ task_loader:
   step; each-policy-step scope still reuses contributions for parse retries. Source
   reconstruction reads recorded contributions without regenerating them. Helper calls
   are recorded separately from Agent decisions (`docs/data_flywheel_runbook.md`).
+- **Task variants** ("same page, different need"): `task_variants` names a JSON file
+  (`{"format": "task-variants-1", "variants": [{source_run_id, step, variant_id, task_text,
+  note}]}`) giving another task for a checkpoint. The file names the checkpoints (among the
+  candidates `step_selector` chose); each variant becomes the tasks
+  `<source_run_id>/s<t>/v<variant_id>/b<i>`, which run under the variant's task text with
+  everything else the source's, and record `branch.task_variant` (both task texts and the
+  note) in their trace. They need `history_source: restored`; `source` is refused before the
+  sweep starts. A malformed file fails the listing; an entry that cannot be used is left out
+  with its reason (`docs/data_flywheel_runbook.md`, "任务变体").
 - **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
   refused before the sweep starts — pass `--no-eval`.
 

@@ -128,6 +128,35 @@ def test_config_explain_uses_prepare_without_launching_or_exposing_secrets(
     assert sorted(tmp_path.iterdir()) == before
 
 
+@pytest.mark.parametrize(
+    ("dropped", "checked", "env_intercepted"),
+    [
+        ((), "configuration_and_prepare", True),
+        (("agent",), "configuration", True),
+        (("agent", "environment"), "configuration", False),
+    ],
+    ids=["prepared", "environment-without-agent", "no-environment"],
+)
+def test_explain_lists_the_interceptions_the_run_would_weave(
+    tmp_path, capsys, dropped, checked, env_intercepted
+):
+    """``env`` interceptions follow whether there is an environment, prepared or not."""
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    for layer in dropped:
+        del raw[layer]
+    raw["hook"][0]["trace_dir"] = str(tmp_path / "never-written")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    assert main(["config", "explain", str(path), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["checked"] == checked
+    (writer,) = [hook for hook in result["hooks"] if hook["hook_id"] == "trace_writer"]
+    points = {(item["role"], item["method"]) for item in writer["intercepts"]}
+    assert ("loop", "record_step") in points
+    assert (("env", "act") in points) is env_intercepted
+    assert not (tmp_path / "never-written").exists()
+
+
 def test_config_validation_error_does_not_include_input_values(tmp_path, capsys):
     raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
     raw["agent"][0]["llm"]["api_key"] = {"hidden": "secret-invalid-input-sentinel"}

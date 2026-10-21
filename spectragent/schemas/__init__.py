@@ -36,6 +36,7 @@ from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt
 from spectragent.schemas.restoration import (
     REASON_ORDER,
     BranchProvenance,
+    BranchTaskVariant,
     Checkpoint,
     RestorationCheck,
     RestorationEvidence,
@@ -44,7 +45,7 @@ from spectragent.schemas.restoration import (
     Retarget,
     RetargetMethod,
 )
-from spectragent.schemas.step_record import StepRecord, TokenUsage
+from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
 from spectragent.schemas.task import (
     BrowserSetup,
     DockerSetup,
@@ -70,11 +71,13 @@ __all__ = [
     "ActionResult",
     "Unmeasured",
     # Step record
+    "ActionSpan",
     "StepRecord",
     "TokenUsage",
     # Restoration (branch runs)
     "REASON_ORDER",
     "BranchProvenance",
+    "BranchTaskVariant",
     "Checkpoint",
     "RestorationCheck",
     "RestorationEvidence",

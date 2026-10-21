@@ -402,10 +402,16 @@ class TestBrowserDefaults:
 
 
 class TestWiring:
-    def test_provides_the_four_archivers(self) -> None:
+    def test_provides_the_five_archivers(self) -> None:
         cap = BrowserCapability()
         assert cap.provided_archivers == frozenset(
-            {"browser.network", "browser.storage", "browser.dom_raw", "browser.replay_log"}
+            {
+                "browser.network",
+                "browser.storage",
+                "browser.dom_raw",
+                "browser.frames",
+                "browser.replay_log",
+            }
         )
 
     async def test_archivers_bound_open_the_archive_scope_and_its_watchdog(self) -> None:

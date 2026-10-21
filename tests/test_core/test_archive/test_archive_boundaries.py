@@ -264,6 +264,7 @@ BROWSER_EVIDENCE_READERS = _modules(
     CORE / "capabilities" / "browser" / "replay" / "archive_index.py",
     CORE / "capabilities" / "browser" / "replay" / "replay_log.py",
     CORE / "capabilities" / "browser" / "archive_stats.py",
+    CORE / "capabilities" / "browser" / "archive" / "frames.py",
 )
 
 

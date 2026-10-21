@@ -86,6 +86,7 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
     BrowserArchiverBase,
     BrowserArchiveRun,
     DomRawArchiver,
+    FramesArchiver,
     NetworkArchiver,
     ParkedRaw,
     ReplayLogArchiver,
@@ -577,7 +578,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # the keys resolve when conscribe reads this entry).
         "archiver": {
             "registry": "archiver",
-            "keys": ["browser.dom_raw", "browser.network", "browser.replay_log", "browser.storage"],
+            "keys": [
+                "browser.dom_raw",
+                "browser.frames",
+                "browser.network",
+                "browser.replay_log",
+                "browser.storage",
+            ],
             "declare_only": True,
         },
         # ``browser_provider`` is the existing conscribe registrar for
@@ -2449,14 +2456,20 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     async def execute_action(self, action: Action) -> ActionResult:
         """Run one of the agent's actions on the focused tab (:meth:`_run_action`).
 
-        It is the agent's action, so it opens the follow window when none is
-        open (§4.14 "页面新开的标签页"): a tab the focused page opens from now
-        until the next observation captures is followed (``new_tabs:
-        follow``). An action on a focused tab that has closed itself fails at
-        once, naming the tab; the next observation moves the focus off it.
+        First the archive side announces the call (:meth:`_announce_action`,
+        the ``action_boundary`` channel, §4.14 ``browser.frames``): every
+        call, so the archive numbers them exactly as the trace's action spans
+        are numbered. Then the tab is checked: an action on a focused tab
+        that has closed itself — before the announcement or while it was
+        being waited for — fails at once, naming the tab; the next
+        observation moves the focus off it. Only then does it open the
+        follow window when none is open (§4.14 "页面新开的标签页"): a tab the
+        focused page opens from now until the next observation captures is
+        followed (``new_tabs: follow``), and one the page opened while the
+        archive was capturing is not the agent's.
         """
         self._ensure_environment()
-        self._open_follow_window()
+        await self._announce_action(action, closed=self._focused_tab_closed())
         closed = self._focused_tab_closed()
         if closed is not None:
             return ActionResult(
@@ -2466,7 +2479,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     f"observation shows the tab the focus moves to"
                 ),
             )
+        self._open_follow_window()
         return await self._run_action(action)
+
+    async def _announce_action(self, action: Action, *, closed: str | None) -> None:
+        """Tell the archive side an action is about to run on the focused tab (*closed*: it is gone).
+
+        Only the agent's actions are announced: setup's start page goes
+        through :meth:`_run_action` directly. The action waits for the
+        archivers that want boundaries, within their budget; nothing here
+        depends on what they captured.
+        """
+        archive = self._archive
+        if archive is None:
+            return
+        sid = self._default_session_id
+        tab = closed if closed is not None else self._session_to_target.get(sid) if sid else None
+        await archive.action_boundary(
+            tab=tab,
+            control_session_id=sid or "",
+            action=action.name,
+            tab_open=closed is None and sid is not None,
+        )
 
     async def _run_action(self, action: Action) -> ActionResult:
         """Delegate action execution to the registered action instance.
@@ -2676,16 +2710,18 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         cache.fired = True
         if self._archive is not None:
             # Only a successful cycle's capture reaches the archive (§4.12).
+            tab = self._session_to_target.get(sid, "")
             self._archive.commit_raw(
                 cache.raw,
                 cycle=cache.cycle,
-                tab=self._session_to_target.get(sid, ""),
+                tab=tab,
                 viewport=(self.viewport_width, self.viewport_height),
                 cleaner=str(
                     getattr(self.dom_cleaner, "cleaner_type", type(self.dom_cleaner).__name__)
                 ),
             )
             cache.raw.clear()
+            self._archive.cycle_committed(cycle=cache.cycle, tab=tab, control_session_id=sid)
         return sid
 
     async def _capture_once(self, sid: str) -> tuple[str, _StateEventOutcome]:

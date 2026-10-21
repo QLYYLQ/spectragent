@@ -89,11 +89,12 @@ recording:
 | `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`、请求开始与结束的墙钟时间 `started_at` / `ended_at`，以及结局事实 `error_text`、`body_note`、`from_cache`），`kind: body`（边下边收的大 body 收完时一行，指向它的 blob，带这次请求的 `ended_at` 与 `error_text`），`kind: pending`（收集时还在途，带 `started_at`） |
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
 | `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |
-| `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，边下边收的大 body `body-<sha>.bin` |
+| `env/steps/NNN/browser.frames/frames.json` | 绑定了 `browser.frames` 时才有：这一步收集到的每一帧（动作之前 `before_action`、观测之后 `after_observation`），结果是 `captured`、`superseded`（被动作或新的观测作废）、`timeout`、`failed` 或 `no_tab`，格式见 [architecture_design.md](architecture_design.md) §4.14 `browser.frames` |
+| `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，`browser.frames` 的 `frame-<cycle>-before-<i>.png` / `frame-<cycle>-after.png`，边下边收的大 body `body-<sha>.bin` |
 | `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、浏览器的默认时区与语言（`browser_defaults`：没有 override 够得着的 frame 读到的值，启动后实测）、UA 与 pinned 带的 client hints、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要（含启动设的 `TZ`）、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
 | `env/trailing/KK/<archiver_id>/<name>` | run 结束时那次收集的证据，不归任何一步 |
 
-`body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。`started_at` / `ended_at` 是墙钟 Unix 秒，与步记录的时间可比；`exchange` 行写出时请求还没结束的（body 在 Response 阶段就读完了、终结事件还没到），`ended_at` 是 `null`。没有正文的记录在回放时怎么答，由这些结局事实推出的源结局决定（见"离线回放一个 run"）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
+`body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。`started_at` / `ended_at` 是墙钟 Unix 秒，与步记录的时间可比；`exchange` 行写出时请求还没结束的（body 在 Response 阶段就读完了、终结事件还没到），`ended_at` 是 `null`。没有正文的记录在回放时怎么答，由这些结局事实推出的源结局决定（见"离线回放一个 run"）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。要给前瞻模型做标签，在 `archive` 里再加 `- archiver_id: browser.frames`：每个动作碰页面之前拍一张视口截图（动作通常多等约 30–50 ms，最多 `max_action_wait_s`，默认 1 s；一个 tab 连续超时两次之后不再等），每次观测之后 1 s 再拍一张（`after_observation_delay_s`），agent 从来看不到这些帧；用 `spectragent.core.capabilities.browser.archive.frames` 的 `iter_frames(trace)` 与 `read_frame_image(trace, step, frame)` 读。`before_action` 帧按 `action_index` 对应那一步的 `action_spans`，`released_at - requested_at` 是录制给这个动作加的时间。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
 
 pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`；写普通 Chrome 标识时版本要写本机 Chrome 的大版本，见下）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
 
@@ -247,7 +248,7 @@ agent_loop:
 
 一个分叉 run 按这个顺序执行：
 
-1. 开跑前对照源 trace：`agent_id`、闭集的 agent 旋钮（`prompt_template`、`coordinate_space`……）、memory、观测与动作的协商结果都要相同，源 loop 必须是 `react`，源 run 本身不能是分叉 run。不符就抛 `IncompatibleCheckpointError`，点名两边的值。teacher 的模型和采样参数可以与源 run 不同。
+1. 开跑前对照源 trace：`agent_id`、闭集的 agent 旋钮（`prompt_template`、`coordinate_space`……）、memory、观测与动作的协商结果都要相同，源 loop 必须是 `react`，源 run 本身不能是分叉 run，任务变体（下面）不能配 `history_source: source`。不符就抛 `IncompatibleCheckpointError`，点名两边的值。teacher 的模型和采样参数可以与源 run 不同。
 2. `history_source: source` 从源 trace 精确重建第 t 步之前的上下文；仅主决策回复及其解析重试经过 Agent 解析器，helper 不参与。`restored` 在恢复每步后通过 Agent 的公开合同构建实际历史，不重新生成源回复。
 3. 浏览器回放源 run 的归档，`prefix_replay` 逐步重新执行录下的动作（元素 index 按位置和签名重新找到，tab id 按顺序和 URL 映射），并校验每一步。恢复出的步记成 `origin: restored`，带这一步的 `restoration` 检查。第 t 步（检查点）的观测也要校验，结果记在第 t 步的策略步上；strict 下它不通过时 teacher 不会被调用。
 4. 配了 `prompt_contribution` hook 时，经 Agent 的公开异步提示入口生成附加贡献；第 t 步和之后的 `continue_steps` 步由 teacher 决定（`origin: policy`），最后再观测一次（`origin: terminal`）。
@@ -286,6 +287,57 @@ hook:
 - 高温下坐标可能离开配置的网格，与模型有关。实测过一次（DMX 上的 qwen3.8-flash，`coordinate_space: normalized_1000`，温度 0.8；不是发布的 gpt-4o）：两次 UI-TARS 回复里有一次写的是截图像素坐标，不是 0 到 1000 网格上的点，这样的点击会落到别处。换模型或调高温度之后，先抽几个分叉 run，对照第 t 步的截图看回复（`StepRecord.llm_output`）里的点，再放量。
 - 在指令下写出的 thought 可能提到这条指令或源 run 的回复。导出用 `thought_source: teacher` 时会原样带上（导出冻结，学生侧下一期再定）。
 - 每个分支给不同的提示还没有做：等 live 数据显示重复的分叉多了再做。
+
+### 任务变体：同一页面，不同需求
+
+前瞻观测的训练数据要同一屏配不同的需求。任务变体让一个分叉在源 run 的第 t 步检查点上，换一份任务重新决策：环境照样恢复到第 t 步之前（同一个回放归档、同一个 setup context），只有任务文本换成变体的。变体写在一个 JSON 文件里，通常由 LLM 看着第 t 步的截图生成（生成不在框架里）：
+
+```json
+{"format": "task-variants-1",
+ "variants": [
+   {"source_run_id": "online_mind2web-task-001_1a2b3c4d",
+    "step": 7,
+    "variant_id": "v1",
+    "task_text": "a different task that starts from this same screen",
+    "note": "optional: how it was generated"}]}
+```
+
+- `source_run_id` 是源 run 的 run id，也就是普通分叉任务 id 的第一段（`--list` 列出的 `<source_run_id>/s<t>/b<i>` 里那段）。
+- `step` 是检查点步号，必须是这个源的候选步（规则同上面的选步），而且是 `step_selector` 选中的；写 `step_selector: { selector_id: all }`，文件就完全决定检查点。文件没提到的步不分叉。
+- `variant_id` 只能用字母、数字、`.`、`_`、`-`，同一个源、同一步里不能重复；它进任务 id。
+- `note` 可省，原样记进 trace。
+
+```yaml
+agent_loop:
+  loop_id: branch
+  history_source: restored         # 必须：source 会在开跑前被拒
+  # 其余同上面的分叉配置
+task_loader:
+  - benchmark_name: trace_branches
+    data_dir: traces/recorded
+    step_selector: { selector_id: all }
+    task_variants: variants/task_variants.json   # 相对启动目录，~ 展开
+    branches_per_step: 1           # 每条变体的分叉数
+```
+
+任务 id 是 `<source_run_id>/s<t>/v<variant_id>/b<i>`，同一条变体的几个分叉 `branch_group_id` 相同（`<source_run_id>/s<t>/v<variant_id>`），同一检查点的不同变体不算同一组。开跑前先 `--list` 看任务 id：
+
+```bash
+uv run spectragent bench --config my_variant_branch.yaml --list
+```
+
+`history_source: source` 逐次精确重放源 run 的 prompt，而源 prompt 里写着源任务，所以与任务变体不能同时用：`prepare()` 报 `IncompatibleCheckpointError`，消息点名 `task_variants` 和 `history_source`，`spectragent bench` 在 pre-flight 就退出（退出码 2），不启动浏览器、不写 trace。改成 `history_source: restored`。
+
+文件本身不对（读不出、不是 JSON、`format` 不是 `task-variants-1`、缺字段或多字段、`step` 不是整数、`variant_id` 含别的字符或为空）时，第一次列任务就报错，点名文件与问题。单条变体用不了时跳过，原因记在加载器的 `skipped` 里，键是 `<source_run_id>/s<t>/v<variant_id>`：同一 `(source_run_id, step, variant_id)` 写了不止一次（每份都跳过）、`task_text` 为空、没有这个 run id 的源、源被筛掉或不可分叉、这一步不是候选或没被选中。
+
+分叉 run 的 `config.json` 里，`task` 是变体文本，`branch.task_variant` 记着 `variant_id`、`task_text`、`source_task_text`（源任务）和 `note`。
+
+评测与导出怎么对待变体：
+
+- 变体没有 benchmark 参考答案，源任务的参考描述的是另一份任务。`spectragent eval` 用 `exact_match`、`browsecomp`、`lexbench_browser` 这类按参考评分的 evaluator 评它时，它记为"无法判定"（`task variant '<id>': no reference for this task`），不算判错，不进任务正确率的分母，trace 里不写判定；退出码因此是 1。`online_mind2web`（WebJudge）不读参考，照样评，评的是变体文本，判定的 `benchmark_details.task_variant` 记着变体与源任务。
+- 导出切分仍按源任务（同一个源的变体与原分叉落在同一份切分里）。`decontamination` 的 `site_instruction` 同时比对变体文本和源任务文本：源任务是将来的评测任务时，从它的录制切出来的变体也被排除，原因写 `its source task's instruction (the run is a task variant)`。
+
+要注意的：restored 历史里每个恢复步都带着源 run 当时的回复（含 thought），写成 `source_material.recorded_reply`。那些 thought 是为源任务想的，源任务的文字只会经它们引用而出现在 teacher 的提示里；提示也不说明这些源材料服务的是另一份任务。第 t 步本身的源回复不进提示。抽几个变体分叉看第一次策略调用的 prompt（`RunTrace.llm_messages(t)`），再决定要不要放量。
 
 ### 原路径回放
 

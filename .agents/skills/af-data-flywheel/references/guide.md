@@ -139,6 +139,7 @@ hook:
 | `browser.network` | `max_inline_body_bytes` (5 000 000, at most 64 MiB: a larger body streams while the page reads it, any type except a document; over 64 MiB is `too_large`), `body_read_timeout_s` (10), `command_timeout_s` (1), `drain_timeout_s` (2), `max_post_data_size` (65536), `strip_request_headers` (null; added to `Cookie`, `Authorization`, `Proxy-Authorization`), `require_replayable` (true), `allow_session_state` (false) |
 | `browser.storage` | `allow_session_state` (false: refuse a non-fresh profile; values are stored as they are either way), `command_timeout_s` (1) |
 | `browser.dom_raw` | `allow_session_state` (false), `self_capture_timeout_s` (10) |
+| `browser.frames` | `before_action` (true), `after_observation_delay_s` (1.0; null turns it off), `capture_timeout_s` (3, at most 5), `max_action_wait_s` (1.0, at most 5: the longest one action waits for its frames), `allow_session_state` (false). Label-only screenshots, never shown to the agent; read them with `archive/frames.py` (`read_frames`, `iter_frames`, `read_frame_image`); join a `before_action` frame to `StepRecord.action_spans` by `action_index`, and subtract `released_at - requested_at` from the span |
 
 `browser.network`'s `index.jsonl` has one `exchange` line per exchange (its `body_status`,
 the wall-clock `started_at` / `ended_at` of the request — `ended_at` is `null` when the line
@@ -419,6 +420,7 @@ task_loader:
     require_eval: null                 # {evaluator_id, label: 1, slug: null}
     require_archive: null              # null: [browser.network]; []: none
     on_unbranchable: raise             # skip
+    task_variants: null                # a task-variants-1 file: another task per checkpoint
 ```
 
 ```bash
@@ -426,7 +428,8 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
 ```
 
-- A task id is `<source_run_id>/s<t>/b<i>`. Its context carries the source's setup context
+- A task id is `<source_run_id>/s<t>/b<i>` (`<source_run_id>/s<t>/v<variant_id>/b<i>` under
+  `task_variants`). Its context carries the source's setup context
   (re-resolved through the source benchmark's loader when it is missing or carries
   redactions), `replay_archive`, the `checkpoint` Loop input, and the branch provenance that
   only the trace receives.
@@ -467,6 +470,27 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   regenerates them. Helper calls carry `purpose=prompt_helper`, count toward experiment
   usage, and never become Agent replies or teacher thoughts. Code references, parameters,
   scope and helper configuration are experimental inputs, not recorder settings.
+- Task variants ("same page, different need", architecture §4.10): `task_variants` names a
+  JSON file `{"format": "task-variants-1", "variants": [{source_run_id, step, variant_id,
+  task_text, note?}]}`. The file names the checkpoints, among the candidates the selector
+  chose (`all` lets the file decide alone); each variant becomes `branches_per_step` tasks
+  whose task text is the variant's, whose `checkpoint` carries `task_variant` (the id), and
+  whose provenance carries `BranchTaskVariant{variant_id, task_text, source_task_text, note}`;
+  `branch_group_id` is the task id without `/b<i>`, so different variants of one checkpoint
+  are never compared as duplicates. Everything else is the source's. A file that does not
+  read as that format fails the first scan naming the problem; an entry that cannot be used
+  (listed twice, empty text, no such source, the source left out, not a chosen candidate)
+  is in `skipped` under `<source_run_id>/s<t>/v<variant_id>`. A variant needs
+  `history_source: restored`: `BranchLoop.weave` refuses `source` (it replays the source's
+  prompts, which carry the source's task) with an `IncompatibleCheckpointError` naming
+  both settings, so the bench pre-flight stops before any setup. Restored history still
+  renders every restored step's source reply, thought included
+  (`agents/prompt_context.py::restored_history_message`, `source_material.recorded_reply`),
+  and those thoughts were written for the source's task.
+  A variant has no benchmark reference: `spectragent eval` records it as an evaluation
+  error under a reference grader (`NoReferenceError`), and only an evaluator declaring
+  `__needs_reference__ = False` (WebJudge, `online_mind2web`) judges it, on the variant's
+  text (architecture §4.11).
 - `trace_branches` has no eval loader: pass `--no-eval`. A configured evaluator is refused
   before the sweep starts.
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
@@ -552,7 +576,8 @@ split and the drops by reason, and exits non-zero on any failure.
   registered loader's default subset. `match: task_id` drops a source recorded on that
   benchmark whose task id its eval loader lists; `site_instruction` drops one whose
   start-URL host and normalised instruction (case-folded, whitespace collapsed) match a task
-  of its task loader; `either` drops on either test. A benchmark whose loaders cannot load
+  of its task loader (a task-variant branch is checked with its own and its source task's
+  instruction, `TaskIdentity.instructions`); `either` drops on either test. A benchmark whose loaders cannot load
   fails the export (`ExportConfigError`).
 - `occlusion: none` consults no occlusion evidence. A `browser.click` or `browser.type` on a
   covered element is taught at the centre of the element's visible box as if nothing covered
@@ -743,12 +768,17 @@ For a browser archiver:
 - Hand-write `__init__` with `Annotated` knobs, `allow_session_state` among them. Every
   browser archiver has it, and the non-fresh-profile check reads it.
 - Declare `needs`, the capture channels the capability opens for archivers (`ArchiveNeed` in
-  `archive/base.py`: `fetch_response`, `raw_dom`, `observation_cycle`, `replay_log`). They
-  open at setup from the union of the bound archivers' needs; binding after setup cannot
-  open one. A new channel extends `ArchiveNeed` and the capability's setup. The
-  cooperation check also reads two of them: `fetch_response` marks live traffic (refused
-  under an `archive` source) and `replay_log` the replay's log (required under an `archive`
-  source, refused under `live`).
+  `archive/base.py`: `fetch_response`, `raw_dom`, `observation_cycle`, `replay_log`,
+  `action_boundary`). They open at setup from the union of the bound archivers' needs;
+  binding after setup cannot open one. A new channel extends `ArchiveNeed` and the
+  capability's setup. The cooperation check also reads two of them: `fetch_response` marks
+  live traffic (refused under an `archive` source) and `replay_log` the replay's log
+  (required under an `archive` source, refused under `live`). `action_boundary`
+  (`browser.frames`): the archive run numbers every `env.act` call since the observation
+  cycle and hands each, before it touches the page, straight to the sessions that want it,
+  in the action's own task, each within its `action_boundary_budget_s`; the wait is part of
+  the action's span, so keep it bounded and record `released_at` (architecture §4.14
+  `browser.frames`, §5.4).
 - An archiver that only consumes CDP events (`Runtime.consoleAPICalled`, say) needs no
   channel. It declares `needs = frozenset()`, as `browser.storage` does, lists the events in
   its session's `event_methods()`, and sends what enables them from `target_commands`
@@ -762,7 +792,11 @@ For a browser archiver:
   `RecorderParticipantBase`, and `collect()` returns `[]`, so override only what you use:
   `target_commands`, `fetch_patterns`, `event_methods`, `admit_event`, `on_event`,
   `on_paused` (with `pause_budget_s`), `wants_cycles` and `on_cycle`, then `collect()` and
-  `aclose()`.
+  `aclose()`. Two more members are not the recorder's: `BrowserArchiveRun` calls them
+  directly, `on_cycle_committed` (a committed observation cycle, synchronous) and, for a
+  session whose `wants_action_boundaries` is true, `on_action_boundary` (bounded by
+  `action_boundary_budget_s`; a cancelled boundary still records its evidence, and nothing
+  about a boundary may fail a collection).
 - `admit_event(method, params, session_id) -> RecorderEvent | None` runs synchronously in the
   client's receive loop. Return small metadata only, because the archive scope keeps its last
   1000 events; return `None` to admit nothing; never modify `params`, which the other

@@ -1044,6 +1044,130 @@ class TestTraceBranchesSweep:
         )
 
 
+# ── A sweep of task variants: same page, different need ──────────────
+
+
+VARIANT_TASK = "find out how long the kettle's warranty lasts"
+
+
+def _variants_file(tmp_path, source_run_id: str, step: int) -> Any:
+    import json
+
+    path = tmp_path / "variants.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "task-variants-1",
+                "variants": [
+                    {
+                        "source_run_id": source_run_id,
+                        "step": step,
+                        "variant_id": "warranty",
+                        "task_text": VARIANT_TASK,
+                        "note": "asked about the warranty instead",
+                    }
+                ],
+            }
+        )
+    )
+    return path
+
+
+class TestTaskVariantSweep:
+    def test_list_prints_the_variant_task_ids(self, tmp_path, capsys):
+        from spectragent.core.benchmark_runner import main
+        from tests._helpers.branch_sources import write_source
+
+        write_source(tmp_path / "recorded", "run-a", steps=3)
+        path = _branch_sweep_config(tmp_path)
+        import yaml
+
+        config = yaml.safe_load(path.read_text())
+        config["task_loader"][0].update(
+            step_selector={"selector_id": "all"},
+            branches_per_step=2,
+            task_variants=str(_variants_file(tmp_path, "run-a", 1)),
+        )
+        path.write_text(yaml.safe_dump(config))
+        argv = ["--session-dir", str(tmp_path / ".sessions"), "--config", str(path), "--list"]
+        assert main(argv) == 0
+        assert capsys.readouterr().out.split() == [
+            "run-a/s1/vwarranty/b0",
+            "run-a/s1/vwarranty/b1",
+        ]
+
+    async def _sweep(self, tmp_path, *, history_source: str) -> tuple[Any, list[Any], Any]:
+        from spectragent.core.data_loader.task import TraceBranchesTaskLoader
+        from spectragent.core.loops import BranchLoop
+        from tests._helpers.branch_fakes import BranchFakeAgent, build_run, make_cap, record_source
+
+        source = await record_source(
+            tmp_path, ["click 100", "click 101", "done ok"], env_context={}
+        )
+        loader = TraceBranchesTaskLoader(
+            data_dir=str(source.parent),
+            require_archive=(),
+            task_variants=str(_variants_file(tmp_path, "src", 1)),
+        )
+        caps: list[Any] = []
+
+        def compose():
+            cap = make_cap(id_offset=500)
+            caps.append(cap)
+            run, _writer, _llm = build_run(
+                tmp_path / "branches",
+                loop=BranchLoop(
+                    max_steps=10,
+                    today_override="2001-02-03",
+                    history_source=history_source,  # type: ignore[arg-type]
+                ),
+                replies=["done branched"],
+                agent=BranchFakeAgent(),
+                cap=cap,
+            )
+            return run
+
+        return BenchmarkRunner(loader=loader, compose=compose, timeout=30), caps, loader
+
+    async def test_source_history_stops_the_sweep_before_it_starts(self, tmp_path):
+        """The pre-flight ``prepare()`` refuses it, naming both settings: nothing set up."""
+        runner, caps, _loader = await self._sweep(tmp_path, history_source="source")
+        with pytest.raises(PreflightError) as info:
+            await runner.run()
+        assert info.value.task_id == "src/s1/vwarranty/b0"
+        message = str(info.value)
+        assert "history_source: source" in message and "task_variants" in message
+        assert [cap.setups for cap in caps] == [0]
+        assert not (tmp_path / "branches").exists()
+
+    async def test_restored_history_runs_under_the_variant_and_records_both_tasks(self, tmp_path):
+        from tests._helpers.branch_fakes import TASK as SOURCE_TASK
+
+        runner, caps, loader = await self._sweep(tmp_path, history_source="restored")
+        summary = await runner.run()
+        assert summary.completed == 1 and summary.failed == 0, summary.format_table()
+        (outcome,) = summary.outcomes
+        assert outcome.task_id == "src/s1/vwarranty/b0"
+        assert caps[-1].log == [
+            "branchfake.click({'index': 500})",
+            "branchfake.done({'answer': 'branched'})",
+        ]
+        assert outcome.trace_dir is not None
+        trace = RunTrace(outcome.trace_dir)
+        assert trace.config.task == VARIANT_TASK
+        assert trace.config.task_id == "src/s1/vwarranty/b0"
+        branch = trace.config.branch
+        assert branch == loader.get_task_context("src/s1/vwarranty/b0").branch
+        assert branch is not None and branch.task_variant is not None
+        assert branch.branch_group_id == "src/s1/vwarranty"
+        assert branch.task_variant.model_dump() == {
+            "variant_id": "warranty",
+            "task_text": VARIANT_TASK,
+            "source_task_text": SOURCE_TASK,
+            "note": "asked about the warranty instead",
+        }
+
+
 # ── The token limit ──────────────────────────────────────────────────
 
 

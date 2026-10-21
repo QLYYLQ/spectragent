@@ -142,6 +142,7 @@ class TestTraceWriterRegistration:
         handlers = {(i.role, i.handler_name) for i in TraceWriter.__intercepts__}
         assert handlers == {
             ("llm", "around_ainvoke"),
+            ("env", "around_act"),
             ("loop", "around_record_step"),
             ("loop", "around_execute_step"),
             ("loop", "around_observe_terminal"),

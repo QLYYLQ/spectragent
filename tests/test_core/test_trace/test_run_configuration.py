@@ -444,6 +444,17 @@ class TestStepTimings:
 
         assert StepRecord(step=0).duration_ms is None
         assert StepRecord(step=0).llm_latency_ms is None
+        assert StepRecord(step=0).action_spans is None
+
+    def test_a_step_record_without_action_spans_reads_as_unmeasured(self, trace):
+        """A record written before the field existed reads back as not measured."""
+        from spectragent.schemas.step_record import StepRecord
+
+        rec = trace.step(0)
+        assert rec is not None and rec.action_spans is not None
+        stored = rec.model_dump(mode="json")
+        del stored["action_spans"]
+        assert StepRecord.model_validate(stored).action_spans is None
 
     async def test_measurements_do_not_change_the_public_prompt(self):
         """Recording enriches shared history without changing model input."""
@@ -483,6 +494,55 @@ class TestStepTimings:
         text = "\n".join(message.text for message in rendered_stamped)
         assert "1234" not in text
         assert "999" not in text
+
+    @pytest.mark.parametrize("agent_id", ["browser_use", "skyvern", "ui_tars"])
+    async def test_action_spans_do_not_reach_the_prompt(self, agent_id):
+        """When each action ran is evidence for offline readers, never model input.
+
+        ``action_spans`` rides on the ``StepRecord`` that ``HistoryObs``
+        carries into the prompt, filled in before the next step renders it.
+        """
+        from spectragent.agents._registrar import AgentRegistrar
+        from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
+        from spectragent.schemas.step_record import ActionSpan, StepRecord
+
+        agent_cls = AgentRegistrar.get(agent_id)
+        plain = StepRecord(
+            step=0,
+            llm_output="thinking",
+            actions=[Action(name="browser.click", params={"index": 1})],
+            action_results=[ActionResult(success=True, extracted_content="ok")],
+        )
+        timed = plain.model_copy(deep=True)
+        timed.action_spans = [
+            ActionSpan(
+                action="browser.click",
+                started_at=1761000000.125,
+                ended_at=1761000004.875,
+                outcome="returned",
+            ),
+            ActionSpan(
+                action="browser.unseen_marker",
+                started_at=1761000005.5,
+                ended_at=1761000006.25,
+                outcome="raised",
+            ),
+        ]
+
+        def observation(record: StepRecord) -> SimpleNamespace:
+            return SimpleNamespace(
+                task=TaskObs(user_request="continue"),
+                history=HistoryObs(items=[record]),
+                platform=SimpleNamespace(operating_system="linux", fragment_id="browser.platform"),
+            )
+
+        context = ReactPromptContext(step=1, phase="policy", policy_step=1)
+        rendered_plain = await agent_cls().build_react_prompt(observation(plain), context=context)
+        rendered_timed = await agent_cls().build_react_prompt(observation(timed), context=context)
+        assert rendered_plain == rendered_timed
+        text = "\n".join(message.text for message in rendered_timed)
+        for marker in ("1761000", "unseen_marker", "raised", "action_spans"):
+            assert marker not in text
 
     @pytest.mark.parametrize("agent_id", ["browser_use", "skyvern", "ui_tars"])
     async def test_origin_and_restoration_do_not_reach_the_prompt(self, agent_id):

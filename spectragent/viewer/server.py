@@ -1,7 +1,13 @@
-"""HTTP presentation of the shared inspection repository; no runtime or writers."""
+"""HTTP presentation of the shared inspection repository.
+
+No runtime and no trace writer: the one thing it writes is label lines, into
+the annotation directory it was started with.
+"""
 
 from __future__ import annotations
 
+import getpass
+import ipaddress
 import webbrowser
 from pathlib import Path, PurePosixPath
 from threading import Timer
@@ -9,18 +15,29 @@ from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
+from spectragent.annotation import AnnotationError, AnnotationStore, QueueChangedError
+from spectragent.core.trace.models import TraceManifest
 from spectragent.inspection.repository import RepositoryError, open_repository
+from spectragent.viewer.annotations import annotation_router, host_refusal, write_refusal
+
+_LOOPBACK_NAMES = {"localhost"}
 
 
 def _key(value: str) -> str:
-    """Accept repository-relative identifiers, never a filesystem URL or path."""
+    """A repository-relative identifier in its one canonical spelling.
+
+    Never a filesystem URL or path; ``./run``, ``run/.`` and ``run/`` are all
+    ``run``, so one run has one identity (ad-hoc labels are keyed by it).
+    """
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or "\\" in value or "\x00" in value:
         raise HTTPException(400, "Expected a relative repository key")
-    return value
+    return path.as_posix()
 
 
 def _image_type(data: bytes) -> str:
@@ -41,11 +58,19 @@ def create_app(
     *,
     config_source: Path | str | None = None,
     config_hash: str | None = None,
+    annotations: Path | str | None = None,
+    annotator: str | None = None,
 ) -> FastAPI:
-    """Create an isolated app exposing only the repository's read operations."""
+    """Create an isolated app: the repository's reads, plus label writes into *annotations*.
+
+    Without *annotations* the app is read-only. With it, label lines are
+    appended inside that directory and nowhere else; *annotator* (default:
+    the OS user name) is who every line is attributed to.
+    """
     root = Path(root).expanduser().resolve()
     source = Path(config_source).expanduser().resolve() if config_source is not None else None
     repository = open_repository(root, config_source=source, config_hash=config_hash)
+    store = _annotation_store(annotations, annotator)
     if initial_run is not None:
         # A focus is validated before binding the server. It does not narrow
         # the repository: sibling runs and source-run links stay available.
@@ -61,7 +86,19 @@ def create_app(
 
     @app.middleware("http")
     async def response_headers(request: Request, call_next: Any) -> Response:
-        response = await call_next(request)
+        api = request.url.path.startswith("/api/")
+        writes = request.method not in {"GET", "HEAD"} and request.url.path.startswith(
+            "/api/review/"
+        )
+        refusal = (host_refusal(request) if api else None) or (
+            write_refusal(request) if writes else None
+        )
+        if refusal is not None:
+            response: Response = JSONResponse(
+                status_code=refusal[0], content={"detail": refusal[1]}
+            )
+        else:
+            response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
@@ -73,9 +110,24 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Located problems only: never echo a request's values (they may not
+        # even be JSON, such as a NaN box coordinate).
+        problems = [
+            {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": problems})
+
     @app.exception_handler(RepositoryError)
     async def repository_error(request: Request, exc: RepositoryError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(AnnotationError)
+    async def annotation_error(request: Request, exc: AnnotationError) -> JSONResponse:
+        status = 409 if isinstance(exc, QueueChangedError) else 400
+        return JSONResponse(status_code=status, content={"detail": str(exc)})
 
     @app.exception_handler(FileNotFoundError)
     async def missing_record(request: Request, exc: FileNotFoundError) -> JSONResponse:
@@ -88,6 +140,9 @@ def create_app(
             "initial_run": initial_run,
             "config_source": str(source) if source is not None else None,
             "config_hash": config_hash,
+            "annotations": None
+            if store is None
+            else {"directory": str(store.directory), "annotator": store.annotator},
         }
 
     @app.get("/api/runs")
@@ -127,6 +182,9 @@ def create_app(
     def report(key: str) -> dict[str, Any]:
         return repository.report(_key(key))
 
+    app.state.annotations = store
+    app.include_router(annotation_router(repository, store, _key, _image_type))
+
     static = Path(__file__).parent / "static"
 
     @app.get("/", include_in_schema=False)
@@ -149,6 +207,42 @@ def create_app(
     return app
 
 
+def _annotation_store(
+    directory: Path | str | None, annotator: str | None
+) -> AnnotationStore | None:
+    if directory is None:
+        return None
+    path = Path(directory).expanduser().resolve()
+    for folder in (path, *path.parents):
+        if _is_run_trace(folder):
+            raise AnnotationError(
+                f"The annotation directory {path} is inside the recorded run {folder}; "
+                "labels never go into a trace"
+            )
+    return AnnotationStore(path, annotator=annotator or getpass.getuser())
+
+
+def _is_run_trace(folder: Path) -> bool:
+    """Whether *folder* holds a run trace (a trace manifest), not just any manifest.json."""
+    manifest = folder / "manifest.json"
+    if not manifest.is_file():
+        return False
+    try:
+        TraceManifest.model_validate_json(manifest.read_bytes())
+    except (OSError, ValidationError):
+        return False
+    return True
+
+
+def _is_loopback(host: str) -> bool:
+    if host in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def serve(
     root: Path,
     host: str = "127.0.0.1",
@@ -158,13 +252,26 @@ def serve(
     *,
     config_source: Path | str | None = None,
     config_hash: str | None = None,
+    annotations: Path | str | None = None,
+    annotator: str | None = None,
 ) -> None:
     """Run the local viewer; opening a browser is always an explicit choice."""
+    if annotations is not None and not _is_loopback(host):
+        raise AnnotationError(
+            f"--annotations writes labels, so the viewer must listen on a loopback address; "
+            f"--host {host} is not one. Drop --host (or use 127.0.0.1) to label, or drop "
+            "--annotations to share a read-only view; reach a remote viewer through SSH forwarding"
+        )
     app = create_app(
-        root, initial_run=initial_run, config_source=config_source, config_hash=config_hash
+        root,
+        initial_run=initial_run,
+        config_source=config_source,
+        config_hash=config_hash,
+        annotations=annotations,
+        annotator=annotator,
     )
     url_host = f"[{host}]" if ":" in host else host
-    # These requests only read evidence. Do not wait indefinitely for a slow
+    # Requests read evidence or append one label line. Do not wait indefinitely for a slow
     # client or query on exit. Own the listener outside the server lifecycle
     # as well, so an interrupted startup/shutdown cannot retain the port.
     config = uvicorn.Config(
@@ -172,10 +279,16 @@ def serve(
     )
     with config.bind_socket() as listener:
         print(f"All4One viewer: http://{url_host}:{listener.getsockname()[1]}/", flush=True)
-        print(
-            "Read-only local evidence. Press Ctrl-C to stop (up to 2s for active requests).",
-            flush=True,
-        )
+        store = app.state.annotations
+        if store is None:
+            print("Read-only local evidence.", flush=True)
+        else:
+            print(
+                f"Traces stay read-only. Labels by {store.annotator} are appended under "
+                f"{store.directory}.",
+                flush=True,
+            )
+        print("Press Ctrl-C to stop (up to 2s for active requests).", flush=True)
         timer = None
         if open_browser:
             browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host

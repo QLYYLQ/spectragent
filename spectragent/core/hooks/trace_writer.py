@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, NamedTuple
+from typing import Annotated, Any, ClassVar, Literal, NamedTuple
 
 from pydantic import Field
 
@@ -65,7 +65,7 @@ from spectragent.schemas.recording import (
     UsageCoverage,
 )
 from spectragent.schemas.restoration import BranchProvenance
-from spectragent.schemas.step_record import StepRecord, TokenUsage
+from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
 
 logger = logging.getLogger(__name__)
 _RunVersions = dict[str, tuple[int, str, int]]
@@ -124,6 +124,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     __wiring__: ClassVar[dict[str, Any]] = {"archive": "archiver"}
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="around"),
+        Intercept("act", role="env", advice="around"),
         Intercept("execute_step", role="loop", advice="around"),
         Intercept("observe_terminal", role="loop", advice="around"),
         Intercept("record_step", role="loop", advice="around"),
@@ -218,6 +219,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._run_id = ""
         self._next_step = 0
         self._started_steps: dict[int, float] = {}
+        # Per step, a slot per ``env.act`` call in call order, filled when it ends.
+        self._action_spans: dict[int, list[ActionSpan | None]] = {}
         self._capture_ms: dict[int, float] = {}
         self._usage = AgentUsage()
         self._coverage = UsageCoverage()
@@ -237,6 +240,16 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     @property
     def blocking(self) -> bool:
         return True
+
+    def intercept_environment(self, present: bool) -> None:
+        """Time ``env.act`` only in a run that has an environment (``EnvironmentInterceptor``).
+
+        An env-less run executes no action, so its measured steps carry
+        ``action_spans == []`` without an interception that could never fire.
+        """
+        intercepts = [item for item in type(self).__intercepts__ if present or item.role != "env"]
+        # The declaration is a ClassVar: shadow it on this instance only.
+        object.__setattr__(self, "__intercepts__", intercepts)
 
     @property
     def health(self) -> RecordingHealth:
@@ -389,6 +402,45 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             self._problem(None, "timing", "capture", exc)
         return await proceed()
 
+    async def around_act(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
+        """One ``ActionSpan`` per ``env.act`` call, for the step executing it.
+
+        Attributed like a model call: the step ``execute_step`` opened, else
+        the next one. The action's result, exception or cancellation passes
+        through unchanged; a recording fault only costs the span.
+        """
+        if not self.recording.metrics:
+            return await proceed()
+        step = self._next_step
+        slot: tuple[list[ActionSpan | None], int, str] | None = None
+        try:
+            attributed = self.call_context.current.step
+            step = step if attributed is None else attributed
+            spans = self._action_spans.setdefault(step, [])
+            action = args[0] if args else kwargs["action"]
+            slot = (spans, len(spans), str(action.name))
+            spans.append(None)
+        except Exception as exc:
+            self._problem(step, "timing", "capture", exc)
+        outcome: Literal["returned", "raised", "cancelled"] = "cancelled"
+        started = time.time()
+        try:
+            result = await proceed()
+            outcome = "returned"
+            return result
+        except Exception:
+            outcome = "raised"
+            raise
+        finally:
+            if slot is not None:
+                spans, index, name = slot
+                try:
+                    spans[index] = ActionSpan(
+                        action=name, started_at=started, ended_at=time.time(), outcome=outcome
+                    )
+                except Exception as exc:
+                    self._problem(step, "timing", "capture", exc)
+
     async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
         pending: PendingLLMCall | None = None
         capture_started = time.perf_counter()
@@ -479,10 +531,13 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             step = record.step
             # This edge stops execution timing before sink and recording work.
             started = self._started_steps.pop(step, None)
+            spans = self._action_spans.pop(step, None) or []
             if self.recording.metrics and started is not None:
                 record.duration_ms = max(
                     0, int((time.perf_counter() - started) * 1000 - self._capture_ms.get(step, 0))
                 )
+                # A call still running when its step is handed over has no end.
+                record.action_spans = [span for span in spans if span is not None]
         except Exception as exc:
             self._problem(None, "timing", "capture", exc)
         result = await proceed()
@@ -549,6 +604,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                     origin=record.origin,
                     duration_ms=record.duration_ms if self.recording.metrics else None,
                     llm_latency_ms=record.llm_latency_ms if self.recording.metrics else None,
+                    action_spans=[span.model_copy() for span in record.action_spans]
+                    if self.recording.metrics and record.action_spans is not None
+                    else None,
                     token_usage=record.token_usage.model_copy(deep=True)
                     if self.recording.metrics and record.token_usage is not None
                     else None,
@@ -579,6 +637,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 sealed.usage_coverage = None
                 sealed.duration_ms = None
                 sealed.llm_latency_ms = None
+                sealed.action_spans = None
                 sealed.action_count = None
                 sealed.proposed_action_count = None
             fragments = (

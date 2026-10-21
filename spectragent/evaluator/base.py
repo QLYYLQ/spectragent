@@ -55,6 +55,21 @@ class BaseEvaluator(Protocol):
     async def evaluate(self, trace: RunTrace, reference: EvalReference) -> EvalResult: ...
 
 
+def needs_reference(evaluator: object) -> bool:
+    """Whether *evaluator*'s verdict depends on the benchmark reference row of the task.
+
+    An evaluator declares the opposite with the class attribute
+    ``__needs_reference__ = False``: its verdict rests on the task text and
+    the evidence the trace recorded alone (WebJudge derives its key points
+    from the recorded task). Undeclared means it does — the safe reading,
+    since grading a task against another task's reference is a wrong verdict,
+    not a missing one. Only a trace whose task has no reference (a
+    task-variant branch, ``docs/architecture_design.md`` §4.10) is decided by
+    it; every other trace is matched to its reference row as always.
+    """
+    return bool(getattr(type(evaluator), "__needs_reference__", True))
+
+
 @runtime_checkable
 class EvaluatorLifecycle(Protocol):
     """Optional resource ownership for an independent evaluation execution."""

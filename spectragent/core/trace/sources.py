@@ -100,13 +100,31 @@ def unreadable_reason(directory: Path, exc: TraceSchemaError) -> str:
 
 @dataclass(frozen=True)
 class TaskIdentity:
-    """The task a run was recorded on — a branch run's is its source task's."""
+    """The task a run was recorded on — a branch run's is its source task's.
+
+    ``task`` is the instruction the run itself was given. A branch run under a
+    task variant was given another instruction than its source task's
+    (``BranchProvenance.task_variant``); ``source_task`` keeps the source's,
+    which the benchmark, subset and task id above belong to.
+    """
 
     benchmark: str
     subset: str
     task_id: str
     task: str
     start_url: str | None
+    source_task: str | None = None
+
+    @property
+    def instructions(self) -> tuple[str, ...]:
+        """Every instruction the run stands for: its own, and its source's under a task variant.
+
+        Decontamination by instruction checks each one: a variant's text is
+        new, but the screens it was cut from were recorded on the source task.
+        """
+        if self.source_task is None or self.source_task == self.task:
+            return (self.task,)
+        return (self.task, self.source_task)
 
     @property
     def key(self) -> str:
@@ -127,18 +145,21 @@ def task_identity(config: TraceConfig) -> TaskIdentity:
 
     The start URL is the recorded task setup's (M28: value-level redaction
     leaves the host alone); a branch run's own setup context is its source
-    task's, re-resolved.
+    task's, re-resolved. A task-variant branch's ``task`` is the variant it
+    ran and ``source_task`` the source run's instruction.
     """
     setup = config.task_setup
     start_url = setup.context.get("start_url") if setup is not None else None
     branch = config.branch
     if branch is not None:
+        variant = branch.task_variant
         return TaskIdentity(
             benchmark=branch.source_benchmark,
             subset=branch.source_subset,
             task_id=branch.source_task_id,
             task=config.task,
             start_url=start_url if isinstance(start_url, str) else None,
+            source_task=variant.source_task_text if variant is not None else None,
         )
     return TaskIdentity(
         benchmark=config.benchmark,

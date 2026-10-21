@@ -595,10 +595,22 @@ def create_app() -> typer.Typer:
         host: str = typer.Option("127.0.0.1"),
         port: int = typer.Option(8765, min=1, max=65535),
         open_browser: bool = typer.Option(False, "--open"),
+        annotations: Annotated[
+            Path | None,
+            typer.Option(
+                "--annotations",
+                help="Label review queues and steps; labels are appended in this directory only.",
+            ),
+        ] = None,
+        annotator: str | None = typer.Option(
+            None, help="Name recorded on every label (default: your OS user name)."
+        ),
     ) -> None:
-        """Serve a local, read-only result viewer."""
+        """Serve a local result viewer; read-only unless --annotations is given."""
         from spectragent.viewer.server import serve
 
+        if annotator is not None and annotations is None:
+            raise typer.BadParameter("--annotator needs --annotations DIR")
         serve(
             root,
             host=host,
@@ -607,6 +619,8 @@ def create_app() -> typer.Typer:
             initial_run=initial_run,
             config_source=config,
             config_hash=config_hash,
+            annotations=annotations,
+            annotator=annotator,
         )
 
     @app.command("tui")

@@ -227,6 +227,19 @@ CLIENT_HINTS_SCENARIOS: tuple[str, ...] = ("client_hints",)
 JSONP_SCENARIOS: tuple[str, ...] = ("jsonp",)
 #: The buttons each JSONP answer adds, by the box (and the endpoint) they belong to.
 JSONP_ITEMS: dict[str, tuple[str, ...]] = {"hot": ("first", "second", "third"), "ad": ("banner",)}
+#: Frames the agent never sees (architecture §4.14 ``browser.frames``), kept apart
+#: for the same reason. ``page.html`` holds one button, ``paint``, at
+#: :data:`FRAMES_PAINT_BOX`; its click handler paints the whole page
+#: :data:`FRAMES_PAINTED` at once (no animation, no request), so a screenshot
+#: taken before the click and one taken after it differ at every pixel off the
+#: button — :data:`FRAMES_PROBE` is white before and painted after.
+FRAMES_SCENARIOS: tuple[str, ...] = ("frames",)
+#: Where ``frames/page.html`` puts its button: ``(left, top, width, height)`` in CSS px.
+FRAMES_PAINT_BOX: tuple[int, int, int, int] = (40, 40, 300, 80)
+#: The colour the click paints the page.
+FRAMES_PAINTED: tuple[int, int, int] = (255, 120, 0)
+#: A point far from the button, in CSS px of the viewport.
+FRAMES_PROBE: tuple[int, int] = (900, 500)
 #: What the first script of every ``new_tab`` document, worker and frame
 #: reports: the shim's mark, the clock, the seeded randomness, time zone,
 #: locale, language, user agent and brands, reduced motion — and whether any
@@ -342,6 +355,7 @@ class LoggedRequest:
             or head in KEYS_SCENARIOS
             or head in CLIENT_HINTS_SCENARIOS
             or head in JSONP_SCENARIOS
+            or head in FRAMES_SCENARIOS
         )
         return head if known else None
 
@@ -576,6 +590,7 @@ class FixtureSite:
             + KEYS_SCENARIOS
             + CLIENT_HINTS_SCENARIOS
             + JSONP_SCENARIOS
+            + FRAMES_SCENARIOS
         )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
@@ -644,6 +659,7 @@ class FixtureSite:
             "keys": ["/keys/page.html"],
             "client_hints": ["/client_hints/page.html", "/client_hints/report"],
             "jsonp": ["/jsonp/page.html", "/jsonp/hot.js", "/jsonp/ad.js"],
+            "frames": ["/frames/page.html"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -1115,7 +1131,23 @@ class FixtureSite:
             "/jsonp/page.html": static(self._jsonp_page(), _HTML),
             "/jsonp/hot.js": self._jsonp_hot,
             "/jsonp/ad.js": self._jsonp_ad,
+            # ── frames the agent never sees ──
+            "/frames/page.html": static(self._frames_page(), _HTML),
         }
+
+    def _frames_page(self) -> bytes:
+        left, top, width, height = FRAMES_PAINT_BOX
+        red, green, blue = FRAMES_PAINTED
+        return self._page(
+            "frames",
+            f'<button id="paint" type="button" style="position:absolute;left:{left}px;'
+            f'top:{top}px;width:{width}px;height:{height}px">Paint the page</button>'
+            "<script>"
+            "document.getElementById('paint').onclick = () => {"
+            f" document.body.style.background = 'rgb({red}, {green}, {blue})';"
+            " document.getElementById('paint').textContent = 'Painted'; };"
+            "</script>",
+        )
 
     def _keys_page(self) -> bytes:
         def box(name: str) -> str:

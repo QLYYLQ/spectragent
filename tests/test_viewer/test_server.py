@@ -18,7 +18,7 @@ from tests._helpers.trace_builder import PNG_BYTES, agent_result, build_referenc
 @pytest.fixture
 def client(tmp_path: Path):
     build_reference_trace(tmp_path)
-    return TestClient(create_app(tmp_path))
+    return TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
 
 
 def test_workspace_without_initial_focus_keeps_the_root_scope(client, tmp_path: Path):
@@ -27,13 +27,16 @@ def test_workspace_without_initial_focus_keeps_the_root_scope(client, tmp_path: 
         "initial_run": None,
         "config_source": None,
         "config_hash": None,
+        "annotations": None,
     }
 
 
 def test_initial_run_focus_preserves_other_runs_in_the_workspace(tmp_path: Path):
     build_reference_trace(tmp_path / "nested", "one")
     build_reference_trace(tmp_path, "two")
-    client = TestClient(create_app(tmp_path, initial_run="nested/one"))
+    client = TestClient(
+        create_app(tmp_path, initial_run="nested/one"), base_url="http://127.0.0.1:8765"
+    )
     assert client.get("/api/workspace").json()["initial_run"] == "nested/one"
     assert {row["key"] for row in client.get("/api/runs").json()} == {"nested/one", "two"}
     assert client.get("/api/run", params={"key": "two"}).status_code == 200
@@ -48,7 +51,9 @@ def test_initial_run_is_validated_before_server_startup(tmp_path: Path):
 
 def test_single_run_root_can_focus_its_dot_key(tmp_path: Path):
     fixture = build_reference_trace(tmp_path)
-    client = TestClient(create_app(fixture.run_dir, initial_run="."))
+    client = TestClient(
+        create_app(fixture.run_dir, initial_run="."), base_url="http://127.0.0.1:8765"
+    )
     assert client.get("/api/workspace").json()["initial_run"] == "."
     assert client.get("/api/run", params={"key": "."}).status_code == 200
 
@@ -67,7 +72,10 @@ def test_configuration_file_history_is_a_filter_not_a_new_root(tmp_path: Path):
         writer.finalize(TraceStatus.COMPLETE)
         hashes[name] = config.configuration_digest()
     assert not source.exists()
-    client = TestClient(create_app(tmp_path, initial_run="later", config_source=source))
+    client = TestClient(
+        create_app(tmp_path, initial_run="later", config_source=source),
+        base_url="http://127.0.0.1:8765",
+    )
     workspace = client.get("/api/workspace").json()
     assert workspace["root"] == str(tmp_path.resolve())
     assert workspace["config_source"] == str(source.resolve())
@@ -75,7 +83,10 @@ def test_configuration_file_history_is_a_filter_not_a_new_root(tmp_path: Path):
     assert client.get("/api/run", params={"key": "unknown"}).status_code == 200
     with pytest.raises(RepositoryError, match="does not match"):
         create_app(tmp_path, initial_run="unknown", config_source=source)
-    exact = TestClient(create_app(tmp_path, config_source=source, config_hash=hashes["earlier"]))
+    exact = TestClient(
+        create_app(tmp_path, config_source=source, config_hash=hashes["earlier"]),
+        base_url="http://127.0.0.1:8765",
+    )
     assert [row["key"] for row in exact.get("/api/runs").json()] == ["earlier"]
     assert exact.get("/api/workspace").json()["config_hash"] == hashes["earlier"]
     with pytest.raises(RepositoryError, match="does not match"):
@@ -85,7 +96,9 @@ def test_configuration_file_history_is_a_filter_not_a_new_root(tmp_path: Path):
 def test_config_source_without_history_does_not_require_the_yaml_file(tmp_path: Path):
     build_reference_trace(tmp_path)
     source = tmp_path / "missing.yaml"
-    client = TestClient(create_app(tmp_path, config_source=source))
+    client = TestClient(
+        create_app(tmp_path, config_source=source), base_url="http://127.0.0.1:8765"
+    )
     assert client.get("/api/runs").json() == []
     assert client.get("/api/workspace").json()["config_source"] == str(source.resolve())
 
@@ -134,7 +147,7 @@ def test_corruption_is_json_error_and_does_not_hide_other_runs(tmp_path: Path):
     broken = build_reference_trace(tmp_path, "broken")
     build_reference_trace(tmp_path, "healthy")
     (broken.run_dir / "steps" / "000.json").write_text("{")
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
     rows = {row["key"]: row for row in client.get("/api/runs").json()}
     assert rows["broken"]["read_error"]
     assert rows["healthy"]["trace_status"] == "complete"
@@ -146,7 +159,7 @@ def test_corruption_is_json_error_and_does_not_hide_other_runs(tmp_path: Path):
 def test_read_only_routes_never_expose_arbitrary_files(tmp_path: Path):
     build_reference_trace(tmp_path)
     (tmp_path / "private.json").write_text('{"secret":"private"}')
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
     assert client.post("/api/run", json={"key": "run-test"}).status_code == 405
     assert client.delete("/api/run", params={"key": "run-test"}).status_code == 405
     for url in [
@@ -163,7 +176,7 @@ def test_reports_use_shared_report_reader(tmp_path: Path):
     report = tmp_path / "eval" / "report.json"
     report.parent.mkdir()
     report.write_text(json.dumps(data))
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
     assert client.get("/api/reports").json()[0]["key"] == "eval/report.json"
     assert client.get("/api/report", params={"key": "eval/report.json"}).json()["data"] == data
 
@@ -171,7 +184,7 @@ def test_reports_use_shared_report_reader(tmp_path: Path):
 def test_comparison_reads_multiple_runs_and_bounds_request(tmp_path: Path):
     build_reference_trace(tmp_path, "one")
     build_reference_trace(tmp_path, "two")
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
     comparison = client.get("/api/compare", params=[("key", "one"), ("key", "two")])
     assert comparison.status_code == 200
     assert len(comparison.json()["runs"]) == 2
@@ -191,7 +204,7 @@ def test_experiment_comparison_exposes_matched_verdicts(tmp_path: Path):
         (writer.run_dir / "evals" / "judge.json").write_text(
             eval_result(predicted_label=verdict).model_dump_json()
         )
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
     response = client.get(
         "/api/compare-groups",
         params={"left": hashes[0], "right": hashes[1], "evaluator": "judge"},
@@ -261,4 +274,9 @@ def test_public_serve_forwards_initial_run_to_the_app(tmp_path: Path, monkeypatc
         server.uvicorn.Server, "run", lambda self, **kwargs: apps.append(self.config.app)
     )
     serve(tmp_path, port=0, initial_run="run-test")
-    assert TestClient(apps[0]).get("/api/workspace").json()["initial_run"] == "run-test"
+    assert (
+        TestClient(apps[0], base_url="http://127.0.0.1:8765")
+        .get("/api/workspace")
+        .json()["initial_run"]
+        == "run-test"
+    )

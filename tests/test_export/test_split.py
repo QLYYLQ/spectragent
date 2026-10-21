@@ -17,8 +17,9 @@ from spectragent.export.errors import ExportConfigError, ExportEmptyError
 from spectragent.export.settings import BenchmarkRef, Decontamination, SplitSettings
 from spectragent.export.split import Decontaminator, split_key, split_of
 from spectragent.schemas.dataset import BenchmarkEntry, DecontaminationLedger, LeakScanLedger
+from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, write_benchmark
-from tests._helpers.export_traces import click_at, ui_tars_step, write_ui_tars_run
+from tests._helpers.export_traces import START_URL, click_at, ui_tars_step, write_ui_tars_run
 
 
 def _identity(**fields: str) -> TaskIdentity:
@@ -175,6 +176,76 @@ class TestDecontamination:
             },
         )
         assert list(only_ids.manifest.sources.filtered) == ["eval-task"]
+
+    def test_a_task_variant_is_checked_with_its_source_instruction(
+        self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A variant's text is new, but its screens were recorded on an evaluation task."""
+        data = tmp_path / "data"
+        monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(data))
+        write_benchmark(
+            data,
+            "online_mind2web",
+            [{"task_id": "t-eval", "task_text": "Buy a kettle", "start_url": START_URL}],
+            subset="All",
+        )
+        sources = tmp_path / "sources"
+        steps = [ui_tars_step(click_at(1, 1))]
+        recorded = {"benchmark": "other_bench", "task_id": "t-recorded"}
+        write_ui_tars_run(sources, "rec", steps, task="buy a   KETTLE", **recorded)
+        write_ui_tars_run(sources, "keep", steps, task="Put the kettle in the cart", **recorded)
+        variant = "How long is the kettle's warranty?"
+        write_ui_tars_run(
+            sources,
+            "variant",
+            steps,
+            benchmark="trace_branches",
+            task_id="rec/s0/vwarranty/b0",
+            task=variant,
+            branch=BranchProvenance(
+                source_run_id="rec",
+                source_trace="rec",
+                source_benchmark="other_bench",
+                source_subset="All",
+                source_task_id="t-recorded",
+                checkpoint_step=0,
+                branch_index=0,
+                branch_group_id="rec/s0/vwarranty",
+                task_variant=BranchTaskVariant(
+                    variant_id="warranty", task_text=variant, source_task_text="buy a   KETTLE"
+                ),
+            ),
+        )
+        report = run_export(
+            composer,
+            exporter_entry(
+                sources,
+                tmp_path / "out",
+                decontamination={
+                    "against": [{"benchmark": "online_mind2web"}],
+                    "match": "site_instruction",
+                },
+            ),
+        )
+        assert report.manifest.sources.filtered == {
+            "rec": (
+                "decontaminated: site shop.example.test and instruction match an evaluation "
+                "task of online_mind2web"
+            ),
+            "variant": (
+                "decontaminated: site shop.example.test and its source task's instruction "
+                "(the run is a task variant) match an evaluation task of online_mind2web"
+            ),
+        }
+        assert [s.path for s in report.manifest.sources.exported] == ["keep"]
+
+    def test_a_task_variant_stands_for_both_instructions(self) -> None:
+        assert _identity().instructions == ("Find the kettle",)
+        assert _identity(source_task="Find the kettle").instructions == ("Find the kettle",)
+        assert _identity(source_task="Buy a kettle").instructions == (
+            "Find the kettle",
+            "Buy a kettle",
+        )
 
     def test_the_documents_loaders_are_the_ones_read(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

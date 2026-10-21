@@ -1,8 +1,8 @@
 """Browser archivers — the browser's half of the archive axis (§4.14).
 
-Importing this package registers the four archivers under
+Importing this package registers the five archivers under
 ``ArchiverRegistrar`` — ``browser.network``, ``browser.storage``,
-``browser.dom_raw`` and ``browser.replay_log`` — which
+``browser.dom_raw``, ``browser.frames`` and ``browser.replay_log`` — which
 ``BrowserCapability.__wiring__["archiver"]`` declares as provided (conscribe
 drops a wiring entry whose keys do not resolve, so the classes are imported
 before the capability class exists).
@@ -14,10 +14,12 @@ browser's privacy rules.
 
 from spectragent.core.capabilities.browser.archive.base import (
     SELF_CAPTURE,
+    ActionBoundary,
     ArchiveNeed,
     BrowserArchiveContext,
     BrowserArchiverBase,
     BrowserArchiveSession,
+    CommittedCycle,
     ParkedRaw,
     RawCapture,
     RawCaptureStore,
@@ -26,6 +28,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     archive_needs,
 )
 from spectragent.core.capabilities.browser.archive.dom_raw import DomRawArchiver
+from spectragent.core.capabilities.browser.archive.frames import FramesArchiver
 from spectragent.core.capabilities.browser.archive.network import NetworkArchiver
 from spectragent.core.capabilities.browser.archive.redaction import (
     BROWSER_REDACTION_POLICY,
@@ -38,13 +41,16 @@ from spectragent.core.capabilities.browser.archive.storage import StorageArchive
 __all__ = [
     "BROWSER_REDACTION_POLICY",
     "SELF_CAPTURE",
+    "ActionBoundary",
     "ParkedRaw",
     "ArchiveNeed",
     "BrowserArchiveContext",
     "BrowserArchiveRun",
     "BrowserArchiveSession",
     "BrowserArchiverBase",
+    "CommittedCycle",
     "DomRawArchiver",
+    "FramesArchiver",
     "NetworkArchiver",
     "RawCapture",
     "RawCaptureStore",

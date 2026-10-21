@@ -41,3 +41,14 @@ class TraceIncompleteError(EvaluationError):
 
 class ReferenceMismatchError(EvaluationError):
     """The reference data does not carry what this evaluator requires."""
+
+
+class NoReferenceError(EvaluationError):
+    """The task the trace ran has no benchmark reference, and the evaluator grades against one.
+
+    A task-variant branch (``BranchProvenance.task_variant``,
+    ``docs/architecture_design.md`` §4.10) ran a task nobody wrote a
+    reference for: its source task's reference describes another task. The
+    trace is unevaluable by such an evaluator — an evaluation error, never a
+    graded wrong answer.
+    """
