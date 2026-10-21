@@ -14,7 +14,8 @@ This module holds the measurements every executor shares:
   and whether it is a given target element or inside it.
 - :func:`focused_element` — the element that has keyboard focus.
 - :class:`FieldProbe` — the focused control before input, held by reference
-  so its value can be compared after input without the value leaving the page.
+  so its value can be compared after input without the value leaving the page,
+  and whether it takes typed text at all (:data:`TextEntry`).
 - :func:`current_location` / :func:`history_entry_committed` — the URL of the
   tab's current navigation-history entry, now or once a history navigation
   committed; :func:`document_loaded` — whether its document finished loading;
@@ -142,7 +143,10 @@ function facts(el) {
 
 #: ``deepFocus()``: ``{el}`` the focused element through open shadow roots and
 #: same-origin frames, ``{opaque: true}`` inside a frame of another site,
-#: ``{el: null}`` when nothing (or only the document) is focused.
+#: ``{el: null}`` when nothing (or only the document) is focused. A document
+#: whose body is itself the editor (``designMode``, or a ``contenteditable``
+#: body: the rich-text editors that live in an ``<iframe>``) is focused on
+#: that body, which is then the focused element.
 _DEEP_FOCUS_JS = r"""
 function deepFocus() {
   let el = document.activeElement;
@@ -157,8 +161,34 @@ function deepFocus() {
     }
     break;
   }
-  if (!el || el.tagName === 'BODY' || el.tagName === 'HTML') return {el: null};
+  if (!el || ((el.tagName === 'BODY' || el.tagName === 'HTML') && !el.isContentEditable)) {
+    return {el: null};
+  }
   return {el: el};
+}
+"""
+
+#: ``textEntry(el)``: whether typed text goes into *el* — ``'text'`` for an
+#: editable ``<input>`` of a text-like type, an editable ``<textarea>``,
+#: editable content (``contenteditable``, ``plaintext-only``, ``designMode``)
+#: and an element whose own ARIA role is ``textbox`` or ``searchbox`` (a
+#: widget that takes the keys itself); ``'read-only'`` for such an input or
+#: textarea that is read-only or disabled; ``'none'`` for anything else.
+#: ``null`` (cannot tell) for a custom element whose shadow root script cannot
+#: open: a closed shadow root can hold the field that has focus.
+_TEXT_ENTRY_JS = r"""
+function textEntry(el) {
+  if (el.isContentEditable) return 'text';
+  const tag = el.localName;
+  const noText = ['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range',
+                  'reset', 'submit'];
+  if (tag === 'textarea' || (tag === 'input' && !noText.includes(el.type))) {
+    return (el.readOnly || el.disabled) ? 'read-only' : 'text';
+  }
+  const role = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
+  if (role === 'textbox' || role === 'searchbox') return 'text';
+  if (tag.includes('-') && !el.shadowRoot) return null;
+  return 'none';
 }
 """
 
@@ -219,9 +249,10 @@ _FOCUSED_REF_EXPRESSION = (
 )
 
 #: What :class:`FieldProbe` reads off its element: facts, the sensitivity
-#: attributes, and a hash of the current value that never leaves as the value.
+#: attributes, whether it takes typed text, and a hash of the current value
+#: that never leaves as the value.
 _FIELD_FN = (
-    "function() {" + ELEMENT_FACTS_JS + "const el = this;"
+    "function() {" + ELEMENT_FACTS_JS + _TEXT_ENTRY_JS + "const el = this;"
     " const attrs = {};"
     " for (const n of ['type', 'autocomplete', 'id', 'name']) {"
     "   const v = el.getAttribute(n); if (v !== null) attrs[n] = v; }"
@@ -232,9 +263,15 @@ _FIELD_FN = (
     "   for (let i = 0; i < value.length; i += 1) { h ^= value.charCodeAt(i);"
     "     h = Math.imul(h, 16777619) >>> 0; }"
     "   digest = value.length + ':' + h; }"
-    " return {facts: facts(el), tag: el.tagName, attrs: attrs, digest: digest,"
-    "   connected: el.isConnected}; }"
+    " return {facts: facts(el), tag: el.tagName, attrs: attrs, entry: textEntry(el),"
+    "   digest: digest, connected: el.isConnected}; }"
 )
+
+#: Whether typed text goes into an element (``textEntry`` above): ``"text"``
+#: it does, ``"read-only"`` a text control that refuses it, ``"none"`` an
+#: element that is no text control.
+TextEntry = Literal["text", "read-only", "none"]
+_TEXT_ENTRIES: dict[str, TextEntry] = {"text": "text", "read-only": "read-only", "none": "none"}
 
 
 @dataclass
@@ -408,10 +445,15 @@ class FieldProbe:
     """The control that has keyboard focus, read before input and again after it.
 
     :meth:`before` holds the focused element by remote-object reference and
-    reads its facts, its sensitivity attributes and a hash of its value;
-    :meth:`after` reads the hash again on the same element — wherever focus
-    went meanwhile — and :meth:`release` drops the reference. The value
-    itself never leaves the page.
+    reads its facts, its sensitivity attributes, whether it takes typed text
+    (``entry``) and a hash of its value; :meth:`after` reads the hash again on
+    the same element — wherever focus went meanwhile — and :meth:`release`
+    drops the reference. The value itself never leaves the page.
+
+    ``entry`` is ``"none"`` when nothing is focused, ``"unavailable"`` when
+    the focus is in a frame this session cannot look into, and ``"unknown"``
+    when the reading failed or the page cannot tell (a custom element whose
+    shadow root is closed).
     """
 
     cdp: CDPCommandProtocol
@@ -419,6 +461,7 @@ class FieldProbe:
     budget: ProbeBudget
     target: ElementFact = UNKNOWN
     sensitive: bool | Unmeasured = UNKNOWN
+    entry: TextEntry | Unmeasured = UNKNOWN
     _object_id: str | None = field(default=None, repr=False)
     _digest_before: str | None = field(default=None, repr=False)
     _has_value: bool = field(default=False, repr=False)
@@ -438,13 +481,13 @@ class FieldProbe:
         if not isinstance(result, dict):
             return
         if result.get("value") == "opaque":
-            self.target = self.sensitive = "unavailable"
+            self.target = self.sensitive = self.entry = "unavailable"
             return
         object_id = result.get("objectId")
         if not isinstance(object_id, str):
             if result.get("subtype") == "null":
                 # Nothing is focused; the keys go to the page itself.
-                self.target, self.sensitive = "nothing", False
+                self.target, self.sensitive, self.entry = "nothing", False, "none"
             # Anything else is a reply that does not say: left unknown.
             return
         self._object_id = object_id
@@ -452,6 +495,8 @@ class FieldProbe:
         if not isinstance(reading, dict):
             return
         self.target = element_facts(reading.get("facts")) or UNKNOWN
+        entry = reading.get("entry")
+        self.entry = _TEXT_ENTRIES.get(entry, UNKNOWN) if isinstance(entry, str) else UNKNOWN
         attrs = reading.get("attrs")
         self.sensitive = is_sensitive_control(
             str(reading.get("tag") or ""),
@@ -684,6 +729,7 @@ __all__ = [
     "UNKNOWN",
     "FieldProbe",
     "ProbeBudget",
+    "TextEntry",
     "current_location",
     "document_loaded",
     "element_at",

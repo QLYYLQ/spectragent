@@ -205,8 +205,11 @@ class TextInputEffect(ActionEffect):
     """Which control received keyboard input, whether its value changed, and the keys sent.
 
     ``target``: the element that had keyboard focus when the input was sent
-    (``"nothing"``: the keys went to the page itself). ``sensitive``: whether
-    the shared rule judges it a password, one-time-code or payment field.
+    (``"nothing"``: the keys went to the page itself) — or, for a typing
+    action that sent nothing because no text field had focus (it failed, its
+    ``keys`` empty and ``text_entered`` false), the focus it found.
+    ``sensitive``: whether the shared rule judges it a password, one-time-code
+    or payment field.
     ``value_changed``: whether its value differs after the action — compared
     in the page, never recorded; ``"unavailable"`` when there was no field.
     ``keys``: the named keys and chords dispatched, canonically written

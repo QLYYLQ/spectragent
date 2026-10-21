@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ClassVar
 
@@ -75,7 +76,7 @@ from spectragent.core.capabilities.browser.effect_probes import (
     resolve_object,
     selection_facts,
 )
-from spectragent.core.capabilities.browser.effects import ViewportPoint
+from spectragent.core.capabilities.browser.effects import ElementFacts, ViewportPoint
 from spectragent.core.capabilities.browser.geometry import (
     FrameGeometryError,
     FrameProjection,
@@ -178,6 +179,32 @@ def _focused_field_verdict(reply: Any) -> bool | None:
         str(value.get("tag") or ""),
         {str(k).lower(): str(v) for k, v in attrs.items()} if isinstance(attrs, dict) else {},
     )
+
+
+#: How long typing waits for focus to land on a text field after the click or
+#: ``DOM.focus`` that should have put it there, before it refuses: a widget
+#: may focus its input on a timer or after an opening animation.
+FOCUS_SETTLE_S = 0.3
+#: How often the focused element is read again while typing waits for it.
+FOCUS_POLL_S = 0.05
+
+
+def _no_text_entry(field: FieldProbe) -> str | None:
+    """Why the focus *field* read takes no typed text, or ``None``.
+
+    ``None`` when it does, and when the reading cannot tell (unknown, or a
+    frame of another site): only a measured "nothing focused" or "no text
+    control" stops a typing action.
+    """
+    if field.target == "nothing":
+        return "nothing has focus"
+    if not isinstance(field.target, ElementFacts):
+        return None
+    if field.entry == "read-only":
+        return f"focus is on {field.target.text()}, which is read-only"
+    if field.entry == "none":
+        return f"focus is on {field.target.text()}, which does not take typed text"
+    return None
 
 
 def _inside_sensitive_control(node: DOMElementNode | None) -> bool:
@@ -829,8 +856,17 @@ class ActionWatchdog(BrowserWatchdog):
                 {"backendNodeId": event.backend_node_id},
                 session_id=sid,
             )
+            index = node.element_index
             return await self._insert_text_at_focus(
-                event.text, event.clear, budget=self._effect_budget(), session_id=sid
+                event.text,
+                event.clear,
+                budget=self._effect_budget(),
+                session_id=sid,
+                no_field=(
+                    "The element is not a text field"
+                    if index is None
+                    else f"Element {index} is not a text field"
+                ),
             )
         except Exception as e:
             logger.error("Type failed: %s", e)
@@ -842,8 +878,9 @@ class ActionWatchdog(BrowserWatchdog):
         A vision-only agent negotiates no DOM fragment, so the
         selector_map is empty and ``DOM.focus`` has nothing to aim at.
         Clicking the coordinate is what moves focus; everything after it
-        (select-all + Backspace, ``Input.insertText``) is focus-relative
-        already and is shared verbatim with :meth:`_on_type_text`.
+        (the check that a text field took focus, select-all + Backspace,
+        ``Input.insertText``) is focus-relative already and is shared
+        verbatim with :meth:`_on_type_text`.
 
         The focusing click measures nothing: this action's effect is the
         typing's (``TextInputEffect``), measured from the focus it left.
@@ -859,20 +896,47 @@ class ActionWatchdog(BrowserWatchdog):
         if "error" in clicked:
             return clicked
         try:
-            return await self._insert_text_at_focus(event.text, event.clear, budget=budget)
+            return await self._insert_text_at_focus(
+                event.text,
+                event.clear,
+                budget=budget,
+                no_field=(
+                    f"No text field took focus at ({event.coordinate_x}, {event.coordinate_y})"
+                ),
+            )
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)
             return {"error": str(e)}
 
     async def _insert_text_at_focus(
-        self, text: str, clear: bool, *, budget: ProbeBudget, session_id: str | None = None
+        self,
+        text: str,
+        clear: bool,
+        *,
+        budget: ProbeBudget,
+        no_field: str,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
-        """Clear (optionally) and enter *text* into the focused node.
+        """Clear (optionally) and enter *text* into the focused text field.
 
         Every CDP call here targets the *current focus*, never a node id —
         which is why the coordinate path can reuse it after a click.
         ``session_id`` is the target the focus was put in; ``None`` is the
         tab, whose input Chrome routes to its focused frame.
+
+        Before any key is sent, the focused element is judged
+        (:class:`FieldProbe`, ``entry``): typed text has to have somewhere to
+        go. When focus is on nothing, or on an element that takes no typed
+        text (a button, a link, a read-only input), nothing is sent — no clear,
+        no text — and the handler answers with an ``error`` that begins with
+        *no_field* and says what has focus instead, plus the effect it
+        measured. A select-all with nothing editable focused selects the whole
+        page's text, and the text then goes nowhere. Focus moved by the page a
+        moment after the click or ``DOM.focus`` (a widget that focuses its
+        input on a timer) is waited for, up to :data:`FOCUS_SETTLE_S`. A
+        reading that cannot tell — it failed or ran out of the budget, the
+        focus is in a frame of another site, or in a closed shadow root — does
+        not stop the typing: only a measured "no text field" does.
 
         The text itself belongs to :class:`HumanKeyboard`: one bulk
         ``Input.insertText`` under the ``instant`` rhythm (the default), a
@@ -898,6 +962,34 @@ class ActionWatchdog(BrowserWatchdog):
         keys: tuple[str, ...] = ()
         try:
             await field.before()
+            settle_until = time.monotonic() + FOCUS_SETTLE_S
+            refused = _no_text_entry(field)
+            while refused is not None and time.monotonic() < settle_until and budget.remaining > 0:
+                await budget.sleep(FOCUS_POLL_S)
+                await budget.run(field.release, "release field")
+                field = FieldProbe(self._cdp, sid, budget)
+                await field.before()
+                if field.target == UNKNOWN:
+                    # A reading that could not tell leaves the last one that
+                    # could standing.
+                    break
+                refused = _no_text_entry(field)
+            if refused is not None:
+                error = f"{no_field}: {refused}, so no text was typed."
+                logger.info("Not typing: %s", error)
+                value_changed = await field.after()
+                focus_after = await focused_element(self._cdp, self._session_id, budget)
+                return {
+                    "error": error,
+                    "effect_facts": {
+                        "target": field.target,
+                        "sensitive": field.sensitive,
+                        "value_changed": value_changed,
+                        "keys": (),
+                        "text_entered": False,
+                        "focus_after": focus_after,
+                    },
+                }
             if clear:
                 await self._keyboard.clear_focused(session_id=sid)
                 select_all = parse_key_chord(f"{self._keyboard.select_all_modifier[0]}+a")

@@ -53,13 +53,24 @@ def facts(role: str, name: str = "") -> dict[str, Any]:
 
 
 def reading(
-    role: str, name: str, *, digest: str | None, tag: str = "INPUT", **attrs: str
+    role: str,
+    name: str,
+    *,
+    digest: str | None,
+    tag: str = "INPUT",
+    entry: str | None = "text",
+    **attrs: str,
 ) -> dict[str, Any]:
-    """One ``FieldProbe`` reading: facts, sensitivity attributes, and a value hash."""
+    """One ``FieldProbe`` reading: facts, sensitivity attributes, text entry, and a value hash.
+
+    *entry* is what ``textEntry(el)`` answers: ``"text"`` (the default, a text
+    field), ``"read-only"``, ``"none"``, or ``None`` (the page cannot tell).
+    """
     return {
         "facts": facts(role, name),
         "tag": tag,
         "attrs": attrs,
+        "entry": entry,
         "digest": digest,
         "connected": True,
     }
@@ -94,8 +105,9 @@ class ProbeCDP:
     ``hit``: the hit test's value (``{"facts": ..., "on_target": ...}`` or
     ``{"nothing": True}``). ``focus``: the focus read's value. ``field``:
     the focused control by reference — ``"node"`` (then ``readings``, one per
-    read, the last repeated), ``"null"`` or ``"opaque"``. ``fail_methods``:
-    CDP methods that raise, as a closed target's would.
+    read, the last repeated), ``"null"`` or ``"opaque"``; a sequence of them is
+    one per reference read, the last repeated (focus that lands late).
+    ``fail_methods``: CDP methods that raise, as a closed target's would.
     """
 
     def __init__(
@@ -103,7 +115,7 @@ class ProbeCDP:
         *,
         hit: dict[str, Any] | None = None,
         focus: dict[str, Any] | None = None,
-        field: str = "null",
+        field: str | Iterable[str] = "null",
         readings: Iterable[dict[str, Any]] = (),
         fail: Iterable[str] = (),
         hang: Iterable[str] = (),
@@ -112,7 +124,8 @@ class ProbeCDP:
         self.calls: list[Call] = []
         self.hit = hit if hit is not None else {"nothing": True}
         self.focus = focus if focus is not None else {"nothing": True}
-        self.field = field
+        self.fields = [field] if isinstance(field, str) else list(field)
+        self.field = self.fields[0]
         self.readings = list(readings)
         self.fail = set(fail)
         self.hang = set(hang)
@@ -137,6 +150,7 @@ class ProbeCDP:
         if kind == "focus":
             return {"result": {"type": "object", "value": self.focus}}
         if kind == "field_ref":
+            self.field = self.fields.pop(0) if len(self.fields) > 1 else self.fields[0]
             if self.field == "node":
                 return {"result": {"type": "object", "subtype": "node", "objectId": "field"}}
             if self.field == "opaque":

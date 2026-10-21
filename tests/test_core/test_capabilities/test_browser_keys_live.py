@@ -20,8 +20,10 @@ capability's own actions, each case on a freshly loaded page:
 - a React-style handler sees ``key`` Enter and ``keyCode`` 13 and handles
   the press itself;
 - typing with the ``human`` rhythm (a key event per character, Enter
-  included), clearing a field first, and clearing where a click landed on no
-  field (focus taken elsewhere, as a login dialog does) under both rhythms.
+  included) and clearing a field first;
+- typing where a click landed on no field (focus taken elsewhere, as a login
+  dialog does) under both rhythms: the action fails and sends no key at all
+  (``docs/architecture_design.md`` §4.5, "动作效果"), so no clear lands there.
 
 After each, the browser lists the agent's tab only, the page reads
 ``document.visibilityState == 'visible'``, and its animation frames run.
@@ -186,9 +188,15 @@ def _type(name: str, text: str, *, clear: bool = False) -> tuple[str, dict[str, 
 
 
 #: A point on the page with no field: a click there leaves nothing editable focused.
+NOWHERE_POINT = (640, 500)
 NOWHERE = (
     "type_coordinate",
-    {"coordinate_x": 640, "coordinate_y": 500, "text": "x", "clear": True},
+    {
+        "coordinate_x": NOWHERE_POINT[0],
+        "coordinate_y": NOWHERE_POINT[1],
+        "text": "x",
+        "clear": True,
+    },
 )
 
 
@@ -215,7 +223,7 @@ def session(site: FixtureSite) -> Session:
             result.cases["react enter"] = await _case(
                 cap, site, [_type("react", "kettle"), _press("enter")]
             )
-            result.cases["instant clear nowhere"] = await _case(cap, site, [NOWHERE])
+            result.cases["instant type nowhere"] = await _case(cap, site, [NOWHERE])
         async with _browser(site, rhythm=HumanRhythm(seed=3)) as cap:
             result.cases["human typing"] = await _case(
                 cap, site, [_type("notes", "Ab1 !?"), _type("notes", "Kettle, 2 L", clear=True)]
@@ -223,15 +231,20 @@ def session(site: FixtureSite) -> Session:
             result.cases["human enter submits"] = await _case(
                 cap, site, [_type("query", "blue kettle\n")], navigates=True
             )
-            result.cases["human clear nowhere"] = await _case(cap, site, [NOWHERE])
+            result.cases["human type nowhere"] = await _case(cap, site, [NOWHERE])
         return result
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
 
 
 def _in_front(case: Case) -> None:
-    """The agent's tab is the only page, in front, its animation frames running."""
+    """Every action succeeded; the agent's tab is the only page, in front, its frames running."""
     assert all(result.success for result in case.results), [r.error for r in case.results]
+    _alone_in_front(case)
+
+
+def _alone_in_front(case: Case) -> None:
+    """The agent's tab is the only page, in front, its animation frames running."""
     assert len(case.tabs) == 1, f"another page opened: {case.tabs}"
     assert case.state["visibility"] == "visible", case.state
     assert case.state["frames"] >= MIN_FRAMES, case.state
@@ -276,10 +289,18 @@ def test_a_react_style_handler_sees_a_real_enter(session: Session) -> None:
     )
 
 
-def test_clearing_where_no_field_has_focus_opens_nothing(session: Session) -> None:
-    """A click on no field, then select-all and Backspace: what a login dialog taking focus left."""
-    _in_front(session.cases["instant clear nowhere"])
-    _in_front(session.cases["human clear nowhere"])
+@pytest.mark.parametrize("label", ["instant type nowhere", "human type nowhere"])
+def test_typing_where_no_field_has_focus_sends_no_key(session: Session, label: str) -> None:
+    """A click on no field (what a login dialog taking focus left): no clear, no text."""
+    case = session.cases[label]
+    (result,) = case.results
+    x, y = NOWHERE_POINT
+    assert (result.success, result.error) == (
+        False,
+        f"No text field took focus at ({x}, {y}): nothing has focus, so no text was typed.",
+    )
+    assert case.state["keys"] == [], "a key reached the page"
+    _alone_in_front(case)
 
 
 def test_human_typing_and_clearing_open_nothing(session: Session) -> None:

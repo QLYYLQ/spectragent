@@ -101,10 +101,19 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
                     self.clear_by_default if params.get("clear") is None else bool(params["clear"])
                 ),
             )
-            await dispatch_request(scope, event)
-            # The handler answers with an ``error`` when the click that should
-            # focus the field failed (it then types nothing) or the typing after
-            # it did: the text never went in, so the action failed.
+            try:
+                await dispatch_request(scope, event)
+            except RuntimeError as exc:
+                # The handler answers with an ``error`` when the click that
+                # should focus the field failed, when no text field took focus
+                # (it then types nothing, and still answers the effect it
+                # measured), or when the typing after it failed: the text never
+                # went in, so the action failed.
+                return ActionResult(
+                    success=False,
+                    error=str(exc),
+                    effect=effect_from(self, handler_field(event, "effect_facts")),
+                )
             effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
             return ActionResult(

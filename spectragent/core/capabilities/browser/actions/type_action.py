@@ -92,7 +92,17 @@ class TypeAction(SettleableAction, ActionBase):
                 text=text,
                 clear=clear,
             )
-            await dispatch_request(scope, event)
+            try:
+                await dispatch_request(scope, event)
+            except RuntimeError as exc:
+                # The handler answers with an ``error`` when focusing or typing
+                # failed, or when the element is not a text field (it then
+                # types nothing, and still answers the effect it measured).
+                return ActionResult(
+                    success=False,
+                    error=str(exc),
+                    effect=effect_from(self, handler_field(event, "effect_facts")),
+                )
             effect = effect_from(self, handler_field(event, "effect_facts"))
             await self.settle()
             return ActionResult(
