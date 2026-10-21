@@ -7,7 +7,7 @@ them out of everything people read. Most of that list cannot be checked by a
 machine (a log line, an error text built at run time); the parts that can are
 checked here, by an AST walk of the source, never an import:
 
-- **identifiers** under ``spectragent/`` and ``tests/`` — function, class,
+- **identifiers** under ``spectragent/``, ``lookahead/`` and ``tests/`` — function, class,
   variable, attribute and parameter names, test names included
   (``Q1_KEEP_STRICT`` and ``test_q4`` were both real);
 - **field descriptions and CLI help** — every ``description=``, ``help=`` and
@@ -33,7 +33,7 @@ from pathlib import Path
 import spectragent
 
 REPO = Path(spectragent.__file__).resolve().parent.parent
-SCANNED = ("spectragent", "tests")
+SCANNED = ("spectragent", "lookahead", "tests")
 #: A planning code inside free text: a local-plan section, a module id, a question number,
 #: a revision or defect label, a spike label, a decision or acceptance file label.
 CODE_IN_TEXT = re.compile(
@@ -88,7 +88,7 @@ def coded_shown_text(source: str) -> list[tuple[int, str]]:
     return found
 
 
-def test_the_scan_reaches_both_trees() -> None:
+def test_the_scan_reaches_every_tree() -> None:
     scanned = {path.relative_to(REPO).parts[0] for path in _sources()}
     assert scanned == set(SCANNED)
     assert any(path.name == "report.py" for path in _sources())
