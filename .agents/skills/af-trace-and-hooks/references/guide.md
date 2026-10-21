@@ -18,7 +18,11 @@ hook or Loop usage tally exists.
 `execute_step` starts a step; `record_step` stops its execution clock and seals its facts.
 `observe_terminal` gives terminal observation its own boundary. `around_ainvoke` registers
 calls before invoking and settles success, failure and cancellation without changing the
-result or exception. Every recording error is isolated; actual execution errors propagate.
+result or exception. `around_act` does the same for each `env.act` call, as a wall-clock
+`ActionSpan` in the executing step's `action_spans`; in an env-less run the writer does not
+declare it (`EnvironmentInterceptor`, told by Runtime before weaving), because the Weaver
+refuses an intercept that cannot fire. Every recording error is isolated; actual execution
+errors propagate.
 
 Keep handlers blocking for snapshot and handoff order. Bounded WAL persistence and retries
 belong to the recording worker, not to the Agent's execution wait chain. Do not set the

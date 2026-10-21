@@ -60,6 +60,24 @@ class TokenUsage(BaseModel):
         return total
 
 
+class ActionSpan(BaseModel):
+    """When one ``env.act`` call of a step ran, measured by the recording component.
+
+    Wall clock (``time.time()``) on purpose: it joins with the environment
+    evidence's own capture times (a network record's ``started_at``, every
+    ``ArchiveProvenance.captured_at``), so an offline reader can tell which
+    action of a multi-action step a piece of evidence followed.
+    """
+
+    # The name ``env.act`` received: fully qualified, as ``guarded_act`` left it.
+    action: str
+    # Immediately before ``env.act`` proceeded.
+    started_at: float
+    # When ``env.act`` returned, raised or was cancelled.
+    ended_at: float
+    outcome: Literal["returned", "raised", "cancelled"]
+
+
 class StepRecord(BaseModel):
     """Single step in an agent's execution trace.
 
@@ -110,6 +128,13 @@ class StepRecord(BaseModel):
     # LLM call the step made, including calls that raised (a refused
     # structured reply costs real seconds and the loop retries past it).
     llm_latency_ms: int | None = None
+    # One span per ``env.act`` call the step made, in call order, restored
+    # steps included; an action that raised or was cancelled has one too, so
+    # this can be longer than ``action_results``. ``[]``: the step made no
+    # ``env.act`` call (a terminal observation, a step that only parsed, an
+    # env-less run). ``None``: not measured, under the same rule as
+    # ``duration_ms`` and filled by the same component. Never rendered.
+    action_spans: list[ActionSpan] | None = None
     # Where the step came from. ``policy``: this run's agent decided it.
     # ``restored``: actual restored execution, with returned action/result
     # pairs here and all attempts in ``restoration``. Old replies and source

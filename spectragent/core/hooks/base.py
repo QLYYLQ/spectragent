@@ -243,3 +243,19 @@ class PromptModelOwner(Protocol):
     def bind_prompt_models(
         self, models: Sequence[BaseChatModel], call_context: RunCallContext
     ) -> None: ...
+
+
+@runtime_checkable
+class EnvironmentInterceptor(Protocol):
+    """A hook that intercepts the environment only in a run that has one.
+
+    The Weaver refuses an interception that can never fire, and an ``env``
+    one in an env-less run is exactly that (``Weaver.audit_intercepts``).
+    A hook whose environment interceptions belong to its job whenever there
+    is an environment, and whose job is complete without one, is told by
+    Runtime before the Weaver reads its ``__intercepts__``: *present* says
+    whether this run has an environment, and the hook declares its ``env``
+    interceptions only when it does. ``TraceWriter`` times ``env.act`` so.
+    """
+
+    def intercept_environment(self, present: bool) -> None: ...
