@@ -24,8 +24,10 @@ def test_runs_are_classified_by_recorded_facts_not_paths(world: World) -> None:
     kinds = {run.key: run.kind for run in runs.runs}
     assert kinds == {
         "branches/br-ended": "branch",
+        "branches/br-offpage": "branch",
         "branches/br-same": "branch",
         "branches/br-typed": "branch",
+        "branches/br-unparsed": "branch",
         "branches/br-variant": "branch",
         "record/rec-1": "record",
         "record/rec-2": "record",
@@ -55,10 +57,21 @@ def test_policy_and_restored_steps_get_rows_terminal_steps_only_as_next(world: W
 
 
 def test_a_run_ending_in_an_error_has_no_next_observation(world: World) -> None:
-    row = _rows(world)[("record/rec-2", 1)]
-    assert row.error_phase == "llm"
-    assert row.next.exists is False and row.next.step is None
-    assert row.raw_dom.next is False
+    rows = _rows(world)
+    # rec-2's click raised and the run ended there: no observation after it
+    failed = rows[("record/rec-2", 1)]
+    assert failed.run_outcome == "error"
+    assert failed.error_phase == "act" and failed.actions[0].success is False
+    assert failed.next.exists is False and failed.next.step is None
+    assert failed.raw_dom.next is False
+    # the step before it does have a next observation: the failing step's own
+    before = rows[("record/rec-2", 0)]
+    assert before.next.exists and before.next.step == 1
+    # a run that ended normally records the terminal observation after its last step
+    last = rows[("record/rec-1", 3)]
+    assert last.run_outcome == "done" and last.next.exists and last.next.origin == "terminal"
+    # a run that wrote no result says so
+    assert rows[("replays/replay-1", 0)].run_outcome is None
 
 
 def test_row_carries_settle_capture_state_actions_and_effect_facts(world: World) -> None:
@@ -114,6 +127,19 @@ def test_frames_follow_their_observation_by_cycle_wherever_they_were_committed(
     assert superseded is not None and superseded.outcome == "superseded" and not superseded.captured
     # step 3: only a delayed frame, placed by its request time
     assert rows[("record/rec-1", 3)].observation_cycle == 4
+
+
+def test_before_action_frames_join_their_env_act_call_through_the_spans(world: World) -> None:
+    first = _rows(world)[("record/rec-1", 0)]
+    joined = {
+        frame.action_index: frame.span for frame in first.frames if frame.kind == "before_action"
+    }
+    assert joined == {0: SPANS[0], 1: SPANS[1]}
+    delayed = first.frame("after_observation")
+    assert delayed is not None and delayed.span is None
+    assert all(frame.released_at is None for frame in first.frames)  # the reader gives none yet
+    # spans measured, no env.act call: nothing to join
+    assert all(frame.span is None for frame in _rows(world)[("record/rec-1", 1)].frames)
 
 
 def test_a_run_without_frames_has_none(world: World) -> None:

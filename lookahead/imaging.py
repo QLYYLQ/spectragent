@@ -13,6 +13,7 @@ the diagnostics module, so they are re-implemented here.
 from __future__ import annotations
 
 import io
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageChops, ImageDraw, UnidentifiedImageError
@@ -41,15 +42,44 @@ def distance(left: bytes, right: bytes) -> int | None:
     return hamming(a, b)
 
 
+@dataclass(frozen=True)
+class ChangedRegion:
+    """One four-neighbour connected group of active grid cells.
+
+    ``box`` bounds it (clipped to the image); ``area`` is the area of its
+    cells themselves (clipped), and ``fraction`` that area over the image's.
+    """
+
+    box: Box
+    cells: int
+    area: int
+    fraction: float
+
+
 @dataclass
 class Difference:
-    """Where two same-sized images differ; ``reason`` says why there are no boxes."""
+    """Where two same-sized images differ; ``reason`` says why nothing was compared."""
 
     compared: bool
-    boxes: list[Box] = field(default_factory=list)
+    regions: list[ChangedRegion] = field(default_factory=list)
     changed_pixels: int | None = None
     total_pixels: int | None = None
     reason: str | None = None
+
+    @property
+    def boxes(self) -> list[Box]:
+        return [region.box for region in self.regions]
+
+    @property
+    def changed_fraction(self) -> float | None:
+        """Changed pixels over all pixels; ``None`` when nothing was compared."""
+        if self.changed_pixels is None or not self.total_pixels:
+            return None
+        return self.changed_pixels / self.total_pixels
+
+    def significant(self, min_fraction: float) -> list[ChangedRegion]:
+        """The regions whose cell area is at least *min_fraction* of the image."""
+        return [region for region in self.regions if region.fraction >= min_fraction]
 
 
 def changed_cells(
@@ -70,10 +100,13 @@ def changed_cells(
     return changed.histogram()[255], cells
 
 
-def cell_boxes(cells: set[tuple[int, int]], size: tuple[int, int], grid: int) -> list[Box]:
-    """Four-neighbour connected cells as boxes, top to bottom, then left to right."""
+def cell_regions(
+    cells: set[tuple[int, int]], size: tuple[int, int], grid: int
+) -> list[ChangedRegion]:
+    """Four-neighbour connected cells as regions, top to bottom, then left to right."""
+    width, height = size
     pending = set(cells)
-    boxes: list[Box] = []
+    regions: list[ChangedRegion] = []
     while pending:
         start = min(pending)
         pending.remove(start)
@@ -87,10 +120,26 @@ def cell_boxes(cells: set[tuple[int, int]], size: tuple[int, int], grid: int) ->
                     stack.append(cell)
         x0 = min(c[0] for c in group) * grid
         y0 = min(c[1] for c in group) * grid
-        x1 = min((max(c[0] for c in group) + 1) * grid, size[0])
-        y1 = min((max(c[1] for c in group) + 1) * grid, size[1])
-        boxes.append([x0, y0, x1, y1])
-    return sorted(boxes, key=lambda box: (box[1], box[0]))
+        x1 = min((max(c[0] for c in group) + 1) * grid, width)
+        y1 = min((max(c[1] for c in group) + 1) * grid, height)
+        area = sum(
+            (min((cx + 1) * grid, width) - cx * grid) * (min((cy + 1) * grid, height) - cy * grid)
+            for cx, cy in group
+        )
+        regions.append(
+            ChangedRegion(
+                box=[x0, y0, x1, y1],
+                cells=len(group),
+                area=area,
+                fraction=area / (width * height),
+            )
+        )
+    return sorted(regions, key=lambda region: (region.box[1], region.box[0]))
+
+
+def cell_boxes(cells: set[tuple[int, int]], size: tuple[int, int], grid: int) -> list[Box]:
+    """The boxes of :func:`cell_regions`."""
+    return [region.box for region in cell_regions(cells, size, grid)]
 
 
 def difference(left: bytes, right: bytes, method: DifferenceMethod | None = None) -> Difference:
@@ -106,10 +155,20 @@ def difference(left: bytes, right: bytes, method: DifferenceMethod | None = None
     count, cells = changed_cells(a, b, method)
     return Difference(
         compared=True,
-        boxes=cell_boxes(cells, a.size, method.grid_size),
+        regions=cell_regions(cells, a.size, method.grid_size),
         changed_pixels=count,
         total_pixels=a.width * a.height,
     )
+
+
+def clip(box: Sequence[float], size: tuple[int, int]) -> Box | None:
+    """*box* inside an image of *size* (rounded to whole pixels); ``None`` when nothing is left."""
+    width, height = size
+    x0, y0 = max(0, round(box[0])), max(0, round(box[1]))
+    x1, y1 = min(width, round(box[2])), min(height, round(box[3]))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return [x0, y0, x1, y1]
 
 
 def overlaps(box: Box, other: Box) -> bool:

@@ -13,7 +13,6 @@ distinctness, writing system) and written as a ``task-variants-1`` file the
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lookahead.judge import Judge, JudgeRequest, image_part, text_part
+from lookahead.output import write_json
 from lookahead.runs import Run, RunSet
 from spectragent.core.data_loader.task.task_variants import (
     TASK_VARIANTS_FORMAT,
@@ -48,13 +48,20 @@ class VariantReply(BaseModel):
     variants: list[VariantTask]
 
 
+#: Kana letters: hiragana, katakana and half-width katakana. Not the middle dot
+#: (U+30FB) or the prolonged-sound mark, which Chinese text uses too.
+_KANA = re.compile(r"[\u3041-\u3096\u30a1-\u30fa\uff66-\uff9d]")
+_HANGUL = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3131-\u318e]")
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
 def writing_system(text: str) -> str:
-    """``japanese``, ``korean``, ``chinese`` (Han characters) or ``other``."""
-    if re.search(r"[぀-ヿ]", text):
+    """``japanese`` (kana letters), ``korean`` (hangul), ``chinese`` (Han only) or ``other``."""
+    if _KANA.search(text):
         return "japanese"
-    if re.search(r"[가-힯]", text):
+    if _HANGUL.search(text):
         return "korean"
-    if re.search(r"[一-鿿]", text):
+    if _HAN.search(text):
         return "chinese"
     return "other"
 
@@ -158,17 +165,21 @@ def prompt(task: str, step: int, url: str | None, count: int) -> str:
 def requests(
     runs: RunSet, steps_per_run: int, per_step: int
 ) -> tuple[list[tuple[str, int, JudgeRequest[Any]]], dict[str, str]]:
-    """``(source run id, step, request)`` per chosen checkpoint, and why each run gave none."""
-    found: list[tuple[str, int, JudgeRequest[Any]]] = []
+    """``(source run id, step, request)`` per chosen checkpoint, and why each run gave none.
+
+    A run whose evidence does not read back is skipped (``runs.skipped``).
+    """
     skipped: dict[str, str] = {}
-    for run in runs.runs:
+
+    def of_run(run: Run) -> list[tuple[str, int, JudgeRequest[Any]]]:
         if run.kind != "record":
             skipped[run.key] = f"a {run.kind} run: variants start from recorded runs"
-            continue
+            return []
         candidates = candidate_steps(run)
         if not candidates:
             skipped[run.key] = "no policy step with a screenshot that a branch can start from"
-            continue
+            return []
+        found: list[tuple[str, int, JudgeRequest[Any]]] = []
         for step in spread(candidates, steps_per_run):
             image = run.screenshot_bytes(step)
             if image is None:
@@ -187,7 +198,10 @@ def requests(
                 image_sources=[f"{run.key}@{step}"],
             )
             found.append((run.run_id, step, request))
-    return found, skipped
+        return found
+
+    checkpoints = [item for _, items in runs.each(of_run) for item in items]
+    return checkpoints, {**skipped, **runs.skipped}
 
 
 def variants_document(
@@ -228,11 +242,7 @@ async def generate(
     checkpoints, skipped = requests(runs, steps_per_run, per_step)
     replies = await judge.ask_all([request for _, _, request in checkpoints])
     document = variants_document(checkpoints, replies, judge.model)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(document.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_json(out, document.model_dump(mode="json"))
     return {
         "checkpoints": len(checkpoints),
         "checkpoints_without_variants": sum(1 for reply in replies if reply.value is None),

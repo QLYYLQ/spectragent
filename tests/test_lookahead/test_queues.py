@@ -127,7 +127,7 @@ def test_labels_are_accepted_against_each_queue(world: World, annotation_dir: Pa
         ),
         image_size=image_size,
     )
-    assert line.choice == "result_list" and line.verdict in {"accepted", "corrected"}
+    assert line.choice == "result_list" and line.verdict is None  # nothing was suggested
 
     stability = queues["stability"]
     assert stability is not None

@@ -97,6 +97,9 @@ def test_reply_validation_counts_distinct_tasks_in_the_source_language() -> None
         model.model_validate_json(same)
     assert writing_system("Find the headline") == "other"
     assert writing_system("在B站搜索") == "chinese"
+    assert writing_system("在B站搜索・排序") == "chinese"  # the middle dot is not kana
+    assert writing_system("動画を検索") == "japanese"
+    assert writing_system("검색") == "korean"
 
 
 def test_variants_file_reads_back_through_the_branch_loader(world: World, tmp_path: Path) -> None:
@@ -122,8 +125,10 @@ def test_variants_file_reads_back_through_the_branch_loader(world: World, tmp_pa
     assert [entry.key for entry in entries][:3] == ["rec-1/s1/v1", "rec-1/s1/v2", "rec-1/s1/v3"]
     assert set(summary["skipped_runs"]) == {
         "branches/br-ended",
+        "branches/br-offpage",
         "branches/br-same",
         "branches/br-typed",
+        "branches/br-unparsed",
         "branches/br-variant",
         "replays/replay-1",
     }

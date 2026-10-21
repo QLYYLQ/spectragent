@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from lookahead.output import write_lines
 from lookahead.rows import (
     ActionRow,
     BranchInfo,
@@ -136,6 +137,8 @@ def restoration_summary(check: RestorationCheck | None) -> RestorationSummary | 
         reasons=list(check.reasons),
         screenshot_distance=evidence.screenshot_distance if evidence is not None else None,
         url_match=evidence.url_match if evidence is not None else None,
+        recorded_url=evidence.recorded_url if evidence is not None else None,
+        restored_url=evidence.restored_url if evidence is not None else None,
         document_misses=evidence.document_misses if evidence is not None else None,
         actions=len(check.actions),
         failed_actions=sum(
@@ -250,6 +253,8 @@ def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
     """Every row of one run, in step order."""
     branch = branch_info(run, runs)
     variant = run.config.branch.task_variant if run.config.branch is not None else None
+    result = run.trace.result
+    outcome = str(result.agent_done) if result is not None else None
     for step in run.steps():
         record = run.records[step]
         if record.origin not in ROW_ORIGINS or not run.has_observation(step):
@@ -262,6 +267,7 @@ def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
             site=run.site,
             task=run.config.task,
             task_variant=variant,
+            run_outcome=outcome,
             step=step,
             origin=record.origin,
             timestamp=record.timestamp or None,
@@ -285,17 +291,11 @@ def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
         )
 
 
-def all_rows(runs: RunSet) -> Iterator[StepRow]:
-    for run in runs.runs:
-        yield from step_rows(run, runs)
+def all_rows(runs: RunSet) -> list[StepRow]:
+    """Every row of every run; a run whose evidence does not read back is skipped whole."""
+    return [row for _, rows in runs.each(lambda run: list(step_rows(run, runs))) for row in rows]
 
 
 def write_rows(runs: RunSet, out: Path) -> int:
-    """Write every row as one JSON object a line; the number written."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with out.open("w", encoding="utf-8") as handle:
-        for row in all_rows(runs):
-            handle.write(row.model_dump_json() + "\n")
-            count += 1
-    return count
+    """Write every row as one JSON object a line, atomically; the number written."""
+    return write_lines(out, (row.model_dump_json() for row in all_rows(runs)))

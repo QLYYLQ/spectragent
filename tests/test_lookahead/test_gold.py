@@ -30,7 +30,9 @@ def test_sampling_spreads_over_sites_actions_and_runs(world: World) -> None:
     ]
 
 
-def test_items_show_both_screens_actions_and_change_hints(world: World, tmp_path: Path) -> None:
+def test_items_show_both_screens_and_actions_without_a_suggestion(
+    world: World, tmp_path: Path
+) -> None:
     summary, path = gold_queue(
         open_runs(world.root),
         tmp_path / "gold",
@@ -56,9 +58,8 @@ def test_items_show_both_screens_actions_and_change_hints(world: World, tmp_path
     assert roles["current"] == {"kind": "observation", "run": "record/rec-1", "step": 0}
     assert roles["next"] == {"kind": "observation", "run": "record/rec-1", "step": 1}
     assert roles["before_action"]["kind"] == "archive" and roles["before_action"]["step"] == 0
-    suggestion = first["suggestion"]
-    assert suggestion["choice"] is None and suggestion["source"] == "pixel-diff"
-    assert suggestion["regions"] == [{"image": "next", "kind": "evidence", "box": [64, 0, 128, 32]}]
+    assert all(item["suggestion"] is None for item in queue["items"])
+    assert "Difference view" in queue["instructions"]
     fields = {field["text"]: field["value"] for field in first["fields"]}
     assert fields["URL after"] == "https://shop.example/search"
     assert fields["Actions"].startswith("1. browser.click_coordinate")

@@ -59,6 +59,7 @@ from spectragent.core.trace.models import (
 )
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.restoration import (
     BranchProvenance,
@@ -119,6 +120,13 @@ def click(x: int, y: int, role: str, name: str) -> tuple[Action, ActionResult]:
     return (
         Action(name="browser.click_coordinate", params={"coordinate_x": x, "coordinate_y": y}),
         ActionResult(success=True, effect=effect),
+    )
+
+
+def failed_click(x: int, y: int, error: str) -> tuple[Action, ActionResult]:
+    return (
+        Action(name="browser.click_coordinate", params={"coordinate_x": x, "coordinate_y": y}),
+        ActionResult(success=False, error=error),
     )
 
 
@@ -323,6 +331,7 @@ def write_run(
     branch: BranchProvenance | None = None,
     trailing_frames: list[Frame] | None = None,
     status: TraceStatus = TraceStatus.COMPLETE,
+    result: AgentResult | None = None,
 ) -> Path:
     """One run directory ``base/run_id``; the path."""
     resolved: dict[str, Any] = {}
@@ -408,5 +417,7 @@ def write_run(
         )
     if trailing_frames is not None:
         wal.commit_trailing(extra_files=frames_files(trailing_frames, trailing=0))
+    if result is not None:
+        wal.write_result(result)
     wal.finalize(status)
     return wal.run_dir

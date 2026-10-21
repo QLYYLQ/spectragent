@@ -73,7 +73,8 @@ class ActionRow(_Row):
 class FrameRow(_Row):
     """One ``browser.frames`` record (its ``frames.json`` entry), with the step whose commit took it.
 
-    ``batch_step`` is ``None`` for a trailing commit.
+    ``batch_step`` is ``None`` for a trailing commit. Every field the frames
+    reader gives is copied; ``span`` is joined here.
     """
 
     batch_step: int | None
@@ -91,6 +92,13 @@ class FrameRow(_Row):
     width: int | None
     height: int | None
     detail: str | None
+    #: When the action was allowed to proceed after its frame; ``None`` when the
+    #: reader gives no such field, or for a delayed frame.
+    released_at: float | None = None
+    #: A before-action frame's ``env.act`` call: the step's action span at the
+    #: frame's ``action_index`` (the ordinal of the call since the cycle; actions
+    #: the guard refused are in neither). ``None`` when spans were not measured.
+    span: ActionSpan | None = None
 
     #: The reader's own record, handed back to the frames reader to read the image.
     _record: FrameRecord | None = PrivateAttr(default=None)
@@ -118,6 +126,8 @@ class RestorationSummary(_Row):
     reasons: list[str] = Field(default_factory=list)
     screenshot_distance: int | None = None
     url_match: bool | None = None
+    recorded_url: str | None = None
+    restored_url: str | None = None
     document_misses: int | None = None
     actions: int = 0
     failed_actions: int = 0
@@ -167,6 +177,8 @@ class StepRow(_Row):
     site: str | None = None
     task: str
     task_variant: BranchTaskVariant | None = None
+    #: How the run ended (``result.json``'s ``agent_done``); ``None`` when it wrote no result.
+    run_outcome: str | None = None
     step: int
     origin: str
     timestamp: float | None = None

@@ -5,10 +5,12 @@ archiver's evidence in every shape the pipeline must read: a delayed frame
 in its own step's batch, one that was still in flight and landed in the next
 step's batch, a superseded one, before-action frames, and a step whose
 observation cycle is known only from the delayed frame's request time.
-``record/rec-2`` (news.example) ends in a model error, so its last step has no
-next observation. ``replays/replay-1`` replays rec-1's network; the four
-branches resume rec-1 at step 1: the same click, a typed query, a
-task-variant branch and one that diverged while restoring.
+``record/rec-2`` (news.example) ends in an error: its last step's click raised
+and the run recorded no observation after it. ``replays/replay-1`` replays
+rec-1's network and saw a local change (a preview playing) that the dHash
+barely registers. The six branches resume rec-1 at step 1: the same click, a
+typed query, a task-variant branch, one that diverged while restoring, one
+whose checkpoint restored on an error page, and one whose reply did not parse.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pytest
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — action effects registered before any test
 from spectragent.core.trace.models import TraceStatus
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import (
     BranchProvenance,
     BranchTaskVariant,
@@ -27,11 +30,13 @@ from spectragent.schemas.restoration import (
     RestorationEvidence,
 )
 from spectragent.schemas.step_record import ActionSpan
+from tests._helpers.trace_builder import agent_result
 from tests.test_lookahead.traces import (
     StepSpec,
     capped,
     click,
     done,
+    failed_click,
     flipped_right_half,
     frame,
     gradient,
@@ -51,6 +56,8 @@ BASE = gradient()
 SEARCHED = with_box(BASE, (64, 0, 128, 32), (0, 0, 0))
 LATER = flipped_right_half(SEARCHED)
 WHITE_LEFT = with_box(BASE, (0, 0, 64, 96), (255, 255, 255))
+#: A local change (a playing preview): 4 % of the pixels, which the dHash barely sees.
+LOCAL = with_box(BASE, (48, 40, 80, 56), (255, 0, 0))
 SPANS = [
     ActionSpan(
         action="browser.click_coordinate", started_at=1001.0, ended_at=1001.2, outcome="returned"
@@ -72,6 +79,8 @@ class World:
     typed: Path
     variant: Path
     ended: Path
+    offpage: Path
+    unparsed: Path
 
 
 def _record_one(base: Path) -> Path:
@@ -172,6 +181,7 @@ def _record_one(base: Path) -> Path:
                 dom_cycle=5,
             ),
         ],
+        result=agent_result(task_id="rec-1", answer="¥99"),
     )
 
 
@@ -194,11 +204,18 @@ def _record_two(base: Path) -> Path:
                 image=SEARCHED,
                 url="https://news.example/top",
                 settle=settled(),
-                error_phase="llm",
-                error="TimeoutError: the model did not answer",
+                actions=[failed_click(60, 50, "TimeoutError: the click did not return")],
+                error_phase="act",
+                error="TimeoutError: the click did not return",
             ),
         ],
         status=TraceStatus.COMPLETE,
+        result=agent_result(
+            task_id="rec-2",
+            agent_done=AgentDoneStatus.ERROR,
+            agent_reported_success=None,
+            error="TimeoutError: the click did not return",
+        ),
     )
 
 
@@ -210,6 +227,8 @@ def _branch(
     *,
     index: int,
     variant: BranchTaskVariant | None = None,
+    checkpoint: RestorationCheck | None = None,
+    error_phase: str = "",
 ) -> Path:
     steps = [
         StepSpec(
@@ -227,8 +246,10 @@ def _branch(
             url="https://shop.example/search",
             settle=settled(),
             actions=decision,
-            restoration=ok_check(1),
+            restoration=checkpoint or ok_check(1),
             llm_output="Thought: decide again.",
+            error_phase=error_phase,
+            error="could not parse the reply" if error_phase else None,
         ),
     ]
     if next_url is not None:
@@ -268,6 +289,18 @@ def build_world(root: Path) -> World:
                 url="https://shop.example/",
                 settle=settled(),
                 actions=[click(20, 10, "textbox", "Search")],
+                action_spans=[SPANS[0]],
+                frames=[
+                    frame("after_observation", 1, image=LOCAL, requested_at=1001.0),
+                    frame(
+                        "before_action",
+                        1,
+                        image=LOCAL,
+                        action_index=0,
+                        action="browser.click_coordinate",
+                        requested_at=1004.0,
+                    ),
+                ],
             ),
             StepSpec(step=1, image=SEARCHED, url="https://shop.example/search", settle=settled()),
         ],
@@ -321,7 +354,30 @@ def build_world(root: Path) -> World:
             )
         ],
     )
-    return World(root, rec1, rec2, replay, same, typed, variant, ended)
+    offpage = _branch(
+        branches,
+        "br-offpage",
+        [click(101, 11, "button", "Search")],
+        "https://shop.example/results",
+        index=4,
+        checkpoint=RestorationCheck(
+            step=1,
+            verdict="warn",
+            reason="document_miss",
+            reasons=["document_miss", "url_mismatch"],
+            evidence=[
+                RestorationEvidence(
+                    capability_id="browser",
+                    url_match=False,
+                    recorded_url="https://shop.example/search",
+                    restored_url="chrome-error://chromewebdata/",
+                    screenshot_distance=40,
+                )
+            ],
+        ),
+    )
+    unparsed = _branch(branches, "br-unparsed", [], None, index=5, error_phase="parse")
+    return World(root, rec1, rec2, replay, same, typed, variant, ended, offpage, unparsed)
 
 
 @pytest.fixture(scope="session")
@@ -342,4 +398,6 @@ def world(world_root: Path) -> World:
         world_root / "branches" / "br-typed",
         world_root / "branches" / "br-variant",
         world_root / "branches" / "br-ended",
+        world_root / "branches" / "br-offpage",
+        world_root / "branches" / "br-unparsed",
     )

@@ -1,15 +1,26 @@
 """The judge model: strict-JSON requests over an OpenAI-protocol gateway, every reply kept.
 
 An HTTP 200 does not mean the reply honours the schema (``docs/llm/dmxapi.cn.md``),
-so every reply is validated with pydantic. A request is sent at most three
-times: the first attempt and up to two retries, each retry telling the model
-what was wrong with its previous reply. Every attempt is recorded — model,
-parameters, latency, usage, the raw reply and why it was refused — in the
-order the attempts finished, and the totals are reported at the end.
+so every reply is validated with pydantic. A reply the validator refuses is
+asked again at most twice, each retry telling the model what was wrong.
 
-The transport is injected: :class:`OpenAITransport` talks to the gateway named
-by ``OPENAI_BASE_URL`` / ``OPENAI_API_KEY`` with the ``openai`` SDK; tests pass
-a scripted one.
+Calls that return no reply are handled apart from that. A rate limit (429), a
+server error (5xx) or a connection failure is retried after an exponential,
+jittered pause; any other 4xx is not retried, since the same request would be
+refused again. The first request of a batch is sent alone, as a probe: when the
+route refuses it (a 4xx other than 429), the batch stops there with a message
+naming the status, instead of sending every request into the same refusal.
+
+The schema sent to the gateway keeps only what a strict ``json_schema``
+response format accepts (no ``minLength``, ``minItems``, ``pattern``, titles or
+defaults); the pydantic models keep every constraint and validate the reply.
+
+Every call is recorded — model, parameters, latency, usage, the raw reply,
+the HTTP status of a failure, and why a reply was refused — in the order the
+calls finished, and the totals are reported at the end. The transport is
+injected: :class:`OpenAITransport` talks to the gateway named by
+``OPENAI_BASE_URL`` / ``OPENAI_API_KEY`` with the ``openai`` SDK; tests pass a
+scripted one.
 """
 
 from __future__ import annotations
@@ -19,8 +30,9 @@ import base64
 import hashlib
 import json
 import os
+import random
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar
@@ -32,14 +44,61 @@ from spectragent.schemas.observation.image import image_media_type
 
 DEFAULT_MODEL = "deepseek-v4.1-flash-1017"
 DEFAULT_REASONING_EFFORT = "high"
-#: Retries after the first attempt.
+DEFAULT_MAX_COMPLETION_TOKENS = 8192
+#: Retries of a request whose reply the validator refused.
 MAX_RETRIES = 2
+#: Retries of a call that failed with a rate limit, a server error or no connection.
+MAX_TRANSIENT_RETRIES = 5
+BACKOFF_BASE_S = 2.0
+BACKOFF_CAP_S = 60.0
+#: Schema keywords a strict ``json_schema`` response format refuses or ignores.
+UNSENT_KEYWORDS = frozenset(
+    {
+        "title",
+        "default",
+        "examples",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "pattern",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minProperties",
+        "maxProperties",
+    }
+)
+_BODY_CHARS = 500
 
 M = TypeVar("M", bound=BaseModel)
+Sleep = Callable[[float], Awaitable[None]]
 
 
 class JudgeConfigurationError(RuntimeError):
     """The judge cannot be reached as configured (no gateway URL or key in the environment)."""
+
+
+class JudgeRouteError(RuntimeError):
+    """The gateway route refused the probe request: no other request was sent."""
+
+
+class TransportError(Exception):
+    """A call that returned no reply: its HTTP status (``None``: none, such as no connection)."""
+
+    def __init__(self, message: str, *, status: int | None, body: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+    @property
+    def transient(self) -> bool:
+        """A rate limit, a server error or a missing connection: worth retrying later."""
+        return self.status is None or self.status == 429 or self.status >= 500
 
 
 @dataclass(frozen=True)
@@ -53,7 +112,10 @@ class ChatReply:
 
 
 class ChatTransport(Protocol):
-    """Sends one chat-completion request (the ``openai`` SDK's keyword arguments)."""
+    """Sends one chat-completion request (the ``openai`` SDK's keyword arguments).
+
+    A call that returns no reply raises :class:`TransportError` with its status.
+    """
 
     async def create(self, **request: Any) -> ChatReply: ...
 
@@ -87,7 +149,16 @@ class OpenAITransport:
         return cls(base_url=base_url, api_key=api_key)
 
     async def create(self, **request: Any) -> ChatReply:
-        response = await self._client.chat.completions.create(**request)
+        from openai import APIConnectionError, APIStatusError
+
+        try:
+            response = await self._client.chat.completions.create(**request)
+        except APIStatusError as exc:
+            raise TransportError(
+                str(exc), status=exc.status_code, body=exc.response.text[:_BODY_CHARS]
+            ) from exc
+        except APIConnectionError as exc:  # timeouts included
+            raise TransportError(str(exc), status=None) from exc
         choice = response.choices[0] if response.choices else None
         return ChatReply(
             content=choice.message.content if choice is not None else None,
@@ -114,19 +185,29 @@ def text_part(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
 
 
-def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """*model*'s JSON schema for a strict ``json_schema`` response format (titles dropped)."""
+def wire_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """*model*'s JSON schema as sent in a strict ``json_schema`` response format.
 
-    def clean(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {
-                key: clean(item) for key, item in value.items() if key not in {"title", "default"}
-            }
+    Schema keywords strict mode refuses are left out (:data:`UNSENT_KEYWORDS`);
+    property names are never touched, so a field called ``title`` stays.
+    """
+
+    def node(value: Any) -> Any:
         if isinstance(value, list):
-            return [clean(item) for item in value]
-        return value
+            return [node(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in UNSENT_KEYWORDS:
+                continue
+            if key in ("properties", "$defs") and isinstance(item, dict):
+                cleaned[key] = {name: node(schema) for name, schema in item.items()}
+            else:
+                cleaned[key] = node(item)
+        return cleaned
 
-    return clean(model.model_json_schema())
+    return node(model.model_json_schema())
 
 
 @dataclass
@@ -144,10 +225,12 @@ class JudgeRequest(Generic[M]):
 
 @dataclass
 class JudgeOutcome(Generic[M]):
-    """The validated reply (``None`` when every attempt failed) and every attempt's record."""
+    """The validated reply (``None`` when there is none) and every call's record."""
 
     value: M | None
     attempts: list[dict[str, Any]]
+    #: The non-transient refusal that ended the request, if one did.
+    refused: TransportError | None = None
 
     @property
     def error(self) -> str | None:
@@ -160,6 +243,7 @@ class JudgeOutcome(Generic[M]):
 class Totals:
     calls: int = 0
     failed_calls: int = 0
+    retried_calls: int = 0
     invalid_replies: int = 0
     valid_replies: int = 0
     requests: int = 0
@@ -176,6 +260,7 @@ class Totals:
         self.latency_ms += int(attempt.get("latency_ms") or 0)
         if attempt.get("error_kind") == "call":
             self.failed_calls += 1
+            self.retried_calls += int(bool(attempt.get("retried")))
         elif attempt.get("valid"):
             self.valid_replies += 1
         else:
@@ -193,10 +278,10 @@ class Totals:
         return (
             f"judge: {self.requests} request(s), {self.unanswered_requests} without a valid reply; "
             f"{self.calls} call(s): {self.valid_replies} valid, {self.invalid_replies} refused by "
-            f"validation, {self.failed_calls} failed; tokens: {self.prompt_tokens} prompt, "
-            f"{self.completion_tokens} completion ({self.reasoning_tokens} reasoning), "
-            f"{self.calls_without_usage} call(s) without usage; "
-            f"summed latency {self.latency_ms / 1000:.1f} s, wall time {self.wall_s:.1f} s"
+            f"validation, {self.failed_calls} failed ({self.retried_calls} retried after a pause); "
+            f"tokens: {self.prompt_tokens} prompt, {self.completion_tokens} completion "
+            f"({self.reasoning_tokens} reasoning), {self.calls_without_usage} call(s) without "
+            f"usage; summed latency {self.latency_ms / 1000:.1f} s, wall time {self.wall_s:.1f} s"
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -204,7 +289,7 @@ class Totals:
 
 
 class Judge:
-    """Sends judge requests with bounded concurrency; keeps every attempt's record."""
+    """Sends judge requests with bounded concurrency; keeps every call's record."""
 
     def __init__(
         self,
@@ -212,15 +297,23 @@ class Judge:
         *,
         model: str = DEFAULT_MODEL,
         reasoning_effort: str | None = DEFAULT_REASONING_EFFORT,
+        max_completion_tokens: int = DEFAULT_MAX_COMPLETION_TOKENS,
         concurrency: int = 4,
         log_path: Path | None = None,
+        sleep: Sleep = asyncio.sleep,
+        rng: random.Random | None = None,
     ) -> None:
         if concurrency < 1:
             raise ValueError("concurrency must be at least 1")
+        if max_completion_tokens < 1:
+            raise ValueError("max_completion_tokens must be at least 1")
         self.transport = transport
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.max_completion_tokens = max_completion_tokens
         self._semaphore = asyncio.Semaphore(concurrency)
+        self._sleep = sleep
+        self._rng = rng or random.Random()
         self.totals = Totals()
         self.log_path = log_path
         self._counter = 0
@@ -232,18 +325,24 @@ class Judge:
         """Every request parameter except the messages."""
         params: dict[str, Any] = {
             "model": self.model,
+            "max_completion_tokens": self.max_completion_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
                     "name": reply_model.__name__,
                     "strict": True,
-                    "schema": strict_schema(reply_model),
+                    "schema": wire_schema(reply_model),
                 },
             },
         }
         if self.reasoning_effort is not None:
             params["reasoning_effort"] = self.reasoning_effort
         return params
+
+    def backoff(self, retry: int) -> float:
+        """The pause before transient retry *retry* (0-based): exponential, capped, jittered."""
+        ceiling = min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2**retry)
+        return ceiling * self._rng.uniform(0.5, 1.0)
 
     async def ask(self, request: JudgeRequest[M]) -> JudgeOutcome[M]:
         async with self._semaphore:
@@ -253,11 +352,30 @@ class Judge:
             self.totals.unanswered_requests += 1
         return outcome
 
-    async def ask_all(self, requests: Sequence[JudgeRequest[M]]) -> list[JudgeOutcome[M]]:
+    async def ask_all(self, requests: Sequence[JudgeRequest[Any]]) -> list[JudgeOutcome[Any]]:
+        """Every request's outcome, in order; the first is sent alone as a probe.
+
+        Raises:
+            JudgeRouteError: The probe was refused with a non-transient status;
+                no other request was sent.
+        """
+        if not requests:
+            return []
         started = time.perf_counter()
-        outcomes = await asyncio.gather(*(self.ask(request) for request in requests))
-        self.totals.wall_s += time.perf_counter() - started
-        return list(outcomes)
+        try:
+            probe = await self.ask(requests[0])
+            if probe.refused is not None:
+                refused = probe.refused
+                raise JudgeRouteError(
+                    f"the judge route refused the first request (HTTP {refused.status}): "
+                    f"{refused.body or refused}. Model {self.model!r}; check the model id, "
+                    f"OPENAI_BASE_URL and the request format this route accepts "
+                    f"(docs/llm/dmxapi.cn.md). No other request was sent."
+                )
+            rest = await asyncio.gather(*(self.ask(request) for request in requests[1:]))
+        finally:
+            self.totals.wall_s += time.perf_counter() - started
+        return [probe, *rest]
 
     async def _ask(self, request: JudgeRequest[M]) -> JudgeOutcome[M]:
         params = self.parameters(request.reply_model)
@@ -272,33 +390,51 @@ class Judge:
         )
         attempts: list[dict[str, Any]] = []
         for attempt in range(MAX_RETRIES + 1):
-            self._counter += 1
-            record: dict[str, Any] = {
-                "call_id": f"{request.purpose}-{self._counter:05d}",
-                "purpose": request.purpose,
-                "item": request.item,
-                "attempt": attempt,
-                "model": self.model,
-                "parameters": dict(params),
-                "prompt_sha256": prompt_digest,
-                "prompt_text": prompt_text if attempt == 0 else None,
-                "images": request.image_sources,
-                "started_at": time.time(),
-            }
-            started = time.perf_counter()
-            try:
-                reply = await self.transport.create(messages=messages, **params)
-            except Exception as exc:  # the gateway's or the SDK's error: recorded, then retried
+            reply: ChatReply | None = None
+            record: dict[str, Any] = {}
+            for retry in range(MAX_TRANSIENT_RETRIES + 1):
+                self._counter += 1
+                record = {
+                    "call_id": f"{request.purpose}-{self._counter:05d}",
+                    "purpose": request.purpose,
+                    "item": request.item,
+                    "attempt": attempt,
+                    "transient_retry": retry,
+                    "model": self.model,
+                    "parameters": dict(params),
+                    "prompt_sha256": prompt_digest,
+                    "prompt_text": prompt_text if attempt == 0 and retry == 0 else None,
+                    "images": request.image_sources,
+                    "started_at": time.time(),
+                }
+                started = time.perf_counter()
+                try:
+                    reply = await self.transport.create(messages=messages, **params)
+                except TransportError as exc:
+                    failure = exc
+                except Exception as exc:  # anything else is treated as a lost connection
+                    failure = TransportError(f"{type(exc).__name__}: {exc}", status=None)
+                else:
+                    record["latency_ms"] = round((time.perf_counter() - started) * 1000)
+                    break
+                retried = failure.transient and retry < MAX_TRANSIENT_RETRIES
                 record.update(
                     latency_ms=round((time.perf_counter() - started) * 1000),
                     error_kind="call",
-                    error=f"{type(exc).__name__}: {exc}",
+                    status=failure.status,
+                    error=str(failure),
+                    body=failure.body,
                     valid=False,
+                    retried=retried,
                 )
                 self._record(record, attempts)
-                continue
+                if not failure.transient:
+                    return JudgeOutcome(value=None, attempts=attempts, refused=failure)
+                if not retried:
+                    return JudgeOutcome(value=None, attempts=attempts)
+                await self._sleep(self.backoff(retry))
+            assert reply is not None
             record.update(
-                latency_ms=round((time.perf_counter() - started) * 1000),
                 response_model=reply.model,
                 finish_reason=reply.finish_reason,
                 usage=reply.usage,
