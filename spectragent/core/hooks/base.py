@@ -11,7 +11,7 @@ See docs/architecture_design.md §4.6 for the full Hook design.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from spectragent.core.llm.base import BaseChatModel
@@ -259,3 +259,15 @@ class EnvironmentInterceptor(Protocol):
     """
 
     def intercept_environment(self, present: bool) -> None: ...
+
+
+def declare_environment_presence(hooks: Iterable[Any], *, present: bool) -> None:
+    """Tell every :class:`EnvironmentInterceptor` among *hooks* whether the run has an environment.
+
+    The one decision both the runtime (before it builds the Weaver) and
+    ``config explain`` (listing what a run would weave) make, so the two
+    can never disagree about a hook's ``env`` interceptions.
+    """
+    for hook in hooks:
+        if isinstance(hook, EnvironmentInterceptor):
+            hook.intercept_environment(present)

@@ -176,9 +176,14 @@ class Weaver:
         of mistake as ``UnclaimedRoleError`` and a hook wired to nothing
         is worth exactly as much as a hook not wired at all; the house
         rule is that config errors surface during assembly, not at the
-        first LLM call. A hook that wants to observe whichever objects a
-        run happens to have should be split into per-role hooks and
-        selected in YAML, not left to guess.
+        first LLM call. So a hook never leaves the audit to guess which
+        objects a run happens to have. Either it is split into per-role
+        hooks selected in YAML, or — when one hook's job includes the
+        environment only if there is one — it declares its ``env``
+        interceptions only for a run that has one: ``LiveMonitor`` is told
+        when the CLI binds it, an ``EnvironmentInterceptor`` (``TraceWriter``)
+        by the runtime before the Weaver is built. The audit itself never
+        lets a dead intercept through.
 
         Raises:
             DeadInterceptError: listing every dead intercept at once, so
