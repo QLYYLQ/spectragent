@@ -1062,9 +1062,16 @@ value on an existing one.
   the trace's CSS pixels. It finds an earlier step's grid in per-run state keyed by step
   number, which `prepare` (each segment's `seed_messages`) clears and each
   `build_react_prompt` fills; a segment builds its steps in order, so nothing else is
-  needed. A new student format with its own grid does the same: pass a `write_point` to
-  `ActionEffect.describe` (through `result_facts` / `effect_line`) and to
-  `render_capture_state`, and an action writer to `restored_history_message`.
+  needed. A point with no place on the grid (its step showed no screenshot of known size,
+  or it lies outside the screenshot) is written as such, never in pixels and never
+  clamped, so such a step kept as text does not stop the export. Which params are points
+  comes from the action's registered `Params` (`point_params`), never from names or
+  values. The same writing is the optional ReAct slot `format_action_fact(action, *,
+  step)`; `keep_as_text` writes its turn with it, so the kept turn and the next step's
+  feedback agree (a student without the slot gets the action's own JSON). A new student
+  format with its own grid does the same: pass a `write_point` to `ActionEffect.describe`
+  (through `result_facts` / `effect_line`) and to `render_capture_state`, an action
+  writer to `restored_history_message`, and implement `format_action_fact`.
 - `StudentRenderer.render` is async. Its callers await it; the synchronous
   `ExportRunner.run` drives the entire async rendering phase with one `asyncio.run`.
   Segment seeding still uses `AgentRuntime.seed_messages`, and assistant history uses

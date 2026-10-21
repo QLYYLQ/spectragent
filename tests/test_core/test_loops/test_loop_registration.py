@@ -67,7 +67,7 @@ class TestShippedLoops:
         assert issubclass(BranchLoop, ReactLoop)
 
     def test_react_slot_sets(self) -> None:
-        """The ReAct slots, pinned (arch §4.1): the last two are the training export's."""
+        """The ReAct slots, pinned (arch §4.1): the last three are the training export's."""
         from spectragent.core.loops import BranchLoop, ReactLoop
 
         assert ReactLoop.__required_slots__ == {"build_react_prompt", "parse_react_output"}
@@ -75,6 +75,7 @@ class TestShippedLoops:
             "get_react_output_model",
             "prepare",
             "format_react_output",
+            "format_action_fact",
             "parse_react_thought",
         }
         assert BranchLoop.__required_slots__ == ReactLoop.__required_slots__

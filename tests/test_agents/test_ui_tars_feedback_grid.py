@@ -16,8 +16,12 @@ the screen; these tests pin the writing that replaced them:
   within the grid's quantum;
 - restored history writes executed and recorded actions on the restored
   observation's grid;
-- an earlier step's grid comes from the prompt this agent built for it, and
-  a batch whose grid it does not know is refused, never written in pixels.
+- an earlier step's grid comes from the prompt this agent built for it;
+- a point with no place on the grid — its step showed no screenshot of known
+  size, or it lies outside the screenshot — is said to be so, never written in
+  pixels and never clamped onto an edge;
+- which params are points comes from the action's registered ``Params``, never
+  from a param's name or value alone.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import pytest
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
-from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.agents.ui_tars import NOT_PLACEABLE, OUTSIDE_THE_SCREENSHOT, UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ElementFacts, PointerEffect, ViewportPoint
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
@@ -285,16 +289,78 @@ async def test_a_batch_whose_step_this_agent_did_not_build_is_refused() -> None:
         )
 
 
-async def test_a_batch_whose_step_showed_no_screenshot_of_known_size_is_refused() -> None:
+async def test_a_batch_whose_step_showed_no_screenshot_of_known_size_is_not_placed() -> None:
+    """No grid to write on: the points say so, and the prompt still builds."""
     agent, _ = _prepared(coordinate_space="normalized_1000")
     await agent.build_react_prompt(
         _observation(screenshot=_screenshot(viewport=(0, 0))),
         context=ReactPromptContext(step=0, phase="policy"),
     )
-    with pytest.raises(ValueError, match="showed no screenshot of known size"):
-        await agent.build_react_prompt(
-            _observation(history=[_batch()]), context=ReactPromptContext(step=1, phase="policy")
-        )
+    step = await agent.build_react_prompt(
+        _observation(history=[_batch()]), context=ReactPromptContext(step=1, phase="policy")
+    )
+    (returned,) = _feedback(step)["returned_results"]
+    assert returned["action"] == {
+        "name": "browser.click_coordinate",
+        "params": {"coordinate_x": NOT_PLACEABLE, "coordinate_y": NOT_PLACEABLE},
+    }
+    assert returned["result"]["effect"].startswith(f"Clicked at a point {NOT_PLACEABLE} on ")
+    assert "640" not in _text(step) and "618" not in _text(step)
+
+
+async def test_a_point_outside_the_screenshot_is_said_to_be_outside_never_clamped() -> None:
+    """``to_grid`` would put (1500, 618) on the right edge; it is not there."""
+    agent, _ = _prepared(coordinate_space="normalized_1000")
+    await agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
+    )
+    step = await agent.build_react_prompt(
+        _observation(history=[_batch(x=1500)], pointer=(-3, 618)),
+        context=ReactPromptContext(step=1, phase="policy"),
+    )
+    (returned,) = _feedback(step)["returned_results"]
+    assert returned["action"] == {
+        "name": "browser.click_coordinate",
+        "params": {"coordinate_x": OUTSIDE_THE_SCREENSHOT, "coordinate_y": OUTSIDE_THE_SCREENSHOT},
+    }
+    assert returned["result"]["effect"].startswith(
+        f"Clicked at a point {OUTSIDE_THE_SCREENSHOT} on "
+    )
+    assert _pointer_line(step) == f"Pointer: a point {OUTSIDE_THE_SCREENSHOT}."
+    assert "1000" not in _text(step) and "1500" not in _text(step)
+
+
+async def test_only_declared_point_params_move_onto_the_grid() -> None:
+    """An ``_x`` / ``_y`` pair the registry does not declare a point is left as it is."""
+    agent, _ = _prepared(coordinate_space="normalized_1000")
+    zoom = Action(name="browser.zoom", params={"scale_x": 640, "scale_y": 618})
+    await agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
+    )
+    step = await agent.build_react_prompt(
+        _observation(
+            history=[
+                StepRecord(step=0, actions=[zoom], action_results=[ActionResult(success=True)])
+            ]
+        ),
+        context=ReactPromptContext(step=1, phase="policy"),
+    )
+    assert _feedback(step)["returned_results"][0]["action"] == zoom.model_dump(mode="json")
+
+
+async def test_a_relative_action_name_finds_its_points_through_the_runs_binding() -> None:
+    agent, _ = _prepared(coordinate_space="normalized_1000")
+    typed = Action(
+        name="type_coordinate",
+        params={"coordinate_x": 640, "coordinate_y": 618, "text": "12", "clear": True},
+    )
+    await agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
+    )
+    assert agent.format_action_fact(typed, step=0) == {
+        "name": "type_coordinate",
+        "params": {"coordinate_x": 500, "coordinate_y": 858, "text": "12", "clear": True},
+    }
 
 
 async def test_prepare_forgets_the_grids_of_the_previous_execution() -> None:
@@ -332,9 +398,8 @@ async def test_the_pointer_on_a_step_without_a_grid_is_not_written_in_pixels() -
         _observation(screenshot=_screenshot(viewport=(0, 0))),
         context=ReactPromptContext(step=0, phase="policy"),
     )
-    assert _pointer_line(step) == (
-        "Pointer: at a position this step cannot place (it shows no screenshot of known size)."
-    )
+    assert _pointer_line(step) == f"Pointer: a point {NOT_PLACEABLE}."
+    assert NOT_PLACEABLE == "not placeable (no screenshot of known size)"
 
 
 async def test_an_action_no_verb_writes_keeps_its_json_with_its_points_on_the_grid() -> None:
@@ -411,6 +476,25 @@ async def test_restored_execution_is_written_on_the_restored_observations_grid()
         _observation(history=[record]), context=ReactPromptContext(step=1, phase="policy")
     )
     assert _feedback(step)["returned_results"][0]["action"] == "click(point='(500, 858)')"
+
+
+async def test_a_restored_observation_without_a_measurable_screenshot_does_not_end_the_branch() -> (
+    None
+):
+    agent, _ = _prepared(coordinate_space="normalized_1000")
+    messages = await agent.build_restored_history(
+        _observation(screenshot=_screenshot(viewport=(0, 0))),
+        history=_restored(),
+        context=ReactPromptContext(step=0, phase="history"),
+    )
+    facts = json.loads(messages[-1].text.split("\n", 1)[1])
+    unplaced = {"coordinate_x": NOT_PLACEABLE, "coordinate_y": NOT_PLACEABLE}
+    assert facts["source_material"]["recorded_actions"] == [
+        {"name": "browser.click_coordinate", "params": unplaced}
+    ]
+    (executed,) = facts["actual_restored_execution"]
+    assert executed["action"] == {"name": "browser.click_coordinate", "params": unplaced}
+    assert executed["result"]["effect"].startswith(f"Clicked at a point {NOT_PLACEABLE} on ")
 
 
 # ── The other agents keep viewport units ──────────────────────────────

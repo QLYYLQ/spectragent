@@ -122,6 +122,7 @@ class ReactLoop(AgentLoopBase):
         "get_react_output_model",
         "prepare",
         "format_react_output",
+        "format_action_fact",
         "parse_react_thought",
     }
     __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset(
