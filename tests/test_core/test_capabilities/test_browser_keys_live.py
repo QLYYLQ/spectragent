@@ -297,7 +297,7 @@ def test_typing_where_no_field_has_focus_sends_no_key(session: Session, label: s
     x, y = NOWHERE_POINT
     assert (result.success, result.error) == (
         False,
-        f"No text field took focus at ({x}, {y}): nothing has focus, so no text was typed.",
+        "No text field took focus at the clicked point: nothing has focus, so no text was typed.",
     )
     assert case.state["keys"] == [], "a key reached the page"
     _alone_in_front(case)

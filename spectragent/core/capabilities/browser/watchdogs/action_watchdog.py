@@ -900,9 +900,9 @@ class ActionWatchdog(BrowserWatchdog):
                 event.text,
                 event.clear,
                 budget=budget,
-                no_field=(
-                    f"No text field took focus at ({event.coordinate_x}, {event.coordinate_y})"
-                ),
+                # No coordinates in the text: the action line already says where, on the
+                # grid the agent writes, and a CSS-pixel copy here would contradict it.
+                no_field="No text field took focus at the clicked point",
             )
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)

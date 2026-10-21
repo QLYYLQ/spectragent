@@ -213,7 +213,7 @@ def test_typing_where_no_field_has_focus_fails_and_sends_nothing(
     x, y = FIELDS_EMPTY_POINT
     effect = _refused(
         session.cases[label],
-        f"No text field took focus at ({x}, {y}): nothing has focus, so no text was typed.",
+        "No text field took focus at the clicked point: nothing has focus, so no text was typed.",
     )
     assert (effect.target, effect.focus_after) == ("nothing", "nothing")
 
@@ -229,7 +229,7 @@ def test_a_button_by_coordinate_is_refused_and_named(session: Session) -> None:
     x, y = centre("text_button")
     effect = _refused(
         case,
-        f'No text field took focus at ({x}, {y}): focus is on button "Search", which does '
+        'No text field took focus at the clicked point: focus is on button "Search", which does '
         "not take typed text, so no text was typed.",
     )
     search = ElementFacts(role="button", name="Search")
@@ -250,7 +250,7 @@ def test_a_read_only_field_is_refused_and_said_to_be_one(session: Session) -> No
     x, y = centre("text_readonly")
     effect = _refused(
         session.cases["read-only"],
-        f'No text field took focus at ({x}, {y}): focus is on textbox "From", which is '
+        'No text field took focus at the clicked point: focus is on textbox "From", which is '
         "read-only, so no text was typed.",
     )
     assert (effect.target, effect.value_changed) == (

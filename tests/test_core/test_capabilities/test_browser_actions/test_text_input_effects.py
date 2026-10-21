@@ -208,7 +208,9 @@ class TestTypeCoordinate:
 
 
 #: What typing at (100, 150) answers when the click left nothing focused.
-NOTHING_FOCUSED = "No text field took focus at (100, 150): nothing has focus, so no text was typed."
+NOTHING_FOCUSED = (
+    "No text field took focus at the clicked point: nothing has focus, so no text was typed."
+)
 
 
 def refused(result: ActionResult, error: str) -> TextInputEffect:
@@ -276,7 +278,7 @@ class TestTypingNeedsATextField:
         )
         effect = refused(
             await type_at(cdp),
-            'No text field took focus at (100, 150): focus is on textbox "From", which is '
+            'No text field took focus at the clicked point: focus is on textbox "From", which is '
             "read-only, so no text was typed.",
         )
         assert effect.target == ElementFacts(role="textbox", name="From")
