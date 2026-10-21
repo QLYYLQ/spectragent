@@ -3,9 +3,10 @@
 Each item shows the screen the agent saw (O_t), the actions it issued, the
 next screen (O_{t+1}) and, when the frames archiver took one, the frame right
 before the first action. The annotator picks the kind of information the
-agent needs next and draws ``evidence`` boxes on the next screen. The
-suggested boxes are the pixel difference between the two screens, as hints
-only: no choice is suggested.
+agent needs next and draws ``evidence`` boxes on the next screen. Items carry
+no suggestion: the viewer seeds a label with a suggestion and grades the label
+against it, and a pixel difference is no answer. The viewer's Difference view
+already shows where the screen changed.
 
 Items are policy steps whose two screens were both recorded, sampled in turn
 across (site, action type) groups, preferring runs used least so far.
@@ -13,51 +14,47 @@ across (site, action type) groups, preferring runs used least so far.
 
 from __future__ import annotations
 
-import json
 import random
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from lookahead import imaging
-from lookahead.contracts import FRAMES_ARCHIVER_ID
 from lookahead.extract import step_rows
 from lookahead.forks import FILLER, action_type, describe_actions
-from lookahead.queues import (
-    Choice,
+from lookahead.output import write_json
+from lookahead.queues import frame_image, observation_image
+from lookahead.rows import StepRow
+from lookahead.runs import Run, RunSet
+from spectragent.annotation import (
+    QUEUE_FORMAT,
     ItemField,
     ItemLink,
+    LabelChoice,
     LabelSpec,
     QueueImage,
     QueueItem,
     RegionKind,
-    RegionLabel,
+    RegionSpec,
     ReviewQueue,
-    SuggestedRegion,
-    Suggestion,
-    archive_image,
-    observation_image,
     write_queue,
 )
-from lookahead.rows import StepRow
-from lookahead.runs import Run, RunSet
 
-HINT_SOURCE = "pixel-diff"
 NO_SITE = "(no site)"
 THOUGHT_CHARS = 600
 CHOICES = [
-    Choice(value="result_list", text="A result list"),
-    Choice(value="confirmation", text="A confirmation or feedback"),
-    Choice(value="detail_fields", text="Detail fields"),
-    Choice(value="navigation_target", text="A navigation target"),
-    Choice(value="nothing_new", text="Nothing new is needed"),
-    Choice(value="other", text="Other"),
+    LabelChoice(value="result_list", text="A result list"),
+    LabelChoice(value="confirmation", text="A confirmation or feedback"),
+    LabelChoice(value="detail_fields", text="Detail fields"),
+    LabelChoice(value="navigation_target", text="A navigation target"),
+    LabelChoice(value="nothing_new", text="Nothing new is needed"),
+    LabelChoice(value="other", text="Other"),
 ]
 INSTRUCTIONS = (
     "The agent saw the current screen and issued the actions listed. On the next screen, find "
     "the information the agent needs for its next decision toward the task. Choose what kind of "
     "information it is, and draw Evidence boxes on the next screen around where it appears. "
-    "The suggested boxes only show where the screen changed; they are hints, not answers."
+    "Nothing is suggested; to see where the screen changed, open the viewer's Difference view "
+    "for the two screens."
 )
 
 
@@ -71,15 +68,19 @@ def main_action(row: StepRow) -> str:
 
 
 def candidates(runs: RunSet) -> list[tuple[Run, StepRow]]:
-    found: list[tuple[Run, StepRow]] = []
-    for run in runs.runs:
-        for row in step_rows(run, runs):
-            if row.origin != "policy" or not row.observation.screenshot:
-                continue
-            if not (row.next.exists and row.next.screenshot):
-                continue
-            found.append((run, row))
-    return found
+    """Policy steps with both screens recorded; a run whose evidence does not read is skipped."""
+
+    def of_run(run: Run) -> list[StepRow]:
+        return [
+            row
+            for row in step_rows(run, runs)
+            if row.origin == "policy"
+            and row.observation.screenshot
+            and row.next.exists
+            and row.next.screenshot
+        ]
+
+    return [(run, row) for run, rows in runs.each(of_run) for row in rows]
 
 
 def sample(pool: list[tuple[Run, StepRow]], count: int, seed: int) -> list[tuple[Run, StepRow]]:
@@ -118,28 +119,17 @@ def gold_item(run: Run, row: StepRow) -> QueueItem:
         observation_image("next", "The next screen", run.key, row.next.step),
     ]
     before = row.frame("before_action")
-    if before is not None and before.captured and before.batch_step is not None:
+    if before is not None and before.captured:
         assert before.name is not None
         images.append(
-            archive_image(
+            frame_image(
                 "before_action",
                 "Right before the first action",
                 run.key,
                 before.batch_step,
-                FRAMES_ARCHIVER_ID,
                 before.name,
             )
         )
-    hints: list[SuggestedRegion] = []
-    current, following = run.screenshot_bytes(row.step), run.screenshot_bytes(row.next.step)
-    note = "the two screens could not be compared"
-    if current is not None and following is not None:
-        diff = imaging.difference(current, following)
-        if diff.compared:
-            hints = [SuggestedRegion(image="next", kind="evidence", box=box) for box in diff.boxes]
-            note = f"{len(diff.boxes)} changed region(s) between the two screens"
-        elif diff.reason:
-            note = diff.reason
     fields = [
         ItemField(text="Task", value=row.task),
         ItemField(text="Step", value=str(row.step)),
@@ -156,7 +146,6 @@ def gold_item(run: Run, row: StepRow) -> QueueItem:
         images=images,
         fields=fields,
         links=[ItemLink(text="Run", run=run.key, step=row.step)],
-        suggestion=Suggestion(choice=None, regions=hints, source=HINT_SOURCE, rationale=note),
     )
 
 
@@ -169,13 +158,14 @@ def gold_queue(
     pool = candidates(runs)
     chosen = sample(pool, count, seed)
     queue = ReviewQueue(
+        format=QUEUE_FORMAT,
         queue_id=queue_id,
         title="Where does the information for the next decision appear?",
         instructions=INSTRUCTIONS,
         label=LabelSpec(
             choices=CHOICES,
             multi=False,
-            regions=RegionLabel(kinds=[RegionKind(value="evidence", text="Evidence")]),
+            regions=RegionSpec(kinds=[RegionKind(value="evidence", text="Evidence")]),
             note=True,
         ),
         items=[gold_item(run, row) for run, row in chosen],
@@ -191,8 +181,5 @@ def gold_queue(
         "by_run": dict(Counter(run.key for run, _ in chosen)),
         "skipped_runs": dict(runs.skipped),
     }
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "sampling.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(out / "sampling.json", summary)
     return summary, path

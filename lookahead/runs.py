@@ -12,14 +12,14 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-from lookahead import contracts
 from lookahead.rows import FrameRow, RunKind
+from spectragent.core.capabilities.browser.archive.frames import iter_frames, read_frame_image
 from spectragent.core.capabilities.browser.observations import (
     BrowserCaptureStateObs,
     ScreenshotObs,
@@ -30,13 +30,13 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity, unreadable_reason
 from spectragent.schemas.step_record import StepRecord
 
+T = TypeVar("T")
+
 #: The task-setup key a replaying run records its source directory under.
 REPLAY_ARCHIVE_KEY = "replay_archive"
 SCREENSHOT_KEY = "browser.screenshot"
 CAPTURE_STATE_KEY = "browser.capture_state"
 DOM_RAW_ARCHIVER_ID = "browser.dom_raw"
-
-Opener = Callable[[Path], RunTrace]
 
 
 class LookaheadInputError(ValueError):
@@ -232,17 +232,16 @@ class Run:
     def frames(self) -> list[FrameRow]:
         """Every ``browser.frames`` record of the run, in commit order."""
         rows: list[FrameRow] = []
-        for batch_step, record in contracts.run_frames(self.trace):
-            facts = contracts.plain(record)
-            # The agreed fields only: a field the reader adds later is not this row's.
-            agreed = {name: facts[name] for name in FrameRow.model_fields if name in facts}
-            row = FrameRow(**{**agreed, "batch_step": batch_step})
+        for batch_step, record in iter_frames(self.trace, include_trailing=True):
+            row = FrameRow(batch_step=batch_step, **asdict(record))
             row._record = record
             rows.append(row)
         return rows
 
     def frame_image(self, frame: FrameRow) -> bytes:
-        return contracts.frame_image(self.trace, frame.batch_step, frame._record)
+        """The PNG of a captured frame of this run."""
+        assert frame._record is not None, "frames of a run carry the reader's record"
+        return read_frame_image(self.trace, frame.batch_step, frame._record)
 
     @cached_property
     def cycles(self) -> dict[int, int | None]:
@@ -293,11 +292,26 @@ class Run:
         return found.pop() if len(found) == 1 else None
 
     def frames_after(self, step: int) -> list[FrameRow]:
-        """The frames that follow *step*'s observation (same cycle), in commit order."""
+        """The frames that follow *step*'s observation (same cycle), in commit order.
+
+        A before-action frame is joined to the step's ``env.act`` call through
+        the action spans, by its ``action_index`` (never through the recorded
+        actions, which also hold the actions the guard refused).
+        """
         cycle = self.cycles.get(step)
         if cycle is None:
             return []
-        return [frame for frame in self.frames if frame.cycle == cycle]
+        record = self.records.get(step)
+        spans = record.action_spans if record is not None else None
+        found: list[FrameRow] = []
+        for frame in self.frames:
+            if frame.cycle != cycle:
+                continue
+            index = frame.action_index
+            if frame.kind == "before_action" and spans and index is not None and index < len(spans):
+                frame = frame.model_copy(update={"span": spans[index]})
+            found.append(frame)
+        return found
 
 
 def _max_cycle(values: Iterable[int | None]) -> int | None:
@@ -305,14 +319,59 @@ def _max_cycle(values: Iterable[int | None]) -> int | None:
     return max(known) if known else None
 
 
+#: What reading one run's evidence can raise: a damaged or unexpected trace,
+#: a frames index or image that does not read back, a file that cannot be opened.
+READ_ERRORS: tuple[type[Exception], ...] = (
+    TraceSchemaError,
+    ValueError,
+    KeyError,
+    OSError,
+)
+
+
+def unreadable(directory: Path, exc: Exception) -> str:
+    """Why a run is left out, without the absolute paths a trace error names."""
+    if isinstance(exc, RecordingScopeError):
+        return str(exc)
+    if isinstance(exc, TraceSchemaError):
+        return unreadable_reason(directory, exc)
+    return f"its evidence does not read back ({type(exc).__name__}: {exc})"
+
+
 @dataclass
 class RunSet:
-    """The readable runs under a root, and why each other run directory was left out."""
+    """The readable runs under a root, and why each other run directory was left out.
+
+    A run whose evidence fails to read while a command works on it is added
+    to ``skipped`` with the reason (:meth:`each`); the command goes on with
+    the other runs.
+    """
 
     root: Path
     viewer_root: Path
     runs: list[Run] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
+
+    def each(
+        self, work: Callable[[Run], T], runs: Iterable[Run] | None = None
+    ) -> list[tuple[Run, T]]:
+        """``(run, work(run))`` for every run (of *runs*, default all) whose evidence reads.
+
+        A run whose evidence raises one of :data:`READ_ERRORS` is skipped with
+        the reason, and the work goes on with the next run.
+        """
+        done: list[tuple[Run, T]] = []
+        for run in self.runs if runs is None else runs:
+            if run.key in self.skipped:
+                continue
+            try:
+                done.append((run, work(run)))
+            except READ_ERRORS as exc:
+                self.skip(run, exc)
+        return done
+
+    def skip(self, run: Run, exc: Exception) -> None:
+        self.skipped[run.key] = unreadable(run.path, exc)
 
     @cached_property
     def by_run_id(self) -> dict[str, list[Run]]:
@@ -346,7 +405,7 @@ class RunSet:
         return matching[0] if len(matching) == 1 else None
 
 
-def open_runs(root: Path, viewer_root: Path | None = None, *, opener: Opener = RunTrace) -> RunSet:
+def open_runs(root: Path, viewer_root: Path | None = None) -> RunSet:
     """Every readable run under *root*, keyed relative to *viewer_root* (default: *root*)."""
     root = root.expanduser()
     if not root.is_dir():
@@ -359,14 +418,11 @@ def open_runs(root: Path, viewer_root: Path | None = None, *, opener: Opener = R
     for directory in find_run_dirs(root):
         key = relative_key(directory, viewer)
         try:
-            run = Run(key=key, path=directory, trace=opener(directory))
+            run = Run(key=key, path=directory, trace=RunTrace(directory))
             run.config  # noqa: B018 — read now, so an unreadable configuration is skipped here
             run.records  # noqa: B018
-        except RecordingScopeError as exc:
-            result.skipped[key] = str(exc)
-            continue
-        except TraceSchemaError as exc:
-            result.skipped[key] = unreadable_reason(directory, exc)
+        except READ_ERRORS as exc:
+            result.skipped[key] = unreadable(directory, exc)
             continue
         result.runs.append(run)
     return result

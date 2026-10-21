@@ -11,15 +11,18 @@ from pathlib import Path
 from typing import Any
 
 from lookahead.judge import (
+    DEFAULT_MAX_COMPLETION_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_REASONING_EFFORT,
     ChatTransport,
     Judge,
     JudgeConfigurationError,
+    JudgeRouteError,
     OpenAITransport,
 )
 from lookahead.queues import default_queue_id
 from lookahead.runs import LookaheadInputError, RunSet, open_runs
+from lookahead.stability import DEFAULT_MIN_CHANGE_AREA
 
 TransportFactory = Callable[[], ChatTransport]
 
@@ -58,6 +61,12 @@ def _judge_options(parser: argparse.ArgumentParser) -> None:
         help="reasoning_effort sent with every request.",
     )
     parser.add_argument(
+        "--max-completion-tokens",
+        type=int,
+        default=DEFAULT_MAX_COMPLETION_TOKENS,
+        help=f"max_completion_tokens of every request (default {DEFAULT_MAX_COMPLETION_TOKENS}).",
+    )
+    parser.add_argument(
         "--concurrency", type=int, default=4, help="Requests in flight at once (default 4)."
     )
 
@@ -80,10 +89,17 @@ def build_parser() -> argparse.ArgumentParser:
     stability.add_argument("--out", type=Path, required=True, help="Output directory.")
     _queue(stability, "stability")
     stability.add_argument(
-        "--max-distance",
-        type=int,
-        default=5,
-        help="Largest dHash distance that counts as the same screen (default 5).",
+        "--min-change-area",
+        type=float,
+        default=DEFAULT_MIN_CHANGE_AREA,
+        help="Share of the image one changed region must cover for a frame to count as "
+        "changed (default 0.005, that is 0.5%%).",
+    )
+    stability.add_argument(
+        "--origins",
+        default="policy",
+        help="Comma-separated step origins to include: policy, restored (default: policy; "
+        "a restored step has no think time).",
     )
     stability.add_argument(
         "--queue-size", type=int, default=60, help="Items in the review queue (default 60)."
@@ -145,6 +161,7 @@ async def _with_judge(
         transport,
         model=args.model,
         reasoning_effort=args.reasoning_effort or None,
+        max_completion_tokens=args.max_completion_tokens,
         concurrency=args.concurrency,
         log_path=log_path,
     )
@@ -165,12 +182,14 @@ def run(
     except LookaheadInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    _print_skipped(runs)
     try:
-        return _dispatch(args, runs, factory)
-    except (LookaheadInputError, JudgeConfigurationError, ValueError) as exc:
+        code = _dispatch(args, runs, factory)
+    except (LookaheadInputError, JudgeConfigurationError, JudgeRouteError, ValueError) as exc:
+        _print_skipped(runs)
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    _print_skipped(runs)
+    return code
 
 
 def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory) -> int:
@@ -191,7 +210,10 @@ def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory)
             queue_id=args.queue_id or default_queue_id("stability"),
             queue_size=args.queue_size,
             seed=args.seed,
-            limit=args.max_distance,
+            min_change_area=args.min_change_area,
+            origins=frozenset(
+                origin.strip() for origin in args.origins.split(",") if origin.strip()
+            ),
         )
         print(f"{len(report.observations)} observation(s): {json.dumps(report.summary)}")
         print(f"report: {args.out / 'report.md'}; queue: {queue}")

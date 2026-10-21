@@ -1,111 +1,159 @@
-"""Review queues: the ``review-queue-1`` shape, checked before it is written."""
+"""Every queue the pipeline writes loads in the viewer's store, and every image it names resolves."""
 
 from __future__ import annotations
 
-import json
+import io
+import re
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from PIL import Image
 
 from lookahead.cli import run
-from lookahead.queues import (
-    Choice,
-    LabelSpec,
-    QueueItem,
-    RegionKind,
-    RegionLabel,
-    ReviewQueue,
-    SuggestedRegion,
-    Suggestion,
-    archive_image,
-    default_queue_id,
-    observation_image,
-    write_queue,
+from lookahead.queues import default_queue_id, frame_image, observation_image, region
+from spectragent.annotation import (
+    AnnotationStore,
+    ArchiveImage,
+    ImageSource,
+    LabelDraft,
+    ObservationImage,
+    Region,
 )
+from spectragent.inspection import open_repository
+from tests.test_lookahead.conftest import World
+from tests.test_lookahead.fake_judge import ScriptedTransport, answers, prompt_text
+
+FRAME_NAME = re.compile(r"frame-\d+-(before-\d+|after)\.png")
 
 
-def _item(**suggestion: object) -> QueueItem:
-    return QueueItem(
-        item_id="a@1",
-        title="t",
-        run="a",
-        step=1,
-        images=[
-            observation_image("before", "Current screen", "a", 1),
-            archive_image("frame", "Before the action", "a", 1, "browser.frames", "frame-1.png"),
-        ],
-        suggestion=Suggestion(source="test", **suggestion),  # type: ignore[arg-type]
+def _judge(request: dict) -> str:
+    if "same_intent" in prompt_text(request):
+        return answers(same_intent="yes", reasonable="yes", executed_as_intended="no")
+    return answers(reasonable="no", executed_as_intended="uncertain")
+
+
+@pytest.fixture
+def annotation_dir(world: World, tmp_path: Path) -> Path:
+    """One annotation directory holding the queue of every command that writes one."""
+    directory = tmp_path / "annotations"
+    common = ["--root", str(world.root), "--annotations", str(directory)]
+    assert run(["stability", *common, "--out", str(tmp_path / "stability")]) == 0
+    assert run(["gold-queue", *common, "--out", str(tmp_path / "gold"), "--n", "50"]) == 0
+    transport = ScriptedTransport(_judge)
+    code = run(
+        ["judge-forks", *common, "--out", str(tmp_path / "forks")],
+        transport_factory=lambda: transport,
     )
+    assert code == 0
+    return directory
 
 
-def _queue(item: QueueItem, *, multi: bool = False) -> ReviewQueue:
-    return ReviewQueue(
-        queue_id="q-1",
-        title="t",
-        instructions="i",
-        label=LabelSpec(
-            choices=[Choice(value="yes", text="Yes"), Choice(value="no", text="No")],
-            multi=multi,
-            regions=RegionLabel(kinds=[RegionKind(value="evidence", text="Evidence")]),
+def _image(repository, source: ImageSource) -> bytes:
+    """What the viewer serves for an item image (the annotation router's own two reads)."""
+    if isinstance(source, ArchiveImage):
+        return repository.archive_image(source.run, source.step, source.archiver, source.name)
+    data = repository.screenshot(source.run, source.step, view="browser")
+    assert data is not None, f"{source.run} step {source.step} has no screenshot"
+    return data
+
+
+def _size(data: bytes) -> tuple[int, int]:
+    with Image.open(io.BytesIO(data)) as image:
+        return image.size
+
+
+def test_every_queue_loads_and_every_image_resolves(world: World, annotation_dir: Path) -> None:
+    store = AnnotationStore(annotation_dir, annotator="tester")
+    listings = store.list_queues()
+    assert [listing.error for listing in listings] == [None, None, None]
+    prefixes = sorted(listing.queue_id.rsplit("-", 1)[0] for listing in listings)
+    assert prefixes == ["fork-judge", "gold", "stability"]
+    repository = open_repository(world.root)
+    kinds: set[str] = set()
+    names: set[str] = set()
+    for listing in listings:
+        assert listing.loaded is not None
+        assert listing.loaded.queue.items, listing.queue_id
+        for item in listing.loaded.queue.items:
+            sizes = {}
+            for image in item.images:
+                data = _image(repository, image.source)
+                sizes[image.role] = _size(data)
+                kinds.add(image.source.kind)
+                if isinstance(image.source, ArchiveImage):
+                    assert image.source.archiver == "browser.frames"
+                    names.add(image.source.name)
+            for suggested in (item.suggestion.regions or []) if item.suggestion else []:
+                width, height = sizes[suggested.image]
+                assert suggested.box[2] <= width and suggested.box[3] <= height
+    assert kinds == {"observation", "archive"}
+    assert names and all(FRAME_NAME.fullmatch(name) for name in names)
+    assert any(name.endswith("-after.png") for name in names)
+    assert any("-before-" in name for name in names)
+
+
+def test_labels_are_accepted_against_each_queue(world: World, annotation_dir: Path) -> None:
+    store = AnnotationStore(annotation_dir, annotator="tester")
+    repository = open_repository(world.root)
+    queues = {listing.queue_id.rsplit("-", 1)[0]: listing.loaded for listing in store.list_queues()}
+
+    def image_size(source: ImageSource) -> tuple[int, int]:
+        return _size(_image(repository, source))
+
+    forks = queues["fork-judge"]
+    assert forks is not None
+    item = forks.queue.item("branches/br-variant@1")
+    assert item is not None and item.suggestion is not None
+    line = store.append_label(
+        forks.queue.queue_id,
+        item.item_id,
+        LabelDraft(answers=dict(item.suggestion.answers or {})),
+        image_size=image_size,
+    )
+    assert line.verdict == "accepted" and line.answers == {
+        "reasonable": "no",
+        "executed_as_intended": "uncertain",
+    }
+
+    gold = queues["gold"]
+    assert gold is not None
+    item = gold.queue.items[0]
+    line = store.append_label(
+        gold.queue.queue_id,
+        item.item_id,
+        LabelDraft(
+            choice="result_list",
+            regions=[Region(image="next", kind="evidence", box=[0, 0, 32, 32])],
         ),
-        items=[item],
+        image_size=image_size,
     )
+    assert line.choice == "result_list" and line.verdict is None  # nothing was suggested
 
-
-def test_a_queue_is_written_in_the_agreed_shape(tmp_path: Path) -> None:
-    item = _item(
-        choice="yes",
-        regions=[SuggestedRegion(image="frame", kind="evidence", box=[0, 0, 10, 10])],
+    stability = queues["stability"]
+    assert stability is not None
+    item = stability.queue.items[0]
+    assert item.suggestion is not None and item.suggestion.choice is not None
+    line = store.append_label(
+        stability.queue.queue_id,
+        item.item_id,
+        LabelDraft(choice=item.suggestion.choice, regions=list(item.suggestion.regions or [])),
+        image_size=image_size,
     )
-    path = write_queue(tmp_path, _queue(item))
-    assert path == tmp_path / "queues" / "q-1.json"
-    document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["format"] == "review-queue-1"
-    assert set(document) == {"format", "queue_id", "title", "instructions", "label", "items"}
-    written = document["items"][0]
-    assert set(written) == {
-        "item_id",
-        "title",
-        "run",
-        "step",
-        "images",
-        "fields",
-        "links",
-        "suggestion",
-    }
-    assert written["images"][1]["source"] == {
-        "kind": "archive",
-        "run": "a",
-        "step": 1,
-        "archiver": "browser.frames",
-        "name": "frame-1.png",
-    }
-    assert set(written["suggestion"]) == {
-        "choice",
-        "choices",
-        "regions",
-        "note",
-        "source",
-        "rationale",
-    }
+    assert line.verdict == "accepted"
 
 
-def test_a_suggestion_must_name_offered_choices_kinds_and_images() -> None:
-    with pytest.raises(ValidationError, match="unknown choice"):
-        _queue(_item(choice="maybe"))
-    with pytest.raises(ValidationError, match="kind"):
-        _queue(_item(regions=[SuggestedRegion(image="frame", kind="change", box=[0, 0, 1, 1])]))
-    with pytest.raises(ValidationError, match="not one of its images"):
-        _item(regions=[SuggestedRegion(image="after", kind="evidence", box=[0, 0, 1, 1])])
-    with pytest.raises(ValidationError, match="single-choice"):
-        _queue(_item(choices=["yes"]))
-    assert _queue(_item(choices=["yes", "no"]), multi=True).items
-
-
-def test_queue_ids_are_file_names() -> None:
-    with pytest.raises(ValidationError, match="file name"):
-        ReviewQueue(queue_id="../x", title="t", instructions="i", label=LabelSpec(), items=[])
+def test_queue_helpers_build_the_viewer_models() -> None:
+    shot = observation_image("current", "What the agent saw", "record/rec-1", 2)
+    assert shot.source == ObservationImage(kind="observation", run="record/rec-1", step=2)
+    trailing = frame_image("delayed", "Later", "record/rec-1", None, "frame-4-after.png")
+    assert trailing.source == ArchiveImage(
+        kind="archive",
+        run="record/rec-1",
+        step=None,
+        archiver="browser.frames",
+        name="frame-4-after.png",
+    )
+    assert region("next", "evidence", [0, 0, 64, 32]).box == [0, 0, 64, 32]
     assert default_queue_id("gold").startswith("gold-")
 
 

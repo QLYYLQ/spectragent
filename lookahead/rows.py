@@ -6,6 +6,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from spectragent.core.capabilities.browser.archive.frames import (
+    FrameKind,
+    FrameOutcome,
+    FrameRecord,
+    FrameSuperseder,
+)
+from spectragent.schemas.restoration import BranchTaskVariant
+from spectragent.schemas.step_record import ActionSpan
+
 #: What a run is, decided from its recorded configuration.
 RunKind = Literal["record", "replay", "branch"]
 
@@ -62,26 +71,37 @@ class ActionRow(_Row):
 
 
 class FrameRow(_Row):
-    """One ``browser.frames`` record, with the step whose commit took it (``None``: trailing)."""
+    """One ``browser.frames`` record (its ``frames.json`` entry), with the step whose commit took it.
+
+    ``batch_step`` is ``None`` for a trailing commit. Every field the frames
+    reader gives is copied; ``span`` is joined here.
+    """
 
     batch_step: int | None
-    kind: str
+    kind: FrameKind
     cycle: int
-    action_index: int | None = None
-    action: str | None = None
-    tab: str = ""
-    requested_at: float | None = None
-    captured_at: float | None = None
-    outcome: str
-    superseded_by: str | None = None
-    name: str | None = None
-    sha256: str | None = None
-    width: int | None = None
-    height: int | None = None
-    detail: str | None = None
+    action_index: int | None
+    action: str | None
+    tab: str
+    requested_at: float
+    captured_at: float | None
+    outcome: FrameOutcome
+    superseded_by: FrameSuperseder | None
+    name: str | None
+    sha256: str | None
+    width: int | None
+    height: int | None
+    detail: str | None
+    #: When the action was allowed to proceed after its frame; ``None`` when the
+    #: reader gives no such field, or for a delayed frame.
+    released_at: float | None = None
+    #: A before-action frame's ``env.act`` call: the step's action span at the
+    #: frame's ``action_index`` (the ordinal of the call since the cycle; actions
+    #: the guard refused are in neither). ``None`` when spans were not measured.
+    span: ActionSpan | None = None
 
     #: The reader's own record, handed back to the frames reader to read the image.
-    _record: Any = PrivateAttr(default=None)
+    _record: FrameRecord | None = PrivateAttr(default=None)
 
     @property
     def captured(self) -> bool:
@@ -106,6 +126,8 @@ class RestorationSummary(_Row):
     reasons: list[str] = Field(default_factory=list)
     screenshot_distance: int | None = None
     url_match: bool | None = None
+    recorded_url: str | None = None
+    restored_url: str | None = None
     document_misses: int | None = None
     actions: int = 0
     failed_actions: int = 0
@@ -154,7 +176,9 @@ class StepRow(_Row):
     kind: RunKind
     site: str | None = None
     task: str
-    task_variant: dict[str, Any] | None = None
+    task_variant: BranchTaskVariant | None = None
+    #: How the run ended (``result.json``'s ``agent_done``); ``None`` when it wrote no result.
+    run_outcome: str | None = None
     step: int
     origin: str
     timestamp: float | None = None
@@ -166,7 +190,7 @@ class StepRow(_Row):
     settle: Settle | None = None
     capture_state: dict[str, Any] | None = None
     actions: list[ActionRow] = Field(default_factory=list)
-    action_spans: list[dict[str, Any]] | None = None
+    action_spans: list[ActionSpan] | None = None
     frames: list[FrameRow] = Field(default_factory=list)
     next: NextObservation
     restoration: RestorationSummary | None = None

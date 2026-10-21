@@ -16,8 +16,12 @@ uv run python -m lookahead <command> --help
 
 `--root DIR` is searched for run directories (a directory holding a readable
 `manifest.json`; exported datasets are skipped, and the search does not
-descend into a run). A run that cannot be read is skipped and named on
-standard error with the reason.
+descend into a run). A run that cannot be read — at the start, or when a
+command reaches evidence of it that does not read back (a missing screenshot,
+a torn frames index) — is skipped whole, named on standard error with the
+reason, and listed in the command's output; the command goes on with the
+other runs. Every output file is written whole or not at all (a temporary
+file, then a rename); the judge's `calls.jsonl` is a log appended call by call.
 
 What a run is comes from what it recorded, never from its path:
 
@@ -37,11 +41,15 @@ The commands that write a review queue write it to
 `<annotations>/queues/<queue_id>.json` (`--annotations`, default `--out`;
 `--queue-id`, default `<command>-<today>`), so
 `spectragent view --root <viewer root> --annotations <annotations>` shows it.
-The queues follow the `review-queue-1` format: images are an observation
-(`{"kind": "observation", "run", "step"}`) or a `browser.frames` file
-(`{"kind": "archive", "run", "step", "archiver", "name"}`, `step` being the
-step whose commit took the frame), and boxes are `[x0, y0, x1, y1]` in the
-image's own pixels.
+Queues are built only from the viewer's own models (`spectragent.annotation`:
+`ReviewQueue`, `QueueItem`, `LabelSpec`, `Question`, `Suggestion`, `Region`)
+and written with its `write_queue`, so the viewer's strict loader reads every
+one. Images are an observation (`{"kind": "observation", "run", "step"}`) or a
+`browser.frames` file (`{"kind": "archive", "run", "step", "archiver",
+"name"}`, `step` being the step whose commit took the frame, `null` for a
+trailing commit; names `frame-<cycle>-before-<i>.png` /
+`frame-<cycle>-after.png`), and boxes are `[x0, y0, x1, y1]` in the image's
+own pixels.
 
 ## `extract --root DIR --out FILE.jsonl`
 
@@ -52,7 +60,8 @@ the next observation of the step before it.
 | field | meaning |
 |---|---|
 | `run`, `run_id`, `kind`, `site`, `task` | the run key, the recorded run id, record / replay / branch, the (source) task's start host, the task text |
-| `task_variant` | a task-variant branch's variant provenance, else `null` |
+| `task_variant` | a task-variant branch's variant provenance (`variant_id`, `task_text`, `source_task_text`, `note`), else `null` |
+| `run_outcome` | how the run ended (`result.json`'s `agent_done`: `done`, `error`, …); `null` when it wrote no result |
 | `step`, `origin`, `timestamp`, `error_phase`, `error`, `llm_output` | the step record's facts |
 | `observation` | O_t: `step`, `screenshot` (an image was committed), `url`, `captured_at`, image and viewport sizes |
 | `observation_cycle` | the browser's observation cycle of O_t (below) |
@@ -60,7 +69,7 @@ the next observation of the step before it.
 | `capture_state` | `pointer`, `failed_visible_resources`, `foreground_change` |
 | `actions` | each action: `name`, `params`, `success`, `error`, `effect` (the recorded effect as JSON), `effect_text`, and `facts`: the pointer's `point` and `hit` element (`{"role", "name"}`), `focus_after`, a navigation's `url_before` / `url_after`, `scroll_before` / `scroll_after`, the typed `text` |
 | `action_spans` | per-action start and end times as recorded; `null` when not measured, `[]` when the step made no environment call |
-| `frames` | the `browser.frames` records that follow O_t (same cycle), each with `batch_step`, the step whose commit took it (`null`: a trailing commit); `[]` when the run recorded none |
+| `frames` | the `browser.frames` records that follow O_t (same cycle), every field the frames reader gives (`released_at` when it gives one), plus `batch_step`, the step whose commit took it (`null`: a trailing commit), and for a before-action frame `span`: the step's action span at the frame's `action_index` (the ordinal of the `env.act` call; actions the guard refused are in neither, so frames are never joined through `actions`); `[]` when the run recorded none |
 | `next` | O_{t+1}: `step`, `exists` (false when the run ended at this step, as an error does), `origin`, `screenshot`, `url` |
 | `restoration` | this step's restoration check in brief (branch runs) |
 | `branch` | a branch's provenance, its `source_run` key (when the source is under the root), `source_task`, and `restoration`: the checkpoint's check, restored steps, verdict counts, the first step that did not pass |
@@ -77,37 +86,51 @@ a later step's batch).
 ## `stability --root DIR --out DIR2`
 
 Did the screen the agent saw stay the same while it thought? Each observation
-with a screenshot is compared with its delayed frame (`after_observation`) and
-with the frame taken right before the step's first action (`before_action`):
-the 64-bit dHash distance (the restorer's own function) and the changed
-regions (the 32-px grid of `spectragent flywheel diagnose`: a pixel changed
-when its largest RGB difference exceeds 16, a cell is active when 1 % of its
-pixels changed, four-neighbour cells merge into one box).
+with a screenshot — of a policy step by default, since a restored step has no
+think time (`--origins policy,restored` adds restored steps; the report then
+splits by origin) — is compared with its delayed frame (`after_observation`)
+and with the frame taken right before the step's first `env.act` call
+(`before_action`).
 
-Verdicts, a frame within `--max-distance` (default 5) counting as the same
-screen: `stable_through_think` (the before-action frame is the same, and the
-delayed one too when there is one), `stable_short` (the delayed frame is the
-same, the before-action frame is not or is missing), `changed_short` (the
-delayed frame differs), `changed_before_action` (no delayed frame, the
-before-action frame differs), `no_frames`. A changed box overlapping a media
-element that was playing around the screenshot is flagged separately
-(`media_change`).
+A comparison is decided by the changed-region grid of `spectragent flywheel
+diagnose` (a pixel changed when its largest RGB difference exceeds 16; a 32-px
+cell is active when 1 % of its pixels changed; four-neighbour cells form one
+region). It counts as **changed** when one region's own cell area is at least
+`--min-change-area` of the image (default `0.005`, 0.5 %: a blinking caret or a
+ticking clock stays under it; a playing preview does not). Each comparison
+reports the changed-pixel fraction and every region (box clipped to the image,
+cells, share of the image, whether it is over the minimum). The 64-bit dHash
+distance (the restorer's own) is reported beside it and decides nothing: it is
+blind to local changes, such as a video preview that changed 6-8 % of the
+pixels at distance 0.
+
+Verdicts: `stable_through_think` (the before-action frame is unchanged, and the
+delayed one too when there is one), `stable_short` (the delayed frame is
+unchanged; the before-action frame changed or is missing), `changed_short` (the
+delayed frame changed), `changed_before_action` (no delayed frame; the
+before-action frame changed), `no_frames` (no frame that could be compared). A
+changed region overlapping a media element that was playing around the
+screenshot is flagged separately (`media_change`), whatever the verdict. The
+think time is the first action span's start minus the observation's capture.
 
 Outputs:
 
-- `stability.json` (`"format": "lookahead-stability-1"`): the method, the
-  counts, and per observation the settle facts, the previous step's last
-  action, both comparisons (frame, outcome, seconds after the observation,
-  distance, boxes, changed pixels), the verdict and the media flags;
+- `stability.json` (`"format": "lookahead-stability-2"`): the method, the
+  minimum area, the origins, the counts, and per observation the settle facts,
+  the previous step's last action, the think time, both comparisons (frame,
+  outcome, seconds after the observation, changed fraction, regions, dHash
+  distance), the verdict and the media flags;
 - `report.md`: verdict counts, settle outcome × verdict, the previous step's
-  last action × verdict, changes over playing media;
-- a review queue of up to `--queue-size` (60) observations with frames, taken
-  in turn from each (settle outcome × verdict) group (`--seed`). Images:
-  `observation`, `delayed`, `before_action`. Choices: stable / still loading /
-  animation or video / other change / cannot tell; region kind `change`. The
-  suggestion is the machine verdict (a change over playing media suggests
-  animation or video, one after a capped settle still loading, any other
-  change other change) with the changed boxes as regions.
+  last action × verdict, origin × verdict (when restored steps are included),
+  changes over playing media, and how often the grid and the dHash disagree;
+- a review queue of up to `--queue-size` (60) observations with a comparable
+  frame, taken in turn from each (settle outcome × verdict) group (`--seed`).
+  Images: `observation`, `delayed`, `before_action` (trailing frames
+  included). Choices: stable / still loading / animation or video / other
+  change / cannot tell; region kind `change`. The suggestion is the machine
+  verdict (a change over playing media suggests animation or video, one after
+  a capped settle still loading, any other change other change) and, always,
+  every grid region as a box.
 
 ## `variants --root DIR --steps-per-run N --per-step K --out FILE.json`
 
@@ -121,40 +144,60 @@ information need on the same site, answerable without logging in, concrete and
 checkable, in the source task's language. A reply must hold exactly K distinct
 tasks, none repeating the source task, each in the source task's script.
 
-`FILE.json` is the `task-variants-1` file the `trace_branches` loader reads:
-`source_run_id` (the recorded run id), `step`, `variant_id` (`"1"` … `"K"`
-per checkpoint), `task_text`, `note` (the model, the step, and where the
-answer is found). Every judge call is in `FILE.calls.jsonl`.
+`FILE.json` is the `task-variants-1` file the `trace_branches` loader reads,
+built with the loader's own model (`TaskVariantsFile`): `source_run_id` (the
+recorded run id), `step`, `variant_id` (`"1"` … `"K"` per checkpoint, so task
+ids read `…/s<step>/v1/b<i>`), `task_text`, `note` (the model, the step, and
+where the answer is found). Every judge call is in `FILE.calls.jsonl`.
 
 ## `judge-forks --root DIR --out DIR2`
 
 For every branch run: is its decision at the checkpoint the same as the
 source's, and is it sound? The branch's first policy step is paired with the
 source run's step at the checkpoint through the recorded provenance; same-task
-and task-variant branches alike.
+and task-variant branches alike. A fork is judged only when it is paired, its
+checkpoint restored (the restorer's check of the checkpoint observation is
+`ok`; the check is copied into the judgment) and the branch made a decision.
+The others get the status `checkpoint_diverged`, `no_decision` or `unpaired`
+with the reason, and stay out of every statistic, table and queue item; the
+report lists them by count and reason.
 
-- **Rules**: action types (`click` = `click_coordinate`, `type` =
-  `type_coordinate`; waits are ignored), the element the pointer hit (role and
-  name), the typed text, a scroll's direction, a navigation's URL, a dropdown's
-  option, and the next observation's URL (a different page decides; a
-  difference only after the path does not). `same`, `different` or `unknown`,
-  with the reasons.
-- **Judge model**: the checkpoint screen with the pointer actions ringed (the
-  branch's red B1…, the source's blue S1…), the branch's next screen and, for a
-  same-task fork, the source's actions and next screen. It answers
-  `same_intent` (same-task forks only), `reasonable` and
-  `executed_as_intended`, each `yes` / `no` / `uncertain` with a one-sentence
-  reason.
+- **Rules**, deciding only on strong evidence: action types (`click` =
+  `click_coordinate`, `type` = `type_coordinate`; waits are ignored); a pointer
+  hit is `same` for the same role and readable name at nearby points (48 CSS
+  px), `different` only when both hits are named interactive targets (a click
+  on a card's image and one on its title may be the same choice: `unknown`);
+  typing is `same` for the same text into the same field (its role and name, or
+  nearby points) and `different` for other text, or the same text into a
+  differently named field; a scroll's direction, a navigation's URL, a
+  dropdown's option; the next observation's URL (a different page decides, a
+  difference only in volatile query parameters such as `vt`, `spm_id_from`,
+  `utm_*` or long digit and hex tokens is neutral, any other query difference
+  leaves it `unknown`). `no_decision` when either side ended in an error
+  without an action (a reply that did not parse).
+- **Judge model**, in two separate requests so that neither answer sees the
+  other side. `reasonable` and `executed_as_intended` are asked from the
+  branch alone, identically for both kinds of fork: its task, the checkpoint
+  screen with its pointer and coordinate-typing actions ringed, its actions
+  with their measured effects, its reply and its next screen. `same_intent`
+  (same-task forks whose source decided) shows both runs' actions on the same
+  screen (run A blue, run B red) and both next screens. Each answer is `yes` /
+  `no` / `uncertain` with a one-sentence reason.
 
-Outputs: `judgments.jsonl` (one object per branch run: both runs, the
-checkpoint, fork kind, tasks, both sides' actions and next observations, the
-rule verdict, the model's answers, its call ids; `status` `judged`,
-`rules_only` or `unpaired` with the reason), `report.md` (how many same-task
-forks the rules decide, their agreement with the model, rule verdict × model
-`same_intent`, reasonable × executed per fork kind), `calls.jsonl`, and a
-review queue whose items carry the model's answers as the suggested choices
-(several may be checked: same / different intent, reasonable / not, executed /
-not). `--rules-only` asks no model and writes no queue.
+Outputs: `judgments.jsonl` (`"format": "lookahead-fork-judgment-2"`, one object
+per branch run: both runs, the checkpoint and its check, fork kind, tasks, both
+sides' actions, errors and next observations, the rule verdict, the model's
+answers, its call ids; `status` `judged`, `rules_only` (no model answer),
+`checkpoint_diverged`, `no_decision` or `unpaired`), `report.md` (how many
+same-task forks the rules decide, their agreement with the model, rule verdict
+× model `same_intent`, reasonable × executed per fork kind, the forks not
+judged), `calls.jsonl`, and a review queue that asks the same questions
+separately (`label.questions`, each yes / no / cannot tell). Each item lists
+the keys it asks and suggests the model's `answers` with its `reasons`. A
+task-variant item shows nothing of the source run; a same-task item shows the
+source's actions, the rule verdict and the source's next screen only in fields
+and an image labelled "For same intent". `--rules-only` asks no model and
+writes no queue.
 
 ## `gold-queue --root DIR --n 100 --out DIR2`
 
@@ -165,21 +208,35 @@ group, the least-used run first (`--seed`). Each shows `current` (O_t), `next`
 taken), with the task, the actions and their measured effects, both URLs and
 the agent's reply. Choices for the kind of information needed next: result
 list, confirmation or feedback, detail fields, navigation target, nothing new
-needed, other. Region kind `evidence`, drawn on the next screen. The
-suggestion carries no choice; its regions are the changed boxes between the
-two screens, as hints (source `pixel-diff`). `DIR2/sampling.json` counts the
-items by site, action type and run.
+needed, other. Region kind `evidence`, drawn on the next screen. Items carry
+no suggestion (the viewer seeds and grades a label against a suggestion, and a
+pixel difference is no answer); the instructions point to the viewer's
+Difference view, which shows where the screen changed. `DIR2/sampling.json`
+counts the items by site, action type and run.
 
 ## The judge model
 
 `variants` and `judge-forks` call `--model` (default
 `deepseek-v4.1-flash-1017`) with `reasoning_effort` `--reasoning-effort`
-(default `high`) through the OpenAI-protocol gateway named by `OPENAI_BASE_URL`
+(default `high`) and `max_completion_tokens` `--max-completion-tokens`
+(default 8192) through the OpenAI-protocol gateway named by `OPENAI_BASE_URL`
 and `OPENAI_API_KEY`, with the `openai` SDK, `--concurrency` requests at once
-(default 4). Images are sent as base64 data URLs. Every request asks for strict
-JSON (`response_format` `json_schema`, strict) and every reply is validated
-with pydantic: an HTTP 200 is no proof the schema was honoured. A request is
-sent at most three times; each retry tells the model why its previous reply
-was refused. Every attempt is recorded (`calls.jsonl`): model, parameters,
-latency, usage (reasoning tokens included), the raw reply, whether a code fence
-had to be removed, and why it was refused. The totals are printed at the end.
+(default 4). Images are sent as base64 data URLs.
+
+Every request asks for strict JSON (`response_format` `json_schema`, strict).
+The schema sent leaves out what strict mode refuses (`minLength`, `minItems`,
+`pattern`, titles, defaults …); the pydantic models keep those constraints and
+validate every reply, since an HTTP 200 is no proof the schema was honoured. A
+refused reply is asked again at most twice, each time saying why.
+
+A call that returns no reply is retried after an exponential, jittered pause
+(2 s doubling to at most 60 s, five times) when it is a rate limit (429), a
+server error (5xx) or a lost connection; any other 4xx is not retried. The
+first request is sent alone as a probe: when the route refuses it that way,
+the command stops with the status and the gateway's message, before sending
+anything else and before writing any output.
+
+Every call is recorded (`calls.jsonl`): model, parameters, latency, usage
+(reasoning tokens included), the raw reply, the HTTP status of a failure,
+whether a code fence had to be removed, and why a reply was refused. The
+totals are printed at the end.

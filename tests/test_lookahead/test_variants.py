@@ -21,6 +21,7 @@ from lookahead.variants import (
     spread,
     writing_system,
 )
+from spectragent.core.data_loader.task.task_variants import read_task_variants
 from tests.test_lookahead.conftest import TASK, World
 from tests.test_lookahead.fake_judge import ScriptedTransport, images, prompt_text
 
@@ -96,9 +97,12 @@ def test_reply_validation_counts_distinct_tasks_in_the_source_language() -> None
         model.model_validate_json(same)
     assert writing_system("Find the headline") == "other"
     assert writing_system("在B站搜索") == "chinese"
+    assert writing_system("在B站搜索・排序") == "chinese"  # the middle dot is not kana
+    assert writing_system("動画を検索") == "japanese"
+    assert writing_system("검색") == "korean"
 
 
-def test_variants_file_follows_the_agreed_format(world: World, tmp_path: Path) -> None:
+def test_variants_file_reads_back_through_the_branch_loader(world: World, tmp_path: Path) -> None:
     out = tmp_path / "variants.json"
     transport = ScriptedTransport(_answer)
     judge = Judge(transport, log_path=calls_path(out))
@@ -117,10 +121,14 @@ def test_variants_file_follows_the_agreed_format(world: World, tmp_path: Path) -
         assert set(item) == {"source_run_id", "step", "variant_id", "task_text", "note"}
         assert "answer location" in item["note"]
     assert summary["checkpoints"] == 4 and summary["variants"] == 12
+    entries = read_task_variants(out)
+    assert [entry.key for entry in entries][:3] == ["rec-1/s1/v1", "rec-1/s1/v2", "rec-1/s1/v3"]
     assert set(summary["skipped_runs"]) == {
         "branches/br-ended",
+        "branches/br-offpage",
         "branches/br-same",
         "branches/br-typed",
+        "branches/br-unparsed",
         "branches/br-variant",
         "replays/replay-1",
     }
