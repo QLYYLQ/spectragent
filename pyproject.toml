@@ -135,7 +135,7 @@ select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
 ignore = ["E501", "E402"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["spectragent"]
+known-first-party = ["spectragent", "lookahead"]
 
 # ========== Pyright (from browseruse-bench) ==========
 
