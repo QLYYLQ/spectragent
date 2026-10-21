@@ -18,7 +18,7 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-8``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-9``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
@@ -97,7 +97,7 @@ from spectragent.schemas._types import UNLIMITED, Unlimited
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-8"
+REPORT_FORMAT = "af-flywheel-report-9"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -301,7 +301,7 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-8"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-9"] = REPORT_FORMAT
     chain: ChainInfo
     token_use: TokenUseReport
     inputs: Inputs

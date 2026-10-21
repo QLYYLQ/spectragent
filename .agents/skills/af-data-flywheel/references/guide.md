@@ -645,7 +645,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-8` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-9` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
   browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit
@@ -656,9 +656,10 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   weighted; `-7` reports exact screenshot bytes, URL-and-screenshot equality and the
   URL / element-signature evidence coverage separately; `-8` added each site's
   `substitutions`, by source outcome, and `reuses`, the `repeat_last` repeats after
-  exhaustion, neither counted as a hit). The same-path fidelity also gives `media_coverage`
-  (verified steps with an actual media comparison), `media_mismatches` and
-  `media_alignment` (alignment records by outcome), overall and per site. Report keys,
+  exhaustion, neither counted as a hit; `-9` added the same-path fidelity's
+  `media_coverage` (verified steps with an actual media comparison), `media_mismatches` and
+  `media_alignment` (alignment records by outcome), overall and per site). Only the current
+  format is read; an older report is regenerated, never adapted. Report keys,
   headings and rule texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's
   ruling of 2026-10-13): what was sent to the model (`model_requests`: the text in the

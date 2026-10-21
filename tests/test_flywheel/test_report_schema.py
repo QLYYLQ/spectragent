@@ -90,7 +90,7 @@ def recommendations(report: FlywheelReport) -> dict[str, Any]:
 
 def test_every_report_item_is_present(report: FlywheelReport) -> None:
     document = json.loads(report_json(report))
-    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-8"
+    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-9"
     assert set(document["token_use"]["roles"]) == {"record", "control", "same_path", "branch"}
     assert set(document["metrics"]) == set(REPORT_METRICS)
     assert set(document["sections"]) == set(REPORT_SECTIONS)
