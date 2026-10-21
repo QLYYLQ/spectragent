@@ -391,10 +391,21 @@ standard profile (Skyvern, BrowserUse) every cross-site frame was listed unreach
 every step on such a page failed `media_mismatch` (now one registry per tab); a frame that
 answered one of the two reads is no longer unreachable; an iframe inside a shadow root was
 silently skipped (now listed as unreachable); the live cross-site test no longer waits for
-media while its start page loads. Open questions with recommendations are in the review:
-the report format string after adding media keys, playing-video drift behind the DOM
-capture for DOM agents (0.6 s at 5,000 elements, 3.5 s at 30,000), shadow-root frames, and
-the sum of capture budgets against the 30 s capture event.
+media while its start page loads.
+
+**User decisions, 2026-10-21, on the final review's four questions (all recommendations
+accepted, implemented on the branch):**
+
+1. A capture whose alignment left a recorded-playing video playing takes its screenshot
+   before the DOM; other captures keep the DOM first. With the DOM first the video had moved
+   0.6 s at 5,000 elements and 3.5 s at 30,000; now 0.007-0.017 s.
+2. The metrics report is `af-flywheel-report-9` (the media fields); no reader for older
+   formats, old reports are regenerated.
+3. `capture_state_timeout_s` (at most 3 s) plus twice `media_state_timeout_s` (at most 1.5 s)
+   must stay under the 4 s a capture's fixed bounds leave of its 30 s event; a larger sum is
+   refused at construction.
+4. Iframes inside shadow roots stay unreachable (their steps are not restorable); recorded as
+   a known limit. Reading them would mean naming frames by their CDP frame owner instead.
 
 ## Pending — Bilibili search `vt` parameter
 
