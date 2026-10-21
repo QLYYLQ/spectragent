@@ -188,13 +188,21 @@ async def test_restored_history_shows_actual_execution_and_labels_source_reply(
     observation_text = next(message.text for message in messages if message.role == "user")
     assert "Live result" in observation_text or "Screenshot: 2000x1000 pixels." in observation_text
     assert "not a new reply or thought" in messages[-1].text
-    if agent_class in (BrowserUseAgent, UITarsAgent):
+    if agent_class is BrowserUseAgent:
         assert "Executed coordinate parameters use CSS viewport pixels." in messages[-1].text
+    else:
+        assert "viewport pixels" not in messages[-1].text
     facts = json.loads(messages[-1].text.split("\n", 1)[1])
     assert facts["source_material"]["run_id"] == "source-run"
     assert facts["source_material"]["recorded_reply"] == history.source_reply
     executed = facts["actual_restored_execution"]
-    assert executed[0]["action"] == history.actions[0].model_dump()
+    if agent_class is UITarsAgent:
+        # On the restored observation's grid: its 2000x1000 screenshot's pixels
+        # over a 1000x500 viewport, so the viewport's (14, 28) is (28, 56).
+        assert executed[0]["action"] == "click(point='(28, 56)')"
+        assert facts["source_material"]["recorded_actions"] == ["click(point='(4, 8)')"]
+    else:
+        assert executed[0]["action"] == history.actions[0].model_dump()
     assert executed[0]["result"]["success"] is False
     assert executed[0]["result"]["error"] == "The live button was disabled"
     assert executed[0]["result"]["extracted_content"] == "actual result text"

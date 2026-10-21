@@ -25,7 +25,14 @@ from pydantic import BaseModel, ConfigDict
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
-from spectragent.schemas.action import Action, ActionDescriptor, ActionEffect, ActionResult
+from spectragent.schemas.action import (
+    Action,
+    ActionDescriptor,
+    ActionEffect,
+    ActionResult,
+    PointWriter,
+    write_viewport_point,
+)
 from spectragent.schemas.restoration import Checkpoint
 from tests._helpers.branch_browser import (
     AgentKind,
@@ -45,7 +52,7 @@ class WorldEffect(ActionEffect):
 
     measured: int
 
-    def describe(self) -> str:
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         return f"World measured {self.measured}."
 
 

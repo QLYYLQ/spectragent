@@ -103,7 +103,17 @@ async def test_runtime_feeds_all_four_results_to_the_next_decision(tmp_path, mon
     assert returned[2]["result"]["extracted_content"] == "third result"
     recorded = trace.step(0)
     assert recorded is not None
-    assert [entry["action"] for entry in returned] == [a.model_dump() for a in recorded.actions]
+    # The trace keeps viewport units (the 64x36 screenshot depicts 1280x720);
+    # the feedback writes each action as the call the model wrote, on its grid.
+    assert [(a.params["coordinate_x"], a.params["coordinate_y"]) for a in recorded.actions] == [
+        (200, 400),
+        (400, 400),
+        (600, 400),
+        (800, 400),
+    ]
+    assert [entry["action"] for entry in returned] == [
+        f"click(point='({x}, 20)')" for x in [10, 20, 30, 40]
+    ]
     assert recorded.action_results[2].typed_into_sensitive_field is True
 
 
@@ -150,7 +160,8 @@ async def test_prepare_resets_platform_but_one_execution_cannot_change_platform(
 async def test_partial_batch_does_not_claim_missing_results_or_repeat_old_batches() -> None:
     before = StepRecord(step=2, error_phase="parse", error="older error already in memory")
     actions = [
-        Action(name="browser.click_coordinate", params={"coordinate_x": x}) for x in [1, 2, 3]
+        Action(name="browser.click_coordinate", params={"coordinate_x": x, "coordinate_y": 9})
+        for x in [1, 2, 3]
     ]
     latest = StepRecord(
         step=3,
@@ -160,12 +171,20 @@ async def test_partial_batch_does_not_claim_missing_results_or_repeat_old_batche
         error_phase="act",
         error="second action raised before returning",
     )
-    messages = await UITarsAgent().build_react_prompt(
+    agent = UITarsAgent()
+    # Step 3's prompt is built first: its batch is written on that step's grid.
+    await agent.build_react_prompt(
+        observation(history=[before]), context=ReactPromptContext(step=3, phase="policy")
+    )
+    messages = await agent.build_react_prompt(
         observation(history=[before, latest]), context=ReactPromptContext(step=4, phase="policy")
     )
     actual = feedback(messages)
     assert len(actual["returned_results"]) == 1
-    assert actual["actions_without_returned_results"] == [a.model_dump() for a in actions[1:]]
+    assert actual["actions_without_returned_results"] == [
+        "click(point='(2, 9)')",
+        "click(point='(3, 9)')",
+    ]
     assert actual["discarded_action_count"] == 2
     assert actual["error"] == latest.error
     assert "older error" not in text(messages)

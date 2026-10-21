@@ -14,6 +14,13 @@ such and never rendered as zero; a measured zero says none.
 An Agent that does not show the capture state excludes the fragment from its
 negotiation demand (:func:`capture_state_demand`) rather than dropping it from
 the prompt after capture, so the fragment is neither captured nor rendered.
+
+The pointer is the one point among the facts, and the one part whose writing
+the Agent decides: it passes a ``write_point``
+(:data:`~spectragent.schemas.action.PointWriter`, shared with the action
+effects' ``describe``) so its model reads the pointer on the grid it writes
+points on (§4.1, "模型看到的每个点都写在它写点的那个网格上"). The default writes
+viewport pixels, as before.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from spectragent.core.negotiation import bounded_demand
+from spectragent.schemas.action import PointWriter, write_viewport_point
 from spectragent.schemas.observation.failure import FragmentFailure
 
 #: The relative observation key every Agent declares optional.
@@ -36,13 +44,20 @@ _NOT_MEASURED = (
 )
 
 
-def render_capture_state(observation: Any) -> str:
+def write_viewport_pixels(x: int, y: int) -> str:
+    """The default pointer writer: the viewport point with its unit, ``(x, y) in viewport pixels``."""
+    return f"{write_viewport_point(x, y)} in viewport pixels"
+
+
+def render_capture_state(
+    observation: Any, *, write_point: PointWriter = write_viewport_pixels
+) -> str:
     """The ``<capture_state>`` block of *observation*, or ``""`` when it has none.
 
     ``""`` when the slot is absent (the environment provides no capture state,
     or the Agent excluded it). A :class:`FragmentFailure` in the slot is said
     as one explicit sentence: the facts are unknown this step, not absent from
-    the platform.
+    the platform. A known pointer is written by *write_point*.
     """
     fragment = getattr(observation, "capture_state", None)
     if fragment is None:
@@ -52,7 +67,7 @@ def render_capture_state(observation: Any) -> str:
     lines = [
         f"Settle: {_settle(fragment.settle_state)}",
         f"Foreground change: {_foreground(fragment.foreground_change)}",
-        f"Pointer: {_pointer(fragment.pointer)}",
+        f"Pointer: {_pointer(fragment.pointer, write_point)}",
         f"Failed visible resources: {_failed_resources(fragment.failed_visible_resources)}",
     ]
     return "<capture_state>\n" + "\n".join(lines) + "\n</capture_state>"
@@ -103,9 +118,9 @@ def _foreground(change: Any) -> str:
     return "the focused surface closed itself and the capture shows another."
 
 
-def _pointer(pointer: Any) -> str:
+def _pointer(pointer: Any, write_point: PointWriter) -> str:
     if pointer.status == "known":
-        return f"({pointer.x}, {pointer.y}) in viewport pixels."
+        return f"{write_point(pointer.x, pointer.y)}."
     if pointer.status == "unavailable":
         return "no pointer on this platform."
     return "unknown (no confirmed position)."
@@ -128,4 +143,9 @@ def _failed_resources(failed: Any) -> str:
     return f"unknown{detail}."
 
 
-__all__ = ["CAPTURE_STATE_KEY", "capture_state_demand", "render_capture_state"]
+__all__ = [
+    "CAPTURE_STATE_KEY",
+    "capture_state_demand",
+    "render_capture_state",
+    "write_viewport_pixels",
+]

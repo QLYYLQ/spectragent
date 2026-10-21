@@ -236,6 +236,26 @@ async def test_shipped_agent_restored_history_uses_live_execution(
         assert first is not None and first.source_history is not None
         assert first.actions[0].params["index"] == 501
         assert first.source_history.source_actions[0].params["index"] == 101
+    else:
+        # The restored and the recorded clicks are written as UI-TARS writes them, on the
+        # restored screenshot's grid: the 64x36 image's pixels, where the source wrote
+        # them; the trace keeps the viewport's (docs/architecture_design.md §4.1).
+        first = trace.step(0)
+        assert first is not None
+        assert first.actions[0].params == {"coordinate_x": 200, "coordinate_y": 400}
+        restored_text = "\n".join(
+            part["text"]
+            for message in recorded_form(outcome.teacher.prompts[0])
+            for part in (
+                message["content"]
+                if isinstance(message["content"], list)
+                else [{"text": message["content"]}]
+            )
+            if "text" in part
+        )
+        assert "click(point='(10, 20)')" in restored_text
+        assert "coordinate_x" not in restored_text
+        assert "viewport pixels" not in restored_text
     assert all(record.llm_output == "" for record in trace.step_records[:2])
 
 
