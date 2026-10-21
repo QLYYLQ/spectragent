@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from spectragent.agents._registrar import AgentRegistrar
-from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.agents.ui_tars import NOT_PLACEABLE, UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.composer import ConfigComposer
@@ -386,6 +386,88 @@ class TestUntranslatable:
             '[not expressible: no_counterpart] [{"name":"browser.navigate",'
             '"params":{"url":"https://shop.example.test/cart"}}]'
         )
+
+    async def test_keep_as_text_writes_points_on_the_students_grid(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """The kept turn and the next step's feedback write the action alike, on the 0-1000 grid.
+
+        ``type``'s ``clear`` has no spelling in UI-TARS's syntax, so the step is
+        unrepresentable and kept as text; its point is still the student's, (500, 858)
+        for the viewport's (640, 618), never the trace's CSS pixels.
+        """
+        typed = Action(
+            name="browser.type_coordinate",
+            params={"coordinate_x": 640, "coordinate_y": 618, "text": "kettle", "clear": True},
+        )
+        renderer = _renderer(composer, untranslatable="keep_as_text")
+        first, last = await renderer.render(_trajectory(_three_steps(tmp_path, typed)))
+        assert last.context_steps == (0, 1)
+        fact = {
+            "name": "browser.type_coordinate",
+            "params": {
+                "clear": True,
+                "coordinate_x": 500,
+                "coordinate_y": 858,
+                "text": "kettle",
+            },
+        }
+        kept = [m.text for m in last.context if isinstance(m, AssistantMessage)][1]
+        assert kept == "[not expressible: unrepresentable] " + json.dumps(
+            [fact], sort_keys=True, separators=(",", ":")
+        )
+        observation = last.context[-1]
+        assert isinstance(observation, UserMessage) and isinstance(observation.content, list)
+        text = observation.content[0].text  # type: ignore[union-attr]
+        feedback = json.loads(text.split("<action_results>\n")[1].split("\n</action_results>")[0])
+        assert [entry["action"] for entry in feedback["returned_results"]] == [fact]
+        assert "640" not in kept and "618" not in kept
+
+    async def test_a_step_kept_as_text_for_a_screenshot_of_unknown_size_does_not_stop_the_export(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """A pixel-grid student cannot place a point on an image of unknown size.
+
+        The step is kept as text with its point said to be not placeable, and the next
+        step feeds it back the same way instead of failing the whole export.
+        """
+        unsized = screenshot(color=20).model_copy(update={"image_width": 0, "image_height": 0})
+        trace = RunTrace(
+            write_ui_tars_run(
+                tmp_path,
+                "run-unsized",
+                [
+                    ui_tars_step(click_at(640, 360), thought="open the menu", color=10),
+                    ExportStep(
+                        actions=[click_at(100, 200)],
+                        llm_output="Thought: pick\nAction: (recorded reply)",
+                        fragments=[unsized],
+                    ),
+                    ui_tars_step(finished("added"), thought="done", color=30),
+                ],
+            )
+        )
+        renderer = _renderer(
+            composer,
+            untranslatable="keep_as_text",
+            root=student_root(coordinate_space="screenshot_pixels"),
+        )
+        first, last = await renderer.render(_trajectory(trace))
+        assert (first.sample.step, last.sample.step) == (0, 2)
+        assert renderer.stats.untranslatable == {"unrepresentable": 1}
+        unplaced = {
+            "name": "browser.click_coordinate",
+            "params": {"coordinate_x": NOT_PLACEABLE, "coordinate_y": NOT_PLACEABLE},
+        }
+        kept = [m.text for m in last.context if isinstance(m, AssistantMessage)][1]
+        assert kept == "[not expressible: unrepresentable] " + json.dumps(
+            [unplaced], sort_keys=True, separators=(",", ":")
+        )
+        observation = last.context[-1]
+        assert isinstance(observation, UserMessage) and isinstance(observation.content, list)
+        text = observation.content[0].text  # type: ignore[union-attr]
+        feedback = json.loads(text.split("<action_results>\n")[1].split("\n</action_results>")[0])
+        assert [entry["action"] for entry in feedback["returned_results"]] == [unplaced]
 
     async def test_fail(self, composer: ConfigComposer, tmp_path: Path) -> None:
         renderer = _renderer(composer, untranslatable="fail")

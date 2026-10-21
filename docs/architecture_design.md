@@ -233,7 +233,8 @@ class ReactLoop(AgentLoopBase):
     __registry_key__ = "react"
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
     __optional_slots__ = {"get_react_output_model", "prepare",
-                          "format_react_output", "parse_react_thought"}   # 后两个：训练导出（M32，见下）
+                          "format_react_output", "format_action_fact",
+                          "parse_react_thought"}   # 后三个：训练导出（M32，见下）
 
     async def _execute(self, agent, task, *, ctx, **_):
         # deps 每次调用经 ctx 传入，不存在 self 上
@@ -254,11 +255,13 @@ class ReactLoop(AgentLoopBase):
 | `get_react_output_model()` | `ReactLoop` 自己（每次 LLM 调用的 `output_format`） | 不校验：没有就是文本调用 |
 | `prepare(task, action_descriptors, execution_limits=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`） | 不校验：没有就没有种子消息 |
 | `format_react_output(actions, *, thought=None) -> str` | 训练导出器（学生一侧，§4.15） | 只在导出组装学生时 |
+| `format_action_fact(action, *, step) -> str \| dict` | 训练导出器（`keep_as_text` 的文本轮，§4.15） | 不校验：没有就写动作自己的 JSON（viewport 单位） |
 | `parse_react_thought(llm_output) -> tuple[str, str] \| None` | 训练导出器（teacher 一侧，`thought_source: teacher`） | 只在导出读 teacher 的 thought 时 |
 
-后两个都是 ReAct 的 slot，所以写在 `ReactLoop.__optional_slots__` 里（`BranchLoop` 继承）；不另立 `__inverse_slots__` 之类的新机制，也没有导出专用的错误类型。
+后三个都是 ReAct 的 slot，所以写在 `ReactLoop.__optional_slots__` 里（`BranchLoop` 继承）；不另立 `__inverse_slots__` 之类的新机制，也没有导出专用的错误类型。
 
 - **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `await build_react_prompt(obs, context=...)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。UI-TARS 的执行反馈与 restored 历史用同一套逐动词写法写已执行的动作，点在那批动作所依据的截图的网格上（§4.1"模型看到的每个点都写在它写点的那个网格上"）。
+- **`format_action_fact`** 把一个动作写成本 agent 当作事实展示它的样子：第 `step` 步截图上选出的动作，点写在那一步的网格上。UI-TARS 的执行反馈、restored 历史与训练导出的 `keep_as_text` 文本轮共用它（2026-10-22），所以文本轮与下一步反馈里的同一个动作写法相同，都不是 trace 的 CSS px。它读本 run 的 agent 状态（那一步的网格），所以只在 `prepare` 之后、第 `step` 步的 `build_react_prompt` 之后调用。没有这个 slot 的学生，导出写动作自己的 JSON。
 - **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止）；`skyvern`：每个动作的 `reasoning` 按顺序以换行连接。
 - **校验**：导出器组装学生之后先照常 `loop.validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`。`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
 
@@ -432,13 +435,13 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 
 **模型看到的每个点都写在它写点的那个网格上**（用户 2026-10-22 的裁决，取代原来的"执行参数的坐标明确为 CSS viewport pixels，模型输出继续使用其配置网格"）。事实不变：trace 里的动作参数、动作效果（§4.5）与 `capture_state`（§4.4）照旧是 capability 的 viewport 单位（浏览器为 CSS px）；变的只是 Agent 怎么呈现它们（呈现归 Agent，§4.4"观测增强按消费方分层"）。原因是实测：`coordinate_space: normalized_1000` 教模型在 0–1000 网格上写点，而反馈里的每个点都是 CSS px，teacher 模型（deepseek）于是把像素数写到网格上：输入框的像素 y 是 604，它写 `(500, 604)`，在 y=435 的空白处执行；一个金融站点上 25 次失败的文本输入有 15 次按像素读就落在输入框里，越靠屏幕下方偏得越远。UI-TARS 因此：
 
-- **上一批动作**写成它自己的动作语法，例如 `click(point='(500, 858)')`：与 `format_react_output` 用同一个逐动词写法（`_Verb.write`），点经 `PointGrid.to_grid` 写在那一批动作所依据的截图（上一步的截图）的网格上，所以模型看到的正是它在那张截图上会写出的那一行。批次的其余事实（每个结果的成败与错误、没有返回结果的动作、截断数量、错误阶段及错误）照旧。这个语法写不出来的动作（没有对应动词、本 run 没协商、参数值写不出——只出现在训练导出 `keep_as_text` 之后的历史里）保留原来的 `{"name", "params"}` 对象，其中成对的 `<name>_x` / `<name>_y` 点参数同样换成网格点。
-- **效果行**由 `describe(write_point=...)`（§4.5）把它陈述的每个点写在同一个网格上；**`capture_state` 的指针**由 `render_capture_state(observation, write_point=...)`（§4.4）写在本轮截图的网格上。本轮没有可测尺寸的截图时（这一步模型本来也写不了点），指针只说位置在这一步无法给出。
+- **上一批动作**写成它自己的动作语法，例如 `click(point='(500, 858)')`：与 `format_react_output` 用同一个逐动词写法（`_Verb.write`），点经 `PointGrid.to_grid` 写在那一批动作所依据的截图（上一步的截图）的网格上，所以模型看到的正是它在那张截图上会写出的那一行。批次的其余事实（每个结果的成败与错误、没有返回结果的动作、截断数量、错误阶段及错误）照旧。这个语法写不出来的动作保留原来的 `{"name", "params"}` 对象，点参数同样换成网格点：没有对应动词、本 run 没协商、参数值写不出，或者点在网格上没有位置（见下）。它们来自训练导出 `keep_as_text` 之后的历史，也来自 restored 历史（retarget 后实际执行的动作与录下的源动作）。哪些参数是点只看动作注册的 `Params`（`core/actions/params.py::point_params`；相对名按本 run 的绑定查全限定名，注册表里没有的动作用 UI-TARS 自己动词的点），从不按参数名或取值猜，所以不是点的 `_x` / `_y` 参数从不被换算。这一写法是 Agent 的公开可选 slot `format_action_fact(action, *, step)`（上文"可选 slot"），导出的 `keep_as_text` 文本轮也用它写。
+- **效果行**由 `describe(write_point=...)`（§4.5）把它陈述的每个点写在同一个网格上；**`capture_state` 的指针**由 `render_capture_state(observation, write_point=...)`（§4.4）写在本轮截图的网格上。本轮没有可测尺寸的截图时（这一步模型本来也写不了点），指针写成 `a point not placeable (no screenshot of known size)`。
 - **restored 历史**（下文"restored 历史"）里实际执行的动作和源材料里录下的动作，都写在本次恢复观测截图的网格上（每个恢复步的动作就是在这张截图之后执行的）；原来的 "Executed coordinate parameters use CSS viewport pixels." 前缀删除。源回复 `recorded_reply` 本来就是 UI-TARS 在网格上写的原文，现在与录下的动作同一个网格。
 - **系统提示**删除 "Execution feedback coordinates are CSS viewport pixels; write new action points on the output grid specified above."，改为一句：执行反馈里的点与模型写的点在同一个网格上。`screenshot_pixels` 的网格就是图像像素，所以同一条路径写出的是图像像素：DPR 1 时数字与以前相同；DPR 2 时是 CSS px 的两倍，这也修正了以前反馈写 CSS px、模型写图像像素的不一致。
 - **距离不是点**：滚动的位移与滚动位置照旧是 viewport 的 px，位移写明单位（§4.5）。
 
-**较早一步的网格从哪里来。** `loop.history` 里的 `StepRecord` 不带截图几何（Loop 不认识截图，§4.4），所以 UI-TARS 保留一份按步号的 per-run 状态：每次 `build_react_prompt` 记下本步截图的网格（没有可测尺寸的截图时记 `None`），渲染上一批时按那条记录的 `step` 取。`prepare` 清空它。每条渲染路径都在 `prepare` 之后按步序构建 prompt：实时执行；branch 的 source 历史重建（逐步用源观测）；restored 历史（`build_restored_history` 先对本次恢复观测构建本步 prompt，再写恢复执行）；训练导出的每一段（段首经 `seed_messages` 调 `prepare`，段首没有上一批，段内逐步构建）。所以上一批的网格总在。取不到——那一步不是这个 Agent 实例在 `prepare` 之后构建的，或那一步没有可测尺寸的截图——而那一批有要写的点时，渲染明确报错，从不退回像素。
+**较早一步的网格从哪里来。** `loop.history` 里的 `StepRecord` 不带截图几何（Loop 不认识截图，§4.4），所以 UI-TARS 保留一份按步号的 per-run 状态：每次 `build_react_prompt` 记下本步截图的网格（没有可测尺寸的截图时记 `None`），渲染上一批时按那条记录的 `step` 取。`prepare` 清空它。每条渲染路径都在 `prepare` 之后按步序构建 prompt：实时执行；branch 的 source 历史重建（逐步用源观测）；restored 历史（`build_restored_history` 先对本次恢复观测构建本步 prompt，再写恢复执行）；训练导出的每一段（段首经 `seed_messages` 调 `prepare`，段首没有上一批，段内逐步构建）。所以上一批的网格总在。**在网格上没有位置的点照实说，从不退回像素，也从不夹到边上**：那一步没有可测尺寸的截图时（导出里因此被 `keep_as_text` 的步、恢复观测的截图量不出尺寸），点写成 `not placeable (no screenshot of known size)`；点在截图所示区域之外时（`to_grid` 会把它夹到边上，从而写错），写成 `outside the screenshot`。动作的 JSON 里这两个点参数取这句话，效果行与指针写成 `a point …`。这样导出与分叉都照常继续，不因一个量不出的点中止。只有那一步根本不是这个 Agent 实例在 `prepare` 之后构建的、而那一批有要写的点时，渲染报错：每条渲染路径都先构建一步的 prompt 再反馈它的批次，所以这只会是调用方跳过了一步，录下的数据造不出这种情况。
 
 **这次改动之前的 UI-TARS 录制不能用 source 历史分叉。** `history_source: source` 先比较种子、再逐次精确比较重建的 prompt 与源录下的 prompt，而系统提示与反馈里的点都变了，所以这样的分叉在种子检查就以 `IncompatibleCheckpointError` 停下。没有兼容路径（测试数据可丢弃）：重新录制，或用 `history_source: restored`（它不比较源 prompt，按新的写法渲染）。训练导出照常读旧录制，学生的上下文按新的写法渲染，只是与源 run 录下的调用不再逐条相同（§4.15"identity 导出的期望"）。
 
@@ -3599,7 +3602,7 @@ class ActionTranslator(Protocol):
 - **缺学生要的 fragment 的步**：某一步没录下学生要的 env 来源 fragment，或在学生必需（`required_fragments`）的 fragment 上录下的是采集失败（teacher 那边它是可选的）：这一步不渲染、结束当前段，manifest 记 `steps.skipped.fragment_unavailable`。
 - **学生写不写得出来**：动作名经 `resolve_action_name(name, <学生守卫过的动作名>, <学生的 action_bindings>)` 解析不出来 → `no_counterpart`；一步的动作数超过学生 Loop 的 `max_actions_per_step` → `exceeds_action_budget`；`format_react_output` 抛 `UnrepresentableActionError` → `unrepresentable`。
 - **thought**：`thought_source: none` 时目标轮与历史轮都没有 thought。`thought_index_refs: drop`（默认）且学生协商出的 fragment 不含源 run 的 index 参数所依赖的 fragment（`param_fragments` 给出的那些，browser 上就是 `browser.dom`）时，含 `[123]` 这类 index 记号的 thought 被丢掉（样本保留、只是没有 thought），manifest 计数。
-- **不可译的步**（翻译器给的或渲染时判的）按翻译器的 `untranslatable` 处理。`drop_step`：这一步不是样本，当前段结束，下一个可渲染的步开新段（重新播种的上下文，同一个任务）；`truncate`：这条轨迹在这一步结束；`keep_as_text`：这一步不是样本，但它的观测轮照常进上下文，assistant 轮写成 `[not expressible: <reason>] <动作的 JSON>`（键排序），段不断；`fail`：抛 `UntranslatableActionError(sample_id, reason, detail)`。每个原因的丢弃数进 manifest（M33 的输入）。不可导出的步（上面）总是结束当前段。
+- **不可译的步**（翻译器给的或渲染时判的）按翻译器的 `untranslatable` 处理。`drop_step`：这一步不是样本，当前段结束，下一个可渲染的步开新段（重新播种的上下文，同一个任务）；`truncate`：这条轨迹在这一步结束；`keep_as_text`：这一步不是样本，但它的观测轮照常进上下文，assistant 轮写成 `[not expressible: <reason>] <动作的 JSON 列表>`（键排序），每个动作经学生的可选 slot `format_action_fact(action, step=k)`（§4.1）写，点在学生网格上、与下一步反馈里的写法相同；学生没有这个 slot 时是动作自己的 JSON。段不断；`fail`：抛 `UntranslatableActionError(sample_id, reason, detail)`。每个原因的丢弃数进 manifest（M33 的输入）。不可导出的步（上面）总是结束当前段。
 - **identity 导出的期望**：对 UI-TARS 录下的 run 用 `identity` 与同一份学生配置导出，第 k 个样本的上下文与源 run 第 k 步第 0 次调用的 `messages` 在 trace 的记录形态下（`core/trace/reconstruction.py::recorded_form`）逐条相同，assistant 轮按解析结果相同；预期的差异只有：源 run 的解析重问轮与截断提示（学生上下文里从不写它们）、跳过或丢弃的步造成的分段、以及 assistant 轮的书写形式（学生的规范写法 vs 模型原文）。
 
 #### round-trip（`parse(format(a)) == a` 做不到，按下面的定义）

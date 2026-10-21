@@ -502,10 +502,22 @@ class StudentRenderer:
         sample: CanonicalStepSample,
         reason: UntranslatableReason,
     ) -> None:
-        """``keep_as_text``: the step stays in the context, its reply written as text."""
+        """``keep_as_text``: the step stays in the context, its reply written as text.
+
+        Each action is written as the student shows an action as a fact — its
+        optional ``format_action_fact`` slot, on the grid of this step's
+        screenshot, the same writing its next observation feeds the step back
+        with (arch §4.1) — or, for a student without that slot, as the action's
+        own JSON.
+        """
         actions = sample.actions if sample.actions is not None else sample.teacher_actions
+        write = getattr(self.agent, "format_action_fact", None)
+        step = item.record.step
         written = json.dumps(
-            [action.model_dump(mode="json") for action in actions],
+            [
+                write(action, step=step) if callable(write) else action.model_dump(mode="json")
+                for action in actions
+            ],
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
