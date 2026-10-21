@@ -35,7 +35,12 @@ from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
     BrowserUseCleaner,
 )
 from spectragent.core.capabilities.browser.dom.models import FRAME_HANDLE_BASE, TargetCapture
+from spectragent.core.capabilities.browser.profiles import resolve_profile
+from spectragent.core.capabilities.browser.watchdogs.base import WatchdogContext
 from spectragent.core.capabilities.browser.watchdogs.dom_watchdog import DOMWatchdog
+from spectragent.core.capabilities.browser.watchdogs.screenshot_watchdog import (
+    ScreenshotWatchdog,
+)
 from tests._helpers.dom_payloads import Doc, El, compile_target
 
 
@@ -53,6 +58,10 @@ class ChromeLikeCDP:
         self.ax_nodes: dict[tuple[str | None, str | None], list[dict[str, Any]]] = {}
         self.dead_sessions: set[str] = set()
         self.refuse_auto_attach: set[str] = set()
+        #: Sessions with auto-attach on. As in Chrome, a session's existing
+        #: frames are reported to its first accepted ``Target.setAutoAttach``
+        #: only; a repeat reports nothing it already reported.
+        self.auto_attaching: set[str] = set()
         #: Sessions whose renderer never answers (a spinning main thread).
         self.stuck_sessions: set[str] = set()
         #: Seconds a session's renderer takes to answer any command.
@@ -82,6 +91,9 @@ class ChromeLikeCDP:
         if method == "Target.setAutoAttach":
             if session_id in self.refuse_auto_attach:
                 raise RuntimeError("CDP error: Not allowed")
+            if (session_id or "") in self.auto_attaching:
+                return {}
+            self.auto_attaching.add(session_id or "")
             for target_id, child in self.children.get(session_id or "", []):
                 self.attach(session_id or "", target_id, child)
             return {}
@@ -245,7 +257,7 @@ class TestDiscovery:
 
     async def test_a_dom_watchdog_without_a_tab_session_does_not_discover_frames(self) -> None:
         cdp = tree()
-        wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=True)  # type: ignore[arg-type]
+        wd = DOMWatchdog(cdp, frames=FrameTargets(cdp))  # type: ignore[arg-type]
         await wd._capture_cdp_data()
         assert cdp.sent_to("Target.setAutoAttach") == []
 
@@ -323,13 +335,22 @@ class TestFrameTable:
         frames.close()
         assert not any(cdp.callbacks.values())
 
-    async def test_dom_watchdog_detach_releases_the_callbacks(self) -> None:
+    async def test_dom_watchdog_detach_leaves_the_shared_registry_to_its_owner(self) -> None:
+        """The tab's registry is the capability's, shared with the media reads.
+
+        The watchdog starts watching it, but its detach must not close it: the
+        capability closes it with the tab, and a registry closed under the
+        media reads would leave every cross-site frame unread.
+        """
         cdp = tree()
-        wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=True)  # type: ignore[arg-type]
+        frames = FrameTargets(cdp)  # type: ignore[arg-type]
+        wd = DOMWatchdog(cdp, frames=frames)  # type: ignore[arg-type]
         scope = _Scope()
         wd.attach(scope, session_id="tab")  # type: ignore[arg-type]
         assert cdp.callbacks["Target.attachedToTarget"]
         wd.detach(scope, "tab")
+        assert cdp.callbacks["Target.attachedToTarget"]
+        frames.close()
         assert not any(cdp.callbacks.values())
 
 
@@ -338,10 +359,45 @@ class _Scope(EventScope):
         super().__init__("test-tab")
 
 
+class TestOneRegistryPerTab:
+    """The DOM resolver and the media reads share the capability's registry for the tab."""
+
+    def test_both_resolvers_are_given_the_tabs_one_registry(self) -> None:
+        cdp = tree()
+        frames = FrameTargets(cdp)  # type: ignore[arg-type]
+        ctx = WatchdogContext(
+            cdp=cdp,  # type: ignore[arg-type]
+            profile=resolve_profile("standard"),
+            frame_targets=frames,
+        )
+        assert DOMWatchdog.build(ctx)._frames is frames
+        assert ScreenshotWatchdog.build(ctx)._frame_targets is frames
+
+    def test_a_profile_without_cross_site_capture_keeps_the_dom_out_of_the_frames(self) -> None:
+        cdp = tree()
+        frames = FrameTargets(cdp)  # type: ignore[arg-type]
+        ctx = WatchdogContext(
+            cdp=cdp,  # type: ignore[arg-type]
+            profile=resolve_profile("lightweight"),
+            frame_targets=frames,
+        )
+        assert DOMWatchdog.build(ctx)._frames is None
+        assert ScreenshotWatchdog.build(ctx)._frame_targets is frames
+
+    async def test_a_second_registry_on_the_tab_would_hear_of_no_frame(self) -> None:
+        """Why there is one: Chrome reports existing frames to the first auto-attach only."""
+        cdp = tree()
+        first = watched(cdp)
+        assert {frame.target_id for frame in await first.children("tab")} == {"CROSS"}
+        second = watched(cdp)
+        assert await second.children("tab") == []
+        assert {frame.target_id for frame in await first.children("tab")} == {"CROSS"}
+
+
 class TestTheProfileDecides:
     async def test_off_no_frame_is_discovered_or_listened_for(self) -> None:
         cdp = tree()
-        wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=False)  # type: ignore[arg-type]
+        wd = DOMWatchdog(cdp)  # type: ignore[arg-type]
         scope = _Scope()
         wd.attach(scope, session_id="tab")  # type: ignore[arg-type]
         wd._session_id = "tab"
@@ -355,7 +411,7 @@ class TestTheProfileDecides:
 
     async def test_on_every_frame_target_is_captured(self) -> None:
         cdp = tree()
-        wd = DOMWatchdog(cdp, enable_cross_site_iframe_capture=True)  # type: ignore[arg-type]
+        wd = DOMWatchdog(cdp, frames=FrameTargets(cdp))  # type: ignore[arg-type]
         scope = _Scope()
         wd.attach(scope, session_id="tab")  # type: ignore[arg-type]
         captured, _dpr = await wd._capture_cdp_data()

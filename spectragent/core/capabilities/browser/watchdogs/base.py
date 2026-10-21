@@ -198,11 +198,16 @@ class WatchdogContext:
     #: seconds (``BrowserCapability.media_state_timeout_s``); one that runs out
     #: is recorded as unknown.
     media_state_timeout_s: float = 1.0
-    #: The tab's out-of-process frames as CDP sessions, for the media reads
-    #: around a screenshot (``media.py``): owned by the capability, one per
-    #: tab, shared with the media alignment of a restored capture. ``None``
-    #: for browser-level watchdogs and hand-built contexts.
-    media_frames: FrameTargets | None = None
+    #: The tab's out-of-process frames as CDP sessions (``dom/capture.py``):
+    #: owned by the capability, exactly one per tab, shared by everything
+    #: that reaches into those frames — the DOM resolver when the profile
+    #: captures cross-site frames, the media reads around a screenshot and
+    #: the media alignment of a restored capture (``media.py``). One registry,
+    #: because Chrome reports a session's existing frames only to the first
+    #: ``Target.setAutoAttach`` sent on it: a second registry on the same tab
+    #: never learns of them. ``None`` for browser-level watchdogs and
+    #: hand-built contexts.
+    frame_targets: FrameTargets | None = None
     #: Shared only by the input controller and screenshot resolver built for this tab.
     pointer_position: PointerPosition = field(default_factory=PointerPosition)
 

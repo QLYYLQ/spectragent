@@ -94,6 +94,13 @@ def _cross_site(cross_origin: str, inner: str = "one.html") -> str:
     )
 
 
+#: A video paused at 1 s and a button, for a cross-site frame the DOM capture reads too.
+_FRAMED = _page(
+    "<button style='position:absolute;left:0;top:190px'>framed-button</button>"
+    + (_ONE % "/clip.webm").split("</style>", 1)[1]
+)
+
+
 #: A page whose main thread is held for a while, soon after it loads: a frame
 #: read sent then gets no answer.
 _BUSY = _page(
@@ -122,6 +129,8 @@ class _Media(BaseHTTPRequestHandler):
             "/cross.html": _cross_site(self.server.cross_origin),  # type: ignore[attr-defined]
             "/cross-busy.html": _cross_site(self.server.cross_origin, "busy.html"),  # type: ignore[attr-defined]
             "/busy.html": _BUSY,
+            "/framed.html": _FRAMED,
+            "/cross-framed.html": _cross_site(self.server.cross_origin, "framed.html"),  # type: ignore[attr-defined]
         }
         if path in pages:
             self._send(200, pages[path].encode(), "text/html; charset=utf-8")
@@ -505,6 +514,45 @@ async def test_a_cross_site_frame_is_read_and_aligned_on_its_own_session(origin:
         3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
     )
     assert "media_mismatch" not in check.reasons
+
+
+async def test_a_cross_site_frame_is_read_when_the_dom_capture_also_reads_it(
+    origin: str,
+) -> None:
+    """The standard profile captures cross-site frames' DOM: both share the tab's one registry.
+
+    Chrome tells only the first ``Target.setAutoAttach`` on a session about
+    the frames already there. With a registry of its own, the media read
+    never heard of the frame the DOM capture had attached and listed it as
+    unreachable on every step — every restoration of such a page failed
+    ``media_mismatch``.
+    """
+    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0)
+    assert cap.profile_config.cross_site_iframe_capture
+    cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
+    await asyncio.wait_for(
+        cap.setup(
+            negotiation={"browser.dom", "browser.screenshot"},
+            start_url=f"{origin}/cross-framed.html",
+        ),
+        60,
+    )
+    browser = _Browser(cap)
+    try:
+        await asyncio.sleep(0.5)
+        shots: list[ScreenshotObs] = []
+        doms: list[Any] = []
+        for _ in range(2):
+            shots.append(await browser.screenshot())
+            doms.append(await cap.resolve_fragment("browser.dom"))
+    finally:
+        await cap.teardown()
+
+    for shot, dom in zip(shots, doms, strict=True):
+        assert shot.media is not None
+        assert shot.media.unreachable_frames == []
+        assert [e.label for e in shot.media.elements] == ["main/0#0 video"]
+        assert "framed-button" in str(dom.selector_map)
 
 
 async def test_a_cross_site_frame_that_does_not_answer_is_unreachable(origin: str) -> None:

@@ -86,7 +86,7 @@ class DOMWatchdog(BrowserWatchdog):
         budget: DOMBudget | None = None,
         viewport: tuple[int, int] = (1280, 720),
         enable_js_listener_detection: bool = False,
-        enable_cross_site_iframe_capture: bool = False,
+        frames: FrameTargets | None = None,
         frame_capture_timeout_s: float = FRAME_CAPTURE_TIMEOUT_S,
         selector_map_setter: Callable[[DOMSelectorMap], None] | None = None,
         raw_capture_sink: Callable[[TargetCapture, float], None] | None = None,
@@ -121,12 +121,14 @@ class DOMWatchdog(BrowserWatchdog):
         # DOM — is none of this resolver's business (§4.12).
         self._raw_capture_sink = raw_capture_sink
         # The tab's out-of-process iframes, or ``None`` when the profile does
-        # not capture them. Owned here because this watchdog is the only
-        # thing that reads their documents; the action layer finds each
-        # element's session on the element itself.
-        self._frames: FrameTargets | None = (
-            FrameTargets(cdp) if enable_cross_site_iframe_capture else None
-        )
+        # not capture them. The registry is the capability's, one per tab and
+        # shared with the media reads (``WatchdogContext.frame_targets``): a
+        # second registry on the same tab would never hear of the frames the
+        # first one's ``Target.setAutoAttach`` already attached. So this
+        # watchdog watches it but never closes it; the capability does, with
+        # the tab. The action layer finds each element's session on the
+        # element itself.
+        self._frames: FrameTargets | None = frames
 
         # Per-scope state (set during attach).
         self._scope: EventScope | None = None
@@ -155,7 +157,7 @@ class DOMWatchdog(BrowserWatchdog):
             budget=ctx.dom_budget,
             viewport=ctx.viewport,
             enable_js_listener_detection=ctx.profile.js_click_listener_detection,
-            enable_cross_site_iframe_capture=ctx.profile.cross_site_iframe_capture,
+            frames=ctx.frame_targets if ctx.profile.cross_site_iframe_capture else None,
             selector_map_setter=ctx.selector_map_setter,
             raw_capture_sink=ctx.raw_capture_sink,
         )
@@ -179,12 +181,7 @@ class DOMWatchdog(BrowserWatchdog):
             receiver_key="browser.dom",
             result_contract=ResultContract(lambda value: isinstance(value, BrowserStateSummary)),
         )
-        self.track_binding(
-            scope,
-            session_id,
-            connections=[connection],
-            close_callbacks=[self._frames.close] if self._frames is not None else (),
-        )
+        self.track_binding(scope, session_id, connections=[connection])
 
     async def _on_browser_state_request(
         self, event: BrowserStateRequestEvent

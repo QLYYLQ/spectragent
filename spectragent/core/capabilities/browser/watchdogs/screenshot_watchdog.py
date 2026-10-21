@@ -93,11 +93,11 @@ class ScreenshotWatchdog(BrowserWatchdog):
         cursor_position_getter: Callable[[], tuple[int, int] | None] | None = None,
         media_timeout_s: float = 1.0,
         main_frame_id_getter: Callable[[], str | None] | None = None,
-        media_frames: FrameTargets | None = None,
+        frame_targets: FrameTargets | None = None,
     ) -> None:
         self._media_timeout_s = media_timeout_s
         self._main_frame_id_getter = main_frame_id_getter
-        self._media_frames = media_frames
+        self._frame_targets = frame_targets
         self._cursor = cursor
         self._cursor_size = cursor_size
         self._cursor_position_getter = cursor_position_getter
@@ -119,7 +119,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
             cursor_position_getter=ctx.pointer_position.snapshot,
             media_timeout_s=ctx.media_state_timeout_s,
             main_frame_id_getter=ctx.main_frame_id_getter,
-            media_frames=ctx.media_frames,
+            frame_targets=ctx.frame_targets,
         )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
@@ -219,7 +219,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
             self._cdp,
             session_id=self._session_id,
             frame_id=frame_id,
-            frames=self._media_frames,
+            frames=self._frame_targets,
             timeout_s=self._media_timeout_s,
         )
 

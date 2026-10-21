@@ -666,10 +666,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: what its capture did, until the next ``verify_restoration`` takes it
     #: (``align_next_observation``, §4.14).
     _media_alignment: PendingAlignment | None
-    #: Each tab's out-of-process frames as CDP sessions, for its media reads
-    #: and alignments (``media.py``), by tab CDP session. Kept apart from the
-    #: DOM resolver's own discovery: media is read whatever the profile.
-    _media_frames: dict[str, FrameTargets]
+    #: Each tab's out-of-process frames as CDP sessions, by tab CDP session:
+    #: one registry per tab, shared by the DOM resolver (when the profile
+    #: captures cross-site frames) and the media reads and alignments
+    #: (``media.py``, read whatever the profile). Never two per tab: Chrome
+    #: reports a session's existing frames only to the first
+    #: ``Target.setAutoAttach`` on it, so a second registry would see none.
+    _frame_targets: dict[str, FrameTargets]
     #: The time zone and locale a frame no override reaches falls back to,
     #: measured right after launch when archivers are bound (§4.14).
     _browser_defaults: BrowserDefaults | None
@@ -1072,7 +1075,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._archive = None
         self._diverged_seen = 0
         self._media_alignment = None
-        self._media_frames = {}
+        self._frame_targets = {}
         self._browser_defaults = None
         self._input_platform = None
         self._tabs = None
@@ -2401,9 +2404,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._input_platform = None
         self._diverged_seen = 0
         self._media_alignment = None
-        for media_frames in self._media_frames.values():
-            media_frames.close()
-        self._media_frames.clear()
+        for frame_targets in self._frame_targets.values():
+            frame_targets.close()
+        self._frame_targets.clear()
         for error in errors:
             if isinstance(error, asyncio.CancelledError):
                 for other in errors:
@@ -2798,7 +2801,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 self._cdp,
                 session_id=sid,
                 frame_id=self._main_frame_ids.get(sid),
-                frames=self._media_frames.get(sid),
+                frames=self._frame_targets.get(sid),
                 recorded=pending.recorded,
                 tolerance_px=self.retarget_tolerance_px,
                 read_timeout_s=self.media_state_timeout_s,
@@ -3387,9 +3390,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._watchdogs.pop(target_id, None)
         self._cycle_cache.pop(session_id, None)
         self._main_frame_ids.pop(session_id, None)
-        media_frames = self._media_frames.pop(session_id, None)
-        if media_frames is not None:
-            media_frames.close()
+        frame_targets = self._frame_targets.pop(session_id, None)
+        if frame_targets is not None:
+            frame_targets.close()
         for error in errors:
             if isinstance(error, asyncio.CancelledError):
                 for other in errors:
@@ -3669,15 +3672,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 return self._main_frame_ids.get(cdp_session_id)
             return None
 
-        # One frame-session registry per tab for media reads (never for the
-        # browser-level session: auto-attach there would adopt every tab). The
-        # first media read starts watching the tab (``media.read_media``).
-        media_frames: FrameTargets | None = None
+        # One frame-session registry per tab, shared by the DOM resolver and
+        # the media reads (never for the browser-level session: auto-attach
+        # there would adopt every tab). Whichever reaches into the tab's frames
+        # first starts watching it; a second registry on the same tab would
+        # never hear of the frames already attached (``_frame_targets``).
+        frame_targets: FrameTargets | None = None
         if cdp_session_id is not None:
-            media_frames = self._media_frames.get(cdp_session_id)
-            if media_frames is None:
-                media_frames = FrameTargets(cdp)
-                self._media_frames[cdp_session_id] = media_frames
+            frame_targets = self._frame_targets.get(cdp_session_id)
+            if frame_targets is None:
+                frame_targets = FrameTargets(cdp)
+                self._frame_targets[cdp_session_id] = frame_targets
         # The only optional argument here is a callback, not a union of all
         # context fields (the tab-local pointer state is supplied by its factory).
         capture_options: dict[str, Any] = (
@@ -3707,7 +3712,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             action_effect_timeout_s=self.action_effect_timeout_s,
             capture_state_timeout_s=self.capture_state_timeout_s,
             media_state_timeout_s=self.media_state_timeout_s,
-            media_frames=media_frames,
+            frame_targets=frame_targets,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,
