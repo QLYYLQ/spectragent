@@ -13,12 +13,12 @@ it can scroll; the capability decides how far.
 
 Neighbouring skills: `af-add-an-observation-fragment` (the mirror axis),
 `af-add-a-capability` (if the owning capability does not exist yet),
-`af-add-an-llm-provider` (the far end of §4), `af-regenerate-and-verify` (§1.5).
+`af-add-an-llm-provider` (the far end of §4), `af-regenerate-and-verify` (§1.6).
 
-## 1. The five edits
+## 1. The five edits, and the optional `Effect`
 
-Worked reference: `spectragent/core/capabilities/browser/actions/scroll.py` (105 lines,
-every feature in one file). Base class and its docstring example:
+Worked reference: `spectragent/core/capabilities/browser/actions/scroll.py` (every
+feature in one file, its `Effect` included). Base class and its docstring example:
 `spectragent/core/actions/_registrar.py:44-177`.
 
 ### 1.1 The class
@@ -123,7 +123,66 @@ remembered. An action never moves the focus as a side effect: every action of on
 on the tab the step observed. Return `ActionResult(success=False, error=...)` for a failure;
 do not raise.
 
-### 1.5 Register it, then wire it
+### 1.5 `Effect` — the output twin of `Params` (optional)
+
+`Params` is what the action takes; a nested `Effect` is what it measurably did
+(`docs/architecture_design.md` §4.5 "动作效果"). `ActionBase.Effect`
+(`core/actions/_registrar.py`) defaults to `None`: the action reports no effect
+(`done`, `screenshot`, `extract_content`). The base class `ActionEffect` and the gap
+type `Unmeasured` are in `schemas/action.py`.
+
+```python
+@dataclass
+class ScrollAction(SettleableAction, ActionBase):
+    __registry_key__ = "browser.scroll"
+    Effect = ScrollEffect          # core/capabilities/browser/effects.py
+```
+
+- **The model.** Subclass `ActionEffect` (frozen, `extra="forbid"`). Its `effect_id` is the
+  producing action's own fully-qualified key. Several actions may share one model
+  (`PointerEffect` serves `click`, `click_coordinate` and `drag`). Capability-specific
+  models live with the capability — the browser's in `browser/effects.py`, outside
+  `actions/`, because the executor that measures them builds them too; `schemas/` never
+  names a capability field.
+- **Gaps are typed, never zero.** Every fact is a value or `Unmeasured`: `"unknown"` (the
+  probe failed or ran out of its budget) or `"unavailable"` (it cannot be measured there,
+  such as inside another site's frame). A measured zero is a value; keep the three apart.
+  Wrap string facts in small models (`Location`, `TabFacts`, `OptionFacts`) so a URL or
+  option text that reads `unknown` is never taken for a gap. A fact you did not see is
+  `unknown`, not a plausible default: the scroll effect is a measured zero only when every
+  container the wheel could reach was already at its edge; when one still had room and no
+  move was seen within the budget, `after` and `at_boundary` are `unknown`.
+- **`describe()`.** One deterministic English line derived only from the object's typed
+  fields: no task judgement, `unknown` / `unavailable` said as such, a sensitive field's
+  content and length never said (no fact echoes typed text, and an editable region's text
+  never names it). Agents render that line and never the fields
+  (`agents/_action_effects.py::effect_line` / `result_facts`), so a cross-platform Agent
+  never imports your type. Whether the line reaches the prompt is each Agent's
+  `show_action_effects`; the trace records the effect either way.
+- **Measure around your own dispatch, within a budget.** Facts are read just before and
+  just after this action's own dispatch, so they belong to it alone; the page after the
+  whole batch is the next observation's. Probe time is bounded by a capability YAML knob
+  (browser: `action_effect_timeout_s`, default 1 s; only probes count, waiting for a wheel
+  to land included, the action itself does not), and a probe that runs out records
+  `unknown`. Measuring never changes `success` / `error` and never aborts the action. In
+  the browser the watchdog handler answers with `effect_facts` and `execute` builds the
+  model with `actions/_common.py::effect_from(self, handler_field(event, "effect_facts"))`;
+  facts the model refuses are logged as an executor bug and the result goes back without
+  an effect.
+- **Read-back goes through the action registry.** `ActionResult.effect` serializes whole as
+  its concrete type and refuses a bare mapping. `RunTrace` rebuilds it with
+  `core/trace/effects.py::restore_effects`: `effect_id` is looked up in `ActionRegistrar`
+  and the payload validated with that action's `Effect` — there is no effect registry. An
+  unregistered key, an action with no `Effect`, or a payload its `Effect` refuses is a
+  `TraceSchemaError` naming the file, never a dict. Renaming an action key or dropping its
+  `Effect` therefore makes recorded traces unreadable: regenerate the data, never alias.
+- **Tests it owes**: every `describe()` variant (measured, zero, `unknown`, `unavailable`, a
+  sensitive field), a trace round trip back to the same type
+  (`tests/test_core/test_trace/test_action_effects.py`, the registry scan in
+  `tests/test_core/test_actions/test_action_effect_contract.py`), and a live probe case
+  where the fact comes from a real page (`test_browser_effects_*_live.py`).
+
+### 1.6 Register it, then wire it
 
 Two edits, both mandatory:
 
@@ -362,6 +421,10 @@ uv run pytest tests/test_core/test_llm/test_schema_dialects.py
 - [ ] `__registry_key__` fully qualified; imported in the capability's
       `actions/__init__.py`; listed in the capability's `__wiring__["actions"]`.
 - [ ] `Params` flat, `extra="forbid"`, scalars/enums/nullable-scalars only.
+- [ ] If the action reports what it did: an `Effect` model with typed gaps
+      (`unknown` / `unavailable`, never 0 for "not seen"), a `describe()` that echoes no
+      sensitive content, measurement inside the capability's effect budget that never
+      changes the outcome, and a trace round trip test.
 - [ ] Every param traced **both** directions — descriptor → agent output model, and
       `Params` → `execute` → event → handler-actually-reads-it.
 - [ ] `_GOLDEN_PROSE` entry added (or edited, with a comment).

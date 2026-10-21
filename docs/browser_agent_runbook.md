@@ -198,6 +198,10 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 
 按键发给 Chrome 时只带 `key`、`code`、Windows 按键码和文字，不带系统原生按键码：`browser.send_keys`（UI-TARS 的 `hotkey` 也是它）、`human` 节奏的逐字键入，以及 `browser.type` / `browser.type_coordinate` 写字之前的清空（全选加 Backspace）都是这样。以前带着原生按键码，在 macOS 上页面自己不处理的按键（最常见的是在搜索框里回车、表单原生提交，焦点被弹窗抢走时的清空也会）让 Chrome 打开它自己的"关于 Chrome"页（`chrome://settings/help`）并提到前台，agent 的页面从此是后台页面：页面脚本读到 `document.hidden`，动画帧停了，截图照常，靠动画帧绘制的页面却画不出来。页面的按键处理函数读到的 `key`、`code`、`keyCode` 不变，React 式的回车处理照常收到回车。带修饰键的回车照真实浏览器的规矩：表单里 `meta+enter` 把结果开在新标签页，`shift+enter` 开在新窗口。见 [architecture_design.md](architecture_design.md) §4.13 "按键事件不带原生按键码"。
 
+`browser.send_keys` 只接受按键：命名键（`Enter`、`Escape`、`ArrowDown`、`F5`……）、单个字符，或用 `+` 把修饰键连到一个键上的组合键（`Control+A`、`Shift+Tab`）。加号键本身写成单独的 `+`，在组合里写成末尾的 `++`（`Control++`）；`ctrl+`、`+a`、`++` 这类空分段照旧拒绝。其他字符串（整段 URL、一个词、一句话）在发出任何按键之前就被拒绝，动作失败，错误写明 "To enter text, use type"：输入文字要用 `browser.type` / `browser.type_coordinate`。页面没有变化不算输入错误。见 [architecture_design.md](architecture_design.md) §4.13。
+
+按编号（元素 index）点击或滚动一个元素时，先把它滚进视口：`DOM.scrollIntoViewIfNeeded` 之后元素中心仍在视口外（只露出一部分、比视口还高），就用脚本把它即时居中再量一次（即时滚动，页面的 `scroll-behavior: smooth` 不会让量到的还是旧位置）；仍在视口外（例如固定在屏幕外的已收起面板）就拒绝这个动作并说明原因，不在视口外派发一次 Chrome 会丢掉、却报告成功的按下。见 [architecture_design.md](architecture_design.md) §4.5 "动作效果"。
+
 `browser.navigate`（setup 打开起始页用的也是它）分两段等：先等页面提交，即 Chrome 回应这次导航，最多 `timeout_ms`（默认 30 s）；再等 `wait_until`（默认 `load`），最多 `lifecycle_timeout_ms`（不写时同 `timeout_ms`）。页面提交了而 `load` 没按时到（常见于有资源一直加载不完的页面，页面其实已经画出来了），记一条 WARNING，导航照常算成功。服务器一直不回应、Chrome 拒绝这个 URL、Chrome 报导航失败（主机连不上、204、下载），导航都失败；setup 打开起始页失败时报 `could not open start_url '<URL>' — <原因>`，run 以环境失败结束，不调用模型。这样的页面之后第一次观测还会在落定上限处等一次 `load`（见下一段），之后的观测不再等它。
 
 导航等完之后、采集之前，观测还会等页面落定：主 frame 的文档加载完，再连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成，最多 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集（`0` 关掉）。两个旋钮写在 capability 块上，DOM、截图与元数据共用这一次等待，只看页面状态，不比截图；每个观测 fragment 的 `settle` 记录写着这次等了多久、是不是被上限截断。代价是每次观测至少多等一个静默窗口，一直在变的页面（轮播、视频）每一步等满上限。点击之后页面的变化要等一个比窗口长、期间又什么都不发生的请求时，仍然看不到它，这时再给 `browser.click_coordinate` 配 `post_delay_ms`。设计与实测见 [architecture_design.md](architecture_design.md) §4.14 "观测之前等页面落定"。
@@ -205,6 +209,27 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 点了一个在新标签页打开的链接（`target=_blank` 的链接或表单、调用 `window.open` 的按钮），下一次观测看到的就是新标签页，和真实浏览器一样，对每个 agent 都如此，UI-TARS 这种没有 `browser.switch_tab` 的也一样。跟过去的是动作期间当前页打开的 tab，有好几个时取最后打开的那个；页面在没有用户点击的情况下自己开的 tab（加载时弹的、计时器弹的、一次点击开的第二个窗口，真实浏览器会拦下的那些）不跟，只列在 tab 列表里。跟过去的 tab 自己关掉时，焦点回到打开它的 tab。导航与落定两段等待都在跟过去的 tab 上做；这次观测的每个 fragment 记下 `focus_moved`（为什么移、从哪个 tab 到哪个 tab），agent 看不到这条记录，提示词只因为页面换了而不同。capability 块上写 `new_tabs: stay` 可以不跟（这之前的行为，新 tab 只能用 `browser.switch_tab` 过去）；默认是 `follow`，录制、回放和分叉要用同一个值。见 [configs/README.md](../configs/README.md#new-tabs) 与 [architecture_design.md](architecture_design.md) §4.14 "页面新开的标签页"。
 
 `skyvern_agent_local.yaml` 用的 `skyvern` cleaner 不看绘制顺序，被吸顶栏盖住的链接照样有编号。把 `dom_cleaner` 换成 `{ cleaner_type: skyvern_hit_test }` 后，页面会对每个编号元素做点击命中测试，默认（`covered_elements: drop`）所有探测点都点不到的元素不编号；视口外的元素不测，保留编号。见 [configs/README.md](../configs/README.md#dom-cleaners)。
+
+### 动作效果、采集状态与媒体状态
+
+每个动作在它自己的派发前后测量它实际做了什么，记在 `ActionResult.effect`，随步记录写进 trace（`steps/NNN.json` 的 `action_results`）。点击类（`click`、`click_coordinate`、`drag`）记按下的点、按下前那一点上的元素（角色与可读名）、按编号点击时是否命中目标、执行后的焦点；输入类（`type`、`type_coordinate`、`send_keys`）记接收输入的控件、是否敏感字段、值是否变化（页面里只比较，不记内容也不记长度）、实际发出的键、执行后的焦点；`scroll` 记实际滚动的是页面还是哪个元素、前后偏移、是否到了这个方向的边缘；`navigate`、`go_back`、`go_forward` 记前后 URL 与文档是否加载完；`switch_tab` 记前后标签页；`select_dropdown` 记当前选中项；`wait` 记实际等待的时长。`done`、`screenshot`、`extract_content` 没有效果。探测失败或用完上限的事实记 `unknown`，这里测不到的（例如另一个站点的 frame 里）记 `unavailable`，两者都不是测得的 0；还有余量的滚动在上限内没看到移动，之后的位置记 `unknown`，不写成 0 位移。测量从不改变动作的成败。一批动作之后的页面状态属于下一次观测，不算在某个动作头上。
+
+模型只看到效果自己写的一行英文（`describe()`），从不看到原始字段：UI-TARS 在每个执行结果的 JSON 里多一个 `"effect"`，Skyvern 写在 `<action_history>` 每个动作后面的 `| effect: …`，BrowserUse 写在每步的 `<effects>` 里。敏感字段既不回显内容也不报长度。
+
+`capture_state` 是一个 optional 观测，说明这次采集时环境的样子：采集前的落定等待（`settled` / `capped` / `unknown`、等了多久、哪些还没落定）、环境自己引起的前台变化（页面开了新标签页、当前页自己关掉）、指针最后一次确认的位置（viewport 像素）、视口内加载失败的可见图片（个数与前几个文件名）。三个 Agent 都在每步的 `<capture_state>` 块里看到它；没测到的写明没测到，测得为零才写 none。
+
+截图另带 `media` 元数据：每个 `<video>` / `<audio>` 的 frame、文档顺序、位置、来源种类、总时长，以及截图前后各一次读到的精确播放位置与暂停状态；读不到的子 frame 记作读不到。录制时只读，不暂停、不跳转。它用于回放恢复的媒体校验与对齐（见 [数据飞轮运行手册](data_flywheel_runbook.md)），默认不进提示词。
+
+| 写在哪里 | 字段 | 默认 | 作用 |
+|---|---|---|---|
+| browser capability 块 | `action_effect_timeout_s` | `1` | 一个动作测量自身效果的上限，秒；只计探测（含等滚轮生效），不计动作本身。超时的事实记 `unknown` |
+| browser capability 块 | `capture_state_timeout_s` | `1` | `capture_state` 页内探测（可见图片加载失败）的上限，秒；超时记 `unknown`，不影响这次观测的其他部分 |
+| browser capability 块 | `media_state_timeout_s` | `1` | 截图前后两次媒体读数各自的上限，秒；超时记 `unknown`，截图照常。分叉恢复时也是媒体对齐起始读数的上限 |
+| 三个 Agent | `show_action_effects` | `true` | 把效果那一行写进提示词；关掉时 trace 照样记录效果，消融的两组测量开销相同 |
+| 三个 Agent | `show_capture_state` | `true` | 协商并渲染 `capture_state`；关掉时这个 fragment 不采集、不记录、不渲染 |
+| Skyvern、BrowserUse | `show_media_state` | `false` | 在页面状态之后写 `<media_state>` 块；关掉时媒体状态照样随截图记录、用于恢复校验 |
+
+`show_capture_state` 改变观测协商，所以它属于分叉与导出的实验身份：取值不同的录制之间不能互相分叉，也不能混在一起导出；录制时没有 `capture_state` 的 run 也不能被协商它的 Agent 分叉。`show_action_effects` 与 `show_media_state` 只改提示词，是显式的实验变量；`history_source: source` 的分叉要求前缀提示与源录制逐字节一致，所以它们也要取与源相同的值。纯视觉实验若一点页面文字都不能读，关掉 `show_action_effects`：效果行会写出命中元素与焦点的角色和可读名。见 [architecture_design.md](architecture_design.md) §4.4 "观测增强按消费方分层"、§4.5 "动作效果"。
 
 ### 浏览器实际平台与预期断言
 
@@ -335,6 +360,8 @@ trace.screenshot(0)          # 第 0 步截图的字节
 | 跑整条链并出度量报告 | `uv run spectragent flywheel run --spec chain.yaml`；只重算报告用 `uv run spectragent flywheel report --spec chain.yaml` |
 
 `--replay-archive` 只能配 `network_source: archive`，YAML 写的是 `live` 时 setup 会拒绝。`spectragent export` 只读 trace，不启动浏览器，也不调用模型。`chain.yaml` 要自己写，格式见 [configs/README.md](../configs/README.md#measuring-the-flywheel)。`spectragent flywheel` 和 `spectragent bench` 一样不读 `.env`，跑之前先在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
+
+宿主机的浅色 / 深色外观既不固定也不记录。运行固定页面配色，但 headless Chrome 的原生滚动条看起来跟随操作系统外观：宿主机设成自动切换时，同一页面在不同时段的截图可能只在滚动条那一条上不同，改变恢复校验的截图距离。正式运行请固定宿主机外观，恢复校验的结果只在同一外观下的运行之间比较。
 
 
 ## 使用登录态

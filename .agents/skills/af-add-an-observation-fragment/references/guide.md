@@ -92,6 +92,35 @@ A fragment owns its own JSON shape. `DOMObs` cannot be encoded without knowing
 type, not in the shared schemas package. `spectragent/schemas/observation/` names
 no field of any domain — keep it that way.
 
+**A fact every platform has gets an abstract, platform-neutral base there.** The
+precedent is `CaptureStateFragment` (`schemas/observation/capture_state.py`,
+`__abstract__ = True`; `docs/architecture_design.md` §4.4 "跨平台采集状态"): four facts —
+settle, foreground change, pointer, failed visible resources — each with its own missing
+semantics, in words that name no page, tab or URL. Each capability registers its own
+concrete subclass under its prefix (`browser.capture_state` is `BrowserCaptureStateObs`
+in `browser/observations.py`; a desktop or Android one later inherits the same base), and
+may project facts from records its capture already keeps instead of measuring them twice
+(`settle_state` reads the capture's `settle`, `foreground_change` its `focus_moved`).
+Agents declare the relative key (`capture_state`, optional) and render it through one
+shared renderer (`agents/_capture_state.py::render_capture_state`) that reads fields
+structurally and imports no capability class, so a cross-platform Agent stays free of
+browser types. An Agent switch that drops the fragment narrows the Agent's *demand*
+(`capture_state_demand`, through `bounded_demand`) rather than hiding it after capture —
+and because that changes negotiation, the switch is part of branch and export identity.
+
+**Sidecar metadata on an existing fragment** is the other shape, for facts that must come
+from the same instant as the pixels. `ScreenshotObs` carries three: `source_url` (the
+document read in the same cycle), `cursor` (`None` = off; a cursor without a position =
+on but unknown) and `media` (`MediaState`, `browser/media.py`: every `<video>` /
+`<audio>` read just before and just after `Page.captureScreenshot` by the same resolver,
+each read bounded by the capability's `media_state_timeout_s`). A sidecar read must never
+fail the fragment it rides on: a read that runs out or errs is recorded inside it as
+`unknown` with a `detail`, and `None` means "not measured" — `media` is then left out of
+the trace JSON (`trace_json_exclude`), so a screenshot without it writes what it always
+wrote. Prefer a separate fragment when a measurement could otherwise degrade a required
+one (that is why `capture_state` is not screenshot fields), and sidecar metadata when the
+fact is meaningless apart from the pixels.
+
 Three methods carry a fragment to the trace and back, all on `FragmentBase`
 (`_registrar.py:157`, `:165`, `:173`):
 
@@ -473,6 +502,21 @@ softening it in the capability removes that decision from the only place that ca
 (`_expect_failure` in the contract suite, `capability_contract.py:254`, fails a
 harness whose `resolve_fragment` returns after `break_capture()`.)
 
+**The one exception: an optional fact inside a batched capture.** The browser serves
+every negotiated browser fragment from one capture, and a capture missing any of them is
+re-fired and then fails whole — the screenshot with it (`_capture_once`; a TODO there
+records that partial capture of optional fragments may be allowed later). An optional
+fragment whose own probe raised would therefore take a required screenshot down with it.
+So the `browser.capture_state` resolver (`watchdogs/capture_state_watchdog.py`) never
+raises and always answers: a probe that runs out of `capture_state_timeout_s`, errs or
+answers with the wrong shape records *that fact* as `unknown` with a short `detail`
+inside the fragment. This is not fabrication: `unknown` is a typed gap in the fragment's
+own contract, distinct from a measured zero and from `unavailable`. Copy it only for an
+optional fragment in a batched capture, with every fact's gap typed; a required
+fragment, or one whose whole content failed, still raises. When the entire capture fails,
+the optional slot becomes a `FragmentFailure` like its peers, and the renderer says the
+facts are unknown this step.
+
 Which slots may carry a failure is derived in one place:
 `env_sourced - required_fragments` (`dynamic_model.py:142`), widening exactly
 those to `Fragment | FragmentFailure` (`:119`). Required slots stay narrow —
@@ -665,7 +709,14 @@ Checklist for a new cost knob:
 - [ ] Did **not** declare `captured_at` or `fragment_id` — inherited both.
 - [ ] Produced by a Resolver that declares it (`provides` for a watchdog) and
       imports the fragment class, so it registers.
-- [ ] Resolver **raises** on failure; never returns `None` or an empty fragment.
+- [ ] Resolver **raises** on failure; never returns `None` or an empty fragment. (Sole
+      exception: an optional fragment inside a batched capture records each probe
+      problem as a typed `unknown` inside itself, so it cannot fail the batch — the
+      `capture_state` precedent in §6.)
+- [ ] A fact every platform has: an abstract platform-neutral base in
+      `schemas/observation/`, one concrete subclass per capability, one shared renderer.
+- [ ] Sidecar metadata on an existing fragment never fails that fragment; `None` means
+      not measured and a failed read is `unknown` inside it.
 - [ ] Declared relatively in the agent's / loop's `__wiring__` 3-tuple, in the
       required or optional half deliberately — optional is what makes it
       survivable.

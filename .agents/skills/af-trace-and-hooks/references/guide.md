@@ -167,10 +167,10 @@ file is read back through `RunTrace.archive_files(step, key)` / `blob(sha)` /
 | Archiver | Step files | What is in them |
 |---|---|---|
 | `browser.network` | `exchanges.warc.gz` | WARC/1.1, one gzip member per record (warcio). A `request` record per exchange (stripped headers, redacted POST body) linked by `WARC-Concurrent-To` to a `response` record — only when the body is known (`ok`, `redirect`, `websocket`); a payload already written in this collection batch is a `revisit` (`identical-payload-digest`). Bodies are stored **decoded**; `Content-Encoding` / `Transfer-Encoding` are dropped and `Content-Length` is the decoded length. |
-| | `index.jsonl` | One JSON object per line, three kinds. `exchange` — exactly once per request hop, when it settles: WARC offsets, method, url, status, resource type, frame / loader / session / target, initiator (no stack), timing, the raw request facts (headers, POST sha256 / length / content type), `payload_sha256`, `revisit_of`, `content_range`, `body_status` ∈ `ok` / `redirect` / `too_large` / `streamed_later` / `websocket` / `incomplete`, and a `redaction` ledger (policy `af-privacy-1+browser-2`). `pending` — still in flight at this collection, status only (also one per collection for a written `streamed_later` record whose body is still streaming, `waiting_for: streamed_body`); a record whose **last** line is `pending` was incomplete at run end. `body` — a `streamed_later` body (over the inline tier, streamed while the page read it) once its request ended, pointing back at its `record_id`: `ok` with the blob's sha256, or `incomplete` / `too_large` with a `note`. **No match key** — replay derives keys from the raw facts. |
+| | `index.jsonl` | One JSON object per line, three kinds. `exchange` — exactly once per request hop, when it settles: WARC offsets, method, url, status, resource type, frame / loader / session / target, initiator (no stack), the recorder's wall-clock `started_at` and `ended_at` (`null` while the request had not ended when the line was written), timing, the raw request facts (headers, POST sha256 / length / content type), `payload_sha256`, `revisit_of`, `content_range`, `body_status` ∈ `ok` / `redirect` / `too_large` / `streamed_later` / `websocket` / `incomplete`, the outcome facts `error_text` (Chrome's failure reason, or a target detach), `body_note` (why the recorder kept no body) and `from_cache`, and a `redaction` ledger (policy `af-privacy-1+browser-2`). `pending` — still in flight at this collection, status and `started_at` only (also one per collection for a written `streamed_later` record whose body is still streaming, `waiting_for: streamed_body`); a record whose **last** line is `pending` was incomplete at run end. `body` — a `streamed_later` body (over the inline tier, streamed while the page read it) once its request ended, pointing back at its `record_id`: `ok` with the blob's sha256, or `incomplete` / `too_large` with a `note`; it carries the request's end (`ended_at`, `error_text`), since the exchange line went out before it. These facts are what replay reads a body-less record's source outcome from. **No match key** — replay derives keys from the raw facts. |
 | | `websocket.jsonl` | Frames: `record_id` of the handshake, direction, opcode, wall time, payload (text) or `payload_base64`. |
 | | `body-<sha>.bin` (content-addressed) | A streamed large body (at most 64 MiB; a larger one is `too_large`). |
-| `browser.replay_log` (a replay run only; `browser.network` is refused there) | `replay.jsonl` | One `ReplayLogEntry` per serving decision of the step (`hit`, `exhausted`, `synthetic`, `miss`, and `summary` for folded repeats), with the matched `record_id` and level, or the miss's class, reason, answer and nearest candidates; a main-frame document miss is `diverged`. Read it with `archive_lines` or the browser's `replay_log` / `iter_replay_log` / `diverged_steps`, which find it under this archiver (architecture §4.14, "回放日志"). |
+| `browser.replay_log` (a replay run only; `browser.network` is refused there) | `replay.jsonl` | One `ReplayLogEntry` per serving decision of the step. Kinds: `hit` (served from the archive), `exhausted` (`repeat_last` served the sequence's last available record again), `substituted` (the consumed record had no body and the rule's `unavailable: serve_identical` answered with an available record of the same sequence with an identical body: `record_id` is the consumed one, `served_record_id` the one sent, `source_outcome` how the source request ended), `synthetic` (a CORS preflight answered 204), `miss`, and `summary` for folded repeats (`folded_kind`, `count`, first / last time). A decision carries the rule (`rule_id`, `exhaustion_policy`, `unavailable_policy`), `answer` and `status`; a hit its `record_id`, level and `range`; a miss its class, `reason`, nearest candidates, `source_outcome` on `body_unavailable`, `requested_range` (the page's `Range` header) on `range_uncovered`, and `repeated: true` when it repeats an exhausted sequence's body-less last record. A main-frame document miss is `diverged`. Read it with `archive_lines` or the browser's `replay_log` / `iter_replay_log` / `diverged_steps`, which find it under this archiver (architecture §4.14, "回放日志"). |
 | `browser.storage` | `storage.json` | Cookies, local storage per origin, session storage per tab and origin, all values as they are (so the archiver always declares `contains_session_state`), an empty ledger naming the policy, and what it could not read: `unreadable_tabs`, `unreadable_origins`, `unread_frames` (out-of-process iframes, not read in v1). **Written only when the state changed**: a step's state is the latest `storage.json` at or before it. |
 | `browser.dom_raw` | `dom-<cycle>-<tab>.json.gz` (content-addressed) | Gzip canonical JSON per committed cycle: the redacted `TargetCapture`, DPR, viewport, cleaner key (`self_capture` for a vision run), source, tab, url / loader id, ledger. Cycle and capture time are in the record's provenance, not the bytes, so an unchanged document is stored once. `archive/dom_raw.capture_from_document` turns it back into a `TargetCapture` for an offline re-clean, the Skyvern ref maps keyed by integers again. |
 | (capability) | `env/run.browser.json` (run record) | The environment fingerprint, versioned on change. |
@@ -178,6 +178,31 @@ file is read back through `RunTrace.archive_files(step, key)` / `blob(sha)` /
 Two rules a reader must not miss: an exchange line is written **once** (pending lines
 before it carry no evidence), and a `body` line can name a record whose `exchange` line
 came in an earlier step.
+
+### Facts read back as their own types
+
+- **Action effects.** `ActionResult.effect` is written whole, as its concrete `Effect`
+  model, wherever a result is written: a step's `action_results`, a restored step's
+  restoration attempts and history, `loop.history`. There is no effect registry: the
+  reader (`core/trace/effects.py::restore_effects`, driven by the annotations of the model
+  being validated, not by JSON key names) looks the effect's `effect_id` up in the
+  existing `ActionRegistrar` and validates the payload with that action's `Effect`. An
+  unregistered key, an action without an `Effect`, or a payload it refuses is a
+  `TraceSchemaError` naming the file; an effect is never left as a dict, and
+  `ActionResult` itself refuses a bare mapping. A missing `effect` and "this action
+  reports none" are the same fact, so the trace format did not change.
+- **Restoration evidence.** A restored step's `restoration.evidence[*]` is one
+  `RestorationEvidence` per capability. Besides URL, signature, screenshot distance and
+  document misses, the browser's carries `media` (`MediaEvidence`): `comparisons`
+  (each media element matched / missing / extra / ambiguous, live or not, and the two
+  sides' position and paused state from the reading both took; `None` when either side
+  had no media state, with `detail`), `recorded_unreachable_frames` /
+  `restored_unreachable_frames` (frames neither read reached), and `alignment` (what
+  `media: align` did before the capture, one `MediaAlignment` per recorded element;
+  `None` when no alignment was requested). The screenshot sidecar's own `media` is `None`
+  — and absent from its JSON — for evidence from before the field. Unknown never decides:
+  a `None` value, a comparison not made or an alignment outcome `unknown` takes no part in
+  a verdict; the restorer applies its tolerances (`checks.py::media_failed`).
 
 ## 5. Configuration and negotiation reach the trace
 

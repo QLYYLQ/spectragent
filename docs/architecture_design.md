@@ -1061,7 +1061,7 @@ class GAIAAgent(AgentBase):
 **设计决策**：Observation 不再是万能袋，而是 Fragment 注册表 + `__wiring__` 三方协商 + Resolver 模式。Fragment 是语义不可分的一组字段，独立注册在 conscribe；Env(Capability)/Agent/Loop 通过 `__wiring__` 声明 provides/requires；config 时 Avro 式协商 → 动态生成 Observation model → Capability 的 Resolver 按需计算。
 
 **观测增强按消费方分层（2026-10-20 裁决，取代 2026-10-19 的“所有使用 BrowserCapability
-的 Agent 统一获得浏览器观测”；enhance 待实现）。** 10-19 的表述把 UI-TARS 也算进浏览器统一
+的 Agent 统一获得浏览器观测”；已实现，2026-10-20 合入 main）。** 10-19 的表述把 UI-TARS 也算进浏览器统一
 观测，这是误记：UI-TARS 是跨平台的 computer-use Agent，只消费不带平台假设的通用合同；
 Skyvern、BrowserUse 是浏览器专用 Agent。新增信息按消费方分三类，全部经现有 fragment、
 Resolver、同周期采集、协商与持久化合同交付，**协商规则不变**，不绕过协商，不给其他
@@ -1569,7 +1569,7 @@ class ScrollAction(ActionBase):
 
 **注意**：`ActionBase` 使用 `@dataclass` + conscribe metaclass 的组合（参考 `AgentBase`），不需要 pydantic bridge，因为 action 对象本身不是数据传输对象，而是携带配置的执行器。
 
-#### 动作效果：`Effect` 与 `Params` 对称（2026-10-20 裁决，enhance 待实现）
+#### 动作效果：`Effect` 与 `Params` 对称（2026-10-20 裁决，已实现）
 
 `Params` 是动作的输入合同，`Effect` 是它的输出事实合同。动作类可以声明嵌套的 `Effect` 模型，执行时自己测量，放进 `ActionResult.effect`。`ActionResult` 只多这一个通用槽位，不出现任何 capability 的字段：
 

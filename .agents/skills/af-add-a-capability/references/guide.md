@@ -199,8 +199,9 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationE
 - **Computes, never acts.** `retarget` returns the action to execute (or a `failure`,
   `not_found` / `ambiguous`, with a `detail`); the restorer executes it through
   `guarded_act`. `verify_restoration` *measures* (`url_match`, `signature_*`,
-  `screenshot_distance`, `document_misses`; each `None` when not measured); thresholds and
-  `strict | warn` are the restorer's (`core/loops/restore/checks.py::judge`).
+  `screenshot_distance`, `document_misses`, `media`; each `None` when not measured);
+  thresholds and `strict | warn` are the restorer's (`core/loops/restore/checks.py::judge`),
+  and a `None` never decides a verdict.
 - **Reads the two observations handed to it**, whole `NegotiatedObservation`s. Read
   your own fragments by local name and check their type (a failed capture is a
   `FragmentFailure`, a fragment this run did not negotiate is absent). No step numbers, no
@@ -223,6 +224,48 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationE
   (the browser: `test_browser_restoration.py`, where a decoded selector-map entry must sign
   like its live node); one fixture per measured reason, judged by `judge`; and, if you
   can run the real thing, a live branch (`test_browser_branch_live.py`).
+
+### If some of your state moves on its own clock — `RestorationAlignment` (optional)
+
+Re-executing a recorded prefix reaches the right page, but state that moves in real time
+does not wait: a video kept playing while the source model thought, so the replay's
+player stands elsewhere (`docs/architecture_design.md` §4.9, §4.14 "恢复：重定位与校验").
+If you can put such state back, implement the second optional protocol
+`RestorationAlignment` (`core/capabilities/base.py`), separate from `RestorationSupport`
+because a capability that retargets and verifies need not have anything to align:
+
+```python
+async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float,
+                                 media_end_lead_s: float) -> None: ...
+```
+
+- **A request, not an act.** It only records that the *next* observation is to be aligned
+  to `recorded`; it touches nothing. The restorer (`prefix_replay` with `media: align`)
+  calls it before every restored observation, the checkpoint's included, through
+  `EnvironmentBase.align_next_observation`, which fans out to implementers in capability
+  order (none: nothing happens).
+- **Aligned inside that observation's own capture**, after the settle wait and right
+  before the capture fires (the browser: `_capture_once` → `_align_media`, once per cycle,
+  on the first attempt). Earlier, a playing video drifts during the settle; in the Loop,
+  the Loop would have to know about page media.
+- **Belongs to one observation only.** Bind the request to the next cycle
+  (`begin_observation`); a later cycle drops it, and the next `verify_restoration` takes
+  the report whether or not a capture acted on it. So nothing is ever aligned after the
+  checkpoint: policy steps and the terminal observation run in real time.
+- **Reported, never silent.** What was done comes back as evidence from the next
+  `verify_restoration` (browser: `RestorationEvidence.media.alignment`, one
+  `MediaAlignment` per recorded element: `aligned` / `already_aligned` / `failed` /
+  `not_restorable` / `unknown`, with target, start, reached state and timing). An
+  operation that does not complete within its budget is undone (`rolled_back`) and fails
+  the step (`media_mismatch`); an unknown target is recorded as `unknown` and decides
+  nothing. Every budget is a restorer YAML field (`media_seek_timeout_s`,
+  `media_end_lead_s`, `media_time_tolerance_s`) or a capability one
+  (`media_state_timeout_s`), and success is judged on the element's own state, not on
+  side signals.
+- **Tests it owes**: an `isinstance(capability, RestorationAlignment)` check; a request
+  that reaches only the next cycle; success, failure with roll-back, and an unknown
+  target judged by `judge`; and a live case (`test_browser_media_live.py`,
+  `test_browser_media_branch_live.py`).
 
 ---
 
@@ -722,6 +765,7 @@ Before you call a capability done:
 - [ ] Every setup refusal decidable from configuration and task data is in `check_setup` (`SetupCheck`): it changes nothing, reports every problem at once naming both parties, and `setup()` calls it again before acquiring anything
 - [ ] `collect_archive` takes no step or cycle, hands over everything since the last collect and forgets it, raises when it cannot collect (never a fake-complete empty batch), is safe on a half-built instance, swaps its buffer atomically with respect to its producers, and carries an in-flight item into a later batch exactly once
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
+- [ ] If a recorded run can resume here: `RestorationSupport` (and, for state that moves on its own clock, `RestorationAlignment`) implemented as pure measurements and requests; unknown values never decide
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
 - [ ] Backend registrar pinned in `collect_registrars()` if you added one
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
@@ -762,6 +806,15 @@ Before you call a capability done:
   conscribe-generated and goes stale silently — a caller typed against the concrete class
   then sees a capability missing the very Protocol member you just added, and nothing in
   the suite catches it. Regenerate after any method or private-attribute change.
+- **One CDP frame registry per tab.** Chrome reports a session's already-attached
+  out-of-process frames only to the *first* `Target.setAutoAttach` sent on that session; a
+  second registry on the same tab hears of none of them. The browser therefore owns exactly
+  one `FrameTargets` (`dom/capture.py`) per tab session and hands it, through
+  `WatchdogContext.frame_targets`, to everything that reaches into cross-site frames — the
+  DOM resolver (only when the profile's `cross_site_iframe_capture` is on) and the media
+  reads and alignment (always) — each frame then read on its own session. The capability
+  closes it with the tab; a consumer watches it but never closes it. A new consumer of
+  frame sessions takes that registry; it never builds its own.
 - **Inside one capability the browser is all-or-nothing**: `_capture_once`
   (`capability.py:1231`) raises if any negotiated fragment is missing after
   `_OBSERVE_MAX_ATTEMPTS` (`:139`), so a landed screenshot is discarded along with a lost

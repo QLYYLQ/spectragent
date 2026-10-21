@@ -148,6 +148,8 @@ Actions are individually registered (`ActionRegistrar`). Each is a dataclass wit
 
 Corollary the action layer paid for once already: negotiation matches *names*, not parameter contracts. An agent that emits an action must produce the params `descriptor().params` declares — put a test on that seam.
 
+`Effect` is the output counterpart of `Params`: an action may declare a nested `Effect` model for what it measurably did, returned in `ActionResult.effect`, read back from a trace through the existing action registry by `effect_id` (no effect registry), and shown to models only as its `describe()` line (`docs/architecture_design.md` §4.5).
+
 **Environment evidence is the third provides axis**, with the same shape: archivers are individually registered (`ArchiverRegistrar`, keys `source.local_id` such as `browser.network`), a Capability declares provides in `__wiring__["archiver"]` (fully qualified), the Environment aggregates `provided_archivers`, and `negotiate_archive` runs in `prepare()` and yields `archive_bindings` (archiver key → `capability_id`). It has exactly one deliberate asymmetry: **requires come from the trace hook instance's `archive` list, always fully qualified** — never from a class `__wiring__`, and never relative (user ruling D3: what a run records is a per-run choice, not an agent's domain knowledge). Do not "fix" that asymmetry by adding an archive entry to an agent's `__wiring__`.
 
 ### 2.6 AOP hooks — no emitter, no opt-in

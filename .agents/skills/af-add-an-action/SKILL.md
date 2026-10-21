@@ -9,7 +9,7 @@ Actions are registered, fully qualified units owned and executed by a Capability
 
 Read [references/guide.md](references/guide.md) as follows:
 
-- Always read §1, §2, §3, and §6 for class shape, registration, negotiation, end-to-end parameter seams, and verification.
+- Always read §1, §2, §3, and §6 for class shape, registration, negotiation, end-to-end parameter seams, and verification. §1.5 covers the optional nested `Effect` — the output twin of `Params`: what the action measurably did, its `describe()` line, the measurement budget, and read-back through the action registry.
 - Read §4 when changing parameter schemas or the structured-output compiler.
 - Read §5 before proposing an action that calls an LLM; the general trace/AOP support is intentionally unresolved.
 

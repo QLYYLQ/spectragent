@@ -10,7 +10,7 @@ Hooks observe methods and lifecycle calls without emitters; evaluators consume p
 Read [references/guide.md](references/guide.md) by task:
 
 - Hook creation and interception: §1–§2.
-- WAL or reader behavior: §3.
+- WAL or reader behavior: §3; recorded evidence on disk, replay-log kinds, action effects read back through the action registry, and restoration media evidence: §4 ("What the browser's evidence looks like on disk", "Facts read back as their own types").
 - Whether a fact belongs in the trace: §4.
 - Run configuration, negotiation, or digests: §5.
 - Secrets or redaction: §6.

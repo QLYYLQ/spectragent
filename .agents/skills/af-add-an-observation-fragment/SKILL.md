@@ -13,4 +13,4 @@ Use [references/guide.md](references/guide.md) by concern:
 - Read §5–§7 for batching, multi-capability behavior, optional failures, and the shared contract harness.
 - Read §8 when the fragment has measurable prompt or capture cost.
 
-Resolvers raise on failure; the environment alone decides whether a required fragment aborts or an optional fragment becomes `FragmentFailure`. Never fabricate an empty fragment.
+Resolvers raise on failure; the environment alone decides whether a required fragment aborts or an optional fragment becomes `FragmentFailure`. Never fabricate an empty fragment. The one exception is an optional fragment inside a batched capture (`capture_state`): it records each probe problem as a typed `unknown` inside itself so it cannot fail the whole capture (§6). For cross-platform facts and screenshot sidecar metadata (`source_url`, `cursor`, `media`) see §1 "Where the class file lives".
