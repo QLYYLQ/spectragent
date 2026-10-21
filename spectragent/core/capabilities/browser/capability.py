@@ -289,6 +289,16 @@ _OBSERVE_MAX_ATTEMPTS = 2
 # flight means no wait at all; the bound is per attempt.
 _NAVIGATION_SETTLE_TIMEOUT_S = 10.0
 
+#: What one capture attempt leaves, in seconds, for the probes whose limits are
+#: YAML knobs — ``capture_state_timeout_s`` once and ``media_state_timeout_s``
+#: twice (before and after the screenshot). A tab captures its fragments one
+#: after another inside one 30 s ``BrowserStateRequestEvent``; the fixed bounds
+#: take 26 s of it (the DOM capture 10 s, the screenshot command 10 s, three
+#: small reads 2 s each; §4.14 "命令上限"). A sum at or past this room would let
+#: a slow probe fail the whole capture, which a probe must never do, so the
+#: capability refuses it (``test_browser_observation_bounds.py`` derives it).
+CAPTURE_PROBE_ROOM_S = 4.0
+
 # How long each command measuring the browser's defaults right after launch
 # may take (§4.14): the first tab's renderer may still be starting.
 _BROWSER_DEFAULTS_TIMEOUT_S = 5.0
@@ -904,7 +914,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             float,
             PydanticField(
                 gt=0,
-                le=10,
+                le=3,
                 description=(
                     "The most time, in seconds, the browser.capture_state fragment may "
                     "spend on its in-page probe (the visible images that failed to load) "
@@ -915,7 +925,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "on simple pages, at most 10 ms at the 95th percentile with 5,000 images "
                     "or on image-heavy sites); it runs on the page's main thread, so this "
                     "limit is reached only when page scripts hold that thread, and then it "
-                    "is what the observation pays. Default 1."
+                    "is what the observation pays. Default 1, at most 3. Together with the two "
+                    "media reads it must leave the capture its budget: this plus twice "
+                    "media_state_timeout_s must stay under 4 s, the part of a capture's 30 s "
+                    "the fixed bounds of the DOM capture, the screenshot and three small "
+                    "reads (26 s) leave; a larger sum is refused, naming both fields."
                 ),
             ),
         ] = 1.0,
@@ -923,7 +937,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             float,
             PydanticField(
                 gt=0,
-                le=10,
+                le=1.5,
                 description=(
                     "The most time, in seconds, each of the two reads of the page's media "
                     "playback state may take: one just before and one just after every "
@@ -934,7 +948,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "read runs on the page's main thread and takes a few milliseconds, so "
                     "this limit is reached only when page scripts hold that thread. In a "
                     "branch run's restored prefix the same limit bounds the read the media "
-                    "alignment starts from. Default 1."
+                    "alignment starts from. Default 1, at most 1.5. It is spent twice per "
+                    "capture, so twice this plus capture_state_timeout_s must stay under 4 s, "
+                    "the part of a capture's 30 s the fixed bounds of the DOM capture, the "
+                    "screenshot and three small reads (26 s) leave; a larger sum is refused, "
+                    "naming both fields."
                 ),
             ),
         ] = 1.0,
@@ -1017,6 +1035,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.settle_quiet_ms = settle_quiet_ms
         self.settle_max_wait_s = settle_max_wait_s
         self.action_effect_timeout_s = action_effect_timeout_s
+        probes = capture_state_timeout_s + 2 * media_state_timeout_s
+        if probes >= CAPTURE_PROBE_ROOM_S:
+            raise ValueError(
+                f"capture_state_timeout_s ({capture_state_timeout_s:g} s) plus twice "
+                f"media_state_timeout_s ({media_state_timeout_s:g} s) is {probes:g} s, not "
+                f"under the {CAPTURE_PROBE_ROOM_S:g} s one capture leaves for them: the DOM "
+                "capture, the screenshot and three small reads may take 26 s of its 30 s, "
+                "so a probe running out would fail the whole capture. Lower one of them."
+            )
         self.capture_state_timeout_s = capture_state_timeout_s
         self.media_state_timeout_s = media_state_timeout_s
         self.retarget_tolerance_px = retarget_tolerance_px

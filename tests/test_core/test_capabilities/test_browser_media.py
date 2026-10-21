@@ -570,7 +570,7 @@ def test_measure_reports_media_only_with_a_screenshot_or_an_alignment() -> None:
 # ── the alignment request ─────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(("value", "valid"), [(0.25, True), (0, False), (11, False)])
+@pytest.mark.parametrize(("value", "valid"), [(0.25, True), (0, False), (2, False)])
 def test_the_media_read_budget_is_a_capability_knob(value: float, valid: bool) -> None:
     import yaml
     from pydantic import ValidationError

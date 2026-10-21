@@ -113,7 +113,11 @@ from the same instant as the pixels. `ScreenshotObs` carries three: `source_url`
 document read in the same cycle), `cursor` (`None` = off; a cursor without a position =
 on but unknown) and `media` (`MediaState`, `browser/media.py`: every `<video>` /
 `<audio>` read just before and just after `Page.captureScreenshot` by the same resolver,
-each read bounded by the capability's `media_state_timeout_s`). A sidecar read must never
+each read bounded by the capability's `media_state_timeout_s`). Every knob-bounded probe
+of a batched capture shares what the capture's fixed bounds leave of its 30 s event: the
+browser refuses `capture_state_timeout_s + 2 × media_state_timeout_s` at or past
+`CAPTURE_PROBE_ROOM_S` (4 s), so a new probe with its own budget must join that sum and its
+test (`test_browser_observation_bounds.py`). A sidecar read must never
 fail the fragment it rides on: a read that runs out or errs is recorded inside it as
 `unknown` with a `detail`, and `None` means "not measured" — `media` is then left out of
 the trace JSON (`trace_json_exclude`), so a screenshot without it writes what it always

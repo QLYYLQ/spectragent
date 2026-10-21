@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import CAPTURE_PROBE_ROOM_S
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, DOMObs
 from spectragent.core.capabilities.browser.watchdogs import base as watchdog_base
 from spectragent.core.capabilities.browser.watchdogs import dom_watchdog, screenshot_watchdog
@@ -74,13 +75,38 @@ def _event(*fragments: str) -> BrowserStateRequestEvent:
 
 
 def test_the_bounds_leave_the_event_room_for_a_re_fire() -> None:
-    """DOM capture + screenshot + the three reads stay inside one event's 30 s."""
-    one_attempt = (
+    """DOM capture + screenshot + the three reads + the knob-bounded probes stay inside 30 s.
+
+    The probes whose limits are YAML knobs (capture_state once, the media
+    state twice) get exactly the room the fixed bounds leave, and the
+    capability refuses a configuration that would fill it.
+    """
+    fixed = (
         dom_watchdog._DOM_CAPTURE_TIMEOUT_S
         + screenshot_watchdog._SCREENSHOT_COMMAND_TIMEOUT_S
         + 3 * watchdog_base.OBSERVATION_READ_TIMEOUT_S
     )
-    assert one_attempt < BrowserStateRequestEvent().event_timeout
+    event_timeout = BrowserStateRequestEvent().event_timeout
+    assert fixed + CAPTURE_PROBE_ROOM_S == event_timeout
+    defaults = BrowserCapability()
+    assert fixed + defaults.capture_state_timeout_s + 2 * defaults.media_state_timeout_s < (
+        event_timeout
+    )
+
+
+@pytest.mark.parametrize(
+    ("capture_state", "media", "valid"),
+    [(1.0, 1.0, True), (3.0, 0.4, True), (0.9, 1.5, True), (2.0, 1.0, False), (3.0, 1.5, False)],
+)
+def test_the_knob_bounded_probes_cannot_overrun_the_capture(
+    capture_state: float, media: float, valid: bool
+) -> None:
+    if valid:
+        cap = BrowserCapability(capture_state_timeout_s=capture_state, media_state_timeout_s=media)
+        assert (cap.capture_state_timeout_s, cap.media_state_timeout_s) == (capture_state, media)
+        return
+    with pytest.raises(ValueError, match="capture_state_timeout_s .* media_state_timeout_s"):
+        BrowserCapability(capture_state_timeout_s=capture_state, media_state_timeout_s=media)
 
 
 class TestDomCapture:
