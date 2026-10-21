@@ -262,7 +262,7 @@ over steps 13 and 15); replay with `pace: none` does not wait. Byte coverage was
 the headless pair (41 of 41 ranges served) and screenshot timing matched. The existing check
 passed step 19 at screenshot distance 4 against threshold 5 although the content differed.
 
-**User decisions, 2026-10-20 (design and implementation pending):**
+**User decisions, 2026-10-20 (implemented on `enhance/media-playback-restoration`, 2026-10-21):**
 
 - Record, check and align. Media state (per element position, paused, duration) is
   screenshot-fragment metadata measured just before and after capture, with a
@@ -295,6 +295,61 @@ passed step 19 at screenshot distance 4 against threshold 5 although the content
 - User decision: after a failed seek, seek back to the pre-alignment position and play state
   (stops the retry storm) and mark the step non-restorable. The unexplained self-pause
   in the headed run is investigated after media facts exist.
+
+**Implemented, 2026-10-21** (branch `enhance/media-playback-restoration`; evidence and
+delivery in `tmp/media_restoration_20261021/delivery.json`). Contract in
+`docs/architecture_design.md` §4.4 "截图的媒体状态", §4.9 `RestorationAlignment`, §4.14
+"恢复：重定位与校验", §5.3 `media_mismatch`, §4.16. Two rules came from real-site
+evidence: a script-fed (`blob:`) source's duration changes as data arrives (30.93 s, then
+31.04 s), so duration confirms a match only for ordinary URL sources; and a completed seek
+must also land on the target (one aimed at 31.04 s completed at 26.66 s).
+
+**User decisions, 2026-10-21, on the six open questions:**
+
+1. Cross-site iframes: read media inside each cross-site frame through that frame's own
+   browser session. Only a frame whose own read fails counts as unreachable; it makes the
+   step non-restorable. `unreachable_frames` stays as evidence. (Implemented; every frame
+   is read in its own isolated world, frames named by their index in the parent's frame
+   list.)
+2. Real-site comparison: record until a recording contains video (at most four attempts),
+   then same-path replays with `media: align` vs `media: none`.
+3. Extra and hidden media elements keep counting as mismatches.
+4. The player's control bar after a scripted seek and play is accepted; the note stays in
+   the alignment record.
+5. Recordings made before media metadata cannot be media-checked; accepted.
+6. Closed: the headed source's self-pause was likely a network stall that only looked like
+   a pause, or the user's own keyboard/mouse input on the visible browser. Not pursued.
+
+**Fixture branch** (local page, scripted model thinking 2.5 s while the video plays,
+real headless Chrome, offline same-path branch to step 3):
+
+| Step | Source | `none` | Result (distance) | `align` | Result (distance) |
+|---|---|---|---|---|---|
+| 1 | 2.99 s playing | 0.36 s | `media_mismatch` (2) | 3.00 s | ok (0) |
+| 2 | 5.57 s paused | 0.41 s | `media_mismatch` (1) | 5.57 s | ok (0) |
+| 3 (checkpoint) | 5.69 s playing | 0.54 s | `media_mismatch` (1) | 5.70 s | ok (1) |
+
+**Real site, 2026-10-21.** Four recording attempts: Bilibili task 158 (clicked an ad,
+left the site), Bilibili task 118 (reached a video page at steps 24-26, but its replay
+diverges from step 2 on a client-generated `vt` search parameter and never restores the
+video page), task 30 (image note again), task 238 (a 31 s recipe video, paused, played,
+scrubbed and ended across steps 4-30: `record/media-l2-238-record-a4`). Same-path replays
+of task 238, two per arm (the same results within each arm):
+
+| Over the 27 video steps (4-30) | `media: align` | `media: none` |
+|---|---|---|
+| Steps passing | 16 | 10 |
+| `media_mismatch` | 1 (step 15: a seek to the end landed at 26.66 s, failed, rolled back; the player then re-seeked itself) | 17 |
+| Media differences the screenshot alone would pass (distance ≤ 5) | 0 | 3-4 (steps 4, 7, 21, and 19 in one run) |
+| Alignment outcomes | 14 aligned, 12 already aligned, 1 failed | — |
+| Paused-source steps (4, 5, 8, 17-19) | exact position, distance 0-1 | 5-15 s off, distance 4-12 |
+| Playing-source steps (6, 7, 9, 14, 16, 20) | +0.04-0.12 s, distance 0-1 | 1-13 s off, distance 2-12 |
+| Ended-source steps 21-30 | position matches, distance 6-7 | from step 23 the replay video ends by itself, distance 0 |
+
+Open, recommended next: a recorded *ended* state aligned by seeking to the end shows a stale
+frame and no end screen (distance 6-7 on xgplayer), while a video that plays to its end
+matches. Recommendation: for an ended target, seek shortly before the end and play to the
+natural end, with the same success rules.
 
 ## Pending — source captures of half-loaded pages
 
