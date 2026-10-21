@@ -52,9 +52,10 @@ if TYPE_CHECKING:
 #: - ``replay_log`` — the replay server's decisions (``browser.replay_log`` has
 #:   it): a replay refuses to run without an archiver with it, and a live
 #:   source refuses one, since it replays nothing;
-#: - ``action_boundary`` — the start of each of the agent's actions, delivered
-#:   into the archive scope before the action touches the page, the action
-#:   waiting for it (``browser.frames`` has it).
+#: - ``action_boundary`` — the start of each of the agent's actions: the
+#:   archive run hands an :class:`ActionBoundary` to the sessions that want it
+#:   before the action touches the page, and the action waits for them, within
+#:   their budget (``browser.frames`` has it).
 #:
 #: The cooperation check finds archivers by these needs, never by archiver id.
 ArchiveNeed = Literal[
@@ -152,6 +153,34 @@ class CommittedCycle:
     committed_at: float
 
 
+@dataclass(frozen=True)
+class ActionBoundary:
+    """One ``env.act`` call on the browser, before it does anything to the page.
+
+    Announced by the archive run for every call of
+    ``BrowserCapability.execute_action`` — one that fails at once because the
+    focused tab closed itself included — so ``action_index`` counts the calls
+    since the observation cycle began: the same ordinal as that step's
+    ``StepRecord.action_spans``. An action ``guarded_act`` refused never
+    reaches the environment and is in neither.
+    """
+
+    #: The tab's target id (``None`` when the capability knows none).
+    target_id: str | None
+    #: The control connection's session for the tab (``""`` when none).
+    control_session_id: str
+    #: The fully-qualified action name (``browser.click``).
+    action: str
+    #: Wall-clock seconds at which the action started.
+    requested_at: float
+    #: The observation cycle the action follows (the environment's counter).
+    cycle: int
+    #: 0-based ordinal of this ``env.act`` call since that cycle.
+    action_index: int
+    #: ``False`` when the focused tab had closed itself: the action fails at once.
+    tab_open: bool = True
+
+
 class RawCaptureStore:
     """Raw captures of committed cycles, waiting for the next collection.
 
@@ -231,9 +260,9 @@ class BrowserArchiveSession(RecorderParticipantBase):
     """One bound archiver's run-time session — a recorder participant.
 
     Every participant member (``target_commands``, ``fetch_patterns``,
-    ``on_event``, ``on_paused``, ``on_cycle``, ``wants_cycles``,
-    ``on_action_boundary``, ``wants_action_boundaries``) defaults to a
-    no-op, and so does :meth:`on_cycle_committed`; :meth:`collect` hands over
+    ``on_event``, ``on_paused``, ``on_cycle``, ``wants_cycles``) defaults to a
+    no-op, and so do the two the archive run calls directly,
+    :meth:`on_cycle_committed` and :meth:`on_action_boundary`; :meth:`collect` hands over
     everything captured since the previous collection and forgets it,
     swapping its buffers in one synchronous statement; :meth:`aclose`
     releases anything still running.
@@ -249,6 +278,30 @@ class BrowserArchiveSession(RecorderParticipantBase):
 
     def on_cycle_committed(self, cycle: CommittedCycle) -> None:
         """An observation cycle committed. Synchronous, on the capability's loop; never blocks."""
+        return None
+
+    @property
+    def wants_action_boundaries(self) -> bool:
+        """Whether :meth:`on_action_boundary` should be called before each action."""
+        return False
+
+    @property
+    def action_boundary_budget_s(self) -> float | None:
+        """Most seconds :meth:`on_action_boundary` may hold the action (``None``: the default).
+
+        The archive run cancels a session that overruns it (plus a small
+        grace) and lets the action run; the session records what that cost
+        its own evidence.
+        """
+        return None
+
+    async def on_action_boundary(self, boundary: ActionBoundary) -> None:
+        """An action is about to run (only when :attr:`wants_action_boundaries`).
+
+        The action waits for it in the agent's own task. A cancellation —
+        the run's budget ran out, or the run itself was cancelled — must
+        still leave this boundary's evidence explicit, never a gap.
+        """
         return None
 
     async def collect(self) -> list[ArchiveFile]:

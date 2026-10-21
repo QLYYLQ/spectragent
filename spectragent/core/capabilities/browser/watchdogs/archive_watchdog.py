@@ -20,13 +20,8 @@ connects the tab's observation scope to the archive scope across scopes
 (``target_scope=``): the cycle's ``BrowserStateRequestEvent`` then also
 runs a handler in the archive scope's loop, which the cycle waits for. It
 returns no summary, so nothing on the archive side can change the
-observation or its document stamps. Archivers that capture *before each
-action* (``browser.frames``) are reached the same way: the archive side
-emits an ``ActionBoundaryEvent`` on the tab's observation scope before the
-action touches the page, and its one handler, here, runs in the archive
-scope and hands an :class:`ActionBoundary` to every participant that wants
-boundaries. Tabs keep exactly their two scopes; there is no per-tab archive
-scope.
+observation or its document stamps. Tabs keep exactly their two scopes;
+there is no per-tab archive scope.
 """
 
 from __future__ import annotations
@@ -34,10 +29,9 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from agent_cdp import Connection, ConnectionType, EventScope, Participation, ResultContract
+from agent_cdp import ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.recorder import (
-    ActionBoundary,
     ArchiveChannel,
     CycleRequest,
     RecorderEvent,
@@ -47,10 +41,7 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
     WatchdogContext,
     WatchdogLevel,
 )
-from spectragent.core.capabilities.browser.watchdogs.events import (
-    ActionBoundaryEvent,
-    BrowserStateRequestEvent,
-)
+from spectragent.core.capabilities.browser.watchdogs.events import BrowserStateRequestEvent
 
 logger = logging.getLogger(__name__)
 
@@ -113,25 +104,15 @@ class ArchiveWatchdog(BrowserWatchdog):
         *,
         session_id: str,
     ) -> None:
-        """Bring this tab's observation cycles and action boundaries into the archive scope.
-
-        Each only if a participant wants it when the tab is bound; who
-        receives is decided at delivery, from the participants bound then.
-        """
+        """Bring this tab's observation cycles into the archive scope, if wanted."""
         channel = self._channel
-        if channel is None:
-            return
-        participants = channel.participants()
-        wants_cycles = any(p.wants_cycles for p in participants)
-        wants_boundaries = any(p.wants_action_boundaries for p in participants)
-        if not (wants_cycles or wants_boundaries):
+        if channel is None or not any(p.wants_cycles for p in channel.participants()):
             return
         target_id = observation_scope.metadata.get("target_id")
-        tab = str(target_id) if target_id is not None else None
 
         async def archive_cycle(event: BrowserStateRequestEvent) -> None:
             request = CycleRequest(
-                target_id=tab,
+                target_id=str(target_id) if target_id is not None else None,
                 control_session_id=session_id,
                 fragments=frozenset(event.fragments),
                 request_id=event.event_id,
@@ -150,54 +131,16 @@ class ArchiveWatchdog(BrowserWatchdog):
                     )
             return None
 
-        async def archive_boundary(event: ActionBoundaryEvent) -> None:
-            boundary = ActionBoundary(
-                target_id=tab,
-                control_session_id=session_id,
-                action=event.action_name,
-                requested_at=event.requested_at,
-            )
-            for participant in channel.participants():
-                if not participant.wants_action_boundaries:
-                    continue
-                try:
-                    await participant.on_action_boundary(boundary)
-                except Exception:
-                    channel.errors += 1
-                    logger.exception(
-                        "archive: %s failed on the boundary of %s on %s",
-                        type(participant).__name__,
-                        event.action_name,
-                        session_id,
-                    )
-            return None
-
         self.unbind_tab(session_id)
-        connections: list[Connection] = []
-        if wants_cycles:
-            connections.append(
-                observation_scope.connect(
-                    BrowserStateRequestEvent,
-                    archive_cycle,
-                    mode=ConnectionType.QUEUED,
-                    target_scope=channel.scope,
-                    participation=Participation.OBSERVER,
-                    result_contract=ResultContract(lambda value: value is None),
-                )
-            )
-        if wants_boundaries:
-            connections.append(
-                observation_scope.connect(
-                    ActionBoundaryEvent,
-                    archive_boundary,
-                    mode=ConnectionType.QUEUED,
-                    target_scope=channel.scope,
-                    participation=Participation.HANDLER,
-                    receiver_key="archive.action_boundary",
-                    result_contract=ResultContract(lambda value: value is None),
-                )
-            )
-        self.track_binding(observation_scope, session_id, connections=connections)
+        connection = observation_scope.connect(
+            BrowserStateRequestEvent,
+            archive_cycle,
+            mode=ConnectionType.QUEUED,
+            target_scope=channel.scope,
+            participation=Participation.OBSERVER,
+            result_contract=ResultContract(lambda value: value is None),
+        )
+        self.track_binding(observation_scope, session_id, connections=[connection])
 
     def unbind_tab(self, session_id: str) -> None:
         for binding in self.bindings:
