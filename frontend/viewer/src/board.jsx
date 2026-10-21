@@ -1,0 +1,356 @@
+/** Images under review, with the person's boxes drawn, moved and resized on them. */
+import React, { useEffect, useRef, useState } from "react";
+import {
+  HANDLES,
+  MIN_BOX,
+  boxFromDrag,
+  boxLabel,
+  boxStyle,
+  hasArea,
+  moveBox,
+  resizeBox,
+  toImagePoint,
+} from "./boxes.js";
+
+export const ZOOMS = ["fit", 1, 1.5, 2, 3];
+export const COMPARE_MODES = [
+  { value: "side", text: "Side by side" },
+  { value: "flip", text: "Flip" },
+  { value: "difference", text: "Difference" },
+];
+
+export function zoomText(zoom) {
+  return zoom === "fit" ? "Fit" : `${Math.round(zoom * 100)}%`;
+}
+
+/**
+ * images: [{ role, text, src, detail }]
+ * regions: the draft's regions; kinds: [{ value, text, color }] or null
+ */
+export function ImageBoard({
+  images,
+  regions = [],
+  suggested = [],
+  showSuggested = true,
+  kinds = null,
+  activeKind = null,
+  editable = false,
+  selected = null,
+  onSelect = () => {},
+  onChange = () => {},
+  compare = "side",
+  flipIndex = 0,
+  zoom = "fit",
+  fit = "window",
+}) {
+  const [sizes, setSizes] = useState({});
+  const comparable =
+    images.length >= 2 &&
+    sizes[images[0].role] &&
+    images.every(
+      (image) =>
+        sizes[image.role] &&
+        sizes[image.role].width === sizes[images[0].role].width &&
+        sizes[image.role].height === sizes[images[0].role].height,
+    );
+  const mode = images.length < 2 ? "side" : compare;
+  const colors = Object.fromEntries((kinds || []).map((kind) => [kind.value, kind]));
+  const record = (role) => (size) =>
+    setSizes((old) =>
+      old[role]?.width === size.width && old[role]?.height === size.height
+        ? old
+        : { ...old, [role]: size },
+    );
+  if (!images.length)
+    return (
+      <div className="board-empty">This item has no images to compare.</div>
+    );
+  const panel = (image, extra = {}) => (
+    <ImagePanel
+      key={image.role}
+      image={image}
+      size={sizes[image.role]}
+      onSize={record(image.role)}
+      regions={regions}
+      suggested={showSuggested ? suggested : []}
+      colors={colors}
+      activeKind={activeKind}
+      editable={editable && Boolean(kinds)}
+      selected={selected}
+      onSelect={onSelect}
+      onChange={onChange}
+      zoom={zoom}
+      fit={fit}
+      {...extra}
+    />
+  );
+  if (mode === "difference") {
+    const [base, top] = images;
+    return (
+      <div className="board single">
+        {!comparable && sizes[base.role] && sizes[top.role] && (
+          <p className="board-note">
+            The two images differ in size, so the difference is only approximate.
+          </p>
+        )}
+        {panel(base, {
+          overlay: top,
+          caption: `Difference of ${base.text || base.role} and ${top.text || top.role}. Black means the pixels did not change.`,
+          editable: false,
+        })}
+      </div>
+    );
+  }
+  if (mode === "flip") {
+    const shown = images[flipIndex % images.length];
+    return (
+      <div className="board single">
+        {panel(shown, {
+          caption: `Showing ${(flipIndex % images.length) + 1} of ${images.length}. Press F to flip.`,
+        })}
+      </div>
+    );
+  }
+  return (
+    <div
+      className="board"
+      style={{
+        gridTemplateColumns: `repeat(${Math.min(images.length, zoom === "fit" ? 2 : 1)}, minmax(0, 1fr))`,
+      }}
+    >
+      {images.map((image) => panel(image))}
+    </div>
+  );
+}
+
+function ImagePanel({
+  image,
+  size,
+  onSize,
+  regions,
+  suggested,
+  colors,
+  activeKind,
+  editable,
+  selected,
+  onSelect,
+  onChange,
+  zoom,
+  fit,
+  overlay = null,
+  caption = null,
+}) {
+  const surface = useRef(null);
+  const [drag, setDrag] = useState(null);
+  const [failed, setFailed] = useState(null);
+  useEffect(() => {
+    setFailed(null);
+    setDrag(null);
+  }, [image.src]);
+  const own = regions
+    .map((region, index) => ({ region, index }))
+    .filter(({ region }) => region.image === image.role);
+  const proposals = suggested.filter((region) => region.image === image.role);
+  const drawing = editable && activeKind != null;
+
+  function point(event) {
+    return toImagePoint(
+      event.clientX,
+      event.clientY,
+      surface.current.getBoundingClientRect(),
+      size,
+    );
+  }
+
+  function pointerDown(event) {
+    if (event.button !== 0 || !size) return;
+    const handle = event.target.closest("[data-handle]");
+    const box = event.target.closest("[data-box]");
+    const at = point(event);
+    // Alt draws over an existing box, for a detail inside a larger area.
+    if (box && !(drawing && event.altKey)) {
+      const index = Number(box.dataset.box);
+      onSelect(index);
+      if (!editable) return;
+      setDrag(
+        handle
+          ? { mode: "resize", index, handle: handle.dataset.handle, box: regions[index].box }
+          : { mode: "move", index, start: at, origin: regions[index].box, box: regions[index].box },
+      );
+    } else {
+      onSelect(null);
+      if (!drawing) return;
+      setDrag({ mode: "draw", start: at, box: [at.x, at.y, at.x, at.y] });
+    }
+    surface.current.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function pointerMove(event) {
+    if (!drag) return;
+    const at = point(event);
+    const box =
+      drag.mode === "draw"
+        ? boxFromDrag(drag.start, at, size)
+        : drag.mode === "move"
+          ? moveBox(drag.origin, at.x - drag.start.x, at.y - drag.start.y, size)
+          : resizeBox(drag.box, drag.handle, at, size);
+    setDrag({ ...drag, box });
+  }
+
+  function pointerUp() {
+    if (!drag) return;
+    if (drag.mode === "draw") {
+      if (hasArea(drag.box, MIN_BOX)) {
+        onChange([...regions, { image: image.role, kind: activeKind, box: drag.box }]);
+        onSelect(regions.length);
+      }
+    } else if (drag.box.some((value, i) => value !== regions[drag.index].box[i])) {
+      onChange(
+        regions.map((region, index) =>
+          index === drag.index ? { ...region, box: drag.box } : region,
+        ),
+      );
+    }
+    setDrag(null);
+  }
+
+  // Fit shows the whole image: as wide as the panel and, on the review
+  // screen ("below"), as tall as the window below the panel's top allows;
+  // inside a scrolling page ("window"), as tall as the window.
+  const viewport = useRef(null);
+  const [room, setRoom] = useState(null);
+  useEffect(() => {
+    const measure = () => {
+      if (!viewport.current) return;
+      const top =
+        fit === "below"
+          ? viewport.current.getBoundingClientRect().top + window.scrollY
+          : 120;
+      setRoom(Math.max(260, window.innerHeight - top - 20));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [size, caption]);
+  const width =
+    !size
+      ? "100%"
+      : zoom === "fit"
+        ? room
+          ? `min(100%, ${Math.floor(room * (size.width / size.height))}px)`
+          : "100%"
+        : `${size.width * zoom}px`;
+  return (
+    <figure className="board-panel">
+      <figcaption>
+        <strong>{image.text || image.role}</strong>
+        {image.detail && <span className="board-detail">{image.detail}</span>}
+        {size && (
+          <span className="board-size">
+            {size.width} × {size.height}
+          </span>
+        )}
+        <a href={image.src} target="_blank" rel="noreferrer">
+          Original
+        </a>
+      </figcaption>
+      {caption && <p className="board-caption">{caption}</p>}
+      <div className="board-viewport" ref={viewport}>
+        {failed ? (
+          <div className="board-missing" role="alert">
+            {failed}
+          </div>
+        ) : (
+          <div
+            className={`board-surface ${drawing ? "drawing" : ""}`}
+            style={{ width }}
+            ref={surface}
+            onPointerDown={pointerDown}
+            onPointerMove={pointerMove}
+            onPointerUp={pointerUp}
+            onPointerCancel={() => setDrag(null)}
+          >
+            <img
+              src={image.src}
+              alt={image.text || image.role}
+              draggable="false"
+              onLoad={(event) =>
+                onSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                })
+              }
+              onError={() => explainFailure(image, setFailed)}
+            />
+            {overlay && (
+              <img className="board-difference" src={overlay.src} alt="" draggable="false" />
+            )}
+            {size &&
+              proposals.map((region, index) => (
+                <div
+                  key={`s${index}`}
+                  className={`region suggested ${tagPlacement(region.box, size)}`}
+                  style={{ ...boxStyle(region.box, size), "--kind": colors[region.kind]?.color }}
+                >
+                  <span className="region-tag" title="Suggested">
+                    {colors[region.kind]?.text || region.kind}
+                  </span>
+                </div>
+              ))}
+            {size &&
+              own.map(({ region, index }) => {
+                const box = drag && drag.index === index ? drag.box : region.box;
+                return (
+                  <div
+                    key={index}
+                    data-box={index}
+                    className={`region ${selected === index ? "selected" : ""} ${editable ? "editable" : ""} ${tagPlacement(box, size)}`}
+                    style={{ ...boxStyle(box, size), "--kind": colors[region.kind]?.color }}
+                    title={`${colors[region.kind]?.text || region.kind}: ${boxLabel(box)}`}
+                  >
+                    <span className="region-tag">
+                      {colors[region.kind]?.text || region.kind}
+                    </span>
+                    {editable &&
+                      selected === index &&
+                      HANDLES.map((handle) => (
+                        <span
+                          key={handle}
+                          data-handle={handle}
+                          className={`region-handle ${handle}`}
+                        />
+                      ))}
+                  </div>
+                );
+              })}
+            {size && drag?.mode === "draw" && (
+              <div
+                className="region drawing-box"
+                style={{ ...boxStyle(drag.box, size), "--kind": colors[activeKind]?.color }}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </figure>
+  );
+}
+
+/** Keep a box's tag inside the image: below the top edge, left of the right edge. */
+function tagPlacement([x0, y0, x1], size) {
+  return `${y0 < size.height * 0.05 ? "low" : ""} ${x1 > size.width * 0.8 && x0 > size.width * 0.5 ? "right" : ""}`;
+}
+
+/** An <img> error has no body; ask once more to show the viewer's reason. */
+function explainFailure(image, setFailed) {
+  const name = image.text || image.role;
+  setFailed(`${name} could not be loaded.`);
+  fetch(image.src)
+    .then((response) => response.json())
+    .then((data) => {
+      if (typeof data.detail === "string")
+        setFailed(`${name} could not be loaded: ${data.detail}`);
+    })
+    .catch(() => {});
+}
