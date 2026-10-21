@@ -15,9 +15,11 @@ benchmarks explicitly — nothing is inferred from the evaluator or from
 verdicts; the default, ``[]``, decontaminates nothing, and the manifest says
 ``decontaminated: false``. ``match``: ``task_id`` (the same benchmark, a task
 id of its eval loader), ``site_instruction`` (the same start-URL host and
-normalised instruction as a task of its task loader) or ``either``. Benchmark
-data is read through ``benchmarks.py`` — the export document's own loaders
-first; a benchmark whose loaders cannot load fails the export:
+normalised instruction as a task of its task loader; a task-variant branch
+is checked with its source task's instruction too, since its screens were
+recorded on that task) or ``either``. Benchmark data is read through
+``benchmarks.py`` — the export document's own loaders first; a benchmark
+whose loaders cannot load fails the export:
 decontamination that silently checked nothing is worse than none.
 """
 
@@ -106,15 +108,19 @@ class Decontaminator:
                 and identity.task_id in tasks.task_ids
             ):
                 return f"decontaminated: task {identity.task_id!r} is an evaluation task of {label}"
-            if (
-                self.match in ("site_instruction", "either")
-                and identity.site is not None
-                and (identity.site, normalized_text(identity.task)) in tasks.sites
-            ):
-                return (
-                    f"decontaminated: site {identity.site} and instruction match an "
-                    f"evaluation task of {label}"
-                )
+            if self.match in ("site_instruction", "either") and identity.site is not None:
+                for instruction in identity.instructions:
+                    if (identity.site, normalized_text(instruction)) not in tasks.sites:
+                        continue
+                    what = (
+                        "instruction"
+                        if instruction == identity.task
+                        else "its source task's instruction (the run is a task variant)"
+                    )
+                    return (
+                        f"decontaminated: site {identity.site} and {what} match an "
+                        f"evaluation task of {label}"
+                    )
         return None
 
     def _load(self, ref: BenchmarkRef) -> _BenchmarkTasks:

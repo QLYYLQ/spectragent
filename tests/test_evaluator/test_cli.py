@@ -123,6 +123,48 @@ async def test_branch_uses_source_reference_without_losing_branch_identity(confi
     assert result["evaluation_details"]["benchmark_details"]["source_reference"]["task_id"] == "one"
 
 
+async def test_a_task_variant_branch_is_never_graded_against_its_source_reference(config, tmp_path):
+    """The variant ran another task; its source task's reference would grade the wrong one.
+
+    The answer equals the source reference's (``42``), so grading it would
+    have produced a confident "correct": it is an evaluation error instead,
+    outside the graded denominator, and no verdict lands in the trace.
+    """
+    source = write_trace(
+        tmp_path / "traces",
+        task_id="source/s2/vwarranty/b0",
+        benchmark="trace_branches",
+        task="How long is the warranty?",
+        answer="42",
+    )
+    path = source / "config.json"
+    raw = json.loads(path.read_text())
+    raw["branch"] = {
+        "source_run_id": "source",
+        "source_trace": "source",
+        "source_benchmark": "browsecomp",
+        "source_subset": "All",
+        "source_task_id": "one",
+        "checkpoint_step": 2,
+        "branch_index": 0,
+        "branch_group_id": "source/s2/vwarranty",
+        "task_variant": {
+            "variant_id": "warranty",
+            "task_text": "How long is the warranty?",
+            "source_task_text": "What is the answer?",
+            "note": None,
+        },
+    }
+    path.write_text(json.dumps(raw))
+    report = await evaluate(config=config, traces=[source], output=tmp_path / "eval")
+    assert report["counts"] == {"provided": 1, "graded": 0, "passed": 0, "failed": 0, "errors": 1}
+    assert report["success_rate"] is None and report["coverage"] == 0
+    (row,) = report["outcomes"]
+    assert "task variant 'warranty': no reference for this task" in row["error"]
+    assert "browsecomp/All/one" in row["error"]
+    assert not RunTrace(source).evals()
+
+
 def test_cli_exit_code_distinguishes_wrong_answer_from_evaluation_error(config, tmp_path):
     source = write_trace(tmp_path / "traces", task_id="one", answer="wrong")
     args = ["--config", str(config), "--traces", str(source), "--out", str(tmp_path / "eval")]

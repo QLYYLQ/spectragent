@@ -332,6 +332,11 @@ uv run spectragent bench --config my_variant_branch.yaml --list
 
 分叉 run 的 `config.json` 里，`task` 是变体文本，`branch.task_variant` 记着 `variant_id`、`task_text`、`source_task_text`（源任务）和 `note`。
 
+评测与导出怎么对待变体：
+
+- 变体没有 benchmark 参考答案，源任务的参考描述的是另一份任务。`spectragent eval` 用 `exact_match`、`browsecomp`、`lexbench_browser` 这类按参考评分的 evaluator 评它时，它记为"无法判定"（`task variant '<id>': no reference for this task`），不算判错，不进任务正确率的分母，trace 里不写判定；退出码因此是 1。`online_mind2web`（WebJudge）不读参考，照样评，评的是变体文本，判定的 `benchmark_details.task_variant` 记着变体与源任务。
+- 导出切分仍按源任务（同一个源的变体与原分叉落在同一份切分里）。`decontamination` 的 `site_instruction` 同时比对变体文本和源任务文本：源任务是将来的评测任务时，从它的录制切出来的变体也被排除，原因写 `its source task's instruction (the run is a task variant)`。
+
 要注意的：restored 历史里每个恢复步都带着源 run 当时的回复（含 thought），写成 `source_material.recorded_reply`。那些 thought 是为源任务想的，源任务的文字只会经它们引用而出现在 teacher 的提示里；提示也不说明这些源材料服务的是另一份任务。第 t 步本身的源回复不进提示。抽几个变体分叉看第一次策略调用的 prompt（`RunTrace.llm_messages(t)`），再决定要不要放量。
 
 ### 原路径回放
