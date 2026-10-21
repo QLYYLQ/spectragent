@@ -37,11 +37,15 @@ The commands that write a review queue write it to
 `<annotations>/queues/<queue_id>.json` (`--annotations`, default `--out`;
 `--queue-id`, default `<command>-<today>`), so
 `spectragent view --root <viewer root> --annotations <annotations>` shows it.
-The queues follow the `review-queue-1` format: images are an observation
-(`{"kind": "observation", "run", "step"}`) or a `browser.frames` file
-(`{"kind": "archive", "run", "step", "archiver", "name"}`, `step` being the
-step whose commit took the frame), and boxes are `[x0, y0, x1, y1]` in the
-image's own pixels.
+Queues are built only from the viewer's own models (`spectragent.annotation`:
+`ReviewQueue`, `QueueItem`, `LabelSpec`, `Question`, `Suggestion`, `Region`)
+and written with its `write_queue`, so the viewer's strict loader reads every
+one. Images are an observation (`{"kind": "observation", "run", "step"}`) or a
+`browser.frames` file (`{"kind": "archive", "run", "step", "archiver",
+"name"}`, `step` being the step whose commit took the frame, `null` for a
+trailing commit; names `frame-<cycle>-before-<i>.png` /
+`frame-<cycle>-after.png`), and boxes are `[x0, y0, x1, y1]` in the image's
+own pixels.
 
 ## `extract --root DIR --out FILE.jsonl`
 
@@ -101,7 +105,7 @@ Outputs:
   distance, boxes, changed pixels), the verdict and the media flags;
 - `report.md`: verdict counts, settle outcome × verdict, the previous step's
   last action × verdict, changes over playing media;
-- a review queue of up to `--queue-size` (60) observations with frames, taken
+- a review queue of up to `--queue-size` (60) observations with a frame, taken
   in turn from each (settle outcome × verdict) group (`--seed`). Images:
   `observation`, `delayed`, `before_action`. Choices: stable / still loading /
   animation or video / other change / cannot tell; region kind `change`. The
@@ -121,10 +125,11 @@ information need on the same site, answerable without logging in, concrete and
 checkable, in the source task's language. A reply must hold exactly K distinct
 tasks, none repeating the source task, each in the source task's script.
 
-`FILE.json` is the `task-variants-1` file the `trace_branches` loader reads:
-`source_run_id` (the recorded run id), `step`, `variant_id` (`"1"` … `"K"`
-per checkpoint), `task_text`, `note` (the model, the step, and where the
-answer is found). Every judge call is in `FILE.calls.jsonl`.
+`FILE.json` is the `task-variants-1` file the `trace_branches` loader reads,
+built with the loader's own model (`TaskVariantsFile`): `source_run_id` (the
+recorded run id), `step`, `variant_id` (`"1"` … `"K"` per checkpoint, so task
+ids read `…/s<step>/v1/b<i>`), `task_text`, `note` (the model, the step, and
+where the answer is found). Every judge call is in `FILE.calls.jsonl`.
 
 ## `judge-forks --root DIR --out DIR2`
 
@@ -152,9 +157,11 @@ rule verdict, the model's answers, its call ids; `status` `judged`,
 `rules_only` or `unpaired` with the reason), `report.md` (how many same-task
 forks the rules decide, their agreement with the model, rule verdict × model
 `same_intent`, reasonable × executed per fork kind), `calls.jsonl`, and a
-review queue whose items carry the model's answers as the suggested choices
-(several may be checked: same / different intent, reasonable / not, executed /
-not). `--rules-only` asks no model and writes no queue.
+review queue that asks the same questions separately (`label.questions`:
+`same_intent`, `reasonable`, `executed_as_intended`, each yes / no / cannot
+tell). Each item lists the keys it asks (`same_intent` only for a same-task
+fork), and its suggestion is the model's `answers` with its `reasons`.
+`--rules-only` asks no model and writes no queue.
 
 ## `gold-queue --root DIR --n 100 --out DIR2`
 

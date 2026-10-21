@@ -33,27 +33,26 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from lookahead import imaging
-from lookahead.contracts import FRAMES_ARCHIVER_ID
 from lookahead.extract import step_rows
-from lookahead.queues import (
-    Choice,
-    ItemField,
-    ItemLink,
-    LabelSpec,
-    QueueImage,
-    QueueItem,
-    RegionKind,
-    RegionLabel,
-    ReviewQueue,
-    SuggestedRegion,
-    Suggestion,
-    archive_image,
-    observation_image,
-    write_queue,
-)
+from lookahead.queues import frame_image, observation_image, region
 from lookahead.report import crosstab, share, table
 from lookahead.rows import FrameRow, StepRow
 from lookahead.runs import Run, RunSet
+from spectragent.annotation import (
+    QUEUE_FORMAT,
+    ItemField,
+    ItemLink,
+    LabelChoice,
+    LabelSpec,
+    QueueImage,
+    QueueItem,
+    Region,
+    RegionKind,
+    RegionSpec,
+    ReviewQueue,
+    Suggestion,
+    write_queue,
+)
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.flywheel.diagnostics import DifferenceMethod
 
@@ -272,11 +271,11 @@ def analyse(runs: RunSet, *, limit: int, method: DifferenceMethod) -> list[Obser
 # ── the review queue ──────────────────────────────────────────────────
 
 CHOICES = [
-    Choice(value="stable", text="Stable"),
-    Choice(value="still_loading", text="Still loading"),
-    Choice(value="animation_or_video", text="Animation or video"),
-    Choice(value="other_change", text="Other change"),
-    Choice(value="cannot_tell", text="Cannot tell"),
+    LabelChoice(value="stable", text="Stable"),
+    LabelChoice(value="still_loading", text="Still loading"),
+    LabelChoice(value="animation_or_video", text="Animation or video"),
+    LabelChoice(value="other_change", text="Other change"),
+    LabelChoice(value="cannot_tell", text="Cannot tell"),
 ]
 INSTRUCTIONS = (
     "The first image is the screen the agent was shown. The others are the same browser tab "
@@ -322,24 +321,16 @@ def queue_item(item: ObservationStability, limit: int) -> QueueItem:
     images: list[QueueImage] = [
         observation_image("observation", "What the agent saw", item.run, item.step)
     ]
-    regions: list[SuggestedRegion] = []
+    regions: list[Region] = []
     for role, text, comparison in (
         ("delayed", "About one second later", item.delayed),
         ("before_action", "Right before the first action", item.before_action),
     ):
         if comparison is None or comparison.distance is None or comparison.name is None:
             continue
-        if comparison.batch_step is None:
-            continue  # a trailing frame: no step to address it by
-        images.append(
-            archive_image(
-                role, text, item.run, comparison.batch_step, FRAMES_ARCHIVER_ID, comparison.name
-            )
-        )
+        images.append(frame_image(role, text, item.run, comparison.batch_step, comparison.name))
         if comparison.distance > limit:
-            regions += [
-                SuggestedRegion(image=role, kind="change", box=box) for box in comparison.boxes
-            ]
+            regions += [region(role, "change", box) for box in comparison.boxes]
     fields = [
         ItemField(text="Settle", value=_settle_text(item)),
         ItemField(text="Machine verdict", value=item.verdict),
@@ -395,13 +386,14 @@ def build_queue(
     items: list[ObservationStability], *, queue_id: str, size: int, seed: int, limit: int
 ) -> ReviewQueue:
     return ReviewQueue(
+        format=QUEUE_FORMAT,
         queue_id=queue_id,
         title="Does the observed screen stay the same while the agent thinks?",
         instructions=INSTRUCTIONS,
         label=LabelSpec(
             choices=CHOICES,
             multi=False,
-            regions=RegionLabel(kinds=[RegionKind(value="change", text="Changed area")]),
+            regions=RegionSpec(kinds=[RegionKind(value="change", text="Changed area")]),
             note=True,
         ),
         items=[queue_item(item, limit) for item in stratified(items, size, seed)],

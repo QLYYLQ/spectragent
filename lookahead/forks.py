@@ -32,24 +32,27 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lookahead import contracts, imaging
+from lookahead import imaging
 from lookahead.extract import step_rows
 from lookahead.judge import Judge, JudgeOutcome, JudgeRequest, image_part, text_part
-from lookahead.queues import (
-    Choice,
+from lookahead.queues import observation_image
+from lookahead.report import crosstab, share, table
+from lookahead.rows import ActionRow, NextObservation, StepRow
+from lookahead.runs import Run, RunSet
+from spectragent.annotation import (
+    QUEUE_FORMAT,
     ItemField,
     ItemLink,
+    LabelChoice,
     LabelSpec,
+    Question,
     QueueImage,
     QueueItem,
     ReviewQueue,
     Suggestion,
-    observation_image,
     write_queue,
 )
-from lookahead.report import crosstab, share, table
-from lookahead.rows import ActionRow, NextObservation, StepRow
-from lookahead.runs import Run, RunSet
+from spectragent.schemas.restoration import BranchTaskVariant
 
 RuleVerdictValue = Literal["same", "different", "unknown"]
 ForkKind = Literal["same_task", "task_variant"]
@@ -79,7 +82,7 @@ class Fork:
     source: Run | None
     checkpoint: int
     kind: ForkKind
-    variant: dict[str, Any] | None
+    variant: BranchTaskVariant | None
     branch_row: StepRow | None
     source_row: StepRow | None
     unpaired: str | None = None
@@ -100,7 +103,7 @@ def forks(runs: RunSet) -> list[Fork]:
         if branch is None:
             continue
         source = runs.source_of(run)
-        variant = contracts.task_variant(run.config)
+        variant = branch.task_variant
         fork = Fork(
             branch=run,
             source=source,
@@ -419,14 +422,7 @@ def judge_request(fork: Fork) -> JudgeRequest[Any] | None:
                 image_part(source_next),
             ]
             sources.append(f"{fork.source.key}@{source.next.step}")
-    questions = (
-        ["same_intent", "reasonable", "executed_as_intended"]
-        if same_task
-        else [
-            "reasonable",
-            "executed_as_intended",
-        ]
-    )
+    questions = fork_questions(fork.kind)
     shape = ", ".join(
         f'"{name}": {{"answer": "yes|no|uncertain", "reason": "..."}}' for name in questions
     )
@@ -473,7 +469,7 @@ def judgment_record(
         "fork_kind": fork.kind,
         "task": fork.branch.config.task,
         "source_task": fork.source.config.task if fork.source is not None else None,
-        "task_variant": fork.variant,
+        "task_variant": fork.variant.model_dump(mode="json") if fork.variant else None,
         "status": "unpaired" if fork.unpaired else ("judged" if llm is not None else "rules_only"),
         "unpaired_reason": fork.unpaired,
         "branch_actions": [action.model_dump(mode="json") for action in branch.actions]
@@ -492,25 +488,23 @@ def judgment_record(
     }
 
 
-POSITIVE = {
-    "same_intent": ("same_intent", "different_intent"),
-    "reasonable": ("reasonable", "not_reasonable"),
-    "executed_as_intended": ("executed", "not_executed"),
-}
-CHOICES = [
-    Choice(value="same_intent", text="Same intent as the original run's action"),
-    Choice(value="different_intent", text="Different intent from the original run's action"),
-    Choice(value="reasonable", text="A reasonable next step toward the branch's task"),
-    Choice(value="not_reasonable", text="Not a reasonable next step"),
-    Choice(value="executed", text="Executed as intended"),
-    Choice(value="not_executed", text="Not executed as intended (error, block, missing content)"),
+ANSWERS = [
+    LabelChoice(value="yes", text="Yes"),
+    LabelChoice(value="no", text="No"),
+    LabelChoice(value="uncertain", text="Cannot tell"),
 ]
 INSTRUCTIONS = (
     "A branch run resumed a recorded run at a checkpoint and decided that step again. Compare "
-    "the branch's decision with the screens. Check every statement that holds; leave both of a "
-    "pair unchecked when you cannot tell. For a task-variant branch (it was given a different "
-    "task), leave the intent pair unchecked. The suggestion is the judge model's answer."
+    "the branch's decision with the screens and answer each question the item asks; a "
+    "task-variant branch (given a different task) is not asked about intent. The suggestion "
+    "is the judge model's answer, with its reasons."
 )
+
+
+def fork_questions(kind: ForkKind) -> list[str]:
+    """The question keys asked of a fork of *kind*: intent only when the task is the same."""
+    keys = list(QUESTIONS)
+    return keys if kind == "same_task" else [key for key in keys if key != "same_intent"]
 
 
 def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
@@ -536,17 +530,10 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
                 "source_next", "The original run's next screen", fork.source.key, source.next.step
             )
         )
-    chosen: list[str] = []
-    reasons: list[str] = []
-    for question, (yes, no) in POSITIVE.items():
-        answer = llm.get(question)
-        if not answer:
-            continue
-        reasons.append(f"{question}: {answer['answer']} — {answer['reason']}")
-        if answer["answer"] == "yes":
-            chosen.append(yes)
-        elif answer["answer"] == "no":
-            chosen.append(no)
+    asked = fork_questions(fork.kind)
+    answers = {key: llm[key]["answer"] for key in asked}
+    reasons = {key: llm[key]["reason"] for key in asked}
+    explained = [f"{key}: {answers[key]} — {reasons[key]}" for key in asked]
     rule = record["rule"] or {}
     fields = [
         ItemField(text="Fork", value=fork.kind.replace("_", " ")),
@@ -558,7 +545,7 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
             text="Rule verdict",
             value=f"{rule.get('verdict')}: " + "; ".join(rule.get("reasons") or []),
         ),
-        ItemField(text="Judge model", value="\n".join(reasons)),
+        ItemField(text="Judge model", value="\n".join(explained)),
     ]
     return QueueItem(
         item_id=f"{fork.branch.key}@{branch.step}",
@@ -571,11 +558,8 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
             ItemLink(text="Branch run", run=fork.branch.key, step=branch.step),
             ItemLink(text="Source run", run=fork.source.key, step=source.step),
         ],
-        suggestion=Suggestion(
-            choices=chosen,
-            source=str(record["model"]),
-            rationale="\n".join(reasons),
-        ),
+        questions=asked,
+        suggestion=Suggestion(answers=answers, reasons=reasons, source=str(record["model"])),
     )
 
 
@@ -718,10 +702,17 @@ async def judge_forks(
         if (item := queue_item(record, fork)) is not None
     ]
     queue = ReviewQueue(
+        format=QUEUE_FORMAT,
         queue_id=queue_id,
         title="Branch decisions at the checkpoint",
         instructions=INSTRUCTIONS,
-        label=LabelSpec(choices=CHOICES, multi=True, regions=None, note=True),
+        label=LabelSpec(
+            questions=[
+                Question(key=key, text=text, choices=ANSWERS) for key, text in QUESTIONS.items()
+            ],
+            regions=None,
+            note=True,
+        ),
         items=items,
     )
     return records, write_queue(annotations, queue)

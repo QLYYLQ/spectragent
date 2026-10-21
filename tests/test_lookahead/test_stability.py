@@ -11,6 +11,7 @@ from lookahead import imaging
 from lookahead.cli import run
 from lookahead.runs import open_runs
 from lookahead.stability import ObservationStability, analyse, build_queue, verdict
+from spectragent.annotation import ArchiveImage
 from spectragent.flywheel.diagnostics import DifferenceMethod
 from tests.test_lookahead.conftest import BASE, LATER, SEARCHED, WHITE_LEFT, World
 from tests.test_lookahead.traces import gradient, with_box
@@ -112,16 +113,18 @@ def test_queue_is_stratified_and_suggests_the_machine_verdict(world: World) -> N
     changed = by_id["record/rec-1@1"]
     assert changed.suggestion is not None
     assert changed.suggestion.choice == "animation_or_video"
-    assert {region.image for region in changed.suggestion.regions} == {"delayed"}
+    assert {region.image for region in changed.suggestion.regions or []} == {"delayed"}
     roles = {image.role: image.source for image in changed.images}
     assert roles["observation"].kind == "observation"
     delayed = roles["delayed"]
-    assert delayed.kind == "archive" and delayed.step == 2  # the batch that took it
-    assert delayed.archiver == "browser.frames"  # type: ignore[union-attr]
+    assert isinstance(delayed, ArchiveImage)
+    assert delayed.step == 2  # the batch that took it
+    assert (delayed.archiver, delayed.name) == ("browser.frames", "frame-2-after.png")
     before = by_id["record/rec-1@2"]
     assert before.suggestion is not None and before.suggestion.choice == "other_change"
     assert "delayed" not in {image.role for image in before.images}  # superseded: no image
-    assert by_id["record/rec-1@0"].suggestion.choice == "stable"  # type: ignore[union-attr]
+    stable = by_id["record/rec-1@0"].suggestion
+    assert stable is not None and stable.choice == "stable"
     small = build_queue(items, queue_id="stability-test", size=2, seed=0, limit=5)
     assert len(small.items) == 2
     assert len({item.fields[1].value for item in small.items}) == 2  # two different groups

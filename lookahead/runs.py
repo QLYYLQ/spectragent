@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from lookahead import contracts
 from lookahead.rows import FrameRow, RunKind
+from spectragent.core.capabilities.browser.archive.frames import iter_frames, read_frame_image
 from spectragent.core.capabilities.browser.observations import (
     BrowserCaptureStateObs,
     ScreenshotObs,
@@ -35,8 +35,6 @@ REPLAY_ARCHIVE_KEY = "replay_archive"
 SCREENSHOT_KEY = "browser.screenshot"
 CAPTURE_STATE_KEY = "browser.capture_state"
 DOM_RAW_ARCHIVER_ID = "browser.dom_raw"
-
-Opener = Callable[[Path], RunTrace]
 
 
 class LookaheadInputError(ValueError):
@@ -232,17 +230,16 @@ class Run:
     def frames(self) -> list[FrameRow]:
         """Every ``browser.frames`` record of the run, in commit order."""
         rows: list[FrameRow] = []
-        for batch_step, record in contracts.run_frames(self.trace):
-            facts = contracts.plain(record)
-            # The agreed fields only: a field the reader adds later is not this row's.
-            agreed = {name: facts[name] for name in FrameRow.model_fields if name in facts}
-            row = FrameRow(**{**agreed, "batch_step": batch_step})
+        for batch_step, record in iter_frames(self.trace, include_trailing=True):
+            row = FrameRow(batch_step=batch_step, **asdict(record))
             row._record = record
             rows.append(row)
         return rows
 
     def frame_image(self, frame: FrameRow) -> bytes:
-        return contracts.frame_image(self.trace, frame.batch_step, frame._record)
+        """The PNG of a captured frame of this run."""
+        assert frame._record is not None, "frames of a run carry the reader's record"
+        return read_frame_image(self.trace, frame.batch_step, frame._record)
 
     @cached_property
     def cycles(self) -> dict[int, int | None]:
@@ -346,7 +343,7 @@ class RunSet:
         return matching[0] if len(matching) == 1 else None
 
 
-def open_runs(root: Path, viewer_root: Path | None = None, *, opener: Opener = RunTrace) -> RunSet:
+def open_runs(root: Path, viewer_root: Path | None = None) -> RunSet:
     """Every readable run under *root*, keyed relative to *viewer_root* (default: *root*)."""
     root = root.expanduser()
     if not root.is_dir():
@@ -359,7 +356,7 @@ def open_runs(root: Path, viewer_root: Path | None = None, *, opener: Opener = R
     for directory in find_run_dirs(root):
         key = relative_key(directory, viewer)
         try:
-            run = Run(key=key, path=directory, trace=opener(directory))
+            run = Run(key=key, path=directory, trace=RunTrace(directory))
             run.config  # noqa: B018 — read now, so an unreadable configuration is skipped here
             run.records  # noqa: B018
         except RecordingScopeError as exc:

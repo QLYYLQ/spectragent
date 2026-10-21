@@ -11,12 +11,11 @@ from lookahead.cli import run
 from lookahead.extract import all_rows, step_rows
 from lookahead.rows import StepRow
 from lookahead.runs import LookaheadInputError, open_runs, run_kind
-from tests.test_lookahead.conftest import SPANS, TASK, VARIANT_TASK, World
-from tests.test_lookahead.traces import ContractTrace
+from tests.test_lookahead.conftest import SPANS, TASK, VARIANT, VARIANT_TASK, World
 
 
-def _rows(world: World, *, contract: bool = False) -> dict[tuple[str, int], StepRow]:
-    runs = open_runs(world.root, opener=ContractTrace) if contract else open_runs(world.root)
+def _rows(world: World) -> dict[tuple[str, int], StepRow]:
+    runs = open_runs(world.root)
     return {(row.run, row.step): row for row in all_rows(runs)}
 
 
@@ -124,7 +123,7 @@ def test_a_run_without_frames_has_none(world: World) -> None:
 
 
 def test_action_spans_are_null_when_not_measured_and_copied_when_recorded(world: World) -> None:
-    rows = _rows(world, contract=True)
+    rows = _rows(world)
     assert rows[("record/rec-1", 0)].action_spans == SPANS
     assert rows[("record/rec-1", 1)].action_spans == []
     assert rows[("record/rec-2", 0)].action_spans is None
@@ -147,11 +146,10 @@ def test_branch_rows_carry_provenance_restoration_and_the_source_key(world: Worl
 
 
 def test_task_variant_provenance_is_carried(world: World) -> None:
-    rows = _rows(world, contract=True)
+    rows = _rows(world)
     row = rows[("branches/br-variant", 1)]
     assert row.task == VARIANT_TASK
-    assert row.task_variant is not None and row.task_variant["variant_id"] == "1"
-    assert row.task_variant["source_task_text"] == TASK
+    assert row.task_variant == VARIANT
     assert rows[("branches/br-same", 1)].task_variant is None
 
 

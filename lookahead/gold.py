@@ -20,38 +20,37 @@ from pathlib import Path
 from typing import Any
 
 from lookahead import imaging
-from lookahead.contracts import FRAMES_ARCHIVER_ID
 from lookahead.extract import step_rows
 from lookahead.forks import FILLER, action_type, describe_actions
-from lookahead.queues import (
-    Choice,
+from lookahead.queues import frame_image, observation_image, region
+from lookahead.rows import StepRow
+from lookahead.runs import Run, RunSet
+from spectragent.annotation import (
+    QUEUE_FORMAT,
     ItemField,
     ItemLink,
+    LabelChoice,
     LabelSpec,
     QueueImage,
     QueueItem,
+    Region,
     RegionKind,
-    RegionLabel,
+    RegionSpec,
     ReviewQueue,
-    SuggestedRegion,
     Suggestion,
-    archive_image,
-    observation_image,
     write_queue,
 )
-from lookahead.rows import StepRow
-from lookahead.runs import Run, RunSet
 
 HINT_SOURCE = "pixel-diff"
 NO_SITE = "(no site)"
 THOUGHT_CHARS = 600
 CHOICES = [
-    Choice(value="result_list", text="A result list"),
-    Choice(value="confirmation", text="A confirmation or feedback"),
-    Choice(value="detail_fields", text="Detail fields"),
-    Choice(value="navigation_target", text="A navigation target"),
-    Choice(value="nothing_new", text="Nothing new is needed"),
-    Choice(value="other", text="Other"),
+    LabelChoice(value="result_list", text="A result list"),
+    LabelChoice(value="confirmation", text="A confirmation or feedback"),
+    LabelChoice(value="detail_fields", text="Detail fields"),
+    LabelChoice(value="navigation_target", text="A navigation target"),
+    LabelChoice(value="nothing_new", text="Nothing new is needed"),
+    LabelChoice(value="other", text="Other"),
 ]
 INSTRUCTIONS = (
     "The agent saw the current screen and issued the actions listed. On the next screen, find "
@@ -118,25 +117,24 @@ def gold_item(run: Run, row: StepRow) -> QueueItem:
         observation_image("next", "The next screen", run.key, row.next.step),
     ]
     before = row.frame("before_action")
-    if before is not None and before.captured and before.batch_step is not None:
+    if before is not None and before.captured:
         assert before.name is not None
         images.append(
-            archive_image(
+            frame_image(
                 "before_action",
                 "Right before the first action",
                 run.key,
                 before.batch_step,
-                FRAMES_ARCHIVER_ID,
                 before.name,
             )
         )
-    hints: list[SuggestedRegion] = []
+    hints: list[Region] | None = None
     current, following = run.screenshot_bytes(row.step), run.screenshot_bytes(row.next.step)
     note = "the two screens could not be compared"
     if current is not None and following is not None:
         diff = imaging.difference(current, following)
         if diff.compared:
-            hints = [SuggestedRegion(image="next", kind="evidence", box=box) for box in diff.boxes]
+            hints = [region("next", "evidence", box) for box in diff.boxes]
             note = f"{len(diff.boxes)} changed region(s) between the two screens"
         elif diff.reason:
             note = diff.reason
@@ -169,13 +167,14 @@ def gold_queue(
     pool = candidates(runs)
     chosen = sample(pool, count, seed)
     queue = ReviewQueue(
+        format=QUEUE_FORMAT,
         queue_id=queue_id,
         title="Where does the information for the next decision appear?",
         instructions=INSTRUCTIONS,
         label=LabelSpec(
             choices=CHOICES,
             multi=False,
-            regions=RegionLabel(kinds=[RegionKind(value="evidence", text="Evidence")]),
+            regions=RegionSpec(kinds=[RegionKind(value="evidence", text="Evidence")]),
             note=True,
         ),
         items=[gold_item(run, row) for run, row in chosen],

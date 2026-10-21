@@ -22,8 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lookahead.judge import Judge, JudgeRequest, image_part, text_part
 from lookahead.runs import Run, RunSet
+from spectragent.core.data_loader.task.task_variants import (
+    TASK_VARIANTS_FORMAT,
+    TaskVariantEntry,
+    TaskVariantsFile,
+)
 
-VARIANTS_FORMAT = "task-variants-1"
 PURPOSE = "task_variants"
 SYSTEM = (
     "You design browsing tasks for evaluating web agents. You only propose tasks whose answer "
@@ -188,25 +192,26 @@ def requests(
 
 def variants_document(
     checkpoints: list[tuple[str, int, JudgeRequest[Any]]], replies: list[Any], model: str
-) -> dict[str, Any]:
-    variants: list[dict[str, Any]] = []
+) -> TaskVariantsFile:
+    """The loader's own ``task-variants-1`` model, so the file is what the loader reads."""
+    variants: list[TaskVariantEntry] = []
     for (run_id, step, _), outcome in zip(checkpoints, replies, strict=True):
         if outcome.value is None:
             continue
         for number, variant in enumerate(outcome.value.variants, start=1):
             variants.append(
-                {
-                    "source_run_id": run_id,
-                    "step": step,
-                    "variant_id": str(number),
-                    "task_text": variant.task_text.strip(),
-                    "note": (
+                TaskVariantEntry(
+                    source_run_id=run_id,
+                    step=step,
+                    variant_id=str(number),
+                    task_text=variant.task_text.strip(),
+                    note=(
                         f"written by {model} from the screenshot of step {step}; "
                         f"answer location: {variant.answer_location.strip()}"
                     ),
-                }
+                )
             )
-    return {"format": VARIANTS_FORMAT, "variants": variants}
+    return TaskVariantsFile(format=TASK_VARIANTS_FORMAT, variants=variants)
 
 
 def calls_path(out: Path) -> Path:
@@ -224,10 +229,13 @@ async def generate(
     replies = await judge.ask_all([request for _, _, request in checkpoints])
     document = variants_document(checkpoints, replies, judge.model)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out.write_text(
+        json.dumps(document.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return {
         "checkpoints": len(checkpoints),
         "checkpoints_without_variants": sum(1 for reply in replies if reply.value is None),
-        "variants": len(document["variants"]),
+        "variants": len(document.variants),
         "skipped_runs": skipped,
     }

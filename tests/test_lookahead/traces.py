@@ -2,30 +2,34 @@
 
 Fragments go through ``encode_fragment`` and archive files through
 ``encode_archive_file``, so the bytes on disk are what a recording writes.
-The features built beside this pipeline are written in their agreed shapes:
-``StepRecord.action_spans``, the ``browser.frames`` archiver's ``frames.json``
-index with its content-addressed PNG frames, and a branch's ``task_variant``
-provenance. :class:`ContractTrace` reads the first and the last back the way
-a reader with those fields does, when the installed models do not declare
-them yet; :func:`frames_reader_module` stands in for the frames reader when it
-is not installed.
+``browser.frames`` evidence is written the way its archiver hands it over:
+one content-addressed PNG per captured frame, named by ``frame_name``, and the
+step's ``frames.json`` index of ``FrameRecord`` entries; the real frames
+reader reads it back.
 """
 
 from __future__ import annotations
 
 import io
 import json
-import sys
-import types
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from PIL import Image, ImageDraw
 
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance
 from spectragent.core.archive.privacy import RedactionLedger
+from spectragent.core.capabilities.browser.archive.frames import (
+    FRAMES_ARCHIVER_ID,
+    FRAMES_FORMAT,
+    FRAMES_INDEX_NAME,
+    FrameKind,
+    FrameOutcome,
+    FrameRecord,
+    FrameSuperseder,
+    frame_name,
+)
 from spectragent.core.capabilities.browser.effects import (
     ElementFacts,
     PointerEffect,
@@ -47,14 +51,12 @@ from spectragent.core.capabilities.browser.observations import (
 )
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.trace.encoding import encode_archive_file, encode_fragment, sha256_hex
-from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.models import (
     TaskSetupRecord,
     TraceConfig,
     TraceNegotiation,
     TraceStatus,
 )
-from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
@@ -63,10 +65,8 @@ from spectragent.schemas.restoration import (
     RestorationCheck,
     RestorationEvidence,
 )
-from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.step_record import ActionSpan, StepRecord
 
-FRAMES = "browser.frames"
-FRAMES_MODULE = "spectragent.core.capabilities.browser.archive.frames"
 SIZE = (128, 96)
 
 
@@ -185,78 +185,73 @@ def playing_video(box: tuple[int, int, int, int]) -> MediaState:
     )
 
 
-# ── frames (the agreed browser-frames-1 shape) ────────────────────────
+# ── frames, as the browser.frames archiver writes them ────────────────
+
+Frame = tuple[FrameRecord, bytes | None]
 
 
 def frame(
-    kind: str,
+    kind: FrameKind,
     cycle: int,
     *,
     image: bytes | None = None,
     action_index: int | None = None,
     action: str | None = None,
     requested_at: float = 0.0,
-    captured_at: float | None = None,
-    outcome: str = "captured",
-    superseded_by: str | None = None,
-) -> tuple[dict[str, Any], bytes | None]:
+    outcome: FrameOutcome = "captured",
+    superseded_by: FrameSuperseder | None = None,
+) -> Frame:
     """One ``frames.json`` entry and its image; a frame that was not captured has none."""
     if (image is not None) != (outcome == "captured"):
         raise ValueError("a captured frame has an image, and only a captured one")
-    name = sha = None
     width = height = None
     if image is not None:
-        sha = sha256_hex(image)
-        index = action_index if action_index is not None else "x"
-        name = f"frame-{cycle}-{kind}-{index}.png"
         width, height = Image.open(io.BytesIO(image)).size
-    entry = {
-        "kind": kind,
-        "cycle": cycle,
-        "action_index": action_index,
-        "action": action,
-        "tab": "TAB1",
-        "requested_at": requested_at,
-        "captured_at": (captured_at if captured_at is not None else requested_at + 0.05)
-        if image is not None
-        else None,
-        "outcome": outcome,
-        "superseded_by": superseded_by,
-        "name": name,
-        "sha256": sha,
-        "width": width,
-        "height": height,
-        "detail": None,
-    }
-    return entry, image
+    record = FrameRecord(
+        kind=kind,
+        cycle=cycle,
+        action_index=action_index,
+        action=action,
+        tab="TAB1",
+        requested_at=requested_at,
+        captured_at=requested_at + 0.05 if image is not None else None,
+        outcome=outcome,
+        superseded_by=superseded_by,
+        name=frame_name(kind, cycle, action_index) if image is not None else None,
+        sha256=sha256_hex(image) if image is not None else None,
+        width=width,
+        height=height,
+        detail=None if image is not None else f"not captured: {outcome}",
+    )
+    return record, image
 
 
 def frames_files(
-    frames: list[tuple[dict[str, Any], bytes | None]],
-    *,
-    step: int | None = None,
-    trailing: int | None = None,
+    frames: list[Frame], *, step: int | None = None, trailing: int | None = None
 ) -> list[Any]:
     """The archive files of one ``browser.frames`` collection: the PNGs and ``frames.json``."""
     files: list[Any] = []
-    for entry, image in frames:
+    for record, image in frames:
         if image is None:
             continue
+        assert record.name is not None and record.captured_at is not None
         item = ArchiveFile(
-            archiver_id=FRAMES,
-            name=entry["name"],
+            archiver_id=FRAMES_ARCHIVER_ID,
+            name=record.name,
             media_type="image/png",
             data=image,
             meta=ArchiveProvenance(
-                captured_at=entry["captured_at"], cycle=entry["cycle"], ids={"tab": "TAB1"}
+                captured_at=record.captured_at,
+                cycle=record.cycle,
+                ids={"tab": record.tab, "kind": record.kind},
             ),
             content_addressed=True,
         )
         files.append(encode_archive_file(item, step=step, trailing=trailing))
-    index = {"format": "browser-frames-1", "frames": [entry for entry, _ in frames]}
+    index = {"format": FRAMES_FORMAT, "frames": [asdict(record) for record, _ in frames]}
     item = ArchiveFile(
-        archiver_id=FRAMES,
-        name="frames.json",
+        archiver_id=FRAMES_ARCHIVER_ID,
+        name=FRAMES_INDEX_NAME,
         media_type="application/json",
         data=json.dumps(index).encode(),
         meta=ArchiveProvenance(captured_at=1000.0),
@@ -280,16 +275,10 @@ def dom_raw_file(step: int, cycle: int) -> Any:
 # ── runs ──────────────────────────────────────────────────────────────
 
 
-class SpannedStepRecord(StepRecord):
-    """A step record carrying per-action spans, written as the agreed field."""
-
-    action_spans: list[dict[str, Any]] | None = None
-
-
 @dataclass
 class StepSpec:
     step: int
-    origin: str = "policy"
+    origin: Literal["policy", "restored", "terminal"] = "policy"
     image: bytes | None = None
     url: str | None = None
     actions: list[tuple[Action, ActionResult]] = field(default_factory=list)
@@ -300,8 +289,8 @@ class StepSpec:
     error: str | None = None
     llm_output: str = ""
     dom_cycle: int | None = None
-    frames: list[tuple[dict[str, Any], bytes | None]] | None = None
-    action_spans: list[dict[str, Any]] | None = None
+    frames: list[Frame] | None = None
+    action_spans: list[ActionSpan] | None = None
     observed: bool = True
 
 
@@ -332,7 +321,7 @@ def write_run(
     start_url: str = "https://shop.example/",
     network_source: str | None = "live",
     branch: BranchProvenance | None = None,
-    trailing_frames: list[tuple[dict[str, Any], bytes | None]] | None = None,
+    trailing_frames: list[Frame] | None = None,
     status: TraceStatus = TraceStatus.COMPLETE,
 ) -> Path:
     """One run directory ``base/run_id``; the path."""
@@ -364,8 +353,8 @@ def write_run(
                 active_fragments=["browser.capture_state", "browser.screenshot", "loop.step_info"],
                 env_sourced_fragments=["browser.capture_state", "browser.screenshot"],
                 loop_sourced_fragments=["loop.step_info"],
-                active_archivers=["browser.dom_raw", FRAMES],
-                archive_bindings={"browser.dom_raw": "browser", FRAMES: "browser"},
+                active_archivers=["browser.dom_raw", FRAMES_ARCHIVER_ID],
+                archive_bindings={"browser.dom_raw": "browser", FRAMES_ARCHIVER_ID: "browser"},
             ),
             task_setup=TaskSetupRecord(
                 context={"start_url": start_url}, redactions=RedactionLedger()
@@ -399,9 +388,9 @@ def write_run(
             extra.append(dom_raw_file(spec.step, spec.dom_cycle))
         if spec.frames is not None:
             extra += frames_files(spec.frames, step=spec.step)
-        record = SpannedStepRecord(
+        record = StepRecord(
             step=spec.step,
-            origin=spec.origin,  # type: ignore[arg-type]
+            origin=spec.origin,
             llm_output=spec.llm_output,
             actions=[action for action, _ in spec.actions],
             action_results=[result for _, result in spec.actions],
@@ -421,119 +410,3 @@ def write_run(
         wal.commit_trailing(extra_files=frames_files(trailing_frames, trailing=0))
     wal.finalize(status)
     return wal.run_dir
-
-
-def add_task_variant(run_dir: Path, variant: dict[str, Any]) -> None:
-    """Record a task-variant branch's provenance, ``branch.task_variant``, in ``config.json``."""
-    path = run_dir / "config.json"
-    config = json.loads(path.read_text(encoding="utf-8"))
-    config["branch"]["task_variant"] = variant
-    config["task"] = variant["task_text"]
-    atomic_write(path, json.dumps(config, indent=2).encode())
-
-
-# ── reading the agreed fields back ────────────────────────────────────
-
-
-class ContractTrace(RunTrace):
-    """``RunTrace`` with the action spans and the task variant read back as their fields.
-
-    When the installed ``StepRecord`` / ``BranchProvenance`` declare the fields,
-    the reader itself returns them and this changes nothing.
-    """
-
-    @property
-    def step_records(self) -> list[StepRecord]:
-        records = super().step_records
-        if "action_spans" in StepRecord.model_fields:
-            return records
-        spans = {}
-        for entry in self.manifest.steps:
-            spans[entry.step] = json.loads(self.read_committed(entry.step_file)).get("action_spans")
-        return [
-            record.model_copy(update={"action_spans": spans[record.step]}) for record in records
-        ]
-
-    @property
-    def config(self) -> TraceConfig:
-        config = super().config
-        if config.branch is None or "task_variant" in BranchProvenance.model_fields:
-            return config
-        variant = json.loads(self.read_committed("config.json"))["branch"].get("task_variant")
-        if variant is None:
-            return config
-        branch = config.branch.model_copy(update={"task_variant": variant})
-        return config.model_copy(update={"branch": branch})
-
-
-# ── the frames reader, as agreed ──────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class FrameRecord:
-    kind: str
-    cycle: int
-    action_index: int | None
-    action: str | None
-    tab: str
-    requested_at: float
-    captured_at: float | None
-    outcome: str
-    superseded_by: str | None
-    name: str | None
-    sha256: str | None
-    width: int | None
-    height: int | None
-    detail: str | None
-
-
-def _index(reader: Any, entries: list[Any]) -> list[FrameRecord]:
-    for entry in entries:
-        if entry.name == "frames.json":
-            document = json.loads(reader.read_extra(entry.path))
-            return [FrameRecord(**item) for item in document["frames"]]
-    return []
-
-
-def _read_frames(reader: Any, step: int) -> list[FrameRecord]:
-    return _index(reader, list(reader.archive_files(step, FRAMES)))
-
-
-def _iter_frames(
-    reader: Any, *, include_trailing: bool = True
-) -> Iterator[tuple[int | None, FrameRecord]]:
-    for step, entry in reader.iter_archive(FRAMES, include_trailing=include_trailing):
-        if entry.name == "frames.json":
-            for record in _index(reader, [entry]):
-                yield step, record
-
-
-def _read_frame_image(reader: Any, step: int | None, record: FrameRecord) -> bytes:
-    if step is None:
-        entries = [
-            entry for at, entry in reader.iter_archive(FRAMES, include_trailing=True) if at is None
-        ]
-    else:
-        entries = list(reader.archive_files(step, FRAMES))
-    for entry in entries:
-        if entry.name == record.name:
-            return reader.read_extra(entry.path)
-    raise KeyError(record.name)
-
-
-def frames_reader_module() -> types.ModuleType:
-    module = types.ModuleType(FRAMES_MODULE)
-    module.FRAMES_ARCHIVER_ID = FRAMES  # type: ignore[attr-defined]
-    module.FrameRecord = FrameRecord  # type: ignore[attr-defined]
-    module.read_frames = _read_frames  # type: ignore[attr-defined]
-    module.iter_frames = _iter_frames  # type: ignore[attr-defined]
-    module.read_frame_image = _read_frame_image  # type: ignore[attr-defined]
-    return module
-
-
-def install_frames_reader(monkeypatch: Any) -> None:
-    """Use the installed frames reader; stand in for it only when it is not installed."""
-    try:
-        __import__(FRAMES_MODULE)
-    except ImportError:
-        monkeypatch.setitem(sys.modules, FRAMES_MODULE, frames_reader_module())

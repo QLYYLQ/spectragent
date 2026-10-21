@@ -22,19 +22,19 @@ import spectragent.core.capabilities.browser.actions  # noqa: F401 — action ef
 from spectragent.core.trace.models import TraceStatus
 from spectragent.schemas.restoration import (
     BranchProvenance,
+    BranchTaskVariant,
     RestorationCheck,
     RestorationEvidence,
 )
+from spectragent.schemas.step_record import ActionSpan
 from tests.test_lookahead.traces import (
     StepSpec,
-    add_task_variant,
     capped,
     click,
     done,
     flipped_right_half,
     frame,
     gradient,
-    install_frames_reader,
     ok_check,
     playing_video,
     scroll_down,
@@ -52,14 +52,14 @@ SEARCHED = with_box(BASE, (64, 0, 128, 32), (0, 0, 0))
 LATER = flipped_right_half(SEARCHED)
 WHITE_LEFT = with_box(BASE, (0, 0, 64, 96), (255, 255, 255))
 SPANS = [
-    {
-        "action": "browser.click_coordinate",
-        "started_at": 1001.0,
-        "ended_at": 1001.2,
-        "outcome": "returned",
-    },
-    {"action": "browser.wait", "started_at": 1001.2, "ended_at": 1002.2, "outcome": "returned"},
+    ActionSpan(
+        action="browser.click_coordinate", started_at=1001.0, ended_at=1001.2, outcome="returned"
+    ),
+    ActionSpan(action="browser.wait", started_at=1001.2, ended_at=1002.2, outcome="returned"),
 ]
+VARIANT = BranchTaskVariant(
+    variant_id="1", task_text=VARIANT_TASK, source_task_text=TASK, note="written for a test"
+)
 
 
 @dataclass
@@ -202,7 +202,15 @@ def _record_two(base: Path) -> Path:
     )
 
 
-def _branch(base: Path, run_id: str, decision: list, next_url: str | None, *, index: int) -> Path:
+def _branch(
+    base: Path,
+    run_id: str,
+    decision: list,
+    next_url: str | None,
+    *,
+    index: int,
+    variant: BranchTaskVariant | None = None,
+) -> Path:
     steps = [
         StepSpec(
             step=0,
@@ -228,7 +236,7 @@ def _branch(base: Path, run_id: str, decision: list, next_url: str | None, *, in
     return write_run(
         base,
         run_id,
-        task=TASK,
+        task=variant.task_text if variant is not None else TASK,
         network_source="archive",
         branch=BranchProvenance(
             source_run_id="rec-1",
@@ -237,7 +245,8 @@ def _branch(base: Path, run_id: str, decision: list, next_url: str | None, *, in
             source_task_id="rec-1",
             checkpoint_step=1,
             branch_index=index,
-            branch_group_id="rec-1/s1",
+            branch_group_id="rec-1/s1/v1" if variant is not None else "rec-1/s1",
+            task_variant=variant,
         ),
         steps=steps,
     )
@@ -280,15 +289,7 @@ def build_world(root: Path) -> World:
         [click(10, 90, "link", "Returns")],
         "https://shop.example/returns",
         index=2,
-    )
-    add_task_variant(
-        variant,
-        {
-            "variant_id": "1",
-            "task_text": VARIANT_TASK,
-            "source_task_text": TASK,
-            "note": "written for a test",
-        },
+        variant=VARIANT,
     )
     ended = write_run(
         branches,
@@ -342,8 +343,3 @@ def world(world_root: Path) -> World:
         world_root / "branches" / "br-variant",
         world_root / "branches" / "br-ended",
     )
-
-
-@pytest.fixture(autouse=True)
-def _frames_reader(monkeypatch: pytest.MonkeyPatch) -> None:
-    install_frames_reader(monkeypatch)

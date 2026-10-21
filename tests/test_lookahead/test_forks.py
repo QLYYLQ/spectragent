@@ -14,9 +14,8 @@ from lookahead.forks import compare_urls, forks, judge_forks, rule_verdict
 from lookahead.judge import Judge
 from lookahead.rows import ActionRow, NextObservation
 from lookahead.runs import open_runs
-from tests.test_lookahead.conftest import TASK, VARIANT_TASK, World
+from tests.test_lookahead.conftest import TASK, VARIANT, VARIANT_TASK, World
 from tests.test_lookahead.fake_judge import ScriptedTransport, answers, images, prompt_text
-from tests.test_lookahead.traces import ContractTrace
 
 
 def _action(name: str, *, hit: Any = None, text: str | None = None, **params: Any) -> ActionRow:
@@ -114,7 +113,7 @@ def test_the_next_url_decides_only_when_the_page_differs() -> None:
 
 
 def _forks(world: World) -> dict[str, Any]:
-    return {fork.branch.key: fork for fork in forks(open_runs(world.root, opener=ContractTrace))}
+    return {fork.branch.key: fork for fork in forks(open_runs(world.root))}
 
 
 def test_branches_are_paired_with_the_source_step_through_their_provenance(world: World) -> None:
@@ -124,7 +123,7 @@ def test_branches_are_paired_with_the_source_step_through_their_provenance(world
     assert same.branch_row.step == 1 and same.source_row.step == 1
     assert same.kind == "same_task"
     assert found["branches/br-variant"].kind == "task_variant"
-    assert found["branches/br-variant"].variant["task_text"] == VARIANT_TASK
+    assert found["branches/br-variant"].variant == VARIANT
     ended = found["branches/br-ended"]
     assert ended.unpaired is not None and "no policy step at its checkpoint" in ended.unpaired
 
@@ -141,7 +140,7 @@ def _script(request: dict[str, Any]) -> str:
 
 def _judge_forks(world: World, tmp_path: Path, transport: ScriptedTransport):
     judge = Judge(transport)
-    runs = open_runs(world.root, opener=ContractTrace)
+    runs = open_runs(world.root)
     return asyncio.run(
         judge_forks(
             runs,
@@ -203,15 +202,33 @@ def test_report_answers_whether_rules_can_judge_forks(world: World, tmp_path: Pa
     assert len(lines) == 4
 
 
-def test_queue_suggests_the_model_verdict(world: World, tmp_path: Path) -> None:
+def test_queue_asks_separate_questions_and_suggests_the_model_answers(
+    world: World, tmp_path: Path
+) -> None:
     _, path = _judge_forks(world, tmp_path, ScriptedTransport(_script))
     assert path is not None
     queue = json.loads(path.read_text(encoding="utf-8"))
-    assert queue["label"]["multi"] is True and queue["label"]["regions"] is None
+    label = queue["label"]
+    assert label["regions"] is None and label["choices"] == [] and label["multi"] is False
+    assert [question["key"] for question in label["questions"]] == [
+        "same_intent",
+        "reasonable",
+        "executed_as_intended",
+    ]
+    for question in label["questions"]:
+        assert [choice["value"] for choice in question["choices"]] == ["yes", "no", "uncertain"]
+        assert question["applies_to"] is None
     items = {item["item_id"]: item for item in queue["items"]}
     assert set(items) == {"branches/br-same@1", "branches/br-typed@1", "branches/br-variant@1"}
     same = items["branches/br-same@1"]
-    assert same["suggestion"]["choices"] == ["same_intent", "reasonable", "executed"]
+    assert same["questions"] == ["same_intent", "reasonable", "executed_as_intended"]
+    assert same["suggestion"]["answers"] == {
+        "same_intent": "yes",
+        "reasonable": "yes",
+        "executed_as_intended": "yes",
+    }
+    assert same["suggestion"]["reasons"]["same_intent"] == "same_intent is yes."
+    assert same["suggestion"]["choice"] is None and same["suggestion"]["choices"] is None
     assert same["suggestion"]["source"] == "deepseek-v4.1-flash-1017"
     assert [image["role"] for image in same["images"]] == [
         "checkpoint",
@@ -219,8 +236,14 @@ def test_queue_suggests_the_model_verdict(world: World, tmp_path: Path) -> None:
         "source_next",
     ]
     assert same["images"][2]["source"] == {"kind": "observation", "run": "record/rec-1", "step": 2}
+    assert items["branches/br-typed@1"]["suggestion"]["answers"]["same_intent"] == "no"
     variant = items["branches/br-variant@1"]
-    assert variant["suggestion"]["choices"] == ["reasonable"]
+    assert variant["questions"] == ["reasonable", "executed_as_intended"]
+    assert variant["suggestion"]["answers"] == {
+        "reasonable": "yes",
+        "executed_as_intended": "uncertain",
+    }
+    assert set(variant["suggestion"]["reasons"]) == {"reasonable", "executed_as_intended"}
     assert [link["run"] for link in variant["links"]] == ["branches/br-variant", "record/rec-1"]
 
 

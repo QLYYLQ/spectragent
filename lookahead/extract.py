@@ -11,7 +11,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from lookahead import contracts
 from lookahead.rows import (
     ActionRow,
     BranchInfo,
@@ -98,7 +97,8 @@ def effect_facts(effect: ActionEffect | None, params: dict[str, Any]) -> dict[st
         facts["url_after"] = _url(effect.after)
         facts["document_loaded"] = effect.document_loaded
     elif isinstance(effect, SelectionEffect):
-        facts["selected"] = contracts.plain(effect.selected)
+        selected = effect.selected
+        facts["selected"] = selected if isinstance(selected, str) else selected.model_dump()
         facts["value_changed"] = effect.value_changed
     text = params.get("text")
     if isinstance(text, str):
@@ -115,7 +115,7 @@ def action_rows(actions: list[Action], results: list[ActionResult]) -> list[Acti
             ActionRow(
                 index=index,
                 name=action.name,
-                params=contracts.plain(action.params),
+                params=dict(action.params),
                 success=result.success if result is not None else None,
                 error=result.error if result is not None else None,
                 effect=effect.model_dump(mode="json") if effect is not None else None,
@@ -249,7 +249,7 @@ def _capture_state(run: Run, step: int) -> dict[str, Any] | None:
 def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
     """Every row of one run, in step order."""
     branch = branch_info(run, runs)
-    variant = contracts.task_variant(run.config)
+    variant = run.config.branch.task_variant if run.config.branch is not None else None
     for step in run.steps():
         record = run.records[step]
         if record.origin not in ROW_ORIGINS or not run.has_observation(step):
@@ -273,7 +273,7 @@ def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
             settle=_settle(run, step),
             capture_state=_capture_state(run, step),
             actions=action_rows(record.actions, record.action_results),
-            action_spans=contracts.action_spans(record),
+            action_spans=record.action_spans,
             frames=run.frames_after(step),
             next=following,
             restoration=restoration_summary(record.restoration),
