@@ -486,6 +486,10 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   renders every restored step's source reply, thought included
   (`agents/prompt_context.py::restored_history_message`, `source_material.recorded_reply`),
   and those thoughts were written for the source's task.
+  A variant has no benchmark reference: `spectragent eval` records it as an evaluation
+  error under a reference grader (`NoReferenceError`), and only an evaluator declaring
+  `__needs_reference__ = False` (WebJudge, `online_mind2web`) judges it, on the variant's
+  text (architecture §4.11).
 - `trace_branches` has no eval loader: pass `--no-eval`. A configured evaluator is refused
   before the sweep starts.
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
@@ -571,7 +575,8 @@ split and the drops by reason, and exits non-zero on any failure.
   registered loader's default subset. `match: task_id` drops a source recorded on that
   benchmark whose task id its eval loader lists; `site_instruction` drops one whose
   start-URL host and normalised instruction (case-folded, whitespace collapsed) match a task
-  of its task loader; `either` drops on either test. A benchmark whose loaders cannot load
+  of its task loader (a task-variant branch is checked with its own and its source task's
+  instruction, `TaskIdentity.instructions`); `either` drops on either test. A benchmark whose loaders cannot load
   fails the export (`ExportConfigError`).
 - `occlusion: none` consults no occlusion evidence. A `browser.click` or `browser.type` on a
   covered element is taught at the centre of the element's visible box as if nothing covered

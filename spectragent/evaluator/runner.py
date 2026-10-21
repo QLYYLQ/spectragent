@@ -24,15 +24,18 @@ from typing import Any
 
 from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.reader import RunTrace
-from spectragent.evaluator.base import BaseEvaluator, EvaluatorLifecycle
+from spectragent.evaluator.base import BaseEvaluator, EvaluatorLifecycle, needs_reference
+from spectragent.evaluator.errors import NoReferenceError
 from spectragent.evaluator.summary import summarize
 from spectragent.evaluator.trace_view import TraceView
+from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import (
     AgentResultRef,
     EvalDetails,
     EvalResult,
 )
 from spectragent.schemas.eval_summary import EvalSummary
+from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +180,8 @@ class EvaluationRunner:
         trace = RunTrace(trace_dir)
         view = TraceView(trace)
         branch = trace.config.branch
+        if branch is not None and branch.task_variant is not None:
+            return await self._evaluate_task_variant(trace_dir, trace, view, branch)
         task_id = branch.source_task_id if branch is not None else view.task_id
         if branch is not None:
             for field, expected in (
@@ -211,6 +216,39 @@ class EvaluationRunner:
                 "subset": branch.source_subset,
                 "task_id": branch.source_task_id,
             }
+        self._persist(trace_dir, result)
+        return result
+
+    async def _evaluate_task_variant(
+        self, trace_dir: Path, trace: RunTrace, view: TraceView, branch: BranchProvenance
+    ) -> EvalResult:
+        """Score a branch that ran a task variant: a task no benchmark reference describes.
+
+        Its source task's reference belongs to another task, so it is never
+        looked up. An evaluator that grades against a reference cannot score
+        the trace (:class:`NoReferenceError`, an evaluation error); one that
+        declares ``__needs_reference__ = False`` judges the recorded task —
+        the variant's — and receives a reference naming the run's own task
+        with no evaluation data.
+        """
+        variant = branch.task_variant
+        assert variant is not None
+        if needs_reference(self._evaluator):
+            source = "/".join(
+                part or "-"
+                for part in (branch.source_benchmark, branch.source_subset, branch.source_task_id)
+            )
+            raise NoReferenceError(
+                f"task variant {variant.variant_id!r}: no reference for this task. The branch "
+                f"ran a variant of source task {source}, whose reference describes the "
+                f"source's task, not this one; {self.evaluator_id!r} grades against a "
+                f"benchmark reference, so this trace is not evaluated by it"
+            )
+        reference = EvalReference(task_id=view.task_id, benchmark=view.benchmark)
+        result = await self._evaluator.evaluate(trace, reference)
+        result.evaluation_details.benchmark_details["task_variant"] = _variant_record(
+            variant, branch
+        )
         self._persist(trace_dir, result)
         return result
 
@@ -394,6 +432,19 @@ class EvaluationRunner:
             return
         summary = json.dumps(report.summary().model_dump(mode="json"), ensure_ascii=False, indent=2)
         atomic_write(self._evals_dir / f"{self.verdict_slug}_summary.json", summary.encode("utf-8"))
+
+
+def _variant_record(variant: BranchTaskVariant, branch: BranchProvenance) -> dict[str, Any]:
+    """What a verdict on a task-variant branch says about its task: the variant, no reference."""
+    return {
+        **variant.model_dump(mode="json"),
+        "source_task": {
+            "benchmark": branch.source_benchmark,
+            "subset": branch.source_subset,
+            "task_id": branch.source_task_id,
+        },
+        "reference": None,
+    }
 
 
 def _task_id_or_dirname(trace_dir: Path) -> str:

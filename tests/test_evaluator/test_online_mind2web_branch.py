@@ -95,3 +95,90 @@ async def test_branch_trace_labels_restored_actions(traces_dir):
     # terminal one.
     assert sorted(_image_payloads(judge)) == sorted(frames)
     assert len(final.image_parts) == 4
+
+
+class _NoReferenceLoader:
+    """An eval loader a task variant must never reach: its rows describe the source tasks."""
+
+    benchmark_name = "online_mind2web"
+    subset = "All"
+
+    def get(self, task_id: str) -> EvalReference:
+        raise AssertionError(f"the source reference {task_id!r} was looked up for a task variant")
+
+
+async def test_a_task_variant_is_judged_on_its_own_task_without_a_reference(traces_dir):
+    """WebJudge needs no reference (``__needs_reference__ = False``): it judges the variant."""
+    import json
+
+    from spectragent.evaluator.base import needs_reference
+    from spectragent.evaluator.runner import EvaluationRunner
+
+    variant_task = "Find how long the kettle's warranty lasts"
+    source_task = "Put the blue kettle in the cart"
+    frames = [png_bytes((40, 40, 40)), png_bytes((90, 10, 10))]
+    path = write_trace(
+        traces_dir,
+        task_id="src/s1/vwarranty/b0",
+        run_id="variant-run",
+        benchmark="trace_branches",
+        task=variant_task,
+        steps=2,
+        screenshots=frames,
+        origins=["restored", "policy"],
+    )
+    config = path / "config.json"
+    raw = json.loads(config.read_text())
+    raw["branch"] = {
+        "source_run_id": "src",
+        "source_trace": "src",
+        "source_benchmark": "online_mind2web",
+        "source_subset": "All",
+        "source_task_id": "task-7",
+        "checkpoint_step": 1,
+        "branch_index": 0,
+        "branch_group_id": "src/s1/vwarranty",
+        "task_variant": {
+            "variant_id": "warranty",
+            "task_text": variant_task,
+            "source_task_text": source_task,
+            "note": "written by a model",
+        },
+    }
+    config.write_text(json.dumps(raw))
+    judge = FakeJudge(replies=[_KEY_POINTS, _IMAGE_PASS, _IMAGE_PASS, _SUCCESS])
+    evaluator = _evaluator(judge)
+    assert not needs_reference(evaluator)
+
+    report = await EvaluationRunner(evaluator=evaluator, eval_loader=_NoReferenceLoader()).run(
+        [path]
+    )
+    (result,) = report.graded
+    assert report.errors == []
+    assert variant_task in judge.calls[0].user_text, "the key points come from the variant"
+    assert not any(source_task in call.user_text for call in judge.calls)
+    assert result.task == variant_task and result.task_id == "src/s1/vwarranty/b0"
+    assert result.evaluation_details.benchmark_details["task_variant"] == {
+        "variant_id": "warranty",
+        "task_text": variant_task,
+        "source_task_text": source_task,
+        "note": "written by a model",
+        "source_task": {"benchmark": "online_mind2web", "subset": "All", "task_id": "task-7"},
+        "reference": None,
+    }
+    assert "source_reference" not in result.evaluation_details.benchmark_details
+    assert len(RunTrace(path).evals()) == 1
+
+
+def test_only_reference_free_judges_declare_it():
+    """Undeclared means a reference is needed: the safe reading for a grader."""
+    from spectragent.evaluator._registrar import EvaluatorRegistrar
+    from spectragent.evaluator.base import needs_reference
+
+    class _Structural:
+        evaluator_id = "structural"
+
+    assert needs_reference(_Structural())
+    assert not needs_reference(OnlineMind2WebEvaluator())
+    for key in ("exact_match", "browsecomp", "lexbench_browser"):
+        assert getattr(EvaluatorRegistrar.get(key), "__needs_reference__", True), key

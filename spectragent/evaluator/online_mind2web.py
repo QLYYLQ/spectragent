@@ -39,7 +39,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from pydantic import Field
 
@@ -69,6 +69,10 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
     """WebJudge: key points → per-screenshot image judge → final verdict."""
 
     __registry_key__ = "online_mind2web"
+    #: The verdict comes from the recorded task text (key points) and the
+    #: recorded trajectory; the reference row is never read, so a task that
+    #: has none (a task-variant branch) is still judged, on its own task.
+    __needs_reference__: ClassVar[bool] = False
 
     # A request that ignores cancellation remains owned until it actually
     # finishes. It must not be reported as stopped when the drain expires.
