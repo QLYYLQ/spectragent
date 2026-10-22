@@ -24,7 +24,9 @@ pure construction — and owned by the capability from setup to teardown:
   request pauses on its page's; an OOPIF's document on its parent page's).
   ``answered`` is set only after the send succeeded; whatever is not
   answered, the recorder fails — **nothing is ever continued to the
-  network**.
+  network**. A response from the archive Chrome refuses never reached the
+  page, so it is logged as a ``fulfil_failed`` miss, never as a hit: a
+  divergence when it was the main frame's document.
 - **What Fetch never sees** — WebSocket handshakes (``Network.webSocketCreated``)
   and http(s) requests that announce themselves (``Network.requestWillBeSent``)
   and end (``loadingFailed`` / ``loadingFinished``) without ever pausing (a
@@ -283,48 +285,72 @@ class ReplayServer(RecorderParticipantBase):
             self.log.fail(f"deciding {paused.url}: {exc!r}")
             raise
         outcome: Answer = "failed"
+        error = "cancelled before Chrome answered the fulfilment"
         try:
             await self._send(paused, answer)
             paused.answered = True
             outcome = "fulfilled" if isinstance(answer, Fulfilment) else "failed"
         except Exception as exc:  # the recorder fails what was not answered
+            error = str(exc) or type(exc).__name__
             logger.warning("replay: answering %s %s failed: %r", paused.stage, paused.url, exc)
         finally:
             # Logged whatever happened, a cancellation (owner timeout) included.
+            if not paused.answered and entry.kind != "miss":
+                entry = self._undelivered(paused, entry, error)
             self.log.append(entry.model_copy(update={"answer": outcome}))
 
     # ── deciding ─────────────────────────────────────────────────────
 
-    def _decide(self, paused: PausedRequest) -> tuple[Fulfilment | MissDecision, ReplayLogEntry]:
-        """What answers *paused*, and the log entry that says so. Synchronous: no await."""
+    def _live_request(
+        self, paused: PausedRequest
+    ) -> tuple[LiveRequest, Literal["main", "sub"] | None, bytes | None]:
+        """The paused request as the matcher sees it, a document's frame, and the raw body."""
         params = paused.params
         request = params.get("request") or {}
-        method = str(request.get("method") or "GET").upper()
-        url = str(request.get("url") or "")
         headers = {str(k): str(v) for k, v in (request.get("headers") or {}).items()}
         resource_type = params.get("resourceType")
-        frame_id = params.get("frameId")
         is_document = resource_type == "Document"
-        frame = self._frame(paused.target, frame_id) if is_document else None
+        frame = self._frame(paused.target, params.get("frameId")) if is_document else None
         found = post_body_of(request)
         raw_body = found[0] if found is not None else None
         content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), None)
-        redacted = redact_post_body(raw_body, content_type)[0] if raw_body else None
         live = LiveRequest(
-            method=method,
-            url=url,
+            method=str(request.get("method") or "GET").upper(),
+            url=str(request.get("url") or ""),
             headers=headers,
-            body=redacted,
+            body=redact_post_body(raw_body, content_type)[0] if raw_body else None,
             is_document=is_document,
             resource_type=resource_type,
         )
+        return live, frame, raw_body
+
+    def _miss(
+        self, live: LiveRequest, frame: Literal["main", "sub"] | None, reason: MissReason
+    ) -> ReplayMiss:
+        """*live* as a miss the policy decides on."""
+        rule = self.recorded.rules.for_request(live.method, live.url)
+        return ReplayMiss(
+            method=live.method,
+            url=live.url,
+            resource_type=live.resource_type,
+            is_document=live.is_document,
+            frame=frame,
+            content_type=live.content_type,
+            reason=reason,
+            site_benign=rule is not None and rule.synthesizes_204(live.url),
+        )
+
+    def _decide(self, paused: PausedRequest) -> tuple[Fulfilment | MissDecision, ReplayLogEntry]:
+        """What answers *paused*, and the log entry that says so. Synchronous: no await."""
+        live, frame, raw_body = self._live_request(paused)
+        method, url = live.method, live.url
         base = {
             "captured_at": self.ctx.clock(),
             "cycle": self.ctx.cycle(),
             "method": method,
             "url": url,
-            "resource_type": resource_type,
-            "frame_id": frame_id,
+            "resource_type": live.resource_type,
+            "frame_id": paused.params.get("frameId"),
             "frame": frame,
             "target_id": paused.target.target_id if paused.target is not None else None,
             "session_id": paused.session_id,
@@ -371,18 +397,7 @@ class ReplayServer(RecorderParticipantBase):
                 kind="synthetic", reason=reason, status=served.status, **base
             )
 
-        rule = self.recorded.rules.for_request(method, url)
-        miss = ReplayMiss(
-            method=method,
-            url=url,
-            resource_type=resource_type,
-            is_document=is_document,
-            frame=frame,
-            content_type=content_type,
-            reason=reason,
-            site_benign=rule is not None and rule.synthesizes_204(url),
-        )
-        decision = self.policy.decide(miss)
+        decision = self.policy.decide(self._miss(live, frame, reason))
         entry = ReplayLogEntry(
             kind="miss",
             record_id=record.record_id if record is not None else None,
@@ -411,6 +426,39 @@ class ReplayServer(RecorderParticipantBase):
         if decision.answer == "fulfill":
             return miss_response(decision), entry
         return decision, entry
+
+    def _undelivered(
+        self, paused: PausedRequest, entry: ReplayLogEntry, error: str
+    ) -> ReplayLogEntry:
+        """*entry* for a response from the archive that never reached the page.
+
+        Chrome refused the ``Fetch.fulfillRequest`` (or did not answer it in
+        time) and the recorder fails the request: the page saw a failure, not
+        the archive's response. That is a ``fulfil_failed`` miss — what the
+        miss policy says it is, its class and whether the replay left the
+        recording here (a main-frame document); its answer is the recorder's
+        failure. The record whose response was refused stays named.
+        """
+        live, frame, _raw_body = self._live_request(paused)
+        try:
+            decision = self.policy.decide(self._miss(live, frame, "fulfil_failed"))
+        except Exception as exc:  # a bug here must fail the next collection, not pass silently
+            self.log.fail(f"deciding the undelivered {paused.url}: {exc!r}")
+            decision = None
+        return entry.model_copy(
+            update={
+                "kind": "miss",
+                "reason": "fulfil_failed",
+                "request_class": decision.request_class if decision is not None else None,
+                "diverged": decision.diverged if decision is not None else False,
+                "status": None,
+                "range": None,
+                "callback_rewrite": None,
+                # repeat_last's repeat of a record that failed to serve.
+                "repeated": True if entry.kind == "exhausted" else None,
+                "fulfil_error": error,
+            }
+        )
 
     def _serve(
         self, result: MatchResult, live: LiveRequest, raw_body: bytes | None

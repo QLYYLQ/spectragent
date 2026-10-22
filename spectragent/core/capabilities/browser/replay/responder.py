@@ -29,6 +29,14 @@ The shapes, one function each:
 - **A miss the policy fulfils** (:func:`miss_response`): the policy's status
   and headers, no body.
 
+Every response carries a reason phrase Chrome accepts (:func:`reason_phrase`):
+the recorded one when it is printable ASCII, else the standard phrase of the
+status, else :data:`UNKNOWN_STATUS_PHRASE`. HTTP/2 has no reason phrase, so a
+response recorded over it has none, and Chrome refuses ``Fetch.fulfillRequest``
+with an empty phrase for any status, and with no phrase for a status it has no
+standard phrase for — "Invalid http status code or phrase" (measured, Chrome
+155: ctrip answered a document 432 over HTTP/2).
+
 Every response goes through the same header hygiene (:func:`sanitised_headers`):
 ``Content-Encoding`` / ``Transfer-Encoding`` and HTTP/2 pseudo-headers dropped,
 ``Content-Length`` recomputed from the bytes served, a value spanning several
@@ -64,6 +72,7 @@ a synthesised ``Date``, an unparsable cookie expiry kept rather than dropped.
 
 import base64
 import email.utils
+import http
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -90,6 +99,10 @@ BODY_DIGEST_HEADERS = frozenset({"content-md5", "digest", "content-digest", "rep
 DATE_HEADERS = frozenset({"date", "expires", "last-modified"})
 #: Statuses that carry no body, hence no ``Content-Length``.
 BODILESS_STATUSES = frozenset({204, 304})
+#: The reason phrase of a status code with no standard one (ctrip's 432), when
+#: the recorded phrase cannot be sent: Chrome refuses such a code without a
+#: phrase (measured, Chrome 155), and the page read none in the source (HTTP/2).
+UNKNOWN_STATUS_PHRASE = "Unknown Status"
 #: ``; Expires=<date>`` inside one ``Set-Cookie`` line.
 _COOKIE_EXPIRES = re.compile(r"(;\s*expires\s*=\s*)([^;]*)", re.IGNORECASE)
 
@@ -102,7 +115,8 @@ class Fulfilment:
         status: The status code.
         headers: The response headers, in order, one entry per header line.
         body: The bytes served (decoded).
-        status_text: The reason phrase (``""``: Chrome's standard one).
+        status_text: The recorded reason phrase (``""``: none was recorded —
+            HTTP/2 carries none); :func:`reason_phrase` turns it into the one sent.
         callback_rewrite: The JSONP callback name this response calls instead
             of the recorded one (``None``: not rewritten); the replay log
             records it.
@@ -125,10 +139,27 @@ class Fulfilment:
             "responseCode": self.status,
             "responseHeaders": [{"name": name, "value": value} for name, value in self.headers],
             "body": base64.b64encode(self.body).decode("ascii"),
+            "responsePhrase": reason_phrase(self.status, self.status_text),
         }
-        if self.status_text and self.status_text.isascii():
-            params["responsePhrase"] = self.status_text
         return params
+
+
+def reason_phrase(status: int, recorded: str) -> str:
+    """The reason phrase sent with *status*: never one Chrome refuses.
+
+    The recorded phrase when it is printable ASCII — what a status line
+    carries in every HTTP stack. Otherwise (none recorded: HTTP/2; or one
+    with other characters) the standard phrase of *status*, and
+    :data:`UNKNOWN_STATUS_PHRASE` for a code with no standard phrase. Chrome
+    refuses an empty phrase whatever the code, and a missing one for a code
+    it has no phrase for (measured, Chrome 155: 432, 299, 599, 999).
+    """
+    if recorded and recorded.isascii() and recorded.isprintable():
+        return recorded
+    try:
+        return http.HTTPStatus(status).phrase
+    except ValueError:
+        return UNKNOWN_STATUS_PHRASE
 
 
 @dataclass(frozen=True)

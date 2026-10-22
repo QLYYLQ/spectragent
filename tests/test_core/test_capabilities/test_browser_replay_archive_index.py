@@ -197,7 +197,7 @@ class TestSourceOutcomes:
 
     @pytest.fixture()
     async def outcomes(self, tmp_path: Path) -> dict[str, IndexedRecord]:
-        recording = RecordingScript(tmp_path, body_read_timeout_s=0.05)
+        recording = RecordingScript(tmp_path, body_read_timeout_s=0.05, late_body_timeout_s=0.05)
         recording.failed(f"{SHOP}/cancelled-early.webp", error_text="net::ERR_ABORTED")
         recording.failed(f"{SHOP}/cancelled-late.webp", error_text="net::ERR_ABORTED", status=200)
         recording.failed(f"{SHOP}/ad.png", error_text="net::ERR_BLOCKED_BY_ORB")

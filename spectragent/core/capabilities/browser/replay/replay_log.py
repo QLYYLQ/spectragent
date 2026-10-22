@@ -114,7 +114,8 @@ class ReplayLogEntry(BaseModel):
     #: The record consumed (for ``substituted``, the one without a body).
     record_id: str | None = None
     run_id: str | None = None
-    #: The record whose response was sent in its place (``substituted`` only).
+    #: The record whose response was sent in its place (``substituted``) — or,
+    #: on a ``fulfil_failed`` miss of such an answer, whose response Chrome refused.
     served_record_id: str | None = None
     #: How the source request of a consumed record without a body ended
     #: (``substituted``, and a ``body_unavailable`` miss).
@@ -143,8 +144,13 @@ class ReplayLogEntry(BaseModel):
     match_key: str | None = None
     body_key: str | None = None
     candidates: list[ReplayCandidate] = Field(default_factory=list)
-    #: A main-frame document miss: the replay left the recording here.
+    #: A main-frame document miss: the replay left the recording here. A
+    #: document the archive answered counts when the answer never reached the
+    #: page (``fulfil_failed``): the page saw a failure all the same.
     diverged: bool = False
+    #: Why the archive's response never reached the page (a ``fulfil_failed``
+    #: miss): Chrome's error for ``Fetch.fulfillRequest``, or the timeout.
+    fulfil_error: str | None = None
     #: A miss that repeats an exhausted sequence's last record (``repeat_last``) —
     #: one without a servable body, or one that failed to serve — rather than the
     #: first time that record was consumed. Written only when true.

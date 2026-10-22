@@ -297,6 +297,9 @@ class Exchange:
     #: The pause's response status (redirect hops pause too).
     paused_status: int | None = None
     body_reading: bool = False
+    #: The body read outlived ``body_read_timeout_s``: the response was
+    #: released and the read goes on (``late_body_timeout_s``).
+    late_body: bool = False
     body: bytes | None = None
     body_status: BodyStatus | None = None
     body_note: str | None = None
@@ -351,7 +354,7 @@ class Exchange:
         if self.is_websocket:
             return None if self.terminal is not None else "handshake"
         if self.body_reading:
-            return "body"
+            return "late_body" if self.late_body else "body"
         if self.terminal is None:
             if self.paused_session is None or self.body_status is None:
                 return "response" if self.status is None else "loading"
