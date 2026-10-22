@@ -1,15 +1,17 @@
-"""One clock for every tab of a pinned run, in a real Chrome (§4.14 ``replayability``).
+"""pinned's two clocks across tabs, in a real Chrome (§4.14 ``replayability``).
 
-The pinned shim used to give every document its own clock — T0 at the
-document's start, then 50 ms every 25 ``Date`` constructions — so two tabs of
-one run read different times: a tab opened minutes into the run read T0 again,
-and a page that called ``Date`` often ran hours ahead of one that did not. On
-iqiyi.com that killed recordings: its tabs keep their search history and SDK
-cache in step through ``localStorage`` and decide by timestamp whose copy is
-newer, the exchange never converged, every iqiyi renderer spent itself on
-``storage`` events, and the next observation's ``Page.captureScreenshot`` got no
-reply (``shims.py`` module docstring). The shim now reads one clock for the
-whole run: T0 at the run's start, then real time.
+The per-document clock (WPR's: T0 at each document's start, then 50 ms every
+25 ``Date`` constructions) gives two tabs of one run different times: a tab
+opened minutes into the run reads T0 again, and a page that calls ``Date``
+often runs hours ahead of one that does not. On iqiyi.com that killed
+recordings: its tabs keep their search history and SDK cache in step through
+``localStorage`` and decide by timestamp whose copy is newer, the exchange
+never converged, every iqiyi renderer spent itself on ``storage`` events, and
+the next observation's ``Page.captureScreenshot`` got no reply (``shims.py``
+module docstring). The shared clock — pinned's default — is one clock for the
+whole run: T0 at the run's start, then real time. The per-document clock stays
+selectable for replays that must read the recorded values exactly; the
+negative control here shows what it costs.
 
 Pages from a loopback server (no network, no model):
 
@@ -37,7 +39,7 @@ import pytest
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
-from spectragent.core.capabilities.browser.replay.shims import render_shim
+from spectragent.core.capabilities.browser.replay.shims import Clock, render_shim
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -122,10 +124,12 @@ def pages() -> Iterator[_Pages]:
 
 
 @asynccontextmanager
-async def _browser(start_url: str, *, pinned: bool = True) -> AsyncIterator[BrowserCapability]:
+async def _browser(
+    start_url: str, *, pinned: bool = True, clock: Clock = "shared"
+) -> AsyncIterator[BrowserCapability]:
     cap = BrowserCapability(settle_quiet_ms=100)
     if pinned:
-        cap.replayability = PinnedReplayability(random_seed=7)
+        cap.replayability = PinnedReplayability(random_seed=7, clock=clock)
     cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
     try:
         await asyncio.wait_for(cap.setup(start_url=start_url), 60)
@@ -169,31 +173,40 @@ async def test_every_tab_reads_the_same_clock(pages: _Pages) -> None:
     await asyncio.wait_for(run(), _TIMEOUT_S)
 
 
+async def _sync_writes(pages: _Pages, clock: Clock) -> tuple[list[int], list[str]]:
+    """Open the sync page in two tabs a second apart; each tab's writes and copy's owner."""
+    async with _browser(pages.url("A", BURN_CALLS), clock=clock) as cap:
+        first = cap.default_session_id
+        await asyncio.sleep(1.0)
+        second = await cap.create_tab(pages.url("B", 0))
+        await asyncio.sleep(SYNC_WATCH_S)
+        writes = [await _evaluate(cap, s, "window.__writes") for s in (first, second)]
+        owners = [await _evaluate(cap, s, "window.__owner()") for s in (first, second)]
+        return writes, owners
+
+
 async def test_tabs_keep_their_storage_sync_settled(pages: _Pages) -> None:
     """Two tabs syncing through ``localStorage`` by timestamp settle after their first writes.
 
-    The regression for the iqiyi.com hang: under a clock per tab the first tab
-    (400 s ahead) refused the second's copy as older and rewrote its own, the
-    second refused that as stamped in its future and rewrote, and so on
-    without end (measured against the old shim: 18 writes per tab in the 2 s
-    watched, and the first tab read 396 s ahead of the host's clock).
+    The regression for the iqiyi.com hang, on the shared clock: the newer copy
+    — the second tab's — wins in both tabs, and nothing is written again.
     """
+    writes, owners = await asyncio.wait_for(_sync_writes(pages, "shared"), _TIMEOUT_S)
+    assert sum(writes) == SETTLED_WRITES, f"writes per tab: {writes}"
+    assert owners == ["B", "B"]
 
-    async def run() -> None:
-        async with _browser(pages.url("A", BURN_CALLS)) as cap:
-            first = cap.default_session_id
-            await asyncio.sleep(1.0)
-            second = await cap.create_tab(pages.url("B", 0))
-            await asyncio.sleep(SYNC_WATCH_S)
-            writes = [await _evaluate(cap, s, "window.__writes") for s in (first, second)]
-            assert sum(writes) == SETTLED_WRITES, f"writes per tab: {writes}"
-            # The newer copy won in both tabs: the second tab's.
-            assert [await _evaluate(cap, s, "window.__owner()") for s in (first, second)] == [
-                "B",
-                "B",
-            ]
 
-    await asyncio.wait_for(run(), _TIMEOUT_S)
+async def test_the_per_document_clock_never_lets_the_sync_settle(pages: _Pages) -> None:
+    """The negative control: the same two tabs on the per-document clock rewrite each other.
+
+    The first tab, 400 s ahead, refuses the second's copy as older and
+    rewrites its own; the second refuses that as stamped in its future and
+    rewrites; and so on without end (measured: 18 writes per tab in the 2 s
+    watched). What a replay buys with this clock — the same calls read the
+    same values — it pays for here.
+    """
+    writes, _owners = await asyncio.wait_for(_sync_writes(pages, "per_document"), _TIMEOUT_S)
+    assert min(writes) > SETTLED_WRITES, f"writes per tab: {writes}"
 
 
 async def test_a_shifted_clock_reads_t0_at_the_runs_start_then_real_time(pages: _Pages) -> None:
@@ -208,7 +221,9 @@ async def test_a_shifted_clock_reads_t0_at_the_runs_start_then_real_time(pages: 
     async def run() -> None:
         async with _browser(pages.url("A", 0), pinned=False) as cap:
             started = int(time.time() * 1000)
-            shim = render_shim(t0_ms=started - hour_ms, run_started_ms=started, seed=1)
+            shim = render_shim(
+                t0_ms=started - hour_ms, run_started_ms=started, seed=1, clock="shared"
+            )
             elapsed_before = time.time() * 1000 - started
             reads = await _evaluate(
                 cap,

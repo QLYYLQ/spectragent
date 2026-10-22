@@ -79,9 +79,21 @@ def done(text: str = "done") -> str:
 
 
 def record_config(
-    *, site: FixtureSite, llm: ScriptedLLMServer, trace_dir: Path, max_steps: int = 30
+    *,
+    site: FixtureSite,
+    llm: ScriptedLLMServer,
+    trace_dir: Path,
+    max_steps: int = 30,
+    clock: str | None = None,
 ) -> dict[str, Any]:
-    """The recording run's configuration (see the module docstring)."""
+    """The recording run's configuration (see the module docstring).
+
+    *clock* names pinned's clock (``shared`` / ``per_document``); ``None``
+    leaves the tier's default. A replay inherits it with the rest of the block.
+    """
+    replayability: dict[str, Any] = {"replayability_id": "pinned", "random_seed": RANDOM_SEED}
+    if clock is not None:
+        replayability["clock"] = clock
     return {
         "agent": [
             {
@@ -123,10 +135,7 @@ def record_config(
                         "settle_quiet_ms": FIXTURE_SETTLE_QUIET_MS,
                         "mouse_trajectory": {"trajectory_type": "instant"},
                         "typing_rhythm": {"rhythm_type": "instant"},
-                        "replayability": {
-                            "replayability_id": "pinned",
-                            "random_seed": RANDOM_SEED,
-                        },
+                        "replayability": replayability,
                         "network_source": {"source_id": "live"},
                         "dom_cleaner": {"cleaner_type": "browser_use"},
                         "dom_serializer": {"serializer_type": "text"},

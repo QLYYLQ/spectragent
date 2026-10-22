@@ -7,28 +7,34 @@ Chromium Authors"; license text in THIRD_PARTY_NOTICES.md). What it keeps
 from WPR, and what af changed, is stated in the template's own header so
 the notice travels with the source into every page it is injected into.
 
-The template is a Python string with three placeholders, ``__AF_T0_MS__``,
-``__AF_RUN_STARTED_MS__`` and ``__AF_SEED__``, replaced by integers.
+The template is a Python string with four placeholders, ``__AF_T0_MS__``,
+``__AF_RUN_STARTED_MS__`` and ``__AF_SEED__``, replaced by integers, and
+``__AF_SHARED_CLOCK__``, replaced by ``true`` or ``false``.
 :data:`SHIM_SHA256` is the digest of the *template* — one value per shim
-version, whatever T0, start and seed a run uses — and is what the environment
-fingerprint records next to them.
+version, whatever T0, start, seed and clock a run uses — and is what the
+environment fingerprint records next to them.
 
-**One clock for the whole run.** ``Date`` reads T0 at the run's start and then
-advances with real time, from the high-resolution clock every document and
-worker shares (``performance.timeOrigin + performance.now()``), so every tab
-reads the same time. WPR's clock — each document its own counter starting at
-T0 and stepping 50 ms every 25 constructions — gave every tab a different
-time: a document opened five minutes into a run read T0 again, and a page
-that called ``Date`` often ran hours ahead of one that did not. A site that
-keeps tabs in step through ``localStorage`` and decides by timestamp whose
-copy is newer (iqiyi.com: its search history and SDK cache rewrite each
-other's copy on every ``storage`` event) then never converged: every tab's
-renderer spent itself on the exchange, every page-side command — the
-observation's screenshot included — went unanswered, and the run failed
-(``docs/architecture_design.md`` §4.14, ``replayability``).
+**Two clocks** (pinned's ``clock`` knob, :data:`CLOCKS`):
+
+- ``shared`` — one clock for the whole run. ``Date`` reads T0 at the run's
+  start and then advances with real time, from the high-resolution clock
+  every document and worker shares (``performance.timeOrigin +
+  performance.now()``), so every tab reads the same time.
+- ``per_document`` — WPR's: each document its own counter, starting at T0 and
+  stepping 50 ms every 25 constructions. The same calls read the same values
+  in a recording and its replay, but tabs disagree: a document opened five
+  minutes into a run reads T0 again, and a page that calls ``Date`` often runs
+  hours ahead of one that does not. A site that keeps tabs in step through
+  ``localStorage`` and decides by timestamp whose copy is newer (iqiyi.com:
+  its search history and SDK cache rewrite each other's copy on every
+  ``storage`` event) then never converges: every tab's renderer spends itself
+  on the exchange, every page-side command — the observation's screenshot
+  included — goes unanswered, and the run fails
+  (``docs/architecture_design.md`` §4.14, ``replayability``).
 """
 
 import hashlib
+from typing import Literal
 
 SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -38,12 +44,13 @@ SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
 // (chromium.googlesource.com/webpagereplay @ 6a31bb0937dccd01bedae8bd6cdeb8c113937cfb).
 // Modified by af (All4One) for replayability: pinned. Kept: the Date
 // replacement's shape (no-argument Date and Date.now read the pinned clock,
-// every other form is native) and a re-injection guard. Changed: the clock is
-// one clock for the whole run, T0 at the run's start advancing in real time
-// (performance.timeOrigin + performance.now(), read through references taken
-// before any page script runs), not a per-document counter stepping 50 ms
-// every 25 constructions, so every document and worker reads the same time;
-// Math.random and crypto.getRandomValues draw from seeded mulberry32 streams
+// every other form is native), the per-document clock (T0, then 50 ms every 25
+// constructions; never frozen, so a busy-wait on Date.now ends) and a
+// re-injection guard. Changed: a second clock, shared by the whole run, reads
+// T0 at the run's start and then real time (performance.timeOrigin +
+// performance.now(), read through references taken before any page script
+// runs), so every document and worker reads the same time; SHARED_CLOCK picks
+// one; Math.random and crypto.getRandomValues draw from seeded mulberry32 streams
 // instead of a fixed step; crypto.randomUUID returns RFC 4122 version-4 UUIDs
 // from the seeded bytes; ServiceWorkerContainer.prototype.register rejects;
 // every API is feature-tested so the same source runs in pages and workers.
@@ -61,6 +68,7 @@ SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
 
   const T0_MS = __AF_T0_MS__;
   const RUN_STARTED_MS = __AF_RUN_STARTED_MS__;
+  const SHARED_CLOCK = __AF_SHARED_CLOCK__;
   const SEED = __AF_SEED__ >>> 0;
 
   function mulberry32(state) {
@@ -120,9 +128,10 @@ SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
     }
   }
 
-  // Date: T0 at the run's start (RUN_STARTED_MS on the host's wall clock),
-  // then real time. performance.timeOrigin + performance.now() is the same
-  // clock in every document and worker, so they all read the same time.
+  // Date. Shared: T0 at the run's start (RUN_STARTED_MS on the host's wall
+  // clock), then real time; performance.timeOrigin + performance.now() is the
+  // same clock in every document and worker, so they all read the same time.
+  // Per document: T0, then 50 ms every 25 constructions, counted here.
   const NativeDate = g.Date;
   const floor = Math.floor;
   const perf = g.performance;
@@ -132,8 +141,18 @@ SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
   function wallMs() {
     return perfNow !== null && origin !== null ? origin + perfNow() : nativeNow();
   }
+  let counted = T0_MS;
+  let constructions = 0;
   function pinnedNow() {
-    return floor(T0_MS + (wallMs() - RUN_STARTED_MS));
+    if (SHARED_CLOCK) {
+      return floor(T0_MS + (wallMs() - RUN_STARTED_MS));
+    }
+    constructions += 1;
+    if (constructions > 25) {
+      counted += 50;
+      constructions = 1;
+    }
+    return counted;
   }
   function PinnedDate() {
     if (new.target === undefined) {
@@ -170,21 +189,28 @@ SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
 #: Digest of the template source; changes exactly when the shim's code does.
 SHIM_SHA256 = hashlib.sha256(SHIM_TEMPLATE.encode("utf-8")).hexdigest()
 
+#: The shim's clocks (module docstring): one for the whole run, or one per document.
+Clock = Literal["shared", "per_document"]
+CLOCKS: tuple[Clock, ...] = ("shared", "per_document")
 
-def render_shim(*, t0_ms: int, run_started_ms: int, seed: int) -> str:
-    """The shim for one run: the template with T0, the run's start and the seed filled in.
+
+def render_shim(*, t0_ms: int, run_started_ms: int, seed: int, clock: Clock) -> str:
+    """The shim for one run: the template with T0, the run's start, the seed and the clock filled in.
 
     *t0_ms* is what the page clock reads at the run's start; *run_started_ms*
     is that start on the host's wall clock (equal to T0 under ``base_time:
     run_start``; the replay's own start under ``from_archive``, whose T0 is
-    the recording's).
+    the recording's). Only the ``shared`` clock reads the start.
     """
     for name, value in (("t0_ms", t0_ms), ("run_started_ms", run_started_ms), ("seed", seed)):
         if not isinstance(value, int) or isinstance(value, bool):
             raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    if clock not in CLOCKS:
+        raise ValueError(f"clock must be one of {CLOCKS}, got {clock!r}")
     return (
         SHIM_TEMPLATE.replace("__AF_T0_MS__", str(t0_ms))
         .replace("__AF_RUN_STARTED_MS__", str(run_started_ms))
+        .replace("__AF_SHARED_CLOCK__", "true" if clock == "shared" else "false")
         .replace("__AF_SEED__", str(seed))
     )
 

@@ -72,14 +72,14 @@ from spectragent.core.capabilities.browser.replay.replayability import (
     ReplayabilityBase,
     ReplayabilityPlan,
 )
-from spectragent.core.capabilities.browser.replay.shims import SHIM_SHA256, render_shim
+from spectragent.core.capabilities.browser.replay.shims import SHIM_SHA256, Clock, render_shim
 
 #: A BCP 47 language tag, loosely: ``en``, ``en-US``, ``zh-Hans-CN``.
 _LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 
 
 class PinnedReplayability(ReplayabilityBase):
-    """Seeded randomness, a stepped clock from T0, fixed tz / locale / UA / DPR."""
+    """Seeded randomness, a clock from T0, fixed tz / locale / UA / DPR."""
 
     __registry_key__ = "pinned"
 
@@ -98,6 +98,22 @@ class PinnedReplayability(ReplayabilityBase):
                 ),
             ),
         ] = "run_start",
+        clock: Annotated[
+            Clock,
+            PydanticField(
+                description=(
+                    "What the shim's Date reads. 'shared': one clock for the whole "
+                    "run — T0 at the run's start, then real time — so every tab and "
+                    "worker reads the same time; Date-stamped values differ between "
+                    "a recording and its replay by timing. 'per_document': each "
+                    "document its own clock — T0, then 50 ms every 25 constructions — "
+                    "so the same calls read the same values when replayed, but tabs "
+                    "disagree on the time, and a site that syncs its tabs by "
+                    "timestamp can spin its renderers until they stop answering "
+                    "(iqiyi.com did). A replay uses its recording's clock."
+                ),
+            ),
+        ] = "shared",
         random_seed: Annotated[
             int,
             PydanticField(
@@ -169,6 +185,7 @@ class PinnedReplayability(ReplayabilityBase):
         if not _LOCALE.match(locale):
             raise ValueError(f"pinned: {locale!r} is not a language tag such as 'en-US'")
         self.base_time: Literal["run_start", "from_archive"] = base_time
+        self.clock: Clock = clock
         self.random_seed = random_seed
         self.timezone = timezone
         self.locale = locale
@@ -226,6 +243,7 @@ class PinnedReplayability(ReplayabilityBase):
             t0_ms=t0_ms,
             run_started_ms=t0_ms if run_started_ms is None else run_started_ms,
             seed=self.random_seed,
+            clock=self.clock,
         )
         hints, problems = self._client_hints(client_hints)
         user_agent: dict[str, Any] = {
@@ -282,6 +300,7 @@ class PinnedReplayability(ReplayabilityBase):
             tier=self.replayability_id,
             params={
                 "base_time": self.base_time,
+                "clock": self.clock,
                 "random_seed": self.random_seed,
                 "timezone": self.timezone,
                 "locale": self.locale,

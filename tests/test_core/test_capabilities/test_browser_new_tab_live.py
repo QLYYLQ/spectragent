@@ -13,7 +13,7 @@ site only (``tests/_helpers/fixture_site.py``, scenario ``new_tab``):
   runs;
 - ``replayability: pinned`` reaches a page-opened tab's first document,
   whatever opened it (and a tab ``create_tab`` opened): the shim before any
-  page script, the clock at T0, the seeded randomness, time zone, locale,
+  page script, the per-document clock at T0, the seeded randomness, time zone, locale,
   language, user agent (not in Chrome's own form, so no client hints: no
   brands), reduced motion — in both documents, the
   worker and the cross-site frame; the document requests carry the pinned
@@ -206,8 +206,16 @@ async def _open(rec: LiveRecording, how: str, *, reports: int) -> Opened:
 @pytest.fixture(scope="module")
 def session() -> Session:
     async def _all() -> Session:
+        # The per-document clock reads exactly T0 in a document's first script:
+        # the witness that the shim's Date was in place before any page script.
+        # The shared clock — pinned's default — reads T0 plus real time, which a
+        # native Date reads too. Both clocks are the same Date replacement.
         pinned = PinnedReplayability(
-            random_seed=7, timezone=PINNED_TZ, locale=PINNED_LOCALE, user_agent=PINNED_UA
+            random_seed=7,
+            timezone=PINNED_TZ,
+            locale=PINNED_LOCALE,
+            user_agent=PINNED_UA,
+            clock="per_document",
         )
         with FixtureSite() as site:
             archiver = NetworkArchiver(drain_timeout_s=1.0)
