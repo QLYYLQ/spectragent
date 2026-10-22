@@ -4,8 +4,8 @@ A capability that declares ``__wiring__["archiver"]`` hands over environment
 evidence when the trace hook pulls it (``docs/architecture_design.md`` §4.6,
 §4.9). ``typing.Protocol`` can state ``bind_archivers`` and
 ``collect_archive``; it cannot state *hand over and forget*, *take no step*,
-*capture nothing unbound*, or *raise rather than return a batch that looks
-complete* — and a capability that gets any of those wrong produces an archive
+*capture nothing unbound*, or *never return a batch that looks complete
+while evidence is missing* — and a capability that gets any of those wrong produces an archive
 that lies: evidence attributed to the wrong step, evidence twice, evidence of
 a run nobody asked to record, or a silent hole that poisons replay and
 branching later. So the rules live here, as assertions, and every archiving
@@ -40,8 +40,9 @@ Capability side (the archiving contract, §4.9):
    owned by the capability or a bound key).
 6. :func:`assert_files_carry_provenance` — every step file says when it was
    captured, inside the window it was produced in.
-7. :func:`assert_a_broken_collection_raises` — a collection that cannot
-   collect raises; it never returns an empty batch that looks complete.
+7. :func:`assert_a_broken_collection_never_looks_complete` — a collection
+   that cannot collect raises, or names the loss in the batch's ``gaps``; it
+   never returns a batch that looks complete.
 
 Through the trace hook (``TraceWriter`` driven directly, negotiated and bound
 exactly as ``AgentRuntime.prepare`` does — no agent, no loop, so any
@@ -58,9 +59,10 @@ capability fits):
 10. :func:`assert_tail_lands_at_run_end` — evidence captured after the last
     commit point lands as trailing evidence at run end, claiming no step.
 11. :func:`assert_a_failed_collection_leaves_the_trace_incomplete` — a step
-    whose collection fails leaves an explicit gap without raising into
-    execution. Later collection is still attempted, and the trace closes
-    ``incomplete`` independently of the run's successful outcome.
+    whose collection fails still commits, without the evidence, and its loss
+    is a recording problem of that step; nothing is raised into execution.
+    Later collection is still attempted, and the trace closes ``incomplete``
+    independently of the run's successful outcome.
 12. :func:`assert_empty_archive_costs_nothing` — a trace hook with no archive
     never touches the environment's archive surface and writes no ``env/``.
 13. :func:`assert_run_records_stay_per_capability` — beside another archiving
@@ -389,12 +391,12 @@ async def assert_files_carry_provenance(
             )
 
 
-async def assert_a_broken_collection_raises(harness: ArchiveHarness) -> None:
-    """A collection that cannot collect raises — never an empty batch that looks complete.
+async def assert_a_broken_collection_never_looks_complete(harness: ArchiveHarness) -> None:
+    """A collection that cannot collect raises or names its gaps — never a batch that looks whole.
 
     The archive was explicitly requested; the trace hook records a collection
-    failure separately from execution. An empty batch instead is a silent
-    hole nobody finds until replay.
+    failure separately from execution. A batch without a gap instead is a
+    silent hole nobody finds until replay.
     """
     cap = harness.capability
     cap.bind_archivers(list(harness.archivers))
@@ -404,10 +406,13 @@ async def assert_a_broken_collection_raises(harness: ArchiveHarness) -> None:
         batch = await cap.collect_archive()
     except Exception:
         return
+    if getattr(batch, "gaps", ()):
+        return
     raise AssertionError(
         f"{harness.capability_id}: after break_collect(), collect_archive() returned "
-        f"{type(batch).__name__} ({len(getattr(batch, 'files', ()))} file(s)) instead of "
-        f"raising. Either the harness does not really break the collection, or the "
+        f"{type(batch).__name__} ({len(getattr(batch, 'files', ()))} file(s), no gap) instead "
+        f"of raising or naming a gap. Either the harness does not really break the collection, "
+        f"or the "
         f"capability swallowed the failure — a batch that looks complete while evidence is "
         f"missing is exactly what fail-closed collection exists to prevent."
     )
@@ -639,11 +644,12 @@ async def assert_tail_lands_at_run_end(harness: ArchiveHarness, trace_root: Path
 async def assert_a_failed_collection_leaves_the_trace_incomplete(
     harness: ArchiveHarness, trace_root: Path
 ) -> None:
-    """Collection errors leave gaps and diagnostics without stopping execution.
+    """Collection errors leave gaps and diagnostics without stopping execution or losing steps.
 
     The capability is deliberately broken for the remainder of this run. Both
     later steps and close-out must still attempt capture; none may pretend that
-    the missing evidence is a successfully collected empty archive.
+    the missing evidence is a successfully collected empty archive, and none
+    may take the step's own record down with its evidence.
     """
     recording = _Recording(harness, trace_root)
     run_dir = await recording.start()
@@ -654,11 +660,15 @@ async def assert_a_failed_collection_leaves_the_trace_incomplete(
     harness.break_collect()
     await recording.commit(1)
     failures = [problem for problem in recording.writer.health.problems if problem.step == 1]
-    assert failures and any(problem.error == "ArchiveCollectionError" for problem in failures)
-    assert any(harness.capability_id in problem.detail for problem in failures)
+    assert failures and all(problem.phase == "collect" for problem in failures)
+    assert any(problem.channel.partition(".")[0] == harness.capability_id for problem in failures)
     trace = RunTrace(run_dir)
-    assert trace.step(1) is None
-    assert _archive_view(trace, harness) == before
+    assert trace.step(1) is not None, (
+        f"{harness.capability_id}: a failed collection took step 1's record down with its evidence"
+    )
+    view = _archive_view(trace, harness)
+    assert view["evidence"] == before["evidence"]
+    assert view["run_record"] == before["run_record"]
 
     collected = recording.spy.calls
     await recording.commit(2)
@@ -666,7 +676,8 @@ async def assert_a_failed_collection_leaves_the_trace_incomplete(
     trace = RunTrace(run_dir)
     assert trace.manifest.status == TraceStatus.INCOMPLETE
     assert trace.manifest.complete_through == 0
-    assert recording.writer.health.missing_steps == [1, 2]
+    assert recording.writer.health.missing_steps == []
+    assert [entry.step for entry in trace.manifest.steps] == [0, 1, 2]
     assert recording.spy.calls == collected + 2, "later steps and close-out still collect"
     assert trace.result is not None and trace.result.agent_done == agent_result().agent_done
     assert _archive_view(trace, harness)["evidence"] == before["evidence"]

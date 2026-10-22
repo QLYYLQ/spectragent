@@ -36,7 +36,9 @@ The fake capability follows the archiving contract
   :meth:`FakeArchivingCapability.change_run_record` makes the next
   collection carry a changed one;
 - ``collect_archive`` swaps its buffer out in one synchronous statement and
-  forgets it; :attr:`FakeArchivingCapability.broken` makes it raise.
+  forgets it; :attr:`FakeArchivingCapability.broken` makes it raise, and
+  :attr:`FakeArchivingCapability.failing` names archivers whose evidence the
+  next collections lose, each handed over as a gap beside the rest.
 
 No custom ``__init__`` on the capability (``CapabilityBase.id`` must stay
 visible to conscribe, ``test_no_dropped_annotated_fields``): per-instance
@@ -58,6 +60,7 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.archive import (
     ArchiveBatch,
     ArchiveFile,
+    ArchiveGap,
     ArchiveProvenance,
     ArchiverBase,
 )
@@ -251,6 +254,8 @@ class FakeArchiveState:
     collect_calls: int = 0
     setup_calls: int = 0
     broken: bool = False
+    #: Archivers whose evidence every collection loses, naming a gap for each.
+    failing: set[str] = field(default_factory=set)
     cycle: int = 0
     actions: int = 0
     run_record_due: bool = False
@@ -302,6 +307,10 @@ with FAKES:
         @broken.setter
         def broken(self, value: bool) -> None:
             self.fake.broken = value
+
+        @property
+        def failing(self) -> set[str]:
+            return self.fake.failing
 
         @property
         def bound_keys(self) -> tuple[str, ...]:
@@ -357,7 +366,14 @@ with FAKES:
             # The hand-over: one synchronous statement, so nothing a producer
             # appends can fall between "read" and "clear".
             files, self.fake.buffer = self.fake.buffer, []
-            return ArchiveBatch(tuple(files))
+            lost = sorted(self.fake.failing & {a.archiver_id for a in self.fake.bound})
+            return ArchiveBatch(
+                tuple(item for item in files if item.archiver_id not in lost),
+                tuple(
+                    ArchiveGap(key, "RuntimeError", f"{key}: evidence lost on purpose")
+                    for key in lost
+                ),
+            )
 
         # ── helpers for tests and the contract harness ──
 
@@ -497,8 +513,8 @@ class PeerArchivingCapability(StructuralCapability):
     capability: routing across prefixes, concurrent collection, failure
     isolation. Each collection sets :attr:`entered`, then (optionally)
     waits for :attr:`wait_for`, then raises :attr:`fail_with` or hands over
-    whatever :attr:`files` holds and forgets it. :attr:`finished` records
-    that a collection ran to its end.
+    whatever :attr:`files` and :attr:`gaps` hold and forgets them.
+    :attr:`finished` records that a collection ran to its end.
     """
 
     def __init__(self, capability_id: str, provides: Sequence[str]) -> None:
@@ -512,6 +528,7 @@ class PeerArchivingCapability(StructuralCapability):
         self.yields_after_wait = 0
         self.fail_with: BaseException | None = None
         self.files: list[ArchiveFile] = []
+        self.gaps: list[ArchiveGap] = []
         self.finished = False
         self.was_cancelled = False
 
@@ -537,8 +554,9 @@ class PeerArchivingCapability(StructuralCapability):
         if self.fail_with is not None:
             raise self.fail_with
         files, self.files = self.files, []
+        gaps, self.gaps = self.gaps, []
         self.finished = True
-        return ArchiveBatch(tuple(files))
+        return ArchiveBatch(tuple(files), tuple(gaps))
 
     def evidence(self, key: str, name: str = "evidence.json") -> ArchiveFile:
         """One step file under *key* — queue it with ``files.append``."""

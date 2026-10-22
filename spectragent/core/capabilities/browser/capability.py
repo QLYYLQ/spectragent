@@ -1447,8 +1447,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         Liveness first — a recorder lost since the last collection raises the
         same ``RecorderLostError`` as every other entry point — then the
         archive channel's barrier, each bound archiver's session in binding
-        order, and the fingerprint run record. Never set up, or nothing
-        bound: an empty batch.
+        order, and the fingerprint run record. A session that cannot collect
+        is named in the batch's ``gaps``; the others' evidence is handed
+        over. Never set up, or nothing bound: an empty batch.
         """
         archive = self._archive
         if archive is None or not self._archivers:

@@ -33,6 +33,8 @@ from spectragent.core.trace.usage import recorded_usage
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentMetrics
+from spectragent.schemas.observation import build_observation_model
+from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.prompt import PromptRef, TextPrompt
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
@@ -289,20 +291,33 @@ async def test_observation_capture_failure_loses_only_its_own_segment(writer_fac
     assert not recorded_usage(trace).complete
 
 
-async def test_archive_collection_failure_preserves_action_result_and_future_capture(
-    writer_factory,
-):
+async def test_archive_collection_failure_keeps_the_step_and_future_capture(writer_factory):
     writer = writer_factory(archive=[FakeStepArchiver()])
     await start_archiving(writer, ScriptedArchive(OSError("capture failed"), ArchiveBatch()))
-    await call(writer, "lost", returns=completion())
-    record = await seal(writer, 0)
+    await call(writer, "kept without evidence", returns=completion())
+    observed = build_observation_model(frozenset({"loop.task"}))(
+        task=TaskObs(user_request="find the price")
+    )
+    record = await seal(writer, 0, observation=observed)
     assert record.action_results[0].success is True
     await call(writer, "next", returns=completion())
     await seal(writer, 1)
     await close(writer, steps=2)
     trace = trace_of(writer)
-    assert trace.manifest.missing_steps == [0]
+    assert trace.manifest.missing_steps == []
+    assert trace.manifest.complete_through == -1
+    assert trace.manifest.status is TraceStatus.INCOMPLETE
+    saved = trace.step(0)
+    assert saved is not None and saved.action_results[0].success is True
+    kept = trace.observation_fragment(0, "loop.task")
+    assert isinstance(kept, TaskObs) and kept.user_request == "find the price"
+    assert [as_chat(item).messages[-1].text for item in trace.llm_messages(0)] == [
+        "kept without evidence"
+    ]
     assert [as_chat(item).messages[-1].text for item in trace.llm_messages(1)] == ["next"]
+    (problem,) = writer.health.problems
+    assert (problem.step, problem.channel, problem.phase) == (0, "archive", "collect")
+    assert (problem.error, problem.detail) == ("OSError", "capture failed")
 
 
 async def test_call_capture_failure_does_not_replace_success_or_original_error(

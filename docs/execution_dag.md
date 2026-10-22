@@ -1193,7 +1193,7 @@ TraceWriter 只在 `around` 里记录调用，因为 `CancelledError` 是 `BaseE
 
 **Capability 与 Environment**：
 - `CapabilityBase` 的默认实现：`provided_archivers` 从 `__wiring__["archiver"]` 派生；`bind_archivers([])` 无操作、非空绑定抛 `NotImplementedError`；`collect_archive()` 返回空批次。`BaseCapability` Protocol 不变。
-- `Environment` Protocol 补上一直缺着的 `provided_actions`，并新增 `provided_archivers`、`bind_archivers`、`collect_archive`；`EnvironmentBase` 按前缀路由绑定（先校验后绑定，分不到的 capability 被清空），并发收集、按 capability 顺序合并；新错误 `UnroutableArchiverError`、`ArchiveCollectionError`。
+- `Environment` Protocol 补上一直缺着的 `provided_actions`，并新增 `provided_archivers`、`bind_archivers`、`collect_archive`；`EnvironmentBase` 按前缀路由绑定（先校验后绑定，分不到的 capability 被清空），并发收集、按 capability 顺序合并；新错误 `UnroutableArchiverError`、`ArchiveCollectionError`（后来删掉：失败的 capability 改成合并批次里点名它的一条 `ArchiveGap`，健康 capability 的证据保留，收集失败的那一步照样提交，用户 2026-10-22 的裁决）。
 
 **协商与绑定**：
 - `negotiate_archive(consumers, env)` → `ArchiveNegotiationResult`（注册为 `archive`：`active_archivers`、`archive_bindings`）；`IncompatibleArchiveError` 一次报全，点名请求方、键、环境与它提供的归档器。

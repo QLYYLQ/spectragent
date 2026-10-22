@@ -22,6 +22,7 @@ from spectragent.core.archive import (
     ArchiveBatch,
     ArchiveContractError,
     ArchiveFile,
+    ArchiveGap,
     ArchiverBase,
     segment_problem,
     text_problem,
@@ -74,14 +75,16 @@ _RunVersions = dict[str, tuple[int, str, int]]
 #: A capability bounds its own collection (the browser alone may wait 5 s for
 #: its event channel, then for in-flight bodies and storage reads), so this is
 #: the backstop for one that does not: long enough that a slow capability
-#: reports its own failure, and spent on its own clock, so the recording
-#: worker's drain (``close_timeout``) is never what a hung environment uses up.
+#: reports its own failure and still hands over what its healthy archivers
+#: hold, and spent on its own clock, so the recording worker's drain
+#: (``close_timeout``) is never what a hung environment uses up.
 CLOSEOUT_COLLECTION_TIMEOUT_S = 10.0
 
 
 class _Collected(NamedTuple):
     number: int
     files: tuple[ArchiveFile, ...]
+    gaps: tuple[ArchiveGap, ...]
 
 
 @dataclass
@@ -422,6 +425,11 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             problem.detail,
         )
 
+    def _record_gaps(self, step: int | None, gaps: Sequence[ArchiveGap], phase: str) -> None:
+        """One recording problem per archive gap, on the channel that lost its evidence."""
+        for gap in gaps:
+            self._record_problem(step, gap.archiver_id, phase, gap.error, gap.detail)
+
     async def around_execute_step(
         self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
     ) -> Any:
@@ -599,7 +607,15 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     async def after_record_step(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
     ) -> None:
-        """Seal synchronously; capture failure cannot retain calls for the next step."""
+        """Seal synchronously; capture failure cannot retain calls for the next step.
+
+        The archive pull comes after the seal and cannot undo it: a
+        collection that raises, is refused or names gaps costs only the
+        archive evidence it lost, recorded as problems of this step, and the
+        step still commits with its record, observations and calls. A
+        cancelled collection queues the sealed step too before the
+        cancellation goes on.
+        """
         record = args[0] if args else kwargs["record"]
         step = record.step
         started = time.perf_counter()
@@ -697,19 +713,33 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 if self.recording.observations
                 else []
             )
-            batch = await self._collect() if self.archive else None
-            elapsed = (time.perf_counter() - started) * 1000 + self._capture_ms.pop(step, 0)
-            self._enqueue(RecordingSegment(step, sealed, fragments, calls, batch, elapsed))
         except Exception as exc:
             self._problem(step, "segment", "capture", exc)
+            return
         except BaseException:
             self._problem(step, "segment", "capture", RuntimeError("capture cancelled"))
             raise
+        batch: _Collected | None = None
+        cancellation: BaseException | None = None
+        if self.archive:
+            try:
+                batch = await self._collect()
+            except Exception as exc:
+                self._problem(step, "archive", "collect", exc)
+            except BaseException as exc:
+                cancellation = exc
+                self._problem(step, "archive", "collect", RuntimeError("collection cancelled"))
+            else:
+                self._record_gaps(step, batch.gaps, "collect")
+        elapsed = (time.perf_counter() - started) * 1000 + self._capture_ms.pop(step, 0)
+        self._enqueue(RecordingSegment(step, sealed, fragments, calls, batch, elapsed))
+        if cancellation is not None:
+            raise cancellation
 
     async def _collect(self) -> _Collected:
-        files = self._checked(await self._env.collect_archive())
+        batch = self._checked(await self._env.collect_archive())
         self._collections += 1
-        return _Collected(self._collections, files)
+        return _Collected(self._collections, batch.files, batch.gaps)
 
     def _enqueue(self, segment: RecordingSegment) -> None:
         try:
@@ -1009,8 +1039,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         """Close the recording: owed calls, the last archive collection, then the drain.
 
         The two waits run on separate clocks. The collection gets
-        ``closeout_collection_timeout``; an overrun or a failure is an archive
-        problem of the close-out and nothing more. The worker then
+        ``closeout_collection_timeout``; an overrun, a failure or a gap is an
+        archive problem of the close-out and nothing more. The worker then
         gets the whole ``close_timeout`` to commit what is queued, write
         ``result.json`` and close the manifest, so a hung environment can
         leave the trace ``incomplete`` but never ``writing``. Only a worker
@@ -1051,6 +1081,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 cancellation = exc
                 self._problem(None, "archive", "closeout", RuntimeError("closeout cancelled"))
             else:
+                self._record_gaps(None, batch.gaps, "closeout")
                 if batch.files:
                     self._enqueue(RecordingSegment(None, None, [], (), batch))
         self._closing = True
@@ -1116,8 +1147,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             f"else may stand in for that."
         )
 
-    def _checked(self, batch: Any) -> tuple[ArchiveFile, ...]:
-        """A collected batch's files — or ``ArchiveContractError`` before any is written.
+    def _checked(self, batch: Any) -> ArchiveBatch:
+        """A collected batch, checked — or ``ArchiveContractError`` before any of it is written.
 
         The checks are what only this hook can know — which archivers the
         run bound — plus everything that would make the commit fail no
@@ -1129,7 +1160,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         255 bytes of UTF-8) and every string the index records must encode
         as UTF-8; no two step files may land on one path as a case- and
         normalization-insensitive filesystem sees it (``fold_path`` —
-        macOS's is); every path must pass the WAL's own rule.
+        macOS's is); every path must pass the WAL's own rule; a gap must
+        name a bound archiver or a capability that holds one.
 
         ``ArchiveFile`` refuses most of this at construction; it is checked
         again here because a frozen dataclass can be forged around its own
@@ -1206,12 +1238,18 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             for owner, count in sorted(run_records.items())
             if count > 1
         ]
+        problems += [
+            f"a gap names {gap.archiver_id!r}, which is neither an archiver this run bound "
+            f"(bound: {sorted(bound)}) nor a capability holding one"
+            for gap in batch.gaps
+            if gap.archiver_id not in bound and gap.archiver_id not in self._archive_owners
+        ]
         if problems:
             raise ArchiveContractError(
                 "the collected batch breaks the archiving contract, and none of it was "
                 "written: " + "; ".join(sorted(problems))
             )
-        return batch.files
+        return batch
 
     def _encode_archive(
         self,

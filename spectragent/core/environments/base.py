@@ -125,12 +125,9 @@ class Environment(Protocol):
         rule. With nothing bound, returns an empty batch without touching
         any capability. Otherwise collects from every bound capability
         concurrently, waits for all of them, and merges their batches in
-        capability order.
-
-        Raises:
-            ArchiveCollectionError: One or more capabilities failed (raised
-                or handed over another capability's file); names every
-                failure. Healthy batches are discarded with it.
+        capability order. A capability that failed (raised, or handed over
+        another capability's file or gap) contributes one ``ArchiveGap``
+        under its id instead of evidence; the healthy batches are kept.
         """
         ...
 

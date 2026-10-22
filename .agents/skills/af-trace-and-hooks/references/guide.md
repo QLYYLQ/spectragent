@@ -90,6 +90,12 @@ Collection batch ownership is not action causality; preserve each event's captur
 and IDs. Cross-batch references cannot point at uncommitted objects. Replay source reads
 are environment operations and must not be swallowed as current-run recording failures.
 
+The pull comes after the seal and never undoes it. A collection that raises, is refused
+or is cancelled still lets the step commit with its record, observations and calls; each
+`ArchiveGap` in a batch (`archiver_id`, `error`, `detail`) becomes a recording problem of
+that step on the channel that lost the evidence, and the rest of the batch commits. One
+archiver's failure never takes another archiver's evidence with it.
+
 Close-out runs two waits on separate clocks: the last collection under
 `closeout_collection_timeout`, then the worker's drain, `result.json` and manifest close
 under the full `close_timeout`. A hung environment can only make the trace `incomplete`.

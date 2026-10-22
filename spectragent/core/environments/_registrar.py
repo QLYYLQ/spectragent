@@ -23,7 +23,7 @@ from pydantic import Field
 
 from spectragent.core.archive._registrar import ArchiverBase
 from spectragent.core.archive.protocols import ArchivingCapability
-from spectragent.core.archive.types import ArchiveBatch, ArchiveContractError
+from spectragent.core.archive.types import ArchiveBatch, ArchiveContractError, ArchiveGap
 from spectragent.core.capabilities.base import (
     BaseCapability,
     CaptureCheck,
@@ -36,7 +36,6 @@ from spectragent.core.capabilities.base import (
 )
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
-    ArchiveCollectionError,
     ObservationFailedError,
     UnroutableArchiverError,
     UnroutableFragmentError,
@@ -545,20 +544,20 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         swallow a ``CancelledError``, and a cancelled run must stay
         cancelled.
 
-        A capability fails by raising, or by handing over a file whose
-        ``capability_id`` is not its own — its evidence would land under
-        another capability's name, so that is a contract violation
+        A capability fails by raising, or by handing over a file or a gap
+        whose ``capability_id`` is not its own — its evidence would land
+        under another capability's name, so that is a contract violation
         (:class:`~spectragent.core.archive.types.ArchiveContractError`).
-        Any failure raises :class:`ArchiveCollectionError` naming every one,
-        in capability order, chained from the first; the healthy batches
-        are discarded with it. The archive consumer records this as a
-        recording-health failure, independently of the agent's outcome.
+        A failed capability contributes one
+        :class:`~spectragent.core.archive.types.ArchiveGap` under its bare
+        id and nothing else; every healthy capability's batch is kept, its
+        own gaps included. Nothing here raises for a capability's failure:
+        the archive consumer records each gap as a recording problem,
+        independently of the agent's outcome (``docs/architecture_design.md``
+        §4.6).
 
         No argument, ever: the environment never hands a step number or a
         cycle to a capability.
-
-        Raises:
-            ArchiveCollectionError: One or more capabilities failed.
         """
         bound = list(self._archiving)
         if not bound:
@@ -578,27 +577,22 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             raise
 
         batches: list[ArchiveBatch] = []
-        failures: dict[str, BaseException] = {}
         for cap, outcome in zip(bound, outcomes, strict=True):
             if isinstance(outcome, BaseException):
-                failures[cap.capability_id] = outcome
+                batches.append(ArchiveBatch(gaps=(ArchiveGap.of(cap.capability_id, outcome),)))
                 continue
-            foreign = [f for f in outcome.files if f.capability_id != cap.capability_id]
+            foreign = sorted(
+                {f.archiver_id for f in outcome.files if f.capability_id != cap.capability_id}
+                | {g.archiver_id for g in outcome.gaps if g.capability_id != cap.capability_id}
+            )
             if foreign:
-                failures[cap.capability_id] = ArchiveContractError(
+                breach = ArchiveContractError(
                     f"capability {cap.capability_id!r} handed over evidence under "
-                    f"another capability's prefix: "
-                    f"{sorted({f.archiver_id for f in foreign})}"
+                    f"another capability's prefix: {foreign}"
                 )
+                batches.append(ArchiveBatch(gaps=(ArchiveGap.of(cap.capability_id, breach),)))
                 continue
             batches.append(outcome)
-        if failures:
-            # ``env_type`` is the registry key; the abstract base used
-            # directly (tests do) has none, so fall back to the class name.
-            where = getattr(self, "env_type", None) or getattr(
-                type(self), "__name__", "Environment"
-            )
-            raise ArchiveCollectionError(where, failures) from next(iter(failures.values()))
         return ArchiveBatch.merge(batches)
 
     @staticmethod

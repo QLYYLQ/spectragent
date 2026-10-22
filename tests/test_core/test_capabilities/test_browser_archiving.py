@@ -33,9 +33,15 @@ from spectragent.core.capabilities.browser.cooperation import BrowserCooperation
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES, BrowserProfileConfig
 from spectragent.core.capabilities.browser.recorder import RecorderLostError
 from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.hooks.trace_writer import TraceWriter
+from spectragent.core.negotiation import negotiate_archive
+from spectragent.core.trace.models import TraceStatus
+from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action
+from tests._helpers.archive_contract import ArchiveHarness
 from tests._helpers.browser_archive import OwnedBrowser, archiving_capability, settle
 from tests._helpers.fake_cdp import FakeBrowser
+from tests._helpers.trace_builder import agent_result, step_record
 
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
@@ -462,6 +468,92 @@ class TestWiring:
         )
         off = await control_methods(())
         assert on == off
+
+    async def test_a_failed_archiver_takes_no_other_archivers_evidence_with_it(self) -> None:
+        """``browser.dom_raw`` fails its self-capture; network and storage still hand over.
+
+        The network evidence that survives is self-contained: the repeated
+        payload is a revisit of a response in the same batch's WARC, so a
+        partial batch leaves no reference to evidence it did not carry.
+        """
+        cap, driver = archiving_capability(
+            archivers=(
+                NetworkArchiver(require_replayable=False, drain_timeout_s=0.2),
+                StorageArchiver(),
+                DomRawArchiver(self_capture_timeout_s=0.05),
+            ),
+            fragments=frozenset({"browser.screenshot"}),
+        )
+        await driver.start()
+        try:
+            driver.browser.hold("DOM.getDocument", session_id=driver.page_session())
+            await driver.observe()
+            await driver.exchange(url="http://shop.test/a", body=b"same payload")
+            await driver.exchange(url="http://shop.test/b", body=b"same payload")
+            driver.change_storage()
+            await settle()
+
+            batch = await cap.collect_archive()
+
+            assert {gap.archiver_id for gap in batch.gaps} == {"browser.dom_raw"}
+            assert all("raw DOM missing" in gap.detail for gap in batch.gaps)
+            by_archiver = {item.archiver_id: item.name for item in batch.files}
+            assert "browser.dom_raw" not in by_archiver
+            assert {"browser.network", "browser.storage", "browser"} <= set(by_archiver)
+            exchanges = [line for line in _index(batch) if line["kind"] == "exchange"]
+            responses = {line["response_record_id"] for line in exchanges}
+            revisits = [line["revisit_of"] for line in exchanges if line["revisit_of"]]
+            assert len(revisits) == 1 and revisits[0] in responses
+        finally:
+            await cap.teardown()
+
+    async def test_the_trace_keeps_the_step_and_the_healthy_evidence(self, tmp_path) -> None:
+        """Through the trace hook: dom_raw's loss is that channel's problem, not the step's."""
+        cap, driver = archiving_capability(
+            archivers=(
+                NetworkArchiver(require_replayable=False, drain_timeout_s=0.2),
+                StorageArchiver(),
+                DomRawArchiver(self_capture_timeout_s=0.05),
+            ),
+            fragments=frozenset({"browser.screenshot"}),
+        )
+        harness = ArchiveHarness(
+            capability=cap,
+            archivers=driver.archivers,
+            produce=driver.produce,
+            break_collect=driver.break_collect,
+            change_run_record=driver.change_run_record,
+            close=driver.close,
+        )
+        env = harness.environment()
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"), archive=list(driver.archivers))
+        negotiation = negotiate_archive([writer], env)
+        env.bind_archivers(writer.archive)
+        await writer.on_run_start(env=env, task="t", config={}, archive_negotiation=negotiation)
+        try:
+            await driver.produce(0)
+            await writer.after_record_step(None, args=(step_record(0),), kwargs={})
+            driver.browser.hold("DOM.getDocument", session_id=driver.page_session())
+            await driver.produce(1)
+            await writer.after_record_step(None, args=(step_record(1),), kwargs={})
+            await writer.on_run_end(result=agent_result())
+        finally:
+            await harness.aclose()
+
+        assert writer.run_dir is not None
+        trace = RunTrace(writer.run_dir)
+        assert [entry.step for entry in trace.manifest.steps] == [0, 1]
+        assert trace.archive_files(1, "browser.network"), "network evidence of step 1 kept"
+        assert trace.archive_files(1, "browser.storage"), "storage evidence of step 1 kept"
+        assert trace.archive_files(1, "browser.dom_raw") == []
+        assert trace.archive_files(0, "browser.dom_raw")
+        lost = [problem for problem in writer.health.problems if problem.step == 1]
+        assert lost and {problem.channel for problem in lost} == {"browser.dom_raw"}
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == 0
+        assert trace.manifest.missing_steps == []
+        assert "browser.dom_raw: " in (trace.manifest.incomplete_reason or "")
+        assert trace.result is not None
 
     async def test_a_lost_recorder_fails_the_collection_naming_it(self) -> None:
         cap, driver = archiving_capability(archivers=(StorageArchiver(),))
