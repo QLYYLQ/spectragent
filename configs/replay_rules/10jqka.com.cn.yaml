@@ -20,3 +20,52 @@ rules:
   - normalized
   ignore_body_paths:
   - qid
+# AI assistant on the research pages (POST /gateway/aime/stream-query, the question;
+# /gateway/aime/robotdata/user_session/add, the chat history entry; /gateway/aime/lenovo,
+# question suggestions; JSON bodies). session_id is a random 32-hex chat id the page makes;
+# responses do not echo it. In the recording the logged-out question got 401, which opens
+# the login dialog. In replays of fork 233 s9 all three missed, the page showed a service
+# error instead and the checkpoint screenshot no longer matched. question, agent_id,
+# theme_id, events and the other fields stay.
+- id: tonghuashun-assistant-question
+  scope:
+    host: search.10jqka.com.cn
+    path: /gateway/aime/stream-query
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - session_id
+- id: tonghuashun-assistant-history
+  scope:
+    host: search.10jqka.com.cn
+    path: /gateway/aime/robotdata/user_session/add
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - session_id
+- id: tonghuashun-assistant-suggestions
+  scope:
+    host: search.10jqka.com.cn
+    path: /gateway/aime/lenovo
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - session_id
