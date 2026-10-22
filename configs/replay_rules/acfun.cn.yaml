@@ -18,6 +18,8 @@ rules:
   - sortType
   - type
   - pagelets
+# perfLog uploads page timings; nothing on the page reads the answer, so a miss there
+# gets a synthetic 204. It ignores no fields.
 - id: acfun-performance-log
   scope:
     host: apilog-web.acfun.cn

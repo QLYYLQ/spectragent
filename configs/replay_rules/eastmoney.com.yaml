@@ -49,6 +49,8 @@ rules:
   unavailable: serve_identical
   ignore_query:
   - callback
+# CommonRecommend.png is an image beacon that logs recommendation views; nothing on the
+# page reads it, so a miss there gets a synthetic 204. It ignores no fields.
 - id: eastmoney-recommendation-log
   scope:
     host: huaxiang.eastmoney.com
