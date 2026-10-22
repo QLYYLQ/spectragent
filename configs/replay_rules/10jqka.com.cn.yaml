@@ -1,0 +1,22 @@
+# Tonghuashun AI search (search.10jqka.com.cn). Evidence: the anonymous recording
+# 233_7f1ce34a and its offline branch replays in lookahead_15task_pixels_20261022.
+rules:
+# Search results (POST /gateway/mobilesearch/comprehensive/search, JSON body). qid is a
+# random 32-character id the page makes for each result panel. Responses do not echo it.
+# Without this rule no result panel rendered, so the recorded result clicks landed on the
+# empty /search page. query, offset, size, channels, app_id, platform, scroll_mode and
+# slots select the results and stay.
+- id: tonghuashun-search-results
+  scope:
+    host: search.10jqka.com.cn
+    path: /gateway/mobilesearch/comprehensive/search
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - qid
