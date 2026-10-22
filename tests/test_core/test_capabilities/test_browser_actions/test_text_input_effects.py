@@ -347,6 +347,28 @@ class TestTypingNeedsATextField:
         assert cdp.kinds().count("field_ref") > 1
         assert keys_and_text(cdp) == []
 
+    @pytest.mark.parametrize("late", ["field_read", "describe"], ids=["reading", "shadow roots"])
+    async def test_the_end_of_the_wait_does_not_cut_short_reading_the_element_found(
+        self, late: str
+    ) -> None:
+        # A button keeps focus, and the page answers the reading of it that a
+        # poll took only after the wait is over. That reading still decides:
+        # cut short, the button would be an element that cannot be told, and
+        # typed into.
+        cdp = ProbeCDP(
+            field="node",
+            readings=[reading("button", "Search", digest="6:1", tag="BUTTON", entry="no-role")],
+            answer_after_s={late: [0.0, 0.3, 0.0]},
+        )
+        effect = refused(
+            await type_at(cdp, type_focus_wait_s=0.1),
+            'No text field took focus at the clicked point: focus is on button "Search", which '
+            "does not take typed text, so no text was typed.",
+        )
+        assert effect.target == ElementFacts(role="button", name="Search")
+        assert cdp.kinds().count("field_ref") == 2
+        assert keys_and_text(cdp) == []
+
     async def test_a_focused_element_that_cannot_be_read_is_typed_into(self) -> None:
         # Nothing focused, then an element takes focus but its reading fails:
         # whether it takes text cannot be told, so the text is typed as asked.

@@ -942,9 +942,14 @@ class ActionWatchdog(BrowserWatchdog):
         animation) is waited for: the focus is read again every
         :data:`FOCUS_POLL_S` for up to ``type_focus_wait_s``, which the wait
         spends from *budget* while the rest of it stays for the probes after
-        the wait. A reading that cannot even say where focus is (it failed or
-        ran out) is dropped, and the last one that could stands, for the
-        verdict and the effect alike. A reading that cannot tell whether the
+        the wait. Only the pauses and the reads of where focus is belong to
+        the wait: reading the element a read found focused may use the rest,
+        so the end of the wait never cuts that reading short. Cut short, an
+        element that keeps focus and takes no text (a button) would become one
+        that cannot be told, and be typed into, depending on when the wait
+        happened to end. A reading that cannot even say where focus is (it
+        failed or ran out) is dropped, and the last one that could stands, for
+        the verdict and the effect alike. A reading that cannot tell whether the
         focused element takes text — the element's own reading failed, focus
         is in a frame of another site, in a closed shadow root or embedded
         content — does not stop the typing: only a measured "no text field"
@@ -983,25 +988,27 @@ class ActionWatchdog(BrowserWatchdog):
                 # the rest is kept for the probes after it.
                 wait_until = time.monotonic() + self._focus_wait_s
                 kept = min(budget.remaining, budget.seconds - self._focus_wait_s)
-                with budget.keeping(kept):
-                    while (
-                        refused is not None
-                        and time.monotonic() < wait_until
-                        and budget.remaining > 0
-                    ):
-                        await budget.sleep(min(FOCUS_POLL_S, wait_until - time.monotonic()))
-                        again = FieldProbe(self._cdp, sid, budget)
-                        adopted = False
-                        try:
-                            await again.before()
-                            if again.located:
-                                field, again, adopted = again, field, True
-                        finally:
-                            # The reading not kept: the one replaced, or one
-                            # that could not say where focus is.
-                            await budget.run(again.release, "release field")
-                        if adopted:
-                            refused = _no_text_entry(field)
+                while refused is not None and time.monotonic() < wait_until:
+                    again = FieldProbe(self._cdp, sid, budget)
+                    adopted = False
+                    try:
+                        with budget.keeping(kept):
+                            if budget.remaining <= 0:
+                                break
+                            await budget.sleep(min(FOCUS_POLL_S, wait_until - time.monotonic()))
+                            await again.locate()
+                        if again.located:
+                            # Reading the element found is no part of the
+                            # wait: it may use the kept rest, so the end of
+                            # the wait never cuts it short.
+                            await again.read_focused()
+                            field, again, adopted = again, field, True
+                    finally:
+                        # The reading not kept: the one replaced, or one that
+                        # could not say where focus is.
+                        await budget.run(again.release, "release field")
+                    if adopted:
+                        refused = _no_text_entry(field)
             if refused is not None:
                 error = f"{no_field}: {refused}, so no text was typed."
                 logger.info("Not typing: %s", error)
