@@ -479,11 +479,12 @@ async def release_object(cdp: CDPCommandProtocol, session_id: str | None, object
 class FieldProbe:
     """The control that has keyboard focus, read before input and again after it.
 
-    :meth:`before` holds the focused element by remote-object reference and
-    reads its facts, its sensitivity attributes, whether it takes typed text
-    (``entry``) and a hash of its value; :meth:`after` reads the hash again on
-    the same element — wherever focus went meanwhile — and :meth:`release`
-    drops the reference. The value itself never leaves the page.
+    :meth:`before` holds the focused element by remote-object reference
+    (:meth:`locate`) and reads its facts, its sensitivity attributes, whether
+    it takes typed text (``entry``) and a hash of its value
+    (:meth:`read_focused`); :meth:`after` reads the hash again on the same
+    element — wherever focus went meanwhile — and :meth:`release` drops the
+    reference. The value itself never leaves the page.
 
     ``located``: the read of where focus is answered — nothing, a frame of
     another site, or an element, whether or not that element's own reading
@@ -508,6 +509,13 @@ class FieldProbe:
     _has_value: bool = field(default=False, repr=False)
 
     async def before(self) -> None:
+        """Find the focused element and read it: :meth:`locate`, then :meth:`read_focused`."""
+        await self.locate()
+        await self.read_focused()
+
+    async def locate(self) -> None:
+        """Find where focus is (``located``), holding a focused element by reference."""
+
         async def focused_ref() -> Any:
             reply = await self.cdp.send(
                 "Runtime.evaluate",
@@ -535,6 +543,11 @@ class FieldProbe:
             return
         self._object_id = object_id
         self.located = True
+
+    async def read_focused(self) -> None:
+        """Read the element :meth:`locate` found; nothing when it found none."""
+        if self._object_id is None:
+            return
         reading = await self._read()
         if not isinstance(reading, dict):
             return

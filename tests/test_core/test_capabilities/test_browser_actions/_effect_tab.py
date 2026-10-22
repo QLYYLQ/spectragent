@@ -16,7 +16,8 @@ focused control by reference, then its readings), ``describe``
 ``sensitivity`` (the typing handler's own focused-field read), ``rect`` (the
 live box of a page element), ``resolve`` (``DOM.resolveNode``) and
 ``release``. A kind in ``fail`` raises; a kind in ``hang`` never answers, so
-only the measurement budget ends it.
+only the measurement budget ends it; a kind in ``answer_after_s`` answers
+late, by the delays given.
 """
 
 from __future__ import annotations
@@ -118,6 +119,8 @@ class ProbeCDP:
     ``shadow_root``: the type of the shadow root ``DOM.describeNode`` lists on
     that control (``"closed"``, ``"open"``), or ``None`` for none.
     ``fail_methods``: CDP methods that raise, as a closed target's would.
+    ``answer_after_s``: per probe kind, how many seconds each call of it takes
+    to answer, one per call, the last repeated (a page that answers slowly).
     """
 
     def __init__(
@@ -131,6 +134,7 @@ class ProbeCDP:
         hang: Iterable[str] = (),
         fail_methods: Iterable[str] = (),
         shadow_root: str | None = None,
+        answer_after_s: dict[str, Iterable[float]] | None = None,
     ) -> None:
         self.calls: list[Call] = []
         self.shadow_root = shadow_root
@@ -142,6 +146,7 @@ class ProbeCDP:
         self.fail = set(fail)
         self.hang = set(hang)
         self.fail_methods = set(fail_methods)
+        self.answer_after_s = {kind: list(d) for kind, d in (answer_after_s or {}).items()}
 
     async def send(
         self,
@@ -157,6 +162,11 @@ class ProbeCDP:
             raise RuntimeError(f"injected failure: {method}")
         if kind in self.hang:
             await asyncio.Event().wait()
+        delays = self.answer_after_s.get(kind) if kind is not None else None
+        if delays:
+            delay = delays.pop(0) if len(delays) > 1 else delays[0]
+            if delay > 0:
+                await asyncio.sleep(delay)
         if kind == "hit":
             return {"result": {"type": "object", "value": self.hit}}
         if kind == "focus":
