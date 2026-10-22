@@ -15,6 +15,9 @@ Refused (before launch):
   excepted: ``from_archive`` is exactly what a replay changes), or the shim
   (``shim_sha256``, pinned);
 - the viewport differs;
+- what becomes of a tab the focus leaves differs (``background_tabs``: a
+  recording whose left tabs ran, replayed with them frozen, or the other way
+  round), or the source recorded no ``background_tabs``;
 - the launch-flag digests differ — this run's computed from the provider's
   ``planned_launch_flags`` (tier + isolation switches, and the tier's launch
   environment, ``TZ``) before launch, both sides without the network routing
@@ -209,6 +212,7 @@ def consistency_problems(
     *,
     replayability: ReplayabilityProtocol,
     viewport: tuple[int, int],
+    background_tabs: str,
     planned_launch_flags: Sequence[str] | None,
     browser_defaults: BrowserDefaults | None = None,
     expected_platform: InputPlatform | None = None,
@@ -282,6 +286,21 @@ def consistency_problems(
         problems.append(
             f"{source} viewport {recorded_viewport.get('width')}x{recorded_viewport.get('height')} "
             f"↔ this run's viewport {viewport[0]}x{viewport[1]}"
+        )
+
+    # A frozen tab runs nothing until the focus returns, so a replay whose
+    # left tabs run (or freeze) where the recording's froze (or ran) neither
+    # asks for what was recorded nor shows what the agent saw coming back.
+    recorded_tabs = fingerprint.get("background_tabs")
+    if recorded_tabs is None:
+        problems.append(
+            f"{source} recorded no background_tabs ↔ this run's background_tabs="
+            f"{background_tabs!r}: the source predates the setting; record it again"
+        )
+    elif recorded_tabs != background_tabs:
+        problems.append(
+            f"{source} background_tabs={recorded_tabs!r} ↔ this run's background_tabs="
+            f"{background_tabs!r}: a tab the focus left must be treated as it was recorded"
         )
 
     recorded_digest = fingerprint.get("launch_flags_sha256")

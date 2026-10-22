@@ -495,7 +495,8 @@ class LocalChromeProvider(BrowserProviderBase):
                 "about 10 times a second with the switches, about once a second without them, "
                 "and once a minute after its first minute in the background without them. "
                 "Throttling slows timers only: tabs keeping each other in step through storage "
-                "events run as fast either way. This knob decides the three switches whatever "
+                "events run as fast either way (the browser capability's background_tabs: "
+                "freeze stops that). This knob decides the three switches whatever "
                 "ignore_default_args says, and they are part of the launch flags an offline "
                 "replay compares with its recording's."
             )

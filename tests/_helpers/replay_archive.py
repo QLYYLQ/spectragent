@@ -456,6 +456,7 @@ class RecordingScript:
                 session_metadata={"launch_flags": self.launch_flags},
                 archivers=[self.archiver],
                 fresh_profile=True,
+                background_tabs="run",
                 initial_storage=StorageSeed(
                     canonical_json(BrowserStorageState().model_dump(mode="json")), "fresh"
                 ).fingerprint(),
