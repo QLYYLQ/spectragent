@@ -5,8 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState
+from tests._helpers.assembly import make_agent
 
 
 def test_empty_dom_string_does_not_render_tree_repr() -> None:
@@ -19,8 +21,9 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
         dom=SimpleNamespace(element_tree=state),
     )
 
-    browser_use = BrowserUseAgent.__new__(BrowserUseAgent)
-    browser_use.observation_mode = "dom"
+    browser_use = make_agent(
+        BrowserUseAgent, memory=SimpleMemory(max_messages=10), observation_mode="dom"
+    )
     rendered_browser_use = browser_use._render_browser_state(observation)
     skyvern = SkyvernAgent.__new__(SkyvernAgent)
     rendered_skyvern = skyvern._render_browser_state(observation)

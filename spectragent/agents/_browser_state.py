@@ -10,6 +10,11 @@ The media playback state (§4.4 "截图的媒体状态") rides on the screenshot
 fragment and is written only when the Agent's ``show_media_state`` asks: it is
 an explicit experiment variable, off by default.
 
+The pointer in the capture state is the one point among these facts; its
+writing is the Agent's ``write_point`` (``render_capture_state``), so an Agent
+whose model writes points on a grid reads the pointer on that grid (§4.1,
+"模型看到的每个点都写在它写点的那个网格上"). The default writes viewport pixels.
+
 Reads are structural, by relative fragment name, like
 ``render_browser_platform``: no capability or resolver class is imported.
 """
@@ -18,7 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from spectragent.agents._capture_state import render_capture_state
+from spectragent.agents._capture_state import render_capture_state, write_viewport_pixels
+from spectragent.schemas.action import PointWriter
 
 #: What the model reads when no media state was measured with this step's screenshot.
 _MEDIA_NOT_MEASURED = (
@@ -26,13 +32,16 @@ _MEDIA_NOT_MEASURED = (
 )
 
 
-def render_browser_state(observation: Any, *, show_media_state: bool) -> str:
+def render_browser_state(
+    observation: Any, *, show_media_state: bool, write_point: PointWriter = write_viewport_pixels
+) -> str:
     """``URL``, ``Title`` and ``Tabs`` lines, the ``<capture_state>`` block, then ``<media_state>``.
 
     Parts are separated by a blank line; a part with nothing to say is left
     out, and ``""`` means there was nothing at all. The caller decides what
     an empty page state reads as and where the element tree goes. The media
-    block is written only with *show_media_state*.
+    block is written only with *show_media_state*. A known pointer is written
+    by *write_point*.
     """
     parts: list[str] = []
     meta = getattr(observation, "browser_meta", None)
@@ -49,7 +58,7 @@ def render_browser_state(observation: Any, *, show_media_state: bool) -> str:
                 f"[{t.get('tab_id', '?')}] {t.get('title', '')} ({t.get('url', '')})" for t in tabs
             )
             parts.append(f"Tabs: {tab_info}")
-    capture_state = render_capture_state(observation)
+    capture_state = render_capture_state(observation, write_point=write_point)
     if capture_state:
         parts.append(capture_state)
     if show_media_state:

@@ -1070,8 +1070,11 @@ value on an existing one.
   step)`; `keep_as_text` writes its turn with it, so the kept turn and the next step's
   feedback agree (a student without the slot gets the action's own JSON). A new student
   format with its own grid does the same: pass a `write_point` to `ActionEffect.describe`
-  (through `result_facts` / `effect_line`) and to `render_capture_state`, an action
-  writer to `restored_history_message`, and implement `format_action_fact`.
+  (through `result_facts` / `effect_line`) and to `render_capture_state` (or
+  `render_browser_state`), an action writer to `restored_history_message`, and implement
+  `format_action_fact`. The grid writing, the not-placeable wording, the per-step grid
+  record and the point-param lookup are shared in `agents/_feedback_points.py`
+  (BrowserUse uses them for its own feedback, though it is not a student).
 - `StudentRenderer.render` is async. Its callers await it; the synchronous
   `ExportRunner.run` drives the entire async rendering phase with one `asyncio.run`.
   Segment seeding still uses `AgentRuntime.seed_messages`, and assistant history uses

@@ -36,6 +36,19 @@ whose ``anyOf`` branches are the verbs this run can execute and nothing
 else. There is no vocabulary map and no local-id fallback: the prompt
 advertises the fully-qualified key, the schema permits it, ``env.act``
 routes on it and the trace records it — one string the whole way.
+
+**Every point the model reads is on the grid it writes.** A run with a
+coordinate action teaches the model a grid (``coordinate_space``) over the
+screenshot it is shown. The facts fed back — the actions a step ran, their
+effects, the pointer — are in the capability's viewport units, and stay so in
+the trace; the prompt writes each of their points on the grid of the
+screenshot it belongs to instead (the step the actions were chosen on, this
+step for the pointer), the same contract UI-TARS keeps
+(``docs/architecture_design.md`` §4.1, "模型看到的每个点都写在它写点的那个网格上";
+the shared writing is ``agents/_feedback_points.py``). A point with no place
+on that grid is said to be so, never written in pixels. A run without a
+coordinate action writes no point and is taught no grid, so its feedback
+keeps viewport units.
 """
 
 from __future__ import annotations
@@ -53,7 +66,18 @@ from spectragent.agents._action_effects import effect_line
 from spectragent.agents._action_union import action_union
 from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._browser_state import render_browser_state
-from spectragent.agents._capture_state import CAPTURE_STATE_KEY, capture_state_demand
+from spectragent.agents._capture_state import (
+    CAPTURE_STATE_KEY,
+    capture_state_demand,
+    write_viewport_pixels,
+)
+from spectragent.agents._feedback_points import (
+    StepGrids,
+    grid_point_writer,
+    params_on_grid,
+    registered_point_params,
+    stated_points,
+)
 from spectragent.agents._output_models import reasoning_fields
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompt_context import (
@@ -66,7 +90,12 @@ from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import bounded_demand
 from spectragent.prompts import hash_text, text_snapshot
-from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.action import (
+    Action,
+    ActionDescriptor,
+    PointWriter,
+    write_viewport_point,
+)
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
     PointGrid,
@@ -219,7 +248,8 @@ _COORDINATE_GUIDE: Mapping[CoordinateSpace, str] = MappingProxyType(
             "A point is (x, y) in pixels of the screenshot you are shown: (0, 0) "
             "is its top-left corner, x grows to the right and y downwards. Every "
             "step states the screenshot's size in pixels. Write the numbers only "
-            "— nothing there names an element, it only says where one is.\n"
+            "— nothing there names an element, it only says where one is. Every "
+            "point in the agent history and the browser state is on this same grid.\n"
             "</coordinates>"
         ),
         "normalized_1000": (
@@ -228,7 +258,8 @@ _COORDINATE_GUIDE: Mapping[CoordinateSpace, str] = MappingProxyType(
             "its size in pixels: (0, 0) is the top-left corner, (1000, 1000) the "
             "bottom-right corner, x grows to the right and y downwards. Write the "
             "numbers only — nothing there names an element, it only says where one "
-            "is.\n"
+            "is. Every point in the agent history and the browser state is on this "
+            "same grid.\n"
             "</coordinates>"
         ),
     }
@@ -356,8 +387,10 @@ class BrowserUseAgent(AgentBase):
                 "(pixels of the screenshot it is shown) or 'normalized_1000' "
                 "(0-1000 over the screenshot on both axes, x first). The "
                 "prompt teaches it; the agent converts every point into the "
-                "units of the capability's point actions. Unused when this "
-                "run negotiated no coordinate action."
+                "units of the capability's point actions, and writes every "
+                "point it feeds back (the actions run, their effects, the "
+                "pointer) on this grid. Unused when this run negotiated no "
+                "coordinate action: its feedback keeps viewport pixels."
             ),
         ),
     ] = "screenshot_pixels"
@@ -444,6 +477,15 @@ class BrowserUseAgent(AgentBase):
     #: that reply looked at. ``None`` when this step showed the model no
     #: measurable screenshot.
     _grid: PointGrid | None = field(default=None, init=False, repr=False)
+    #: The grid of every step whose prompt this agent built since
+    #: ``prepare``, by step number. The history writes a step's actions and
+    #: effects on the grid of the screenshot that step showed, and the
+    #: ``loop.history`` records carry no screenshot geometry, so this is
+    #: where that grid is kept. Read only when this run teaches a grid
+    #: (:meth:`_has_point_actions`).
+    _step_grids: StepGrids = field(
+        default_factory=lambda: StepGrids("browser_use"), init=False, repr=False
+    )
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
@@ -562,6 +604,7 @@ class BrowserUseAgent(AgentBase):
             raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
         self._action_descriptors = list(action_descriptors)
         self._grid = None
+        self._step_grids.clear()
         variant = self.select_prompt_variant()
         relabel = self._coordinate_relabel()
         self._per_run_output_model = self._build_per_run_output_model(variant, relabel)
@@ -608,7 +651,9 @@ class BrowserUseAgent(AgentBase):
 
         The one piece of state it records is the grid over the screenshot
         it attaches, because ``parse_react_output`` has to convert a point
-        in the reply with the image that reply was looking at.
+        in the reply with the image that reply was looking at, and because
+        later steps' history writes this step's actions on it
+        (:attr:`_step_grids`). The pointer is written on this step's grid.
 
         Raises:
             TypeError: the screenshot fragment reports no geometry while
@@ -634,6 +679,7 @@ class BrowserUseAgent(AgentBase):
             self._grid = point_grid(self.coordinate_space, screenshot)
 
         body = self._build_step_text(observation)
+        self._step_grids.record(context.step, self._grid)
         if shows_screenshot:
             messages: list[BaseMessage] = [self._build_vision_message(observation, body)]
         else:
@@ -647,16 +693,22 @@ class BrowserUseAgent(AgentBase):
         history: RestoredHistory,
         context: ReactPromptContext,
     ) -> list[BaseMessage]:
-        """Render the live page and actual restoration without parsing the old reply."""
+        """Render the live page and actual restoration without parsing the old reply.
+
+        The restored actions ran after *observation* was captured, so their
+        points — the executed actions', their effect lines' and the recorded
+        source actions' — are written on its screenshot's grid when this run
+        teaches one, the grid the prompt just built here keeps for this step.
+        """
         history.validate_execution()
         messages = await self.build_react_prompt(observation, context=context)
-        restored = restored_history_message(history, show_action_effects=self.show_action_effects)
-        return [
-            *messages,
-            UserMessage(
-                content="Executed coordinate parameters use CSS viewport pixels. " + restored.text
-            ),
-        ]
+        restored = restored_history_message(
+            history,
+            show_action_effects=self.show_action_effects,
+            write_action=lambda action: self._action_fact(action, step=context.step),
+            write_point=self._step_point_writer(context.step),
+        )
+        return [*messages, restored]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         """Validate a reply against this run's closed schema, as Actions.
@@ -756,7 +808,63 @@ class BrowserUseAgent(AgentBase):
     # ── private helpers ────────────────────────────────────────
 
     def _has_point_actions(self) -> bool:
+        """Whether this run has a coordinate action, and so teaches the model a grid."""
         return any(_local_id(d.name) in _POINT_PARAMS for d in self._action_descriptors)
+
+    # ── Writing the points of execution feedback ───────────────
+
+    def _point_pairs(self, action: Action) -> list[tuple[str, str]]:
+        """The ``(x, y)`` params of *action* that are a point, as its action declares them.
+
+        The registered ``Params``' points (a relative name looked up by the
+        one this run binds it to); an action the registry does not know has
+        the points :data:`_POINT_PARAMS` gives its verb, or none. A param is
+        never taken for a point from its name or value alone.
+        """
+        registered = registered_point_params(action, self._action_descriptors)
+        if registered is not None:
+            return registered
+        return list(_POINT_PARAMS.get(_local_id(action.name), ()))
+
+    def _params_fed_back(
+        self, params: dict[str, Any], action: Action, *, step: int
+    ) -> dict[str, Any]:
+        """*params* of *action*, chosen on step *step*'s screenshot, as the prompt shows them.
+
+        Each point *action* states is on that step's grid, or written as
+        having no place there (``agents/_feedback_points.py``); never in
+        pixels. *params* itself, unchanged, when this run teaches no grid or
+        the action states no point.
+
+        Raises:
+            ValueError: *action* states a point and this agent did not build
+                step *step*'s prompt since ``prepare`` (``StepGrids.grid_of``).
+        """
+        if not self._has_point_actions():
+            return params
+        pairs = stated_points(action.params, self._point_pairs(action))
+        if not pairs:
+            return params
+        return params_on_grid(params, pairs, self._step_grids.grid_of(step))
+
+    def _action_fact(self, action: Action, *, step: int) -> dict[str, Any]:
+        """*action*, chosen on step *step*'s screenshot, as restored history shows it.
+
+        Its JSON, with its points on that step's grid (:meth:`_params_fed_back`).
+        """
+        written = action.model_dump(mode="json")
+        written["params"] = self._params_fed_back(written["params"], action, step=step)
+        return written
+
+    def _step_point_writer(self, step: int) -> PointWriter:
+        """Writes a point an effect of step *step*'s actions states.
+
+        On that step's grid when this run teaches one; in viewport units, as
+        the fact is, when it writes no point at all.
+        """
+        if not self._has_point_actions():
+            return write_viewport_point
+        return self._step_grids.point_writer(step)
 
     def _coordinate_relabel(self) -> dict[str, dict[str, str]]:
         """Descriptor name → param → the unit *the model* writes it in.
@@ -1074,6 +1182,11 @@ class BrowserUseAgent(AgentBase):
         accessible name (what a click hit, where focus went), in every mode:
         a ``vision`` run that must read no page text at all turns
         ``show_action_effects`` off.
+
+        In a run that teaches a grid, every point a step's actions and
+        effects state is on the grid of the screenshot that step showed
+        (:meth:`_params_fed_back`, :meth:`_step_point_writer`); the
+        ``<llm_output>`` is the model's own reply, already on it.
         """
         items = list(getattr(history, "items", []) or [])
         if not items:
@@ -1082,7 +1195,14 @@ class BrowserUseAgent(AgentBase):
             items = items[-self._max_history_steps :]
         blocks: list[str] = []
         for rec in items:
-            actions_str = ", ".join(f"{a.name}({a.params})" for a in rec.actions) or "(none)"
+            actions_str = (
+                ", ".join(
+                    f"{a.name}({self._params_fed_back(a.params, a, step=rec.step)})"
+                    for a in rec.actions
+                )
+                or "(none)"
+            )
+            write_point = self._step_point_writer(rec.step)
             results_str = (
                 "; ".join(
                     f"ok={r.success} {r.error or r.extracted_content or ''}".rstrip()
@@ -1095,7 +1215,12 @@ class BrowserUseAgent(AgentBase):
                 for position, (action, result) in enumerate(
                     zip(rec.actions, rec.action_results, strict=False), start=1
                 )
-                if (line := effect_line(result, shown=self.show_action_effects)) is not None
+                if (
+                    line := effect_line(
+                        result, shown=self.show_action_effects, write_point=write_point
+                    )
+                )
+                is not None
             ]
             effects_xml = "<effects>\n" + "\n".join(effects) + "\n</effects>\n" if effects else ""
             tag = f"step_{rec.step + 1}"
@@ -1118,9 +1243,18 @@ class BrowserUseAgent(AgentBase):
         ``vision`` the tree never reaches the model even if something put
         one on the observation — which is what makes a vision ablation a
         vision ablation.
+
+        The pointer is written on this step's grid when this run teaches one
+        (a point with no place there is said to be so), and in viewport
+        pixels when it writes no point.
         """
         parts: list[str] = []
-        page_state = render_browser_state(observation, show_media_state=self.show_media_state)
+        write_point = (
+            grid_point_writer(self._grid) if self._has_point_actions() else write_viewport_pixels
+        )
+        page_state = render_browser_state(
+            observation, show_media_state=self.show_media_state, write_point=write_point
+        )
         if page_state:
             parts.append(page_state)
 
