@@ -48,6 +48,8 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   viewport, its top visible and its centre below; ``far_fixed.html`` pins it with
   ``position: fixed`` where no scrolling can reach it; ``far_edge_smooth.html`` and
   ``far_tall_smooth.html`` repeat those two under ``scroll-behavior: smooth``.
+  Each starts with a line of text in view (``Far page``), as a real page shows
+  something before it is scrolled.
 
 Every control sits at a fixed CSS-px box (:data:`BOXES`), so a test clicks by
 coordinate without reading the DOM.
@@ -219,7 +221,12 @@ def _pages() -> dict[str, tuple[str, bytes]]:
         ),
         "b.html": ("text/html; charset=utf-8", _page("Page B", "<p>Page B.</p>")),
         **{
-            name: ("text/html; charset=utf-8", _page("Far", body, style=style))
+            # A line of text in view: a page whose only element is off-screen would be
+            # an empty viewport, which the settle wait holds to its cap (settle.py).
+            name: (
+                "text/html; charset=utf-8",
+                _page("Far", '<p style="margin:0">Far page</p>' + body, style=style),
+            )
             for name, body, style in (
                 ("far.html", _far_button("absolute"), "body{width:2400px}"),
                 (
