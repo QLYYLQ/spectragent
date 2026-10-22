@@ -145,7 +145,14 @@ def _observation(*, effects: bool = True, capture_state: bool = True) -> SimpleN
 
 
 def _prepared(agent_class: type[Any], **switches: Any) -> Any:
+    """*agent_class* prepared with the actions of a browser it would negotiate them from.
+
+    Only the ones its own demand admits: a DOM-mode BrowserUse never holds a
+    coordinate action, so it teaches no grid and writes its feedback in
+    viewport pixels.
+    """
     agent = make_agent(agent_class, memory=SimpleMemory(max_messages=20), **switches)
+    required, optional = agent.negotiation_demand("action")
     keys = {
         "browser.click",
         "browser.click_coordinate",
@@ -156,7 +163,7 @@ def _prepared(agent_class: type[Any], **switches: Any) -> Any:
     descriptors = [
         action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
         for action in BrowserCapability().actions
-        if action.action_id in keys
+        if action.action_id in keys and action.action_id.split(".")[-1] in required | optional
     ]
     agent.prepare(
         task="Open",

@@ -32,10 +32,10 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents._feedback_points import NOT_PLACEABLE, OUTSIDE_THE_SCREENSHOT
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
-from spectragent.agents.ui_tars import NOT_PLACEABLE, OUTSIDE_THE_SCREENSHOT, UITarsAgent
+from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ElementFacts, PointerEffect, ViewportPoint
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
@@ -497,12 +497,13 @@ async def test_a_restored_observation_without_a_measurable_screenshot_does_not_e
     assert executed["result"]["effect"].startswith(f"Clicked at a point {NOT_PLACEABLE} on ")
 
 
-# ── The other agents keep viewport units ──────────────────────────────
+# ── An agent whose model writes no point keeps viewport units ─────────
+# (BrowserUse writes its feedback on its own grid too, or in viewport units when
+# its run has no coordinate action: tests/test_agents/test_browser_use_feedback_grid.py.)
 
 
-@pytest.mark.parametrize("agent_class", [SkyvernAgent, BrowserUseAgent])
-async def test_the_browser_agents_still_read_viewport_pixels(agent_class: type[Any]) -> None:
-    agent, _ = _prepared(agent_class)
+async def test_skyvern_still_reads_viewport_pixels() -> None:
+    agent, _ = _prepared(SkyvernAgent)
     step = await agent.build_react_prompt(
         _observation(history=[_batch()]), context=ReactPromptContext(step=1, phase="policy")
     )
