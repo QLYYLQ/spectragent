@@ -34,7 +34,7 @@ from spectragent.core.trace.encoding import sha256_hex
 from tests._helpers.archive_contract import (
     HARNESS_FACTORIES,
     ArchiveHarness,
-    assert_a_broken_collection_raises,
+    assert_a_broken_collection_never_looks_complete,
     assert_a_failed_collection_leaves_the_trace_incomplete,
     assert_bind_routes_by_prefix_and_clears,
     assert_collect_hands_over_and_forgets,
@@ -99,8 +99,8 @@ class TestTheArchivingContract:
     async def test_files_carry_provenance(self, harness: ArchiveHarness) -> None:
         await assert_files_carry_provenance(harness, now=time.time)
 
-    async def test_a_broken_collection_raises(self, harness: ArchiveHarness) -> None:
-        await assert_a_broken_collection_raises(harness)
+    async def test_a_broken_collection_never_looks_complete(self, harness: ArchiveHarness) -> None:
+        await assert_a_broken_collection_never_looks_complete(harness)
 
 
 class TestThroughTheTraceHook:
@@ -402,7 +402,7 @@ CAPABILITY_CLAUSES: dict[str, Callable[[ArchiveHarness], Any]] = {
     "hands over and forgets": assert_collect_hands_over_and_forgets,
     "every file belongs to a bound archiver": assert_every_file_belongs_to_a_bound_archiver,
     "files carry provenance": functools.partial(assert_files_carry_provenance, now=time.time),
-    "a broken collection raises": assert_a_broken_collection_raises,
+    "a broken collection never looks complete": assert_a_broken_collection_never_looks_complete,
 }
 
 #: Mistake → (the one clause that must fail, a phrase its message must carry).
@@ -412,7 +412,7 @@ MISTAKES: dict[str, tuple[str, str]] = {
     "two_run_records": ("every file belongs to a bound archiver", "2 run records in one batch"),
     "takes_step": ("collect takes no step", r"takes \['step'\]"),
     "stale": ("files carry provenance", "outside the window"),
-    "swallows": ("a broken collection raises", "instead of raising"),
+    "swallows": ("a broken collection never looks complete", "instead of raising"),
     "never_unbinds": ("bind routes and clears", "after an empty bind"),
     "starts_bound": ("unbound archives nothing", "never bound"),
 }

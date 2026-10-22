@@ -41,8 +41,10 @@ class ArchivingCapability(Protocol):
       hands over everything captured since the previous collection, then
       forgets it: the batch belongs to the caller. It never blocks
       indefinitely, is safe on a capability that never set up or set up
-      half way (nothing captured: an empty batch), and **raises** when it
-      cannot collect rather than returning a batch that looks complete.
+      half way (nothing captured: an empty batch), **raises** when it can
+      collect nothing at all, and when only part of its evidence is missing
+      hands over the rest and names the missing part in ``ArchiveBatch.gaps``
+      — never a batch that looks complete.
     - The hand-over is atomic with respect to the capability's own
       producers (swap the buffer out in one synchronous statement): in a
       shared environment another agent may be acting while it runs.
@@ -51,9 +53,9 @@ class ArchivingCapability(Protocol):
       collection either finishes it within bounded time or hands it over
       marked incomplete — how it is marked is the capability's business.
     - Every file carries its provenance (``ArchiveFile.meta``), its
-      ``capability_id`` is this capability's own, and every step file
-      belongs to a bound archiver; a batch holds at most one run record
-      per capability.
+      ``capability_id`` is this capability's own (so is every gap's), and
+      every step file belongs to a bound archiver; a batch holds at most one
+      run record per capability.
     """
 
     @property
@@ -70,7 +72,7 @@ class ArchivingCapability(Protocol):
         ...
 
     async def collect_archive(self) -> ArchiveBatch:
-        """Hand over everything captured since the last collection, and forget it."""
+        """Hand over everything captured since the last collection, forget it, and name any gap."""
         ...
 
 

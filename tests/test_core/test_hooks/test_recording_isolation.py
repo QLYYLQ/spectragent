@@ -33,6 +33,8 @@ from spectragent.core.trace.usage import recorded_usage
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentMetrics
+from spectragent.schemas.observation import build_observation_model
+from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.prompt import PromptRef, TextPrompt
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
@@ -123,7 +125,7 @@ class ScriptedArchive:
         return outcome
 
 
-async def start_archiving(writer: TraceWriter, env: ScriptedArchive) -> None:
+async def start_archiving(writer: TraceWriter, env: ScriptedArchive | StalledArchive) -> None:
     await start(
         writer,
         env=env,
@@ -289,20 +291,33 @@ async def test_observation_capture_failure_loses_only_its_own_segment(writer_fac
     assert not recorded_usage(trace).complete
 
 
-async def test_archive_collection_failure_preserves_action_result_and_future_capture(
-    writer_factory,
-):
+async def test_archive_collection_failure_keeps_the_step_and_future_capture(writer_factory):
     writer = writer_factory(archive=[FakeStepArchiver()])
     await start_archiving(writer, ScriptedArchive(OSError("capture failed"), ArchiveBatch()))
-    await call(writer, "lost", returns=completion())
-    record = await seal(writer, 0)
+    await call(writer, "kept without evidence", returns=completion())
+    observed = build_observation_model(frozenset({"loop.task"}))(
+        task=TaskObs(user_request="find the price")
+    )
+    record = await seal(writer, 0, observation=observed)
     assert record.action_results[0].success is True
     await call(writer, "next", returns=completion())
     await seal(writer, 1)
     await close(writer, steps=2)
     trace = trace_of(writer)
-    assert trace.manifest.missing_steps == [0]
+    assert trace.manifest.missing_steps == []
+    assert trace.manifest.complete_through == -1
+    assert trace.manifest.status is TraceStatus.INCOMPLETE
+    saved = trace.step(0)
+    assert saved is not None and saved.action_results[0].success is True
+    kept = trace.observation_fragment(0, "loop.task")
+    assert isinstance(kept, TaskObs) and kept.user_request == "find the price"
+    assert [as_chat(item).messages[-1].text for item in trace.llm_messages(0)] == [
+        "kept without evidence"
+    ]
     assert [as_chat(item).messages[-1].text for item in trace.llm_messages(1)] == ["next"]
+    (problem,) = writer.health.problems
+    assert (problem.step, problem.channel, problem.phase) == (0, "archive", "collect")
+    assert (problem.error, problem.detail) == ("OSError", "capture failed")
 
 
 async def test_call_capture_failure_does_not_replace_success_or_original_error(
@@ -631,6 +646,93 @@ async def test_tail_archive_failure_does_not_discard_unfinished_step_calls(write
     assert trace.manifest.status is TraceStatus.INCOMPLETE
     assert [as_chat(item).messages[-1].text for item in trace.trailing_calls] == ["unfinished step"]
     assert recorded_usage(trace).tokens == 15
+
+
+class StalledArchive:
+    """Each step's collection hands over nothing; the close-out's never finishes (a hung browser)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.cancelled = False
+
+    async def collect_archive(self) -> ArchiveBatch:
+        self.calls += 1
+        if self.calls == 1:
+            return ArchiveBatch()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("unreachable")
+
+
+async def test_a_close_out_collection_that_outlasts_the_drain_budget_still_closes_the_trace(
+    writer_factory, caplog
+):
+    """The last collection overran; the drain and the result still get their own time.
+
+    Its budget is longer than the drain's on purpose: on one shared clock the
+    collection would have used the drain's time too, the worker would have
+    been stopped before it wrote ``result.json``, and the manifest would have
+    stayed ``writing``.
+    """
+    writer = writer_factory(
+        archive=[FakeStepArchiver()], close_timeout=0.2, closeout_collection_timeout=0.3
+    )
+    env = StalledArchive()
+    await start_archiving(writer, env)
+    await call(writer, returns=completion())
+    await seal(writer, 0)
+    caplog.set_level("WARNING", logger=hook_module.__name__)
+    result = await close(writer)
+
+    assert env.cancelled, "the overrunning collection is cancelled, not left running"
+    trace = trace_of(writer)
+    assert trace.manifest.status is TraceStatus.INCOMPLETE
+    assert trace.result is not None
+    assert trace.step(0) is not None
+    assert trace.manifest.complete_through == 0
+    (problem,) = writer.health.problems
+    assert (problem.step, problem.channel, problem.phase, problem.error) == (
+        None,
+        "archive",
+        "closeout",
+        "TimeoutError",
+    )
+    overran = "the close-out archive collection did not finish within 0.3 s"
+    assert problem.detail.startswith(overran)
+    assert overran in (trace.manifest.incomplete_reason or "")
+    assert result.metrics.recording_health is not None
+    assert result.metrics.recording_health.status == "incomplete"
+    assert [
+        record.getMessage() for record in caplog.records if record.name == hook_module.__name__
+    ] == [f"Recording closeout failed at step None (archive): TimeoutError: {problem.detail}"]
+
+
+async def test_an_error_without_a_message_is_logged_and_recorded_by_its_class(
+    writer_factory, caplog
+):
+    """The collection's own ``TimeoutError()`` — not the close-out budget — has no message."""
+    writer = writer_factory(archive=[FakeStepArchiver()])
+    await start_archiving(writer, ScriptedArchive(ArchiveBatch(), TimeoutError()))
+    caplog.set_level("WARNING", logger=hook_module.__name__)
+    await seal(writer, 0)
+    await close(writer)
+
+    (problem,) = writer.health.problems
+    assert (problem.channel, problem.phase, problem.error, problem.detail) == (
+        "archive",
+        "closeout",
+        "TimeoutError",
+        "TimeoutError",
+    )
+    assert [
+        record.getMessage() for record in caplog.records if record.name == hook_module.__name__
+    ] == ["Recording closeout failed at step None (archive): TimeoutError: TimeoutError"]
+    trace = trace_of(writer)
+    assert trace.manifest.incomplete_reason == "archive: TimeoutError: TimeoutError"
+    assert trace.result is not None
 
 
 async def test_unsaved_trailing_call_is_not_recovered_by_a_different_saved_archive_segment(

@@ -21,6 +21,7 @@ def test_selected_recording_scope_and_budgets_reach_the_hook():
         write_retries=1,
         retry_delay=0.2,
         close_timeout=0.75,
+        closeout_collection_timeout=1.5,
     )
     run = ConfigComposer(registrars=collect_registrars()).compose(raw)
     writer = next(hook for hook in run.instances("hook") if isinstance(hook, TraceWriter))
@@ -31,7 +32,8 @@ def test_selected_recording_scope_and_budgets_reach_the_hook():
         writer.write_retries,
         writer.retry_delay,
         writer.close_timeout,
-    ) == (3, 1, 0.2, 0.75)
+        writer.closeout_collection_timeout,
+    ) == (3, 1, 0.2, 0.75, 1.5)
 
 
 @pytest.mark.parametrize(
@@ -42,6 +44,7 @@ def test_selected_recording_scope_and_budgets_reach_the_hook():
         {"write_retries": -1},
         {"retry_delay": -0.1},
         {"close_timeout": 0},
+        {"closeout_collection_timeout": 0},
     ],
 )
 def test_invalid_recording_configuration_is_rejected(value):

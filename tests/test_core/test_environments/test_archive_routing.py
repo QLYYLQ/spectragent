@@ -6,9 +6,10 @@ convention its capabilities happen to follow:
 - **binding validates everything before binding anything**, routes by key
   prefix exactly like ``act()``, and clears every archiving capability that
   receives nothing;
-- **collection is concurrent, complete and fail-closed** — every bound
-  capability is waited for, a failure anywhere fails the whole collection
-  naming every failure, and a cancellation is never swallowed;
+- **collection is concurrent, complete and names what it lost** — every
+  bound capability is waited for, a failed capability becomes one gap under
+  its id while every healthy capability's evidence is kept, and a
+  cancellation is never swallowed;
 - **nothing bound costs nothing** — no capability is touched.
 """
 
@@ -20,9 +21,8 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.archive import ArchiveBatch, ArchiveContractError
+from spectragent.core.archive import ArchiveBatch, ArchiveGap
 from spectragent.core.environments import (
-    ArchiveCollectionError,
     Environment,
     EnvironmentBase,
     UnroutableArchiverError,
@@ -260,23 +260,19 @@ class TestCollection:
         assert peer.collect_calls == 1
         assert cap.collect_calls == 0
 
-    async def test_one_failure_fails_the_collection_after_every_task_finished(self) -> None:
+    async def test_one_failure_is_a_gap_and_the_healthy_evidence_is_kept(self) -> None:
         a, b, env = _peers()
-        boom = RuntimeError("disk on fire")
-        a.fail_with = boom
+        a.fail_with = RuntimeError("disk on fire")
         # The healthy peer is still working when the failure happens.
         b.wait_for = a.entered
         b.yields_after_wait = 3
-        b.files.append(b.evidence(_PEER_B_KEY))
+        evidence = b.evidence(_PEER_B_KEY)
+        b.files.append(evidence)
 
-        with pytest.raises(ArchiveCollectionError) as excinfo:
-            await env.collect_archive()
+        batch = await env.collect_archive()
 
-        err = excinfo.value
-        assert list(err.failures) == [PEER_A]
-        assert err.failures[PEER_A] is boom
-        assert err.__cause__ is boom
-        assert PEER_A in str(err) and "disk on fire" in str(err)
+        assert batch.gaps == (ArchiveGap(PEER_A, "RuntimeError", "disk on fire"),)
+        assert batch.files == (evidence,)
         # No orphan task: the healthy collection ran to its end first.
         assert b.finished is True
         assert b.collect_calls == 1
@@ -286,23 +282,49 @@ class TestCollection:
         a.fail_with = RuntimeError("first")
         b.fail_with = ValueError("second")
 
-        with pytest.raises(ArchiveCollectionError) as excinfo:
-            await env.collect_archive()
+        batch = await env.collect_archive()
 
-        assert list(excinfo.value.failures) == [PEER_A, PEER_B]
-        assert excinfo.value.__cause__ is a.fail_with
-        assert "first" in str(excinfo.value) and "second" in str(excinfo.value)
+        assert batch.files == ()
+        assert [(gap.archiver_id, gap.error, gap.detail) for gap in batch.gaps] == [
+            (PEER_A, "RuntimeError", "first"),
+            (PEER_B, "ValueError", "second"),
+        ]
+
+    async def test_a_capabilitys_own_gaps_are_kept_beside_its_evidence(self) -> None:
+        a, b, env = _peers()
+        evidence = a.evidence(_PEER_A_KEY)
+        a.files.append(evidence)
+        a.gaps.append(ArchiveGap(_PEER_A_KEY, "TimeoutError", "one archiver ran out of time"))
+        b.fail_with = RuntimeError("second")
+
+        batch = await env.collect_archive()
+
+        assert batch.files == (evidence,)
+        assert [gap.archiver_id for gap in batch.gaps] == [_PEER_A_KEY, PEER_B]
 
     async def test_evidence_under_another_capabilitys_prefix_is_a_failure(self) -> None:
         a, _b, env = _peers()
+        a.files.append(a.evidence(_PEER_A_KEY))
         a.files.append(a.evidence(_PEER_B_KEY))
 
-        with pytest.raises(ArchiveCollectionError) as excinfo:
-            await env.collect_archive()
+        batch = await env.collect_archive()
 
-        failure = excinfo.value.failures[PEER_A]
-        assert isinstance(failure, ArchiveContractError)
-        assert _PEER_B_KEY in str(failure)
+        (gap,) = batch.gaps
+        assert (gap.archiver_id, gap.error) == (PEER_A, "ArchiveContractError")
+        assert _PEER_B_KEY in gap.detail
+        assert batch.files == (), "a capability that breaks the contract hands over nothing"
+
+    async def test_a_gap_under_another_capabilitys_prefix_is_a_failure(self) -> None:
+        a, _b, env = _peers()
+        a.files.append(a.evidence(_PEER_A_KEY))
+        a.gaps.append(ArchiveGap(_PEER_B_KEY, "RuntimeError", "not mine to name"))
+
+        batch = await env.collect_archive()
+
+        (gap,) = batch.gaps
+        assert (gap.archiver_id, gap.error) == (PEER_A, "ArchiveContractError")
+        assert _PEER_B_KEY in gap.detail
+        assert batch.files == ()
 
     async def test_a_capability_that_returns_no_batch_is_a_named_failure(self) -> None:
         """A contract failure naming the capability — not an ``AttributeError`` from the merge."""
@@ -316,12 +338,11 @@ class TestCollection:
         env = make_env(EnvironmentBase, {"a#0": cap})
         env.bind_archivers([PeerAArchiver()])
 
-        with pytest.raises(ArchiveCollectionError) as excinfo:
-            await env.collect_archive()
+        batch = await env.collect_archive()
 
-        failure = excinfo.value.failures[PEER_A]
-        assert isinstance(failure, ArchiveContractError)
-        assert "not an ArchiveBatch" in str(failure)
+        (gap,) = batch.gaps
+        assert (gap.archiver_id, gap.error) == (PEER_A, "ArchiveContractError")
+        assert "not an ArchiveBatch" in gap.detail
 
     async def test_a_cancellation_is_never_swallowed(self) -> None:
         a, _b, env = _peers()

@@ -251,15 +251,78 @@ class ArchiveFile:
         return self.archiver_id.partition(".")[0]
 
 
+def _writable_text(value: str) -> str:
+    """*value* with whatever UTF-8 cannot encode replaced, so it can land in JSON."""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+@dataclass(frozen=True)
+class ArchiveGap:
+    """Evidence one collection could not hand over, and why.
+
+    A collection hands over what it did collect and names what it did not:
+    one archiver failing never takes another archiver's evidence down with
+    it (``docs/architecture_design.md`` §4.9). The consumer records each gap
+    as a recording problem of the step whose commit took the batch.
+
+    Attributes:
+        archiver_id: The archiver whose evidence is missing
+            (``browser.dom_raw``), or a bare capability id when the loss is
+            not one archiver's: the capability's collection as a whole, or
+            what all its archivers share (the browser's event channel). The
+            same convention as a run record's ``ArchiveFile.archiver_id``.
+        error: The failure's class name.
+        detail: What went wrong, never empty.
+
+    Raises (at construction):
+        TypeError: A field that is not a ``str``.
+        ValueError: An ``archiver_id`` that is not one safe path segment
+            (:func:`segment_problem`), an empty ``error`` or ``detail``, or
+            a string UTF-8 cannot encode.
+    """
+
+    archiver_id: str
+    error: str
+    detail: str
+
+    def __post_init__(self) -> None:
+        for what in ("archiver_id", "error", "detail"):
+            value = getattr(self, what)
+            if not isinstance(value, str):
+                raise TypeError(f"ArchiveGap.{what} must be a str, got {type(value).__name__}")
+            if not value:
+                raise ValueError(f"ArchiveGap.{what} must not be empty")
+            problem = text_problem(value)
+            if problem is not None:
+                raise ValueError(f"ArchiveGap.{what} {value!r} {problem}")
+        problem = segment_problem(self.archiver_id)
+        if problem is not None:
+            raise ValueError(f"ArchiveGap.archiver_id {self.archiver_id!r} {problem}")
+
+    @classmethod
+    def of(cls, archiver_id: str, error: BaseException) -> "ArchiveGap":
+        """The gap *error* left in *archiver_id*'s evidence; an empty message becomes its class."""
+        name = type(error).__name__
+        return cls(archiver_id, name, _writable_text(str(error) or name))
+
+    @property
+    def capability_id(self) -> str:
+        """The capability whose evidence is missing — the key's first segment."""
+        return self.archiver_id.partition(".")[0]
+
+
 @dataclass(frozen=True)
 class ArchiveBatch:
     """Everything one ``collect_archive`` call handed over, in order.
 
     The caller owns it: the capability has already forgotten every file in
-    it. A list passed as ``files`` is stored as a tuple.
+    it. ``gaps`` names what the collection could not hand over; a batch
+    with gaps is not complete, however many files it carries. Lists passed
+    as ``files`` or ``gaps`` are stored as tuples.
     """
 
     files: tuple[ArchiveFile, ...] = ()
+    gaps: tuple[ArchiveGap, ...] = ()
 
     def __post_init__(self) -> None:
         files = tuple(self.files)
@@ -268,14 +331,25 @@ class ArchiveBatch:
                 raise TypeError(
                     f"ArchiveBatch.files holds ArchiveFile objects, got {type(item).__name__}"
                 )
+        gaps = tuple(self.gaps)
+        for gap in gaps:
+            if not isinstance(gap, ArchiveGap):
+                raise TypeError(
+                    f"ArchiveBatch.gaps holds ArchiveGap objects, got {type(gap).__name__}"
+                )
         object.__setattr__(self, "files", files)
+        object.__setattr__(self, "gaps", gaps)
 
     @property
     def is_empty(self) -> bool:
-        """True when the batch carries no file at all."""
-        return not self.files
+        """True when the batch carries no file and names no gap."""
+        return not self.files and not self.gaps
 
     @classmethod
     def merge(cls, batches: Iterable["ArchiveBatch"]) -> "ArchiveBatch":
-        """One batch holding every file of *batches*, in the order given."""
-        return cls(tuple(item for batch in batches for item in batch.files))
+        """One batch holding every file and every gap of *batches*, in the order given."""
+        batches = list(batches)
+        return cls(
+            tuple(item for batch in batches for item in batch.files),
+            tuple(gap for batch in batches for gap in batch.gaps),
+        )

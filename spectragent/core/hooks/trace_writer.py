@@ -22,6 +22,7 @@ from spectragent.core.archive import (
     ArchiveBatch,
     ArchiveContractError,
     ArchiveFile,
+    ArchiveGap,
     ArchiverBase,
     segment_problem,
     text_problem,
@@ -70,10 +71,20 @@ from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
 logger = logging.getLogger(__name__)
 _RunVersions = dict[str, tuple[int, str, int]]
 
+#: Seconds the close-out archive collection may take before it is abandoned.
+#: A capability bounds its own collection (the browser alone may wait 5 s for
+#: its event channel, then for in-flight bodies and storage reads), so this is
+#: the backstop for one that does not: long enough that a slow capability
+#: reports its own failure and still hands over what its healthy archivers
+#: hold, and spent on its own clock, so the recording worker's drain
+#: (``close_timeout``) is never what a hung environment uses up.
+CLOSEOUT_COLLECTION_TIMEOUT_S = 10.0
+
 
 class _Collected(NamedTuple):
     number: int
     files: tuple[ArchiveFile, ...]
+    gaps: tuple[ArchiveGap, ...]
 
 
 @dataclass
@@ -178,9 +189,24 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             Field(
                 default=5.0,
                 gt=0,
-                description="Maximum seconds lifecycle waits for the recording worker to drain.",
+                description=(
+                    "Maximum seconds close-out waits for the recording worker to drain and "
+                    "write the result and the closed manifest; counted after the close-out "
+                    "archive collection, never shared with it."
+                ),
             ),
         ] = 5.0,
+        closeout_collection_timeout: Annotated[
+            float,
+            Field(
+                default=CLOSEOUT_COLLECTION_TIMEOUT_S,
+                gt=0,
+                description=(
+                    "Maximum seconds the last archive collection at close-out may take; "
+                    "an overrun is recorded as an archive problem and the trace still closes."
+                ),
+            ),
+        ] = CLOSEOUT_COLLECTION_TIMEOUT_S,
         archive: Annotated[
             list[ArchiverBase] | None,
             Field(
@@ -197,6 +223,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self.write_retries = write_retries
         self.retry_delay = retry_delay
         self.close_timeout = close_timeout
+        self.closeout_collection_timeout = closeout_collection_timeout
         self.archive = list(archive or [])
         self.wal: WALWriter | None = None
         self.call_context = RunCallContext()
@@ -356,19 +383,52 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         segment_id: str | None = None,
         call_ids: Sequence[str] = (),
     ) -> None:
-        self._health.problems.append(
-            RecordingProblem(
-                step=step,
-                segment_id=segment_id,
-                call_ids=list(call_ids),
-                channel=channel,
-                phase=phase,
-                error=type(error).__name__,
-                detail=str(error) or type(error).__name__,
-                occurred_at=time.time(),
-            )
+        name = type(error).__name__
+        self._record_problem(
+            step,
+            channel,
+            phase,
+            name,
+            str(error) or name,
+            segment_id=segment_id,
+            call_ids=call_ids,
         )
-        logger.warning("Recording %s failed at step %s: %s", phase, step, error)
+
+    def _record_problem(
+        self,
+        step: int | None,
+        channel: str,
+        phase: str,
+        error: str,
+        detail: str,
+        *,
+        segment_id: str | None = None,
+        call_ids: Sequence[str] = (),
+    ) -> None:
+        problem = RecordingProblem(
+            step=step,
+            segment_id=segment_id,
+            call_ids=list(call_ids),
+            channel=channel,
+            phase=phase,
+            error=error,
+            detail=detail,
+            occurred_at=time.time(),
+        )
+        self._health.problems.append(problem)
+        logger.warning(
+            "Recording %s failed at step %s (%s): %s: %s",
+            phase,
+            step,
+            channel,
+            problem.error,
+            problem.detail,
+        )
+
+    def _record_gaps(self, step: int | None, gaps: Sequence[ArchiveGap], phase: str) -> None:
+        """One recording problem per archive gap, on the channel that lost its evidence."""
+        for gap in gaps:
+            self._record_problem(step, gap.archiver_id, phase, gap.error, gap.detail)
 
     async def around_execute_step(
         self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
@@ -547,7 +607,15 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     async def after_record_step(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
     ) -> None:
-        """Seal synchronously; capture failure cannot retain calls for the next step."""
+        """Seal synchronously; capture failure cannot retain calls for the next step.
+
+        The archive pull comes after the seal and cannot undo it: a
+        collection that raises, is refused or names gaps costs only the
+        archive evidence it lost, recorded as problems of this step, and the
+        step still commits with its record, observations and calls. A
+        cancelled collection queues the sealed step too before the
+        cancellation goes on.
+        """
         record = args[0] if args else kwargs["record"]
         step = record.step
         started = time.perf_counter()
@@ -645,19 +713,33 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 if self.recording.observations
                 else []
             )
-            batch = await self._collect() if self.archive else None
-            elapsed = (time.perf_counter() - started) * 1000 + self._capture_ms.pop(step, 0)
-            self._enqueue(RecordingSegment(step, sealed, fragments, calls, batch, elapsed))
         except Exception as exc:
             self._problem(step, "segment", "capture", exc)
+            return
         except BaseException:
             self._problem(step, "segment", "capture", RuntimeError("capture cancelled"))
             raise
+        batch: _Collected | None = None
+        cancellation: BaseException | None = None
+        if self.archive:
+            try:
+                batch = await self._collect()
+            except Exception as exc:
+                self._problem(step, "archive", "collect", exc)
+            except BaseException as exc:
+                cancellation = exc
+                self._problem(step, "archive", "collect", RuntimeError("collection cancelled"))
+            else:
+                self._record_gaps(step, batch.gaps, "collect")
+        elapsed = (time.perf_counter() - started) * 1000 + self._capture_ms.pop(step, 0)
+        self._enqueue(RecordingSegment(step, sealed, fragments, calls, batch, elapsed))
+        if cancellation is not None:
+            raise cancellation
 
     async def _collect(self) -> _Collected:
-        files = self._checked(await self._env.collect_archive())
+        batch = self._checked(await self._env.collect_archive())
         self._collections += 1
-        return _Collected(self._collections, files)
+        return _Collected(self._collections, batch.files, batch.gaps)
 
     def _enqueue(self, segment: RecordingSegment) -> None:
         try:
@@ -916,7 +998,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             self._problem(None, "result", "closeout", exc)
         self._refresh_health()
         reason = "; ".join(
-            f"{problem.error}: {problem.detail}"
+            f"{problem.channel}: {problem.error}: {problem.detail}"
             for problem in self._health.problems
             if not problem.recovered
         )
@@ -944,44 +1026,80 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             raise ValueError("recording flush timeout must be positive")
         try:
             await asyncio.wait_for(self._queue.join(), timeout=budget)
-        except TimeoutError as exc:
-            self._problem(None, "worker", "flush", exc)
+        except TimeoutError:
+            self._problem(
+                None,
+                "worker",
+                "flush",
+                TimeoutError(f"the sealed segments were not persisted within {budget:g} s"),
+            )
         self._refresh_health()
 
     async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
+        """Close the recording: owed calls, the last archive collection, then the drain.
+
+        The two waits run on separate clocks. The collection gets
+        ``closeout_collection_timeout``; an overrun, a failure or a gap is an
+        archive problem of the close-out and nothing more. The worker then
+        gets the whole ``close_timeout`` to commit what is queued, write
+        ``result.json`` and close the manifest, so a hung environment can
+        leave the trace ``incomplete`` but never ``writing``. Only a worker
+        that itself overruns its budget (a write stuck in the kernel) stops
+        all further writes and leaves the manifest as it is: a write that
+        might still land must not be followed by a finalisation.
+        """
         if self._closed:
             return
         self._closed = True
         self._result = result
         cancellation: BaseException | None = None
-        close_clock = asyncio.get_running_loop()
-        close_started = close_clock.time()
         calls, self._pending_calls = tuple(self._pending_calls), []
         if calls:
             self._enqueue(RecordingSegment(None, None, [], calls, None))
-        try:
-            batch = (
-                await asyncio.wait_for(self._collect(), timeout=self.close_timeout)
-                if self.archive
-                else None
-            )
-            if batch is not None and batch.files:
-                self._enqueue(RecordingSegment(None, None, [], (), batch))
-        except Exception as exc:
-            self._problem(None, "archive", "closeout", exc)
-        except BaseException as exc:
-            cancellation = exc
-            self._problem(None, "archive", "closeout", RuntimeError("closeout cancelled"))
+        if self.archive:
+            budget = self.closeout_collection_timeout
+            clock = asyncio.timeout(budget)
+            try:
+                async with clock:
+                    batch = await self._collect()
+            except TimeoutError as exc:
+                if not clock.expired():
+                    self._problem(None, "archive", "closeout", exc)
+                else:
+                    self._problem(
+                        None,
+                        "archive",
+                        "closeout",
+                        TimeoutError(
+                            f"the close-out archive collection did not finish within "
+                            f"{budget:g} s (closeout_collection_timeout)"
+                        ),
+                    )
+            except Exception as exc:
+                self._problem(None, "archive", "closeout", exc)
+            except BaseException as exc:
+                cancellation = exc
+                self._problem(None, "archive", "closeout", RuntimeError("closeout cancelled"))
+            else:
+                self._record_gaps(None, batch.gaps, "closeout")
+                if batch.files:
+                    self._enqueue(RecordingSegment(None, None, [], (), batch))
         self._closing = True
         self._env = None
         if self._worker is not None:
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(self._worker),
-                    timeout=max(0.001, self.close_timeout - (close_clock.time() - close_started)),
+                await asyncio.wait_for(asyncio.shield(self._worker), timeout=self.close_timeout)
+            except TimeoutError:
+                self._problem(
+                    None,
+                    "worker",
+                    "closeout",
+                    TimeoutError(
+                        f"the recording worker did not drain within {self.close_timeout:g} s "
+                        f"(close_timeout); later writes were stopped and the manifest was left "
+                        f"as it was"
+                    ),
                 )
-            except TimeoutError as exc:
-                self._problem(None, "worker", "closeout", exc)
                 self._stop_writes.set()
                 self._worker.cancel()
                 await asyncio.gather(self._worker, return_exceptions=True)
@@ -1029,8 +1147,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             f"else may stand in for that."
         )
 
-    def _checked(self, batch: Any) -> tuple[ArchiveFile, ...]:
-        """A collected batch's files — or ``ArchiveContractError`` before any is written.
+    def _checked(self, batch: Any) -> ArchiveBatch:
+        """A collected batch, checked — or ``ArchiveContractError`` before any of it is written.
 
         The checks are what only this hook can know — which archivers the
         run bound — plus everything that would make the commit fail no
@@ -1042,7 +1160,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         255 bytes of UTF-8) and every string the index records must encode
         as UTF-8; no two step files may land on one path as a case- and
         normalization-insensitive filesystem sees it (``fold_path`` —
-        macOS's is); every path must pass the WAL's own rule.
+        macOS's is); every path must pass the WAL's own rule; a gap must
+        name a bound archiver or a capability that holds one.
 
         ``ArchiveFile`` refuses most of this at construction; it is checked
         again here because a frozen dataclass can be forged around its own
@@ -1119,12 +1238,18 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             for owner, count in sorted(run_records.items())
             if count > 1
         ]
+        problems += [
+            f"a gap names {gap.archiver_id!r}, which is neither an archiver this run bound "
+            f"(bound: {sorted(bound)}) nor a capability holding one"
+            for gap in batch.gaps
+            if gap.archiver_id not in bound and gap.archiver_id not in self._archive_owners
+        ]
         if problems:
             raise ArchiveContractError(
                 "the collected batch breaks the archiving contract, and none of it was "
                 "written: " + "; ".join(sorted(problems))
             )
-        return batch.files
+        return batch
 
     def _encode_archive(
         self,

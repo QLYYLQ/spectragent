@@ -151,6 +151,7 @@ def test_the_init_check_reads_hand_written_inits() -> None:
         "write_retries",
         "retry_delay",
         "close_timeout",
+        "closeout_collection_timeout",
     }
     layers = {layer for layer, _, _ in _registered_classes()}
     assert "archiver" in layers

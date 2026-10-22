@@ -1016,16 +1016,16 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         # 每个 capability 一个任务；_collect_one 捕获 Exception 并把它返回，
         # 不用 gather(..., return_exceptions=True)——那会把 CancelledError 也吞掉
         outcomes = await asyncio.gather(*(self._collect_one(cap) for cap in self._archiving))
-        ...  # 全部跑完才裁决：异常，或批次里有 capability_id 不是自己的文件，都算该 capability 失败
-             # 有失败 → ArchiveCollectionError（点名每个失败的 capability），否则按 capability 顺序合并
+        ...  # 全部跑完才裁决：异常，或批次里有 capability_id 不是自己的文件或缺口，都算该 capability 失败
+             # 失败的 capability 换成一条点名它的 ArchiveGap；健康的批次（连同它们自己的缺口）照样保留
         return ArchiveBatch.merge(batches)
 ```
 
-**归档的路由与收集**（`core/environments/_registrar.py`，错误类在 `core/environments/errors.py`）：
+**归档的路由与收集**（`core/environments/_registrar.py`，绑定的错误类在 `core/environments/errors.py`）：
 
 - `provided_archivers`：实现了 `ArchivingCapability` 的 capability 各自 `provided_archivers` 的并集；其余 capability 什么也不贡献。
 - `bind_archivers(archivers)`：按每个键的第一段经 `_by_capability_id()` 找 capability（与 `act()` 同一套路由）。下面任何一种情况都记一条问题，全部收集完一次抛 `UnroutableArchiverError(problems, capability_ids)`（`problems`：键 → 原因，按键排序写进消息；`capability_ids`：本环境的 capability id），抛错时没有任何 capability 被调用：前缀对应不到 capability；对应的 capability 不实现 `ArchivingCapability`；键不在该 capability 的 `provided_archivers` 里。校验通过后，**每个** `ArchivingCapability` 都收到自己的那一组，分不到的收到空列表，这会清掉它之前的绑定；收到非空组的 capability 按 capability 顺序记进 `_archiving`。绑定不获取任何资源（它可能发生在干跑里、setup 之前）。
-- `collect_archive()`：什么都没绑定时直接返回 `ArchiveBatch()`，一个 capability 也不碰。否则每个绑定了的 capability 一个任务**并发**收集；每个任务都跑完才裁决结果，不留孤儿任务。一个 capability 抛 `Exception`、交回的不是 `ArchiveBatch`，或交回的文件里有 `capability_id` 不是它自己的（后两条记成点名该 capability 的 `ArchiveContractError`，最后一条还点名那些 `archiver_id`），都算它失败；有任何失败就抛 `ArchiveCollectionError(env_type, failures)`：`failures` 是 capability id → 异常，消息按 capability 顺序点名每一个，`__cause__` 是按 capability 顺序的第一个失败；健康 capability 交回的批次随之丢弃（run 反正要失败，§4.6）。没有失败时按 capability 顺序把各批次合并成一个 `ArchiveBatch`。`CancelledError` 原样传播，包括某个 capability 自己抛出它的情形：`gather` 这时会让兄弟任务接着跑，所以先取消还没结束的任务、等它们收场，再原样重抛，同样不留孤儿任务。
+- `collect_archive()`：什么都没绑定时直接返回 `ArchiveBatch()`，一个 capability 也不碰。否则每个绑定了的 capability 一个任务**并发**收集；每个任务都跑完才裁决结果，不留孤儿任务。一个 capability 抛 `Exception`、交回的不是 `ArchiveBatch`，或交回的文件或缺口里有 `capability_id` 不是它自己的（后两条记成点名该 capability 的 `ArchiveContractError`，最后一条还点名那些 `archiver_id`），都算它失败：它在合并结果里只留一条 `ArchiveGap`（`archiver_id` 是它的裸 id，`error` / `detail` 是那个异常），一个文件也不留。健康 capability 交回的批次照样保留，连同它们自己点名的缺口；按 capability 顺序把各批次合并成一个 `ArchiveBatch`。capability 的失败从不让这次收集抛错：记录器把每条缺口记成一条记录问题，与 agent 的结局无关（§4.6）。`CancelledError` 原样传播，包括某个 capability 自己抛出它的情形：`gather` 这时会让兄弟任务接着跑，所以先取消还没结束的任务、等它们收场，再原样重抛，同样不留孤儿任务。
 - 收集不带任何参数：environment 从不把步号（也不把 cycle）交给 capability。"第 t 步的提交取走的就归第 t 步"是记录器那一侧的规则（§4.6）。
 
 **检查点恢复的路由（M31）**（`core/environments/_registrar.py`）：恢复器（§4.1 `BranchLoop`）经 environment 调用两个只读的方法，capability 侧的协议是 §4.9 的 `RestorationSupport`；另有一个为下一次观测预约对齐的方法，capability 侧的协议是 §4.9 的 `RestorationAlignment`（列在最后）：
@@ -1894,7 +1894,7 @@ runtime 通过 `ArchiveConsumer` Protocol（`core/archive/protocols.py`）发现
 
 **执行结果与记录健康分开。** 初始化、采集、编码、WAL 提交和收尾的记录故障都由记录器隔离，不能决定 Loop 是否继续，不能伪装成模型或动作失败，也不能覆盖真实错误、guard 否决和外部取消。没有 `RecordingFailedError` 终止路径，也没有记录器控制的停机策略。源归档读取失败仍是环境执行失败，不属于本次记录写入故障。
 
-`record_step` 是封存边界，不是持久化成功边界。已封存段的 step、call、动作、观测和已交接归档批次身份固定；后台补写仍提交原段。只有未交出步骤的调用进入 trailing。记录器保持 blocking 以保证快照和封存顺序；持久化和恢复重试由有界记录任务承担，不占用 `agent.run` 等待链。队列容量、重试次数与收尾等待均为显式配置；资源耗尽报告丢失范围，仍尝试后续可保存的步骤。
+`record_step` 是封存边界，不是持久化成功边界。已封存段的 step、call、动作、观测和已交接归档批次身份固定；封存之后的归档拉取失败、被拒或带缺口，只损失那部分证据，不撤销封存，这一步照样提交（§5.4）；后台补写仍提交原段。只有未交出步骤的调用进入 trailing。记录器保持 blocking 以保证快照和封存顺序；持久化和恢复重试由有界记录任务承担，不占用 `agent.run` 等待链。队列容量、重试次数与收尾等待均为显式配置；资源耗尽报告丢失范围，仍尝试后续可保存的步骤。
 
 manifest 只索引实际提交内容。`complete_through` 是连续完整前缀，`missing_steps` 是预期步骤中未提交的索引；洞后已提交步骤仍可查看和汇总。缺口补齐后可恢复完整，历史 `recording_problems` 不消失。持久化持续失败时内存 `recording_health` 和日志仍说明问题，不承诺把磁盘错误写进坏掉的磁盘。
 
@@ -2145,13 +2145,15 @@ class ArchivingCapability(Protocol):
 - `bind_archivers([])` 什么也不做；非空的绑定抛 `NotImplementedError`，点名类名和那些键，所以声明了 provides 的 capability 必须同时覆盖 `bind_archivers` 和 `collect_archive`；
 - `collect_archive()` 返回空的 `ArchiveBatch()`。
 
-**归档契约**（`core/archive/` 定义类型，capability 实现行为；`tests/_helpers/archive_contract.py` 对每个提供归档器的 capability 检查能从外面检查的那些条：替换与清空绑定、不带参数、交出并忘掉、未绑定不采、只交已绑定归档器的证据、每批至多一份 run 记录、来源信封、采不到就抛错，以及这些证据经 TraceWriter 提交、读回、崩溃窗口与收尾的行为，和另一个归档 capability 同处一个环境时 run 记录仍按 capability 计数、编号与去重。"不无限阻塞"、"对生产者原子交接"与"在途条目恰好交出一次"取决于 capability 的内部时序，与 capability 无关的 harness 造不出来，由各 capability 自己的测试钉住，browser 的在 M29，用 fake CDP）：
+**一次收集交出它收到的，点名它没收到的。** `ArchiveBatch` 有两个字段：`files`（证据）与 `gaps`（`ArchiveGap`：`archiver_id`、`error` 类名、`detail`，`detail` 从不为空）。缺口的 `archiver_id` 与 run 记录的写法相同：缺了某个归档器的证据写它的全限定键（`browser.dom_raw`），缺的不是某一个归档器的（整个 capability 的收集、它所有归档器共用的通道）写裸的 capability id。带缺口的批次不完整，不管它带了多少文件；一个归档器失败从不连带别的归档器已经收到的证据。
+
+**归档契约**（`core/archive/` 定义类型，capability 实现行为；`tests/_helpers/archive_contract.py` 对每个提供归档器的 capability 检查能从外面检查的那些条：替换与清空绑定、不带参数、交出并忘掉、未绑定不采、只交已绑定归档器的证据、每批至多一份 run 记录、来源信封、采不到就抛错或点名缺口，以及这些证据经 TraceWriter 提交、读回、崩溃窗口、收集失败（步照样提交）与收尾的行为，和另一个归档 capability 同处一个环境时 run 记录仍按 capability 计数、编号与去重。"不无限阻塞"、"对生产者原子交接"与"在途条目恰好交出一次"取决于 capability 的内部时序，与 capability 无关的 harness 造不出来，由各 capability 自己的测试钉住，browser 的在 M29，用 fake CDP）：
 
 - `bind_archivers(archivers)` **替换**整个绑定（空列表 = 解除），不获取任何资源；runtime 只在 setup 之前绑定，capability 在 `setup()` 里读绑定，决定建不建自己的采集通道。收到的是 trace hook 持有的归档器实例，旋钮就在实例上。
-- `collect_archive()` 不带任何参数（没有步号，没有 cycle），交出自上次收集以来采到的全部证据并忘掉它们，批次从此归调用方。不无限阻塞；在没有 setup、或 setup 半途失败的 capability 上调用也安全（没采到东西就返回空批次）；采不到时**抛错**，不返回一个假装完整的空批次。
+- `collect_archive()` 不带任何参数（没有步号，没有 cycle），交出自上次收集以来采到的全部证据并忘掉它们，批次从此归调用方。不无限阻塞；在没有 setup、或 setup 半途失败的 capability 上调用也安全（没采到东西就返回空批次）；什么都采不到时**抛错**，只缺一部分时交出其余的，并在 `gaps` 里点名缺的那部分；从不返回一个假装完整的批次。
 - 它可能在共享环境里另一个 agent 正在动作时被调用，所以"交出并清空"对 capability 自己的生产者必须是原子的（例如在一条同步语句里把缓冲区换出去）。
 - 收集边界上还没完成的条目（还在读的响应体）留到之后的批次，恰好交出一次，不重复也不丢；收尾那次收集是最后一次：capability 要么在有限时间内把它们收完，要么把它们标成未完成交出（怎么标是 capability 自己的事，M29 的 `body_status`）。
-- 每个 `ArchiveFile` 自带来源信封 `meta: ArchiveProvenance`：`captured_at`（墙钟 Unix 时间）、适用时的 `cycle`、capability 作用域的 `ids`（session / frame / loader id 等）。文件的 `capability_id`（`archiver_id` 的第一段）必须是这个 capability 自己——environment 把别的前缀当作该 capability 的收集失败；步级文件必须属于一个已绑定的归档器键。
+- 每个 `ArchiveFile` 自带来源信封 `meta: ArchiveProvenance`：`captured_at`（墙钟 Unix 时间）、适用时的 `cycle`、capability 作用域的 `ids`（session / frame / loader id 等）。文件与缺口的 `capability_id`（`archiver_id` 的第一段）必须是这个 capability 自己——environment 把别的前缀当作该 capability 的收集失败；步级文件必须属于一个已绑定的归档器键，缺口必须点名一个已绑定的归档器键或持有归档器的 capability（记录器检查，§5.4）。
 - 每个批次里每个 capability 至多一份 run 记录（`scope="run"`，JSON，不内容寻址；`archiver_id` 可以是裸的 capability id，也可以是它的一个已绑定归档器键）。内容变化才需要再发；与上一版字节相同的再发会被记录器丢掉（§5.4）。
 
 **"最后一次收集"capability 无从知道。** `collect_archive()` 不带参数，收尾那次收集发生在 `on_run_end` 里，teardown 在它之后（§4.2），capability 分不出哪一次是最后一次。所以上面"收尾那次要么收完、要么标成未完成"在实现上落成**每一次**收集都遵守的同一条规则：在有限时间内等还在读的条目，仍未完成的条目留到之后的批次，并在本批写一条轻量的"未完成"标记（不是证据本身，只是状态）；条目完成后它的证据恰好交出一次。哪个条目的最后一条是"未完成"标记，它就是 run 结束时还在途的那个。Browser 的落法（`index.jsonl` 的 `pending` 行）见 §4.14。
@@ -2183,12 +2185,23 @@ class ArchiveFile:
     def capability_id(self) -> str: ...   # archiver_id.partition(".")[0]
 
 @dataclass(frozen=True)
-class ArchiveBatch:               # 一次收集取走的全部文件
-    files: tuple[ArchiveFile, ...] = ()   # 传入 list 时转成 tuple
-    @property
-    def is_empty(self) -> bool: ...
+class ArchiveGap:                 # 一次收集没能交出的证据，以及原因
+    archiver_id: str              # 缺了谁的：全限定归档器键，或裸 capability id（不属于某一个归档器的损失）
+    error: str                    # 异常类名
+    detail: str                   # 原因，从不为空
     @classmethod
-    def merge(cls, batches: Iterable["ArchiveBatch"]) -> "ArchiveBatch": ...   # 保持顺序
+    def of(cls, archiver_id: str, error: BaseException) -> "ArchiveGap": ...   # 空消息记成类名
+    @property
+    def capability_id(self) -> str: ...   # archiver_id.partition(".")[0]
+
+@dataclass(frozen=True)
+class ArchiveBatch:               # 一次收集取走的全部文件，和它点名的缺口
+    files: tuple[ArchiveFile, ...] = ()   # 传入 list 时转成 tuple
+    gaps: tuple[ArchiveGap, ...] = ()     # 有缺口的批次不完整
+    @property
+    def is_empty(self) -> bool: ...       # 既没有文件也没有缺口
+    @classmethod
+    def merge(cls, batches: Iterable["ArchiveBatch"]) -> "ArchiveBatch": ...   # 文件与缺口都保持顺序
 
 class ArchiveContractError(ValueError): ...   # 收集到的批次违反契约（由消费者 / environment 抛出）
 ```
@@ -3021,7 +3034,7 @@ class ReplayabilityProtocol(Protocol):
 - **运行期的归档侧**（`archive/run.py`，`BrowserArchiveRun`）：capability 在 setup 时建它、teardown 时关它；它持有 channel、本 run 的会话、`RawCaptureStore` 与指纹状态，`collect` 按下面的顺序收集。capability 只负责接线（建 scope、组装 context、调用它），不在自己的模块里写归档逻辑。
 - **原始 DOM 的待定槽位**在 `_ObserveCycleCache.raw`（§4.12）：DOM resolver 的 sink 与 dom_raw 自采（经 context 的 `park_raw`）都放进当前 cycle 的槽位；每次尝试开始时清空（重发的那次替换上一次），`_populate_cycle` 成功时由 `BrowserArchiveRun.commit_raw` 补上 cycle、tab、viewport、cleaner 键后提交进 `RawCaptureStore`，失败的 cycle 什么也不留。sink 只在 setup 时打开了 `raw_dom` 通道时才装；装了之后，当前没有绑定要 `raw_dom` 的归档器时它什么也不放。
 - **ArchiveWatchdog**（`watchdogs/archive_watchdog.py`，`level="shared"`，`provides=∅`，先例是 `JavaScriptExecutionWatchdog`）：**按绑定安装，不按 profile**。`BrowserWatchdog.should_install(ctx)` 是新的类方法（默认 True），capability 在建 watchdog 的地方求值；ArchiveWatchdog 只在 `ctx.archive` 存在（recorder 开着且绑定了归档器）时返回 True，从没有 recorder 的 context 也能惰性地建出来。它在 archive scope 上把准入的事件交给准入它的会话（target 簿记交给每个会话），并给每一个记一次"已处理"（屏障由 `ArchiveChannel` 自己应答）；某个会话处理事件时抛错，记进 `ArchiveChannel.errors`，不打断别的会话。有会话要 `observation_cycle` 时，它覆盖 `bind_tab_scopes(observation_scope, js_scope, *, session_id)`，把 tab 观测 scope 的 `BrowserStateRequestEvent` 跨 scope 连到 archive scope（`target_scope=`），`unbind_tab` 丢掉每 tab 的状态。tab 的 scope 仍然只有观测与 JS 两个，为每 tab 第三个 scope 设计的 `TabScopes` 组合对象不做：archive scope 是 browser 级的（弹窗的流量在控制连接接管它之前就到了），那个动机已经不存在，到下一个真正 per-tab 的 scope 再泛化 `bind_tab_scopes`。
-- **`collect_archive()`**：没 setup 或什么都没绑定 → 空批次；否则入口查存活 → 屏障 → 上次收集以来有会话处理事件时抛过错（`ArchiveChannel.errors` 增加了）就抛错 → 按绑定顺序收集每个会话（每个会话在一条同步语句里换出自己的缓冲区）→ 指纹 run 记录（内容变了才再发）→ 批次。每一步都有界；采不到就抛错。
+- **`collect_archive()`**：没 setup 或什么都没绑定 → 空批次；否则入口查存活（recorder 丢了就抛错，什么也采不到）→ 屏障 → 按绑定顺序收集每个会话（每个会话在一条同步语句里换出自己的缓冲区）→ 指纹 run 记录（内容变了才再发）→ 批次。每一步都有界。损失点名到它所属的那一层，不连带别人：屏障没落定、或上次收集以来有会话处理事件时抛过错（`ArchiveChannel.errors` 增加了），是整个 capability 的缺口（`ArchiveGap` 写裸 id `browser`：这种损失不属于某一个归档器），会话照样收集；提交了的 cycle 缺原始 DOM，是每个要 `raw_dom` 的已绑定归档器的缺口；某个会话的 `collect` 抛错，是它那个归档器的缺口（如 `browser.dom_raw` 自采超时），其余会话的证据照样交出。指纹不是可选的：有步级证据的批次一定带着它（见下面"WARC 引用限于一次交出批次"），所以测不出指纹时整次收集抛错，environment 把它记成整个 capability 的缺口。
 - **实测开销**（Chrome 155，fixture 站点除 `nested_worker` 外的 12 个场景、在同一个浏览器里各访问两次，`none` 档位，DOM agent，三个归档器全开；`test_browser_archive_live.py::test_overhead_benchmark` 写出 `ArchiveOverheadReport`）：每步（导航 + 观测 + 收集）p50 多 ≈ 10–25 ms、p95 多 ≈ 90–100 ms；上限 p50 300 ms（`core/archive/budget.py::ARCHIVE_MAX_P50_OVERHEAD_MS`，度量报告的归档开销规则用的是同一个常量，§4.16；基准可用 `SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS` 临时覆盖）。字节（这次 run 收集到的全部证据，含收尾那次收集，除以步数）：去重前每步 ≈ 1061 KB，去重后 ≈ 537 KB（2026-10-13 起两个 6 MB 的 body——`large` 场景的脚本与 XHR——都边下边收、存下；之前只补取脚本、XHR 记 `too_large`，那时是 537 / 275 KB）。去重前的算法：每份内容寻址文件都计入，每条 revisit 记录按它指向的那条完整 response 记录的存储长度计入（payload 与压缩相同，只差几个头部字节）。省下的字节几乎全来自内容寻址：两个 6 MB 的 body 两次访问各收一遍，各只存一份（每步 ≈ 524 KB）。revisit 每步只净省 ≈ 83 B：gzip 后一条 revisit 记录约 510–530 B，比几十字节的 JSON 或脚本的完整记录还大，这些 payload 写成 revisit 反而各多花 50–90 B；净省主要来自 Range 视频的 206 body 和较大的 HTML 页面。
 
 #### `browser.network`
@@ -3061,7 +3074,7 @@ class ReplayabilityProtocol(Protocol):
 - **只录线上流量**：`browser.network` 永远是"录流量"（用户 2026-10-13 的裁决），不随网络来源换意思。回放（`network_source: archive`）没有自己的线上流量，送出的每个字节都已经在源归档里，所以绑定它被协作检查拒绝（按 `fetch_response` 需求，`prepare()` 就报），报错点名回放要绑定的 `browser.replay_log`（下面）。
 - 其他旋钮：`strip_request_headers`（大小写不敏感，追加在默认三个之后）、`max_post_data_size`、`allow_session_state`。原先补取大 body 的上限 `max_streamed_body_bytes` 与补取本身（`Network.loadNetworkResource` 再下载一遍，只对静态 GET）一起删掉：边下边收覆盖所有类型，64 MiB 以上一律 `too_large`。
 
-**WARC 引用限于一次交出批次。** 相同 payload 的 revisit 只引用同一 collection 的 response；每次 collection 建独立 payload 索引。记录组件可能丢失某一批后继续运行，后续批次不能依赖它未提交的 WARC。跨批内容寻址 blob 的持久化去重仍由 WAL 对已提交内容负责，归档器不维护第二份提交账。有步级证据的每批同时交出当前环境指纹，即使内容未变；WAL 对已提交的 run 记录去重。空且未变化的收集仍为空。流式 body 后到而原 exchange 未提交时，读侧明确拒绝缺失关联，不补造完整交换。
+**WARC 引用限于一次交出批次。** 相同 payload 的 revisit 只引用同一 collection 的 response；每次 collection 建独立 payload 索引。记录组件可能丢失某一批后继续运行，后续批次不能依赖它未提交的 WARC。跨批内容寻址 blob 的持久化去重仍由 WAL 对已提交内容负责，归档器不维护第二份提交账。有步级证据的每批同时交出当前环境指纹，即使内容未变；WAL 对已提交的 run 记录去重。一批只缺某个归档器的证据（`gaps` 点名它）时，其余归档器的文件照样随这一步提交：每个归档器的文件在一批里自成一体（`browser.network` 的 revisit 只指向它这一批自己的 WARC），所以缺了别的归档器不会留下悬空引用。空且未变化的收集仍为空。流式 body 后到而原 exchange 未提交时，读侧明确拒绝缺失关联，不补造完整交换。
 
 #### `browser.storage`
 
@@ -4160,7 +4173,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 **环境证据走同一个提交。** 归档文件是普通的 extra 文件，WAL 不认识它们（接口仍然只有 `TraceFile`）：
 
-- 一步的 `after_record_step` 在 manifest 提交之前拉取的批次，随**这一步**的 `commit_step(..., extra_files=...)` 落盘，列在 `steps/NNN.extra.json`；内容寻址的文件由 WAL 在 run 内去重，每个引用它的步的索引都列它。
+- 一步的 `after_record_step` 在 manifest 提交之前拉取的批次，随**这一步**的 `commit_step(..., extra_files=...)` 落盘，列在 `steps/NNN.extra.json`；内容寻址的文件由 WAL 在 run 内去重，每个引用它的步的索引都列它。拉取失败、批次被拒或带缺口时这一步照样提交，没收到的那部分证据记成这一步的记录问题（§5.4），WAL 照常写它带着的那些文件。
 - 已交出步骤的失败段始终按原 step 提交，不能重新编码成 trailing。只有未交出步骤的调用与收尾的环境批次分别使用 `commit_trailing`。每个 trailing 段携带稳定 `segment_id`；补写先核对该身份，不能把后来复用同一位置的别的段误认为本段已提交。
 - `complete_through` 是连续完整前缀，`expected_steps` 保存执行交出范围，`missing_steps` 是该范围内实际未提交的步。`steps` 保留洞后的已提交项；数量取 `len(steps)`，不能取最大索引加一。补齐全部缺口可以恢复完整，历史 `recording_problems` 保留。
 - 段已安装但提交点目录 fsync 报错时，WAL 核对实际 manifest 并同步引用索引。无法核对时停止覆盖，后续写先 `reconcile()`。run 归档版本也随实际提交核对，不能用旧版本表覆盖后来的证据；browser WARC 的 revisit 只引用同一采集批次中自包含的 response。
@@ -4277,7 +4290,7 @@ traces/
 }
 ```
 
-同一个 run 在第 2 步采集环境证据失败时，Agent 仍可执行后续步骤并最终 done；manifest 记录 `missing_steps: [2]`、`complete_through: 1`，保留第 3 步之后实际提交的内容。result.json 里的真实执行结局不因记录错误改变，metrics.recording_health 独立说明记录健康。
+同一个 run 在第 2 步采集环境证据失败时，Agent 仍可执行后续步骤并最终 done；第 2 步照样带着 StepRecord、观测与调用提交，只是没有它没收到的那部分证据（某一个归档器失败时，其余归档器的证据照样在），manifest 记录 `missing_steps: []`、`complete_through: 1`、一条第 2 步的记录问题（通道是丢了证据的归档器，或 `archive`），保留第 3 步之后实际提交的内容。`missing_steps` 只列真正没提交的步（写入失败、缓冲满）。result.json 里的真实执行结局不因记录错误改变，metrics.recording_health 独立说明记录健康。
 
 **两本账（用户 2026-10-13 的裁决）。** `result.json` 只说 agent 怎么结束：done / max_steps / error / timeout / vetoed（`AgentDoneStatus`）。manifest 只说 trace 记全没有：
 
@@ -4285,7 +4298,7 @@ traces/
 |---|---|---|
 | `writing` | trace 未关闭；可能仍在运行或进程未完成收尾，已提交索引仍可供查看 | `init_run` |
 | `complete` | 已关闭，在声明记录范围内完整；已恢复的历史故障仍可见 | `finalize` |
-| `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容（run 可继续）、收尾那次收集、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
+| `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容或它的某一路归档证据（run 可继续）、收尾那次收集（含超出 `closeout_collection_timeout`）、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（每一项 `<通道>: <错误类>: <原因>`，几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
 `complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
@@ -4560,9 +4573,11 @@ class StepRecord(BaseModel):
 - 不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_action_spans_do_not_reach_the_prompt`）。
 - 无环境的 run 没有 `env.act` 可拦：`TraceWriter` 经 `EnvironmentInterceptor` 得知后不声明这一拦截（§4.6），run 照常装配，各步记 `[]`。
 
-交接先封存，后台持久化后提交。输入快照在交接时完成；重试只保留同一封存段，不能改名 trailing。记录组件隔离初始化、采集、编码、提交和收尾的异常，真实执行异常原样传播。默认缓冲 64 个段、最多重试 2 次、重试间隔 0.05 秒、收尾等待 5 秒；这些是记录配置，绝非停机策略。满缓冲丢失的段有健康诊断，后续段继续尝试；恢复等待只在后台和收尾发生。
+交接先封存，后台持久化后提交。输入快照在交接时完成；重试只保留同一封存段，不能改名 trailing。记录组件隔离初始化、采集、编码、提交和收尾的异常，真实执行异常原样传播。默认缓冲 64 个段、最多重试 2 次、重试间隔 0.05 秒；这些是记录配置，绝非停机策略。满缓冲丢失的段有健康诊断，后续段继续尝试；恢复等待只在后台和收尾发生。
 
-归档仍从原始 environment.collect_archive 拉取；它决定批次所属步骤，每条证据自己的 captured_at/cycle/ids 保留，不推断动作因果。归档 run 版本按采集顺序保留，去重只信任提交索引；跨批次引用不得指向未提交对象。归档摘要日志显式标记折叠、代表次数、首末时间和事件类别。
+**收尾的两段等待各自计时。** 收尾先把未交出步骤的调用排进队列，再做最后一次归档收集，最多 `closeout_collection_timeout`（默认 10 秒，`CLOSEOUT_COLLECTION_TIMEOUT_S`：capability 自己给收集设了界，browser 光等事件通道就可能 5 秒，这只是兜底，留够时间让慢的 capability 报出自己的失败并交出健康归档器的证据）；超时、失败或缺口都只是收尾的一条归档问题，超时的 `detail` 写明预算。之后后台写入另有一整段 `close_timeout`（默认 5 秒），从收集结束时起算，把队列写完、写 `result.json` 并关闭 manifest。所以环境卡死只能让 trace 以 `incomplete` 关闭，不能让它停在 `writing`；两段若共用一个预算，卡住的收集会把它用光，写入只剩零头，`result.json` 写不成、manifest 停在 `writing`。只有写入本身超出自己的预算（一次卡在内核里的写）才停止后续写入、保持 manifest 原样：一个可能还会落盘的写之后不能再接一次关闭。每条记录问题的日志都写出通道与 `detail`（`Recording <phase> failed at step <step> (<channel>): <error>: <detail>`），`incomplete_reason` 的每一项也是 `<channel>: <error>: <detail>`。
+
+归档仍从原始 environment.collect_archive 拉取；它决定批次所属步骤，每条证据自己的 captured_at/cycle/ids 保留，不推断动作因果。**一次收集失败只丢它没收到的证据，不丢这一步。** 拉取在封存之后，撤销不了封存：收集抛错、被记录器按契约拒绝（`ArchiveContractError`）或被取消时，这一步照样带着 StepRecord、观测与调用提交，只是没有归档文件，原因记成这一步的一条记录问题（通道 `archive`，阶段 `collect`；取消时先把封存段排进队列再让取消继续）。批次里的每条 `ArchiveGap` 记成这一步的一条记录问题，通道就是缺口的 `archiver_id`（`browser.dom_raw`，或整个 capability 的 id），批次里其余的证据照常随这一步提交。这一步因此留在 `steps` 里，`missing_steps` 不列它，`complete_through` 截在它之前（未恢复的、有步号的问题截断前缀，§5.3）。收尾那次收集的缺口同样记成问题，步号为空，不抹掉已有的完整前缀。归档 run 版本按采集顺序保留，去重只信任提交索引；跨批次引用不得指向未提交对象。归档摘要日志显式标记折叠、代表次数、首末时间和事件类别。
 
 逻辑请求保存框架交给 provider 的消息和 requested output schema，不冒充 provider 转换后的 wire 报文。记录失败保存取得的异常类型、原因、partial/raw output 和 usage，不伪造 completion。
 

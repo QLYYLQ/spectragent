@@ -208,7 +208,7 @@ class TestTheVisionSelfCapture:
         finally:
             await cap.teardown()
 
-    async def test_a_failed_self_capture_fails_the_next_collection(self) -> None:
+    async def test_a_failed_self_capture_is_a_gap_in_the_next_collection(self) -> None:
         cap, driver = await _dom_raw_capability(fragments=frozenset({"browser.screenshot"}))
         await driver.start()
         try:
@@ -216,8 +216,10 @@ class TestTheVisionSelfCapture:
                 archiver.self_capture_timeout_s = 0.05  # type: ignore[attr-defined]
             driver.browser.hold("DOM.getDocument", session_id=driver.page_session())
             await driver.observe()
-            with pytest.raises(Exception, match="raw DOM missing"):
-                await cap.collect_archive()
+            batch = await cap.collect_archive()
+            assert {gap.archiver_id for gap in batch.gaps} == {"browser.dom_raw"}
+            assert all("raw DOM missing" in gap.detail for gap in batch.gaps)
+            assert _documents(list(batch.files)) == []
         finally:
             await cap.teardown()
 

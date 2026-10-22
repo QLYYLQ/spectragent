@@ -699,8 +699,12 @@ class TestTheCloseOut:
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == 0
         reason = trace.manifest.incomplete_reason or ""
-        assert "ArchiveCollectionError" in reason
+        assert f"{CAPABILITY_ID}: RuntimeError:" in reason
         assert "broken on purpose" in reason
+        problem = _problem(
+            bench.writer, step=None, error="RuntimeError", detail="broken on purpose"
+        )
+        assert (problem.channel, problem.phase) == (CAPABILITY_ID, "closeout")
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
         assert as_chat(trace.trailing_calls[0]).messages[0].text == "the last word"
         # And never again: ``on_run_error`` does not retry the collection.
@@ -987,20 +991,21 @@ BREACHES: dict[str, tuple[Any, str]] = {
 
 class TestArchiveFaultsPreserveExecution:
     @pytest.mark.parametrize("breach", list(BREACHES))
-    async def test_an_invalid_batch_loses_its_segment_but_later_steps_still_commit(
+    async def test_an_invalid_batch_loses_its_evidence_but_not_its_step(
         self, tmp_path, breach
     ) -> None:
         batch, why = BREACHES[breach]
         env = ScriptedEnv(batch)
         writer, run_dir = await _scripted_start(tmp_path, env)
-        await _call(writer, "the invalid segment's call")
+        await _call(writer, "the invalid batch's step call")
         await _commit(writer, 0)
 
         trace = RunTrace(run_dir)
-        assert trace.step(0) is None
+        assert trace.step(0) is not None
         assert not (run_dir / "env").exists()
         problem = _problem(writer, step=0, error="ArchiveContractError", detail=why)
-        assert problem.phase == "capture" and not problem.recovered
+        assert (problem.channel, problem.phase) == ("archive", "collect")
+        assert not problem.recovered
         await _call(writer, "the later step's call")
         await _commit(writer, 1)
         result = _done()
@@ -1009,13 +1014,16 @@ class TestArchiveFaultsPreserveExecution:
         trace = RunTrace(run_dir)
         assert env.calls == 3
         assert result.agent_done == AgentDoneStatus.DONE and result.error is None
-        assert trace.step(0) is None and trace.step(1) is not None
+        assert trace.step(0) is not None and trace.step(1) is not None
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(0)] == [
+            "the invalid batch's step call"
+        ]
         assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == [
             "the later step's call"
         ]
         assert trace.trailing_calls == []
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.manifest.missing_steps == [0]
+        assert trace.manifest.missing_steps == []
         assert trace.manifest.complete_through == -1
         assert why in (trace.manifest.incomplete_reason or "")
         assert not (run_dir / "env").exists()
@@ -1059,34 +1067,87 @@ class TestArchiveFaultsPreserveExecution:
 
         trace = RunTrace(run_dir)
         assert env.calls == 4
-        assert [entry.step for entry in trace.manifest.steps] == [0, 2]
-        assert trace.step_count == 2
-        assert trace.step(1) is None
+        assert [entry.step for entry in trace.manifest.steps] == [0, 1, 2]
+        assert trace.step_count == 3
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == ["step 1"]
         assert [as_chat(call).messages[0].text for call in trace.llm_messages(2)] == ["step 2"]
         assert trace.trailing_calls == []
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.manifest.missing_steps == [1]
+        assert trace.manifest.missing_steps == []
         assert trace.manifest.complete_through == 0
-        assert "socket gone" in (trace.manifest.incomplete_reason or "")
-        _problem(writer, step=1, error="RuntimeError", detail="socket gone")
+        assert "archive: RuntimeError: socket gone" in (trace.manifest.incomplete_reason or "")
+        problem = _problem(writer, step=1, error="RuntimeError", detail="socket gone")
+        assert (problem.channel, problem.phase) == ("archive", "collect")
 
-    async def test_a_cancelled_collection_propagates_and_keeps_its_segment_missing(self, tmp_path):
+    async def test_one_archivers_gap_keeps_the_step_and_the_other_archivers_evidence(
+        self, tmp_path
+    ) -> None:
+        bench = Bench(tmp_path)
+        await bench.start()
+        await bench.step(0, call="whole step")
+        bench.cap.failing.add(BLOBS_KEY)
+        await bench.step(1, call="step without its bodies")
+        bench.cap.failing.clear()
+        await bench.step(2)
+        await bench.writer.on_run_end(result=_done())
+
+        trace = bench.trace()
+        assert [entry.step for entry in trace.manifest.steps] == [0, 1, 2]
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == [
+            "step without its bodies"
+        ]
+        assert [r.name for r in trace.archive_files(1, STEPS_KEY)] == ["cycle_002.json"]
+        assert trace.archive_files(1, BLOBS_KEY) == []
+        assert [len(trace.archive_files(step, BLOBS_KEY)) for step in (0, 2)] == [1, 1]
+        (problem,) = bench.writer.health.problems
+        assert (problem.step, problem.channel, problem.phase) == (1, BLOBS_KEY, "collect")
+        assert problem.detail == f"{BLOBS_KEY}: evidence lost on purpose"
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.missing_steps == []
+        assert trace.manifest.complete_through == 0
+        assert trace.manifest.incomplete_reason == (
+            f"{BLOBS_KEY}: RuntimeError: {BLOBS_KEY}: evidence lost on purpose"
+        )
+
+    async def test_a_gap_at_close_out_keeps_the_tails_other_evidence(self, tmp_path) -> None:
+        bench = Bench(tmp_path)
+        await bench.start()
+        await bench.step(0)
+        await bench.cap.produce(1)
+        bench.cap.failing.add(BLOBS_KEY)
+        await bench.writer.on_run_end(result=_done())
+
+        trace = bench.trace()
+        assert [
+            (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
+        ] == [(0, "cycle_001.json"), (None, "cycle_002.json")]
+        (problem,) = bench.writer.health.problems
+        assert (problem.step, problem.channel, problem.phase) == (None, BLOBS_KEY, "closeout")
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == 0
+        assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
+
+    async def test_a_cancelled_collection_propagates_and_still_queues_its_step(self, tmp_path):
+        """The step was sealed before the pull; the cancellation costs its evidence, not it."""
         tail = archive_item(STEPS_KEY, "tail.json", b"{}")
         env = ScriptedEnv(ArchiveBatch(), asyncio.CancelledError(), ArchiveBatch((tail,)))
         writer, run_dir = await _scripted_start(tmp_path, env)
         await _commit(writer, 0)
         await _call(writer, "cancelled collection's original call")
         with pytest.raises(asyncio.CancelledError):
-            await _commit(writer, 1)
+            await writer.after_record_step(None, args=(step_record(1),), kwargs={})
         await writer.on_run_end(result=_failed("Execution cancelled"))
 
         trace = RunTrace(run_dir)
         assert env.calls == 3
-        assert trace.step(1) is None
+        assert trace.step(1) is not None
+        assert [as_chat(call).messages[0].text for call in trace.llm_messages(1)] == [
+            "cancelled collection's original call"
+        ]
         assert trace.trailing_calls == []
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.manifest.missing_steps == [1]
-        assert "capture cancelled" in (trace.manifest.incomplete_reason or "")
+        assert trace.manifest.missing_steps == []
+        assert "collection cancelled" in (trace.manifest.incomplete_reason or "")
         assert trace.manifest.complete_through == 0
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
@@ -1576,18 +1637,21 @@ class TestThroughTheRuntime:
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == failing_step - 1
-        assert trace.manifest.missing_steps == list(range(failing_step, 3))
+        assert trace.manifest.missing_steps == []
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
         assert trace.result.error is None
-        assert trace.step(failing_step) is None
-        assert trace.archive_files(failing_step, STEPS_KEY) == []
+        assert [entry.step for entry in trace.manifest.steps] == [0, 1, 2]
+        for step in range(failing_step, 3):
+            assert trace.archive_files(step, STEPS_KEY) == []
+            assert len(trace.llm_messages(step)) == 1, "the step's model call is kept"
         assert trace.trailing_calls == []
         assert cap.collect_calls == 4
         assert result.metrics.recording_health is not None
-        assert result.metrics.recording_health.missing_steps == list(range(failing_step, 3))
-        _problem(
-            writer, step=failing_step, error="ArchiveCollectionError", detail="broken on purpose"
+        assert result.metrics.recording_health.missing_steps == []
+        problem = _problem(
+            writer, step=failing_step, error="RuntimeError", detail="broken on purpose"
         )
+        assert (problem.channel, problem.phase) == (CAPABILITY_ID, "collect")
 
     async def test_recording_health_is_separate_from_the_successful_execution_result(
         self, tmp_path
@@ -1607,8 +1671,9 @@ class TestThroughTheRuntime:
         assert result.metrics.llm_calls == 3
         assert result.metrics.recording_health is not None
         assert result.metrics.recording_health.status == "incomplete"
-        assert result.metrics.recording_health.missing_steps == [0, 1, 2]
-        assert result.metrics.recording_health.committed_steps == 0
+        assert result.metrics.recording_health.missing_steps == []
+        assert result.metrics.recording_health.committed_steps == 3
+        assert result.metrics.recording_health.complete_through == -1
         assert writer.run_dir is not None
         assert RunTrace(writer.run_dir).manifest.status == TraceStatus.INCOMPLETE
 
@@ -1635,9 +1700,10 @@ class TestThroughTheRuntime:
         assert trace.result is not None and trace.result.answer == "42"
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == -1
-        assert "ArchiveCollectionError" in (trace.manifest.incomplete_reason or "")
-        assert trace.manifest.missing_steps == [0]
-        assert trace.step(0) is None
+        assert "broken on purpose" in (trace.manifest.incomplete_reason or "")
+        assert trace.manifest.missing_steps == []
+        assert trace.step(0) is not None
+        assert trace.archive_files(0, STEPS_KEY) == []
         assert trace.trailing_calls == []
         assert cap.collect_calls == 2
 
@@ -1675,9 +1741,11 @@ class TestThroughTheRuntime:
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == 0  # the policy step is whole
-        assert "ArchiveCollectionError" in (trace.manifest.incomplete_reason or "")
-        assert trace.manifest.missing_steps == [1]
-        assert trace.step(1) is None
+        assert "broken on purpose" in (trace.manifest.incomplete_reason or "")
+        assert trace.manifest.missing_steps == []
+        terminal = trace.step(1)
+        assert terminal is not None and terminal.origin == "terminal"
+        assert trace.archive_files(1, STEPS_KEY) == []
 
     async def test_a_failed_tail_on_a_successful_run_keeps_its_outcome(self, tmp_path):
         """Not raised from ``execute``: the outcome is decided; the trace says what it lost."""
@@ -1693,7 +1761,7 @@ class TestThroughTheRuntime:
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == 0
-        assert "ArchiveCollectionError" in (trace.manifest.incomplete_reason or "")
+        assert "broken on purpose" in (trace.manifest.incomplete_reason or "")
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
         assert trace.step(0) is not None
         assert [r.name for _, r in trace.iter_archive(STEPS_KEY)] == ["cycle_001.json"]
@@ -1708,19 +1776,20 @@ class TestThroughTheRuntime:
                 "t", timeout=10, raise_on_error=False
             )
 
-        assert "ArchiveCollectionError" not in str(caught.value)
-        _problem(writer, step=1, error="ArchiveCollectionError", detail="broken on purpose")
+        assert "broken on purpose" not in str(caught.value)
+        _problem(writer, step=1, error="RuntimeError", detail="broken on purpose")
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == 0
-        assert trace.manifest.missing_steps == [1]
-        assert trace.step(1) is None
+        assert trace.manifest.missing_steps == []
+        assert trace.step(1) is not None, "the vetoed step is recorded without its evidence"
+        assert trace.archive_files(1, STEPS_KEY) == []
         assert trace.trailing_calls == []
         assert trace.result is not None and "risk-control page detected" in (
             trace.result.error or ""
         )
-        assert "ArchiveCollectionError" not in (trace.result.error or "")
+        assert "broken on purpose" not in (trace.result.error or "")
         assert trace.result.agent_done == AgentDoneStatus.VETOED
         assert cap.collect_calls == 3
 
@@ -1738,12 +1807,14 @@ class TestThroughTheRuntime:
         assert result.error is not None
         assert result.error.startswith("observe failed at step 1: ObservationFailedError")
         assert "ConnectionError: CDP websocket closed" in result.error
-        assert "ArchiveCollectionError" not in result.error
-        _problem(writer, step=1, error="ArchiveCollectionError", detail="broken on purpose")
+        assert "broken on purpose" not in result.error
+        _problem(writer, step=1, error="RuntimeError", detail="broken on purpose")
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.step(1) is None
+        failed = trace.step(1)
+        assert failed is not None and failed.error_phase == "observe"
+        assert trace.archive_files(1, STEPS_KEY) == []
         assert trace.result is not None and trace.result.error == result.error
 
     async def test_such_a_veto_still_stops_the_sweep(self, tmp_path) -> None:
@@ -1795,15 +1866,16 @@ class TestThroughTheRuntime:
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.manifest.last_step_completed == 0
-        assert trace.step(1) is None  # cut off: never committed
+        # Sealed before its collection was cut off: recorded without its evidence.
+        assert trace.step(1) is not None
+        assert trace.manifest.complete_through == 0
         assert trace.trailing_calls == []
         # The stalled collection took nothing; the close-out took the vetoed page's evidence.
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(0, "cycle_001.json"), (None, "cycle_002.json")]
-        assert "capture cancelled" in (trace.manifest.incomplete_reason or "")
-        assert trace.manifest.missing_steps == [1]
+        assert "collection cancelled" in (trace.manifest.incomplete_reason or "")
+        assert trace.manifest.missing_steps == []
         assert trace.result is not None
         assert trace.result.agent_done == AgentDoneStatus.VETOED
         assert trace.result.error == (
@@ -1832,7 +1904,8 @@ class TestThroughTheRuntime:
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.step(1) is None
+        assert trace.manifest.complete_through == 0
+        assert trace.archive_files(1, STEPS_KEY) == []
         assert trace.result is not None and trace.result.error == result.error
 
     async def test_such_a_veto_stops_the_sweep_when_the_timeout_cuts_its_step_off(

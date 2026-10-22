@@ -19,9 +19,12 @@ the sessions:
   directly, in the action's own task, each within its budget.
 - :meth:`BrowserArchiveRun.collect` is ``collect_archive`` after the
   capability's liveness check: the channel flush (every metadata event
-  emitted so far was handled, or the collection fails), then each session in
-  binding order, then the fingerprint run record. Every step is bounded; a
-  step that cannot collect raises.
+  emitted so far was handled, or the batch names a gap for the whole
+  capability), then each session in binding order, then the fingerprint run
+  record. Every step is bounded. A session that cannot collect leaves a gap
+  under its archiver and takes nobody else's evidence with it; only a
+  fingerprint that cannot be measured fails the collection, because every
+  batch with step evidence carries its fingerprint.
 """
 
 import asyncio
@@ -30,7 +33,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from spectragent.core.archive import ArchiveBatch, ArchiveFile
+from spectragent.core.archive import ArchiveBatch, ArchiveFile, ArchiveGap
 from spectragent.core.capabilities.browser.archive.base import (
     SELF_CAPTURE,
     ActionBoundary,
@@ -244,26 +247,51 @@ class BrowserArchiveRun:
 
         *network_fingerprint* is the network source's block (``None``: live);
         *browser_defaults* what the capability measured right after launch.
+
+        What fails is named, not spread: a channel that lost metadata (a
+        flush that did not settle, an event handler that raised) is a gap of
+        the whole capability, since its loss is not one archiver's; a cycle
+        whose raw DOM never arrived is a gap of each bound archiver that
+        needs ``raw_dom``; a session whose ``collect`` raises is a gap of its
+        archiver. Every other session still hands over what it holds. The
+        fingerprint is not optional: a batch with step evidence carries it
+        (§4.14), so one that cannot be measured raises and the environment
+        records the whole capability's collection as failed.
         """
         ctx = self._ctx
         if ctx is None or not self._sessions:
             return ArchiveBatch()
-        await self.channel.flush(timeout=FLUSH_TIMEOUT_S)
-        if self._raw_failures:
-            failures, self._raw_failures = self._raw_failures, []
-            raise ArchiveChannelError(
-                "raw DOM missing for committed cycles: " + "; ".join(failures)
-            )
+        capability = self.fingerprint.capability_id
+        gaps: list[ArchiveGap] = []
+        try:
+            await self.channel.flush(timeout=FLUSH_TIMEOUT_S)
+        except Exception as exc:
+            gaps.append(ArchiveGap.of(capability, exc))
         if self.channel.errors > self._errors_seen:
             failed = self.channel.errors - self._errors_seen
             self._errors_seen = self.channel.errors
-            raise ArchiveChannelError(
-                f"{failed} archive event handler(s) failed since the last collection "
-                f"(see the log); this collection would be incomplete"
+            gaps.append(
+                ArchiveGap.of(
+                    capability,
+                    ArchiveChannelError(
+                        f"{failed} archive event handler(s) failed since the last collection "
+                        f"(see the log); what this collection hands over may be incomplete"
+                    ),
+                )
             )
+        if self._raw_failures:
+            failures, self._raw_failures = self._raw_failures, []
+            missing = ArchiveChannelError(
+                "raw DOM missing for committed cycles: " + "; ".join(failures)
+            )
+            wanting = [a.archiver_id for a, _ in self._sessions if "raw_dom" in a.needs]
+            gaps.extend(ArchiveGap.of(key, missing) for key in wanting or [capability])
         files: list[ArchiveFile] = []
         for _, session in self._sessions:
-            files.extend(await session.collect())
+            try:
+                files.extend(await session.collect())
+            except Exception as exc:
+                gaps.append(ArchiveGap.of(session.archiver_id, exc))
         record = await self.fingerprint.collect(
             recorder=ctx.recorder,
             tabs=ctx.tabs(),
@@ -281,7 +309,7 @@ class BrowserArchiveRun:
         )
         if record is not None:
             files.append(record)
-        return ArchiveBatch(tuple(files))
+        return ArchiveBatch(tuple(files), tuple(gaps))
 
     async def aclose(self) -> None:
         """Attempt every session; keep failed resources reachable for a retry."""

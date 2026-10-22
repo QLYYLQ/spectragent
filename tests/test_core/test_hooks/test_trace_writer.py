@@ -197,6 +197,7 @@ class TestTheConstructorSurface:
             "write_retries",
             "retry_delay",
             "close_timeout",
+            "closeout_collection_timeout",
         }
         assert TraceWriter.__wiring__ == {"archive": "archiver"}
 
@@ -215,6 +216,7 @@ class TestTheConstructorSurface:
             "write_retries",
             "retry_delay",
             "close_timeout",
+            "closeout_collection_timeout",
         }
         config = TraceWriterHookConfig.model_validate(
             {"archive": [{"archiver_id": "browser.network", "drain_timeout_s": 0.5}]}
@@ -974,5 +976,5 @@ class TestTrailingCalls:
 
         trace = RunTrace(run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.manifest.incomplete_reason == "OSError: disk full"
+        assert trace.manifest.incomplete_reason == "result: OSError: disk full"
         assert trace.result is None

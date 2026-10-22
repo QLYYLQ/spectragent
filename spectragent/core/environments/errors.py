@@ -103,33 +103,3 @@ class UnroutableArchiverError(Exception):
         )
         self.problems = ordered
         self.capability_ids = capability_ids
-
-
-class ArchiveCollectionError(Exception):
-    """One or more capabilities failed to hand over their evidence.
-
-    Collection is concurrent and every capability is waited for before the
-    outcome is decided, so the message reports the *complete* failure set,
-    in capability order. A capability fails by raising, or by handing over
-    a file whose ``capability_id`` is not its own (recorded as an
-    ``ArchiveContractError``). The batches the healthy capabilities handed
-    over are discarded. The archive consumer records the collection failure
-    as recording-health evidence; it does not change the agent's outcome
-    (``docs/architecture_design.md`` §4.6).
-
-    Attributes:
-        env_type: The environment that collected.
-        failures: Capability id → its exception, in capability order. The
-            first one is also this error's ``__cause__``.
-    """
-
-    def __init__(self, env_type: str, failures: Mapping[str, BaseException]) -> None:
-        detail = "; ".join(
-            f"{cap_id}: {type(exc).__name__}: {exc}" for cap_id, exc in failures.items()
-        )
-        super().__init__(
-            f"Environment {env_type!r} could not collect the archive from "
-            f"capability(ies) {list(failures)}: {detail}."
-        )
-        self.env_type = env_type
-        self.failures = dict(failures)
