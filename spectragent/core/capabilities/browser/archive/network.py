@@ -817,7 +817,7 @@ class NetworkSession(BrowserArchiveSession):
         late_note = f"{LATE_BODY_NOTE}: it took longer than body_read_timeout_s ({held:g}s)"
         try:
             self._keep_body(
-                hop, reply, f"{note}; {late_note}" if note else late_note, content_range
+                hop, reply, f"{late_note}; {note}" if note else late_note, content_range
             )
         except Exception as exc:  # a bug here must not pass silently
             self._errors.append(f"late body read {hop.url}: {exc!r}")

@@ -534,6 +534,32 @@ class TestBodiesReadAfterTheRelease:
         assert "failed after the response was released" in line["body_note"]
         assert line["error_text"] == "net::ERR_CONNECTION_RESET"
 
+    async def test_a_large_document_read_late_says_so_first(self) -> None:
+        """A document over the inline tier is read inline too; its note leads with the late read."""
+        session, recorder = _session(body_read_timeout_s=0.05, max_inline_body_bytes=8)
+        gate = asyncio.Event()
+        recorder.holds["Fetch.getResponseBody"] = gate
+        recorder.bodies["i1"] = b"<html>" + b"x" * 64 + b"</html>"
+        deliver(session, _request_event("n1"))
+        await session.on_paused(
+            paused(
+                request_id="i1",
+                network_id="n1",
+                url=URL,
+                resource_type="Document",
+                headers={"Content-Type": "text/html", "Content-Length": "77"},
+            )
+        )
+        deliver(session, _response_event("n1"))
+        deliver(session, _finished("n1"))
+        gate.set()
+        await asyncio.sleep(0.05)
+        (line,) = _index(await session.collect())
+        assert line["body_status"] == "ok"
+        assert line["body_note"].startswith(LATE_BODY_NOTE)
+        assert "a document is read inline" in line["body_note"]
+        assert "Network.streamResourceContent" not in recorder.methods()
+
     async def test_closing_the_session_stops_waiting(self) -> None:
         session, recorder = _session(body_read_timeout_s=0.05)
         await self._slow_document(session, recorder, b"late")
