@@ -232,6 +232,15 @@ The same rule covers everything people read, not only commit messages. Identifie
 
 The repo-scoped `af-project-history` skill under `.agents/skills/` contains curated historical decisions, experiment context, and an unfinished-work ledger migrated from Claude project memory and handoffs. Use it when the user asks to resume earlier work, explain why a boundary exists, or revisit prior anti-bot, input, LLM-routing, JEV, roadmap, handoff, or asset work. Its references are historical evidence and continuation state, not a source of current implementation truth: re-check the relevant architecture section, code, and tests before acting.
 
+### 3.9 Waiting for long-running work
+
+Do not wait for a run, a test sweep or a server with a fixed `sleep N` followed by a look at its log. A guessed pause is either too short (another round) or too long (idle wall-clock time), and one longer than the tool's command timeout is killed outright. Session history up to 2026-10-22 held about 500 such pauses, about 22 hours of idle time, almost all `sleep N; tail log`.
+
+- If your harness notifies you when a background command exits, start the job in the background and rely on that notification. Do not poll it.
+- If you must block on the outcome (a subagent that needs a run's result to continue), wait on the event itself, with an upper bound. Run it in the foreground with an explicit timeout when it fits, or use `wait <pid>`, `timeout <s> tail -f <log> | grep -m1 '<finished line>'`, or `timeout <s> sh -c 'until <condition>; do sleep 1; done'`. Keep each blocking command under the tool's command timeout.
+- To check that a server or job started, poll for readiness (the port answers, the ready line is in the log) at a short interval with an upper bound. Do not use a fixed pause.
+- A fixed pause is right only where the delay itself is the point: a test that needs time to pass, or rate limiting.
+
 ## 4. External dependencies worth knowing
 
 - `conscribe` (v≥2.1.0,<3, in-house) — the registrar + `__wiring__` + config-generation framework. Its three-element `__wiring__` tuple (`(registry, required, optional)`) is the keystone of the whole design. M01 in the DAG = already shipped.
