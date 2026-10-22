@@ -333,8 +333,15 @@ def write_run(
     trailing_frames: list[Frame] | None = None,
     status: TraceStatus = TraceStatus.COMPLETE,
     result: AgentResult | None = None,
+    viewport: tuple[int, int] = SIZE,
+    pointer: tuple[int, int] | None = (5, 5),
 ) -> Path:
-    """One run directory ``base/run_id``; the path."""
+    """One run directory ``base/run_id``; the path.
+
+    Screenshots are ``SIZE`` pixels showing a *viewport* of CSS pixels (by
+    default the same size: device scale 1); *pointer* is the pointer position
+    each capture recorded (``None``: unknown).
+    """
     resolved: dict[str, Any] = {}
     if network_source is not None:
         resolved = {
@@ -377,8 +384,8 @@ def write_run(
         if spec.observed and spec.image is not None:
             shot = ScreenshotObs(
                 image_bytes=spec.image,
-                viewport_width=SIZE[0],
-                viewport_height=SIZE[1],
+                viewport_width=viewport[0],
+                viewport_height=viewport[1],
                 image_width=SIZE[0],
                 image_height=SIZE[1],
                 source_url=spec.url,
@@ -387,7 +394,9 @@ def write_run(
                 captured_at=1000.0 + 10 * spec.step,
             )
             state = BrowserCaptureStateObs(
-                pointer=PointerState(status="known", x=5, y=5),
+                pointer=PointerState(status="known", x=pointer[0], y=pointer[1])
+                if pointer is not None
+                else PointerState(status="unknown"),
                 failed_visible_resources=FailedVisibleResources(status="measured", count=0),
                 settle=spec.settle,
                 captured_at=1000.0 + 10 * spec.step,

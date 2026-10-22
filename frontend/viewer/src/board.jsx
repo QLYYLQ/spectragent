@@ -11,20 +11,22 @@ import {
   resizeBox,
   toImagePoint,
 } from "./boxes.js";
+import { MarkLayer, MarkLegend } from "./marks.jsx";
 
 export const ZOOMS = ["fit", 1, 1.5, 2, 3];
 export const COMPARE_MODES = [
-  { value: "side", text: "Side by side" },
-  { value: "flip", text: "Flip" },
-  { value: "difference", text: "Difference" },
+  { value: "side", text: "并排" },
+  { value: "flip", text: "切换" },
+  { value: "difference", text: "差异" },
 ];
 
 export function zoomText(zoom) {
-  return zoom === "fit" ? "Fit" : `${Math.round(zoom * 100)}%`;
+  return zoom === "fit" ? "适合窗口" : `${Math.round(zoom * 100)}%`;
 }
 
 /**
- * images: [{ role, text, src, detail }]
+ * images: [{ role, text, src, detail, marks }] (`marks`: the served action
+ * marks of that image, or null)
  * regions: the draft's regions; kinds: [{ value, text, color }] or null
  */
 export function ImageBoard({
@@ -42,6 +44,7 @@ export function ImageBoard({
   flipIndex = 0,
   zoom = "fit",
   fit = "window",
+  showMarks = true,
 }) {
   // Sizes belong to the images on show; a new set starts unmeasured, so a
   // drag never maps through the previous item's image size.
@@ -73,7 +76,7 @@ export function ImageBoard({
     );
   if (!images.length)
     return (
-      <div className="board-empty">This item has no images to compare.</div>
+      <div className="board-empty">这个条目没有可以比较的图片。</div>
     );
   const panel = (image, extra = {}) => (
     <ImagePanel
@@ -91,6 +94,7 @@ export function ImageBoard({
       onChange={onChange}
       zoom={zoom}
       fit={fit}
+      showMarks={showMarks}
       {...extra}
     />
   );
@@ -100,13 +104,14 @@ export function ImageBoard({
       <div className="board single">
         {!comparable && sizes[base.role] && sizes[top.role] && (
           <p className="board-note">
-            The two images differ in size, so the difference is only approximate.
+            两张图大小不同，差异只是大致的。
           </p>
         )}
         {panel(base, {
           overlay: top,
-          caption: `Difference of ${base.text || base.role} and ${top.text || top.role}. Black means the pixels did not change.`,
+          caption: `“${base.text || base.role}”和“${top.text || top.role}”的差异：黑色表示像素没有变化。`,
           editable: false,
+          marks: null,
         })}
       </div>
     );
@@ -116,7 +121,7 @@ export function ImageBoard({
     return (
       <div className="board single">
         {panel(shown, {
-          caption: `Showing ${(flipIndex % images.length) + 1} of ${images.length}. Press F to flip.`,
+          caption: `正在看第 ${(flipIndex % images.length) + 1} 张，共 ${images.length} 张。按 F 切换。`,
         })}
       </div>
     );
@@ -149,6 +154,8 @@ function ImagePanel({
   fit,
   overlay = null,
   caption = null,
+  showMarks = true,
+  marks = image.marks,
 }) {
   const surface = useRef(null);
   const [drag, setDrag] = useState(null);
@@ -264,10 +271,11 @@ function ImagePanel({
           </span>
         )}
         <a href={image.src} target="_blank" rel="noreferrer">
-          Original
+          原图
         </a>
       </figcaption>
       {caption && <p className="board-caption">{caption}</p>}
+      {marks && <MarkLegend data={marks} hidden={!showMarks} />}
       <div className="board-viewport" ref={viewport}>
         {failed ? (
           <div className="board-missing" role="alert">
@@ -298,6 +306,7 @@ function ImagePanel({
             {overlay && (
               <img className="board-difference" src={overlay.src} alt="" draggable="false" />
             )}
+            {marks && showMarks && <MarkLayer data={marks} />}
             {size &&
               proposals.map((region, index) => (
                 <div
@@ -305,7 +314,7 @@ function ImagePanel({
                   className={`region suggested ${tagPlacement(region.box, size)}`}
                   style={{ ...boxStyle(region.box, size), "--kind": colors[region.kind]?.color }}
                 >
-                  <span className="region-tag" title="Suggested">
+                  <span className="region-tag" title="建议的框">
                     {colors[region.kind]?.text || region.kind}
                   </span>
                 </div>
@@ -357,12 +366,12 @@ function tagPlacement([x0, y0, x1], size) {
 /** An <img> error has no body; ask once more to show the viewer's reason. */
 function explainFailure(image, setFailed) {
   const name = image.text || image.role;
-  setFailed(`${name} could not be loaded.`);
+  setFailed(`“${name}”加载不出来。`);
   fetch(image.src)
     .then((response) => response.json())
     .then((data) => {
       if (typeof data.detail === "string")
-        setFailed(`${name} could not be loaded: ${data.detail}`);
+        setFailed(`“${name}”加载不出来：${data.detail}`);
     })
     .catch(() => {});
 }

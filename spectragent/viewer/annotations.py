@@ -36,9 +36,7 @@ from spectragent.annotation.labels import step_target, target
 from spectragent.inspection.repository import RunRepository
 from spectragent.schemas.observation.image import image_media_type
 
-DISABLED = (
-    "Labeling is off. Start the viewer with --annotations DIR to label review queues and steps."
-)
+DISABLED = "标注没有打开。用 --annotations DIR 启动查看器，才能标注审阅队列和步骤。"
 
 
 class QueueLabelRequest(LabelDraft):
@@ -134,7 +132,7 @@ def host_refusal(request: Request) -> tuple[int, str] | None:
     try:
         ipaddress.ip_address(name)
     except ValueError:
-        return 403, "Open the viewer at an IP address or localhost; host names are refused"
+        return 403, "请用 IP 地址或 localhost 打开查看器；不接受其他主机名"
     return None
 
 
@@ -144,7 +142,7 @@ def write_refusal(request: Request) -> tuple[int, str] | None:
     Checked before the body is read, for every review request that is not a read.
     """
     if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
-        return 415, "Label writes are JSON requests"
+        return 415, "保存标注必须是 JSON 请求"
     host = request.headers.get("host", "")
     origin = request.headers.get("origin")
     parts = urlsplit(origin or "")
@@ -153,7 +151,7 @@ def write_refusal(request: Request) -> tuple[int, str] | None:
         or parts.scheme not in {"http", "https"}
         or parts.netloc.lower() != host.lower()
     ):
-        return 403, "Label writes are accepted only from the viewer page"
+        return 403, "只接受从查看器页面发来的标注"
     return None
 
 
@@ -176,7 +174,7 @@ def annotation_router(
             return repository.archive_image(key, source.step, source.archiver, source.name)
         data = repository.screenshot(key, source.step, view="browser")
         if data is None:
-            raise FileNotFoundError(f"Run {source.run} step {source.step} has no screenshot")
+            raise FileNotFoundError(f"运行 {source.run} 的第 {source.step} 步没有截图")
         return data
 
     def image_size(source: ImageSource) -> tuple[int, int]:
@@ -188,12 +186,11 @@ def annotation_router(
         loaded = require().load_queue(queue_id)
         if queue_sha256 is not None and loaded.sha256 != queue_sha256:
             raise QueueChangedError(
-                f"Queue {queue_id!r} changed since you opened it; reload it to see the "
-                "current version"
+                f"队列 {queue_id!r} 在你打开之后被重新生成了；请重新加载，查看当前版本"
             )
         found = loaded.queue.item(item_id)
         if found is None:
-            raise FileNotFoundError(f"Queue {queue_id!r} has no item {item_id!r}")
+            raise FileNotFoundError(f"队列 {queue_id!r} 里没有条目 {item_id!r}")
         return loaded, found
 
     @router.get("/queues")
@@ -238,6 +235,8 @@ def annotation_router(
             "queue_id": loaded.queue.queue_id,
             "title": loaded.queue.title or loaded.queue.queue_id,
             "instructions": loaded.queue.instructions,
+            "guide": [section.model_dump(mode="json") for section in loaded.queue.guide],
+            "suggestion_display": loaded.queue.suggestion_display.model_dump(mode="json"),
             "label": loaded.queue.label.model_dump(mode="json"),
             "sha256": loaded.sha256,
             "items": states,
@@ -258,9 +257,29 @@ def annotation_router(
         _, found = item(queue_id, item_id, queue_sha256)
         picture = found.image(role)
         if picture is None:
-            raise FileNotFoundError(f"Item {item_id!r} has no image {role!r}")
+            raise FileNotFoundError(f"条目 {item_id!r} 没有图片 {role!r}")
         data = image_bytes(picture.source)
         return Response(content=data, media_type=image_type(data))
+
+    @router.get("/marks")
+    def marks(queue_id: str, item_id: str, role: str, queue_sha256: str) -> dict[str, Any]:
+        """The actions drawn on one item image: its ``marks_from``, else what the image shows."""
+        _, found = item(queue_id, item_id, queue_sha256)
+        picture = found.image(role)
+        if picture is None:
+            raise FileNotFoundError(f"条目 {item_id!r} 没有图片 {role!r}")
+        source = picture.source
+        return repository.image_marks(
+            run_key(source.run),
+            source.step,
+            archiver=source.archiver if isinstance(source, ArchiveImage) else None,
+            name=source.name if isinstance(source, ArchiveImage) else None,
+            marks_from=[
+                (run_key(entry.run), entry.step, entry.label) for entry in picture.marks_from
+            ]
+            if picture.marks_from is not None
+            else None,
+        )
 
     @router.post("/label")
     def label(body: QueueLabelRequest) -> dict[str, Any]:
@@ -307,7 +326,7 @@ def annotation_router(
         current = require()
         key = run_key(body.run)
         if not repository.has_step(key, body.step):
-            raise FileNotFoundError(f"Run {key} has no committed step {body.step}")
+            raise FileNotFoundError(f"运行 {key} 没有已提交的第 {body.step} 步")
         # A committed step never changes, so an ad-hoc label needs no version;
         # its screenshot is read only to check boxes drawn on it.
         screenshot = repository.screenshot(key, body.step, view="browser") if body.regions else None
@@ -335,9 +354,9 @@ def annotation_router(
 
 def _size(data: bytes) -> tuple[int, int]:
     if image_media_type(data) is None:
-        raise AnnotationError("The referenced file is not a raster image")
+        raise AnnotationError("引用的文件不是图片")
     try:
         with Image.open(io.BytesIO(data)) as picture:
             return picture.size
     except (UnidentifiedImageError, OSError) as exc:
-        raise AnnotationError(f"The referenced image cannot be read: {exc}") from exc
+        raise AnnotationError(f"引用的图片读不出来：{exc}") from exc

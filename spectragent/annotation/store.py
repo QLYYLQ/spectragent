@@ -54,9 +54,13 @@ ADHOC_SPEC = LabelSpec(
     choices=[],
     regions=RegionSpec(
         kinds=[
-            RegionKind(value="needed_information", text="Needed information"),
-            RegionKind(value="problem", text="Problem"),
-            RegionKind(value="other", text="Other"),
+            RegionKind(
+                value="needed_information",
+                text="需要的信息",
+                help="智能体做决定要用到的信息在哪里",
+            ),
+            RegionKind(value="problem", text="问题", help="画面上出错或可疑的地方"),
+            RegionKind(value="other", text="其他", help="其他想标出来的地方，请在备注里说明"),
         ]
     ),
     note=True,
@@ -105,7 +109,7 @@ def validation_message(exc: ValidationError) -> str:
 def check_annotator(name: str) -> str:
     name = name.strip()
     if not _ANNOTATOR.fullmatch(name):
-        raise AnnotationError("An annotator name is 1-64 printable characters")
+        raise AnnotationError("标注者名字是 1-64 个可打印字符")
     return name
 
 
@@ -134,13 +138,13 @@ class AnnotationStore:
     def _inside(self, *parts: str) -> Path:
         path = self.directory.joinpath(*parts)
         if not path.resolve().is_relative_to(self.directory):
-            raise AnnotationError(f"{'/'.join(parts)} leaves the annotation directory")
+            raise AnnotationError(f"{'/'.join(parts)} 超出了标注目录")
         return path
 
     @staticmethod
     def _queue_id(queue_id: str) -> str:
         if not QUEUE_ID_PATTERN.fullmatch(queue_id):
-            raise AnnotationError(f"{queue_id!r} is not a queue id")
+            raise AnnotationError(f"{queue_id!r} 不是队列 id")
         return queue_id
 
     def _labels_path(self, queue_id: str) -> Path:
@@ -164,20 +168,19 @@ class AnnotationStore:
 
     def load_queue(self, queue_id: str) -> LoadedQueue:
         if queue_id.startswith("_"):
-            raise AnnotationError(f"Queue ids starting with '_' are reserved: {queue_id}")
+            raise AnnotationError(f"以 '_' 开头的队列 id 是保留的：{queue_id}")
         path = self._inside("queues", f"{self._queue_id(queue_id)}.json")
         if not path.is_file():
-            raise FileNotFoundError(f"No review queue {queue_id!r} in {self.directory / 'queues'}")
+            raise FileNotFoundError(f"{self.directory / 'queues'} 里没有审阅队列 {queue_id!r}")
         data = path.read_bytes()
         try:
             queue = ReviewQueue.model_validate(json.loads(data))
         except (UnicodeError, ValueError) as exc:
             message = validation_message(exc) if isinstance(exc, ValidationError) else str(exc)
-            raise AnnotationError(f"queues/{path.name} is not a review queue: {message}") from exc
+            raise AnnotationError(f"queues/{path.name} 不是有效的审阅队列：{message}") from exc
         if queue.queue_id != queue_id:
             raise AnnotationError(
-                f"queues/{path.name} declares queue_id {queue.queue_id!r}; "
-                "the file name must be the queue id"
+                f"queues/{path.name} 写的 queue_id 是 {queue.queue_id!r}；文件名必须就是队列 id"
             )
         return LoadedQueue(queue, hashlib.sha256(data).hexdigest())
 
@@ -207,7 +210,7 @@ class AnnotationStore:
                 errors.append(LabelError(number, message))
                 continue
             if line.queue_id != queue_id:
-                errors.append(LabelError(number, f"labels queue {line.queue_id!r}"))
+                errors.append(LabelError(number, f"这一行标注的是队列 {line.queue_id!r}"))
                 continue
             lines.append(line)
         return LabelLog(tuple(lines), tuple(errors))
@@ -237,14 +240,13 @@ class AnnotationStore:
         loaded = self.load_queue(queue_id)
         if loaded.sha256 != queue_sha256:
             raise QueueChangedError(
-                f"Queue {queue_id!r} changed since you opened it; reload it to label the "
-                "current version"
+                f"队列 {queue_id!r} 在你打开之后被重新生成了；请重新加载，再标注当前版本"
             )
         spec, item = loaded.queue.label, loaded.queue.item(item_id)
         if item is None:
-            raise FileNotFoundError(f"Queue {queue_id!r} has no item {item_id!r}")
+            raise FileNotFoundError(f"队列 {queue_id!r} 里没有条目 {item_id!r}")
         if draft.reject and (item.suggestion is None or not item.suggestion.has_answer):
-            raise AnnotationError("This item has no suggestion to reject")
+            raise AnnotationError("这个条目没有可以驳回的建议")
         self._check_draft(spec, item, draft)
         sizes = {}
         for role in {region.image for region in draft.regions}:
@@ -282,11 +284,11 @@ class AnnotationStore:
             or draft.skipped
             or draft.reject
         ):
-            raise AnnotationError("An ad-hoc label carries only a note and regions")
+            raise AnnotationError("随手标注只能写备注和画框")
         self._check_draft(ADHOC_SPEC, None, draft)
         if draft.regions:
             if screenshot_size is None:
-                raise AnnotationError("This step has no committed screenshot to draw on")
+                raise AnnotationError("这一步没有截图，不能画框")
             self._raise(region_bounds_problems(draft.regions, {ADHOC_IMAGE: screenshot_size}))
         line = self._line(
             ADHOC_SPEC,
@@ -303,21 +305,19 @@ class AnnotationStore:
     @staticmethod
     def _raise(problems: list[str]) -> None:
         if problems:
-            raise AnnotationError("; ".join(problems))
+            raise AnnotationError("；".join(problems))
 
     def _check_draft(self, spec: LabelSpec, item: QueueItem | None, draft: LabelDraft) -> None:
         if draft.skipped and draft.reject:
-            raise AnnotationError("Skip an item or reject its suggestion, not both")
+            raise AnnotationError("跳过条目和驳回建议只能选一个")
         if (draft.skipped or draft.reject) and (
             draft.choice is not None or draft.choices or draft.answers or draft.regions
         ):
-            raise AnnotationError(
-                "A skipped item or a rejected suggestion carries no answer; only a note"
-            )
+            raise AnnotationError("跳过的条目或驳回的建议不带答案，只能写备注")
         if draft.note and not spec.note:
-            raise AnnotationError("This queue does not take notes")
+            raise AnnotationError("这个队列不收备注")
         if len(draft.note) > MAX_NOTE_LENGTH:
-            raise AnnotationError(f"A note is at most {MAX_NOTE_LENGTH} characters")
+            raise AnnotationError(f"备注最多 {MAX_NOTE_LENGTH} 个字符")
         self._raise(
             answer_problems(
                 spec,

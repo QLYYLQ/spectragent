@@ -39,14 +39,29 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
+#: Whether a label that picks a choice may, must, or must not carry boxes.
+RegionRule = Literal["optional", "required", "forbidden"]
+
+
 class LabelChoice(_Strict):
+    """One answer a person can pick: its stored ``value``, what they read, and its box rule.
+
+    ``text`` is the short name on the button, ``help`` the explanation shown
+    beside it. ``regions`` says what picking it means for the label's boxes:
+    ``required`` needs at least one, ``forbidden`` allows none. A queue that
+    labels no regions only takes ``optional``.
+    """
+
     value: str = Field(min_length=1)
     text: str = ""
+    help: str = ""
+    regions: RegionRule = "optional"
 
 
 class RegionKind(_Strict):
     value: str = Field(min_length=1)
     text: str = ""
+    help: str = ""
 
 
 class RegionSpec(_Strict):
@@ -58,6 +73,7 @@ class Question(_Strict):
 
     key: str = Field(min_length=1)
     text: str = ""
+    help: str = ""
     choices: list[LabelChoice] = Field(min_length=1)
     #: ``None``: every item; otherwise the item ids this question is asked of.
     applies_to: list[str] | None = None
@@ -89,17 +105,31 @@ class LabelSpec(_Strict):
     @model_validator(mode="after")
     def _unique_values(self) -> LabelSpec:
         for name, values in (
-            ("choice", [choice.value for choice in self.choices]),
-            ("region kind", [kind.value for kind in self.regions.kinds] if self.regions else []),
-            ("question key", [question.key for question in self.questions or []]),
+            ("选项值", [choice.value for choice in self.choices]),
+            ("框的类别", [kind.value for kind in self.regions.kinds] if self.regions else []),
+            ("问题的 key", [question.key for question in self.questions or []]),
         ):
             if len(set(values)) != len(values):
-                raise ValueError(f"each {name} must be unique")
+                raise ValueError(f"{name}不能重复")
         if self.questions is not None and (self.choices or self.multi):
-            raise ValueError("a queue asks either questions or one set of choices, not both")
+            raise ValueError(
+                "一个队列要么问几个问题（questions），要么给一组选项（choices），不能两者都有"
+            )
         if self.questions is not None and not self.questions:
-            raise ValueError("questions, when given, lists at least one question")
+            raise ValueError("给了 questions 就至少要有一个问题")
+        if self.regions is None:
+            ruled = [choice.value for choice in self.all_choices() if choice.regions != "optional"]
+            if ruled:
+                raise ValueError(
+                    f"这个队列不画框，选项 {ruled} 却规定了框（regions 只能是 optional）"
+                )
         return self
+
+    def all_choices(self) -> list[LabelChoice]:
+        """The single question's choices, or every question's."""
+        if self.questions is None:
+            return list(self.choices)
+        return [choice for question in self.questions for choice in question.choices]
 
     @property
     def choice_values(self) -> list[str]:
@@ -126,7 +156,7 @@ class Region(_Strict):
     def _ordered(cls, box: list[int | float]) -> list[int | float]:
         x0, y0, x1, y1 = box
         if min(box) < 0 or x1 <= x0 or y1 <= y0:
-            raise ValueError("a box is [x0, y0, x1, y1] with 0 <= x0 < x1 and 0 <= y0 < y1")
+            raise ValueError("框写作 [x0, y0, x1, y1]，要求 0 <= x0 < x1 且 0 <= y0 < y1")
         return box
 
     def key(self) -> tuple[str, str, tuple[float, ...]]:
@@ -154,15 +184,56 @@ class ArchiveImage(_Strict):
 ImageSource = Annotated[ObservationImage | ArchiveImage, Field(discriminator="kind")]
 
 
+class MarkSource(_Strict):
+    """A run step whose recorded actions are drawn on a queue image, under *label*."""
+
+    run: str = Field(min_length=1)
+    step: int = Field(ge=0)
+    label: str = ""
+
+
 class QueueImage(_Strict):
+    """One image of an item, and whose actions are drawn on it.
+
+    ``marks_from`` ``None`` follows the image: an observation shows the
+    actions its step decided on that screen, a ``browser.frames``
+    before-action frame shows the action it was taken before, any other image
+    none. ``[]`` draws nothing; a list draws each named step's actions, one
+    colour per entry, converted into this image's pixels.
+    """
+
     role: str = Field(min_length=1)
     text: str = ""
     source: ImageSource
+    marks_from: list[MarkSource] | None = None
 
 
 class ItemField(_Strict):
+    """A fact shown with the item; a ``technical`` one sits in a collapsed details section."""
+
     text: str
     value: str | int | float | bool | None = None
+    technical: bool = False
+
+
+class GuideSection(_Strict):
+    """One section of a queue's labeling guide: a heading and plain text (lines starting
+    with ``- `` are list items)."""
+
+    title: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class SuggestionDisplay(_Strict):
+    """How the page presents the items' suggestions.
+
+    ``title`` heads the suggestion (``""``: the page's own wording);
+    ``on_request`` keeps it hidden until the person asks to see it, so a model's
+    answer cannot anchor theirs.
+    """
+
+    title: str = ""
+    shown: Literal["always", "on_request"] = "always"
 
 
 class ItemLink(_Strict):
@@ -233,6 +304,9 @@ class ReviewQueue(_Strict):
     queue_id: str
     title: str = ""
     instructions: str = ""
+    #: The labeling guide the page keeps one click away: definitions and examples.
+    guide: list[GuideSection] = Field(default_factory=list)
+    suggestion_display: SuggestionDisplay = Field(default_factory=SuggestionDisplay)
     label: LabelSpec
     items: list[QueueItem]
 
@@ -241,8 +315,7 @@ class ReviewQueue(_Strict):
     def _file_name(cls, value: str) -> str:
         if not QUEUE_ID_PATTERN.fullmatch(value):
             raise ValueError(
-                "a queue id is 1-128 letters, digits, '.', '_' or '-', "
-                "starting with a letter or digit"
+                "队列 id 由 1-128 个字母、数字、'.'、'_' 或 '-' 组成，以字母或数字开头"
             )
         return value
 
@@ -251,22 +324,21 @@ class ReviewQueue(_Strict):
         seen: set[str] = set()
         for item in self.items:
             if item.item_id in seen:
-                raise ValueError(f"item_id {item.item_id!r} appears more than once")
+                raise ValueError(f"item_id {item.item_id!r} 出现了不止一次")
             seen.add(item.item_id)
             roles = [image.role for image in item.images]
             if len(set(roles)) != len(roles):
-                raise ValueError(f"item {item.item_id!r} repeats an image role")
+                raise ValueError(f"条目 {item.item_id!r} 有重复的图片角色")
             keys = {question.key for question in self.label.questions or []}
             unknown = sorted(set(item.questions or []) - keys)
             if unknown:
-                raise ValueError(f"item {item.item_id!r} asks unknown questions {unknown}")
+                raise ValueError(f"条目 {item.item_id!r} 问了队列里没有的问题 {unknown}")
             if self.label.questions is not None and not asked_questions(self.label, item):
-                raise ValueError(f"item {item.item_id!r} asks none of the queue's questions")
+                raise ValueError(f"条目 {item.item_id!r} 没有问队列里的任何问题")
             if item.suggestion is not None:
                 if item.suggestion.answers == {}:
                     raise ValueError(
-                        f"item {item.item_id!r} has a suggestion with no answers; "
-                        "leave 'answers' out when nothing is suggested"
+                        f"条目 {item.item_id!r} 的建议没有任何答案；没有建议答案时请省略 'answers'"
                     )
                 problems = answer_problems(
                     self.label,
@@ -274,18 +346,16 @@ class ReviewQueue(_Strict):
                     choice=item.suggestion.choice,
                     choices=item.suggestion.choices,
                     answers=item.suggestion.answers,
-                    regions=item.suggestion.regions or [],
+                    regions=item.suggestion.regions,
                     require_choice=False,
                 )
                 asked = {question.key for question in asked_questions(self.label, item)}
                 for key in sorted(set(item.suggestion.reasons or {}) - asked):
-                    problems.append(f"a reason is given for {key!r}, which this item does not ask")
+                    problems.append(f"给了问题 {key!r} 的理由，但这个条目没有问它")
                 if item.suggestion.regions is not None and self.label.regions is None:
-                    problems.insert(0, "the queue does not label regions")
+                    problems.insert(0, "这个队列不画框")
                 if problems:
-                    raise ValueError(
-                        f"item {item.item_id!r} has an invalid suggestion: {problems[0]}"
-                    )
+                    raise ValueError(f"条目 {item.item_id!r} 的建议无效：{problems[0]}")
         return self
 
     def item(self, item_id: str) -> QueueItem | None:
@@ -315,9 +385,9 @@ class LabelLine(_Strict):
     def _target(self) -> LabelLine:
         if self.queue_id == ADHOC_QUEUE_ID:
             if self.item_id is not None or self.run is None or self.step is None:
-                raise ValueError("an ad-hoc label names a run and a step, not an item")
+                raise ValueError("随手标注写 run 和 step，不写 item_id")
         elif self.item_id is None or self.run is not None or self.step is not None:
-            raise ValueError("a queue label names an item_id, not a run step")
+            raise ValueError("队列标注写 item_id，不写 run 和 step")
         return self
 
     def to_json_line(self) -> str:
@@ -353,53 +423,82 @@ def answer_problems(
     choice: str | None,
     choices: list[str] | None,
     answers: dict[str, str] | None,
-    regions: list[Region],
+    regions: list[Region] | None,
     require_choice: bool,
 ) -> list[str]:
     """Why an answer does not fit *spec* (sizes aside); ``[]`` when it does.
 
     *item* names the images a region may refer to and the questions it
     asks; ``None`` means the one ad-hoc screenshot and no questions.
+    *regions* ``None`` means the answer gives no boxes at all (a suggestion
+    that proposes none), so the chosen options' box rules are not checked.
+    Every reason is written for the person labeling, in Chinese.
     """
     problems: list[str] = []
     allowed = spec.choice_values
+    picked: list[LabelChoice] = []
     if spec.questions is not None:
         if choice is not None or choices is not None:
-            problems.append("this queue asks questions: send 'answers', not 'choice' or 'choices'")
+            problems.append(
+                "这个队列分几个问题作答：请提交 'answers'，不要提交 'choice' 或 'choices'"
+            )
         asked = {question.key: question for question in asked_questions(spec, item)}
         for key, value in (answers or {}).items():
             question = asked.get(key)
             if question is None:
-                problems.append(f"this item does not ask question {key!r}")
+                problems.append(f"这个条目没有问问题 {key!r}")
             elif value not in question.choice_values():
-                problems.append(f"{value!r} is not one of the choices of question {key!r}")
+                problems.append(f"{value!r} 不是问题 {key!r} 的选项")
+            else:
+                picked += [option for option in question.choices if option.value == value]
         missing = [key for key in asked if key not in (answers or {})]
         if require_choice and missing:
-            problems.append(f"answer every question this item asks; missing {missing}")
+            problems.append(f"请回答这个条目的每个问题；还没回答：{missing}")
     elif answers is not None:
-        problems.append("this queue asks no separate questions: 'answers' is not used")
+        problems.append("这个队列只有一个问题：不用 'answers'")
     elif spec.multi:
         if choice is not None:
-            problems.append("this queue takes several choices: send 'choices', not 'choice'")
+            problems.append("这个队列可以多选：请提交 'choices'，不要提交 'choice'")
         for value in choices or []:
             if value not in allowed:
-                problems.append(f"{value!r} is not one of this queue's choices")
+                problems.append(f"{value!r} 不是这个队列的选项")
         if choices is not None and len(set(choices)) != len(choices):
-            problems.append("a choice is listed twice")
+            problems.append("同一个选项选了两次")
+        picked += [option for option in spec.choices if option.value in (choices or [])]
     else:
         if choices is not None:
-            problems.append("this queue takes one choice: send 'choice', not 'choices'")
+            problems.append("这个队列只能单选：请提交 'choice'，不要提交 'choices'")
         if choice is not None and choice not in allowed:
-            problems.append(f"{choice!r} is not one of this queue's choices")
+            problems.append(f"{choice!r} 不是这个队列的选项")
         if require_choice and allowed and choice is None:
-            problems.append("choose one of this queue's choices, skip the item, or reject")
+            problems.append("请选一个答案，或者跳过这个条目、驳回建议")
+        picked += [option for option in spec.choices if option.value == choice]
     if regions and spec.regions is None:
-        problems.append("this queue does not label regions")
+        problems.append("这个队列不画框")
     kinds = spec.kind_values
     images = [image.role for image in item.images] if item is not None else [ADHOC_IMAGE]
-    for region in regions:
+    for region in regions or []:
         if spec.regions is not None and region.kind not in kinds:
-            problems.append(f"{region.kind!r} is not one of this queue's region kinds")
+            problems.append(f"{region.kind!r} 不是这个队列的框类别")
         if region.image not in images:
-            problems.append(f"{region.image!r} is not one of this item's images")
+            problems.append(f"{region.image!r} 不是这个条目的图片")
+    if regions is not None:
+        problems += region_rule_problems(picked, regions)
     return problems
+
+
+def region_rule_problems(picked: list[LabelChoice], regions: list[Region]) -> list[str]:
+    """Why the boxes break a box rule of the picked choices (``LabelChoice.regions``)."""
+
+    def named(options: list[LabelChoice]) -> str:
+        return "、".join(f"“{option.text or option.value}”" for option in options)
+
+    forbidding = [option for option in picked if option.regions == "forbidden"]
+    requiring = [option for option in picked if option.regions == "required"]
+    if forbidding and requiring:
+        return [f"{named(requiring)}要画框，{named(forbidding)}不能画框，不能同时选"]
+    if forbidding and regions:
+        return [f"选了{named(forbidding)}就不能画框：请删掉框，或者换一个选项"]
+    if requiring and not regions:
+        return [f"选了{named(requiring)}就至少要画一个框"]
+    return []

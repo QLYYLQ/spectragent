@@ -1,0 +1,196 @@
+/* Action marks over screenshots and their numbered legend. */
+
+.mark-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  line-height: normal;
+}
+
+.mark-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.mark-dot {
+  position: absolute;
+  /* --stack: how many dots already sit on this spot; each one more moves right. */
+  transform: translate(calc(-50% + var(--stack, 0) * 20px), -50%);
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 11px;
+  background: var(--mark);
+  color: #fff;
+  font: 700 12px/1 ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+/* Where text was typed: a square dot, so it reads apart from a click. */
+.mark-dot.type {
+  border-radius: 4px;
+}
+
+.mark-head {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 12px solid var(--mark);
+  filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff);
+}
+
+/* A drag's release: a ring under the arrow's tip. */
+.mark-head.drag {
+  border: 3px solid var(--mark);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-sizing: border-box;
+}
+
+.mark-typed {
+  position: absolute;
+  transform: translate(calc(16px + var(--stack, 0) * 20px), -50%);
+  max-width: 260px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--mark);
+  color: #fff;
+  font: 600 12px/1.5 ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+
+.mark-legend {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.mark-legend.faded {
+  opacity: 0.55;
+}
+
+.mark-set {
+  display: grid;
+  gap: 3px;
+}
+
+.mark-set-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--ink, #1d2430);
+}
+
+.mark-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--mark);
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(0, 0, 0, 0.25);
+}
+
+.mark-set ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.mark-set li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mark-number {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--mark);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mark-set li.off-image .mark-number {
+  background: #fff;
+  color: var(--mark);
+  box-shadow: inset 0 0 0 1.5px var(--mark);
+}
+
+.mark-text {
+  overflow-wrap: anywhere;
+}
+
+.mark-set li.failed .mark-text {
+  text-decoration: line-through;
+  text-decoration-color: rgba(209, 67, 67, 0.7);
+}
+
+.mark-note,
+.mark-problem {
+  color: var(--muted, #687385);
+  font-size: 12px;
+}
+
+.mark-problem {
+  margin: 0;
+}
+
+/* The run page's screenshot: the marks wrap the image tightly, whatever its size. */
+.screenshot-marked {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+  vertical-align: middle;
+}
+
+.screenshot .mark-legend {
+  padding: 0 14px 10px;
+  background: #fffcf4;
+}
+
+.board-panel .mark-legend {
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid #e5e1d6;
+  background: #fffdf7;
+}
+
+.image-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.image-tools .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}

@@ -36,7 +36,7 @@ def _key(value: str) -> str:
     """
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or "\\" in value or "\x00" in value:
-        raise HTTPException(400, "Expected a relative repository key")
+        raise HTTPException(400, "需要根目录内的相对路径（relative repository key）")
     return path.as_posix()
 
 
@@ -49,7 +49,7 @@ def _image_type(data: bytes) -> str:
         return "image/gif"
     if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
         return "image/webp"
-    raise HTTPException(422, "Recorded screenshot is not a supported raster image")
+    raise HTTPException(422, "记录的截图不是支持的图片格式")
 
 
 def create_app(
@@ -163,8 +163,12 @@ def create_app(
     ) -> Response:
         data = repository.screenshot(_key(key), index, view=view)
         if data is None:
-            raise HTTPException(404, "This step has no committed screenshot")
+            raise HTTPException(404, "这一步没有已提交的截图")
         return Response(content=data, media_type=_image_type(data))
+
+    @app.get("/api/marks")
+    def marks(key: str, index: Annotated[int, Query(ge=0)]) -> dict[str, Any]:
+        return repository.observation_marks(_key(key), index)
 
     @app.get("/api/compare")
     def compare(key: Annotated[list[str], Query(min_length=2, max_length=8)]) -> dict[str, Any]:
@@ -192,7 +196,7 @@ def create_app(
         page = static / "index.html"
         if not page.is_file():
             raise HTTPException(
-                503, "Viewer assets are missing; run npm ci && npm run build in frontend/viewer"
+                503, "查看器页面文件缺失；请在 frontend/viewer 里运行 npm ci && npm run build"
             )
         return FileResponse(page, headers={"Cache-Control": "no-cache"})
 

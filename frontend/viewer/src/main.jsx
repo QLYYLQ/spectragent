@@ -25,13 +25,46 @@ import {
   Icon,
   useRemote,
   Badge,
+  statusLabel,
   Empty,
   RemoteState,
   AnnotationContext,
 } from "./common.jsx";
 import { ReviewDisabled, ReviewHome, ReviewSession } from "./review.jsx";
 import { StepLabels } from "./stepLabels.jsx";
+import { MarkLayer, MarkLegend, MarkToggle } from "./marks.jsx";
+import { hasMarks } from "./marks.js";
 import "./styles.css";
+
+/** Display names for the restorer's verify setting (``strict`` or ``warn``). */
+const VERIFY_LABELS = { strict: "严格", warn: "仅提示" };
+const verifyLabel = (value) => VERIFY_LABELS[value] || value || "未知";
+
+/** Display names for the phase a step failed in. */
+const PHASE_LABELS = {
+  observe: "观测",
+  prompt: "构建提示词",
+  parse: "解析模型输出",
+  act: "执行动作",
+  replay: "回放",
+  restore: "恢复",
+};
+
+/** Display names for report kinds. */
+const REPORT_KINDS = {
+  replay_review: "回放审阅",
+  evaluation: "评测",
+  flywheel: "数据飞轮",
+  session: "会话",
+  diagnostics: "诊断",
+  dataset: "数据集",
+  unreadable: "无法读取",
+};
+
+/** Display names for replay review threshold scopes. */
+const SCOPE_LABELS = { default: "默认", site: "站点", task: "任务" };
+
+const yesNo = (value) => (value === true ? "是" : value === false ? "否" : text(value));
 
 function downloadJSON(value, filename) {
   const blob = new Blob([JSON.stringify(value, null, 2)], {
@@ -49,7 +82,7 @@ function JsonBlock({ value }) {
   const [full, setFull] = useState(false);
   const output =
     typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  if (output == null) return <p className="muted">Not recorded.</p>;
+  if (output == null) return <p className="muted">未记录。</p>;
   const large = output.length > 40000;
   return (
     <>
@@ -59,8 +92,8 @@ function JsonBlock({ value }) {
       {large && (
         <button className="text-button" onClick={() => setFull(!full)}>
           {full
-            ? "Show preview"
-            : `Show all ${number(output.length)} characters`}
+            ? "只显示预览"
+            : `显示全部 ${number(output.length)} 个字符`}
         </button>
       )}
     </>
@@ -87,11 +120,16 @@ function JsonPanel({ title, value, initialOpen = false }) {
               onClick={() =>
                 downloadJSON(
                   value,
-                  `${title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`,
+                  `${
+                    title
+                      .toLowerCase()
+                      .replaceAll(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+                      .replaceAll(/^-+|-+$/g, "") || "record"
+                  }.json`,
                 )
               }
             >
-              Download JSON ↓
+              下载 JSON ↓
             </button>
           </div>
           <JsonBlock value={value} />
@@ -115,7 +153,7 @@ function Verdicts({ verdicts = [], evaluationError }) {
   if (evaluationError)
     return (
       <span className="row-error" title={evaluationError}>
-        Evaluation unreadable
+        评测结果无法读取
       </span>
     );
   return verdicts.length ? (
@@ -124,12 +162,14 @@ function Verdicts({ verdicts = [], evaluationError }) {
         <div key={`${verdict.evaluator}-${i}`}>
           <span className="verdict-name">{verdict.evaluator}</span>
           <Badge value={verdictLabel(verdict)} />
-          <span className="muted small">{verdict.verdict_source}</span>
+          <span className="muted small">
+            {statusLabel(verdict.verdict_source)}
+          </span>
         </div>
       ))}
     </div>
   ) : (
-    <span className="muted">Not evaluated</span>
+    <span className="muted">未评测</span>
   );
 }
 
@@ -137,26 +177,26 @@ function Ledger({ row }) {
   return (
     <div className="ledger-grid">
       <div>
-        <span className="eyebrow">Agent outcome</span>
+        <span className="eyebrow">智能体结果</span>
         <Badge value={row.agent_done} />
-        <small>How the agent ended</small>
+        <small>智能体是怎样结束的</small>
       </div>
       <div>
-        <span className="eyebrow">Environment</span>
+        <span className="eyebrow">环境</span>
         <Badge value={row.env_status} />
-        <small>Recorded environment status</small>
+        <small>记录下的环境状态</small>
       </div>
       <div>
-        <span className="eyebrow">Recording</span>
+        <span className="eyebrow">记录状态</span>
         <Badge value={row.trace_status} />
         <small>
           {row.complete_through >= 0
-            ? `Complete through step ${row.complete_through}`
-            : "No complete step recorded"}
+            ? `直到第 ${row.complete_through} 步都完整`
+            : "没有完整记录的步"}
         </small>
       </div>
       <div>
-        <span className="eyebrow">Evaluation</span>
+        <span className="eyebrow">评测</span>
         <Verdicts
           verdicts={row.verdicts}
           evaluationError={row.evaluation_error}
@@ -208,16 +248,16 @@ function RunList({ revision, selected, setSelected, workspace }) {
     <>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">Experiment workspace</span>
-          <h1>Runs</h1>
-          <p>Follow the evidence from task to verdict.</p>
+          <span className="eyebrow">实验工作区</span>
+          <h1>运行</h1>
+          <p>从任务开始，一路查看到评测判定的证据。</p>
         </div>
         <div className="inline">
           <button
             className="button"
             onClick={() => navigate({ view: "groups" })}
           >
-            Compare experiments
+            对比实验
           </button>
           <button
             className="button primary"
@@ -227,27 +267,27 @@ function RunList({ revision, selected, setSelected, workspace }) {
             }
           >
             <Icon name="compare" />
-            Compare{selected.length > 0 ? ` (${selected.length})` : ""}
+            对比{selected.length > 0 ? ` (${selected.length})` : ""}
           </button>
         </div>
       </div>
       <div className="stats">
-        <Stat label="Recorded runs" value={number(rows.length)} />
+        <Stat label="已记录的运行" value={number(rows.length)} />
         <Stat
-          label="Open traces"
+          label="未关闭的记录"
           value={number(
             rows.filter((row) => row.trace_status === "writing").length,
           )}
-          detail="May be running or interrupted"
+          detail="可能仍在运行，也可能已中断"
         />
         <Stat
-          label="Incomplete traces"
+          label="不完整的记录"
           value={number(
             rows.filter((row) => row.trace_status === "incomplete").length,
           )}
         />
         <Stat
-          label="With evaluations"
+          label="已有评测"
           value={number(rows.filter((row) => row.verdicts?.length).length)}
         />
       </div>
@@ -256,42 +296,44 @@ function RunList({ revision, selected, setSelected, workspace }) {
           <label className="search">
             <Icon name="search" />
             <input
-              aria-label="Search runs"
-              placeholder="Search task, model, run…"
+              aria-label="搜索运行"
+              placeholder="搜索任务、模型、运行…"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
           </label>
           <select
-            aria-label="Filter by recording status"
+            aria-label="按记录状态筛选"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           >
-            <option value="">All recording states</option>
+            <option value="">全部记录状态</option>
             {["complete", "incomplete", "writing"].map((value) => (
-              <option key={value}>{value}</option>
+              <option key={value} value={value}>
+                {statusLabel(value)}
+              </option>
             ))}
           </select>
           <select
-            aria-label="Filter by execution kind"
+            aria-label="按运行方式筛选"
             value={execution}
             onChange={(event) => setExecution(event.target.value)}
           >
-            <option value="">All execution kinds</option>
+            <option value="">全部运行方式</option>
             {["live", "replay", "branch", "branch_replay", "unknown"].map(
               (value) => (
                 <option key={value} value={value}>
-                  {value.replaceAll("_", " ")}
+                  {statusLabel(value)}
                 </option>
               ),
             )}
           </select>
           <select
-            aria-label="Filter by benchmark"
+            aria-label="按基准测试筛选"
             value={benchmark}
             onChange={(event) => setBenchmark(event.target.value)}
           >
-            <option value="">All benchmarks</option>
+            <option value="">全部基准测试</option>
             {benchmarks.map((value) => (
               <option key={value}>{value}</option>
             ))}
@@ -303,19 +345,19 @@ function RunList({ revision, selected, setSelected, workspace }) {
               <Empty
                 title={
                   rows.length
-                    ? "No matching runs"
+                    ? "没有符合条件的运行"
                     : workspace.config_source || workspace.config_hash
-                      ? "No matching configuration history"
-                      : "No traces found"
+                      ? "没有使用这个配置的运行记录"
+                      : "没有找到运行记录"
                 }
               >
                 {rows.length
-                  ? "Try a different search or filter."
+                  ? "换个搜索词或筛选条件试试。"
                   : workspace.config_source
-                    ? "No recorded run in this root names this configuration source. Older traces with unknown config source are excluded. Runs stored elsewhere require a different root directory."
+                    ? "这个根目录下没有来自这个配置文件的运行记录。配置来源不明的旧记录不在其中。存放在别处的运行需要换一个根目录打开。"
                     : workspace.config_hash
-                      ? "No recorded run in this root has this configuration digest. Runs stored elsewhere require a different root directory."
-                      : "Select a directory containing recorded runs, then refresh. Only committed trace evidence appears here."}
+                      ? "这个根目录下没有使用这个配置摘要的运行记录。存放在别处的运行需要换一个根目录打开。"
+                      : "请选择包含运行记录的目录，然后刷新。这里只显示已提交的记录。"}
               </Empty>
             ) : (
               <div className="table-scroll">
@@ -323,18 +365,18 @@ function RunList({ revision, selected, setSelected, workspace }) {
                   <thead>
                     <tr>
                       <th className="check-col">
-                        <span className="sr-only">Compare</span>
+                        <span className="sr-only">对比</span>
                       </th>
-                      <th>Task / run</th>
-                      <th>Agent / model</th>
-                      <th>Execution</th>
-                      <th>Agent</th>
-                      <th>Environment</th>
-                      <th>Recording</th>
-                      <th>Evaluation</th>
-                      <th className="numeric">Steps</th>
-                      <th className="numeric">Tokens</th>
-                      <th className="numeric">Time</th>
+                      <th>任务 / 运行</th>
+                      <th>智能体 / 模型</th>
+                      <th>运行方式</th>
+                      <th>智能体结果</th>
+                      <th>环境</th>
+                      <th>记录状态</th>
+                      <th>评测</th>
+                      <th className="numeric">步数</th>
+                      <th className="numeric">Token</th>
+                      <th className="numeric">用时</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -348,7 +390,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
                         <td>
                           <input
                             type="checkbox"
-                            aria-label={`Compare ${row.task_id || row.run_id || row.key}`}
+                            aria-label={`对比 ${row.task_id || row.run_id || row.key}`}
                             checked={selected.includes(row.key)}
                             disabled={
                               selected.length >= 8 &&
@@ -368,7 +410,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
                             {row.task_id || row.run_id || row.key}
                           </div>
                           <div className="muted small">
-                            {row.benchmark || "Unspecified benchmark"} ·{" "}
+                            {row.benchmark || "未指定基准测试"} ·{" "}
                             {date(row.created_at)}
                           </div>
                           <div
@@ -376,12 +418,12 @@ function RunList({ revision, selected, setSelected, workspace }) {
                             title={row.config_source?.path}
                           >
                             {row.config_source
-                              ? `${row.config_source.path.split("/").pop()} · source ${row.config_source.sha256.slice(0, 10)}`
-                              : "Config source unknown"}
+                              ? `${row.config_source.path.split("/").pop()} · 来源 ${row.config_source.sha256.slice(0, 10)}`
+                              : "配置来源未知"}
                           </div>
                           {row.read_error && (
                             <span className="row-error" title={row.read_error}>
-                              Unreadable trace
+                              记录无法读取
                             </span>
                           )}
                         </td>
@@ -395,8 +437,8 @@ function RunList({ revision, selected, setSelected, workspace }) {
                             <small className="strategy-label">
                               {historyLabel(row.strategy?.history_source)}
                               <br />
-                              Checkpoint {row.branch.checkpoint_step} · verify{" "}
-                              {row.strategy?.verify || "unknown"}
+                              检查点 {row.branch.checkpoint_step} · 校验{" "}
+                              {verifyLabel(row.strategy?.verify)}
                             </small>
                           )}
                         </td>
@@ -418,22 +460,22 @@ function RunList({ revision, selected, setSelected, workspace }) {
                         <td className="numeric">
                           {number(row.policy_steps)}
                           <small className="muted">
-                            {number(row.total_steps)} total
+                            共 {number(row.total_steps)} 步
                           </small>
                         </td>
                         <td className="numeric">
                           {row.usage_measured === false
-                            ? "Not measured"
+                            ? "未统计"
                             : number(row.tokens)}
                           {row.usage_measured &&
                             row.usage_complete === false && (
                               <small className="warn-text">
-                                Known subtotal
+                                仅已知部分
                               </small>
                             )}
                           {row.usage_missing > 0 && (
                             <small className="warn-text">
-                              {row.usage_missing} unknown
+                              {row.usage_missing} 次未知
                             </small>
                           )}
                         </td>
@@ -450,31 +492,29 @@ function RunList({ revision, selected, setSelected, workspace }) {
         </RemoteState>
         <div className="table-footer">
           <span>
-            {number(visible.length)} of {number(rows.length)} runs
+            显示 {number(visible.length)} 次 / 共 {number(rows.length)} 次运行
           </span>
           <span>
             {selected.length
-              ? `${selected.length} selected · maximum 8`
-              : "Select two or more runs to compare"}
+              ? `已选 ${selected.length} 次 · 最多 8 次`
+              : "选择两次或更多运行即可对比"}
           </span>
           {selected.length > 0 && (
             <button className="text-button" onClick={() => setSelected([])}>
-              Clear selection
+              清除选择
             </button>
           )}
         </div>
       </div>
       <p className="footnote">
-        Agent outcome, environment status, recording completeness, and evaluator
-        verdicts are independent. An open trace does not prove its process is
-        still running.
+        智能体结果、环境状态、记录是否完整、评测判定，这几项彼此独立。记录未关闭，并不说明进程仍在运行。
       </p>
     </>
   );
 }
 
 function Messages({ messages }) {
-  if (!messages?.length) return <p className="muted">No messages recorded.</p>;
+  if (!messages?.length) return <p className="muted">未记录消息。</p>;
   return (
     <div className="messages">
       {messages.map((message, index) => (
@@ -497,18 +537,18 @@ function Messages({ messages }) {
                   ) ? (
                     <details>
                       <summary>
-                        Recorded prompt image ·{" "}
+                        提示词中的图片 ·{" "}
                         {part.image_url.detail || "auto"}
                       </summary>
                       <img
                         src={part.image_url.url}
-                        alt={`Prompt image in message ${index + 1}`}
+                        alt={`第 ${index + 1} 条消息中的图片`}
                         loading="lazy"
                       />
                     </details>
                   ) : (
                     <p className="small mono">
-                      Image reference: {text(part.image_url?.url)}
+                      图片引用：{text(part.image_url?.url)}
                     </p>
                   )}
                 </div>
@@ -522,7 +562,7 @@ function Messages({ messages }) {
             <JsonBlock value={message.content} />
           )}{" "}
           {message.tool_calls?.length > 0 && (
-            <JsonPanel title="Tool calls" value={message.tool_calls} />
+            <JsonPanel title="工具调用" value={message.tool_calls} />
           )}
         </article>
       ))}
@@ -533,33 +573,33 @@ function Messages({ messages }) {
 function DecisionContents({ call }) {
   return <>
     <details className="message-details">
-      <summary>Decision state and evidence</summary>
+      <summary>判定时的状态与证据</summary>
       <StructuredData value={call.request?.state} />
     </details>
-    <JsonPanel title="Questions and criteria" value={call.request?.questions} />
+    <JsonPanel title="问题与判定标准" value={call.request?.questions} />
     <div className="decision-images">
       {Object.entries(call.request?.assets || {}).map(([key, asset]) => <figure key={key}>
-        <img alt={`Decision input ${key}`} src={`data:image/${asset.format === "png" ? "png" : "jpeg"};base64,${asset.data_base64}`} />
+        <img alt={`判定输入 ${key}`} src={`data:image/${asset.format === "png" ? "png" : "jpeg"};base64,${asset.data_base64}`} />
         <figcaption>{key}</figcaption>
-        {asset.provenance && <JsonPanel title="Image origin and transformations" value={asset.provenance} />}
+        {asset.provenance && <JsonPanel title="图片来源与处理过程" value={asset.provenance} />}
       </figure>)}
     </div>
     {decisionAnswerRows(call.result).map(answer => <section className="panel padded" key={answer.id}>
       <div className="section-heading"><h4>{answer.id}</h4><Badge value={answer.type} /></div>
-      <p>Answer: <strong>{text(answer.value)}</strong></p>
-      {answer.confidence !== null && <p>Provider confidence: {answer.confidence}</p>}
+      <p>回答：<strong>{text(answer.value)}</strong></p>
+      {answer.confidence !== null && <p>模型服务给出的置信度：{answer.confidence}</p>}
       {answer.probabilities && <StructuredData value={answer.probabilities} />}
-      {answer.legend && <JsonPanel title="Score legend" value={answer.legend} initialOpen />}
+      {answer.legend && <JsonPanel title="评分说明" value={answer.legend} initialOpen />}
     </section>)}
-    {call.result && <JsonPanel title="Native decision result and usage" value={call.result} />}
+    {call.result && <JsonPanel title="原始判定结果与用量" value={call.result} />}
   </>;
 }
 
 function Calls({ calls, schemas = {} }) {
   if (!calls?.length)
     return (
-      <Empty title="No model calls in this step">
-        Restored and terminal steps may have no policy model call.
+      <Empty title="这一步没有模型调用">
+        恢复步和终止观测可能没有策略模型调用。
       </Empty>
     );
   return (
@@ -573,7 +613,7 @@ function Calls({ calls, schemas = {} }) {
             <h3>
               {modelCallTitle(call)}{" "}
               {call.call ?? index}
-              <span className="muted small"> · {call.step == null ? `job ${call.owner_id}` : `step ${call.step}`}</span>
+              <span className="muted small"> · {call.step == null ? `作业 ${call.owner_id}` : `第 ${call.step} 步`}</span>
             </h3>
             <div className="inline">
               <Badge value={call.kind} />
@@ -582,17 +622,17 @@ function Calls({ calls, schemas = {} }) {
             </div>
           </div>
           <p className="muted small">
-            Caller: {call.caller || "Unknown"} · Model:{" "}
-            {call.model || "Unknown"}
+            调用方：{call.caller || "未知"} · 模型：
+            {call.model || "未知"}
             {call.purpose === "prompt_helper" &&
-              " · External prompt generation; this is not the Agent's thought."}
+              " · 由外部生成的提示词，不是智能体自己的思考。"}
           </p>
           {call.failure && (
             <div className="notice error">
-              <strong>{call.failure.error || "Model call failed"}</strong>
-              <p>{call.failure.detail || "See the recorded failure below."}</p>
+              <strong>{call.failure.error || "模型调用失败"}</strong>
+              <p>{call.failure.detail || "详见下方记录的失败信息。"}</p>
               <JsonPanel
-                title="Failure details"
+                title="失败详情"
                 value={call.failure}
                 initialOpen
               />
@@ -601,43 +641,43 @@ function Calls({ calls, schemas = {} }) {
           {call.kind === "decision" ? <DecisionContents call={call} /> : <>
           <details className="message-details" open>
             <summary>
-              Request · {number(call.messages?.length || 0)} messages
+              请求 · {number(call.messages?.length || 0)} 条消息
             </summary>
             <Messages messages={call.messages} />
           </details>
-          <JsonPanel title="Raw request messages" value={call.messages} />
+          <JsonPanel title="原始请求消息" value={call.messages} />
           {call.completion && (
             <JsonPanel
-              title="Recorded completion"
+              title="记录下的模型回复"
               value={call.completion}
               initialOpen
             />
           )}
           {call.output_format ? (
             <JsonPanel
-              title="Output schema"
+              title="要求的输出格式"
               value={schemas[call.output_format.sha256] || call.output_format}
             />
           ) : (
             <p className="small muted">
-              No structured output schema requested.
+              没有要求结构化输出格式。
             </p>
           )}
           </>}
-          <JsonPanel title="Full call record" value={call} />
+          <JsonPanel title="完整调用记录" value={call} />
         </article>
       ))}
     </div>
   );
 }
 
-function Screenshot({ runKey, step, view = "agent" }) {
+function Screenshot({ runKey, step, view = "agent", marks = null }) {
   const [failed, setFailed] = useState(false);
   const src = query("screenshot", { key: runKey, index: step, view });
   useEffect(() => setFailed(false), [src]);
   return failed ? (
     <div className="notice error">
-      The committed screenshot could not be read.
+      无法读取已提交的截图。
     </div>
   ) : (
     <figure className="screenshot">
@@ -645,19 +685,22 @@ function Screenshot({ runKey, step, view = "agent" }) {
         href={src}
         target="_blank"
         rel="noreferrer"
-        title="Open screenshot at original size"
+        title="按原始尺寸打开截图"
       >
-        <img
-          src={src}
-          alt={`${view === "agent" ? "Agent observation" : "Browser state"} at step ${step}`}
-          onError={() => setFailed(true)}
-        />
+        <span className="screenshot-marked">
+          <img
+            src={src}
+            alt={`第 ${step} 步的${view === "agent" ? "智能体观测" : "浏览器状态"}`}
+            onError={() => setFailed(true)}
+          />
+          {marks && <MarkLayer data={marks} />}
+        </span>
       </a>
       <figcaption>
         <Icon name="image" />
-        {view === "agent" ? "Agent observation" : "Browser state"} · step {step}
+        {view === "agent" ? "智能体观测" : "浏览器状态"} · 第 {step} 步
         <a href={src} target="_blank" rel="noreferrer">
-          Open full size ↗
+          查看原图 ↗
         </a>
       </figcaption>
     </figure>
@@ -666,10 +709,10 @@ function Screenshot({ runKey, step, view = "agent" }) {
 
 function ImageViewSwitch({ view, setView }) {
   return (
-    <div className="tabs compact image-switch" aria-label="Screenshot view">
+    <div className="tabs compact image-switch" aria-label="截图视图">
       {[
-        ["agent", "Agent observation"],
-        ["browser", "Browser state · clean"],
+        ["agent", "智能体观测"],
+        ["browser", "浏览器状态 · 原始画面"],
       ].map(([key, label]) => (
         <button
           key={key}
@@ -686,19 +729,32 @@ function ImageViewSwitch({ view, setView }) {
 
 function ObservationImage({ runKey, step, fragments }) {
   const [view, setView] = useState("agent");
+  const [showMarks, setShowMarks] = useState(true);
+  const marks = useRemote(query("marks", { key: runKey, index: step }));
+  const shown = hasMarks(marks.data);
   return (
     <section>
-      <ImageViewSwitch view={view} setView={setView} />
+      <div className="image-tools">
+        <ImageViewSwitch view={view} setView={setView} />
+        {shown && <MarkToggle show={showMarks} onChange={setShowMarks} keycap={false} />}
+      </div>
       <p className="muted small">
         {view === "agent"
           ? cursorLabel(fragments)
-          : "Clean captured pixels · used for restoration and evaluation"}
+          : "未加任何标记的原始截图 · 用于恢复和评测"}
+        {shown && " · 编号标记是这一步在这一屏上做的动作，编号和下面的动作列表一致"}
       </p>
-      <Screenshot runKey={runKey} step={step} view={view} />
+      <Screenshot
+        runKey={runKey}
+        step={step}
+        view={view}
+        marks={shown && showMarks ? marks.data : null}
+      />
+      {shown && <MarkLegend data={marks.data} hidden={!showMarks} />}
+      {marks.error && <p className="muted small">动作标记读不出来：{marks.error}</p>}
       {view === "agent" && (
         <p className="muted small">
-          Reconstructed from recorded observation metadata. Exact submitted
-          prompts are in Model calls.
+          根据记录的观测信息重建。实际发给模型的提示词见“模型调用”。
         </p>
       )}
     </section>
@@ -712,7 +768,7 @@ function GapSummary({ gap }) {
       <div className="section-heading">
         <strong>{gapLabel(gap)}</strong>
         <span className="inline small">
-          Verification <Badge value={gap.verdict} />
+          校验 <Badge value={gap.verdict} />
         </span>
       </div>
       {gap.differences.length > 0 && (
@@ -724,7 +780,7 @@ function GapSummary({ gap }) {
       )}
       {gap.unmeasured.length > 0 && (
         <details>
-          <summary>{gap.unmeasured.length} unavailable comparisons</summary>
+          <summary>{gap.unmeasured.length} 项无法对比</summary>
           <ul>
             {gap.unmeasured.map((item) => (
               <li key={item}>{item}</li>
@@ -733,8 +789,7 @@ function GapSummary({ gap }) {
         </details>
       )}
       <p className="muted small">
-        Verification uses configured tolerances. A passing check or zero dHash
-        distance does not prove identical screenshots.
+        校验按配置的容差进行。校验通过或 dHash 距离为 0，并不能证明截图完全相同。
       </p>
     </div>
   );
@@ -749,7 +804,7 @@ function RestorationComparison({ step, runKey, index }) {
   return (
     <section className="restoration-comparison">
       <div className="section-heading">
-        <h3>Source history ↔ Actual replay</h3>
+        <h3>原始记录 ↔ 实际回放</h3>
         <Badge
           value={
             comparison.history_source
@@ -761,19 +816,19 @@ function RestorationComparison({ step, runKey, index }) {
       <p className="history-explanation">
         {historyExplanation(comparison.history_source)}{" "}
         {prefix
-          ? "This restored step makes no new policy decision."
-          : "At the checkpoint, the new policy always uses the actual restored observation."}
+          ? "这一恢复步没有做新的策略决策。"
+          : "在检查点上，新策略总是使用实际恢复出的观测。"}
       </p>
       <GapSummary gap={step.gap} />
       <ImageViewSwitch view={view} setView={setView} />
       <div className="restoration-columns">
         <article className="restoration-column source-column">
           <div className="section-heading">
-            <h3>Source record · {comparison.source_step}</h3>
+            <h3>原始记录 · 第 {comparison.source_step} 步</h3>
             <span className="eyebrow">
               {prefix && comparison.history_source === "source"
-                ? "Agent history"
-                : "Reference evidence"}
+                ? "智能体历史"
+                : "参考证据"}
             </span>
           </div>
           {source ? (
@@ -781,7 +836,7 @@ function RestorationComparison({ step, runKey, index }) {
               <p className="muted small">
                 {view === "agent"
                   ? cursorLabel(source.fragments)
-                  : "Original browser state · clean capture"}
+                  : "原始浏览器状态 · 原始画面"}
               </p>
               {source.has_screenshot ? (
                 <Screenshot
@@ -790,10 +845,10 @@ function RestorationComparison({ step, runKey, index }) {
                   view={view}
                 />
               ) : (
-                <Empty title="Source screenshot unavailable">
+                <Empty title="原始截图不可用">
                   {source.recording.observations
-                    ? "No committed screenshot."
-                    : "Observations were not recorded."}
+                    ? "没有已提交的截图。"
+                    : "没有记录观测。"}
                 </Empty>
               )}
               <p className="observation-summary">
@@ -809,27 +864,27 @@ function RestorationComparison({ step, runKey, index }) {
                   )
                 }
               >
-                Open source step ↗
+                打开原始步 ↗
               </button>
               <JsonPanel
-                title="Source observation fragments"
+                title="原始观测片段"
                 value={source.fragments}
               />
             </>
           ) : (
             <div className="notice">
               <strong>
-                Source unavailable ·{" "}
-                {comparison.source_status.replaceAll("_", " ")}
+                原始记录不可用 ·{" "}
+                {statusLabel(comparison.source_status)}
               </strong>
               <p>
                 {comparison.error ||
-                  "Source evidence cannot be opened within the selected root. Saved restoration measurements are still shown."}
+                  "在所选根目录中打不开原始记录。已保存的恢复测量结果仍会显示。"}
               </p>
             </div>
           )}
           <JsonPanel
-            title="Earlier Agent reply · source material"
+            title="智能体早先的回复 · 来源材料"
             value={
               step.record.source_history?.source_reply ??
               source?.record.llm_output
@@ -839,33 +894,33 @@ function RestorationComparison({ step, runKey, index }) {
         <article className="restoration-column actual-column">
           <div className="section-heading">
             <h3>
-              {prefix ? "Actual replay" : "Checkpoint state"} · {index}
+              {prefix ? "实际回放" : "检查点状态"} · 第 {index} 步
             </h3>
             <span className="eyebrow">
               {prefix && comparison.history_source === "restored"
-                ? "Agent history"
+                ? "智能体历史"
                 : prefix
-                  ? "Environment evidence"
-                  : "New policy input"}
+                  ? "环境证据"
+                  : "新策略的输入"}
             </span>
           </div>
           <p className="muted small">
             {view === "agent"
               ? cursorLabel(step.fragments)
-              : "Restored browser state · clean capture"}
+              : "恢复后的浏览器状态 · 原始画面"}
           </p>
           {step.has_screenshot ? (
             <Screenshot runKey={runKey} step={index} view={view} />
           ) : (
-            <Empty title="Replay screenshot unavailable">
-              No committed screenshot for this step.
+            <Empty title="回放截图不可用">
+              这一步没有已提交的截图。
             </Empty>
           )}
           <p className="observation-summary">
             {step.record.observation_summary}
           </p>
           <JsonPanel
-            title="Actual observation fragments"
+            title="实际观测片段"
             value={step.fragments}
           />
         </article>
@@ -874,14 +929,14 @@ function RestorationComparison({ step, runKey, index }) {
         <div className="table-scroll" key={evidence.capability_id}>
           <table className="gap-table">
             <caption>
-              {evidence.capability_id} · recorded restoration measurements
+              {evidence.capability_id} · 记录下的恢复测量结果
             </caption>
             <thead>
               <tr>
-                <th>Measure</th>
-                <th>Source</th>
-                <th>Actual replay</th>
-                <th>Comparison</th>
+                <th>测量项</th>
+                <th>原始记录</th>
+                <th>实际回放</th>
+                <th>对比</th>
               </tr>
             </thead>
             <tbody>
@@ -893,10 +948,10 @@ function RestorationComparison({ step, runKey, index }) {
                 <td>{text(evidence.restored_url)}</td>
                 <td>
                   {evidence.url_match == null
-                    ? "Not measured"
+                    ? "未测量"
                     : evidence.url_match
-                      ? "Matches"
-                      : "Changed"}
+                      ? "一致"
+                      : "有变化"}
                 </td>
               </tr>
               <tr
@@ -904,19 +959,19 @@ function RestorationComparison({ step, runKey, index }) {
                   evidence.signature_match === false ? "difference-row" : ""
                 }
               >
-                <th>DOM signature</th>
-                <td>Source signature</td>
+                <th>页面结构签名 (DOM)</th>
+                <td>原始签名</td>
                 <td>
                   {evidence.signature_match == null
-                    ? "Unknown"
-                    : `${evidence.signature_missing} missing · ${evidence.signature_extra} extra`}
+                    ? "未知"
+                    : `缺少 ${evidence.signature_missing} 项 · 多出 ${evidence.signature_extra} 项`}
                 </td>
                 <td>
                   {evidence.signature_match == null
-                    ? "Not measured"
+                    ? "未测量"
                     : evidence.signature_match
-                      ? "Matches"
-                      : "Changed"}
+                      ? "一致"
+                      : "有变化"}
                 </td>
               </tr>
               <tr
@@ -924,22 +979,22 @@ function RestorationComparison({ step, runKey, index }) {
                   evidence.screenshot_distance > 0 ? "difference-row" : ""
                 }
               >
-                <th>Screenshot dHash</th>
-                <td>Clean capture</td>
-                <td>Clean capture</td>
+                <th>截图 dHash</th>
+                <td>原始画面</td>
+                <td>原始画面</td>
                 <td>
                   {evidence.screenshot_distance == null
-                    ? "Not measured"
-                    : `Distance ${evidence.screenshot_distance}`}
+                    ? "未测量"
+                    : `距离 ${evidence.screenshot_distance}`}
                 </td>
               </tr>
               <tr
                 className={evidence.document_misses > 0 ? "difference-row" : ""}
               >
-                <th>Document misses</th>
+                <th>页面文档未命中次数</th>
                 <td>—</td>
-                <td>{evidence.document_misses ?? "Not measured"}</td>
-                <td>Offline replay evidence</td>
+                <td>{evidence.document_misses ?? "未测量"}</td>
+                <td>离线回放证据</td>
               </tr>
             </tbody>
           </table>
@@ -947,37 +1002,37 @@ function RestorationComparison({ step, runKey, index }) {
       ))}
       {!!check?.actions?.length && (
         <section>
-          <h3>Action correspondence</h3>
+          <h3>动作对应关系</h3>
           {check.actions.map((action, i) => (
             <article className="action-correspondence" key={i}>
               <div className="section-heading">
                 <strong>
-                  Action {i + 1} · {action.method}
+                  动作 {i + 1} · {action.method}
                 </strong>
                 <Badge value={restoredActionOutcome(action)} />
               </div>
               <div className="restoration-columns">
                 <div>
-                  <h4>Recorded action</h4>
+                  <h4>记录的动作</h4>
                   <JsonBlock value={action.recorded} />
                   <p className="small">
-                    Source success: {text(action.recorded_success)}
+                    原始是否成功：{yesNo(action.recorded_success)}
                   </p>
                   <JsonPanel
-                    title="Source result"
+                    title="原始结果"
                     value={comparison.results?.[i]?.source}
                     initialOpen
                   />
                 </div>
                 <div>
-                  <h4>Actually executed</h4>
+                  <h4>实际执行</h4>
                   {action.executed ? (
                     <JsonBlock value={action.executed} />
                   ) : (
-                    <p>Not executed · {action.failure || "unknown reason"}</p>
+                    <p>未执行 · {action.failure || "原因未知"}</p>
                   )}
                   <p className="small">
-                    Actual success: {text(action.live_success)}
+                    实际是否成功：{yesNo(action.live_success)}
                   </p>
                   <p
                     className={
@@ -986,14 +1041,14 @@ function RestorationComparison({ step, runKey, index }) {
                         : "muted small"
                     }
                   >
-                    Result payload:{" "}
-                    {comparison.results?.[i]?.status || "unavailable"}
+                    返回结果：
+                    {statusLabel(comparison.results?.[i]?.status || "unavailable")}
                   </p>
                   {action.live_error && (
                     <p className="row-error">{action.live_error}</p>
                   )}
                   <JsonPanel
-                    title="Actual returned result"
+                    title="实际返回结果"
                     value={action.result}
                     initialOpen
                   />
@@ -1006,8 +1061,7 @@ function RestorationComparison({ step, runKey, index }) {
       )}
       {!prefix && (
         <p className="notice">
-          Restoration stops before the source checkpoint action. The Actions and
-          Model calls tabs show this run's new decision.
+          恢复会在原始检查点的动作之前停下。本次运行的新决策见“动作”和“模型调用”标签页。
         </p>
       )}
     </section>
@@ -1022,23 +1076,21 @@ function StepActions({ record }) {
       {restored && (
         <>
           <div className="notice">
-            <strong>Restored step</strong>
+            <strong>恢复步</strong>
             <p>
-              These actions and results describe this run's restored execution.
-              The source material below retains the earlier decision separately;
-              restoration did not generate a new Agent reply or thought.
+              这些动作和结果描述的是本次运行的恢复执行。下方的来源材料单独保留了早先的决策；恢复过程没有产生新的智能体回复或思考。
             </p>
           </div>
           {record.source_history && (
             <JsonPanel
-              title="Source material and restoration correspondence"
+              title="来源材料与恢复对应关系"
               value={record.source_history}
             />
           )}
           {check ? (
             <section>
               <div className="section-heading">
-                <h3>Actual restoration execution</h3>
+                <h3>实际恢复执行</h3>
                 <Badge value={check.verdict} />
               </div>
               {check.reasons.length > 0 && (
@@ -1048,11 +1100,11 @@ function StepActions({ record }) {
                 check.actions.map((action, index) => (
                   <article className="call-card" key={index}>
                     <div className="section-heading">
-                      <h3>{action.executed?.name || `Action ${index + 1}`}</h3>
+                      <h3>{action.executed?.name || `动作 ${index + 1}`}</h3>
                       <Badge value={restoredActionOutcome(action)} />
                     </div>
                     <p className="muted small">
-                      Retargeting: {action.method}
+                      重新定位方式：{action.method}
                       {action.failure ? ` · ${action.failure}` : ""}
                     </p>
                     {action.detail && <p className="small">{action.detail}</p>}
@@ -1061,31 +1113,30 @@ function StepActions({ record }) {
                     )}
                     {action.executed ? (
                       <JsonPanel
-                        title="Executed action"
+                        title="已执行的动作"
                         value={action.executed}
                         initialOpen
                       />
                     ) : (
                       <p className="muted">
-                        This action was not submitted for execution.
+                        这个动作没有提交执行。
                       </p>
                     )}
                     <JsonPanel
-                      title="Restored action evidence"
+                      title="恢复动作的证据"
                       value={action}
                     />
                   </article>
                 ))
               ) : (
                 <p className="muted">
-                  No restoration actions recorded for this check.
+                  这次检查没有记录恢复动作。
                 </p>
               )}
             </section>
           ) : (
             <div className="notice error">
-              No restoration check was recorded. Actual re-execution outcomes
-              are unknown.
+              没有记录恢复检查，实际重新执行的结果未知。
             </div>
           )}
         </>
@@ -1093,7 +1144,7 @@ function StepActions({ record }) {
       {check && (
         <JsonPanel
           title={
-            restored ? "Restoration check" : "Checkpoint restoration check"
+            restored ? "恢复检查" : "检查点恢复检查"
           }
           value={check}
           initialOpen
@@ -1101,17 +1152,16 @@ function StepActions({ record }) {
       )}
       {record.truncated_actions > 0 && (
         <div className="notice">
-          {record.truncated_actions} model-emitted actions were discarded by the
-          action limit.
+          模型给出的 {record.truncated_actions} 个动作超出了动作数量上限，已被丢弃。
         </div>
       )}
       <JsonPanel
-        title={restored ? "Executed restored actions" : "Actions"}
+        title={restored ? "已执行的恢复动作" : "动作"}
         value={record.actions}
         initialOpen={!restored}
       />
       <JsonPanel
-        title={restored ? "Actual restored results" : "Action results"}
+        title={restored ? "实际恢复结果" : "动作结果"}
         value={record.action_results}
         initialOpen={!restored}
       />
@@ -1119,8 +1169,8 @@ function StepActions({ record }) {
         <JsonPanel
           title={
             restored
-              ? "Source parsed model output (copied)"
-              : "Parsed model output"
+              ? "原始的模型输出解析结果（复制而来）"
+              : "模型输出解析结果"
           }
           value={record.llm_output}
         />
@@ -1139,50 +1189,56 @@ function StepDetail({ runKey, index, revision }) {
         <div className="step-detail">
           <div className="section-heading">
             <div>
-              <h2>Step {step.record.step}</h2>
+              <h2>第 {step.record.step} 步</h2>
               <div className="inline">
                 <Badge value={step.record.origin} />
                 <span className="muted small">
                   {duration(step.record.duration_ms)} ·{" "}
                   {step.recording.metrics
-                    ? `${number(step.call_metrics.length)} model calls`
-                    : "Model calls not measured"}
+                    ? `${number(step.call_metrics.length)} 次模型调用`
+                    : "未统计模型调用"}
                   {step.record.recording_ms != null &&
-                    ` · recording ${duration(step.record.recording_ms)}`}
+                    ` · 记录耗时 ${duration(step.record.recording_ms)}`}
                 </span>
               </div>
             </div>
             <span className="mono muted small">
               {step.record.timestamp
-                ? new Date(step.record.timestamp * 1000).toLocaleTimeString()
+                ? new Date(step.record.timestamp * 1000).toLocaleTimeString(
+                    "zh-CN",
+                  )
                 : ""}
             </span>
           </div>
           {step.record.error && (
             <div className="notice error">
-              <strong>{step.record.error_phase || "Step"} failure</strong>
+              <strong>
+                {step.record.error_phase
+                  ? `${PHASE_LABELS[step.record.error_phase] || step.record.error_phase}阶段失败`
+                  : "这一步失败"}
+              </strong>
               <p>{step.record.error}</p>
             </div>
           )}
-          <div className="tabs compact" aria-label="Step sections">
+          <div className="tabs compact" aria-label="这一步的内容">
             {[
-              ["observation", "Observation"],
+              ["observation", "观测"],
               [
                 "actions",
                 step.record.origin === "restored"
-                  ? "Restoration actions"
+                  ? "恢复动作"
                   : step.recording.trajectory
-                    ? `Actions (${step.record.actions?.length || 0})`
-                    : "Actions (not recorded)",
+                    ? `动作 (${step.record.actions?.length || 0})`
+                    : "动作（未记录）",
               ],
               [
                 "calls",
                 step.recording.metrics
-                  ? `Model calls (${step.call_metrics.length})`
-                  : "Model calls",
+                  ? `模型调用 (${step.call_metrics.length})`
+                  : "模型调用",
               ],
-              ["archive", `Archive (${step.archive.length})`],
-              ...(annotations ? [["labels", "Labels"]] : []),
+              ["archive", `归档证据 (${step.archive.length})`],
+              ...(annotations ? [["labels", "标注"]] : []),
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -1212,15 +1268,15 @@ function StepDetail({ runKey, index, revision }) {
               )}
               <p className="observation-summary">
                 {step.record.origin === "restored" && (
-                  <strong>Restored observation: </strong>
+                  <strong>恢复后的观测：</strong>
                 )}
                 {step.record.observation_summary}
               </p>
               {!Object.keys(step.fragments).length && (
-                <Empty title="No observation fragments">
+                <Empty title="没有观测片段">
                   {step.recording.observations
-                    ? "This step has no committed observation fragments."
-                    : "The recording plan did not select observations."}
+                    ? "这一步没有已提交的观测片段。"
+                    : "记录设置中没有选择保存观测。"}
                 </Empty>
               )}
               {Object.entries(step.fragments).map(([name, fragment]) => (
@@ -1228,7 +1284,7 @@ function StepDetail({ runKey, index, revision }) {
               ))}
               {step.record.restoration && (
                 <JsonPanel
-                  title="Restoration check"
+                  title="恢复检查"
                   value={step.record.restoration}
                   initialOpen
                 />
@@ -1240,11 +1296,11 @@ function StepDetail({ runKey, index, revision }) {
               {step.recording.trajectory ? (
                 <StepActions record={step.record} />
               ) : (
-                <Empty title="Actions not recorded">
-                  The recording plan did not select the agent trajectory.
+                <Empty title="未记录动作">
+                  记录设置中没有选择保存智能体轨迹。
                 </Empty>
               )}
-              <JsonPanel title="Step record" value={step.record} />
+              <JsonPanel title="步骤记录" value={step.record} />
             </>
           )}
           {tab === "calls" &&
@@ -1252,11 +1308,11 @@ function StepDetail({ runKey, index, revision }) {
               <Calls calls={step.calls} schemas={step.output_schemas} />
             ) : (
               <>
-                <Empty title="Model inputs and replies not recorded">
-                  The recording plan did not select the agent trajectory.
+                <Empty title="未记录模型的输入和回复">
+                  记录设置中没有选择保存智能体轨迹。
                 </Empty>
                 <JsonPanel
-                  title="Call metrics and errors"
+                  title="调用统计与错误"
                   value={step.call_metrics}
                   initialOpen
                 />
@@ -1274,14 +1330,13 @@ function StepDetail({ runKey, index, revision }) {
           {tab === "archive" && (
             <>
               <p className="muted small">
-                Manifest-indexed environment evidence. These records describe
-                archived artifacts; this viewer does not replay or execute them.
+                清单中登记的环境证据。这些条目描述的是已归档的文件；查看器不会回放或执行它们。
               </p>
               {step.archive.length ? (
                 <StructuredData value={step.archive} />
               ) : (
-                <Empty title="No archived evidence">
-                  This step has no committed environment archive records.
+                <Empty title="没有归档证据">
+                  这一步没有已提交的环境归档记录。
                 </Empty>
               )}
             </>
@@ -1296,16 +1351,15 @@ function Trajectory({ run, route, revision }) {
   const selected = Number(route.step ?? run.steps[0]?.step ?? 0);
   if (!run.steps.length)
     return (
-      <Empty title="No committed steps">
-        Inspect the result and trailing calls for evidence from setup,
-        cancellation, or an interrupted model call.
+      <Empty title="没有已提交的步">
+        可以查看“结果与清单”和“收尾调用”，了解准备阶段、取消或中断的模型调用留下的证据。
       </Empty>
     );
   return (
     <div className="trajectory">
-      <aside className="timeline" aria-label="Step timeline">
+      <aside className="timeline" aria-label="步骤时间线">
         <div className="timeline-title">
-          Committed steps <span>{run.steps.length}</span>
+          已提交的步 <span>{run.steps.length}</span>
         </div>
         {run.steps.map((step) => (
           <button
@@ -1324,7 +1378,7 @@ function Trajectory({ run, route, revision }) {
               </span>
               <Badge value={step.origin} />
               {run.execution.checkpoint === step.step && (
-                <span className="checkpoint-label">Checkpoint</span>
+                <span className="checkpoint-label">检查点</span>
               )}
               {step.error && (
                 <span className="error-dot" title={step.error}>
@@ -1335,7 +1389,7 @@ function Trajectory({ run, route, revision }) {
             <span className="action-name">
               {run.config.recording.trajectory
                 ? actionLabel(step)
-                : "Actions not recorded"}
+                : "未记录动作"}
             </span>
             {step.gap && (
               <span
@@ -1348,7 +1402,7 @@ function Trajectory({ run, route, revision }) {
             )}
             <span className="muted small">
               {duration(step.duration_ms)}
-              {step.call_count ? ` · ${step.call_count} calls` : ""}
+              {step.call_count ? ` · ${step.call_count} 次调用` : ""}
             </span>
           </button>
         ))}
@@ -1362,15 +1416,14 @@ function Evaluations({ evaluations, error }) {
   if (error)
     return (
       <div className="notice error" role="alert">
-        <strong>Evaluation evidence is unreadable</strong>
+        <strong>评测证据无法读取</strong>
         <p>{error}</p>
-        <p>The run's recorded steps and model calls remain available.</p>
+        <p>这次运行记录的步和模型调用仍可查看。</p>
       </div>
     );
   return !Object.keys(evaluations).length ? (
-    <Empty title="Not evaluated">
-      Evaluator verdicts are recorded separately from the agent outcome. Run an
-      evaluation to add a verdict.
+    <Empty title="未评测">
+      评测判定与智能体结果分开记录。运行一次评测即可添加判定。
     </Empty>
   ) : (
     <div className="evaluation-list">
@@ -1378,7 +1431,9 @@ function Evaluations({ evaluations, error }) {
         <article className="panel padded" key={slug}>
           <div className="section-heading">
             <div>
-              <span className="eyebrow">{result.verdict_source}</span>
+              <span className="eyebrow">
+                {statusLabel(result.verdict_source)}
+              </span>
               <h3>{result.evaluator_id || slug}</h3>
             </div>
             <Badge value={verdictLabel(result)} />
@@ -1388,19 +1443,19 @@ function Evaluations({ evaluations, error }) {
           </p>
           {result.failure_category && (
             <p>
-              Failure category: <strong>{result.failure_category}</strong>
+              失败类别：<strong>{result.failure_category}</strong>
             </p>
           )}
           <JsonPanel
-            title="Evaluation details"
+            title="评测详情"
             value={result.evaluation_details}
             initialOpen
           />
           <JsonPanel
-            title="Evaluator configuration"
+            title="评测器配置"
             value={result.evaluator_config}
           />
-          <JsonPanel title="Full evaluation record" value={result} />
+          <JsonPanel title="完整评测记录" value={result} />
         </article>
       ))}
     </div>
@@ -1410,63 +1465,65 @@ function Evaluations({ evaluations, error }) {
 function ExecutionContext({ run }) {
   const execution = run.execution;
   if (!execution)
-    return <div className="notice">Execution provenance is unavailable.</div>;
+    return <div className="notice">没有运行来源信息。</div>;
   return (
     <section className="panel padded">
       <div className="section-heading">
-        <h3>Execution provenance</h3>
+        <h3>运行来源</h3>
         <Badge value={run.summary.execution_kind || "unknown"} />
       </div>
       <dl className="properties">
         <div>
-          <dt>Loop</dt>
+          <dt>执行循环 (Loop)</dt>
           <dd>{text(run.summary.loop_id)}</dd>
         </div>
         <div>
-          <dt>Network source</dt>
-          <dd>{text(execution.network_source)}</dd>
+          <dt>网络来源</dt>
+          <dd>{statusLabel(execution.network_source)}</dd>
         </div>
         {run.summary.branch && (
           <>
             <div>
-              <dt>Agent history</dt>
+              <dt>智能体历史</dt>
               <dd>{historyLabel(execution.history_source)}</dd>
             </div>
             <div>
-              <dt>Restoration policy</dt>
+              <dt>恢复策略</dt>
               <dd>
-                {text(execution.restorer)} · verify {text(execution.verify)}
+                {text(execution.restorer)} · 校验 {verifyLabel(execution.verify)}
               </dd>
             </div>
             <div>
-              <dt>Continuation budget</dt>
+              <dt>分叉后可继续的步数</dt>
               <dd>
-                Checkpoint decision + {text(execution.continue_steps)} further
-                steps · ceiling {text(execution.max_steps)}
+                检查点决策 + 之后 {text(execution.continue_steps)} 步 · 上限{" "}
+                {text(execution.max_steps)} 步
               </dd>
             </div>
           </>
         )}
         <div>
-          <dt>Source relationship</dt>
-          <dd>{text(execution.relationship)}</dd>
+          <dt>与原始运行的关系</dt>
+          <dd>
+            {execution.relationship ? statusLabel(execution.relationship) : "—"}
+          </dd>
         </div>
         {execution.source_run_id && (
           <div>
-            <dt>Source run</dt>
+            <dt>原始运行</dt>
             <dd>{execution.source_run_id}</dd>
           </div>
         )}
         {execution.checkpoint != null && (
           <div>
-            <dt>Checkpoint step</dt>
+            <dt>检查点所在步</dt>
             <dd>{execution.checkpoint}</dd>
           </div>
         )}
         {execution.source_resolution && (
           <div>
-            <dt>Source location</dt>
-            <dd>{execution.source_resolution.replaceAll("_", " ")}</dd>
+            <dt>原始记录位置</dt>
+            <dd>{statusLabel(execution.source_resolution)}</dd>
           </div>
         )}
       </dl>
@@ -1478,26 +1535,26 @@ function ExecutionContext({ run }) {
           {run.restoration_overview && (
             <div className="restoration-overview">
               <span>
+                恢复检查{" "}
                 <strong>
                   {run.restoration_overview.checked}/
                   {run.restoration_overview.expected}
-                </strong>{" "}
-                restoration checks
+                </strong>
               </span>
               <span>
-                <strong>{run.restoration_overview.accepted}</strong> accepted
+                通过 <strong>{run.restoration_overview.accepted}</strong>
               </span>
               <span>
-                <strong>{run.restoration_overview.warned}</strong> warnings
+                有差异 <strong>{run.restoration_overview.warned}</strong>
               </span>
               <span>
-                <strong>{run.restoration_overview.diverged}</strong> diverged
+                已偏离 <strong>{run.restoration_overview.diverged}</strong>
               </span>
               <span>
+                测得差异的步{" "}
                 <strong>
                   {run.restoration_overview.different_steps.length}
-                </strong>{" "}
-                steps with measured differences
+                </strong>
               </span>
               {run.restoration_overview.different_steps.length > 0 && (
                 <button
@@ -1510,7 +1567,7 @@ function ExecutionContext({ run }) {
                     )
                   }
                 >
-                  Inspect first difference →
+                  查看第一处差异 →
                 </button>
               )}
             </div>
@@ -1532,13 +1589,13 @@ function ExecutionContext({ run }) {
           }
         >
           {execution.checkpoint == null
-            ? "Open source run"
-            : `Open source checkpoint · step ${execution.checkpoint}`}{" "}
+            ? "打开原始运行"
+            : `打开原始检查点 · 第 ${execution.checkpoint} 步`}{" "}
           ↗
         </button>
       )}
       {run.summary.branch && (
-        <JsonPanel title="Branch provenance" value={run.summary.branch} />
+        <JsonPanel title="分叉来源" value={run.summary.branch} />
       )}
     </section>
   );
@@ -1550,9 +1607,8 @@ function ReplayLog({ log, runKey }) {
   const [limit, setLimit] = useState(100);
   if (!log || (!log.recorded && !log.error))
     return (
-      <Empty title="No replay log recorded">
-        This run has no committed replay-log archive. Replay decisions cannot be
-        inferred from its actions or final outcome.
+      <Empty title="没有回放日志">
+        这次运行没有已提交的回放日志。无法从它的动作或最终结果推断回放时每个请求是怎样处理的。
       </Empty>
     );
   const entries = log.entries.filter(
@@ -1571,18 +1627,18 @@ function ReplayLog({ log, runKey }) {
     <>
       {log.error && (
         <div className="notice error" role="alert">
-          <strong>Replay evidence is unreadable</strong>
+          <strong>回放证据无法读取</strong>
           <p>{log.error}</p>
-          <p>Any entries shown below are partial evidence.</p>
+          <p>下方显示的条目只是部分证据。</p>
         </div>
       )}
       <div className="stats">
         {[
-          ["hit", "Archive hits"],
-          ["miss", "Archive misses"],
-          ["exhausted", "Exhausted responses"],
-          ["substituted", "Substituted responses"],
-          ["synthetic", "Synthetic responses"],
+          ["hit", "归档命中"],
+          ["miss", "归档未命中"],
+          ["exhausted", "已用尽的响应"],
+          ["substituted", "替代的响应"],
+          ["synthetic", "合成的响应"],
         ].map(([key, label]) => (
           <Stat
             key={key}
@@ -1596,8 +1652,8 @@ function ReplayLog({ log, runKey }) {
           <label className="search">
             <Icon name="search" />
             <input
-              aria-label="Search replay decisions"
-              placeholder="Search URL, method, reason…"
+              aria-label="搜索回放处理记录"
+              placeholder="搜索 URL、请求方法、原因…"
               value={search}
               onChange={(event) => {
                 setSearch(event.target.value);
@@ -1606,14 +1662,14 @@ function ReplayLog({ log, runKey }) {
             />
           </label>
           <select
-            aria-label="Filter replay decision kind"
+            aria-label="按处理结果筛选"
             value={kind}
             onChange={(event) => {
               setKind(event.target.value);
               setLimit(100);
             }}
           >
-            <option value="">All decisions</option>
+            <option value="">全部处理结果</option>
             {[
               "hit",
               "miss",
@@ -1623,7 +1679,9 @@ function ReplayLog({ log, runKey }) {
               "summary",
             ].map(
               (value) => (
-                <option key={value}>{value}</option>
+                <option key={value} value={value}>
+                  {statusLabel(value)}
+                </option>
               ),
             )}
           </select>
@@ -1633,12 +1691,12 @@ function ReplayLog({ log, runKey }) {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Commit</th>
-                  <th>Decision</th>
-                  <th className="numeric">Count</th>
-                  <th>Request</th>
-                  <th>Reason / answer</th>
-                  <th>Evidence</th>
+                  <th>提交于</th>
+                  <th>处理结果</th>
+                  <th className="numeric">次数</th>
+                  <th>请求</th>
+                  <th>原因 / 应答</th>
+                  <th>证据</th>
                 </tr>
               </thead>
               <tbody>
@@ -1646,7 +1704,7 @@ function ReplayLog({ log, runKey }) {
                   <tr key={index}>
                     <td>
                       {entry.step == null ? (
-                        "Trailing"
+                        "收尾"
                       ) : (
                         <button
                           className="text-button"
@@ -1654,7 +1712,7 @@ function ReplayLog({ log, runKey }) {
                             navigate(runRoute(runKey, { step: entry.step }))
                           }
                         >
-                          Step {entry.step} ↗
+                          第 {entry.step} 步 ↗
                         </button>
                       )}
                     </td>
@@ -1662,11 +1720,11 @@ function ReplayLog({ log, runKey }) {
                       <Badge value={entry.kind} />
                       {entry.folded_kind && (
                         <div className="muted small">
-                          {entry.folded_kind} repeated
+                          {statusLabel(entry.folded_kind)} · 重复
                         </div>
                       )}
                       {entry.diverged && (
-                        <div className="row-error">Diverged</div>
+                        <div className="row-error">已偏离</div>
                       )}
                     </td>
                     <td className="numeric">{number(entry.weight)}</td>
@@ -1675,7 +1733,7 @@ function ReplayLog({ log, runKey }) {
                       <div className="mono small">{entry.url}</div>
                       <div className="muted small">
                         {entry.resource_type}
-                        {entry.frame ? ` · ${entry.frame} frame` : ""}
+                        {entry.frame ? ` · 框架 ${entry.frame}` : ""}
                       </div>
                     </td>
                     <td>
@@ -1686,12 +1744,12 @@ function ReplayLog({ log, runKey }) {
                       </div>
                       {entry.source_outcome && (
                         <div className="muted small">
-                          Source: {entry.source_outcome}
+                          原始结果：{entry.source_outcome}
                         </div>
                       )}
                     </td>
                     <td>
-                      <JsonPanel title="Replay decision" value={entry} />
+                      <JsonPanel title="回放处理记录" value={entry} />
                     </td>
                   </tr>
                 ))}
@@ -1702,34 +1760,32 @@ function ReplayLog({ log, runKey }) {
           <Empty
             title={
               log.entries.length
-                ? "No matching decisions"
-                : "No decisions recorded"
+                ? "没有符合条件的处理记录"
+                : "没有任何处理记录"
             }
           >
             {log.entries.length
-              ? "Try a different search or decision filter."
-              : "The replay log was enabled but contains no committed decisions."}
+              ? "换个搜索词或处理结果试试。"
+              : "回放日志已开启，但没有已提交的处理记录。"}
           </Empty>
         )}
         <div className="table-footer">
           <span>
-            {number(entries.length)} matching entries ·{" "}
-            {number(log.entries.length)} recorded entries
+            符合条件 {number(entries.length)} 条 · 共记录{" "}
+            {number(log.entries.length)} 条
           </span>
           {entries.length > limit && (
             <button
               className="text-button"
               onClick={() => setLimit(limit + 100)}
             >
-              Show next {Math.min(entries.length - limit, 100)}
+              再显示 {Math.min(entries.length - limit, 100)} 条
             </button>
           )}
         </div>
       </div>
       <p className="footnote">
-        Counts include repeated requests represented by summary entries. Step
-        labels identify the commit that collected each decision; trailing
-        entries were collected at close-out.
+        计数包含汇总条目所代表的重复请求。“第 N 步”指收集这条记录的那次提交；“收尾”条目是在运行结束收尾时收集的。
       </p>
     </>
   );
@@ -1742,7 +1798,7 @@ function RunDetail({ route, revision }) {
     <>
       <button className="back-link" onClick={() => navigate({ view: "runs" })}>
         <Icon name="back" />
-        All runs
+        全部运行
       </button>
       <RemoteState state={state}>
         {(run) => (
@@ -1750,7 +1806,7 @@ function RunDetail({ route, revision }) {
             <div className="page-heading run-heading">
               <div>
                 <span className="eyebrow">
-                  {run.summary.benchmark || "Recorded run"}
+                  {run.summary.benchmark || "已记录的运行"}
                   {run.summary.subset ? ` / ${run.summary.subset}` : ""}
                 </span>
                 <h1>
@@ -1769,7 +1825,7 @@ function RunDetail({ route, revision }) {
                   downloadJSON(run, `${run.summary.run_id || "run"}.json`)
                 }
               >
-                Download run JSON ↓
+                下载运行 JSON ↓
               </button>
             </div>
             <Ledger row={run.summary} />
@@ -1779,51 +1835,51 @@ function RunDetail({ route, revision }) {
                 {text(run.summary.loop_id)}
               </span>
               <span>{text(run.summary.model)}</span>
-              <span>{number(run.summary.policy_steps)} policy steps</span>
+              <span>{number(run.summary.policy_steps)} 个策略步</span>
               <span>
                 {run.summary.usage_measured === false
-                  ? "Tokens not measured"
-                  : `${number(run.summary.tokens)} tokens${run.summary.usage_complete === false ? " · known subtotal" : ""}`}
+                  ? "未统计 token"
+                  : `${number(run.summary.tokens)} token${run.summary.usage_complete === false ? " · 仅已知部分" : ""}`}
                 {run.summary.usage_missing > 0
-                  ? ` · ${run.summary.usage_missing} calls without usage`
+                  ? ` · ${run.summary.usage_missing} 次调用没有用量数据`
                   : ""}
               </span>
               <span>{duration(run.summary.execution_ms)}</span>
             </div>
             {run.manifest.incomplete_reason && (
               <div className="notice error">
-                <strong>Recording is incomplete</strong>
+                <strong>记录不完整</strong>
                 <p>{run.manifest.incomplete_reason}</p>
               </div>
             )}
             {run.summary.error && (
               <div className="notice error">
-                <strong>Run error</strong>
+                <strong>运行出错</strong>
                 <p>{run.summary.error}</p>
               </div>
             )}
             <ExecutionContext run={run} />
-            <div className="tabs" aria-label="Run sections">
+            <div className="tabs" aria-label="运行内容">
               {[
-                ["trajectory", "Trajectory"],
+                ["trajectory", "轨迹"],
                 [
                   "evaluations",
                   run.evaluation_error
-                    ? "Evaluations (!)"
-                    : `Evaluations (${Object.keys(run.evaluations).length})`,
+                    ? "评测 (!)"
+                    : `评测 (${Object.keys(run.evaluations).length})`,
                 ],
                 [
                   "trailing",
-                  `Trailing calls (${number(trailingCallCount(run))})`,
+                  `收尾调用 (${number(trailingCallCount(run))})`,
                 ],
                 [
                   "replay",
                   run.replay_log?.error
-                    ? "Replay log (!)"
-                    : `Replay log (${run.replay_log?.entries.length || 0})`,
+                    ? "回放日志 (!)"
+                    : `回放日志 (${run.replay_log?.entries.length || 0})`,
                 ],
-                ["config", "Configuration"],
-                ["result", "Result & manifest"],
+                ["config", "配置"],
+                ["result", "结果与清单"],
               ].map(([key, label]) => (
                 <button
                   key={key}
@@ -1854,8 +1910,7 @@ function RunDetail({ route, revision }) {
             {tab === "trailing" && (
               <>
                 <p className="muted">
-                  Calls committed at close-out, outside a committed step. They
-                  are preserved evidence, not additional policy steps.
+                  运行收尾时提交、不属于任何已提交步的调用。它们作为证据保留，不算额外的策略步。
                 </p>
                 {run.config.recording.trajectory ? (
                   <Calls
@@ -1864,17 +1919,17 @@ function RunDetail({ route, revision }) {
                   />
                 ) : (
                   <>
-                    <Empty title="Model inputs and replies not recorded">
-                      The recording plan did not select the agent trajectory.
+                    <Empty title="未记录模型的输入和回复">
+                      记录设置中没有选择保存智能体轨迹。
                     </Empty>
                     {run.config.recording.metrics ? (
                       <JsonPanel
-                        title="Call metrics and errors"
+                        title="调用统计与错误"
                         value={run.trailing_call_metrics}
                         initialOpen
                       />
                     ) : (
-                      <p className="muted">Model calls not measured.</p>
+                      <p className="muted">未统计模型调用。</p>
                     )}
                   </>
                 )}
@@ -1887,21 +1942,20 @@ function RunDetail({ route, revision }) {
               <>
                 <div className="panel padded">
                   <div className="section-heading">
-                    <h2>Recorded configuration</h2>
-                    <code>{run.summary.config_hash || "No digest"}</code>
+                    <h2>记录的配置</h2>
+                    <code>{run.summary.config_hash || "无摘要"}</code>
                   </div>
                   <p className="muted">
-                    The resolved configuration and negotiated contracts captured
-                    for this run.
+                    这次运行解析后的完整配置，以及运行前协商确定的观测和动作。
                   </p>
                   {run.summary.config_source ? (
                     <dl className="properties">
                       <div>
-                        <dt>Recorded source path</dt>
+                        <dt>记录的来源路径</dt>
                         <dd>{run.summary.config_source.path}</dd>
                       </div>
                       <div>
-                        <dt>Source file SHA-256</dt>
+                        <dt>来源文件 SHA-256</dt>
                         <dd className="mono">
                           {run.summary.config_source.sha256}
                         </dd>
@@ -1909,12 +1963,11 @@ function RunDetail({ route, revision }) {
                     </dl>
                   ) : (
                     <div className="notice">
-                      Configuration source unknown. This trace does not record
-                      which YAML file produced it.
+                      配置来源未知。这份记录没有写明它来自哪个 YAML 文件。
                     </div>
                   )}
                   <JsonPanel
-                    title="Configuration snapshot"
+                    title="配置快照"
                     value={run.config}
                     initialOpen
                   />
@@ -1925,17 +1978,17 @@ function RunDetail({ route, revision }) {
               <>
                 {run.summary.answer && (
                   <div className="panel padded">
-                    <h2>Recorded answer</h2>
+                    <h2>记录的答案</h2>
                     <pre className="prose-code">{text(run.summary.answer)}</pre>
                   </div>
                 )}
                 <JsonPanel
-                  title="Agent result"
+                  title="智能体结果"
                   value={run.result}
                   initialOpen
                 />
-                <JsonPanel title="Recording manifest" value={run.manifest} />
-                <JsonPanel title="Usage accounting" value={run.usage} />
+                <JsonPanel title="记录清单" value={run.manifest} />
+                <JsonPanel title="用量统计" value={run.usage} />
               </>
             )}
           </>
@@ -1950,7 +2003,7 @@ function StructuredData({ value, depth = 0 }) {
   if (value == null || typeof value !== "object")
     return <span className="data-value">{text(value)}</span>;
   if (Array.isArray(value)) {
-    if (!value.length) return <p className="muted small">No entries.</p>;
+    if (!value.length) return <p className="muted small">没有条目。</p>;
     if (
       value.every(
         (item) => item && typeof item === "object" && !Array.isArray(item),
@@ -1993,8 +2046,8 @@ function StructuredData({ value, depth = 0 }) {
               className="text-button"
               onClick={() => setLimit(limit + 100)}
             >
-              Show next {Math.min(100, value.length - limit)} of {value.length}{" "}
-              entries
+              再显示 {Math.min(100, value.length - limit)} 条（共 {value.length}{" "}
+              条）
             </button>
           )}
         </>
@@ -2002,7 +2055,7 @@ function StructuredData({ value, depth = 0 }) {
     }
     return <JsonBlock value={value} />;
   }
-  if (depth > 2) return <JsonPanel title="Details" value={value} />;
+  if (depth > 2) return <JsonPanel title="详情" value={value} />;
   const scalar = Object.entries(value).filter(
     ([, item]) => item == null || typeof item !== "object",
   );
@@ -2054,24 +2107,24 @@ function EvidenceColumn({ summary, revision }) {
         {(data) =>
           data.steps.length ? (
             <label className="evidence-step">
-              <span className="eyebrow">Committed step</span>
+              <span className="eyebrow">已提交的步</span>
               <select
                 value={index}
-                aria-label={`Step for ${summary.run_id || summary.key}`}
+                aria-label={`${summary.run_id || summary.key} 的步`}
                 onChange={(event) => setSelected(Number(event.target.value))}
               >
                 {data.steps.map((item) => (
                   <option key={item.step} value={item.step}>
-                    {item.step} · {item.origin} ·{" "}
+                    {item.step} · {statusLabel(item.origin)} ·{" "}
                     {data.config.recording.trajectory
                       ? actionLabel(item)
-                      : "Actions not recorded"}
+                      : "未记录动作"}
                   </option>
                 ))}
               </select>
             </label>
           ) : (
-            <p className="muted">No committed steps.</p>
+            <p className="muted">没有已提交的步。</p>
           )
         }
       </RemoteState>
@@ -2096,16 +2149,16 @@ function EvidenceColumn({ summary, revision }) {
                   <Icon name="image" />
                   <p>
                     {data.recording.observations
-                      ? "No committed screenshot"
-                      : "Observations not selected"}
+                      ? "没有已提交的截图"
+                      : "没有选择保存观测"}
                   </p>
                 </div>
               )}
               {data.recording.trajectory ? (
                 <StepActions record={data.record} />
               ) : (
-                <Empty title="Actions not recorded">
-                  The recording plan did not select the agent trajectory.
+                <Empty title="未记录动作">
+                  记录设置中没有选择保存智能体轨迹。
                 </Empty>
               )}
               {data.record.error && (
@@ -2115,7 +2168,7 @@ function EvidenceColumn({ summary, revision }) {
                 className="text-button"
                 onClick={() => navigate(runRoute(summary.key, { step: index }))}
               >
-                Inspect this step's full evidence ↗
+                查看这一步的全部证据 ↗
               </button>
             </>
           )}
@@ -2134,8 +2187,8 @@ function ComparedEvidence({ runs, revision }) {
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>
-        Compare step evidence
-        <span className="muted small">Screenshots and actions</span>
+        对比各步证据
+        <span className="muted small">截图与动作</span>
       </summary>
       {open && (
         <div className="evidence-columns">
@@ -2167,20 +2220,18 @@ function Compare({ route, revision }) {
     <>
       <button className="back-link" onClick={() => navigate({ view: "runs" })}>
         <Icon name="back" />
-        All runs
+        全部运行
       </button>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">Compare evidence</span>
-          <h1>Run comparison</h1>
-          <p>
-            Align outcomes, evaluator verdicts, and configuration differences.
-          </p>
+          <span className="eyebrow">对比证据</span>
+          <h1>运行对比</h1>
+          <p>并排查看各次运行的结果、评测判定和配置差异。</p>
         </div>
       </div>
       {keys.length < 2 ? (
-        <Empty title="Select at least two runs">
-          Return to the run list and select runs to compare.
+        <Empty title="请至少选择两次运行">
+          回到运行列表，勾选要对比的运行。
         </Empty>
       ) : (
         <RemoteState state={state}>
@@ -2188,15 +2239,14 @@ function Compare({ route, revision }) {
             <>
               {!comparison.same_task && (
                 <div className="notice">
-                  These runs do not all refer to the same task. Differences in
-                  verdicts and usage may reflect different workloads.
+                  这些运行并非都针对同一个任务。判定和用量上的差异，可能来自任务本身的不同。
                 </div>
               )}
               <div className="table-scroll panel">
                 <table className="comparison-table">
                   <thead>
                     <tr>
-                      <th>Evidence</th>
+                      <th>项目</th>
                       {comparison.runs.map((run) => (
                         <th key={run.key}>
                           <button
@@ -2212,25 +2262,26 @@ function Compare({ route, revision }) {
                   </thead>
                   <tbody>
                     {[
-                      ["Agent", "agent_id"],
-                      ["Model", "model"],
-                      ["Loop", "loop_id"],
-                      ["Execution", "execution_kind"],
-                      ["Agent outcome", "agent_done"],
-                      ["Environment", "env_status"],
-                      ["Recording", "trace_status"],
-                      ["Complete through", "complete_through"],
-                      ["Policy steps", "policy_steps"],
-                      ["Total steps", "total_steps"],
-                      ["Tokens", "tokens"],
-                      ["Calls without usage", "usage_missing"],
-                      ["Execution time", "execution_ms"],
+                      ["智能体", "agent_id"],
+                      ["模型", "model"],
+                      ["执行循环 (Loop)", "loop_id"],
+                      ["运行方式", "execution_kind"],
+                      ["智能体结果", "agent_done"],
+                      ["环境", "env_status"],
+                      ["记录状态", "trace_status"],
+                      ["完整记录到第几步", "complete_through"],
+                      ["策略步数", "policy_steps"],
+                      ["总步数", "total_steps"],
+                      ["Token", "tokens"],
+                      ["没有用量数据的调用", "usage_missing"],
+                      ["运行用时", "execution_ms"],
                     ].map(([label, key]) => (
                       <tr key={key}>
                         <th>{label}</th>
                         {comparison.runs.map((run) => (
                           <td key={run.key}>
                             {[
+                              "execution_kind",
                               "agent_done",
                               "env_status",
                               "trace_status",
@@ -2247,7 +2298,7 @@ function Compare({ route, revision }) {
                     ))}
                     {comparison.runs.some((run) => run.evaluation_error) && (
                       <tr>
-                        <th>Evaluation evidence</th>
+                        <th>评测证据</th>
                         {comparison.runs.map((run) => (
                           <td key={run.key}>
                             <Verdicts
@@ -2260,7 +2311,7 @@ function Compare({ route, revision }) {
                     )}
                     {comparison.evaluator_comparisons.map((item) => (
                       <tr key={item.evaluator}>
-                        <th>Evaluator · {item.evaluator}</th>
+                        <th>评测器 · {item.evaluator}</th>
                         {item.verdicts.map((verdict, index) => (
                           <td key={index}>
                             {comparison.runs[index]?.evaluation_error ? (
@@ -2268,10 +2319,10 @@ function Compare({ route, revision }) {
                                 className="row-error"
                                 title={comparison.runs[index].evaluation_error}
                               >
-                                Evaluation unreadable
+                                评测结果无法读取
                               </span>
                             ) : verdict == null ? (
-                              <span className="muted">Not evaluated</span>
+                              <span className="muted">未评测</span>
                             ) : (
                               <StructuredData value={verdict} />
                             )}
@@ -2284,9 +2335,9 @@ function Compare({ route, revision }) {
               </div>
               <section className="panel padded">
                 <div className="section-heading">
-                  <h2>Configuration differences</h2>
+                  <h2>配置差异</h2>
                   <span className="muted small">
-                    {comparison.config_differences.length} changed paths
+                    {comparison.config_differences.length} 处配置不同
                   </span>
                 </div>
                 {comparison.config_differences.length ? (
@@ -2294,7 +2345,7 @@ function Compare({ route, revision }) {
                     <table className="comparison-table">
                       <thead>
                         <tr>
-                          <th>Configuration path</th>
+                          <th>配置路径</th>
                           {comparison.runs.map((run) => (
                             <th key={run.key}>{run.run_id || run.key}</th>
                           ))}
@@ -2320,12 +2371,12 @@ function Compare({ route, revision }) {
                   </div>
                 ) : (
                   <p className="muted">
-                    The recorded configurations have no differences.
+                    记录的配置之间没有差异。
                   </p>
                 )}
               </section>
               <ComparedEvidence runs={comparison.runs} revision={revision} />
-              <JsonPanel title="Comparison data" value={comparison} />
+              <JsonPanel title="对比数据" value={comparison} />
             </>
           )}
         </RemoteState>
@@ -2359,7 +2410,7 @@ function ExperimentComparison({ route, revision }) {
   (runs.data || []).forEach((run) => {
     if (!run.config_hash) return;
     const group = groups.get(run.config_hash) || {
-      label: `${run.agent_id || "agent"} · ${run.model || "model"}`,
+      label: `${run.agent_id || "未知智能体"} · ${run.model || "未知模型"}`,
       count: 0,
     };
     group.count += 1;
@@ -2373,14 +2424,14 @@ function ExperimentComparison({ route, revision }) {
     ),
   ].sort();
   const outcomes = {
-    both_passed: "Both passed",
-    left_only_passed: "A passed / B failed",
-    right_only_passed: "B passed / A failed",
-    both_failed: "Both failed",
-    unpaired: "Unpaired tasks",
-    ungraded: "Ungraded tasks",
-    ambiguous: "Ambiguous attempts",
-    incompatible_evaluator: "Different evaluator settings",
+    both_passed: "两边都通过",
+    left_only_passed: "A 通过 / B 失败",
+    right_only_passed: "B 通过 / A 失败",
+    both_failed: "两边都失败",
+    unpaired: "无法配对的任务",
+    ungraded: "未评分的任务",
+    ambiguous: "多次尝试、无法确定",
+    incompatible_evaluator: "评测器设置不同",
   };
   const runLinks = (values) =>
     values.length ? (
@@ -2396,26 +2447,26 @@ function ExperimentComparison({ route, revision }) {
             <Badge value={run.agent_done} />
             {run.evaluation_error && (
               <div className="row-error" title={run.evaluation_error}>
-                Evaluation unreadable
+                评测结果无法读取
               </div>
             )}
           </div>
         ))}
       </div>
     ) : (
-      <span className="muted">No matching run</span>
+      <span className="muted">没有对应的运行</span>
     );
   return (
     <>
       <button className="back-link" onClick={() => navigate({ view: "runs" })}>
         <Icon name="back" />
-        All runs
+        全部运行
       </button>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">Matched tasks</span>
-          <h1>Experiment comparison</h1>
-          <p>Find where one configuration succeeds and another fails.</p>
+          <span className="eyebrow">按任务配对</span>
+          <h1>实验对比</h1>
+          <p>找出一种配置成功、另一种配置失败的任务。</p>
         </div>
       </div>
       <RemoteState state={runs}>
@@ -2428,8 +2479,8 @@ function ExperimentComparison({ route, revision }) {
             }}
           >
             {[
-              ["A · Configuration", left, setLeft],
-              ["B · Configuration", right, setRight],
+              ["A · 配置", left, setLeft],
+              ["B · 配置", right, setRight],
             ].map(([label, value, setter]) => (
               <label key={label}>
                 <span className="eyebrow">{label}</span>
@@ -2438,23 +2489,23 @@ function ExperimentComparison({ route, revision }) {
                   value={value}
                   onChange={(event) => setter(event.target.value)}
                 >
-                  <option value="">Select a configuration</option>
+                  <option value="">选择配置</option>
                   {[...groups.entries()].map(([hash, group]) => (
                     <option key={hash} value={hash}>
-                      {hash.slice(0, 10)} · {group.label} · {group.count} runs
+                      {hash.slice(0, 10)} · {group.label} · {group.count} 次运行
                     </option>
                   ))}
                 </select>
               </label>
             ))}
             <label>
-              <span className="eyebrow">Evaluator</span>
+              <span className="eyebrow">评测器</span>
               <select
                 required
                 value={evaluator}
                 onChange={(event) => setEvaluator(event.target.value)}
               >
-                <option value="">Select an evaluator</option>
+                <option value="">选择评测器</option>
                 {evaluators.map((name) => (
                   <option key={name}>{name}</option>
                 ))}
@@ -2464,15 +2515,13 @@ function ExperimentComparison({ route, revision }) {
               className="button primary"
               disabled={!left || !right || left === right || !evaluator}
             >
-              Compare experiments
+              对比实验
             </button>
           </form>
         )}
       </RemoteState>
       <p className="footnote">
-        Pairs match benchmark, subset, and task identity. Only graded verdicts
-        with matching evaluator settings are compared. Repeated attempts remain
-        ambiguous; no attempt is picked for you.
+        按基准测试、子集和任务配对。只对比评测器设置相同、且已评分的判定。同一任务有多次尝试时视为无法确定，不会替你挑选其中一次。
       </p>
       {comparison.data || comparison.loading || comparison.error ? (
         <RemoteState state={comparison}>
@@ -2489,13 +2538,13 @@ function ExperimentComparison({ route, revision }) {
               </div>
               <div className="panel padded">
                 <div className="outcome-filter">
-                  <label htmlFor="outcome-filter">Case outcome</label>
+                  <label htmlFor="outcome-filter">对比结果</label>
                   <select
                     id="outcome-filter"
                     value={filter}
                     onChange={(event) => setFilter(event.target.value)}
                   >
-                    <option value="">All tasks</option>
+                    <option value="">全部任务</option>
                     {Object.entries(outcomes).map(([key, label]) => (
                       <option key={key} value={key}>
                         {label}
@@ -2507,8 +2556,8 @@ function ExperimentComparison({ route, revision }) {
                   <table className="comparison-table">
                     <thead>
                       <tr>
-                        <th>Task</th>
-                        <th>Outcome</th>
+                        <th>任务</th>
+                        <th>结果</th>
                         <th>A · {data.left.slice(0, 10)}</th>
                         <th>B · {data.right.slice(0, 10)}</th>
                       </tr>
@@ -2533,19 +2582,18 @@ function ExperimentComparison({ route, revision }) {
                   </table>
                 </div>
                 {!data.rows.length && (
-                  <Empty title="No matching task evidence">
-                    Choose configurations with recorded tasks and evaluator
-                    results.
+                  <Empty title="没有符合条件的任务证据">
+                    请选择有任务记录和评测结果的配置。
                   </Empty>
                 )}
               </div>
-              <JsonPanel title="Experiment comparison data" value={data} />
+              <JsonPanel title="实验对比数据" value={data} />
             </>
           )}
         </RemoteState>
       ) : (
-        <Empty title="Choose two configurations and an evaluator">
-          Open any matched run to investigate its trajectory and evidence.
+        <Empty title="请选择两种配置和一个评测器">
+          之后可以打开任意一次配对的运行，查看它的轨迹和证据。
         </Empty>
       )}
     </>
@@ -2554,20 +2602,20 @@ function ExperimentComparison({ route, revision }) {
 
 function ReplayReviewReport({ report }) {
   return <>
-    <div className="section-heading"><h3>Independent replay review</h3><Badge value={report.manifest.status} /></div>
+    <div className="section-heading"><h3>独立回放审阅</h3><Badge value={report.manifest.status} /></div>
     <StructuredData value={report.manifest.summary} />
-    <JsonPanel title="Questions, policy and evidence options" value={report.config} />
+    <JsonPanel title="问题、策略与证据选项" value={report.config} />
     {report.items.map(item => <section className="panel padded" key={item.index}>
-      <h3>Observation pair {item.index + 1}</h3>
+      <h3>第 {item.index + 1} 组观测</h3>
       <dl className="properties">
-        <div><dt>Execution</dt><dd>{item.assessment.status}</dd></div>
-        <div><dt>Information answer</dt><dd>{item.assessment.information ?? "Not assessed"}</dd></div>
-        <div><dt>Thresholds</dt><dd>{item.assessment.thresholds ? `${item.assessment.thresholds.scope}: accept ≥ ${item.assessment.thresholds.accept_information_min}, investigate ≤ ${item.assessment.thresholds.investigate_information_max}` : "Not applied"}</dd></div>
-        <div><dt>Review route</dt><dd>{item.assessment.route}</dd></div>
+        <div><dt>执行状态</dt><dd>{statusLabel(item.assessment.status)}</dd></div>
+        <div><dt>信息判定</dt><dd>{item.assessment.information ?? "未评估"}</dd></div>
+        <div><dt>阈值</dt><dd>{item.assessment.thresholds ? `${SCOPE_LABELS[item.assessment.thresholds.scope] || item.assessment.thresholds.scope}：≥ ${item.assessment.thresholds.accept_information_min} 接受，≤ ${item.assessment.thresholds.investigate_information_max} 需调查` : "未使用"}</dd></div>
+        <div><dt>审阅去向</dt><dd>{item.assessment.route ? statusLabel(item.assessment.route) : "—"}</dd></div>
       </dl>
       <p>{item.assessment.reasons.join(" · ")}</p>
       {item.assessment.detail && <p className="notice error">{item.assessment.detail}</p>}
-      <JsonPanel title="Evidence, source references and restoration checks" value={item.evidence} />
+      <JsonPanel title="证据、来源引用与恢复检查" value={item.evidence} />
       <Calls calls={item.calls} />
     </section>)}
   </>;
@@ -2583,32 +2631,27 @@ function Reports({ route, revision, workspace }) {
     <>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">Research artifacts</span>
-          <h1>Reports & datasets</h1>
-          <p>
-            Recorded evaluations, flywheel metrics, diagnostics, and dataset
-            manifests.
-          </p>
+          <span className="eyebrow">研究产物</span>
+          <h1>报告与数据集</h1>
+          <p>已记录的评测、数据飞轮指标、诊断信息和数据集清单。</p>
         </div>
       </div>
       {(workspace.config_source || workspace.config_hash) && (
         <div className="notice">
-          <strong>Reports retain their original scope</strong>
+          <strong>报告保持原有范围</strong>
           <p>
-            Reports are discovered across this root and retain their original
-            inputs and denominators. Configuration filters apply to run lists;
-            they do not filter or recompute report statistics.
+            报告是在整个根目录中查找的，保留原有的输入和统计分母。配置筛选只作用于运行列表，不会筛选或重新计算报告中的统计。
           </p>
         </div>
       )}
       <div className="report-layout">
         <aside className="panel report-list">
-          <div className="timeline-title">Artifacts</div>
+          <div className="timeline-title">产物</div>
           <RemoteState state={list}>
             {(reports) =>
               !reports.length ? (
-                <Empty title="No reports found">
-                  Reports will appear when present under this workspace.
+                <Empty title="没有找到报告">
+                  工作区中有报告时，会显示在这里。
                 </Empty>
               ) : (
                 reports.map((item) => (
@@ -2617,7 +2660,9 @@ function Reports({ route, revision, workspace }) {
                     onClick={() => navigate({ view: "reports", key: item.key })}
                     className={`report-button ${route.key === item.key ? "active" : ""}`}
                   >
-                    <span className="eyebrow">{item.kind}</span>
+                    <span className="eyebrow">
+                      {REPORT_KINDS[item.kind] || item.kind}
+                    </span>
                     <strong>{item.title || item.key}</strong>
                     <span className="mono muted small">{item.key}</span>
                     {item.error && (
@@ -2636,7 +2681,9 @@ function Reports({ route, revision, workspace }) {
                 <div className="panel padded">
                   <div className="section-heading">
                     <div>
-                      <span className="eyebrow">{item.kind}</span>
+                      <span className="eyebrow">
+                        {REPORT_KINDS[item.kind] || item.kind}
+                      </span>
                       <h2>{item.key.split("/").pop()}</h2>
                     </div>
                     <button
@@ -2648,18 +2695,17 @@ function Reports({ route, revision, workspace }) {
                         )
                       }
                     >
-                      Download JSON ↓
+                      下载 JSON ↓
                     </button>
                   </div>
                   {item.kind === "replay_review" ? <ReplayReviewReport report={item.data} /> : <StructuredData value={item.data} />}
-                  <JsonPanel title="Raw report" value={item.data} />
+                  <JsonPanel title="原始报告" value={item.data} />
                 </div>
               )}
             </RemoteState>
           ) : (
-            <Empty title="Choose a report">
-              Select an artifact to inspect its recorded measurements and
-              provenance.
+            <Empty title="请选择一份报告">
+              选择左侧的一项产物，查看它记录的测量结果和来源。
             </Empty>
           )}
         </div>
@@ -2672,10 +2718,8 @@ function WorkspaceScope({ workspace }) {
   return workspace.config_source || workspace.config_hash ? (
     <div className="notice">
       <strong>
-        Run list filter ·{" "}
-        {workspace.config_source
-          ? "configuration file history"
-          : "configuration digest"}
+        运行列表筛选 ·{" "}
+        {workspace.config_source ? "配置文件历史" : "配置摘要"}
       </strong>
       {workspace.config_source && (
         <p className="mono small">{workspace.config_source}</p>
@@ -2683,20 +2727,20 @@ function WorkspaceScope({ workspace }) {
       <p>
         {workspace.config_hash ? (
           <>
-            Configuration digest:{" "}
+            配置摘要：
             <span className="mono small">{workspace.config_hash}</span>
           </>
         ) : (
-          "All recorded versions of this file. Traces with unknown configuration source are excluded."
+          "包含这个文件所有已记录的版本。配置来源不明的记录不在其中。"
         )}
       </p>
       <p className="small">
-        Search root: <span className="mono">{workspace.root}</span>
+        查找根目录：<span className="mono">{workspace.root}</span>
       </p>
     </div>
   ) : (
     <p className="footnote">
-      Search root: <span className="mono">{workspace.root}</span>
+      查找根目录：<span className="mono">{workspace.root}</span>
     </p>
   );
 }
@@ -2732,59 +2776,59 @@ function App() {
           document.getElementById("main-content").focus();
         }}
       >
-        Skip to content
+        跳到正文
       </a>
       <aside className="sidebar">
         <a className="brand" href="#view=runs">
           <img
             className="brand-mark"
             src="/brand/mark.svg"
-            alt="Spectragent prism mark"
+            alt="All4One 棱镜标志"
             width="42"
             height="42"
           />
           <span>
-            All4One<small>EXPERIMENT VIEWER</small>
+            All4One<small>实验查看器</small>
           </span>
         </a>
-        <div className="nav-label">Workspace</div>
-        <nav aria-label="Main navigation">
+        <div className="nav-label">工作区</div>
+        <nav aria-label="主导航">
           <button
             className={!["reports", "review"].includes(view) ? "active" : ""}
             onClick={() => navigate({ view: "runs" })}
           >
             <Icon name="runs" />
-            Runs
+            运行
           </button>
           <button
             className={view === "review" ? "active" : ""}
             onClick={() => navigate({ view: "review" })}
           >
             <Icon name="review" />
-            Review
+            审阅
           </button>
           <button
             className={view === "reports" ? "active" : ""}
             onClick={() => navigate({ view: "reports" })}
           >
             <Icon name="reports" />
-            Reports & datasets
+            报告与数据集
           </button>
         </nav>
         <div className="sidebar-bottom">
           <span className="connection-dot" />
-          Local workspace
+          本地工作区
           {annotations ? (
             <p>
-              Traces read-only
+              运行记录只读
               <br />
-              Labeling as {annotations.annotator}
+              标注人：{annotations.annotator}
             </p>
           ) : (
             <p>
-              Read-only evidence
+              证据只读
               <br />
-              No agent execution
+              不会运行智能体
             </p>
           )}
         </div>
@@ -2792,17 +2836,17 @@ function App() {
       <div className="workspace">
         <header className="topbar">
           <span>
-            <span className="breadcrumb">Workspace</span>
+            <span className="breadcrumb">工作区</span>
             <Icon name="arrow" />
             {view === "reports"
-              ? "Reports & datasets"
+              ? "报告与数据集"
               : view === "review"
-                ? "Review"
+                ? "审阅"
                 : view === "run"
-                ? "Run details"
+                ? "运行详情"
                 : ["compare", "groups"].includes(view)
-                  ? "Comparison"
-                  : "Runs"}
+                  ? "对比"
+                  : "运行"}
           </span>
           <div className="topbar-actions">
             <label className="auto-refresh">
@@ -2811,15 +2855,15 @@ function App() {
                 checked={live}
                 onChange={(event) => setLive(event.target.checked)}
               />
-              Auto-refresh · 5s
+              自动刷新 · 5 秒
             </label>
             <button
               className="button icon-button"
-              aria-label="Refresh evidence"
+              aria-label="刷新证据"
               onClick={() => setRevision((value) => value + 1)}
             >
               <Icon name="refresh" />
-              Refresh
+              刷新
             </button>
           </div>
         </header>
