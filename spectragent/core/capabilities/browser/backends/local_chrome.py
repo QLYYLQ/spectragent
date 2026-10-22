@@ -114,6 +114,20 @@ CHROME_DEFAULT_ARGS: tuple[str, ...] = (
     "DialMediaRouteProvider",
 )
 
+#: The three defaults that keep a tab nobody looks at running at full speed.
+#: They came with the rest of ``CHROME_DEFAULT_ARGS`` in the first commit, from
+#: Puppeteer's automation defaults: a script that drives a page in a tab that is
+#: not in front (or in a covered window) must not see its timers slowed. Here
+#: only the focused tab is acted on and observed, and the capability brings it
+#: to the front (``Target.activateTarget``), so these govern only the tabs the
+#: focus left. ``background_throttling: true`` leaves them out
+#: (``docs/architecture_design.md`` §4.9.x "后台 tab 的节流").
+CHROME_BACKGROUND_UNTHROTTLED_ARGS: tuple[str, ...] = (
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+)
+
 CHROME_HEADLESS_ARGS: tuple[str, ...] = ("--headless=new",)
 
 CHROME_DOCKER_ARGS: tuple[str, ...] = (
@@ -467,6 +481,27 @@ class LocalChromeProvider(BrowserProviderBase):
         Field(description="Disable Chrome sync"),
     ] = True
 
+    background_throttling: Annotated[
+        bool,
+        Field(
+            description=(
+                "Let Chrome throttle background tabs the way it does for a user. false (the "
+                "default) launches with --disable-background-timer-throttling, "
+                "--disable-backgrounding-occluded-windows and --disable-renderer-backgrounding, "
+                "taken over with Puppeteer's automation defaults so that a tab nobody looks at "
+                "keeps its timers at full speed; true leaves the three out. The tab the agent is "
+                "on is in front either way: only the tabs the focus left are affected. Measured "
+                "in headless Chrome 155 on macOS: a tab the focus left is hidden; its timers wake "
+                "about 10 times a second with the switches, about once a second without them, "
+                "and once a minute after its first minute in the background without them. "
+                "Throttling slows timers only: tabs keeping each other in step through storage "
+                "events run as fast either way. This knob decides the three switches whatever "
+                "ignore_default_args says, and they are part of the launch flags an offline "
+                "replay compares with its recording's."
+            )
+        ),
+    ] = False
+
     disable_automation_controlled: Annotated[
         bool,
         Field(
@@ -556,9 +591,18 @@ class LocalChromeProvider(BrowserProviderBase):
         """Assemble Chrome CLI arguments from config fields."""
         args: list[str] = []
 
-        # Base defaults.
+        # Base defaults. The three that keep background tabs at full speed are
+        # ``background_throttling``'s, whatever ``ignore_default_args`` says;
+        # kept in place among the defaults, so the launch flags of a default
+        # launch are what they were.
         if not self.ignore_default_args:
-            args.extend(CHROME_DEFAULT_ARGS)
+            args.extend(
+                arg
+                for arg in CHROME_DEFAULT_ARGS
+                if not (self.background_throttling and arg in CHROME_BACKGROUND_UNTHROTTLED_ARGS)
+            )
+        elif not self.background_throttling:
+            args.extend(CHROME_BACKGROUND_UNTHROTTLED_ARGS)
 
         # Headless.
         if self.headless:
