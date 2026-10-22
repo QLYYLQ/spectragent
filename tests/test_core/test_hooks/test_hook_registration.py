@@ -168,6 +168,7 @@ class TestHookConfigIsExtractable:
             "write_retries",
             "retry_delay",
             "close_timeout",
+            "closeout_collection_timeout",
         }
 
     def test_trace_writer_exposes_trace_dir(self) -> None:

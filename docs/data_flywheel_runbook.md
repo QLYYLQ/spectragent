@@ -77,7 +77,7 @@ recording:
   observations: false
 ```
 
-这种轻量记录仍写磁盘，读取 token 和失败调用不需要解码图片。完全不配置记录器时用量/调用次数为未测量；provider 未报用量与明确零用量分别显示。`metrics.usage_coverage` 表示实际调用的 provider 覆盖，`metrics.recording_health` 表示持久化覆盖。写盘失败不会改变 Agent 执行结果，`missing_steps` 和 `complete_through` 说明缺口；洞后保存内容可以查看，分叉和导出只用满足范围与完整历史条件的部分。恢复写入在后台有界进行：pending_segments 默认 64、write_retries 默认 2、retry_delay 默认 0.05 秒、close_timeout 默认 5 秒。
+这种轻量记录仍写磁盘，读取 token 和失败调用不需要解码图片。完全不配置记录器时用量/调用次数为未测量；provider 未报用量与明确零用量分别显示。`metrics.usage_coverage` 表示实际调用的 provider 覆盖，`metrics.recording_health` 表示持久化覆盖。写盘失败不会改变 Agent 执行结果，`missing_steps` 和 `complete_through` 说明缺口；洞后保存内容可以查看，分叉和导出只用满足范围与完整历史条件的部分。恢复写入在后台有界进行：pending_segments 默认 64、write_retries 默认 2、retry_delay 默认 0.05 秒。收尾分两段各自计时：最后一次归档收集最多 closeout_collection_timeout（默认 10 秒），之后 close_timeout（默认 5 秒）留给写完队列、写 result.json 并关闭 manifest，所以浏览器卡死的 run 也以 incomplete 关闭。
 
 `archive` 是录不录环境证据的唯一开关：不写、写 `null` 或 `[]` 都不录。归档器只能写在这里，YAML 顶层写 `archiver:` 段会在组装时报错，提示把归档器写进 `trace_writer.archive`。`browser.network` 默认 `require_replayable: true`，与 `none` 档位一起绑定会被拒；要把一次评测 run 照原样存档，写 `require_replayable: false`，这样的归档不保证能回放。
 

@@ -90,6 +90,12 @@ Collection batch ownership is not action causality; preserve each event's captur
 and IDs. Cross-batch references cannot point at uncommitted objects. Replay source reads
 are environment operations and must not be swallowed as current-run recording failures.
 
+Close-out runs two waits on separate clocks: the last collection under
+`closeout_collection_timeout`, then the worker's drain, `result.json` and manifest close
+under the full `close_timeout`. A hung environment can only make the trace `incomplete`.
+Only a worker that overruns its own budget stops further writes and leaves the manifest
+`writing`, because a write that may still land must not be followed by finalisation.
+
 ## 4. What belongs in a trace — the judgement
 
 **The trace records agent behaviour.**

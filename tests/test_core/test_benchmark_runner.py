@@ -755,8 +755,10 @@ class TestTheSummaryCountsThreeLedgers:
         (outcome,) = summary.outcomes
         assert outcome.agent_done == "done"  # the agent's ledger is unharmed
         assert outcome.trace_status == "incomplete"
-        assert outcome.trace_note == "OSError: disk full"
-        assert outcome.infrastructure_error == ("the trace is incomplete: OSError: disk full")
+        assert outcome.trace_note == "result: OSError: disk full"
+        assert outcome.infrastructure_error == (
+            "the trace is incomplete: result: OSError: disk full"
+        )
         assert summary.count_by_trace() == {"incomplete": 1}
         assert summary.failed == 1
 

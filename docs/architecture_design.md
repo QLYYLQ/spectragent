@@ -4277,7 +4277,7 @@ traces/
 |---|---|---|
 | `writing` | trace 未关闭；可能仍在运行或进程未完成收尾，已提交索引仍可供查看 | `init_run` |
 | `complete` | 已关闭，在声明记录范围内完整；已恢复的历史故障仍可见 | `finalize` |
-| `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容（run 可继续）、收尾那次收集、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
+| `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容（run 可继续）、收尾那次收集（含超出 `closeout_collection_timeout`）、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（每一项 `<通道>: <错误类>: <原因>`，几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
 `complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
@@ -4552,7 +4552,9 @@ class StepRecord(BaseModel):
 - 不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_action_spans_do_not_reach_the_prompt`）。
 - 无环境的 run 没有 `env.act` 可拦：`TraceWriter` 经 `EnvironmentInterceptor` 得知后不声明这一拦截（§4.6），run 照常装配，各步记 `[]`。
 
-交接先封存，后台持久化后提交。输入快照在交接时完成；重试只保留同一封存段，不能改名 trailing。记录组件隔离初始化、采集、编码、提交和收尾的异常，真实执行异常原样传播。默认缓冲 64 个段、最多重试 2 次、重试间隔 0.05 秒、收尾等待 5 秒；这些是记录配置，绝非停机策略。满缓冲丢失的段有健康诊断，后续段继续尝试；恢复等待只在后台和收尾发生。
+交接先封存，后台持久化后提交。输入快照在交接时完成；重试只保留同一封存段，不能改名 trailing。记录组件隔离初始化、采集、编码、提交和收尾的异常，真实执行异常原样传播。默认缓冲 64 个段、最多重试 2 次、重试间隔 0.05 秒；这些是记录配置，绝非停机策略。满缓冲丢失的段有健康诊断，后续段继续尝试；恢复等待只在后台和收尾发生。
+
+**收尾的两段等待各自计时。** 收尾先把未交出步骤的调用排进队列，再做最后一次归档收集，最多 `closeout_collection_timeout`（默认 10 秒，`CLOSEOUT_COLLECTION_TIMEOUT_S`：capability 自己给收集设了界，browser 光等事件通道就可能 5 秒，这只是兜底，留够时间让慢的 capability 报出自己的失败）；超时或失败都只是收尾的一条归档问题，超时的 `detail` 写明预算。之后后台写入另有一整段 `close_timeout`（默认 5 秒），从收集结束时起算，把队列写完、写 `result.json` 并关闭 manifest。所以环境卡死只能让 trace 以 `incomplete` 关闭，不能让它停在 `writing`；两段若共用一个预算，卡住的收集会把它用光，写入只剩零头，`result.json` 写不成、manifest 停在 `writing`。只有写入本身超出自己的预算（一次卡在内核里的写）才停止后续写入、保持 manifest 原样：一个可能还会落盘的写之后不能再接一次关闭。每条记录问题的日志都写出通道与 `detail`（`Recording <phase> failed at step <step> (<channel>): <error>: <detail>`），`incomplete_reason` 的每一项也是 `<channel>: <error>: <detail>`。
 
 归档仍从原始 environment.collect_archive 拉取；它决定批次所属步骤，每条证据自己的 captured_at/cycle/ids 保留，不推断动作因果。归档 run 版本按采集顺序保留，去重只信任提交索引；跨批次引用不得指向未提交对象。归档摘要日志显式标记折叠、代表次数、首末时间和事件类别。
 
