@@ -58,6 +58,14 @@ one (``openerId`` from ``opener_id``) before it attaches it anywhere, and
 :meth:`FakeBrowser.close_target` — or ``Target.closeTarget`` — detaches every
 session of the target and reports it destroyed. ``Page.windowOpen`` is a test's
 to fire, on the opener's session (:meth:`FakeClient.fire`).
+
+And the page lifecycle, as freezing the tabs the focus left reads it
+(``background_tabs: freeze``, §4.14 "离开焦点的 tab"): ``Page.setWebLifecycleState``
+freezes or resumes the target of the session it is sent on
+(:attr:`FakeTarget.frozen`), and — measured, Chrome 155 — every other command
+on a frozen tab is answered as usual, except that ``Page.captureScreenshot``
+on it and ``Target.activateTarget`` of it bring the page back to life; each
+such resume is listed in :attr:`FakeBrowser.implicit_resumes`.
 """
 
 from __future__ import annotations
@@ -123,6 +131,8 @@ class FakeTarget:
     commit_held: bool = False
     #: Set once it runs and its first document committed: page-side commands answer.
     running: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Frozen by ``Page.setWebLifecycleState`` (and not resumed since).
+    frozen: bool = False
 
     def info(self) -> dict[str, Any]:
         info: dict[str, Any] = {"targetId": self.target_id, "type": self.type, "url": self.url}
@@ -396,6 +406,9 @@ class FakeBrowser:
         self.password_value = "planted-secret"
         #: What ``Page.captureScreenshot`` returns (a PNG header and filler).
         self.screenshot = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+        #: ``(target id, method)`` of every command that brought a frozen tab back to
+        #: life without ``Page.setWebLifecycleState{active}`` (module docstring).
+        self.implicit_resumes: list[tuple[str, str]] = []
 
     # ── factory ───────────────────────────────────────────────────────
 
@@ -604,6 +617,15 @@ class FakeBrowser:
                 raise RuntimeError("CDP error: No target with given id found")
             self.close_target(str(params["targetId"]))
             return {"success": True}
+        if method == "Target.activateTarget":
+            activated = self.targets.get(str(params.get("targetId")))
+            if activated is not None and activated.frozen:
+                activated.frozen = False
+                self.implicit_resumes.append((activated.target_id, method))
+            return {}
+        if method == "Page.setWebLifecycleState" and target is not None:
+            target.frozen = params.get("state") == "frozen"
+            return {}
         if method == "Target.attachToTarget":
             attached = self.targets.get(params["targetId"])
             if attached is None:
@@ -710,6 +732,9 @@ class FakeBrowser:
                 return {"result": {"type": "string", "value": json.dumps(probe)}}
             return {}
         if method == "Page.captureScreenshot":
+            if target is not None and target.frozen:
+                target.frozen = False
+                self.implicit_resumes.append((target.target_id, method))
             return {"data": base64.b64encode(self.screenshot).decode("ascii")}
         if method == "DOM.getDocument":
             return {"root": self.document()}

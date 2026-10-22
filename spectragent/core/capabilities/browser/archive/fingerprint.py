@@ -28,6 +28,9 @@ It holds:
   zone is the pinned one (``TZ`` at launch) and the locale the host's; a
   replay whose browser falls back to others is refused.
 - **The viewport** as configured.
+- **What becomes of a tab the focus leaves** — the capability's
+  ``background_tabs`` (``run`` / ``freeze``): a frozen tab runs nothing until
+  the focus returns, so a recording and its replay must agree on it.
 - **The tier** — ``ReplayabilityPlan.fingerprint()``: tier, parameters, T0,
   ``shim_sha256`` and the tier's own launch switches, kept apart from the
   rest of the command line so replay can compare them on their own.
@@ -130,6 +133,7 @@ class BrowserFingerprint:
         session_metadata: Mapping[str, Any] | None,
         archivers: Sequence[BrowserArchiverBase],
         fresh_profile: bool,
+        background_tabs: str,
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
@@ -152,6 +156,7 @@ class BrowserFingerprint:
             session_metadata=session_metadata,
             archivers=archivers,
             fresh_profile=fresh_profile,
+            background_tabs=background_tabs,
             network_fingerprint=network_fingerprint,
             browser_defaults=browser_defaults,
             input_platform=input_platform,
@@ -181,6 +186,7 @@ class BrowserFingerprint:
         session_metadata: Mapping[str, Any] | None,
         archivers: Sequence[BrowserArchiverBase],
         fresh_profile: bool,
+        background_tabs: str,
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
         input_platform: InputPlatform | None = None,
@@ -220,6 +226,7 @@ class BrowserFingerprint:
             "input_platform": input_platform,
             "initial_storage": dict(initial_storage) if initial_storage is not None else None,
             "viewport": {"width": viewport[0], "height": viewport[1]},
+            "background_tabs": background_tabs,
             "replayability": dict(plan_fingerprint),
             "launch_flags_sha256": launch_flags_digest(session_metadata),
             "network_source": dict(network_fingerprint or {"source_id": "live"}),

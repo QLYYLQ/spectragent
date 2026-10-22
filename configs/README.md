@@ -230,6 +230,25 @@ capabilities:
 - **Tab order.** `browser_meta.tabs`, and the "most recently opened tab" of `browser.switch_tab` with `target_id: null`, follow the order the tabs opened, not Chrome's own tab list.
 - **Recording, replay and branching** apply the same rule, so all three configs use one value; the shipped ones use the default. The value is recorded raw in `config.json`. A branch whose `new_tabs` differs from its recording's diverges at the first tab the recording followed (`url_mismatch`).
 
+## Tabs the agent left
+
+What happens to a tab once the agent's focus leaves it — the tab a followed new tab came from, the tab a `browser.switch_tab` left — is a second capability knob, and how hard Chrome slows tabs that are not in front is a `local_chrome` launch knob:
+
+```yaml
+capabilities:
+  - capability_id: browser
+    background_tabs: run          # the default; freeze: a tab the focus left runs nothing until it comes back
+    backend:
+      provider_id: local_chrome
+      background_throttling: false  # the default; true: Chrome throttles background tabs as it does for a user
+```
+
+- **Why.** iqiyi.com keeps its tabs in step through `localStorage`; with five of its tabs open the tabs rewrote each other without end, every renderer pegged its CPU and the run ended because the observation's screenshot got no reply. A frozen tab answers nobody, so `background_tabs: freeze` stops it. Throttling slows a background tab's timers, not the `storage` events such tabs trade, so `background_throttling: true` alone does not.
+- **What `freeze` does.** The tab the focus leaves is frozen (Chrome's page lifecycle freeze): its timers, scripts, storage events and network callbacks stop until the focus comes back, and it is set running again before it is shown. Only tabs the focus was on are frozen: a popup that was not followed, or a new tab under `new_tabs: stay`, keeps running.
+- **What it changes for the page.** A video or audio that was playing in the tab is paused when it is frozen, and is still paused when the agent returns; a countdown or a poll on the page stands still while it is frozen. With `run`, the tab plays and ticks on in the background.
+- **What `background_throttling: true` changes.** `local_chrome` launches without `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows` and `--disable-renderer-backgrounding`, the switches it took over from Puppeteer's automation defaults. The tab the agent is on is in front either way. Measured in headless Chrome 155: a tab the focus left wakes its timers about 10 times a second with the switches, about once a second without them, and once a minute after its first minute in the background. In a headful run, a window covered by other windows is throttled too.
+- **Recording, replay and branching** must use one value of each. `background_tabs` is recorded raw in `config.json` and in the environment fingerprint; the three switches are part of the launch flags. An offline replay refuses a recording made with another value of either, and a recording made before `background_tabs` existed.
+
 ## Switching backend
 
 Edit only `environment[0].capabilities[0].backend`:

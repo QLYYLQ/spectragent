@@ -66,6 +66,7 @@ def _source(
     archivers: tuple[Any, ...] = (NetworkArchiver(require_replayable=False),),
     defaults: BrowserDefaults | None = DEFAULTS,
     hints: ClientHints | None = None,
+    background_tabs: str = "run",
     edit: Any = None,
 ) -> RecordedArchive:
     """A source run's archive (in memory) carrying a real fingerprint document."""
@@ -82,6 +83,7 @@ def _source(
             session_metadata={"launch_flags": flags if flags is not None else [*BASE_FLAGS]},
             archivers=archivers,
             fresh_profile=True,
+            background_tabs=background_tabs,
             network_fingerprint=network,
             browser_defaults=defaults,
             input_platform="macos",
@@ -103,6 +105,7 @@ def _problems(recorded: RecordedArchive, tier: Any = None, **kwargs: Any) -> lis
     options: dict[str, Any] = {
         "replayability": tier if tier is not None else PinnedReplayability(random_seed=7),
         "viewport": (1280, 720),
+        "background_tabs": "run",
         "planned_launch_flags": [*BASE_FLAGS, *NETWORK_ISOLATION_ARGS],
     }
     options.update(kwargs)
@@ -165,6 +168,24 @@ def test_another_shim_is_refused() -> None:
 def test_another_viewport_is_refused() -> None:
     (problem,) = _problems(_source(), viewport=(800, 600))
     assert _names_both_sides(problem) and "1280x720" in problem and "800x600" in problem
+
+
+def test_another_background_tabs_is_refused() -> None:
+    """A tab the focus left ran in the recording and would be frozen in the replay, or back."""
+    (problem,) = _problems(_source(), background_tabs="freeze")
+    assert _names_both_sides(problem)
+    assert "background_tabs='run'" in problem and "background_tabs='freeze'" in problem
+    (problem,) = _problems(_source(background_tabs="freeze"))
+    assert "background_tabs='freeze'" in problem and "background_tabs='run'" in problem
+    assert _problems(_source(background_tabs="freeze"), background_tabs="freeze") == []
+
+
+def test_a_source_that_recorded_no_background_tabs_is_refused() -> None:
+    def _older(document: dict[str, Any]) -> None:
+        del document["background_tabs"]
+
+    (problem,) = _problems(_source(edit=_older))
+    assert _names_both_sides(problem) and "recorded no background_tabs" in problem
 
 
 def test_launch_flags_compare_without_routing_switches() -> None:

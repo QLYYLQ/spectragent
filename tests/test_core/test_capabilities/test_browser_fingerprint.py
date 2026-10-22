@@ -74,6 +74,7 @@ async def _measure(plan: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         session_metadata=METADATA,
         archivers=kwargs.pop("archivers", (NetworkArchiver(), StorageArchiver())),
         fresh_profile=True,
+        background_tabs=kwargs.pop("background_tabs", "run"),
         **kwargs,
     )
 
@@ -137,6 +138,7 @@ async def test_ua_metadata_is_kept_across_a_plain_http_page() -> None:
         "session_metadata": None,
         "archivers": (),
         "fresh_profile": True,
+        "background_tabs": "run",
     }
     secure = await fingerprint.measure(**common)
     recorder.probe = {**PROBE, "userAgentData": None}
@@ -197,6 +199,7 @@ async def test_off_probes_in_an_isolated_world_once_per_document() -> None:
         "session_metadata": None,
         "archivers": (),
         "fresh_profile": True,
+        "background_tabs": "run",
     }
     first = await fingerprint.measure(**common)
     worlds = [p for m, p, _ in recorder.sent if m == "Page.createIsolatedWorld"]

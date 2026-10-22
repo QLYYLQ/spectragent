@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.archive.fingerprint import flags_digest
 from spectragent.core.capabilities.browser.backends import local_chrome
 from spectragent.core.capabilities.browser.backends._registrar import BrowserProviderRegistrar
 from spectragent.core.capabilities.browser.backends.base import (
@@ -35,6 +36,7 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     without_routing_switches,
 )
 from spectragent.core.capabilities.browser.backends.local_chrome import (
+    CHROME_BACKGROUND_UNTHROTTLED_ARGS,
     CHROME_DEFAULT_ARGS,
     CHROME_DISABLE_SECURITY_ARGS,
     LocalChromeProvider,
@@ -221,6 +223,42 @@ class TestContradictingSwitch:
             "--disable-features=HttpsUpgrades"
         )
         assert contradicting_switch("--disable-features=Foo", PINNED_LIKE) is None
+
+
+class TestBackgroundThrottling:
+    """``background_throttling``: the three switches that keep left tabs at full speed (§4.9.x)."""
+
+    def test_the_switches_are_among_the_defaults(self) -> None:
+        assert set(CHROME_BACKGROUND_UNTHROTTLED_ARGS) <= set(CHROME_DEFAULT_ARGS)
+
+    def test_off_by_default_the_switches_stay_where_they_were(self) -> None:
+        provider = LocalChromeProvider()
+        assert provider.background_throttling is False
+        args = provider._build_args(9222, "/tmp/p")
+        assert args[: len(CHROME_DEFAULT_ARGS)] == list(CHROME_DEFAULT_ARGS)
+
+    def test_on_leaves_exactly_the_three_out(self) -> None:
+        default = LocalChromeProvider()._build_args(9222, "/tmp/p")
+        throttled = LocalChromeProvider(background_throttling=True)._build_args(9222, "/tmp/p")
+        assert not set(CHROME_BACKGROUND_UNTHROTTLED_ARGS) & set(throttled)
+        assert throttled == [a for a in default if a not in CHROME_BACKGROUND_UNTHROTTLED_ARGS]
+
+    def test_the_knob_decides_whatever_ignore_default_args_says(self) -> None:
+        bare = LocalChromeProvider(ignore_default_args=True)._build_args(9222, "/tmp/p")
+        assert set(CHROME_BACKGROUND_UNTHROTTLED_ARGS) <= set(bare)
+        assert not set(CHROME_DEFAULT_ARGS) - set(CHROME_BACKGROUND_UNTHROTTLED_ARGS) & set(bare)
+        throttled = LocalChromeProvider(
+            ignore_default_args=True, background_throttling=True
+        )._build_args(9222, "/tmp/p")
+        assert not set(CHROME_BACKGROUND_UNTHROTTLED_ARGS) & set(throttled)
+
+    def test_it_is_part_of_the_launch_flags_a_replay_compares(self) -> None:
+        """A recording and a replay that differ in it are refused by the launch-flag digest."""
+        default = LocalChromeProvider().planned_launch_flags(PINNED_LIKE)
+        throttled = LocalChromeProvider(background_throttling=True).planned_launch_flags(
+            PINNED_LIKE
+        )
+        assert flags_digest(default) != flags_digest(throttled)
 
 
 class _FakeProcess:

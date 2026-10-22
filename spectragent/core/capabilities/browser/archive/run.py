@@ -237,6 +237,7 @@ class BrowserArchiveRun:
         plan_fingerprint: Mapping[str, Any],
         session_metadata: Mapping[str, Any] | None,
         fresh_profile: bool,
+        background_tabs: str,
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
@@ -246,7 +247,8 @@ class BrowserArchiveRun:
         """Flush → each session in binding order → fingerprint → one batch.
 
         *network_fingerprint* is the network source's block (``None``: live);
-        *browser_defaults* what the capability measured right after launch.
+        *browser_defaults* what the capability measured right after launch;
+        *background_tabs* the capability's ``run`` / ``freeze``.
 
         What fails is named, not spread: a channel that lost metadata (a
         flush that did not settle, an event handler that raised) is a gap of
@@ -300,6 +302,7 @@ class BrowserArchiveRun:
             session_metadata=session_metadata,
             archivers=self.archivers,
             fresh_profile=fresh_profile,
+            background_tabs=background_tabs,
             clock=clock,
             network_fingerprint=network_fingerprint,
             browser_defaults=browser_defaults,

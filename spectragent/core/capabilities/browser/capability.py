@@ -38,6 +38,8 @@ Key design points:
   threading it through the framework's Action / Environment / Runtime /
   Loop signatures gave every other domain a mandatory argument it could
   neither produce nor use. The per-cycle cache is keyed by that same id.
+  Under ``background_tabs: freeze`` the tab the focus leaves is frozen, and
+  set running again before the focus returns to it (§4.14 "离开焦点的 tab").
 
 See docs/architecture_design.md §4.9 and docs/execution_dag.md M13.
 """
@@ -334,6 +336,13 @@ _FOCUS_MOVES_PER_OBSERVATION = 3
 # take (``Target.getTargets``, answered by the browser itself).
 _TAB_LIST_TIMEOUT_S = 2.0
 
+# How long freezing a tab the focus left, or setting it running again, may take
+# (``Page.setWebLifecycleState``, ``background_tabs: freeze``, §4.14 "离开焦点的
+# tab"). The browser process answers it, not the page: measured, Chrome 155,
+# about 1 ms, also while the tab's main thread was inside a 4 s task. The bound
+# only catches a connection that stopped answering.
+_LIFECYCLE_TIMEOUT_S = 2.0
+
 
 # ── Cache entry ───────────────────────────────────────────────────────
 
@@ -628,6 +637,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     media_state_timeout_s: float
     retarget_tolerance_px: float
     new_tabs: Literal["follow", "stay"]
+    background_tabs: Literal["run", "freeze"]
     expected_platform: InputPlatform | None
 
     # ── internal state, never config (assigned in __init__) ──────────
@@ -712,6 +722,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     _focus_moved: FocusMove | None
     #: Tabs the focus could not be moved to (adoption failed); never tried again.
     _unfollowable: set[str]
+    #: Tabs frozen when the focus left them (``background_tabs: freeze``), by
+    #: target id; each is set running again before the focus returns to it.
+    _frozen: set[str]
 
     # ── Init machinery ────────────────────────────────────────────────
 
@@ -1026,6 +1039,29 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = "follow",
+        background_tabs: Annotated[
+            Literal["run", "freeze"],
+            PydanticField(
+                description=(
+                    "What becomes of a tab the agent's focus leaves: the tab a followed new "
+                    "tab came from, the tab browser.switch_tab left. 'run' (the default): it "
+                    "keeps running in the background, as in a real browser. 'freeze': it is "
+                    "frozen (Chrome's page lifecycle freeze), so none of its timers, scripts, "
+                    "storage events or network callbacks run, until the focus comes back to "
+                    "it; it is set running again before it is shown. This stops tabs of one "
+                    "site that keep each other in step through localStorage from rewriting "
+                    "each other without end (iqiyi.com with five tabs open: every renderer "
+                    "pegged and the observation's screenshot got no reply). What it changes "
+                    "for the page: media that was playing in the tab is paused when it is "
+                    "frozen and is still paused when the agent comes back (measured, Chrome "
+                    "155). A tab the focus was never on (a popup that was not followed, a "
+                    "new tab under new_tabs: stay) is not frozen. Recording, replay and "
+                    "branching must use one value: it is part of the environment "
+                    "fingerprint, and an offline replay refuses a recording made with the "
+                    "other."
+                ),
+            ),
+        ] = "run",
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -1090,6 +1126,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.media_state_timeout_s = media_state_timeout_s
         self.retarget_tolerance_px = retarget_tolerance_px
         self.new_tabs = new_tabs
+        self.background_tabs = background_tabs
 
         # In-Python default for the wired trajectory receptor. YAML must
         # name one (a single-instance receptor is required in the
@@ -1155,6 +1192,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._focus_moves = 0
         self._focus_moved = None
         self._unfollowable = set()
+        self._frozen = set()
 
         self.actions = actions
 
@@ -1469,6 +1507,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 else None
             ),
             fresh_profile=self._fresh_profile(),
+            background_tabs=self.background_tabs,
             clock=time.time,
             network_fingerprint=(
                 server.fingerprint() if server is not None else self.network_source.fingerprint()
@@ -1687,6 +1726,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     load_fingerprint(source_reader),
                     replayability=self.replayability,
                     viewport=(self.viewport_width, self.viewport_height),
+                    background_tabs=self.background_tabs,
                     planned_launch_flags=planned_launch_flags(
                         self, cdp_url=cdp_url, injected_client=injected
                     ),
@@ -2405,6 +2445,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._replay_server = None
         if self._archive is not None and await aclean("archive close", self._archive.aclose):
             self._archive = None
+        # The tabs this run froze outlive it only in a browser it does not own
+        # (an explicit cdp_url, an injected transport): they are set running
+        # again. An owned browser or BrowserContext closes with them.
+        if self._session is None and self._context_lease is None:
+            for target_id in sorted(self._frozen):
+                if self._tabs is None or not self._tabs.is_closed(target_id):
+                    await aclean(
+                        f"setting frozen tab {target_id} running",
+                        lambda target_id=target_id: self._set_lifecycle(target_id, "active"),
+                    )
+        self._frozen.clear()
         clean("tab discovery close", self._stop_tab_discovery)
         for sid, bridge in list(self._bridges.items()):
             if clean(f"bridge close for {sid}", bridge.close):
@@ -3202,19 +3253,88 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         does (measured, Chrome 155: it turns ``visible`` and the tab it
         replaced ``hidden``), and its cache from an earlier cycle is dropped —
         the agent is about to observe it fresh.
+
+        Under ``background_tabs: freeze`` (§4.14 "离开焦点的 tab") a tab
+        frozen when the focus left it is set running before it is brought to
+        the front, and the tab the focus leaves is frozen once the new one is
+        in front: from then on only the focused tab of the ones the focus was
+        ever on runs.
         """
         if self._cdp is None:
             raise RuntimeError("BrowserCapability not set up")
+        left = self._focused_target()
         sid = self._target_to_session.get(target_id)
         if sid is None:
             attach = self._attach_tab(target_id, url)
             sid = await (
                 attach if adopt_timeout is None else asyncio.wait_for(attach, adopt_timeout)
             )
+        await self._resume_tab(target_id)
         await self._cdp.send("Target.activateTarget", {"targetId": target_id})
         self._default_session_id = sid
         self._cycle_cache.pop(sid, None)
+        if left is not None and left != target_id:
+            await self._freeze_tab(left)
         return sid
+
+    # ── Freezing the tabs the focus left (§4.14 "离开焦点的 tab") ──────
+
+    async def _freeze_tab(self, target_id: str) -> None:
+        """Freeze *target_id*, the tab the focus just left, under ``background_tabs: freeze``.
+
+        ``Page.setWebLifecycleState{state: frozen}`` on its control session:
+        Chrome stops the page's task queues (timers, scripts, storage events,
+        network callbacks; its out-of-process iframes too) and fires the
+        page's ``freeze`` event. A tab that closed has nothing to freeze. A
+        failure is only logged: the tab keeps running, as under ``run``.
+        """
+        if self.background_tabs != "freeze" or target_id in self._frozen:
+            return
+        if self._tabs is not None and self._tabs.is_closed(target_id):
+            return
+        try:
+            await self._set_lifecycle(target_id, "frozen")
+        except Exception as exc:
+            logger.warning(
+                "BrowserCapability: the tab the focus left (%s) could not be frozen and keeps "
+                "running: %r",
+                target_id,
+                exc,
+            )
+            return
+        self._frozen.add(target_id)
+
+    async def _resume_tab(self, target_id: str) -> None:
+        """Set *target_id* running again, if the focus froze it when it left; before it is shown.
+
+        A failure is only logged: bringing the tab to the front resumes a
+        frozen page anyway (measured, Chrome 155), only without telling the
+        browser it is no longer frozen.
+        """
+        if target_id not in self._frozen:
+            return
+        self._frozen.discard(target_id)
+        try:
+            await self._set_lifecycle(target_id, "active")
+        except Exception as exc:
+            logger.warning(
+                "BrowserCapability: the frozen tab %s could not be set running before the focus "
+                "returns to it: %r",
+                target_id,
+                exc,
+            )
+
+    async def _set_lifecycle(self, target_id: str, state: Literal["frozen", "active"]) -> None:
+        """``Page.setWebLifecycleState`` on *target_id*'s control session."""
+        sid = self._target_to_session.get(target_id)
+        if self._cdp is None or sid is None:
+            raise RuntimeError(f"tab {target_id} is not attached")
+        await self._cdp.send(
+            "Page.setWebLifecycleState",
+            {"state": state},
+            session_id=sid,
+            timeout=_LIFECYCLE_TIMEOUT_S,
+        )
 
     # ── Following new tabs, leaving closed ones (§4.14 "页面新开的标签页") ──
 
@@ -3534,6 +3654,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
         self._target_to_session.pop(target_id, None)
         self._session_to_target.pop(session_id, None)
+        self._frozen.discard(target_id)
         return target_id
 
     async def _attach_tab(self, target_id: str, url: str = "") -> str:
