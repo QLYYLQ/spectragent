@@ -16,8 +16,9 @@ from typing import Any
 
 import pytest
 
+from spectragent.agents._feedback_points import NOT_PLACEABLE
 from spectragent.agents._registrar import AgentRegistrar
-from spectragent.agents.ui_tars import NOT_PLACEABLE, UITarsAgent
+from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.composer import ConfigComposer

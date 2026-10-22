@@ -55,7 +55,9 @@ screenshot the points belong to — the step the batch was chosen on, or
 this step for the pointer (``docs/architecture_design.md`` §4.1,
 "模型看到的每个点都写在它写点的那个网格上"). A point with no place on that grid
 — the step had no screenshot of known size, or the point lies outside it —
-is said to be so, never written in pixels. :meth:`UITarsAgent.format_action_fact`
+is said to be so, never written in pixels. That writing, and the record of
+each step's grid, are the ones BrowserUse shares (``agents/_feedback_points.py``).
+:meth:`UITarsAgent.format_action_fact`
 is that writing for an action, public so the training export writes its
 ``keep_as_text`` turns with it.
 """
@@ -69,7 +71,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Annotated, Any, ClassVar, Literal, TypeGuard
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
@@ -80,14 +82,21 @@ from spectragent.agents._capture_state import (
     capture_state_demand,
     render_capture_state,
 )
+from spectragent.agents._feedback_points import (
+    StepGrids,
+    grid_point_writer,
+    inside,
+    is_number,
+    params_on_grid,
+    registered_point_params,
+    stated_points,
+)
 from spectragent.agents._input_platform import render_computer_use_platform
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
-from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.actions.params import point_params
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -98,7 +107,7 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.schemas.action import Action, ActionDescriptor, PointWriter
+from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
     PointGrid,
@@ -559,51 +568,6 @@ def _local_id(name: str) -> str:
     return name.rsplit(".", 1)[-1]
 
 
-# ── Writing the points of execution feedback ─────────────────
-
-
-def _is_number(value: Any) -> TypeGuard[int | float]:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-#: What a point with no place on the grid is written as — never as a number in
-#: another unit. The step showed no screenshot of known size (no grid at all),
-#: or the point lies outside the area the screenshot depicts (where ``to_grid``
-#: would clamp it onto the edge and so misstate it).
-NOT_PLACEABLE = "not placeable (no screenshot of known size)"
-OUTSIDE_THE_SCREENSHOT = "outside the screenshot"
-
-
-def _inside(grid: PointGrid, x: float, y: float) -> bool:
-    """Whether the viewport point (x, y) lies in the area *grid*'s screenshot depicts."""
-    return 0 <= x < grid.viewport_width and 0 <= y < grid.viewport_height
-
-
-def _placed(grid: PointGrid | None, x: float, y: float) -> tuple[int, int] | str:
-    """The viewport point (x, y) on *grid*, or why it has no place there."""
-    if grid is None:
-        return NOT_PLACEABLE
-    if not _inside(grid, x, y):
-        return OUTSIDE_THE_SCREENSHOT
-    return grid.to_grid(x, y)
-
-
-def _grid_writer(grid: PointGrid | None) -> PointWriter:
-    """Writes a viewport point on *grid* as a reply writes one, ``(x, y)``.
-
-    A point the grid cannot hold (:func:`_placed`) is said as such, ``a point
-    outside the screenshot``: never clamped, never in another unit.
-    """
-
-    def write(x: int, y: int) -> str:
-        placed = _placed(grid, x, y)
-        if isinstance(placed, str):
-            return f"a point {placed}"
-        return f"({placed[0]}, {placed[1]})"
-
-    return write
-
-
 # ── The coordinate contract ───────────────────────────────────
 
 #: What the system prompt says a point is, per coordinate space. Keyed by
@@ -810,9 +774,12 @@ class UITarsAgent(AgentBase):
     #: ``prepare`` — a live run, branch source and restored history, each
     #: training-export segment — so the grid of the batch fed back is here.
     #: A point with no place on it (``None``, or outside the screenshot) is
-    #: written as such, never in pixels (:func:`_placed`); a step missing from
-    #: here is a caller that skipped it, and rendering fails (:meth:`_grid_of`).
-    _step_grids: dict[int, PointGrid | None] = field(default_factory=dict, init=False, repr=False)
+    #: written as such, never in pixels (``_feedback_points.placed``); a step
+    #: missing from here is a caller that skipped it, and rendering fails
+    #: (``StepGrids.grid_of``).
+    _step_grids: StepGrids = field(
+        default_factory=lambda: StepGrids("UI-TARS"), init=False, repr=False
+    )
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
     _input_platform_text: str | None = field(default=None, init=False, repr=False)
@@ -872,7 +839,7 @@ class UITarsAgent(AgentBase):
             name: verb for name, verb in _VERB_TABLE.items() if verb.action in negotiated
         }
         self._grid = None
-        self._step_grids = {}
+        self._step_grids.clear()
         self._input_platform_text = None
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task, self._action_descriptors, max_actions_per_step
@@ -944,11 +911,11 @@ class UITarsAgent(AgentBase):
             else None
         )
         text = step_label + "\n" + self._render_action_results(observation.history)
-        capture_state = render_capture_state(observation, write_point=_grid_writer(grid))
+        capture_state = render_capture_state(observation, write_point=grid_point_writer(grid))
         if capture_state:
             text += "\n" + capture_state
         self._grid = grid
-        self._step_grids[context.step] = grid
+        self._step_grids.record(context.step, grid)
 
         if screenshot is None or image_bytes is None:
             messages = place_prompt_contributions(
@@ -1001,7 +968,7 @@ class UITarsAgent(AgentBase):
         if len(record.action_results) > len(record.actions):
             raise ValueError("UI-TARS action feedback has more results than actions")
         returned = len(record.action_results)
-        write_point = self._batch_point_writer(record.step)
+        write_point = self._step_grids.point_writer(record.step)
         facts = {
             "step": record.step + 1,
             "returned_results": [
@@ -1049,7 +1016,7 @@ class UITarsAgent(AgentBase):
             history,
             show_action_effects=self.show_action_effects,
             write_action=lambda action: self.format_action_fact(action, step=context.step),
-            write_point=self._batch_point_writer(context.step),
+            write_point=self._step_grids.point_writer(context.step),
         )
         return [*messages, restored]
 
@@ -1125,28 +1092,21 @@ class UITarsAgent(AgentBase):
         carry — no verb, not negotiated, a value with no spelling, or a point
         with no place on that grid — keeps its JSON with each point param
         (:meth:`_point_pairs`) on the grid, or, where it has no place there,
-        written as :data:`NOT_PLACEABLE` / :data:`OUTSIDE_THE_SCREENSHOT`.
-        Never as pixels. Optional ReAct slot (arch §4.1).
+        written as ``NOT_PLACEABLE`` / ``OUTSIDE_THE_SCREENSHOT``
+        (``agents/_feedback_points.py``). Never as pixels. Optional ReAct slot
+        (arch §4.1).
 
         Raises:
             ValueError: *action* has a point and this agent did not build
-                step *step*'s prompt since ``prepare`` (:meth:`_grid_of`).
+                step *step*'s prompt since ``prepare`` (``StepGrids.grid_of``).
         """
-        pairs = [
-            (x_key, y_key)
-            for x_key, y_key in self._point_pairs(action)
-            if _is_number(action.params.get(x_key)) and _is_number(action.params.get(y_key))
-        ]
-        grid = self._grid_of(step) if pairs else None
+        pairs = stated_points(action.params, self._point_pairs(action))
+        grid = self._step_grids.grid_of(step) if pairs else None
         try:
             return self._call_text(action, grid)
         except UnrepresentableActionError:
             written = action.model_dump(mode="json")
-            for x_key, y_key in pairs:
-                placed = _placed(grid, action.params[x_key], action.params[y_key])
-                written["params"][x_key], written["params"][y_key] = (
-                    (placed, placed) if isinstance(placed, str) else placed
-                )
+            written["params"] = params_on_grid(written["params"], pairs, grid)
             return written
 
     @staticmethod
@@ -1182,46 +1142,11 @@ class UITarsAgent(AgentBase):
         verb for it, or none: a param is never taken for a point from its
         name or value alone.
         """
-        name = action.name
-        if "." not in name:
-            name = next(
-                (
-                    d.name
-                    for d in self._action_descriptors
-                    if "." in d.name and _local_id(d.name) == name
-                ),
-                name,
-            )
-        params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
-        if isinstance(params, type) and issubclass(params, BaseModel):
-            return point_params(params)
+        registered = registered_point_params(action, self._action_descriptors)
+        if registered is not None:
+            return registered
         verb_name = _ACTION_TO_VERB.get(_local_id(action.name))
         return list(_VERB_TABLE[verb_name].points) if verb_name is not None else []
-
-    def _batch_point_writer(self, step: int) -> PointWriter:
-        """Writes a point of step *step*'s batch on that step's grid, looked up when a point is written."""
-
-        def write(x: int, y: int) -> str:
-            return _grid_writer(self._grid_of(step))(x, y)
-
-        return write
-
-    def _grid_of(self, step: int) -> PointGrid | None:
-        """The grid of the screenshot step *step* showed; ``None`` when it had no known size.
-
-        Raises:
-            ValueError: This agent did not build step *step*'s prompt since
-                ``prepare``. Every rendering path builds each step's prompt
-                before it feeds that step's batch back, so this is a caller
-                that skipped a step, never something recorded data can cause.
-        """
-        if step not in self._step_grids:
-            raise ValueError(
-                f"UI-TARS cannot write the points of step {step}'s actions: it did not build "
-                f"step {step}'s prompt since prepare, so it does not know the grid of the "
-                f"screenshot they were chosen on (prompts are built in step order)"
-            )
-        return self._step_grids[step]
 
     def _call_text(self, action: Action, grid: PointGrid | None) -> str:
         """*action* as the call :meth:`_action_for` reads back into it, its points on *grid*."""
@@ -1328,11 +1253,11 @@ def _points_to_grid(
         )
     for x_key, y_key in verb.points:
         x, y = params.get(x_key), params.get(y_key)
-        if not _is_number(x) or not _is_number(y):
+        if not is_number(x) or not is_number(y):
             raise UnrepresentableActionError(
                 action_name, (x_key, y_key), f"({x!r}, {y!r}) is not a point"
             )
-        if not _inside(grid, x, y):
+        if not inside(grid, x, y):
             raise UnrepresentableActionError(
                 action_name,
                 (x_key, y_key),

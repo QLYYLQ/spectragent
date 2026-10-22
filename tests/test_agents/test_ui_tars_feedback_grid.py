@@ -32,10 +32,11 @@ from typing import Any
 
 import pytest
 
+from spectragent.agents._feedback_points import NOT_PLACEABLE, OUTSIDE_THE_SCREENSHOT
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
-from spectragent.agents.ui_tars import NOT_PLACEABLE, OUTSIDE_THE_SCREENSHOT, UITarsAgent
+from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ElementFacts, PointerEffect, ViewportPoint
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
