@@ -29,7 +29,10 @@ from conscribe import create_registrar
 #: ``unservable``: a request Fetch never paused (a nested worker's script);
 #: ``sequence_exhausted``: the selected sequence has no unused record;
 #: ``match_level_disallowed``: Range candidates exist only at forbidden levels;
-#: ``archive_unreadable``: committed response bytes cannot be read or verified.
+#: ``archive_unreadable``: committed response bytes cannot be read or verified;
+#: ``fulfil_failed``: the archive's response never reached the page — Chrome
+#: refused ``Fetch.fulfillRequest`` (or did not answer it in time) and the
+#: recorder failed the request.
 MissReason = Literal[
     "no_match",
     "too_large",
@@ -40,6 +43,7 @@ MissReason = Literal[
     "sequence_exhausted",
     "match_level_disallowed",
     "archive_unreadable",
+    "fulfil_failed",
 ]
 
 #: A request's class, as the policy sorts it.

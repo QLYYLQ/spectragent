@@ -247,8 +247,11 @@ FRAMES_PROBE: tuple[int, int] = (900, 500)
 #: headers come at once and its body — GBK, gzip, no ``Content-Length`` —
 #: :data:`SLOW_DOCUMENT_DELAY_S` later, past a short ``body_read_timeout_s``;
 #: its ``again`` link (:data:`SLOW_DOCUMENT_BOXES`) opens it once more in a
-#: new tab, the way bilibili opened its results.
-DOCUMENT_SCENARIOS: tuple[str, ...] = ("slow_document",)
+#: new tab, the way bilibili opened its results, and its ``status`` link opens
+#: ``unusual_status/page.html`` in the same tab — ctrip's answer: status 432
+#: with an empty reason phrase, which its HTTP/2 response carried as no phrase
+#: at all.
+DOCUMENT_SCENARIOS: tuple[str, ...] = ("slow_document", "unusual_status")
 #: How long ``slow_document/page.html`` holds back the rest of its body.
 SLOW_DOCUMENT_DELAY_S = 1.0
 #: The text ``slow_document/page.html`` shows, sent GBK-encoded.
@@ -256,7 +259,10 @@ SLOW_DOCUMENT_TEXT = "搜索结果：慢的文档"
 #: Where ``slow_document/page.html`` puts its links: ``(left, top, width, height)`` in CSS px.
 SLOW_DOCUMENT_BOXES: dict[str, tuple[int, int, int, int]] = {
     "again": (20, 120, 300, 40),
+    "status": (20, 200, 300, 40),
 }
+#: The status ``unusual_status/page.html`` answers with: a code with no standard reason phrase.
+UNUSUAL_STATUS = 432
 #: What the first script of every ``new_tab`` document, worker and frame
 #: reports: the shim's mark, the clock, the seeded randomness, time zone,
 #: locale, language, user agent and brands, reduced motion — and whether any
@@ -680,6 +686,7 @@ class FixtureSite:
             "jsonp": ["/jsonp/page.html", "/jsonp/hot.js", "/jsonp/ad.js"],
             "frames": ["/frames/page.html"],
             "slow_document": ["/slow_document/page.html"],
+            "unusual_status": ["/unusual_status/page.html"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -1155,6 +1162,7 @@ class FixtureSite:
             "/frames/page.html": static(self._frames_page(), _HTML),
             # ── documents kept and answered as recorded ──
             "/slow_document/page.html": self._slow_document,
+            "/unusual_status/page.html": self._unusual_status,
         }
 
     def _frames_page(self) -> bytes:
@@ -1184,6 +1192,7 @@ class FixtureSite:
             f'<title>slow results</title></head><body><p id="text">{SLOW_DOCUMENT_TEXT}</p>'
             '<a id="again" href="/slow_document/page.html?tab=new" target="_blank" '
             f'style="{box("again")}">again</a>'
+            f'<a id="status" href="/unusual_status/page.html" style="{box("status")}">status</a>'
             "</body></html>"
         ).encode("gbk")
 
@@ -1202,6 +1211,16 @@ class FixtureSite:
             handler.wfile.flush()
             time.sleep(pause)
         handler.wfile.write(b"0\r\n\r\n")
+
+    def _unusual_status(self, handler: _Handler, _body: bytes) -> None:
+        """:data:`UNUSUAL_STATUS` with an empty reason phrase, and a page to show."""
+        page = self._page("unusual status", f'<p id="status">status {UNUSUAL_STATUS}</p>')
+        handler.send_response(UNUSUAL_STATUS, "")
+        handler.send_header("Content-Type", _HTML)
+        handler.send_header("Content-Length", str(len(page)))
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        handler.wfile.write(page)
 
     def _keys_page(self) -> bytes:
         def box(name: str) -> str:
@@ -1731,6 +1750,12 @@ def flywheel_point(name: str) -> tuple[int, int]:
 def keys_point(name: str) -> tuple[int, int]:
     """The centre of a ``keys`` field (:data:`KEYS_BOXES`)."""
     left, top, width, height = KEYS_BOXES[name]
+    return left + width // 2, top + height // 2
+
+
+def slow_document_point(name: str) -> tuple[int, int]:
+    """The centre of a ``slow_document`` link (:data:`SLOW_DOCUMENT_BOXES`)."""
+    left, top, width, height = SLOW_DOCUMENT_BOXES[name]
     return left + width // 2, top + height // 2
 
 

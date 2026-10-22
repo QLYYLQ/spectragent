@@ -16,6 +16,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import RangeCove
 from spectragent.core.capabilities.browser.replay.matcher import LiveRequest
 from spectragent.core.capabilities.browser.replay.miss_policy import MissDecision
 from spectragent.core.capabilities.browser.replay.responder import (
+    UNKNOWN_STATUS_PHRASE,
     Fulfilment,
     Refusal,
     exceeds_cap,
@@ -24,6 +25,7 @@ from spectragent.core.capabilities.browser.replay.responder import (
     is_preflight,
     miss_response,
     parse_http_date,
+    reason_phrase,
     serve_range,
     serve_record,
     synthetic_preflight,
@@ -391,4 +393,28 @@ def test_command_params() -> None:
         "body": base64.b64encode(b"\x00hi").decode("ascii"),
         "responsePhrase": "OK",
     }
-    assert "responsePhrase" not in Fulfilment(status=200, headers=()).command_params("r")
+
+
+@pytest.mark.parametrize(
+    ("status", "recorded", "sent"),
+    [
+        (200, "OK", "OK"),
+        (404, "Nope", "Nope"),
+        # HTTP/2 carries no phrase: the standard one, never an empty phrase Chrome refuses.
+        (200, "", "OK"),
+        (404, "", "Not Found"),
+        (425, "", "Too Early"),
+        # ctrip's document: a code with no standard phrase, recorded over HTTP/2.
+        (432, "", UNKNOWN_STATUS_PHRASE),
+        (599, "", UNKNOWN_STATUS_PHRASE),
+        # A recorded phrase a status line does not carry everywhere is not sent as it is.
+        (432, "Nicht gut é", UNKNOWN_STATUS_PHRASE),
+        (500, "bad\tphrase", "Internal Server Error"),
+    ],
+)
+def test_every_fulfilment_carries_a_phrase_chrome_accepts(
+    status: int, recorded: str, sent: str
+) -> None:
+    assert reason_phrase(status, recorded) == sent
+    params = Fulfilment(status=status, headers=(), status_text=recorded).command_params("r")
+    assert params["responsePhrase"] == sent

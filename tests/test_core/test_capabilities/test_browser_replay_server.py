@@ -28,6 +28,7 @@ from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.miss_policy import MissDecision, ReplayMiss
+from spectragent.core.capabilities.browser.replay.responder import UNKNOWN_STATUS_PHRASE
 from spectragent.core.capabilities.browser.replay.server import (
     REQUEST_STAGE_PATTERN,
     ReplayContext,
@@ -551,7 +552,101 @@ class TestMisses:
         assert server.pending_sessions() == set()
 
 
-# ── the invariant, and state ──────────────────────────────────────────
+# ── answers that never reach the page (§4.14 "服务", "回放日志") ─────────
+
+
+@pytest.fixture(scope="module")
+def unusual_status_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """ctrip's document: status 432, no reason phrase (HTTP/2 carries none)."""
+
+    async def _record() -> Path:
+        script = RecordingScript(tmp_path_factory.mktemp("status"), run_id="run-status")
+        await script.exchange(
+            "http://shop.test/blocked",
+            status=432,
+            body=b"<html>verify</html>",
+            headers={"Content-Type": "text/html"},
+            resource_type="Document",
+        )
+        await script.commit(1)
+        return script.finish()
+
+    return asyncio.run(_record())
+
+
+class TestUndeliveredAnswers:
+    """A response from the archive Chrome does not take is a miss, never a silent hit.
+
+    The ctrip case: the recorded 432 went out without a phrase, Chrome refused
+    the fulfilment, the recorder failed the document — and the log said
+    ``hit``, so no restoration and no report saw the page fail.
+    """
+
+    async def test_an_unusual_status_without_a_phrase_is_sent_with_one(
+        self, unusual_status_run: Path
+    ) -> None:
+        _browser, recorder, client, server, sid = await _serving(unusual_status_run)
+        _pause(
+            client,
+            sid,
+            "qd",
+            "http://shop.test/blocked",
+            resource_type="Document",
+            frame_id="page-1",
+        )
+        await _settle()
+        params = _sent(client, "qd")
+        assert (params["responseCode"], params["responsePhrase"]) == (432, UNKNOWN_STATUS_PHRASE)
+        (entry,) = _log(server)
+        assert (entry["kind"], entry["answer"], entry["status"]) == ("hit", "fulfilled", 432)
+        await recorder.close()
+
+    async def test_a_main_frame_document_chrome_refuses_diverges(self, source_run: Path) -> None:
+        browser, recorder, client, server, sid = await _serving(source_run)
+        browser.fail(
+            "Fetch.fulfillRequest", RuntimeError("CDP error: Invalid http status code or phrase")
+        )
+        _pause(client, sid, "qd", "http://shop.test/", resource_type="Document", frame_id="page-1")
+        await _settle()
+        assert ("Fetch.failRequest", "qd", sid) in _answers(client), "the recorder fails it"
+        (entry,) = _log(server)
+        assert (entry["kind"], entry["reason"], entry["answer"]) == (
+            "miss",
+            "fulfil_failed",
+            "failed",
+        )
+        assert (entry["request_class"], entry["frame"], entry["diverged"]) == (
+            "document",
+            "main",
+            True,
+        )
+        assert entry["record_id"] and entry["run_id"] == "run-src"
+        assert "Invalid http status code or phrase" in entry["fulfil_error"]
+        assert "status" not in entry
+        assert server.log.diverged_total == 1, "restoration's document_misses counts it"
+        await recorder.close()
+
+    async def test_a_subresource_chrome_refuses_is_a_miss_that_does_not_diverge(
+        self, source_run: Path
+    ) -> None:
+        browser, recorder, client, server, sid = await _serving(source_run)
+        for n in range(2):  # both recorded responses, served in order
+            _pause(client, sid, f"q{n}", "http://shop.test/api/data.json")
+            await _settle()
+        browser.fail("Fetch.fulfillRequest", RuntimeError("CDP error: Invalid header"))
+        _pause(client, sid, "q2", "http://shop.test/api/data.json")  # repeats the last one
+        await _settle()
+        *hits, refused = _log(server)
+        assert [entry["kind"] for entry in hits] == ["hit", "hit"]
+        assert (refused["kind"], refused["reason"], refused["request_class"]) == (
+            "miss",
+            "fulfil_failed",
+            "subresource",
+        )
+        assert refused["diverged"] is False and refused["repeated"] is True
+        assert refused["fulfil_error"] == "CDP error: Invalid header"
+        assert server.log.diverged_total == 0
+        await recorder.close()
 
 
 class _BrokenPolicy:
