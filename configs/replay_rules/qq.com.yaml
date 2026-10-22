@@ -21,3 +21,165 @@ rules:
   unavailable: serve_identical
   synthesize_204:
   - https://yybadaccess.3g.qq.com/v3/pcyyb_report_profile_info*
+
+# Tencent Video (v.qq.com) endpoints below. Evidence: the anonymous recordings
+# 128_d124081f, 263_023152fe and 28_b62b8e8c and their offline branch replays in
+# lookahead_15task_pixels_20261022. In each replay the page made a new random visitor id.
+# Each rule names the fields it ignores; every other field stays in the key.
+
+# Feature switches (POST config.ab.qq.com/tab/GetTabRemoteConfig, JSON body). guid is
+# the page's random visitor id; responses do not echo it. config_keys selects the switches,
+# so it stays. Without this rule the request missed, page_slice_search_hover_sdk_option was
+# missing, the header asked for searchbox-sdk.js version 1.0.0 instead of the recorded
+# 1.0.1, and the search box never loaded. In run 128, requests with two different guids
+# and the same config_keys got the same response.
+# The protobuf variant of this request is still matched on its whole body. Its field 5 is
+# the cached config version, and that version decides between the full config and an
+# 8-byte not-modified answer, so ignoring the body would serve the wrong one.
+- id: tencent-video-feature-switches
+  scope:
+    host: config.ab.qq.com
+    path: /tab/GetTabRemoteConfig
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - guid
+# Experiment groups (POST data.ab.qq.com/wabt/get_gray_policy, JSON body {guid, appid}).
+# guid is the same random visitor id as above; responses do not echo it. The groups are
+# assigned per visitor, so replay serves the recorded visitor's groups in recorded order.
+# appid stays.
+- id: tencent-video-experiment-groups
+  scope:
+    host: data.ab.qq.com
+    path: /wabt/get_gray_policy
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - guid
+# Visitor bucket JSONP (GET access.video.qq.com/common_config/get_bi). callback is jQuery's
+# random function name and _ is jQuery's timestamp cache buster. The JSONP rewrite then
+# calls the name this request asked for. vappid and vsecret stay. All replays missed it.
+- id: tencent-video-bucket-jsonp
+  scope:
+    host: access.video.qq.com
+    path: /common_config/get_bi
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - callback
+  - _
+# Video search results (POST pbaccess.video.qq.com/.../MultiTerminalSearch/MbSearch, JSON).
+# uuid is a random id the search box makes and keeps. Responses do not echo it. query,
+# paging, filters and the feature list select the results and stay. In run 263, two
+# recorded searches that differed only in uuid returned the same titles; only the tail
+# order and badge JSON changed.
+- id: tencent-video-search
+  scope:
+    host: pbaccess.video.qq.com
+    path: /trpc.videosearch.mobile_search.MultiTerminalSearch/MbSearch
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - uuid
+# Search suggestions (POST actapi.video.qq.com/.../SugRecallHttp/GetSugHttp, JSON body).
+# sug_id is the client time in milliseconds followed by random hex, new for each request.
+# query, scene_id and paging select the suggestions and stay.
+- id: tencent-video-search-suggestions
+  scope:
+    host: actapi.video.qq.com
+    path: /trpc.videosearch.smartboxServer.SugRecallHttp/GetSugHttp
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - sug_id
+# Play page layout (POST pbaccess.video.qq.com/trpc.vector_layout.page_view.PageService/getPage):
+# the title panel, episode list and recommendations beside the player. The query's
+# vdevice_guid and the body's page_bypass_params.abtest_bypass_id hold the same random
+# visitor id as above. In a replay of run 263 without this rule the request missed and the
+# panel beside the player stayed empty. Answers echo the visitor id inside a session token
+# (rec_session_id). Later pages send that token back in page_context, and replay serves
+# recorded answers, so the token is the recorded one. page_bypass_params.params,
+# page_context and the other query fields select the page and stay.
+- id: tencent-video-page-layout
+  scope:
+    host: pbaccess.video.qq.com
+    path: /trpc.vector_layout.page_view.PageService/getPage
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - vdevice_guid
+  ignore_body_paths:
+  - page_bypass_params.abtest_bypass_id
+# Membership checks on the play page (GET vip.video.qq.com/fcgi-bin/comm_cgi). _ is the
+# client time in milliseconds, added as a cache buster. name and cmd select the check;
+# cid, vid and the callback stay.
+- id: tencent-video-membership-check
+  scope:
+    host: vip.video.qq.com
+    path: /fcgi-bin/comm_cgi
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - _
+# Play page video info (POST vd6.l.qq.com/vinfo_proxy, JSON body). vqqcookie is a copy of
+# document.cookie: visitor ids, counters and experiment strings that the replayed page
+# rebuilds. The recordings were not logged in, so it carries no account. cid, vid,
+# playParams and vinfoParams select the video and stay. In a replay of run 263 with every
+# other rule here but not this one, this request missed, the cover page called
+# FillUnionInfo, which the recording never called, and its script opened /error.html.
+- id: tencent-video-play-info
+  scope:
+    host: vd6.l.qq.com
+    path: /vinfo_proxy
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - vqqcookie
