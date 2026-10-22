@@ -42,6 +42,7 @@ class NoneReplayability(ReplayabilityBase):
         *,
         t0_ms: int,
         browser_user_agent: str,
+        run_started_ms: int | None = None,
         client_hints: ClientHints | None = None,
         color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:

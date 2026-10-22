@@ -512,6 +512,7 @@ async def _pinned_run(page_url: str, **pinned: Any) -> dict[str, Any]:
             timeout=10,
         )
         result = json.loads(reply["result"]["value"])
+        result["read_ms"] = int(time.time() * 1000)
         assert cap._replay_plan is not None
         result["t0_ms"] = cap._replay_plan.t0_ms
         return result
@@ -537,10 +538,8 @@ class TestPinnedShims:
         first, again = runs["first"][where], runs["again"][where]
         for key in ("random", "bytes", "uuids"):
             assert first[key] == again[key], (where, key)
-        # T0 is each run's own start (base_time: run_start); the clock's
-        # steps from it are identical.
-        steps = [d - runs["first"]["t0_ms"] for d in first["dates"]]
-        assert steps == [d - runs["again"]["t0_ms"] for d in again["dates"]]
+        # The clock is not part of the sequences: it is T0 plus real time
+        # (test_the_clock_reads_t0_then_real_time_and_a_busy_wait_ends).
 
     @pytest.mark.parametrize("where", ["page", "worker"])
     def test_another_seed_differs(self, runs: dict[str, Any], where: str) -> None:
@@ -548,14 +547,17 @@ class TestPinnedShims:
         assert runs["first"][where]["uuids"] != runs["other"][where]["uuids"]
 
     @pytest.mark.parametrize("where", ["page", "worker"])
-    def test_the_clock_starts_at_t0_and_a_busy_wait_ends(
+    def test_the_clock_reads_t0_then_real_time_and_a_busy_wait_ends(
         self, runs: dict[str, Any], where: str
     ) -> None:
-        probe = runs["first"][where]
+        run = runs["first"]
+        probe = run[where]
         assert probe["spins"] > 0  # the 200 ms busy-wait terminated
-        # The first constructions read exactly T0 (the clock steps 50 ms per
-        # 25 constructions; it never reads the wall clock).
-        assert probe["dates"] == [runs["first"]["t0_ms"]] * 3
+        # One clock for the whole run: T0 at its start (base_time: run_start,
+        # unshifted), then real time — never before T0, never past the moment
+        # the test read the page, and never backwards (shims.py).
+        assert run["t0_ms"] <= probe["dates"][0] <= probe["dates"][1] <= probe["dates"][2]
+        assert probe["dates"][2] <= run["read_ms"]
 
     @pytest.mark.parametrize("where", ["page", "worker"])
     def test_uuids_are_rfc4122_v4(self, runs: dict[str, Any], where: str) -> None:

@@ -1853,7 +1853,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             recorded = self.network_source.open_replay(open_archive(replay_archive))
         self._recorder_error = None
         # The run's start: T0 of a pinned tier's clock — or the recording's,
-        # under base_time: from_archive, resolved before any shim is built.
+        # under base_time: from_archive, resolved before any shim is built. The
+        # clock advances in real time from this start, in every document alike.
         now_ms = int(time.time() * 1000)
         t0_ms = replay_t0(recorded, self.replayability, now_ms) if recorded else now_ms
         color_scheme = (
@@ -1995,6 +1996,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             await self._connect_recorder(
                 cdp_url,
                 t0_ms=t0_ms,
+                run_started_ms=now_ms,
                 recorded=recorded,
                 notes=consistency_notes(recorded, planned_launch_flags=planned)
                 if recorded is not None
@@ -2067,6 +2069,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         cdp_url: str,
         *,
         t0_ms: int,
+        run_started_ms: int,
         recorded: RecordedArchive | None = None,
         notes: Sequence[str] = (),
         expected_defaults: BrowserDefaults | None = None,
@@ -2145,6 +2148,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
         plan = self.replayability.plan(
             t0_ms=t0_ms,
+            run_started_ms=run_started_ms,
             browser_user_agent=str(version.get("userAgent", "")),
             client_hints=hints,
             color_scheme=color_scheme,

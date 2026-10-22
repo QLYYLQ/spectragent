@@ -6,7 +6,7 @@ with a loopback scripted model — ``tests/_helpers/replay_driver.py``:
 - **the flow** — recorded once against the mapped fixture site (a redirect
   chain, a form POST with a password, a JSON POST with a token, GraphQL, a
   cross-site iframe, a dedicated worker, a popup, Range video, a beacon, the
-  pinned clock), then replayed from its archive twice with ``base_time:
+  per-document pinned clock), then replayed from its archive twice with ``base_time:
   from_archive`` and once with ``run_start``;
 - **the strict flow** — a page that asks hosts a hermetic recording cannot
   reach (a sub-frame document, a beacon, a subresource) and fetches a body
@@ -90,6 +90,12 @@ FLOW = (
     "clock",
 )
 GONE = "http://gone.example.test/"
+#: pinned's clock for the flows that check a replay shows exactly what its
+#: recording showed, the page clock included (the clock page, the new tab's
+#: report): only the per-document clock reads the same values for the same
+#: calls; the shared clock — pinned's default — follows real time, so its
+#: values differ by however much faster the replay runs (§4.14 ``replayability``).
+EXACT_CLOCK = "per_document"
 
 
 @dataclass
@@ -164,7 +170,7 @@ def flow(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
     script = [driver.navigate(site.url(page)) for page in FLOW[1:]]
     script += [driver.click_at(640, 360), driver.done("visited")]
     with ScriptedLLMServer(script) as llm:
-        raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record")
+        raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record", clock=EXACT_CLOCK)
         source = asyncio.run(
             driver.run_task(raw, task="Visit the pages.", start_url=site.url(FLOW[0]))
         )
@@ -258,7 +264,7 @@ def new_tab(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs
     with ScriptedLLMServer(
         [driver.click_at(*new_tab_point("replay")), driver.done("visited")]
     ) as llm:
-        raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record")
+        raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record", clock=EXACT_CLOCK)
         source = asyncio.run(driver.run_task(raw, task="Open the tab.", start_url=start))
     source.require_finished(2, "visited")
     before = tree_digest(source.run_dir)
