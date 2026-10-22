@@ -18,7 +18,7 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-9``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-10``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
@@ -56,6 +56,8 @@ from spectragent.flywheel.metrics import (
     DuplicateBranches,
     ExportDeterminism,
     ExportYield,
+    NearMissEndpoint,
+    NearMissFieldSet,
     Planted,
     PostBranchMisses,
     Privacy,
@@ -97,7 +99,7 @@ from spectragent.schemas._types import UNLIMITED, Unlimited
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-9"
+REPORT_FORMAT = "af-flywheel-report-10"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -301,7 +303,7 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-9"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-10"] = REPORT_FORMAT
     chain: ChainInfo
     token_use: TokenUseReport
     inputs: Inputs
@@ -1003,32 +1005,46 @@ def _decide_recording_coverage(inputs: DecisionInputs, basis: Evidence) -> Recom
     )
 
 
+def _field_set_text(fields: NearMissFieldSet) -> str:
+    """``query a, b; body c`` — one combination of differing fields, as a rule would name them."""
+    parts = []
+    if fields.query:
+        parts.append("query " + ", ".join(fields.query))
+    if fields.body:
+        parts.append("body " + ", ".join(fields.body))
+    if fields.opaque_body:
+        parts.append("body differs (digest only)")
+    return "; ".join(parts)
+
+
 def _decide_site_rules(inputs: DecisionInputs, basis: Evidence) -> Recommendation:
     found = inputs.site_rule_candidates
     evidence = [
         EvidenceRef(
-            pointer=pointer("decision_inputs", "site_rule_candidates", "by_host"),
-            value=found.by_host,
+            pointer=pointer("decision_inputs", "site_rule_candidates", "endpoints"),
+            value=[endpoint.model_dump(mode="json") for endpoint in found.endpoints],
             n=found.runs,
         ),
-        EvidenceRef(
-            pointer=pointer("decision_inputs", "site_rule_candidates", "params"), value=found.params
-        ),
     ]
-    frequent = {host: n for host, n in found.by_host.items() if n >= SITE_RULE_MIN_NEAR_MISSES}
+    frequent = [e for e in found.endpoints if e.misses >= SITE_RULE_MIN_NEAR_MISSES]
     verdict = None
     if found.runs:
         verdict = (
-            "generate ignore_query rules for review: "
-            + "; ".join(f"{host} [{', '.join(found.params.get(host, {}))}]" for host in frequent)
+            "propose endpoint rules for review: "
+            + "; ".join(
+                f"{e.host} {e.method} {e.path} [{_field_set_text(e.field_sets[0])}]"
+                for e in frequent
+            )
             if frequent
-            else f"keep hand-written rules: no host reached {SITE_RULE_MIN_NEAR_MISSES} near misses"
+            else f"keep hand-written rules: no endpoint reached {SITE_RULE_MIN_NEAR_MISSES} "
+            f"near misses"
         )
     return _recommend(
         basis,
-        f"propose a generated ignore_query rule for a host with ≥ {SITE_RULE_MIN_NEAR_MISSES} "
-        f"misses whose nearest recorded request differs only in query parameters "
-        f"(SITE_RULE_MIN_NEAR_MISSES)",
+        f"propose a rule for review (ignore_query / ignore_body_paths, scoped to the endpoint) "
+        f"for an endpoint (host, method, path) with ≥ {SITE_RULE_MIN_NEAR_MISSES} misses whose "
+        f"nearest recorded request differs only in query parameters or body fields, naming its "
+        f"most frequent combination of differing fields (SITE_RULE_MIN_NEAR_MISSES)",
         evidence,
         verdict,
         has_data=found.runs > 0,
@@ -1261,6 +1277,21 @@ def _settle_md(wait: SettleWait) -> list[str]:
         f"{wait.unknown}; sites: {wait.sites}",
         *_skipped_md(wait.skipped, indent="  "),
     ]
+
+
+def _near_miss_md(endpoints: Sequence[NearMissEndpoint]) -> list[str]:
+    """One line per endpoint with near misses, then one per combination of fields that differed."""
+    lines: list[str] = []
+    for endpoint in endpoints:
+        lines.append(
+            f"  - {endpoint.host} {endpoint.method} {endpoint.path}: {endpoint.misses} near "
+            f"miss(es); query {_fmt(endpoint.query)}; body {_fmt(endpoint.body)}; "
+            f"body differs (digest only) {endpoint.opaque_body}"
+        )
+        lines += [
+            f"    - {fields.misses} × {_field_set_text(fields)}" for fields in endpoint.field_sets
+        ]
+    return lines
 
 
 def _skipped_md(skipped: Mapping[str, str], indent: str = "") -> list[str]:
@@ -1567,8 +1598,10 @@ def render_markdown(report: FlywheelReport) -> str:
         f"- document misses of the {misses.branches} branch(es) that acted: "
         f"{misses.document_misses}; GETs of unrecorded URLs {_ratio_md(misses.get_no_match)}",
         *_skipped_md(misses.skipped),
-        f"- site-rule candidates over {candidates.runs} replayed run(s): {_fmt(candidates.by_host)} "
-        f"{_fmt(candidates.params)}",
+        f"- site-rule candidates over {candidates.runs} replayed run(s): "
+        f"{len(candidates.endpoints)} endpoint(s), "
+        f"{sum(e.misses for e in candidates.endpoints)} near miss(es)",
+        *_near_miss_md(candidates.endpoints),
         *_skipped_md(candidates.skipped),
         "",
     ]

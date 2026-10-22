@@ -42,7 +42,7 @@ directory walks. Useful entry points under `spectragent/`:
 - Browser `replay/replay_log.py::iter_decisions`, `iter_replay_log`, `diverged_steps`:
   serving decisions, rule and record identity, nearest candidates and document misses.
 - Browser `replay/archive_index.py::iter_index_lines`, `load_archive`, and
-  `archive_stats.py::body_completeness`, `site_rule_candidates`: source requests,
+  `archive_stats.py::body_completeness`, `near_misses`, `site_rule_candidates`: source requests,
   responses, availability and hints. Hints are not equivalence proofs.
 
 Separate task correctness, environment execution and recording health. `done` does not
@@ -65,11 +65,18 @@ occurrences; disclose missing individual timestamps. A hashed body key cannot re
 the original fields. Compare clean screenshots, not cursor-decorated model images;
 low dHash distance does not prove equal click targets or focus.
 
-The automatic near-miss report considers query differences, not every POST-body
-difference. Compare the actual recorded request body with available replay evidence;
-preserve empty values when decoding canonical parameters. Packed telemetry may be
-misread as enormous query parameter names. Do not copy those strings into rules or
-public reports, or infer that every suggested name is a real parameter.
+The automatic near-miss report (`decision_inputs.site_rule_candidates`) groups misses by
+endpoint (host, method, path) and lists differing query parameters and body fields apart,
+with each combination that differed together (`field_sets`). Both sides are keyed with the
+replay's own recorded rules, so a field its rule already ignores is not listed. A body whose
+canonical form is only a digest (over the canonical cap, unparsable, or past the replay
+log's 512-character key cap) counts as `opaque_body`: the fields are unknown. Compare the
+actual recorded request body with available replay evidence then; preserve empty values when
+decoding canonical parameters (`canonical.decode_params`). For replays outside a chain, point
+a scratch root's `traces/record` and `traces/branch` at the runs and use
+`spectragent flywheel report --root`. Packed telemetry may be misread as enormous query
+parameter names. Do not copy those strings into rules or public reports, or infer that every
+suggested name is a real parameter.
 
 | Evidence | Next decision |
 |---|---|

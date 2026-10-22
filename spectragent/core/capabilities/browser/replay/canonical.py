@@ -68,7 +68,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 
@@ -196,6 +196,21 @@ def host_of(url: str) -> str:
 def encode_params(params: Sequence[tuple[str, str]]) -> str:
     """``a=1&b=x%20y`` — every name and value percent-encoded, in the given order."""
     return "&".join(f"{quote(name, safe='')}={quote(value, safe='')}" for name, value in params)
+
+
+def decode_params(encoded: str) -> Params:
+    """The parameters :func:`encode_params` encoded, in order (``""`` is none).
+
+    Exact inverse: ``encode_params`` escapes every ``&`` and ``=``, so the
+    split is unambiguous, and an empty value stays an empty value.
+    """
+    if not encoded:
+        return ()
+    pairs: list[tuple[str, str]] = []
+    for item in encoded.split("&"):
+        name, _, value = item.partition("=")
+        pairs.append((unquote(name), unquote(value)))
+    return tuple(pairs)
 
 
 def exact_body_digest(body: bytes | None, content_type: str | None) -> str | None:

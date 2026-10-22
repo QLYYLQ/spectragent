@@ -261,13 +261,22 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     )
     assert metrics["body_completeness"]["complete"]["value"] == 1.0
 
-    candidates = report["decision_inputs"]["site_rule_candidates"]["params"]
+    endpoints = {
+        (item["host"], item["method"], item["path"]): (item["misses"], item["query"], item["body"])
+        for item in report["decision_inputs"]["site_rule_candidates"]["endpoints"]
+    }
     # The drift site: two replays, each asking its URL twice (the error page's own reload).
-    assert candidates[SHOP] == {"session": 4} and candidates[DRIFT] == {"visit": 4}
+    assert endpoints == {
+        (SHOP, "GET", "/flywheel_shop/recommend.json"): (4, {"session": 4}, {}),
+        (DRIFT, "GET", "/flywheel_drift/next.html"): (4, {"visit": 4}, {}),
+    }
     decisions = report["decisions"]
     assert decisions["miss_policy"]["verdict"].startswith("evaluate a fallback for documents")
     assert decisions["recording_coverage"]["verdict"].startswith("do not expand coverage: 0 of 1")
-    assert "drift.example.test [visit]" in decisions["site_rules"]["verdict"]
+    assert (
+        "drift.example.test GET /flywheel_drift/next.html [query visit]"
+        in decisions["site_rules"]["verdict"]
+    )
     statuses = {item["status"] for item in decisions.values()}
     statuses |= {
         item["status"] for group in report["recommendations"].values() for item in group.values()

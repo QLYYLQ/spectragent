@@ -10,6 +10,7 @@ objects, as ``iter_decisions`` yields them.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -21,19 +22,34 @@ from spectragent.core.capabilities.browser.archive_stats import (
     body_completeness,
     challenge_documents,
     challenge_signals,
+    near_misses,
     revisit_saving,
     site_rule_candidates,
 )
 from spectragent.core.capabilities.browser.replay.archive_index import (
+    ArchiveIndex,
     ExchangeLine,
     IndexLine,
+    RecordedArchive,
+    ReplayArchiveError,
     iter_index_lines,
 )
+from spectragent.core.capabilities.browser.replay.canonical import (
+    MAX_BODY_KEY_CHARS,
+    request_keys,
+)
 from spectragent.core.capabilities.browser.replay.replay_log import (
+    KEY_DIGEST_PREFIX,
     ReplayCandidate,
     ReplayLogEntry,
+    short_key,
 )
-from tests._helpers.replay_archive import RecordingScript
+from spectragent.core.capabilities.browser.replay.site_rules import (
+    RequestScope,
+    SiteRule,
+    SiteRules,
+)
+from tests._helpers.replay_archive import RecordingScript, indexed
 
 SHOP = "http://shop.test"
 CHALLENGE = {"Server": "cloudflare", "CF-RAY": "8a1b2c3d4e5f-AMS", "cf-mitigated": "challenge"}
@@ -196,7 +212,16 @@ def test_challenge_signals(
 # ── site-rule candidates ──────────────────────────────────────────────
 
 
-def _miss(url: str, *, candidates: list[str], method: str = "GET", **fields: Any) -> ReplayLogEntry:
+def _miss(
+    url: str,
+    *,
+    candidates: list[str],
+    method: str = "GET",
+    record_ids: list[str] | None = None,
+    candidate_method: str | None = None,
+    **fields: Any,
+) -> ReplayLogEntry:
+    ids = record_ids if record_ids is not None else [f"r{i}" for i in range(len(candidates))]
     base: dict[str, Any] = {
         "kind": "miss",
         "captured_at": 1.0,
@@ -209,7 +234,13 @@ def _miss(url: str, *, candidates: list[str], method: str = "GET", **fields: Any
         "answer": "fulfilled",
         "status": 404,
         "candidates": [
-            ReplayCandidate(record_id=f"r{i}", method="GET", url=c, score=0.5, consumed=False)
+            ReplayCandidate(
+                record_id=ids[i],
+                method=candidate_method or method,
+                url=c,
+                score=0.5,
+                consumed=False,
+            )
             for i, c in enumerate(candidates)
         ],
     }
@@ -217,7 +248,59 @@ def _miss(url: str, *, candidates: list[str], method: str = "GET", **fields: Any
     return ReplayLogEntry(**base)
 
 
-def test_near_misses_count_by_host_and_differing_parameter() -> None:
+JSON = "application/json"
+
+
+def _source(
+    *requests: tuple[str, str, bytes | None], rules: SiteRules | None = None
+) -> RecordedArchive:
+    """An in-memory source archive: one record ``r<i>`` per ``(method, url, body)``, keyed with *rules*."""
+    rules = rules if rules is not None else SiteRules()
+    records = [
+        indexed(
+            url,
+            record_id=f"r{i}",
+            order=i,
+            method=method,
+            body=body,
+            content_type=JSON if body is not None else None,
+            rule=rules.for_request(method, url),
+        )
+        for i, (method, url, body) in enumerate(requests)
+    ]
+    return RecordedArchive(
+        run_id="source",
+        fingerprint=None,
+        fingerprint_sha256=None,
+        t0_ms=None,
+        index=ArchiveIndex(records),
+        rules=rules,
+    )
+
+
+def _body_miss(
+    url: str, body: bytes, record: int, recorded_url: str, rules: SiteRules | None = None
+) -> ReplayLogEntry:
+    """A POST miss as the server logs it: its body key computed with the rule the rules select."""
+    rule = (rules or SiteRules()).for_request("POST", url)
+    keys = request_keys("POST", url, body, JSON, rule)
+    return _miss(
+        url,
+        candidates=[recorded_url],
+        method="POST",
+        record_ids=[f"r{record}"],
+        body_key=short_key(keys.body_key),
+    )
+
+
+def test_near_misses_count_by_endpoint_and_differing_parameter() -> None:
+    source = _source(
+        ("GET", f"{SHOP}/data.json?session=1&page=1", None),
+        ("GET", f"{SHOP}/data.json?a=2", None),
+        ("GET", "http://cdn.test/data.json?a=2", None),
+        ("GET", "http://news.test/p?visit=8", None),
+        ("GET", f"{SHOP}/other.json?session=1", None),
+    )
     decisions = [
         (
             1,
@@ -232,31 +315,204 @@ def test_near_misses_count_by_host_and_differing_parameter() -> None:
             _miss(f"{SHOP}/data.json?session=3", candidates=[f"{SHOP}/data.json?session=1&page=1"]),
             3,
         ),
-        # The nearest candidate is another path, another host, another method: not a query rule.
-        (2, _miss(f"{SHOP}/other.json?a=1", candidates=[f"{SHOP}/data.json?a=2"]), 1),
-        (2, _miss(f"{SHOP}/data.json?a=1", candidates=["http://cdn.test/data.json?a=2"]), 1),
-        (2, _miss(f"{SHOP}/data.json?a=1", candidates=[f"{SHOP}/data.json?a=2"], method="POST"), 1),
-        # No candidate; a different reason; a hit; folded (no candidates are kept).
+        (
+            2,
+            _miss(
+                f"{SHOP}/other.json?session=2",
+                candidates=[f"{SHOP}/other.json?session=1"],
+                record_ids=["r4"],
+            ),
+            1,
+        ),
+        # The nearest candidate is another path, another host, another method: no endpoint rule.
+        (
+            2,
+            _miss(
+                f"{SHOP}/elsewhere.json?a=1",
+                candidates=[f"{SHOP}/data.json?a=2"],
+                record_ids=["r1"],
+            ),
+            1,
+        ),
+        (
+            2,
+            _miss(
+                f"{SHOP}/data.json?a=1",
+                candidates=["http://cdn.test/data.json?a=2"],
+                record_ids=["r2"],
+            ),
+            1,
+        ),
+        (
+            2,
+            _miss(
+                f"{SHOP}/data.json?a=1",
+                candidates=[f"{SHOP}/data.json?a=2"],
+                method="POST",
+                candidate_method="GET",
+                record_ids=["r1"],
+            ),
+            1,
+        ),
+        # No candidate; a different reason; folded (no candidates are kept).
         (3, _miss(f"{SHOP}/data.json?a=1", candidates=[]), 1),
         (
             3,
             _miss(
-                f"{SHOP}/data.json?a=1", candidates=[f"{SHOP}/data.json?a=2"], reason="too_large"
+                f"{SHOP}/data.json?a=1",
+                candidates=[f"{SHOP}/data.json?a=2"],
+                record_ids=["r1"],
+                reason="too_large",
             ),
             1,
         ),
-        (None, _miss("http://news.test/p?visit=9", candidates=["http://news.test/p?visit=8"]), 1),
+        (
+            None,
+            _miss(
+                "http://news.test/p?visit=9",
+                candidates=["http://news.test/p?visit=8"],
+                record_ids=["r3"],
+            ),
+            1,
+        ),
     ]
 
-    found = site_rule_candidates(decisions)
+    found = site_rule_candidates(near_misses(decisions, source))
 
-    assert {host: (c.misses, dict(c.params)) for host, c in found.items()} == {
-        "news.test": (1, {"visit": 1}),
-        "shop.test": (4, {"page": 3, "session": 4}),
-    }
+    assert [(c.host, c.method, c.path, c.misses, dict(c.query)) for c in found] == [
+        ("shop.test", "GET", "/data.json", 4, {"page": 3, "session": 4}),
+        ("news.test", "GET", "/p", 1, {"visit": 1}),
+        ("shop.test", "GET", "/other.json", 1, {"session": 1}),
+    ], "most near misses first; an endpoint is host, method and path, not the host alone"
+    assert [(f.query, f.body, f.misses) for f in found[0].field_sets] == [
+        (("page", "session"), (), 3),
+        (("session",), (), 1),
+    ], "the fields that differed together, most frequent combination first"
 
 
 def test_cache_shaped_parameters_remain_candidates_without_an_explicit_rule() -> None:
     """A counter-shaped parameter is not globally assumed irrelevant to content."""
+    source = _source(("GET", f"{SHOP}/poll?_=2&id=7", None))
     decisions = [(1, _miss(f"{SHOP}/poll?_=1&id=7", candidates=[f"{SHOP}/poll?_=2&id=7"]), 1)]
-    assert site_rule_candidates(decisions)["shop.test"].params == {"_": 1}
+    assert site_rule_candidates(near_misses(decisions, source))[0].query == {"_": 1}
+
+
+def test_body_fields_that_differ_are_counted_by_their_flattened_path() -> None:
+    url = f"{SHOP}/api/search"
+    recorded = b'{"query": "kettle", "page": 1, "client": {"trace": "aaa", "ts": 100}}'
+    source = _source(("POST", url, recorded))
+    decisions = [
+        (
+            1,
+            _body_miss(
+                url,
+                b'{"query": "kettle", "page": 1, "client": {"trace": "bbb", "ts": 101}}',
+                0,
+                url,
+            ),
+            1,
+        ),
+        (
+            2,
+            _body_miss(
+                url,
+                b'{"query": "kettle", "page": 1, "client": {"trace": "ccc", "ts": 100}}',
+                0,
+                url,
+            ),
+            1,
+        ),
+        # The same body: not a near miss of this kind (something else kept it from matching).
+        (3, _body_miss(url, recorded, 0, url), 1),
+    ]
+
+    [candidate] = site_rule_candidates(near_misses(decisions, source))
+
+    assert (candidate.method, candidate.path, candidate.misses) == ("POST", "/api/search", 2)
+    assert candidate.query == {} and candidate.body == {"client.trace": 2, "client.ts": 1}
+    assert [(f.body, f.misses) for f in candidate.field_sets] == [
+        (("client.trace",), 1),
+        (("client.trace", "client.ts"), 1),
+    ]
+    assert candidate.opaque_body == 0
+
+
+def test_a_field_the_replays_own_rule_ignores_is_not_reported() -> None:
+    url = f"{SHOP}/api/search"
+    rules = SiteRules(
+        [
+            SiteRule(
+                id="search",
+                scope=RequestScope(host="shop.test", path="/api/search", method="POST"),
+                exhaustion="repeat_last",
+                unavailable="miss",
+                ignore_query=("t",),
+                ignore_body_paths=("client.trace",),
+            )
+        ]
+    )
+    source = _source(
+        ("POST", f"{url}?t=1&q=kettle", b'{"client": {"trace": "a"}, "page": 1}'), rules=rules
+    )
+    live = f"{url}?t=2&q=kettle"
+    decisions = [
+        (
+            1,
+            _body_miss(
+                live, b'{"client": {"trace": "b"}, "page": 2}', 0, f"{url}?t=1&q=kettle", rules
+            ),
+            1,
+        )
+    ]
+
+    [candidate] = site_rule_candidates(near_misses(decisions, source))
+
+    assert candidate.query == {} and candidate.body == {"page": 1}, (
+        "t and client.trace are already ignored by the rule both sides were keyed with"
+    )
+
+
+def test_bodies_known_only_by_digest_count_as_an_opaque_difference() -> None:
+    url = f"{SHOP}/api/report"
+    long_value = "x" * (MAX_BODY_KEY_CHARS + 10)
+    source = _source(("POST", url, json.dumps({"blob": long_value, "n": 1}).encode()))
+    decisions = [
+        (1, _body_miss(url, json.dumps({"blob": long_value, "n": 2}).encode(), 0, url), 2),
+        (2, _body_miss(url, json.dumps({"blob": long_value, "n": 1}).encode(), 0, url), 1),
+    ]
+
+    [candidate] = site_rule_candidates(near_misses(decisions, source))
+
+    assert (candidate.misses, candidate.opaque_body, candidate.body) == (2, 2, {}), (
+        "the second body is the recorded one: equal digests are no difference"
+    )
+    assert [(f.body, f.opaque_body, f.misses) for f in candidate.field_sets] == [((), True, 2)]
+
+
+def test_a_body_past_the_replay_logs_key_cap_is_compared_by_digest() -> None:
+    url = f"{SHOP}/api/report"
+    fields = {f"k{i}": "v" * 20 for i in range(30)}  # over the log's 512 characters, under 4096
+    source = _source(("POST", url, json.dumps(fields).encode()))
+    changed = json.dumps({**fields, "k0": "w" * 20}).encode()
+    entry = _body_miss(url, changed, 0, url)
+    assert entry.body_key is not None and entry.body_key.startswith(KEY_DIGEST_PREFIX)
+    same = _body_miss(url, json.dumps(fields).encode(), 0, url)
+
+    found = site_rule_candidates(near_misses([(1, entry, 1), (2, same, 1)], source))
+
+    assert [(c.misses, c.opaque_body) for c in found] == [(1, 1)]
+
+
+def test_a_candidate_the_source_does_not_hold_is_refused() -> None:
+    source = _source(("GET", f"{SHOP}/data.json?a=1", None))
+    decisions = [
+        (
+            1,
+            _miss(
+                f"{SHOP}/data.json?a=2", candidates=[f"{SHOP}/data.json?a=1"], record_ids=["gone"]
+            ),
+            1,
+        )
+    ]
+    with pytest.raises(ReplayArchiveError, match="does not hold"):
+        near_misses(decisions, source)

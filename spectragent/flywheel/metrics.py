@@ -62,20 +62,25 @@ from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
 from spectragent.core.capabilities.browser.archive_stats import (
     BodyCompleteness,
+    NearMiss,
     body_completeness,
     challenge_documents,
+    near_misses,
     revisit_saving,
     site_rule_candidates,
 )
 from spectragent.core.capabilities.browser.replay.archive_index import (
     IndexEntry,
+    RecordedArchive,
     ReplayArchiveError,
     iter_index_lines,
+    load_archive,
 )
 from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLogEntry,
     iter_decisions,
 )
+from spectragent.core.capabilities.browser.replay.rule_snapshot import recorded_site_rules
 from spectragent.core.capabilities.browser.settle import PageSettle, recorded_settle
 from spectragent.core.trace.digest import TreeDigest, tree_digest
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
@@ -2349,40 +2354,115 @@ def export_yield(layout: ChainLayout, manifest: DatasetManifest | None) -> Expor
     )
 
 
+class NearMissFieldSet(_Model):
+    """One combination of fields that differed together, and in how many near misses."""
+
+    query: list[str]
+    body: list[str]
+    #: The bodies differed where a digest hides which fields.
+    opaque_body: bool
+    misses: int
+
+
+class NearMissEndpoint(_Model):
+    """One endpoint's near misses (``archive_stats.site_rule_candidates``)."""
+
+    host: str
+    method: str
+    path: str
+    misses: int
+    #: Per query parameter / body field, how many of those misses it differed in.
+    query: dict[str, int]
+    body: dict[str, int]
+    #: Misses whose bodies differed where a digest hides which fields.
+    opaque_body: int
+    #: Each distinct combination of differing fields, most frequent first.
+    field_sets: list[NearMissFieldSet]
+
+
 class SiteRuleCandidates(_Model):
-    """Replay misses a per-site query rule would have matched (``archive_stats``), by host."""
+    """Replay misses an endpoint rule would have matched (``archive_stats``), by endpoint."""
 
     runs: int
     #: Distinct sites of the replayed runs counted.
     sites: int
-    by_host: dict[str, int]
-    params: dict[str, dict[str, int]]
+    #: Most near misses first (ties by host, path and method).
+    endpoints: list[NearMissEndpoint]
     #: Replayed runs (``traces/<role>/<run>``) left out, and why.
     skipped: dict[str, str] = {}
 
 
 def site_rules(chain: ChainRuns) -> SiteRuleCandidates:
-    """Near misses in every replayed run (``same_path`` and ``branch``), by host and parameter."""
-    misses: Counter[str] = Counter()
-    params: dict[str, Counter[str]] = {}
+    """Near misses in every replayed run (``same_path`` and ``branch``), by endpoint and field.
+
+    Each replay is compared with its source run (``source_trace`` under
+    ``traces/record``), loaded with the rules the replay recorded it used
+    (``recorded_site_rules``), so a field the replay's own rules ignored is
+    never reported as differing. A source is loaded once per rule version.
+    A replay whose source is not in the chain, or whose replay log, rule
+    snapshot or source archive does not read back, is left out with the
+    reason.
+    """
+    found: list[NearMiss] = []
     counted: list[Run] = []
     skipped: dict[str, str] = {}
+    sources: dict[tuple[str, str], RecordedArchive | str] = {}
     for role in ("same_path", "branch"):
         for run in chain.role(role).runs:
+            source = chain.source_of(run)
+            if source is None:
+                skipped[run.pointer] = "its source run is not under traces/record"
+                continue
             try:
-                found = site_rule_candidates(run.decisions)
+                rules = recorded_site_rules(run.trace)
+            except EVIDENCE_ERRORS as exc:
+                skipped[run.pointer] = (
+                    f"its rule snapshot does not read back ({type(exc).__name__})"
+                )
+                continue
+            key = (source.rel, rules.sha256)
+            if key not in sources:
+                try:
+                    sources[key] = load_archive(source.trace, rules)
+                except EVIDENCE_ERRORS as exc:
+                    sources[key] = (
+                        f"its source archive {source.pointer} does not read back "
+                        f"({type(exc).__name__})"
+                    )
+            recorded = sources[key]
+            if isinstance(recorded, str):
+                skipped[run.pointer] = recorded
+                continue
+            try:
+                found.extend(near_misses(run.decisions, recorded))
             except EVIDENCE_ERRORS as exc:
                 skipped[run.pointer] = f"its replay log does not read back ({type(exc).__name__})"
                 continue
             counted.append(run)
-            for host, candidate in found.items():
-                misses[host] += candidate.misses
-                params.setdefault(host, Counter()).update(dict(candidate.params))
     return SiteRuleCandidates(
         runs=len(counted),
         sites=site_count(counted),
-        by_host=_counts(misses),
-        params={host: _counts(params[host]) for host in sorted(params)},
+        endpoints=[
+            NearMissEndpoint(
+                host=candidate.host,
+                method=candidate.method,
+                path=candidate.path,
+                misses=candidate.misses,
+                query=dict(candidate.query),
+                body=dict(candidate.body),
+                opaque_body=candidate.opaque_body,
+                field_sets=[
+                    NearMissFieldSet(
+                        query=list(fields.query),
+                        body=list(fields.body),
+                        opaque_body=fields.opaque_body,
+                        misses=fields.misses,
+                    )
+                    for fields in candidate.field_sets
+                ],
+            )
+            for candidate in site_rule_candidates(found)
+        ],
         skipped=dict(sorted(skipped.items())),
     )
 
@@ -2464,6 +2544,8 @@ __all__ = [
     "NO_ACTION",
     "NO_RESULT",
     "NO_SITE",
+    "NearMissEndpoint",
+    "NearMissFieldSet",
     "RESULT_ERRORS",
     "ROLES",
     "TERMINAL",

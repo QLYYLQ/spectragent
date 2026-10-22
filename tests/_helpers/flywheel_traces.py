@@ -50,15 +50,23 @@ from typing import Any
 from PIL import Image
 
 from spectragent.core.archive.privacy import MARKER_SESSION_STATE, RedactionLedger
+from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities.browser.archive import ReplayLogArchiver
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.capabilities.browser.replay.archive_index import load_archive
 from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayCandidate,
     ReplayLog,
     ReplayLogEntry,
 )
+from spectragent.core.capabilities.browser.replay.site_rules import SiteRules
 from spectragent.core.capabilities.browser.settle import PageSettle
-from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file, encode_fragment
+from spectragent.core.trace.encoding import (
+    EncodedFragment,
+    TraceFile,
+    encode_archive_file,
+    encode_fragment,
+)
 from spectragent.core.trace.models import (
     TaskSetupRecord,
     TraceConfig,
@@ -92,7 +100,7 @@ from spectragent.schemas.sample import CanonicalStepSample, SampleLabels
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_recorder import open_session
 from tests._helpers.replay_archive import RecordingScript
-from tests._helpers.trace_builder import agent_result
+from tests._helpers.trace_builder import agent_result, archive_file
 
 SHOP, BLOCKED, BROKEN = "shop.test", "blocked.test", "broken.test"
 #: The tier every run of :func:`known_chain` records in its resolved configuration.
@@ -166,10 +174,15 @@ def miss(
     method: str = "GET",
     resource_type: str = "XHR",
     candidates: Sequence[str] = (),
+    record_ids: Sequence[str] = (),
     document: bool = False,
     reason: str = "no_match",
 ) -> ReplayLogEntry:
-    """A replay miss as the replay server logs it (a main-frame document miss diverges)."""
+    """A replay miss as the replay server logs it (a main-frame document miss diverges).
+
+    *record_ids* name the source records of *candidates*, in order (the
+    near-miss count reads them in the source archive).
+    """
     return ReplayLogEntry(
         kind="miss",
         captured_at=1.0,
@@ -183,8 +196,8 @@ def miss(
         answer="failed" if document else "fulfilled",
         status=None if document else 404,
         candidates=[
-            ReplayCandidate(record_id=f"rec-{i}", method=method, url=c, score=0.5, consumed=False)
-            for i, c in enumerate(candidates)
+            ReplayCandidate(record_id=record_id, method=method, url=c, score=0.5, consumed=False)
+            for c, record_id in zip(candidates, record_ids, strict=True)
         ],
         diverged=document,
     )
@@ -339,11 +352,11 @@ async def write_replayed(
         for entry in spec.replay:
             log.append(entry)
         files = await session.collect()
+        extra = [encode_archive_file(item, step=index) for item in files]
+        if index == 0:
+            extra.append(rule_snapshot_file())
         wal.commit_step(
-            index,
-            spec.record(index),
-            fragments=spec.fragments(index),
-            extra_files=[encode_archive_file(item, step=index) for item in files],
+            index, spec.record(index), fragments=spec.fragments(index), extra_files=extra
         )
     if trailing:
         for entry in trailing:
@@ -353,6 +366,30 @@ async def write_replayed(
     wal.write_result(agent_result())
     wal.finalize(TraceStatus.COMPLETE)
     return wal.run_dir
+
+
+def rule_snapshot_file() -> TraceFile:
+    """A replay's browser run record holding the (empty) rule set it was served with."""
+    snapshot = SiteRules().snapshot()
+    block = {
+        "source_id": "archive",
+        "site_rules_sha256": snapshot.sha256,
+        "site_rules_snapshot": snapshot.model_dump(mode="json"),
+    }
+    return archive_file(
+        "browser",
+        "fingerprint.json",
+        json.dumps({"network_source": block}).encode(),
+        scope="run",
+        run_version=0,
+    )
+
+
+def record_ids(run_dir: Path) -> dict[str, str]:
+    """Each recorded URL's record id in *run_dir*'s network archive (one record per URL here)."""
+    return {
+        record.url: record.record_id for record in load_archive(open_archive(run_dir)).index.records
+    }
 
 
 def provenance(source: str, checkpoint: int, index: int, task_id: str) -> BranchProvenance:
@@ -556,9 +593,10 @@ async def known_chain(root: Path) -> KnownChain:
         site=SHOP,
     )
 
-    near = miss(
-        f"http://{SHOP}/data.json?session=2", candidates=[f"http://{SHOP}/data.json?session=1"]
-    )
+    shop_ids = record_ids(chain.runs["rec-shop"])
+    blocked_ids = record_ids(chain.runs["rec-blocked"])
+    results = f"http://{SHOP}/results?q=kettle"
+    near = miss(f"{results}&session=2", candidates=[results], record_ids=[shop_ids[results]])
     for index, middle in ((0, 20), (1, 21)):
         chain.runs[f"sp-shop-b{index}"] = await write_replayed(
             same_path,
@@ -589,7 +627,12 @@ async def known_chain(root: Path) -> KnownChain:
                 color=71,
                 restoration=check(0, "document_miss", "screenshot_distance", document_misses=1),
                 replay=[
-                    miss(f"http://{BLOCKED}/", document=True, candidates=[f"http://{BLOCKED}/"])
+                    miss(
+                        f"http://{BLOCKED}/",
+                        document=True,
+                        candidates=[f"http://{BLOCKED}/"],
+                        record_ids=[blocked_ids[f"http://{BLOCKED}/"]],
+                    )
                 ],
             ),
             Step("terminal", color=72),
@@ -619,8 +662,9 @@ async def known_chain(root: Path) -> KnownChain:
                 replay=[
                     hit(f"http://{SHOP}/results?q=kettle"),
                     miss(
-                        f"http://{SHOP}/data.json?session=3",
-                        candidates=[f"http://{SHOP}/data.json?session=1"],
+                        f"{results}&session=3",
+                        candidates=[results],
+                        record_ids=[shop_ids[results]],
                     ),
                 ],
             ),
