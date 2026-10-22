@@ -45,14 +45,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from lookahead import imaging
 from lookahead.extract import step_rows
 from lookahead.output import write_json, write_text
-from lookahead.queues import frame_image, observation_image, region
+from lookahead.queues import frame_image, item_title, observation_image, region
 from lookahead.report import crosstab, share, table
 from lookahead.rows import FrameRow, StepRow
 from lookahead.runs import Run, RunSet
 from spectragent.annotation import (
     QUEUE_FORMAT,
+    GuideSection,
     ItemField,
-    ItemLink,
     LabelChoice,
     LabelSpec,
     QueueImage,
@@ -62,10 +62,12 @@ from spectragent.annotation import (
     RegionSpec,
     ReviewQueue,
     Suggestion,
+    SuggestionDisplay,
     write_queue,
 )
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.flywheel.diagnostics import DifferenceMethod
+from spectragent.inspection.marks import action_lines, action_text
 
 Verdict = Literal[
     "stable_through_think", "stable_short", "changed_short", "changed_before_action", "no_frames"
@@ -269,6 +271,19 @@ def previous_action(run: Run, step: int) -> str:
     return record.actions[-1].name if record.actions else NO_ACTION
 
 
+def previous_action_text(run: Run, step: int) -> str:
+    """The previous step's last action as a person reads it."""
+    earlier = [other for other in run.steps() if other < step]
+    if not earlier:
+        return "（这是第一步）"
+    record = run.records[earlier[-1]]
+    if not record.actions:
+        return "（没有动作）"
+    index = len(record.actions) - 1
+    result = record.action_results[index] if index < len(record.action_results) else None
+    return action_text(record.actions[index], result)
+
+
 def observation_stability(
     run: Run, row: StepRow, *, method: DifferenceMethod, min_change_area: float
 ) -> ObservationStability | None:
@@ -359,20 +374,88 @@ def analyse(
 # ── the review queue ──────────────────────────────────────────────────
 
 CHOICES = [
-    LabelChoice(value="stable", text="Stable"),
-    LabelChoice(value="still_loading", text="Still loading"),
-    LabelChoice(value="animation_or_video", text="Animation or video"),
-    LabelChoice(value="other_change", text="Other change"),
-    LabelChoice(value="cannot_tell", text="Cannot tell"),
+    LabelChoice(
+        value="stable",
+        text="稳定",
+        help="三张图实质上一样。光标闪烁、时钟秒数跳动这类小变化不算。",
+        regions="forbidden",
+    ),
+    LabelChoice(
+        value="still_loading",
+        text="还在加载",
+        help="第一张图没加载完（空白、灰色占位条、转圈、列表或图片缺失），后面的图里才补全。",
+        regions="optional",
+    ),
+    LabelChoice(
+        value="animation_or_video",
+        text="页面自动变化",
+        help="页面自己在动：视频在播放、轮播图在切换、动态预览、股票行情在刷新。"
+        "行情数字自动刷新也归到这一类。",
+        regions="optional",
+    ),
+    LabelChoice(
+        value="other_change",
+        text="其他变化",
+        help="弹窗或遮罩出现或消失、搜索联想下拉框、插入的广告等。",
+        regions="optional",
+    ),
+    LabelChoice(
+        value="cannot_tell",
+        text="看不出",
+        help="图片看不清或不完整，判断不了；请在备注里说明。",
+        regions="optional",
+    ),
 ]
-INSTRUCTIONS = (
-    "The first image is the screen the agent was shown. The others are the same browser tab "
-    "captured later, before the agent's next action could change it: about one second later, "
-    "and right before the agent's first action (after it finished thinking). Did the screen "
-    "stay the same? If not, say what kind of change it was, and draw boxes around changed "
-    "areas you think matter. The suggested boxes are every region a pixel grid found changed, "
-    "small ones included."
+CHANGE = RegionKind(
+    value="change",
+    text="变化区域",
+    help="和“智能体看到的”相比，后面的图里变了的地方。画在变了的那张图上。",
 )
+TITLE = "智能体思考时，屏幕有没有变"
+INSTRUCTIONS = (
+    "第一张图是智能体看到的画面，后面是同一个页面稍后的画面：约 1 秒后，以及智能体想完、"
+    "刚要执行第一个动作之前。请判断画面有没有变；变了的话选出是哪一类变化，"
+    "并在变了的那张图上框出重要的变化区域。机器建议的框（虚线）只包括面积超过阈值的变化区域。"
+)
+GUIDE = [
+    GuideSection(
+        title="三张图分别是什么",
+        text=(
+            "- 智能体看到的：交给智能体做决定的那张截图；上面的编号标记是它在这一屏上做的动作。\n"
+            "- 约 1 秒后：同一个页面大约 1 秒后的样子，智能体的动作还没开始。\n"
+            "- 第一个动作之前：智能体想完、刚要执行第一个动作时的样子；上面的标记是这个动作。\n"
+            "- 有的条目只有其中两张图。"
+        ),
+    ),
+    GuideSection(
+        title="怎么判断",
+        text=(
+            "- 拿后面的图和第一张比。对比方式切到“差异”可以看出哪里变了：黑色表示没变。\n"
+            "- 只有光标闪烁、时钟秒数这类很小的变化：选“稳定”。\n"
+            "- 第一张图明显没加载完，后面补全了：选“还在加载”。\n"
+            "- 视频、轮播图、动态预览、行情数字在自己变：选“页面自动变化”。\n"
+            "- 弹窗、遮罩、联想下拉框、广告出现或消失：选“其他变化”。"
+        ),
+    ),
+    GuideSection(
+        title="框怎么画",
+        text=(
+            "- 选“稳定”时不能画框。\n"
+            "- 其他选项可以画框：框出你认为重要的变化区域，画在变了的那张图上。\n"
+            "- 虚线框是机器建议，可以按 E 复制过来再改，或按 A 直接接受。"
+        ),
+    ),
+]
+SUGGESTION_TITLE = "机器建议（由像素比较得出，仅供参考）"
+VERDICT_TEXT = {
+    "stable_through_think": "一直没变（到第一个动作之前都没变）",
+    "stable_short": "约 1 秒内没变；第一个动作之前有变化或没有那张图",
+    "changed_short": "约 1 秒后已经变了",
+    "changed_before_action": "第一个动作之前变了（没有 1 秒后的图）",
+    "no_frames": "没有可比较的图",
+}
+SETTLE_TEXT = {"settled": "页面已稳定", "capped": "等到上限仍未稳定", "unknown": "不知道是否稳定"}
+WAITING_TEXT = {"load": "页面加载完成", "dom": "页面结构不再变化"}
 
 
 def any_change(item: ObservationStability) -> bool:
@@ -395,69 +478,129 @@ def machine_choice(item: ObservationStability) -> str:
 
 
 def _settle_text(item: ObservationStability) -> str:
-    waited = f" after {item.settle_waited_ms} ms" if item.settle_waited_ms is not None else ""
-    pending = (
-        f", waiting for {', '.join(item.settle_waiting_for)}" if item.settle_waiting_for else ""
+    if item.settle_outcome == "unrecorded":
+        return "没有记录"
+    head = SETTLE_TEXT.get(item.settle_outcome, item.settle_outcome)
+    waited = (
+        f"（等了 {item.settle_waited_ms / 1000:.1f} 秒）"
+        if item.settle_waited_ms is not None
+        else ""
     )
-    return f"{item.settle_outcome}{waited}{pending}"
+    pending = (
+        "，还在等：" + "、".join(WAITING_TEXT.get(name, name) for name in item.settle_waiting_for)
+        if item.settle_waiting_for
+        else ""
+    )
+    return f"{head}{waited}{pending}"
 
 
-def _comparison_text(comparison: FrameComparison | None) -> str:
+def _comparison_text(comparison: FrameComparison | None, min_change_area: float) -> str:
+    """How one later frame compares, in words a person reads."""
+    if comparison is None:
+        return "没有这张图"
+    if not comparison.compared:
+        return "这张图没法比较"
+    later = (
+        f"（{comparison.seconds_after:.1f} 秒后）" if comparison.seconds_after is not None else ""
+    )
+    significant = sum(1 for found in comparison.regions if found.significant)
+    if not comparison.changed:
+        return f"没有明显变化{later}"
+    return (
+        f"有变化{later}：{(comparison.changed_fraction or 0):.1%} 的像素变了，"
+        f"{significant} 处变化超过 {min_change_area:.1%} 的面积阈值，"
+        f"最大一处占画面 {(comparison.largest_region_fraction or 0):.1%}"
+    )
+
+
+def _comparison_detail(comparison: FrameComparison | None) -> str:
+    """The same comparison's machine facts, for the technical details."""
     if comparison is None:
         return "no frame"
     if not comparison.compared:
         return comparison.reason or comparison.outcome
-    later = f" ({comparison.seconds_after} s later)" if comparison.seconds_after is not None else ""
-    significant = sum(1 for found in comparison.regions if found.significant)
     return (
-        f"{'changed' if comparison.changed else 'unchanged'}{later}: "
-        f"{(comparison.changed_fraction or 0):.1%} of pixels, {len(comparison.regions)} region(s), "
-        f"{significant} over the minimum, largest {(comparison.largest_region_fraction or 0):.1%}; "
-        f"dHash distance {comparison.dhash_distance}"
+        f"{comparison.name}: changed={comparison.changed}, "
+        f"{len(comparison.regions)} grid region(s), dHash distance {comparison.dhash_distance}"
     )
 
 
-def queue_item(item: ObservationStability) -> QueueItem:
+def queue_item(
+    item: ObservationStability,
+    run: Run | None = None,
+    *,
+    min_change_area: float = DEFAULT_MIN_CHANGE_AREA,
+) -> QueueItem:
     images: list[QueueImage] = [
-        observation_image("observation", "What the agent saw", item.run, item.step)
+        observation_image("observation", "智能体看到的", item.run, item.step)
     ]
     regions: list[Region] = []
     for role, text, comparison in (
-        ("delayed", "About one second later", item.delayed),
-        ("before_action", "Right before the first action", item.before_action),
+        ("delayed", "约 1 秒后", item.delayed),
+        ("before_action", "第一个动作之前", item.before_action),
     ):
         if comparison is None or not comparison.compared or comparison.name is None:
             continue
         images.append(frame_image(role, text, item.run, comparison.batch_step, comparison.name))
-        regions += [region(role, "change", found.box) for found in comparison.regions]
+        # Only the regions that count as a change: the grid's small cells
+        # (a caret, a clock) are noise to a person.
+        regions += [
+            region(role, "change", found.box) for found in comparison.regions if found.significant
+        ]
+    record = run.records.get(item.step) if run is not None else None
     fields = [
-        ItemField(text="Settle", value=_settle_text(item)),
-        ItemField(text="Machine verdict", value=item.verdict),
-        ItemField(text="One second later", value=_comparison_text(item.delayed)),
-        ItemField(text="Before the first action", value=_comparison_text(item.before_action)),
-        ItemField(text="Previous action", value=item.previous_action),
+        ItemField(text="机器判断", value=VERDICT_TEXT.get(item.verdict, item.verdict)),
+        ItemField(text="约 1 秒后", value=_comparison_text(item.delayed, min_change_area)),
         ItemField(
-            text="Think time",
-            value=f"{item.think_s} s" if item.think_s is not None else "not measured",
+            text="第一个动作之前", value=_comparison_text(item.before_action, min_change_area)
         ),
-        ItemField(text="Playing media", value=", ".join(item.media_playing) or "none"),
-        ItemField(text="URL", value=item.url or "unknown"),
+        ItemField(text="截图前等页面稳定", value=_settle_text(item)),
+        ItemField(
+            text="智能体思考了",
+            value=f"{item.think_s:.1f} 秒" if item.think_s is not None else "没有测量",
+        ),
+        ItemField(
+            text="上一步的最后一个动作",
+            value=previous_action_text(run, item.step) if run is not None else item.previous_action,
+        ),
+        ItemField(text="这一步的动作", value=action_lines(record) if record else "未记录"),
+        ItemField(text="正在播放的媒体", value="、".join(item.media_playing) or "无"),
+        ItemField(text="网址", value=item.url or "未记录", technical=True),
+        ItemField(text="机器判定（原值）", value=item.verdict, technical=True),
+        ItemField(text="约 1 秒后（细节）", value=_comparison_detail(item.delayed), technical=True),
+        ItemField(
+            text="第一个动作之前（细节）",
+            value=_comparison_detail(item.before_action),
+            technical=True,
+        ),
+        ItemField(
+            text="稳定等待（原值）",
+            value=f"{item.settle_outcome}, waited {item.settle_waited_ms} ms, "
+            f"waiting for {item.settle_waiting_for}",
+            technical=True,
+        ),
+        ItemField(text="运行", value=item.run, technical=True),
     ]
     return QueueItem(
         item_id=f"{item.run}@{item.step}",
-        title=f"{item.run} step {item.step}: {item.verdict}",
+        title=item_title(
+            item.url,
+            run.start_url if run is not None else None,
+            run.task_id if run is not None else None,
+            f"第 {item.step} 步",
+        ),
         run=item.run,
         step=item.step,
         images=images,
         fields=fields,
-        links=[ItemLink(text="Run", run=item.run, step=item.step)],
         suggestion=Suggestion(
             choice=machine_choice(item),
             regions=regions,
             source=MACHINE_SOURCE,
             rationale=(
-                f"grid verdict {item.verdict}; settle {item.settle_outcome}"
-                + ("; a changed region overlaps playing media" if item.media_change else "")
+                f"像素比较：{VERDICT_TEXT.get(item.verdict, item.verdict)}；"
+                f"截图前{SETTLE_TEXT.get(item.settle_outcome, item.settle_outcome)}"
+                + ("；变化区域和正在播放的媒体重叠" if item.media_change else "")
             ),
         ),
     )
@@ -485,20 +628,32 @@ def stratified(
 
 
 def build_queue(
-    items: list[ObservationStability], *, queue_id: str, size: int, seed: int
+    items: list[ObservationStability],
+    *,
+    queue_id: str,
+    size: int,
+    seed: int,
+    runs: dict[str, Run] | None = None,
+    min_change_area: float = DEFAULT_MIN_CHANGE_AREA,
 ) -> ReviewQueue:
+    runs = runs or {}
     return ReviewQueue(
         format=QUEUE_FORMAT,
         queue_id=queue_id,
-        title="Does the observed screen stay the same while the agent thinks?",
+        title=TITLE,
         instructions=INSTRUCTIONS,
+        guide=GUIDE,
+        suggestion_display=SuggestionDisplay(title=SUGGESTION_TITLE),
         label=LabelSpec(
             choices=CHOICES,
             multi=False,
-            regions=RegionSpec(kinds=[RegionKind(value="change", text="Changed area")]),
+            regions=RegionSpec(kinds=[CHANGE]),
             note=True,
         ),
-        items=[queue_item(item) for item in stratified(items, size, seed)],
+        items=[
+            queue_item(item, runs.get(item.run), min_change_area=min_change_area)
+            for item in stratified(items, size, seed)
+        ],
     )
 
 
@@ -633,7 +788,14 @@ def run_stability(
         skipped_runs=dict(runs.skipped),
         observations=items,
     )
-    queue = build_queue(items, queue_id=queue_id, size=queue_size, seed=seed)
+    queue = build_queue(
+        items,
+        queue_id=queue_id,
+        size=queue_size,
+        seed=seed,
+        runs={run.key: run for run in runs.runs},
+        min_change_area=min_change_area,
+    )
     write_json(out / "stability.json", report.model_dump(mode="json"))
     write_text(out / "report.md", render_report(report))
     return report, write_queue(annotations, queue)

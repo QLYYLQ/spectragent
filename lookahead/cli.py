@@ -128,10 +128,18 @@ def build_parser() -> argparse.ArgumentParser:
     forks.add_argument("--out", type=Path, required=True, help="Output directory.")
     _queue(forks, "fork-judge")
     _judge_options(forks)
-    forks.add_argument(
+    reuse = forks.add_mutually_exclusive_group()
+    reuse.add_argument(
         "--rules-only",
         action="store_true",
         help="Apply the rules only; ask no model and write no queue.",
+    )
+    reuse.add_argument(
+        "--answers-from",
+        type=Path,
+        default=None,
+        help="judgments.jsonl of an earlier judge-forks run: reuse its model answers and write "
+        "the queue with them, asking no model.",
     )
 
     gold = commands.add_parser(
@@ -253,6 +261,25 @@ def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory)
                 judge_forks(runs, None, args.out, annotations=annotations, queue_id=queue_id)
             )
             print(f"{len(records)} fork(s) judged by rules; report: {args.out / 'report.md'}")
+            return 0
+        if args.answers_from is not None:
+            from lookahead.forks import earlier_answers
+
+            records, queue = asyncio.run(
+                judge_forks(
+                    runs,
+                    None,
+                    args.out,
+                    annotations=annotations,
+                    queue_id=queue_id,
+                    earlier=earlier_answers(args.answers_from),
+                )
+            )
+            reused = sum(1 for record in records if record["answers_from"])
+            print(
+                f"{len(records)} fork(s); {reused} with model answers reused from "
+                f"{args.answers_from}; report: {args.out / 'report.md'}; queue: {queue}"
+            )
             return 0
         (records, queue), judge = asyncio.run(
             _with_judge(

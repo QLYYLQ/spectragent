@@ -173,7 +173,7 @@ def test_previous_action_is_the_last_action_of_the_step_before(world: World) -> 
     assert items[("record/rec-1", 3)].previous_action == "browser.scroll"
 
 
-def test_queue_is_stratified_and_always_suggests_the_grid_boxes(world: World) -> None:
+def test_queue_is_stratified_and_suggests_the_regions_over_the_minimum(world: World) -> None:
     items = analyse(open_runs(world.root), method=DifferenceMethod())
     queue = build_queue(items, queue_id="stability-test", size=60, seed=0)
     by_id = {item.item_id: item for item in queue.items}
@@ -197,7 +197,35 @@ def test_queue_is_stratified_and_always_suggests_the_grid_boxes(world: World) ->
     assert stable is not None and stable.choice == "stable" and stable.regions == []
     small = build_queue(items, queue_id="stability-test", size=2, seed=0)
     assert len(small.items) == 2
-    assert len({item.fields[1].value for item in small.items}) == 2  # two different groups
+    assert small.items[0].fields[0].text == "机器判断"
+    assert len({item.fields[0].value for item in small.items}) == 2  # two different groups
+    # a region under the minimum area is noise: neither a change nor a suggested box
+    lenient = analyse(open_runs(world.root), method=DifferenceMethod(), min_change_area=0.2)
+    quiet = {
+        item.item_id: item
+        for item in build_queue(lenient, queue_id="q", size=60, seed=0, min_change_area=0.2).items
+    }["replays/replay-1@0"].suggestion
+    assert quiet is not None and quiet.choice == "stable" and quiet.regions == []
+
+
+def test_queue_items_read_in_chinese(world: World) -> None:
+    runs = open_runs(world.root)
+    items = analyse(runs, method=DifferenceMethod())
+    queue = build_queue(
+        items, queue_id="q", size=60, seed=0, runs={run.key: run for run in runs.runs}
+    )
+    assert {choice.value: choice.regions for choice in queue.label.choices}["stable"] == "forbidden"
+    assert queue.guide and queue.suggestion_display.title.startswith("机器建议")
+    item = queue.item("record/rec-1@1")
+    assert item is not None and item.title == "shop.example · 任务 rec-1 · 第 1 步"
+    assert [image.text for image in item.images] == ["智能体看到的", "约 1 秒后", "第一个动作之前"]
+    fields = {field.text: field for field in item.fields}
+    assert fields["上一步的最后一个动作"].value == "等待 1 秒"
+    assert fields["这一步的动作"].value == "1. 点击 (100, 10) → 按钮“Search”"
+    assert str(fields["截图前等页面稳定"].value).startswith("等到上限仍未稳定（等了 3.0 秒）")
+    assert fields["网址"].technical and not fields["机器判断"].technical
+    assert "dHash" in str(fields["约 1 秒后（细节）"].value)
+    assert "dHash" not in str(fields["约 1 秒后"].value)
 
 
 def test_cli_writes_report_json_and_queue(world: World, tmp_path: Path) -> None:
