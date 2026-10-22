@@ -1,0 +1,45 @@
+# iQIYI (www.iqiyi.com). Evidence: the anonymous recordings 18_7e42e97c and 208_6925a91f
+# and the offline branch replays of 18 in lookahead_15task_pixels_20261022.
+# timestamp is the client clock in milliseconds. sign is upper-case md5 over every other
+# query field, decoded and sorted, plus a fixed key from the page script. All eight
+# recorded signatures were recomputed that way, so sign carries nothing else.
+rules:
+# Search result click (GET www.iqiyi.com/tvg/to_page_url). The answer is a 302 to the
+# video page (v_<id>.html), chosen by tv_id or album_id. ext_params holds lt, e2 and
+# qyTrace, a fresh random trace id per click; the Location header only copies them.
+# Without this rule the replay missed the redirect and the tab showed a Chrome error page.
+# tv_id, album_id, app_version and on_record stay; a different video still misses.
+- id: iqiyi-video-page-redirect
+  scope:
+    host: www.iqiyi.com
+    path: /tvg/to_page_url
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - ext_params
+  - timestamp
+  - sign
+# Video page details (GET mesh.if.iqiyi.com/tvg/v2/lw/base_info): title, episodes and
+# the player's first data. entity_id selects the video; device, user and version fields
+# stay. Only timestamp and sign changed between recorded and replayed page loads.
+- id: iqiyi-video-base-info
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/v2/lw/base_info
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
