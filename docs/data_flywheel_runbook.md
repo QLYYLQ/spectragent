@@ -574,6 +574,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - WebSocket 不回放。录制时帧写进 `websocket.jsonl`；回放时握手记为 miss（`reason: websocket`），隔离下握手直接失败。
 - 页面定时器发起的导航：观测开始前会等主 frame 在途的跨文档导航提交（最多 10 s），但检查之后才由定时器发起的导航跟踪不到。截图命令有 10 s 的上限，那一次采集失败后重发，这一步因此多花约 10 s。DOM 采集同样有 10 s 的上限，读文档戳的小命令 2 s：渲染进程不回应时，一次观测尝试最多花掉这些时间，不会卡满整个 30 s。
 - 归档开着时，内联读的 body（5 MB 以内、没声明长度的，以及文档）会把响应扣到下载完成，页面拿不到渐进加载的 HTML。更大的 body 边下边收，不扣；但页面不读的 body（`fetch()` 之后从不读，或停住的视频）流不完，记成 `incomplete`。SSE 和长轮询被扣到 `body_read_timeout_s`，之后记为 `incomplete`。
+- pinned 的 `Date` 是整个 run 共用的一个时钟：run 开始时读 T0，之后按真实时间前进，所有 tab 读到同一个时间。页面用 `Date` 拼进 URL 的时间戳因此在录制与回放之间按时序相差毫秒到秒，只能经站点规则的 `ignore_query` 或模糊级匹配。`Math.random` 与 `crypto` 是每个文档一条从同一种子开始的流，同一 run 的两个 tab 抽到相同的随机数。
 - pinned 不固定 `performance.now` 和定时器。没有 `Last-Modified` 头时 `document.lastModified` 读真实时钟，不带参数的 `Intl.DateTimeFormat().format()` 也读真实时钟。`base_time: from_archive` 下，页面 JS 设的绝对过期时间的 cookie 可能被 Chrome 丢掉。
 - 回放 `none` 档位的录制时，DPR 不比较（时区与语言就是浏览器的默认值，按上面的规则比较），HTTPS 升级的试探可能显示为主 frame 文档 miss。
 - 时区与语言 override 的所有者：同一个渲染进程里只有最先设它的 frame 是所有者。所有者走了之后，同进程的其余 frame（同一个站点的第二个跨源 iframe、保留 opener 的同站弹窗）在 0.2–0.3 s 内落回浏览器的默认值；保留 opener 的跨站弹窗从第一个文档起就读默认语言。时区因为 `TZ` 仍是 pin 的；语言是机器的系统语言，录在指纹里，回放要求它相同，但落回发生在哪一次观测之前，录制和回放之间可能不同。

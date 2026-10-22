@@ -216,12 +216,17 @@ class PinnedReplayability(ReplayabilityBase):
         *,
         t0_ms: int,
         browser_user_agent: str,
+        run_started_ms: int | None = None,
         client_hints: ClientHints | None = None,
         color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
         if color_scheme is not None and color_scheme_from_record(color_scheme) is None:
             raise ValueError(f"pinned: invalid measured color scheme {color_scheme!r}")
-        shim = render_shim(t0_ms=t0_ms, seed=self.random_seed)
+        shim = render_shim(
+            t0_ms=t0_ms,
+            run_started_ms=t0_ms if run_started_ms is None else run_started_ms,
+            seed=self.random_seed,
+        )
         hints, problems = self._client_hints(client_hints)
         user_agent: dict[str, Any] = {
             "userAgent": self.user_agent or browser_user_agent,

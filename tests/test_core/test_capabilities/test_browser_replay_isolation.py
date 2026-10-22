@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -279,6 +280,12 @@ class TestServing:
                 if s.method == "Page.addScriptToEvaluateOnNewDocument"
                 and str(clock["t0_ms"]) in s.params["source"]
             )
+            # The page clock reads T0 at this run's start, then real time: the
+            # shim carries the start on the host's clock, the replay's own even
+            # when T0 is the recording's (shims.py, one clock for the whole run).
+            started = re.search(r"const RUN_STARTED_MS = (\d+);", shim.params["source"])
+            assert started is not None
+            assert setup_started_ms <= int(started.group(1)) <= setup_finished_ms
             requested_at = int(time.time())
             browser.recorder.fire(
                 "Fetch.requestPaused",

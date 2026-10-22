@@ -14,15 +14,18 @@ references only and contribute no code.
   "Copyright 2017 The Chromium Authors. All rights reserved."
 - **Ported into:** `spectragent/core/capabilities/browser/replay/shims.py` (`SHIM_TEMPLATE`),
   the shim the `replayability: pinned` tier injects into every page and worker.
-- **Kept:** `Date` and `Date.now()` start at a fixed time and advance 50 ms every
-  25 constructions (never frozen); a guard against injecting twice.
-- **Modified by af:** `Math.random` and `crypto.getRandomValues` draw from seeded
+- **Kept:** the shape of the `Date` replacement (no-argument `Date` and `Date.now()`
+  read the pinned clock, every other form is native); a guard against injecting twice.
+- **Modified by af:** the clock is one clock for the whole run — T0 at the run's start,
+  then real time read from `performance.timeOrigin + performance.now()` — instead of
+  WPR's per-page counter (a fixed time advancing 50 ms every 25 constructions), so every
+  tab and worker of a run reads the same time; `Math.random` and `crypto.getRandomValues` draw from seeded
   mulberry32 streams instead of WPR's fixed 0.13297 step or constant value;
   `crypto.randomUUID` returns RFC 4122 version-4 UUIDs from the seeded bytes;
   `ServiceWorkerContainer.prototype.register` rejects; the `Date` replacement is
   built with `Reflect.construct` so subclasses and `instanceof` keep working; every
   API is feature-tested so one source runs in pages and workers; the template takes
-  T0 and the seed as placeholders. **Dropped:** the hard-coded `getTimezoneOffset`
+  T0, the run's start and the seed as placeholders. **Dropped:** the hard-coded `getTimezoneOffset`
   (time zone is a CDP override), and the `navigator.onLine` / `navigator.connection`
   overrides.
 

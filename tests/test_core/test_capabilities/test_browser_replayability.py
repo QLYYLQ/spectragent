@@ -252,7 +252,10 @@ class TestPinnedPlan:
     def test_frame_command_parameters(self, plan) -> None:
         commands = {c.method: dict(c.params) for c in plan.target_commands(_target("page"))}
         assert commands["Page.addScriptToEvaluateOnNewDocument"] == {
-            "source": render_shim(t0_ms=1_700_000_000_000, seed=5),
+            # No start given: the run starts at T0 itself (base_time: run_start).
+            "source": render_shim(
+                t0_ms=1_700_000_000_000, run_started_ms=1_700_000_000_000, seed=5
+            ),
             # The document already there when the target is prepared is pinned too.
             "runImmediately": True,
         }
@@ -270,7 +273,7 @@ class TestPinnedPlan:
         assert commands["Network.setBypassServiceWorker"] == {"bypass": True}
 
     def test_workers_get_the_shim_by_evaluation(self, plan) -> None:
-        shim = render_shim(t0_ms=1_700_000_000_000, seed=5)
+        shim = render_shim(t0_ms=1_700_000_000_000, run_started_ms=1_700_000_000_000, seed=5)
         for kind in ("worker", "shared_worker", "service_worker"):
             commands = list(plan.target_commands(_target(kind)))
             assert commands[0].method == "Runtime.evaluate"
@@ -327,6 +330,21 @@ class TestPinnedPlan:
             "reduced_motion": True,
         }
 
+    def test_a_replay_shifts_the_clock_to_the_recordings_t0(self) -> None:
+        """T0 is the recording's, the start is the replay's own: the shim gets both.
+
+        The page then reads the recording's T0 at the replay's start and advances
+        in real time from there (``shims.py``: one clock for the whole run).
+        """
+        plan = PinnedReplayability(base_time="from_archive", random_seed=5).plan(
+            t0_ms=1_760_000_000_000, run_started_ms=1_790_000_000_000, browser_user_agent="UA"
+        )
+        commands = {c.method: dict(c.params) for c in plan.target_commands(_target("page"))}
+        assert commands["Page.addScriptToEvaluateOnNewDocument"]["source"] == render_shim(
+            t0_ms=1_760_000_000_000, run_started_ms=1_790_000_000_000, seed=5
+        )
+        assert plan.fingerprint()["t0_ms"] == 1_760_000_000_000
+
     def test_the_configured_instance_keeps_no_run_state(self) -> None:
         pinned = PinnedReplayability()
         first = pinned.plan(t0_ms=1, browser_user_agent="A")
@@ -336,11 +354,26 @@ class TestPinnedPlan:
 
 
 class TestShim:
-    def test_render_fills_t0_and_seed(self) -> None:
-        shim = render_shim(t0_ms=1_700_000_000_123, seed=77)
+    def test_render_fills_t0_start_and_seed(self) -> None:
+        shim = render_shim(t0_ms=1_700_000_000_123, run_started_ms=1_700_000_005_000, seed=77)
         assert "__AF_" not in shim
         assert "const T0_MS = 1700000000123;" in shim
+        assert "const RUN_STARTED_MS = 1700000005000;" in shim
         assert "const SEED = 77 >>> 0;" in shim
+
+    def test_the_clock_is_one_clock_for_the_whole_run(self) -> None:
+        """Real time from the run's start, not a per-document counter.
+
+        The per-document counter (WPR's: T0, then 50 ms every 25
+        constructions) gave every tab its own time, and iqiyi.com's cross-tab
+        storage sync never converged under it (``shims.py`` module docstring).
+        The behaviour itself is checked in a real Chrome
+        (``test_browser_recorder_live.py``, ``TestPinnedClock``).
+        """
+        body = SHIM_TEMPLATE.split("(function ()", 1)[1]
+        assert "perf.timeOrigin" in body and "perf.now" in body
+        assert "T0_MS + (wallMs() - RUN_STARTED_MS)" in body
+        assert "constructions" not in body
 
     def test_digest_is_the_templates_whatever_the_run(self) -> None:
         assert hashlib.sha256(SHIM_TEMPLATE.encode()).hexdigest() == SHIM_SHA256
@@ -365,9 +398,11 @@ class TestShim:
     @pytest.mark.parametrize("bad", [1.5, "1", True])
     def test_render_refuses_non_integers(self, bad: Any) -> None:
         with pytest.raises(TypeError):
-            render_shim(t0_ms=bad, seed=1)
+            render_shim(t0_ms=bad, run_started_ms=1, seed=1)
         with pytest.raises(TypeError):
-            render_shim(t0_ms=1, seed=bad)
+            render_shim(t0_ms=1, run_started_ms=bad, seed=1)
+        with pytest.raises(TypeError):
+            render_shim(t0_ms=1, run_started_ms=1, seed=bad)
 
 
 # ── Cooperation (setup-time refusals) ─────────────────────────────────

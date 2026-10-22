@@ -44,7 +44,8 @@ class ReplayabilityPlan(RecorderParticipantBase):
     tier: str
     #: The tier's knobs, as recorded in the fingerprint.
     params: Mapping[str, Any] = field(default_factory=dict)
-    #: Epoch milliseconds the shim's clock starts from; ``None`` without a shim.
+    #: Epoch milliseconds the shim's clock reads at the run's start (it then
+    #: advances in real time); ``None`` without a shim.
     t0_ms: int | None = None
     #: sha256 of the shim *template* (independent of T0 and seed).
     shim_sha256: str | None = None
@@ -153,11 +154,17 @@ class ReplayabilityProtocol(Protocol):
         *,
         t0_ms: int,
         browser_user_agent: str,
+        run_started_ms: int | None = None,
         client_hints: ClientHints | None = None,
         color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
         """This run's plan. The configured instance keeps no run state.
 
+        *t0_ms* is what the tier's clock reads at the run's start;
+        *run_started_ms* is that start on the host's wall clock, from which the
+        clock advances in real time. ``None`` means the clock is not shifted:
+        the run starts at T0 itself (``base_time: run_start``). A replay whose
+        T0 is the recording's passes its own start.
         *client_hints* are the browser's own, read after launch when
         :attr:`needs_client_hints`; ``None`` when not read (the consistency
         check plans with none, for the parameters only).
@@ -227,6 +234,7 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
         *,
         t0_ms: int,
         browser_user_agent: str,
+        run_started_ms: int | None = None,
         client_hints: ClientHints | None = None,
         color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
