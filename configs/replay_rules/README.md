@@ -84,6 +84,31 @@ profile's video-list request (`/x/space/wbi/arc/search`) changes the same two fi
 but its recorded answer was an empty list: serving it changed no restoration check or
 page text, so a higher hit count alone did not justify a rule and it is not covered.
 
+On 2026-10-22, `qq.com.yaml` (Tencent Video), the new `iqiyi.com.yaml` and the new
+`10jqka.com.cn.yaml` (Tonghuashun) added endpoint rules. The evidence is the offline
+branch replays of five anonymous recordings in `lookahead_15task_pixels_20261022`:
+Tencent Video 128, 263 and 28, iQIYI 18 and Tonghuashun 233. Each rule covers a value
+that the replayed page makes fresh: a random visitor, panel, chat or search-box id, a
+trace id, a jQuery callback name and cache buster, or a client time with a signature
+over it. The live requests were captured during replay. Each differed from its nearest
+recorded request only in the fields its rule ignores, and each file says why per rule.
+Every recorded iQIYI signature was recomputed from the other fields. Across all 15
+recordings, requests that a new rule joins share their status. Their recorded answers
+differ only in tracking strings, ranking order or lists that change between page loads.
+The tests check that every content field still misses.
+
+Restoration checks used the restorer's `ok` verdict on the 64 branch forks of these
+recordings. Before the rules, 4 of 64 forks were `ok`. With the rules they were 17 of 64
+under `pace: none` and 20 of 64 under `pace: recorded_llm_latency`. The forks whose
+checkpoint is on the recorded URL rose from 12 to 40 and 52. The four step-29 Tencent
+Video forks need more than the 900 s task timeout when paced. Most of the remaining
+Tencent Video and iQIYI forks fail only the media and screenshot checks: the video does
+not play. The player's stream requests put encrypted keys, times and flow ids inside one
+field (`vinfoparam` in `proxyhttp`, `cKey` on `getvinfo`, `authKey`/`vf` on iQIYI's
+`dash`), and a rule cannot ignore only part of a field. The protobuf variant of
+`GetTabRemoteConfig` stays matched on its whole body because its cached-version field
+chooses between a full config and a not-modified answer.
+
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another
 endpoint. A change must check incorrect matches as well as newly matched

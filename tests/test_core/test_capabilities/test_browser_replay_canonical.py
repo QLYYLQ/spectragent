@@ -233,6 +233,25 @@ class TestTheBodyCap:
         assert [name for name, _ in one] == [BODY_SHA256_PARAM]
         assert one != two, "upstream truncates at 4096 characters and these would collide"
 
+    def test_ignored_body_paths_are_removed_before_the_cap(self) -> None:
+        """A long ignored field neither pushes a body past the cap nor enters its sha256."""
+        rule = SiteRule(
+            id="cookie-copy",
+            exhaustion="repeat_last",
+            unavailable="miss",
+            ignore_body_paths=("cookie",),
+        )
+        short = json.dumps({"id": "7", "cookie": "c" * MAX_BODY_KEY_CHARS}).encode()
+        assert body_params(short, JSON, rule) == (("id", "7"),)
+
+        def long(cookie: str, kept: str = "k") -> bytes:
+            return json.dumps({"kept": kept * MAX_BODY_KEY_CHARS, "cookie": cookie}).encode()
+
+        one, two = body_params(long("a"), JSON, rule), body_params(long("b" * 500), JSON, rule)
+        assert [name for name, _ in one] == [BODY_SHA256_PARAM]
+        assert one == two
+        assert body_params(long("a", kept="j"), JSON, rule) != one
+
 
 class TestGraphQL:
     QUERY = "query Search($q: String!) {\n  search(q: $q) { id }\n}"

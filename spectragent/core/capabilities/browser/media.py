@@ -53,7 +53,7 @@ end (``media_end_lead_s``) and played through to its natural end (``ended``
 fired), because a seek straight to the end leaves a stale frame and no end
 screen. ``currentTime`` alone is no proof: a seek into bytes the recording
 never fetched reports the target at once while ``seeking`` stays true and the
-frame never changes (measured on the site's player). A seek or play that does
+frame never changes (measured on Xiaohongshu's player). A seek or play that does
 not complete within ``media_seek_timeout_s`` is ``failed``, and the element is
 put back where it was (which also stops the player's retry storm on the
 missing bytes). Every action is recorded.
