@@ -36,6 +36,7 @@ on every page so no favicon request is made.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -240,6 +241,22 @@ FRAMES_PAINT_BOX: tuple[int, int, int, int] = (40, 40, 300, 80)
 FRAMES_PAINTED: tuple[int, int, int] = (255, 120, 0)
 #: A point far from the button, in CSS px of the viewport.
 FRAMES_PROBE: tuple[int, int] = (900, 500)
+#: Documents a recording must keep and a replay must answer as recorded
+#: (architecture §4.14 ``browser.network`` and "服务"), kept apart for the same
+#: reason. ``slow_document/page.html`` is bilibili's search results: its
+#: headers come at once and its body — GBK, gzip, no ``Content-Length`` —
+#: :data:`SLOW_DOCUMENT_DELAY_S` later, past a short ``body_read_timeout_s``;
+#: its ``again`` link (:data:`SLOW_DOCUMENT_BOXES`) opens it once more in a
+#: new tab, the way bilibili opened its results.
+DOCUMENT_SCENARIOS: tuple[str, ...] = ("slow_document",)
+#: How long ``slow_document/page.html`` holds back the rest of its body.
+SLOW_DOCUMENT_DELAY_S = 1.0
+#: The text ``slow_document/page.html`` shows, sent GBK-encoded.
+SLOW_DOCUMENT_TEXT = "搜索结果：慢的文档"
+#: Where ``slow_document/page.html`` puts its links: ``(left, top, width, height)`` in CSS px.
+SLOW_DOCUMENT_BOXES: dict[str, tuple[int, int, int, int]] = {
+    "again": (20, 120, 300, 40),
+}
 #: What the first script of every ``new_tab`` document, worker and frame
 #: reports: the shim's mark, the clock, the seeded randomness, time zone,
 #: locale, language, user agent and brands, reduced motion — and whether any
@@ -356,6 +373,7 @@ class LoggedRequest:
             or head in CLIENT_HINTS_SCENARIOS
             or head in JSONP_SCENARIOS
             or head in FRAMES_SCENARIOS
+            or head in DOCUMENT_SCENARIOS
         )
         return head if known else None
 
@@ -591,6 +609,7 @@ class FixtureSite:
             + CLIENT_HINTS_SCENARIOS
             + JSONP_SCENARIOS
             + FRAMES_SCENARIOS
+            + DOCUMENT_SCENARIOS
         )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
@@ -660,6 +679,7 @@ class FixtureSite:
             "client_hints": ["/client_hints/page.html", "/client_hints/report"],
             "jsonp": ["/jsonp/page.html", "/jsonp/hot.js", "/jsonp/ad.js"],
             "frames": ["/frames/page.html"],
+            "slow_document": ["/slow_document/page.html"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -1133,6 +1153,8 @@ class FixtureSite:
             "/jsonp/ad.js": self._jsonp_ad,
             # ── frames the agent never sees ──
             "/frames/page.html": static(self._frames_page(), _HTML),
+            # ── documents kept and answered as recorded ──
+            "/slow_document/page.html": self._slow_document,
         }
 
     def _frames_page(self) -> bytes:
@@ -1148,6 +1170,38 @@ class FixtureSite:
             " document.getElementById('paint').textContent = 'Painted'; };"
             "</script>",
         )
+
+    @staticmethod
+    def slow_document_bytes() -> bytes:
+        """``slow_document/page.html`` as the server encodes it: GBK, before gzip."""
+
+        def box(name: str) -> str:
+            left, top, width, height = SLOW_DOCUMENT_BOXES[name]
+            return f"position:absolute;left:{left}px;top:{top}px;width:{width}px;height:{height}px"
+
+        return (
+            '<!doctype html><html><head><meta charset="gbk"><link rel="icon" href="data:,">'
+            f'<title>slow results</title></head><body><p id="text">{SLOW_DOCUMENT_TEXT}</p>'
+            '<a id="again" href="/slow_document/page.html?tab=new" target="_blank" '
+            f'style="{box("again")}">again</a>'
+            "</body></html>"
+        ).encode("gbk")
+
+    def _slow_document(self, handler: _Handler, _body: bytes) -> None:
+        """Headers now, the gzip body in two chunks :data:`SLOW_DOCUMENT_DELAY_S` apart."""
+        payload = gzip.compress(self.slow_document_bytes(), mtime=0)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=gbk")
+        handler.send_header("Content-Encoding", "gzip")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        half = len(payload) // 2
+        for part, pause in ((payload[:half], SLOW_DOCUMENT_DELAY_S), (payload[half:], 0.0)):
+            handler.wfile.write(f"{len(part):x}\r\n".encode() + part + b"\r\n")
+            handler.wfile.flush()
+            time.sleep(pause)
+        handler.wfile.write(b"0\r\n\r\n")
 
     def _keys_page(self) -> bytes:
         def box(name: str) -> str:

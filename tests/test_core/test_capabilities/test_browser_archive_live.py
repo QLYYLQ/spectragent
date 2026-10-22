@@ -35,6 +35,7 @@ recording is shared by the completeness tests.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,10 @@ from spectragent.core.capabilities.browser.archive import (
     StorageArchiver,
 )
 from spectragent.core.capabilities.browser.archive.dom_raw import DomRawSession
+from spectragent.core.capabilities.browser.archive.network import (
+    BODY_READ_TIMEOUT_NOTE,
+    LATE_BODY_NOTE,
+)
 from spectragent.core.capabilities.browser.dom.js.skyvern_extraction import EXTRACTION_SCRIPT
 from spectragent.core.capabilities.browser.dom.sensitivity import (
     REDACTED_MARKUP,
@@ -75,7 +80,13 @@ from tests._helpers.archive_bench import (
     served_but_not_captured,
     write_report,
 )
-from tests._helpers.fixture_site import FIXTURE_PASSWORD, SCENARIOS, FixtureSite
+from tests._helpers.fixture_site import (
+    FIXTURE_PASSWORD,
+    SCENARIOS,
+    SLOW_DOCUMENT_DELAY_S,
+    SLOW_DOCUMENT_TEXT,
+    FixtureSite,
+)
 from tests._helpers.trace_builder import agent_result, step_record
 from tests.test_core.test_capabilities.test_browser_sensitivity import CONTROL_TABLE
 
@@ -462,6 +473,64 @@ def test_control_connection_never_carries_bodies() -> None:
     assert any(len(item.data) > 6_000_000 for item in blobs), "the 6 MB body is in the archive"
     statuses = captured_paths(lines)
     assert statuses["/large/static.js"] == ["streamed_later"]
+
+
+# ── a document slower than the hold ───────────────────────────────────
+
+#: A hold well under the fixture's delay, so the inline read always outlives it.
+_SHORT_HOLD_S = 0.3
+
+
+def _record_slow_document(**network: Any) -> tuple[list[dict[str, Any]], str]:
+    """The ``slow_document`` page recorded with a short hold; its index lines and the DOM."""
+
+    async def record() -> tuple[list[dict[str, Any]], str]:
+        archiver = NetworkArchiver(
+            require_replayable=False, body_read_timeout_s=_SHORT_HOLD_S, **network
+        )
+        with FixtureSite(mapped=True) as site:
+            async with LiveRecording(site, archivers=(archiver,)) as rec:
+                await rec.step(site.url("slow_document"), wait_for=site.expected("slow_document"))
+                # The read answers when the body is in; the page's load waited for that.
+                await asyncio.sleep(SLOW_DOCUMENT_DELAY_S)
+                await rec.final_collect()
+                return rec.index_lines(), rec.observations[0]["serialized_dom"]
+
+    return _run(record())
+
+
+def _slow_document_line(lines: list[dict[str, Any]]) -> dict[str, Any]:
+    (line,) = [
+        line
+        for line in lines
+        if line["kind"] == "exchange" and line["url"].endswith("/slow_document/page.html")
+    ]
+    return line
+
+
+def test_a_document_slower_than_the_hold_is_kept_whole() -> None:
+    """bilibili's results: gzip, GBK, no length, its body later than ``body_read_timeout_s``.
+
+    The read goes on after the response is released, and Chrome answers it
+    with the bytes the server sent — GBK, not the page's decoded text.
+    """
+    lines, dom = _record_slow_document()
+    assert SLOW_DOCUMENT_TEXT in dom, "the page itself was not held back"
+    line = _slow_document_line(lines)
+    assert line["body_status"] == "ok", line["body_note"]
+    assert line["body_note"].startswith(LATE_BODY_NOTE)
+    body = FixtureSite.slow_document_bytes()
+    assert line["payload_sha256"] == hashlib.sha256(body).hexdigest()
+    assert line["original_encoding"]["content-encoding"] == "gzip"
+
+
+def test_without_the_wait_after_the_release_the_document_has_no_body() -> None:
+    """The negative control (``late_body_timeout_s: 0``): what every recording did before."""
+    lines, dom = _record_slow_document(late_body_timeout_s=0)
+    assert SLOW_DOCUMENT_TEXT in dom
+    line = _slow_document_line(lines)
+    assert line["body_status"] == "incomplete"
+    assert line["body_note"] == f"{BODY_READ_TIMEOUT_NOTE} {_SHORT_HOLD_S:g}s"
 
 
 # ── privacy: planted credentials never reach the trace ────────────────

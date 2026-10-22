@@ -61,6 +61,9 @@ RECORDED_DEFAULTS = BrowserDefaults(timezone="UTC", locale="en-US")
 #: The inline body tier of the scripted archiver: anything declared larger is not read inline.
 INLINE_LIMIT = 4096
 PAGE_SESSION = "page-s"
+#: How much longer than ``late_body_timeout_s`` a script waits for a read that never
+#: answers to be given up: the event loop's own scheduling slack on a loaded machine.
+LATE_READ_MARGIN_S = 0.05
 
 
 class RecordingScript:
@@ -380,13 +383,16 @@ class RecordingScript:
         return network_id
 
     async def body_read_times_out(self, url: str, **exchange: Any) -> str:
-        """An exchange whose inline body read outlives the archiver's ``body_read_timeout_s``.
+        """An exchange whose body read never answers: not while the response is held, nor after.
 
-        Give the script a short ``body_read_timeout_s``: the read waits for it.
+        Give the script short ``body_read_timeout_s`` and ``late_body_timeout_s``:
+        the hold waits out the first, this helper the second.
         """
         self.recorder.holds["Fetch.getResponseBody"] = asyncio.Event()
         try:
-            return await self.exchange(url, **exchange)
+            network_id = await self.exchange(url, **exchange)
+            await asyncio.sleep(self.archiver.late_body_timeout_s + LATE_READ_MARGIN_S)
+            return network_id
         finally:
             del self.recorder.holds["Fetch.getResponseBody"]
 
