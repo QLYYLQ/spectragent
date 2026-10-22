@@ -51,6 +51,55 @@ trailing commit; names `frame-<cycle>-before-<i>.png` /
 `frame-<cycle>-after.png`), and boxes are `[x0, y0, x1, y1]` in the image's
 own pixels.
 
+### What a queue shows a person
+
+The people who label are Chinese annotators, not researchers, so everything a
+queue shows is Simplified Chinese and explains itself; stored values (choice
+values, region kinds, question keys, run keys) stay English identifiers.
+
+- **Titles** read `<site> · 任务 <task id> · 第 <n> 步`. The site is the one of
+  the page actually shown (from the observation's URL, named from a small
+  table of known hosts, else the host); when the task started on another
+  site, `（从<start site>开始）` follows.
+- **Options explain themselves**: every `LabelChoice` and `Question` carries
+  `help`, shown beside it, and each choice a box rule `regions:
+  optional | required | forbidden` that the viewer enforces when a label is
+  saved (a choice that needs boxes cannot be saved without one, one that
+  forbids them cannot be saved with one). `ReviewQueue.guide` holds the
+  labeling guide (definitions, examples, what the images are), opened from the
+  review page.
+- **Machine details are tucked away**: an `ItemField` with `technical: true`
+  (raw verdict names, dHash distances, URLs, action parameters, rule-verdict
+  strings) goes into the collapsed 技术细节 section. Actions are written as
+  numbered Chinese lines (`1. 点击 (223, 234) → 按钮“最多播放”`, `输入“贵州茅台”`,
+  `向下滚动，页面移动了 300 像素`, `等待 1 秒`, `完成并回答：…`) by
+  `spectragent.inspection.marks.action_lines`, the viewer's own describer.
+- **Suggestions** are labelled by `ReviewQueue.suggestion_display.title`;
+  `shown: on_request` keeps a model's answers hidden until the person asks.
+
+### Which actions an image draws: `QueueImage.marks_from`
+
+The viewer draws recorded actions on queue images as numbered marks (a click's
+point, a drag's start → end arrow, a coordinate typing point with its text, a
+scroll's point and direction), numbered as in the step's action list; actions
+without a point (keys, waits, done) are listed beside the image. The marks
+come from `spectragent/inspection/marks.py` and are converted from CSS
+viewport pixels into the image's own pixels with the image's recorded
+geometry. Which actions an image draws:
+
+- `marks_from` left out (`null`): what the image is. An observation draws the
+  actions its step decided on that screen; a before-action frame draws the one
+  action it was taken before; any other image draws nothing.
+- `"marks_from": []`: nothing.
+- `"marks_from": [{"run": "<run key>", "step": <n>, "label": "<legend>"}, …]`:
+  every action of each named step, one colour per entry in order, under its
+  label. The steps may belong to another run than the image (a source run's
+  actions on a branch's checkpoint screen); their points are drawn on this
+  image's geometry.
+
+`observation_image(...)` and `frame_image(...)` in `lookahead/queues.py` take
+`marks_from=` and leave it `None` by default.
+
 ## `extract --root DIR --out FILE.jsonl`
 
 One JSON object per line (`"format": "lookahead-step-1"`) for every policy or
@@ -129,8 +178,18 @@ Outputs:
   included). Choices: stable / still loading / animation or video / other
   change / cannot tell; region kind `change`. The suggestion is the machine
   verdict (a change over playing media suggests animation or video, one after
-  a capped settle still loading, any other change other change) and, always,
-  every grid region as a box.
+  a capped settle still loading, any other change other change) and, as
+  boxes, the grid regions over the minimum area only (the small cells of a
+  caret or a clock are noise to a person). The items are in Chinese: the
+  images are 智能体看到的 / 约 1 秒后 / 第一个动作之前, the options with their
+  help and box rules are 稳定 `stable` (forbidden: substantively the same, a
+  blinking caret or ticking seconds do not count), 还在加载 `still_loading`,
+  页面自动变化 `animation_or_video` (a playing video, a carousel, an animated
+  preview, live stock quotes refreshing), 其他变化 `other_change` (a popup or
+  overlay, a suggestions dropdown, an injected ad) and 看不出 `cannot_tell`,
+  all optional but the first; the region kind is 变化区域 `change`. The
+  observation draws its step's actions, the before-action frame the first
+  action.
 
 ## `variants --root DIR --steps-per-run N --per-step K --out FILE.json`
 
@@ -192,26 +251,58 @@ answers, its call ids; `status` `judged`, `rules_only` (no model answer),
 same-task forks the rules decide, their agreement with the model, rule verdict
 × model `same_intent`, reasonable × executed per fork kind, the forks not
 judged), `calls.jsonl`, and a review queue that asks the same questions
-separately (`label.questions`, each yes / no / cannot tell). Each item lists
-the keys it asks and suggests the model's `answers` with its `reasons`. A
-task-variant item shows nothing of the source run; a same-task item shows the
-source's actions, the rule verdict and the source's next screen only in fields
-and an image labelled "For same intent". `--rules-only` asks no model and
-writes no queue.
+separately (`label.questions`, each 是 / 否 / 看不出). The queue explains in
+Chinese what a branch is (a recorded run restored to a checkpoint, where the
+model decides again on the same screen) and its two kinds, 同任务 (same task)
+and 换任务 (same screen, a new task), and asks, each with its help:
+意图相同 `same_intent` (do the source and the branch pursue the same target and
+purpose on this screen; execution details may differ), 合理 `reasonable`
+(judging the branch alone: is this batch a reasonable step toward its task; it
+need not be optimal) and 执行如意 `executed_as_intended` (does the branch's
+next screen show the intended effect, without an error, a block or missing
+content). Each item lists the keys it asks and suggests the model's `answers`
+with its (English) `reasons`, titled 模型的判断（仅供参考） and hidden until the
+person asks (`suggestion_display.shown: on_request`), so it cannot anchor
+them. The checkpoint image draws the branch's actions and, for a same-task
+item, the source run's actions at the checkpoint in a second colour
+(`marks_from`); the next screens draw none. A task-variant item shows nothing
+of the source run; a same-task item shows the source's actions and next
+screen only in fields and images marked （只用于“意图相同”）, the rule verdict
+among the technical details. `--rules-only` asks no model and writes no
+queue. `--answers-from <judgments.jsonl>` asks no model either: it takes the
+model answers an earlier `judge-forks` run wrote (matched by branch run id
+and checkpoint) and writes the queue with them, so a queue can be rebuilt
+without paying for the same answers twice; each record names that file in
+`answers_from` (`null` when the model was asked now).
 
 ## `gold-queue --root DIR --n 100 --out DIR2`
 
-A review queue for human gold labels. Items are policy steps whose screen and
-next screen were both recorded, taken in turn from each (site, action type)
-group, the least-used run first (`--seed`). Each shows `current` (O_t), `next`
-(O_{t+1}) and `before_action` (the frame before the first action, when one was
-taken), with the task, the actions and their measured effects, both URLs and
-the agent's reply. Choices for the kind of information needed next: result
-list, confirmation or feedback, detail fields, navigation target, nothing new
-needed, other. Region kind `evidence`, drawn on the next screen. Items carry
-no suggestion (the viewer seeds and grades a label against a suggestion, and a
-pixel difference is no answer); the instructions point to the viewer's
-Difference view, which shows where the screen changed. `DIR2/sampling.json`
+A review queue for human gold labels of the information the agent **actually
+used** for its next step (user ruling). Items are policy steps whose screen and
+next screen were both recorded and whose next step is a policy step that
+acted; a step that finished the task (`done`) is left out, since nothing
+follows it. They are taken in turn from each (site, action type) group, the
+least-used run first (`--seed`). Each shows `current` (O_t, drawing this
+step's actions), `next` (O_{t+1}, drawing the agent's **next** step's actions)
+and `before_action` (the frame before the first action, when one was taken,
+drawing that action), with the task, this step's actions, and the next step's
+reply and actions in Chinese; URLs, the run, the step numbers and the raw
+parameters are technical details. The instructions say: see what the agent
+did next, then box where on the next screen the information it needed for
+that is; if the next screen is blank or not loaded, press 跳过 and add a note.
+
+Options (help in the queue; box rule in brackets): 结果列表 `result_list` (the
+next step picks or reads among several similar items, even if it then clicks
+one; required), 确认/反馈 `confirmation` (the agent checks the previous action
+took effect: typed text visible, a filter or sort selected, a dropdown or
+suggestions open, a message; required), 详情字段 `detail_fields` (specific
+values to read or record, including ones put straight into the answer;
+required), 操作入口 `navigation_target` (one specific control to operate next;
+required), 不需要新信息 `nothing_new` (the next step does not depend on new
+content: it continues a plan, waits, retries; forbidden), 其他 `other` (explain
+in the note; optional). Region kind 信息所在位置 `evidence`, drawn on the next
+screen. Items carry no suggestion (the viewer seeds and grades a label against
+a suggestion, and a pixel difference is no answer). `DIR2/sampling.json`
 counts the items by site, action type and run.
 
 ## The judge model

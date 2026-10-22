@@ -44,23 +44,27 @@ from lookahead import imaging
 from lookahead.extract import restoration_summary, step_rows
 from lookahead.judge import Judge, JudgeOutcome, JudgeRequest, image_part, text_part
 from lookahead.output import write_lines, write_text
-from lookahead.queues import observation_image
+from lookahead.queues import item_title, observation_image
 from lookahead.report import crosstab, share, table
 from lookahead.rows import ActionRow, NextObservation, RestorationSummary, StepRow
-from lookahead.runs import READ_ERRORS, Run, RunSet, unreadable
+from lookahead.runs import READ_ERRORS, LookaheadInputError, Run, RunSet, unreadable
 from spectragent.annotation import (
     QUEUE_FORMAT,
+    GuideSection,
     ItemField,
     ItemLink,
     LabelChoice,
     LabelSpec,
+    MarkSource,
     Question,
     QueueImage,
     QueueItem,
     ReviewQueue,
     Suggestion,
+    SuggestionDisplay,
     write_queue,
 )
+from spectragent.inspection.marks import action_lines, observation_geometry, step_marks
 from spectragent.schemas.restoration import BranchTaskVariant
 
 RuleVerdictValue = Literal["same", "different", "unknown", "no_decision"]
@@ -146,6 +150,9 @@ _VOLATILE_VALUE = re.compile(
     r"\d{8,}|[0-9a-fA-F]{16,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 THOUGHT_CHARS = 1500
+#: The judge model's ring colours: the branch (run B, or the only run) red, the source blue.
+RED = "#e8202a"
+BLUE = "#1f6feb"
 
 SYSTEM = (
     "You review the decisions of a web-browsing agent. You see screenshots of a browser and "
@@ -581,22 +588,20 @@ def _thought(row: StepRow) -> str:
     return text if len(text) <= THOUGHT_CHARS else text[: THOUGHT_CHARS - 3] + "..."
 
 
-def markers(row: StepRow, prefix: str, color: str) -> list[imaging.Marker]:
-    """A ring per action that aimed at a point (clicks, drags, coordinate typing), in image pixels."""
-    width, view = row.observation.image_width, row.observation.viewport_width
-    height, view_h = row.observation.image_height, row.observation.viewport_height
-    scale_x = width / view if width and view else 1.0
-    scale_y = height / view_h if height and view_h else 1.0
-    found: list[imaging.Marker] = []
-    for action in row.actions:
-        point = action_point(action)
-        if point is not None:
-            found.append(
-                imaging.Marker(
-                    f"{prefix}{action.index + 1}", point[0] * scale_x, point[1] * scale_y, color
-                )
-            )
-    return found
+def markers(
+    image: Run, image_step: int, run: Run, step: int, prefix: str, color: str
+) -> list[imaging.Marker]:
+    """A ring per action of *run*'s *step* that aimed at a point (clicks, drags, coordinate
+    typing), in pixels of *image*'s screenshot at *image_step* (``inspection/marks.py``)."""
+    record = run.records.get(step)
+    if record is None:
+        return []
+    geometry = observation_geometry(image.trace, image_step)
+    return [
+        imaging.Marker(f"{prefix}{mark.number}", mark.x, mark.y, color)
+        for mark in step_marks(record, geometry)
+        if mark.kind in ("click", "drag", "type") and mark.x is not None and mark.y is not None
+    ]
 
 
 def _geometry(row: StepRow) -> str:
@@ -633,7 +638,11 @@ def quality_request(fork: Fork) -> JudgeRequest[Any] | None:
             "Image 1: the screen at the decision point, before the agent's actions. Red rings "
             "labelled A1, A2, … mark where its pointer actions pressed or typed."
         ),
-        image_part(imaging.mark(checkpoint, markers(branch, "A", "#e8202a"))),
+        image_part(
+            imaging.mark(
+                checkpoint, markers(fork.branch, branch.step, fork.branch, branch.step, "A", RED)
+            )
+        ),
         text_part(
             "The agent's actions at this screen:\n"
             + describe_actions(branch, "A")
@@ -672,7 +681,9 @@ def intent_request(fork: Fork) -> JudgeRequest[Any] | None:
     checkpoint = fork.branch.screenshot_bytes(branch.step)
     if checkpoint is None:
         return None
-    rings = markers(source, "A", "#1f6feb") + markers(branch, "B", "#e8202a")
+    rings = markers(fork.branch, branch.step, fork.source, source.step, "A", BLUE) + markers(
+        fork.branch, branch.step, fork.branch, branch.step, "B", RED
+    )
     content: list[dict[str, Any]] = [
         text_part(
             "Two runs of an agent with the same task reached the same screen, and each issued "
@@ -736,15 +747,61 @@ def _answers(outcome: JudgeOutcome[Any] | None) -> dict[str, Any]:
     return outcome.value.model_dump(mode="json")
 
 
+@dataclass(frozen=True)
+class EarlierAnswers:
+    """The judge model's answers an earlier ``judge-forks`` run wrote, by (branch run id, checkpoint).
+
+    Reusing them asks no model: the queue can be rebuilt (in a new wording,
+    with new fields) without paying for the same answers twice.
+    """
+
+    path: Path
+    #: (branch run id, checkpoint step) to that run's ``llm`` answers and ``model``.
+    answers: dict[tuple[str, int], tuple[dict[str, Any], str]]
+
+    def of(self, fork: Fork) -> tuple[dict[str, Any], str] | None:
+        return self.answers.get((fork.branch.run_id, fork.checkpoint))
+
+
+def earlier_answers(path: Path) -> EarlierAnswers:
+    """Read the model answers of an earlier run's ``judgments.jsonl``; a foreign line is refused."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise LookaheadInputError(f"--answers-from {path} cannot be read: {exc}") from exc
+    found: dict[tuple[str, int], tuple[dict[str, Any], str]] = {}
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError as exc:
+            raise LookaheadInputError(f"{path} line {number} is not JSON: {exc}") from exc
+        if not isinstance(record, dict) or record.get("format") != JUDGMENT_FORMAT:
+            raise LookaheadInputError(
+                f"{path} line {number} is not a {JUDGMENT_FORMAT} record (judgments.jsonl of "
+                "judge-forks)"
+            )
+        if record.get("llm") and record.get("model"):
+            key = (str(record["branch_run_id"]), int(record["checkpoint_step"]))
+            found[key] = (record["llm"], str(record["model"]))
+    return EarlierAnswers(path, found)
+
+
 def judgment_record(
     fork: Fork,
     rule: RuleVerdict | None,
     intent: JudgeOutcome[Any] | None,
     quality: JudgeOutcome[Any] | None,
     model: str | None,
+    earlier: EarlierAnswers | None = None,
 ) -> dict[str, Any]:
     branch, source = fork.branch_row, fork.source_row
     answers = {**_answers(intent), **_answers(quality)}
+    reused = earlier.of(fork) if earlier is not None and fork.counted else None
+    if reused is not None:
+        answers = {key: value for key, value in reused[0].items() if value}
+        model = reused[1]
     counted: ForkStatus = "judged" if answers else "rules_only"
     status: ForkStatus = fork.excluded if fork.excluded is not None else counted
     llm = (
@@ -756,7 +813,7 @@ def judgment_record(
         if answers
         else None
     )
-    asked = intent is not None or quality is not None
+    asked = intent is not None or quality is not None or reused is not None
     return {
         "format": JUDGMENT_FORMAT,
         "branch_run": fork.branch.key,
@@ -798,22 +855,93 @@ def judgment_record(
             if outcome is not None
             for attempt in outcome.attempts
         ],
+        #: The earlier judgments file the answers were taken from; ``None``: asked now.
+        "answers_from": str(earlier.path) if reused is not None and earlier is not None else None,
     }
 
 
 ANSWERS = [
-    LabelChoice(value="yes", text="Yes"),
-    LabelChoice(value="no", text="No"),
-    LabelChoice(value="uncertain", text="Cannot tell"),
+    LabelChoice(value="yes", text="是"),
+    LabelChoice(value="no", text="否"),
+    LabelChoice(
+        value="uncertain",
+        text="看不出",
+        help="图看不清，或信息不够判断；请在备注里说明。",
+    ),
 ]
+#: The questions as the reviewer reads them (the model reads ``QUESTIONS``).
+REVIEW_QUESTIONS = [
+    Question(
+        key="same_intent",
+        text="意图相同：原运行和分叉在这一屏上的目标和目的一样吗？",
+        help="两边要找的、要操作的是同一个东西，目的也一样，就选“是”；做法细节可以不同"
+        "（点的位置略有偏差、多一步或少一步）。看“检查点”图上两种颜色的标记和两边的动作。",
+        choices=ANSWERS,
+    ),
+    Question(
+        key="reasonable",
+        text="合理：只看分叉自己，按它的任务和这一屏，这批动作是朝任务前进的合理一步吗？",
+        help="不要求是最好的做法，合理就选“是”。不要拿原运行来比。",
+        choices=ANSWERS,
+    ),
+    Question(
+        key="executed_as_intended",
+        text="执行如意：分叉的下一屏显示出它的动作想要的效果了吗？",
+        help="下一屏出现了动作想要的结果，并且没有报错、没有被拦住（登录墙、验证码、拒绝访问）、"
+        "内容也没有缺失，就选“是”。",
+        choices=ANSWERS,
+    ),
+]
+TITLE = "分叉在检查点上的决定"
 INSTRUCTIONS = (
-    "A branch run resumed a recorded run at a checkpoint and decided that step again. Answer "
-    "each question the item asks. 'Reasonable' and 'executed as intended' are about the "
-    "branch alone: judge them from its task, its screens and its actions. Only the "
-    "'same intent' question compares it with the original run; the fields and the image "
-    "marked 'For same intent' belong to that question. The suggestion is the judge model's."
+    "分叉是把一次录好的运行恢复到某一步（检查点），让模型在同一个画面上重新做一次决定。"
+    "请回答条目问的每个问题。“合理”和“执行如意”只看分叉自己：它的任务、它的画面和它的动作。"
+    "只有“意图相同”要和原运行比较；标着“原运行”的图、标记和字段只用于这个问题。"
+    "模型的判断默认不显示，请先自己判断。"
 )
-FOR_INTENT = "For same intent: "
+GUIDE = [
+    GuideSection(
+        title="什么是分叉",
+        text=(
+            "- 先有一次完整录下来的运行（原运行）。\n"
+            "- 分叉把浏览器恢复到原运行的某一步（检查点），画面和原运行当时一样，"
+            "再让模型在这个画面上重新决定下一步做什么。\n"
+            "- 同任务：分叉的任务和原运行一样，可以比较两边的决定是不是一个意思。\n"
+            "- 换任务：同一个画面，给了一个新任务；这种条目不问“意图相同”，也不显示原运行。"
+        ),
+    ),
+    GuideSection(
+        title="图和标记",
+        text=(
+            "- 检查点：分叉做决定时看到的画面。分叉的动作用第一种颜色标出；同任务的条目里，"
+            "原运行在同一画面上的动作用第二种颜色标出（只用于“意图相同”）。\n"
+            "- 分叉的下一屏：分叉执行动作之后的画面，用来判断“执行如意”。\n"
+            "- 原运行的下一屏：只用于“意图相同”。\n"
+            "- 标记上的编号和右边动作列表的编号一致；点“动作标记”可以隐藏或显示。"
+        ),
+    ),
+    GuideSection(
+        title="三个问题",
+        text=(
+            "- 意图相同：比如两边都是点开“更多筛选”来限定发布时间，即使一边先多点了一下排序，"
+            "也选“是”；一边点“最多播放”、另一边去搜索别的关键词，选“否”。\n"
+            "- 合理：只看分叉的任务和画面。比如任务要找播放量最高的视频，分叉点了“最多播放”排序，"
+            "选“是”；点了无关的广告，选“否”。\n"
+            "- 执行如意：看分叉的下一屏。想打开的页面打开了、想输入的文字出现了，选“是”；"
+            "出现登录墙、验证码、“拒绝访问”、报错页或空白页，选“否”。"
+        ),
+    ),
+    GuideSection(
+        title="模型的判断",
+        text=(
+            "- 每个条目都有一个模型给出的判断和理由（理由是英文原文）。\n"
+            "- 它默认藏起来，免得影响你的判断。先自己选，再点“查看模型的判断”对照。\n"
+            "- 模型的判断只供参考，它常常会错；和你的判断不一样时，以你的为准。"
+        ),
+    ),
+]
+KIND_TEXT = {"same_task": "同任务", "task_variant": "换任务"}
+SOURCE_ONLY = "（只用于“意图相同”）"
 
 
 def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
@@ -823,51 +951,88 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
         return None
     intent = asks_intent(fork) and source is not None and fork.source is not None
     asked = (["same_intent"] if intent else []) + list(QUALITY_QUESTIONS)
+    branch_record = fork.branch.records[branch.step]
+    marks = [MarkSource(run=fork.branch.key, step=branch.step, label="分叉的动作")]
+    if intent:
+        assert source is not None and fork.source is not None
+        marks.append(
+            MarkSource(run=fork.source.key, step=source.step, label="原运行的动作" + SOURCE_ONLY)
+        )
     images: list[QueueImage] = [
         observation_image(
-            "checkpoint", "The screen at the decision point", fork.branch.key, branch.step
+            "checkpoint",
+            "检查点（分叉和原运行都在这一屏上做决定）"
+            if intent
+            else "检查点（分叉在这一屏上做决定）",
+            fork.branch.key,
+            branch.step,
+            marks_from=marks,
         )
     ]
     if branch.next.exists and branch.next.screenshot and branch.next.step is not None:
         images.append(
             observation_image(
-                "branch_next", "The branch's next screen", fork.branch.key, branch.next.step
+                "branch_next", "分叉的下一屏", fork.branch.key, branch.next.step, marks_from=[]
             )
         )
     fields = [
-        ItemField(text="Task", value=record["task"]),
-        ItemField(text="Branch actions", value=describe_actions(branch, "B")),
-        ItemField(text="Branch reply", value=_thought(branch)),
+        ItemField(text="分叉的任务", value=record["task"]),
+        ItemField(
+            text="分叉类型",
+            value="同任务（任务和原运行一样）"
+            if fork.kind == "same_task"
+            else "换任务（同一个画面，新的任务）",
+        ),
+        ItemField(text="分叉的动作（画在“检查点”上）", value=action_lines(branch_record)),
+        ItemField(text="分叉的回复（原文）", value=_thought(branch)),
     ]
-    links = [ItemLink(text="Branch run", run=fork.branch.key, step=branch.step)]
+    links = [ItemLink(text="打开分叉的这一步", run=fork.branch.key, step=branch.step)]
     if intent:
         assert source is not None and fork.source is not None
         if source.next.exists and source.next.screenshot and source.next.step is not None:
             images.append(
                 observation_image(
                     "source_next",
-                    FOR_INTENT + "the original run's next screen",
+                    "原运行的下一屏" + SOURCE_ONLY,
                     fork.source.key,
                     source.next.step,
+                    marks_from=[],
                 )
             )
         rule = record["rule"] or {}
         fields += [
             ItemField(
-                text=FOR_INTENT + "the original run's actions", value=describe_actions(source, "S")
+                text="原运行的动作" + SOURCE_ONLY,
+                value=action_lines(fork.source.records[source.step]),
             ),
             ItemField(
-                text=FOR_INTENT + "rule verdict",
+                text="规则判断（原运行对比）",
                 value=f"{rule.get('verdict')}: " + "; ".join(rule.get("reasons") or []),
+                technical=True,
             ),
         ]
         links.append(
-            ItemLink(text=FOR_INTENT + "the original run", run=fork.source.key, step=source.step)
+            ItemLink(text="打开原运行的这一步" + SOURCE_ONLY, run=fork.source.key, step=source.step)
         )
+    check = fork.checkpoint_check
+    fields += [
+        ItemField(
+            text="检查点恢复检查",
+            value=_check_text(check) if check is not None else "未记录",
+            technical=True,
+        ),
+        ItemField(text="分叉运行", value=fork.branch.key, technical=True),
+        ItemField(text="判断模型", value=str(record["model"]), technical=True),
+    ]
     answered = {key: llm[key] for key in asked if llm.get(key)}
     return QueueItem(
         item_id=f"{fork.branch.key}@{branch.step}",
-        title=f"{fork.branch.key} checkpoint {branch.step} ({fork.kind.replace('_', ' ')})",
+        title=item_title(
+            branch.observation.url,
+            fork.branch.start_url,
+            fork.branch.task_id,
+            f"分叉 · 检查点第 {branch.step} 步 · {KIND_TEXT[fork.kind]}",
+        ),
         run=fork.branch.key,
         step=branch.step,
         images=images,
@@ -991,11 +1156,19 @@ def render_report(records: list[dict[str, Any]], totals: str) -> str:
 
 
 async def judge_forks(
-    runs: RunSet, judge: Judge | None, out: Path, *, annotations: Path, queue_id: str
+    runs: RunSet,
+    judge: Judge | None,
+    out: Path,
+    *,
+    annotations: Path,
+    queue_id: str,
+    earlier: EarlierAnswers | None = None,
 ) -> tuple[list[dict[str, Any]], Path | None]:
     """Judge every fork; write ``judgments.jsonl``, ``report.md`` and the review queue.
 
-    Without a judge only the rules run, and no queue is written.
+    Without a judge only the rules run, and no queue is written, unless
+    *earlier* answers are reused: then no model is asked and the queue is
+    written with them.
     """
     found = forks(runs)
     rules = [fork_rule(fork) if fork.counted else None for fork in found]
@@ -1018,12 +1191,18 @@ async def judge_forks(
             target[index] = reply
     model = judge.model if judge is not None else None
     records = [
-        judgment_record(fork, rule, intent, quality, model)
+        judgment_record(fork, rule, intent, quality, model, earlier)
         for fork, rule, intent, quality in zip(found, rules, intents, qualities, strict=True)
     ]
-    totals = judge.totals.summary() if judge is not None else "No judge model was asked."
+    totals = (
+        judge.totals.summary()
+        if judge is not None
+        else f"No judge model was asked; its answers were reused from {earlier.path}."
+        if earlier is not None
+        else "No judge model was asked."
+    )
     queue: ReviewQueue | None = None
-    if judge is not None:
+    if judge is not None or earlier is not None:
         items = [
             item
             for record, fork in zip(records, found, strict=True)
@@ -1032,15 +1211,13 @@ async def judge_forks(
         queue = ReviewQueue(
             format=QUEUE_FORMAT,
             queue_id=queue_id,
-            title="Branch decisions at the checkpoint",
+            title=TITLE,
             instructions=INSTRUCTIONS,
-            label=LabelSpec(
-                questions=[
-                    Question(key=key, text=text, choices=ANSWERS) for key, text in QUESTIONS.items()
-                ],
-                regions=None,
-                note=True,
+            guide=GUIDE,
+            suggestion_display=SuggestionDisplay(
+                title="模型的判断（仅供参考）", shown="on_request"
             ),
+            label=LabelSpec(questions=REVIEW_QUESTIONS, regions=None, note=True),
             items=items,
         )
     write_lines(

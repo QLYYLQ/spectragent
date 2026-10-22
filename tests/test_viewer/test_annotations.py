@@ -180,7 +180,7 @@ def test_an_invalid_label_is_refused_with_its_reason(client, workspace):
         {"queue_id": "gold-evidence", "item_id": "first", "choices": ["read"], "regions": [region]},
     )
     assert response.status_code == 400
-    assert "leaves image 'before' (64x40 pixels)" in response.json()["detail"]
+    assert "超出了图片 'before'（64x40 像素）" in response.json()["detail"]
     response = post(
         client, "/api/review/label", {"queue_id": "gold-evidence", "item_id": "first", "who": "x"}
     )
@@ -342,7 +342,7 @@ def test_a_question_queue_is_answered_per_question(client, workspace):
     assert queue["items"][2]["item"]["questions"] == ["reasonable"]
     body = {"queue_id": "fork-questions", "item_id": "planned"}
     partial = post(client, "/api/review/label", {**body, "answers": {"same_intent": "yes"}})
-    assert partial.status_code == 400 and "missing ['reasonable']" in partial.json()["detail"]
+    assert partial.status_code == 400 and "还没回答：['reasonable']" in partial.json()["detail"]
     answers = {"same_intent": "yes", "reasonable": "yes"}
     saved = post(client, "/api/review/label", {**body, "answers": answers})
     assert saved.status_code == 200, saved.text
@@ -366,7 +366,7 @@ def test_a_label_for_a_queue_rewritten_since_it_was_loaded_is_refused(client, wo
     body = {"queue_id": "fork-judge", "item_id": f"{run.key}/s0", "choice": "reasonable"}
     response = post(client, "/api/review/label", {**body, "queue_sha256": loaded})
     assert response.status_code == 409
-    assert "changed since you opened it" in response.json()["detail"]
+    assert "在你打开之后被重新生成了" in response.json()["detail"]
     assert not (annotations / "labels").exists()
     current = version(client, "fork-judge")
     saved = post(client, "/api/review/label", {**body, "queue_sha256": current})

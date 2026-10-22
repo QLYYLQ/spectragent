@@ -72,3 +72,12 @@ test("a held key never repeats a decision, only a nudge", () => {
   assert.equal(keyAction(press("1", { code: "Digit1", repeat: true }), context), null);
   assert.deepEqual(keyAction(press("ArrowLeft", { repeat: true }), { ...context, selection: true }), { type: "nudge", dx: -1, dy: 0 });
 });
+
+test("marks, the guide and a hidden suggestion have their own keys", () => {
+  const context = { choices: 2, kinds: 0, suggestion: true, selection: false, questions: 1 };
+  assert.deepEqual(keyAction(press("m"), context), { type: "marks" });
+  assert.deepEqual(keyAction(press("i"), context), { type: "guide" });
+  assert.deepEqual(keyAction(press("v"), context), { type: "revealSuggestion" });
+  assert.equal(keyAction(press("v"), { ...context, suggestion: false }), null);
+  assert.equal(keyAction(press("m", { inText: true }), context), null);
+});

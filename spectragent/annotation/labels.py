@@ -55,14 +55,12 @@ def region_bounds_problems(
     for region in regions:
         size = sizes.get(region.image)
         if size is None or size[0] <= 0 or size[1] <= 0:
-            problems.append(f"the size of image {region.image!r} is unknown")
+            problems.append(f"不知道图片 {region.image!r} 的尺寸")
             continue
         width, height = size
         x0, y0, x1, y1 = region.box
         if x1 > width or y1 > height:
-            problems.append(
-                f"box {region.box} leaves image {region.image!r} ({width}x{height} pixels)"
-            )
+            problems.append(f"框 {region.box} 超出了图片 {region.image!r}（{width}x{height} 像素）")
     return problems
 
 

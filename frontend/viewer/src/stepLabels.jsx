@@ -5,6 +5,8 @@ import { ImageBoard } from "./board.jsx";
 import { sameRegions } from "./boxes.js";
 import { isTextTarget, keyAction } from "./keys.js";
 import { kindColor, refreshDraft } from "./labels.js";
+import { MarkToggle } from "./marks.jsx";
+import { hasMarks } from "./marks.js";
 
 const savedDraft = (mine) => ({ regions: mine?.regions || [], note: mine?.note || "" });
 const sameStepDraft = (a, b) =>
@@ -60,10 +62,13 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
   const [selected, setSelected] = useState(null);
   const [status, setStatus] = useState(
     restored && !sameStepDraft(restored, initial)
-      ? { kind: "info", text: "Your unsaved edits to this step were restored." }
+      ? { kind: "info", text: "已恢复你对这一步还没保存的修改。" }
       : null,
   );
   const [saving, setSaving] = useState(false);
+  const [showMarks, setShowMarks] = useState(true);
+  const marks = useRemote(query("marks", { key: runKey, index }));
+  const markData = hasMarks(marks.data) ? marks.data : null;
   // A refresh re-reads the saved label every few seconds: a clean draft
   // follows it, unsaved edits are never replaced.
   const before = useRef(initial);
@@ -75,7 +80,7 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
     if (result.conflict)
       setStatus({
         kind: "confirm",
-        text: "Your saved label for this step changed elsewhere; your unsaved edits are kept and saving replaces it.",
+        text: "你在别处保存的这一步的标注变了；你没保存的修改还在，保存后会替换它。",
       });
   }, [data]);
   const dirty = !sameStepDraft(draft, initial);
@@ -92,7 +97,7 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
     try {
       const result = await postJSON("/api/review/step", { run: runKey, step: index, ...body });
       onSaved(result);
-      setStatus({ kind: "saved", text: body.regions.length || body.note ? "Saved." : "Cleared." });
+      setStatus({ kind: "saved", text: body.regions.length || body.note ? "已保存。" : "已清除。" });
       setSelected(null);
     } catch (error) {
       setStatus({ kind: "problem", text: error.message });
@@ -129,14 +134,13 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
   return (
     <section className="step-labels" onKeyDown={onKeyDown}>
       <p className="muted small">
-        Labeling as <strong>{annotations.annotator}</strong>. Boxes are drawn on
-        the clean browser screenshot; saving appends a line to{" "}
-        <span className="mono">labels/_adhoc.jsonl</span>, never to the trace.
+        标注者：<strong>{annotations.annotator}</strong>。框画在未加标记的浏览器截图上；保存时追加一行到{" "}
+        <span className="mono">labels/_adhoc.jsonl</span>，不会写进运行记录。
       </p>
       {hasScreenshot ? (
         <>
-          <div className="kinds" role="radiogroup" aria-label="Box kind">
-            <span className="kinds-label">Box kind</span>
+          <div className="kinds" role="radiogroup" aria-label="框的类别">
+            <span className="kinds-label">框的类别</span>
             {kinds.map((kind, i) => (
               <button
                 key={kind.value}
@@ -144,6 +148,7 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
                 aria-checked={activeKind === kind.value}
                 className={`kind ${activeKind === kind.value ? "on" : ""}`}
                 style={{ "--kind": kind.color }}
+                title={kind.help || undefined}
                 onClick={() => {
                   setActiveKind(kind.value);
                   if (selected != null)
@@ -160,14 +165,18 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
                 <Keycap>⇧{i + 1}</Keycap>
               </button>
             ))}
+            {markData && (
+              <MarkToggle show={showMarks} onChange={setShowMarks} keycap={false} />
+            )}
           </div>
           <ImageBoard
             images={[
               {
                 role: "screenshot",
-                text: "Browser state",
-                detail: `step ${index}`,
+                text: "浏览器状态",
+                detail: `第 ${index} 步`,
                 src: query("screenshot", { key: runKey, index, view: "browser" }),
+                marks: markData,
               },
             ]}
             regions={draft.regions}
@@ -177,23 +186,24 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
             selected={selected}
             onSelect={setSelected}
             onChange={(regions) => setDraft({ ...draft, regions })}
+            showMarks={showMarks}
           />
         </>
       ) : (
-        <p className="muted small">This step has no committed screenshot; you can still add a note.</p>
+        <p className="muted small">这一步没有截图；你仍然可以写备注。</p>
       )}
       <label className="note-field">
-        <span>Note</span>
+        <span>备注</span>
         <textarea
           rows="3"
           value={draft.note}
-          placeholder="What should someone looking at this step know?"
+          placeholder="看这一步的人应该知道什么？"
           onChange={(event) => setDraft({ ...draft, note: event.target.value })}
         />
       </label>
       <div className="save-row">
         <button className="button primary" disabled={!dirty || saving} onClick={() => save(draft)}>
-          {saving ? "Saving…" : "Save label"}
+          {saving ? "正在保存…" : "保存标注"}
           <Keycap>⌘ Enter</Keycap>
         </button>
         {data.mine && (
@@ -203,19 +213,19 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
             onClick={() => save({ regions: [], note: "" })}
           >
             <Icon name="close" />
-            Clear my label
+            清除我的标注
           </button>
         )}
         {status && <span className={`save-message ${status.kind}`}>{status.text}</span>}
       </div>
       {data.others.length > 0 && (
         <div className="rail-section others">
-          <h3>Other annotators</h3>
+          <h3>其他标注者</h3>
           <ul>
             {data.others.map((label) => (
               <li key={label.annotator}>
                 <strong>{label.annotator}</strong>{" "}
-                {label.regions?.length ? `${label.regions.length} boxes` : ""}
+                {label.regions?.length ? `${label.regions.length} 个框` : ""}
                 {label.note && <p className="small">{label.note}</p>}
               </li>
             ))}
@@ -224,9 +234,9 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
       )}
       {data.history.length > 0 && (
         <p className="muted small">
-          {data.history.length} saved {data.history.length === 1 ? "line" : "lines"} for this
-          step{data.errors ? ` · ${data.errors} unreadable lines in the file` : ""}.
-          {data.mine?.at && ` Yours was saved ${new Date(data.mine.at).toLocaleString()}.`}
+          这一步保存过 {data.history.length} 行标注
+          {data.errors ? ` · 文件里有 ${data.errors} 行读不出来` : ""}。
+          {data.mine?.at && ` 你的标注保存于 ${new Date(data.mine.at).toLocaleString("zh-CN")}。`}
         </p>
       )}
     </section>

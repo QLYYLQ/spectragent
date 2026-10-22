@@ -1,4 +1,29 @@
 /** Names describe actions actually submitted in this run, including restoration. */
+/** Browser actions by the verb a person reads; any other action keeps its recorded name. */
+const ACTION_VERBS = {
+  click: "点击",
+  click_coordinate: "点击",
+  type: "输入",
+  type_coordinate: "输入",
+  send_keys: "按键",
+  scroll: "滚动",
+  drag: "拖动",
+  wait: "等待",
+  done: "完成",
+  navigate: "打开网址",
+  go_back: "后退",
+  go_forward: "前进",
+  switch_tab: "切换标签页",
+  select_dropdown: "下拉选择",
+  extract_content: "读取页面",
+  screenshot: "截图",
+};
+
+export function actionVerb(name) {
+  const local = String(name).split(".").pop();
+  return name.startsWith("browser.") && ACTION_VERBS[local] ? ACTION_VERBS[local] : name;
+}
+
 export function actionLabel(record) {
   const actions =
     record.origin === "restored"
@@ -7,12 +32,12 @@ export function actionLabel(record) {
           .filter(Boolean)
       : record.actions || [];
   return (
-    actions.map((action) => action.name).join(", ") ||
+    actions.map((action) => actionVerb(action.name)).join("、") ||
     (record.origin === "terminal"
-      ? "Final observation"
+      ? "终止观测"
       : record.origin === "restored"
-        ? "No execution recorded"
-        : "No action")
+        ? "未记录执行"
+        : "无动作")
   );
 }
 
@@ -43,44 +68,41 @@ export function trailingCallCount(run) {
 
 export function historyLabel(source) {
   return source === "source"
-    ? "Source history"
+    ? "沿用原始历史"
     : source === "restored"
-      ? "Restored history"
-      : "History source unknown";
+      ? "使用恢复后的历史"
+      : "历史来源未知";
 }
 
 export function historyExplanation(source) {
   if (source === "source")
-    return "The Agent keeps the original conversation. Differences in actual replay are not substituted into that history.";
+    return "智能体保留原来的对话。实际回放中出现的差异不会替换进这段历史。";
   if (source === "restored")
-    return "The Agent receives actual restored observations, retargeted actions and returned results. Earlier replies remain attributed source material.";
-  return "The history strategy was not recorded. Source material alone does not establish which history the Agent used.";
+    return "智能体收到的是实际恢复出的观测、重新定位后的动作和实际返回的结果。早先的回复仍标为来源材料。";
+  return "未记录历史策略。仅凭来源材料无法确定智能体用的是哪一种历史。";
 }
 
 export function cursorLabel(fragments) {
   const fragment = Object.entries(fragments || {}).find(([key]) =>
     key.endsWith(".screenshot"),
   )?.[1];
-  if (!fragment || fragment.error) return "Cursor metadata unavailable";
-  if (!fragment.cursor) return "Cursor disabled";
+  if (!fragment || fragment.error) return "没有光标信息";
+  if (!fragment.cursor) return "未开启光标显示";
   if (!fragment.cursor.position)
-    return "Cursor enabled · position unknown (no overlay)";
-  return `Cursor rendered · (${fragment.cursor.position.join(", ")}) CSS px · size ${fragment.cursor.size_css_px} CSS px`;
+    return "已开启光标显示 · 位置未知（没有画出光标）";
+  return `已画出光标 · 位置 (${fragment.cursor.position.join(", ")}) CSS 像素 · 大小 ${fragment.cursor.size_css_px} CSS 像素`;
 }
 
 export function gapLabel(gap) {
-  if (!gap) return "No comparison";
-  if (gap.differences.length)
-    return `${gap.differences.length} measured differences`;
-  return gap.unmeasured.length
-    ? "Comparison incomplete"
-    : "No measured differences";
+  if (!gap) return "无对比";
+  if (gap.differences.length) return `测得 ${gap.differences.length} 处差异`;
+  return gap.unmeasured.length ? "对比不完整" : "未测得差异";
 }
 export function modelCallTitle(call) {
-  if (call.purpose === "replay_review") return "Replay review";
-  if (call.purpose === "prompt_helper") return "Prompt helper";
-  if (call.purpose === "agent_decision") return "Agent decision";
-  return call.purpose || "Model call";
+  if (call.purpose === "replay_review") return "回放审阅";
+  if (call.purpose === "prompt_helper") return "提示词辅助";
+  if (call.purpose === "agent_decision") return "智能体决策";
+  return call.purpose || "模型调用";
 }
 
 export function decisionAnswerRows(result) {

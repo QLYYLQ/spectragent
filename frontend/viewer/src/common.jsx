@@ -2,7 +2,7 @@
 import React, { createContext, useEffect, useState } from "react";
 
 export const number = (value) =>
-  value == null ? "—" : Number(value).toLocaleString();
+  value == null ? "—" : Number(value).toLocaleString("zh-CN");
 export const text = (value) =>
   value == null || value === ""
     ? "—"
@@ -13,11 +13,12 @@ export const duration = (ms) =>
   ms == null
     ? "—"
     : ms < 1000
-      ? `${ms} ms`
+      ? `${ms} 毫秒`
       : ms < 60000
-        ? `${(ms / 1000).toFixed(1)} s`
-        : `${(ms / 60000).toFixed(1)} min`;
-export const date = (value) => (!value ? "—" : new Date(value).toLocaleString());
+        ? `${(ms / 1000).toFixed(1)} 秒`
+        : `${(ms / 60000).toFixed(1)} 分钟`;
+export const date = (value) =>
+  !value ? "—" : new Date(value).toLocaleString("zh-CN");
 export const query = (path, params = {}) =>
   `/api/${path}?${new URLSearchParams(params)}`;
 export const routeFromHash = () =>
@@ -150,11 +151,113 @@ export function useRemote(url, revision) {
     : { data: null, error: null, loading: Boolean(url), url };
 }
 
-export function Badge({ value, kind = "" }) {
-  const label =
-    value == null || value === ""
-      ? "not recorded"
+/** Display names for recorded status and kind values; the values themselves stay English. */
+const STATUS_LABELS = {
+  // Recording completeness
+  complete: "完整",
+  incomplete: "不完整",
+  writing: "写入中",
+  // How the agent and the environment ended
+  done: "已完成",
+  completed: "已完成",
+  error: "出错",
+  failed: "失败",
+  failure: "失败",
+  success: "成功",
+  cancelled: "已取消",
+  timeout: "超时",
+  max_steps: "达到步数上限",
+  vetoed: "被否决",
+  // Step origin
+  policy: "策略步",
+  restored: "恢复步",
+  terminal: "终止观测",
+  // Restoration checks and restored actions
+  ok: "通过",
+  warn: "有差异",
+  diverged: "已偏离",
+  "not executed": "未执行",
+  matches: "一致",
+  changed: "有变化",
+  unavailable: "不可用",
+  source_history: "沿用原始历史",
+  restored_history: "使用恢复后的历史",
+  history_unknown: "历史来源未知",
+  // Execution kind and network source
+  live: "实时",
+  replay: "回放",
+  branch: "分叉",
+  branch_replay: "分叉回放",
+  archive: "归档",
+  unknown: "未知",
+  // Where a source run was found
+  found: "已找到",
+  missing: "缺失",
+  ambiguous: "有多个候选",
+  outside_root: "不在根目录内",
+  none: "无",
+  inconsistent_reference: "引用不一致",
+  missing_step: "缺少该步",
+  unreadable: "无法读取",
+  // Replay log decisions
+  hit: "命中",
+  miss: "未命中",
+  exhausted: "已用尽",
+  substituted: "已替代",
+  synthetic: "合成",
+  summary: "汇总",
+  // Model calls and decision answers
+  chat: "对话",
+  decision: "判定",
+  choice: "选择",
+  score: "评分",
+  noul: "是非概率",
+  box: "框选区域",
+  // Evaluation verdict sources
+  graded: "已评分",
+  not_evaluated: "未评测",
+  evaluation_error: "评测出错",
+  // Replay review items
+  assessed: "已评估",
+  missing_source: "缺少原始记录",
+  scope_unrecorded: "未记录范围",
+  missing_evidence: "缺少证据",
+  corrupt_evidence: "证据损坏",
+  alignment_error: "对齐出错",
+  unsupported_input: "不支持的输入",
+  input_limit: "超出输入上限",
+  http_error: "HTTP 出错",
+  transport_error: "传输出错",
+  invalid_response: "回复无效",
+  review_error: "审阅出错",
+  candidate_acceptable: "候选可接受",
+  investigate_difference: "需调查差异",
+  further_review: "需进一步审阅",
+  // Labels and review queues
+  accepted: "已接受",
+  corrected: "已修正",
+  rejected: "已驳回",
+  skipped: "已跳过",
+  labeled: "已标注",
+  pending: "待处理",
+  // Message roles
+  user: "用户",
+  assistant: "助手",
+  system: "系统",
+  tool: "工具",
+  developer: "开发者",
+};
+
+/** The Chinese display name of a recorded value; unknown values keep their own text. */
+export const statusLabel = (value) =>
+  value == null || value === ""
+    ? "未记录"
+    : Object.hasOwn(STATUS_LABELS, String(value))
+      ? STATUS_LABELS[String(value)]
       : String(value).replaceAll("_", " ");
+
+export function Badge({ value, kind = "" }) {
+  const label = statusLabel(value);
   const tone = [
     "incomplete",
     "error",
@@ -198,7 +301,7 @@ export function RemoteState({ state, children }) {
   if (state.error)
     return (
       <div role="alert" className="notice error">
-        <strong>Could not read this evidence</strong>
+        <strong>无法读取这份记录</strong>
         <p>{state.error}</p>
       </div>
     );
@@ -206,7 +309,7 @@ export function RemoteState({ state, children }) {
     return (
       <div className="loading" role="status">
         <span className="spinner" />
-        Reading committed evidence…
+        正在读取已提交的记录…
       </div>
     );
   return children(state.data);
@@ -228,7 +331,7 @@ export async function postJSON(path, body) {
           ? data.detail
               .map((problem) => `${(problem.loc || []).slice(1).join(".")}: ${problem.msg}`)
               .join("; ")
-          : `The viewer answered ${response.status}`,
+          : `查看器返回了 ${response.status}`,
     );
     error.status = response.status;
     throw error;

@@ -20,7 +20,10 @@ import {
   labelRequest,
   matchesFilter,
   openingIndex,
+  pickedChoices,
   previewVerdict,
+  regionRuleProblems,
+  regionRuleText,
   stepIndex,
   toggleChoice,
   toggleReject,
@@ -152,8 +155,8 @@ test("next and previous follow the filter, wrap once, and skip the current item"
 
 test("summaries name choices by their text", () => {
   assert.equal(answerSummary({ choice: "yes" }, single), "Reasonable");
-  assert.equal(answerSummary({ choices: ["read"], regions: [region, region] }, boxes), "Read a value · 2 boxes");
-  assert.equal(answerSummary({ choices: [], regions: [] }, boxes), "No choice · No boxes");
+  assert.equal(answerSummary({ choices: ["read"], regions: [region, region] }, boxes), "Read a value · 2 个框");
+  assert.equal(answerSummary({ choices: [], regions: [] }, boxes), "没有选择 · 没有框");
 });
 
 test("kind colors cycle through the six spectral lines", () => {
@@ -189,7 +192,7 @@ test("an item asks its own questions, else those that apply to it", () => {
 test("answers toggle per question and every asked question must be answered", () => {
   const asked = askedQuestions(questions, { item_id: "a" });
   let draft = toggleAnswer(emptyDraft(), "same_intent", "yes");
-  assert.match(draftProblems(draft, questions, asked)[0], /1 of 2 answered/);
+  assert.match(draftProblems(draft, questions, asked)[0], /已答 1\/2/);
   draft = toggleAnswer(draft, "reasonable", "no");
   assert.deepEqual(draftProblems(draft, questions, asked), []);
   assert.deepEqual(toggleAnswer(draft, "reasonable", "no").answers, { same_intent: "yes" });
@@ -264,4 +267,52 @@ test("a refreshed saved label replaces a clean draft but never unsaved edits", (
   assert.deepEqual(refreshDraft(before, before, after, same), { draft: after, conflict: false });
   assert.deepEqual(refreshDraft({ note: "typing" }, before, after, same), { draft: { note: "typing" }, conflict: true });
   assert.deepEqual(refreshDraft(after, before, after, same), { draft: after, conflict: false }, "what was just saved");
+});
+
+test("a choice's box rule blocks saving with the store's own words", () => {
+  const ruled = {
+    choices: [
+      { value: "result_list", text: "结果列表", regions: "required" },
+      { value: "nothing_new", text: "不需要新信息", regions: "forbidden" },
+      { value: "other", text: "其他", regions: "optional" },
+    ],
+    multi: false,
+    regions: { kinds: [{ value: "evidence", text: "信息所在位置" }] },
+    note: true,
+  };
+  const box = { image: "next", kind: "evidence", box: [0, 0, 5, 5] };
+  assert.deepEqual(draftProblems({ ...emptyDraft(), choice: "nothing_new", regions: [box] }, ruled), [
+    "选了“不需要新信息”就不能画框：请删掉框，或者换一个选项",
+  ]);
+  assert.deepEqual(draftProblems({ ...emptyDraft(), choice: "result_list" }, ruled), [
+    "选了“结果列表”就至少要画一个框",
+  ]);
+  assert.deepEqual(draftProblems({ ...emptyDraft(), choice: "result_list", regions: [box] }, ruled), []);
+  assert.deepEqual(draftProblems({ ...emptyDraft(), choice: "other" }, ruled), []);
+  assert.deepEqual(draftProblems({ ...emptyDraft(), choice: "nothing_new" }, ruled), []);
+  assert.deepEqual(
+    regionRuleProblems([ruled.choices[0], ruled.choices[1]], [box]),
+    ["“结果列表”要画框，“不需要新信息”不能画框，不能同时选"],
+  );
+  assert.equal(regionRuleText("required"), "必须画框");
+  assert.equal(regionRuleText("optional"), "");
+});
+
+test("question answers are held to their choices' box rules too", () => {
+  const spec = {
+    choices: [],
+    multi: false,
+    questions: [
+      { key: "q", text: "Q", choices: [{ value: "a", text: "甲", regions: "required" }] },
+    ],
+    regions: { kinds: [{ value: "k", text: "K" }] },
+    note: true,
+  };
+  const asked = spec.questions;
+  assert.deepEqual(pickedChoices({ ...emptyDraft(), answers: { q: "a" } }, spec, asked), [
+    spec.questions[0].choices[0],
+  ]);
+  assert.deepEqual(draftProblems({ ...emptyDraft(), answers: { q: "a" } }, spec, asked), [
+    "选了“甲”就至少要画一个框",
+  ]);
 });

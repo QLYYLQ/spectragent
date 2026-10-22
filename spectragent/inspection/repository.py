@@ -20,6 +20,12 @@ from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
+from spectragent.inspection.marks import (
+    MarkRequest,
+    default_requests,
+    marks_on,
+    observation_marks,
+)
 from spectragent.inspection.restoration import (
     restoration_gap,
     restoration_overview,
@@ -46,6 +52,16 @@ class RunRepository(Protocol):
     ) -> bytes | None: ...
     def has_step(self, key: str, index: int) -> bool: ...
     def archive_image(self, key: str, step: int | None, archiver: str, name: str) -> bytes: ...
+    def observation_marks(self, key: str, index: int) -> dict[str, Any]: ...
+    def image_marks(
+        self,
+        key: str,
+        step: int | None,
+        *,
+        archiver: str | None = None,
+        name: str | None = None,
+        marks_from: list[tuple[str, int, str]] | None = None,
+    ) -> dict[str, Any]: ...
     def compare(self, keys: list[str]) -> dict[str, Any]: ...
     def compare_groups(self, left: str, right: str, evaluator: str) -> dict[str, Any]: ...
     def reports(self) -> list[dict[str, Any]]: ...
@@ -611,6 +627,46 @@ class _FileRepository:
         if image_media_type(data) != record.media_type:
             raise RepositoryError(f"{archiver} file {name!r} does not hold {record.media_type}")
         return data
+
+    def observation_marks(self, key: str, index: int) -> dict[str, Any]:
+        """*index*'s actions as marks on its own screenshot (``inspection/marks.py``)."""
+        trace = self._trace(key)
+        try:
+            if trace.step(index) is None:
+                raise FileNotFoundError(f"Run {key} has no committed step {index}")
+            return observation_marks(trace, key, index).model_dump(mode="json")
+        except (TraceSchemaError, KeyError) as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def image_marks(
+        self,
+        key: str,
+        step: int | None,
+        *,
+        archiver: str | None = None,
+        name: str | None = None,
+        marks_from: list[tuple[str, int, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Marks on one image: an observation of *key* (``archiver`` ``None``) or an archive image.
+
+        *marks_from* names whose actions to draw, as ``(run, step, label)``;
+        ``None`` follows the image (``inspection/marks.py``).
+        """
+        trace = self._trace(key)
+        try:
+            geometry, requests = default_requests(trace, key, step, archiver, name)
+            if marks_from is not None:
+                requests = [MarkRequest(run, at, label) for run, at, label in marks_from]
+            opened = {key: trace}
+
+            def open_trace(run: str) -> RunTrace:
+                if run not in opened:
+                    opened[run] = self._trace(run)
+                return opened[run]
+
+            return marks_on(geometry, requests, open_trace).model_dump(mode="json")
+        except (TraceSchemaError, KeyError) as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def compare(self, keys: list[str]) -> dict[str, Any]:
         if len(keys) < 2 or len(keys) > 8 or len(set(keys)) != len(keys):

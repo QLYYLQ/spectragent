@@ -11,6 +11,7 @@ import pytest
 
 from lookahead.cli import run
 from lookahead.forks import (
+    SOURCE_ONLY,
     compare_urls,
     forks,
     judge_forks,
@@ -142,17 +143,16 @@ def test_rules(branch: list[ActionRow], source: list[ActionRow], expected: str) 
     assert rule_verdict(branch, source, NO_NEXT, NO_NEXT).verdict == expected
 
 
-def test_rings_mark_clicks_and_coordinate_typing(world: World) -> None:
-    rows = {fork.branch.key: fork.branch_row for fork in forks(open_runs(world.root))}
-    row = rows["branches/br-same"]
-    assert row is not None
-    typed = ActionRow(
-        index=1,
-        name="browser.type_coordinate",
-        params={"coordinate_x": 40, "coordinate_y": 20, "text": "x"},
-    )
-    found = markers(row.model_copy(update={"actions": [*row.actions, typed]}), "A", "#e8202a")
-    assert [(ring.label, ring.x, ring.y) for ring in found] == [("A1", 101, 11), ("A2", 40, 20)]
+def test_rings_mark_pointer_actions_on_the_checkpoint_image(world: World) -> None:
+    runs = {run.key: run for run in open_runs(world.root).runs}
+    branch, source = runs["branches/br-same"], runs["record/rec-1"]
+    found = markers(branch, 1, branch, 1, "B", "#e8202a")
+    assert [(ring.label, ring.x, ring.y) for ring in found] == [("B1", 101, 11)]
+    # the source's step 0 clicked and waited: only the click points anywhere
+    found = markers(branch, 1, source, 0, "A", "#1f6feb")
+    assert [(ring.label, ring.x, ring.y) for ring in found] == [("A1", 20, 10)]
+    # typing by element index names no point
+    assert markers(runs["branches/br-typed"], 1, runs["branches/br-typed"], 1, "B", "red") == []
 
 
 def test_an_error_without_an_action_is_no_decision() -> None:
@@ -329,21 +329,38 @@ def test_queue_shows_source_information_only_for_the_intent_question(
     }
     assert same["suggestion"]["reasons"]["same_intent"] == "same_intent is yes."
     assert same["suggestion"]["source"] == "deepseek-v4.1-flash-1017"
-    source_fields = [field["text"] for field in same["fields"] if "original" in field["text"]]
-    assert source_fields and all(text.startswith("For same intent: ") for text in source_fields)
-    source_images = [image for image in same["images"] if image["role"] == "source_next"]
-    assert source_images[0]["text"].startswith("For same intent: ")
-    assert source_images[0]["source"] == {"kind": "observation", "run": "record/rec-1", "step": 2}
+    assert queue["suggestion_display"] == {"title": "模型的判断（仅供参考）", "shown": "on_request"}
+    assert queue["guide"] and all(question["help"] for question in label["questions"])
+    shown = [
+        field for field in same["fields"] if "原运行" in field["text"] and not field["technical"]
+    ]
+    assert shown and all(field["text"].endswith(SOURCE_ONLY) for field in shown)
+    assert shown[0]["value"] == "1. 点击 (100, 10) → 按钮“Search”"
+    rule = next(field for field in same["fields"] if field["text"].startswith("规则判断"))
+    assert rule["technical"] and rule["value"].startswith("same: ")
+    images = {image["role"]: image for image in same["images"]}
+    assert images["source_next"]["text"].endswith(SOURCE_ONLY)
+    assert images["source_next"]["source"] == {
+        "kind": "observation",
+        "run": "record/rec-1",
+        "step": 2,
+    }
+    # the checkpoint draws the branch's actions, and the source's for the intent question
+    assert [(entry["run"], entry["step"]) for entry in images["checkpoint"]["marks_from"]] == [
+        ("branches/br-same", 1),
+        ("record/rec-1", 1),
+    ]
+    assert images["branch_next"]["marks_from"] == [] and images["source_next"]["marks_from"] == []
     variant = items["branches/br-variant@1"]
     assert variant["questions"] == ["reasonable", "executed_as_intended"]
     assert set(variant["suggestion"]["answers"]) == {"reasonable", "executed_as_intended"}
     assert not [
-        field
-        for field in variant["fields"]
-        if "original" in field["text"] or "rule" in field["text"]
+        field for field in variant["fields"] if "原运行" in field["text"] or "规则" in field["text"]
     ]
     assert [image["role"] for image in variant["images"]] == ["checkpoint", "branch_next"]
+    assert [entry["run"] for entry in variant["images"][0]["marks_from"]] == ["branches/br-variant"]
     assert [link["run"] for link in variant["links"]] == ["branches/br-variant"]
+    assert variant["title"] == "shop.example · 任务 rec-1 · 分叉 · 检查点第 1 步 · 换任务"
 
 
 def test_a_fork_without_a_valid_reply_keeps_its_rule_verdict(world: World, tmp_path: Path) -> None:
@@ -368,6 +385,64 @@ def test_cli_rules_only_asks_no_model(world: World, tmp_path: Path) -> None:
     assert code == 0
     assert "No judge model was asked." in (out / "report.md").read_text(encoding="utf-8")
     assert not (out / "queues").exists()
+
+
+def test_cli_reuses_earlier_answers_without_asking_a_model(world: World, tmp_path: Path) -> None:
+    def refuse() -> ScriptedTransport:
+        raise AssertionError("no model may be asked")
+
+    first = tmp_path / "first"
+    code = run(
+        ["judge-forks", "--root", str(world.root), "--out", str(first), "--queue-id", "f"],
+        transport_factory=lambda: ScriptedTransport(_script),
+    )
+    assert code == 0
+    again = tmp_path / "again"
+    code = run(
+        [
+            "judge-forks",
+            "--root",
+            str(world.root),
+            "--out",
+            str(again),
+            "--queue-id",
+            "f",
+            "--answers-from",
+            str(first / "judgments.jsonl"),
+        ],
+        transport_factory=refuse,
+    )
+    assert code == 0
+    earlier = json.loads((first / "queues" / "f.json").read_text(encoding="utf-8"))
+    reused = json.loads((again / "queues" / "f.json").read_text(encoding="utf-8"))
+    assert [item["suggestion"] for item in reused["items"]] == [
+        item["suggestion"] for item in earlier["items"]
+    ]
+    records = [
+        json.loads(line)
+        for line in (again / "judgments.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    judged = [record for record in records if record["status"] == "judged"]
+    assert len(judged) == 3 and all(record["llm_calls"] == [] for record in judged)
+    assert all(record["answers_from"] == str(first / "judgments.jsonl") for record in judged)
+    assert "reused from" in (again / "report.md").read_text(encoding="utf-8")
+
+
+def test_answers_from_refuses_a_file_of_another_format(world: World, tmp_path: Path) -> None:
+    other = tmp_path / "other.jsonl"
+    other.write_text('{"format": "something-else"}\n', encoding="utf-8")
+    code = run(
+        [
+            "judge-forks",
+            "--root",
+            str(world.root),
+            "--out",
+            str(tmp_path / "out"),
+            "--answers-from",
+            str(other),
+        ]
+    )
+    assert code == 2
 
 
 def test_cli_with_a_judge_writes_calls_and_queue(world: World, tmp_path: Path) -> None:

@@ -101,6 +101,37 @@ export function previewVerdict(draft, suggestion, { skipped = false } = {}) {
   return same ? "accepted" : "corrected";
 }
 
+/** The choices the draft picks: its one choice, its several, or each question's answer. */
+export function pickedChoices(draft, spec, asked = []) {
+  if (spec.questions)
+    return asked
+      .map((question) =>
+        question.choices.find((choice) => choice.value === (draft.answers || {})[question.key]),
+      )
+      .filter(Boolean);
+  if (spec.multi) return spec.choices.filter((choice) => (draft.choices || []).includes(choice.value));
+  return spec.choices.filter((choice) => choice.value === draft.choice);
+}
+
+const named = (options) => options.map((option) => `“${option.text || option.value}”`).join("、");
+
+/** Why the boxes break a picked choice's box rule; the same words as the store's. */
+export function regionRuleProblems(picked, regions = []) {
+  const forbidding = picked.filter((option) => option.regions === "forbidden");
+  const requiring = picked.filter((option) => option.regions === "required");
+  if (forbidding.length && requiring.length)
+    return [`${named(requiring)}要画框，${named(forbidding)}不能画框，不能同时选`];
+  if (forbidding.length && regions.length)
+    return [`选了${named(forbidding)}就不能画框：请删掉框，或者换一个选项`];
+  if (requiring.length && !regions.length) return [`选了${named(requiring)}就至少要画一个框`];
+  return [];
+}
+
+/** What a choice's box rule asks, as a short tag; "" when boxes are optional. */
+export function regionRuleText(rule) {
+  return rule === "required" ? "必须画框" : rule === "forbidden" ? "不能画框" : "";
+}
+
 /** Why the draft cannot be saved as an answer yet; [] when it can. */
 export function draftProblems(draft, spec, asked = []) {
   if (draft.reject) return [];
@@ -109,12 +140,13 @@ export function draftProblems(draft, spec, asked = []) {
     const open = asked.filter((question) => !(draft.answers || {})[question.key]);
     if (open.length)
       problems.push(
-        `Answer every question (${asked.length - open.length} of ${asked.length} answered), reject the suggestion, or skip.`,
+        `请回答每个问题（已答 ${asked.length - open.length}/${asked.length}），或者驳回建议、跳过。`,
       );
   } else if (!spec.multi && spec.choices.length && draft.choice == null)
-    problems.push("Choose one answer, reject the suggestion, or skip.");
+    problems.push("请选一个答案，或者驳回建议、跳过。");
+  problems.push(...regionRuleProblems(pickedChoices(draft, spec, asked), draft.regions || []));
   if (isBlank(draft) && (spec.choices.length || spec.regions || spec.questions))
-    problems.push("Nothing to save yet. Choose, draw a box, or skip.");
+    problems.push("还没有可以保存的内容：请选择答案、画框，或者跳过。");
   return problems;
 }
 
@@ -177,11 +209,11 @@ export function itemStatus(state) {
 }
 
 export const FILTERS = [
-  { value: "unlabeled", text: "Not labeled by me" },
-  { value: "all", text: "All items" },
-  { value: "mine", text: "Labeled by me" },
-  { value: "skipped", text: "Skipped by me" },
-  { value: "disagree", text: "Disagrees with the suggestion" },
+  { value: "unlabeled", text: "我还没标的" },
+  { value: "all", text: "全部条目" },
+  { value: "mine", text: "我标过的" },
+  { value: "skipped", text: "我跳过的" },
+  { value: "disagree", text: "和建议不一致的" },
 ];
 
 export function matchesFilter(state, filter) {
@@ -246,19 +278,16 @@ export function answerSummary(answer, spec) {
       spec.questions
         .filter((question) => question.key in answer.answers)
         .map((question) => choiceText(question, answer.answers[question.key]))
-        .join(" / ") || "No answers",
+        .join(" / ") || "没有回答",
     );
   if (answer.choices != null)
     parts.push(
       answer.choices.length
         ? answer.choices.map((value) => choiceText(spec, value)).join(", ")
-        : "No choice",
+        : "没有选择",
     );
-  if (answer.regions != null && answer.regions.length)
-    parts.push(
-      `${answer.regions.length} ${answer.regions.length === 1 ? "box" : "boxes"}`,
-    );
-  else if (answer.regions != null && spec.regions) parts.push("No boxes");
+  if (answer.regions != null && answer.regions.length) parts.push(`${answer.regions.length} 个框`);
+  else if (answer.regions != null && spec.regions) parts.push("没有框");
   return parts.join(" · ");
 }
 

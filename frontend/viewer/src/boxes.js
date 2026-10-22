@@ -74,7 +74,7 @@ export function boxStyle([x0, y0, x1, y1], size) {
 }
 
 export function boxLabel([x0, y0, x1, y1]) {
-  return `${Math.round(x1 - x0)} × ${Math.round(y1 - y0)} at ${Math.round(x0)}, ${Math.round(y0)}`;
+  return `${Math.round(x1 - x0)} × ${Math.round(y1 - y0)}，位于 (${Math.round(x0)}, ${Math.round(y0)})`;
 }
 
 export function sameRegion(a, b) {

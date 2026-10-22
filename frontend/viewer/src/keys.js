@@ -4,25 +4,28 @@
  */
 
 export const SHORTCUTS = [
-  { keys: ["1", "…", "9"], text: "Choose an answer (for the highlighted question)" },
-  { keys: ["↑", "↓"], text: "Move between questions" },
-  { keys: ["Shift", "1", "…", "9"], text: "Pick the box kind (or change the selected box)" },
-  { keys: ["A"], text: "Accept the suggestion and go to the next item" },
-  { keys: ["E"], text: "Copy the suggestion into your label to edit it" },
-  { keys: ["R"], text: "Reject the suggestion without a replacement" },
-  { keys: ["Enter"], text: "Save and go to the next item" },
-  { keys: ["S"], text: "Skip this item" },
-  { keys: ["J", "→"], text: "Next item in the filter" },
-  { keys: ["K", "←"], text: "Previous item in the filter" },
-  { keys: ["N"], text: "Write a note (⌘ Enter saves from the note)" },
-  { keys: ["Delete"], text: "Delete the selected box" },
-  { keys: ["←", "↑", "→", "↓"], text: "Nudge the selected box (Shift: 10 px)" },
-  { keys: ["Esc"], text: "Deselect the box, or leave the note" },
-  { keys: ["G"], text: "Show or hide the suggested boxes" },
-  { keys: ["C"], text: "Compare: side by side, flip, difference" },
-  { keys: ["F"], text: "Flip to the other image while flipping" },
-  { keys: ["+", "−", "0"], text: "Zoom in, zoom out, fit" },
-  { keys: ["?"], text: "Show these shortcuts" },
+  { keys: ["1", "…", "9"], text: "选答案（几个问题时作用于高亮的那一题）" },
+  { keys: ["↑", "↓"], text: "在问题之间移动" },
+  { keys: ["Shift", "1", "…", "9"], text: "选框的类别（或改选中框的类别）" },
+  { keys: ["A"], text: "接受建议并进入下一条" },
+  { keys: ["E"], text: "把建议复制到你的标注里再修改" },
+  { keys: ["R"], text: "驳回建议，不给替代答案" },
+  { keys: ["V"], text: "显示或隐藏建议（模型的判断）" },
+  { keys: ["Enter"], text: "保存并进入下一条" },
+  { keys: ["S"], text: "跳过这一条" },
+  { keys: ["J", "→"], text: "下一条（按当前筛选）" },
+  { keys: ["K", "←"], text: "上一条（按当前筛选）" },
+  { keys: ["N"], text: "写备注（在备注里按 ⌘ Enter 保存）" },
+  { keys: ["Delete"], text: "删除选中的框" },
+  { keys: ["←", "↑", "→", "↓"], text: "微调选中的框（按住 Shift：每次 10 像素）" },
+  { keys: ["Esc"], text: "取消选中的框，或离开备注" },
+  { keys: ["G"], text: "显示或隐藏建议的框" },
+  { keys: ["M"], text: "显示或隐藏动作标记" },
+  { keys: ["C"], text: "对比方式：并排、切换、差异" },
+  { keys: ["F"], text: "切换模式下换到下一张图" },
+  { keys: ["+", "−", "0"], text: "放大、缩小、适合窗口" },
+  { keys: ["I"], text: "打开或关闭标注说明" },
+  { keys: ["?"], text: "显示快捷键" },
 ];
 
 const ARROWS = {
@@ -87,6 +90,12 @@ function decide(event, context) {
       return { type: "flip" };
     case "g":
       return context.suggestion ? { type: "toggleSuggestion" } : null;
+    case "v":
+      return context.suggestion ? { type: "revealSuggestion" } : null;
+    case "m":
+      return { type: "marks" };
+    case "i":
+      return { type: "guide" };
     case "a":
       return context.suggestion ? { type: "accept" } : null;
     case "e":

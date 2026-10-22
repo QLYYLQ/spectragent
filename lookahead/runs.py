@@ -150,6 +150,16 @@ class Run:
         return site_of(self.config)
 
     @cached_property
+    def start_url(self) -> str | None:
+        """The (source) task's start URL, when one was recorded."""
+        return task_identity(self.config).start_url or None
+
+    @cached_property
+    def task_id(self) -> str | None:
+        """The (source) task's id, as the benchmark numbers it."""
+        return task_identity(self.config).task_id or None
+
+    @cached_property
     def records(self) -> dict[int, StepRecord]:
         return {record.step: record for record in self.trace.step_records}
 

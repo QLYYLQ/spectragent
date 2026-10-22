@@ -13,9 +13,9 @@ import {
 } from "./evidence.js";
 
 test("Decision kind is independent of Agent decision purpose", () => {
-  assert.equal(modelCallTitle({kind: "decision", purpose: "replay_review"}), "Replay review");
-  assert.equal(modelCallTitle({kind: "chat", purpose: "agent_decision"}), "Agent decision");
-  assert.equal(modelCallTitle({kind: "decision", purpose: "prompt_helper"}), "Prompt helper");
+  assert.equal(modelCallTitle({kind: "decision", purpose: "replay_review"}), "回放审阅");
+  assert.equal(modelCallTitle({kind: "chat", purpose: "agent_decision"}), "智能体决策");
+  assert.equal(modelCallTitle({kind: "decision", purpose: "prompt_helper"}), "提示词辅助");
 });
 
 test("native answer rows preserve zero, structured legends and absent Noul confidence", () => {
@@ -31,34 +31,34 @@ test("native answer rows preserve zero, structured legends and absent Noul confi
 });
 
 test("cursor labels distinguish disabled, unknown and recorded positions", () => {
-  assert.equal(cursorLabel({}), "Cursor metadata unavailable");
+  assert.equal(cursorLabel({}), "没有光标信息");
   assert.equal(
     cursorLabel({ "browser.screenshot": { cursor: null } }),
-    "Cursor disabled",
+    "未开启光标显示",
   );
   assert.match(
     cursorLabel({ "browser.screenshot": { cursor: { position: null } } }),
-    /position unknown/,
+    /位置未知/,
   );
   assert.equal(
     cursorLabel({
       "browser.screenshot": { cursor: { position: [0, 0], size_css_px: 48 } },
     }),
-    "Cursor rendered · (0, 0) CSS px · size 48 CSS px",
+    "已画出光标 · 位置 (0, 0) CSS 像素 · 大小 48 CSS 像素",
   );
 });
 
 test("history and measured gaps do not equate verification with identical history", () => {
-  assert.match(historyExplanation("source"), /original conversation/);
-  assert.match(historyExplanation("restored"), /actual restored observations/);
-  assert.match(historyExplanation(null), /not recorded/);
+  assert.match(historyExplanation("source"), /原来的对话/);
+  assert.match(historyExplanation("restored"), /实际恢复出的观测/);
+  assert.match(historyExplanation(null), /未记录/);
   assert.equal(
     gapLabel({ verdict: "ok", differences: ["distance 1"], unmeasured: [] }),
-    "1 measured differences",
+    "测得 1 处差异",
   );
   assert.equal(
     gapLabel({ differences: [], unmeasured: ["unknown"] }),
-    "Comparison incomplete",
+    "对比不完整",
   );
 });
 
@@ -69,7 +69,7 @@ test("restored actions use executed names rather than copied source actions", ()
       actions: [{ name: "source.click" }],
       restoration: { actions: [{ executed: { name: "browser.click" } }] },
     }),
-    "browser.click",
+    "点击",
   );
   assert.equal(
     actionLabel({
@@ -77,7 +77,7 @@ test("restored actions use executed names rather than copied source actions", ()
       actions: [{ name: "source.click" }],
       restoration: { actions: [{ executed: null }] },
     }),
-    "No execution recorded",
+    "未记录执行",
   );
 });
 
@@ -110,12 +110,15 @@ test("a source success cannot turn a failed restoration into a success", () => {
 
 test("policy and terminal action labels retain their own meaning", () => {
   assert.equal(
-    actionLabel({ origin: "policy", actions: [{ name: "browser.click" }] }),
-    "browser.click",
+    actionLabel({
+      origin: "policy",
+      actions: [{ name: "browser.click" }, { name: "browser.wait" }, { name: "desktop.click" }],
+    }),
+    "点击、等待、desktop.click",
   );
   assert.equal(
     actionLabel({ origin: "terminal", actions: [] }),
-    "Final observation",
+    "终止观测",
   );
 });
 
