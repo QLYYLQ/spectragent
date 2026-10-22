@@ -140,7 +140,10 @@ async def test_a_page_whose_load_never_fires_opens_with_a_warning(
         first = await _meta(cap, 1)
         assert first.url == url and first.page_title == "drawn"
         assert first.settle is not None
-        assert (first.settle.outcome, first.settle.waiting_for) == ("capped", ["load", "dom"])
+        assert (first.settle.outcome, first.settle.waiting_for) == (
+            "capped",
+            ["load", "dom", "content"],
+        )
 
         second = await _meta(cap, 2)
         assert second.url == url

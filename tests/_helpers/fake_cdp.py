@@ -36,7 +36,7 @@ the accessibility tree, the fingerprint probe (and its isolated world), and
 test fires).
 
 And the observation's settle wait (``settle.py``): its isolated world, and its
-in-page probe, which reports the page quiet at once
+in-page probe, which reports the page quiet and showing content at once
 (:attr:`FakeBrowser.settle_answer`, changeable per test). And the screenshot's
 media reads (``media.py``): their isolated world and a page without audio or
 video (:attr:`FakeBrowser.media_answer`); a session-level ``Target.setAutoAttach``
@@ -354,9 +354,10 @@ class FakeBrowser:
         #: Execution contexts of the settle wait's world, and how many probes ran in them.
         self.settle_contexts: set[int] = set()
         self.settle_probes = 0
-        #: What the settle probe resolves with: a quiet page, at once.
+        #: What the settle probe resolves with: a quiet page showing content, at once.
         self.settle_answer: dict[str, Any] = {
             "quiet": True,
+            "content": True,
             "waited_ms": 0,
             "mutations": 0,
             "resources": 0,

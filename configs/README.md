@@ -173,12 +173,12 @@ dom_cleaner:
 
 A vision agent (`ui_tars`, or `browser_use` in `dom_vision` / `vision`) aims at the screenshot the step showed. Two settings decide whether that is still the page it acts on.
 
-**When the screenshot is taken.** An action returns `post_delay_ms` after its effect was dispatched (default `0`), and the next observation then waits for the page to settle before it captures anything: the document loaded, then `settle_quiet_ms` (default 500) of no DOM change and no resource finishing, for at most `settle_max_wait_s` (default 5 s; `0` turns the wait off). The wait belongs to the observation, so a DOM-only run waits the same way, and each fragment records how long it waited and whether the cap ended it (`settle`; `docs/architecture_design.md` §4.14). Both are capability knobs:
+**When the screenshot is taken.** An action returns `post_delay_ms` after its effect was dispatched (default `0`), and the next observation then waits for the page to settle before it captures anything: the document loaded, then `settle_quiet_ms` (default 500) of no DOM change and no resource finishing with something visible in the viewport (text, an image, a video, a canvas, an SVG drawing, a frame or a form control; a white page with only a CSS loading bar does not count), for at most `settle_max_wait_s` (default 5 s; `0` turns the wait off). The wait belongs to the observation, so a DOM-only run waits the same way, and each fragment records how long it waited and whether the cap ended it (`settle`; `docs/architecture_design.md` §4.14). Both are capability knobs:
 
 ```yaml
 capabilities:
   - capability_id: browser
-    settle_quiet_ms: 500        # quiet window before a capture (0: wait for the load only)
+    settle_quiet_ms: 500        # quiet window before a capture (0: wait for the load and visible content only)
     settle_max_wait_s: 5        # the cap; a page that never goes quiet costs this per step
 ```
 

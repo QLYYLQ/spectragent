@@ -1151,14 +1151,17 @@ value on an existing one.
   replay alike (`settle.py`, architecture §4.14): the main frame's document loaded
   (`MainFrameLoad`, fed by the same `NavigationFeed`), then `settle_quiet_ms` (500) of no DOM
   mutation and no resource finishing, measured in the `af-settle` isolated world from the
-  moment the wait reaches the page; at most `settle_max_wait_s` (5; `0` turns it off), then
-  it captures as it is. The wait belongs to the observation, ahead of the one capture every
-  fragment comes from, so a DOM-only run waits exactly as a vision run; it never takes or
-  compares a screenshot. Each browser fragment carries the capture's `PageSettle`
+  moment the wait reaches the page, then visible content in the viewport (text, or an image,
+  video, canvas, SVG drawing, frame or form control of at least 16 px; CSS colour such as a
+  loading bar does not count, `about:blank` is not waited on); at most `settle_max_wait_s`
+  (5; `0` turns it off), then it captures as it is (`waiting_for: [content]` on a quiet page
+  whose viewport stayed empty). The wait belongs to the observation, ahead of the one capture
+  every fragment comes from, so a DOM-only run waits exactly as a vision run; it never takes
+  or compares a screenshot. Each browser fragment carries the capture's `PageSettle`
   (`BrowserCaptureFragment.settle`; left out of the trace JSON when `None`). Restoration
   compares the recorded and restored observations as they are: there is no capture taken
   for verification only. Cost: at least one quiet window per observation, the cap on every
-  step of a page that never goes quiet.
+  step of a page that never goes quiet or whose viewport stays empty.
 - The focus moves only at an observation, never inside an action (`tabs.py`, architecture
   §4.14 "页面新开的标签页"): the agent's action opens the follow window, the first fragment of
   the next observation decides (after one `Target.getTargets`, before the navigation and

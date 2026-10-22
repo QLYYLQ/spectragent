@@ -872,10 +872,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "Before every observation the capture waits for the page "
                     "to settle: the document loaded, then no DOM change and no "
                     "resource finishing loading for this many milliseconds, "
-                    "measured from the moment the wait reaches the page. The "
-                    "same wait serves every browser fragment (DOM, screenshot, "
-                    "metadata), in recording and in replay alike. 0 skips the "
-                    "quiet window and waits for the load only. Default 500."
+                    "measured from the moment the wait reaches the page, with "
+                    "something visible in the viewport (text, an image, a "
+                    "video, a canvas, an SVG drawing, a frame or a form control). "
+                    "The same wait serves every browser fragment (DOM, "
+                    "screenshot, metadata), in recording and in replay alike. "
+                    "0 skips the quiet window and waits for the load and for "
+                    "visible content only. Default 500."
                 ),
             ),
         ] = DEFAULT_SETTLE_QUIET_MS,
@@ -887,11 +890,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 description=(
                     "The longest the settle wait may take before an "
                     "observation captures the page anyway, in seconds: a page "
-                    "that never goes quiet (a carousel, a video, a poll) "
-                    "costs this much on each step. 0 turns the wait off: the "
-                    "observation captures at once. Each fragment records how "
-                    "long its capture waited and whether this cap ended the "
-                    "wait. Default 5."
+                    "that never goes quiet (a carousel, a video, a poll) or "
+                    "whose viewport stays empty costs this much on each step. "
+                    "0 turns the wait off: the observation captures at once. "
+                    "Each fragment records how long its capture waited and "
+                    "whether this cap ended the wait. Default 5."
                 ),
             ),
         ] = DEFAULT_SETTLE_MAX_WAIT_S,
@@ -2776,8 +2779,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         Then it waits for the page to settle (:meth:`_settle`, ``settle.py``,
         §4.14): the document loaded, then the page quiet for
-        ``settle_quiet_ms`` — at most ``settle_max_wait_s``, after which it
-        captures anyway. The wait is part of the observation: it runs before
+        ``settle_quiet_ms`` with something visible in its viewport — at most
+        ``settle_max_wait_s``, after which it captures anyway. The wait is part of the observation: it runs before
         the one event that captures every negotiated fragment, whichever
         they are, and every fragment of the served capture records it
         (``BrowserCaptureFragment.settle``).

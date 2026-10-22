@@ -270,7 +270,9 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
     "browser.capture_state": {
         # Every fact present: a capped wait, a followed tab, a known pointer, failed images.
         "measured": lambda: BrowserCaptureStateObs(
-            settle=PageSettle(waited_ms=5000, outcome="capped", waiting_for=["load", "dom"]),
+            settle=PageSettle(
+                waited_ms=5000, outcome="capped", waiting_for=["load", "dom", "content"]
+            ),
             focus_moved=FocusMove(reason="new_tab", from_tab="T1", to_tab="T2"),
             pointer=PointerState(status="known", x=120, y=95),
             failed_visible_resources=FailedVisibleResources(
