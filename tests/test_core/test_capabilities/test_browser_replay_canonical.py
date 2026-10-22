@@ -25,6 +25,8 @@ from spectragent.core.capabilities.browser.replay.canonical import (
     POST_DATA_PARAM,
     body_params,
     canonical_query,
+    decode_params,
+    encode_params,
     exact_body_digest,
     request_keys,
 )
@@ -400,3 +402,17 @@ class TestRedactionParity:
             assert record.keys.body_key == live.body_key, url
             # Unredacted, the live request would not have matched at all.
             assert request_keys("POST", url, live_body, live_type).exact != record.keys.exact, url
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        (),
+        (("a", "1"),),
+        (("a.b.0", ""), ("q", "x y&z=1"), ("名", "值%")),
+        (("", "empty name"), ("k", "=")),
+    ],
+)
+def test_decoding_parameters_inverts_their_encoding(params: tuple[tuple[str, str], ...]) -> None:
+    """A body key in the replay log reads back as the fields it was made of, empty values kept."""
+    assert decode_params(encode_params(params)) == params

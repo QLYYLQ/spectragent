@@ -77,6 +77,8 @@ LogMode = Literal["full", "summary"]
 Answer = Literal["fulfilled", "failed", "none"]
 #: Longest key kept verbatim in an entry; a longer one is its sha256.
 MAX_KEY_CHARS = 512
+#: What a key shortened past :data:`MAX_KEY_CHARS` starts with (then its sha256 hex).
+KEY_DIGEST_PREFIX = "sha256:"
 
 
 class ReplayCandidate(BaseModel):
@@ -308,7 +310,7 @@ def short_key(key: str | None) -> str | None:
     """*key* itself, or ``sha256:<hex>`` when it is longer than :data:`MAX_KEY_CHARS`."""
     if key is None or len(key) <= MAX_KEY_CHARS:
         return key
-    return "sha256:" + hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return KEY_DIGEST_PREFIX + hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 # ── reading ───────────────────────────────────────────────────────────

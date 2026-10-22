@@ -24,6 +24,8 @@ from spectragent.flywheel.metrics import (
     DatasetFormatError,
     EmptyBranches,
     MissDistribution,
+    NearMissEndpoint,
+    NearMissFieldSet,
     Planted,
     PlantedCount,
     PostBranchMisses,
@@ -345,10 +347,25 @@ class TestDecisionInputs:
         assert found.model_dump() == {
             "runs": 6,
             "sites": 2,
-            "by_host": {"shop.test": 3},
-            "params": {"shop.test": {"session": 3}},
+            "endpoints": [
+                {
+                    "host": "shop.test",
+                    "method": "GET",
+                    "path": "/results",
+                    "misses": 3,
+                    "query": {"session": 3},
+                    "body": {},
+                    "opaque_body": 0,
+                    "field_sets": [
+                        {"query": ["session"], "body": [], "opaque_body": False, "misses": 3}
+                    ],
+                }
+            ],
             "skipped": {},
-        }
+        }, (
+            "the two same-path replays and br-b0 each ask results?q=kettle with a session the "
+            "recording never sent; the blocked document is the recorded request itself"
+        )
 
 
 # ── the rules ─────────────────────────────────────────────────────────
@@ -365,7 +382,7 @@ class TestTheDecisionsOnTheKnownChain:
         assert decisions.recording_coverage.verdict.startswith("do not expand coverage: 0 of 1")
         assert (
             decisions.site_rules.verdict
-            == "generate ignore_query rules for review: shop.test [session]"
+            == "propose endpoint rules for review: shop.test GET /results [query session]"
         )
         assert decisions.retention.verdict is not None and "per task" in decisions.retention.verdict
         for name in ("miss_policy", "recording_coverage", "site_rules", "retention"):
@@ -479,16 +496,25 @@ class TestRuleThresholds:
     @pytest.mark.parametrize(
         ("misses", "verdict"),
         [
-            (2, "generate ignore_query rules for review: a.test [q]"),
-            (1, "keep hand-written rules: no host reached 2 near misses"),
+            (2, "propose endpoint rules for review: a.test POST /s [query q; body client.ts]"),
+            (1, "keep hand-written rules: no endpoint reached 2 near misses"),
         ],
     )
     def test_site_rules(self, report: FlywheelReport, misses: int, verdict: str) -> None:
+        fields = NearMissFieldSet(query=["q"], body=["client.ts"], opaque_body=False, misses=misses)
+        endpoint = NearMissEndpoint(
+            host="a.test",
+            method="POST",
+            path="/s",
+            misses=misses,
+            query={"q": misses},
+            body={"client.ts": misses},
+            opaque_body=0,
+            field_sets=[fields],
+        )
         inputs = report.decision_inputs.model_copy(
             update={
-                "site_rule_candidates": SiteRuleCandidates(
-                    runs=4, sites=1, by_host={"a.test": misses}, params={"a.test": {"q": misses}}
-                )
+                "site_rule_candidates": SiteRuleCandidates(runs=4, sites=1, endpoints=[endpoint])
             }
         )
         assert rules._decide_site_rules(inputs, "live").verdict == verdict

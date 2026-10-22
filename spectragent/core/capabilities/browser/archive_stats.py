@@ -18,15 +18,19 @@ code that writes and replays it:
   or ``server: cloudflare`` with a ``cf-ray``), main frame and sub-frame
   alike: a challenge iframe blocks the page too. Response headers only — a
   block page without these headers is not recognised;
-- :func:`site_rule_candidates` — replay misses whose nearest recorded
-  candidate is the same request but for its query parameters (same host,
-  path and method): what a per-site ``ignore_query`` rule would have matched,
-  counted by host and parameter.
+- :func:`near_misses` and :func:`site_rule_candidates` — replay misses whose
+  nearest recorded candidate is the same endpoint (same host, path and
+  method) but for some query parameters or body fields: what a rule scoped
+  to that endpoint (``ignore_query`` / ``ignore_body_paths``) would have
+  matched, counted by endpoint, by field and by the combination of fields
+  that differed together.
 
 Pure functions over what they are handed: index lines
 (:func:`~spectragent.core.capabilities.browser.replay.archive_index.iter_index_lines`),
 replay-log decisions
-(:func:`~spectragent.core.capabilities.browser.replay.replay_log.iter_decisions`)
+(:func:`~spectragent.core.capabilities.browser.replay.replay_log.iter_decisions`),
+a loaded source archive
+(:func:`~spectragent.core.capabilities.browser.replay.archive_index.load_archive`)
 or an :class:`~spectragent.core.archive.source.ArchiveReader`. No
 ``core.trace`` and no ``spectragent.flywheel`` import — the boundary
 ``replay_log.py`` keeps (``tests/test_core/test_archive/test_archive_boundaries.py``).
@@ -43,11 +47,25 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     ExchangeLine,
     IndexEntry,
     PendingLine,
+    RecordedArchive,
+    ReplayArchiveError,
     iter_index_lines,
     load_archive,
 )
-from spectragent.core.capabilities.browser.replay.canonical import canonical_query, host_of
-from spectragent.core.capabilities.browser.replay.replay_log import ReplayLogEntry
+from spectragent.core.capabilities.browser.replay.canonical import (
+    BODY_PARAM_PREFIX,
+    BODY_SHA256_PARAM,
+    POST_DATA_PARAM,
+    Params,
+    canonical_query,
+    decode_params,
+    host_of,
+)
+from spectragent.core.capabilities.browser.replay.replay_log import (
+    KEY_DIGEST_PREFIX,
+    ReplayLogEntry,
+    short_key,
+)
 
 #: Final states with a body in the archive: written whole, or streamed as a later blob.
 WITH_BODY: tuple[str, ...] = ("ok", "streamed_later")
@@ -232,19 +250,66 @@ def challenge_documents(reader: ArchiveReader) -> list[ChallengeDocument]:
 
 
 @dataclass(frozen=True)
-class SiteRuleCandidate:
-    """Replay misses on one host that only their query parameters kept from a recorded request.
+class NearMiss:
+    """One replay miss that only its query parameters or body fields kept from a recorded request.
 
     Attributes:
-        host: The host.
-        misses: How many misses (folded ones counted by how many they fold).
-        params: Per query parameter whose values differed, how many of those
-            misses it differed in.
+        host: The request's host.
+        method: Its method (upper case).
+        path: Its URL path (``/`` when empty).
+        query: The query parameters whose values differ from the nearest
+            recorded request's, sorted.
+        body: The body fields (flattened paths, as ``ignore_body_paths``
+            names them) whose values differ, sorted.
+        opaque_body: The two bodies differ, but one of them is known only by
+            a digest, so which fields differ is unknown.
+        weight: How many misses it stands for (a folded summary's count).
     """
 
     host: str
+    method: str
+    path: str
+    query: tuple[str, ...]
+    body: tuple[str, ...]
+    opaque_body: bool
+    weight: int
+
+
+@dataclass(frozen=True)
+class FieldSet:
+    """One combination of differing fields, and how many near misses differ in exactly it."""
+
+    query: tuple[str, ...]
+    body: tuple[str, ...]
+    opaque_body: bool
     misses: int
-    params: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class SiteRuleCandidate:
+    """The near misses of one endpoint: what a rule scoped to it would have to ignore.
+
+    Attributes:
+        host: The host.
+        method: The method.
+        path: The path.
+        misses: How many near misses (folded ones counted by how many they fold).
+        query: Per query parameter, how many of those misses it differed in.
+        body: Per body field, how many of those misses it differed in.
+        opaque_body: How many of those misses had bodies that differ where a
+            digest hides which fields.
+        field_sets: Every distinct combination of differing fields, most
+            frequent first: the fields that change together.
+    """
+
+    host: str
+    method: str
+    path: str
+    misses: int
+    query: Mapping[str, int]
+    body: Mapping[str, int]
+    opaque_body: int
+    field_sets: tuple[FieldSet, ...]
 
 
 def _differing(live: Sequence[tuple[str, str]], recorded: Sequence[tuple[str, str]]) -> list[str]:
@@ -257,20 +322,51 @@ def _differing(live: Sequence[tuple[str, str]], recorded: Sequence[tuple[str, st
     return sorted(name for name, (a, b) in values.items() if sorted(a) != sorted(b))
 
 
-def site_rule_candidates(
-    decisions: Iterable[tuple[int | None, ReplayLogEntry, int]],
-) -> dict[str, SiteRuleCandidate]:
-    """Per host, the ``no_match`` misses a query-parameter rule would have matched.
+#: Canonical body parameters that stand for a whole body rather than for one of its fields.
+_DIGEST_PARAMS = frozenset({BODY_SHA256_PARAM, POST_DATA_PARAM})
 
-    *decisions* as ``iter_decisions`` yields them. A miss counts when its
-    nearest candidate (the first: the matcher ranks same method, same path,
-    best score first) has the same host, path and method and their canonical
-    queries (``canonical_query``, no site rule) differ — then by host, and by
-    every parameter whose values differ. Folded misses carry no candidates
-    and do not count.
+
+def _body_fields(body_key: str | None) -> tuple[str, Params | None]:
+    """``(digest, fields)`` of a canonical body key: ``fields`` is ``None`` when only a digest is known.
+
+    ``digest`` identifies the body for an equality check either way: the
+    replay log shortens a key longer than its cap to ``sha256:<hex>``, and
+    the canonicaliser replaces a body past its own cap, or one that does not
+    parse, by a single digest parameter.
     """
-    misses: Counter[str] = Counter()
-    params: dict[str, Counter[str]] = {}
+    if body_key is None:
+        return "", ()
+    if body_key.startswith(KEY_DIGEST_PREFIX):
+        return body_key, None
+    params = decode_params(body_key)
+    if len(params) == 1 and params[0][0] in _DIGEST_PARAMS:
+        return body_key, None
+    return body_key, params
+
+
+def near_misses(
+    decisions: Iterable[tuple[int | None, ReplayLogEntry, int]],
+    recorded: RecordedArchive,
+) -> list[NearMiss]:
+    """The ``no_match`` misses of one replay whose nearest recorded request is the same endpoint.
+
+    *decisions* as ``iter_decisions`` yields them; *recorded* is the replay's
+    source archive, loaded with the rules the replay used
+    (``recorded_site_rules``), so both sides are keyed alike: the live
+    request's query is canonicalised with the rule the source's rules select
+    for it, its body is the replay log's body key (already keyed with that
+    rule), and the candidate's query and body come from the record's own
+    keys. A miss counts when its nearest candidate (the first: the matcher
+    ranks same method, same path, best score first) has the same host, path
+    and method and their query parameters or body fields differ. Folded
+    misses carry no candidates and do not count.
+
+    Raises:
+        ReplayArchiveError: A candidate names a record *recorded* does not
+            hold: the replay was not served from this archive.
+    """
+    records = {record.record_id: record for record in recorded.index.records}
+    found: list[NearMiss] = []
     for _step, entry, weight in decisions:
         if entry.kind != "miss" or entry.reason != "no_match" or not entry.candidates:
             continue
@@ -278,25 +374,96 @@ def site_rule_candidates(
             continue
         best = entry.candidates[0]
         host = host_of(entry.url)
-        if not host or host != host_of(best.url) or entry.method.upper() != best.method.upper():
+        method = entry.method.upper()
+        if not host or host != host_of(best.url) or method != best.method.upper():
             continue
         try:
-            live, recorded = urlsplit(entry.url), urlsplit(best.url)
+            live = urlsplit(entry.url.split("#", 1)[0])
+            path = live.path or "/"
         except ValueError:
             continue
-        if (live.path or "/") != (recorded.path or "/"):
+        record = records.get(best.record_id)
+        if record is None:
+            raise ReplayArchiveError(
+                "a replay candidate names a record its source archive does not hold",
+                run_id=recorded.run_id,
+                record_id=best.record_id,
+            )
+        if path != record.keys.path:
             continue
-        differing = _differing(canonical_query(live.query), canonical_query(recorded.query))
-        if not differing:
+        rule = recorded.rules.for_request(method, entry.url)
+        recorded_query = [
+            (name, value)
+            for name, value in record.keys.params
+            if not name.startswith(BODY_PARAM_PREFIX)
+        ]
+        query = _differing(canonical_query(live.query, rule), recorded_query)
+        live_digest, live_body = _body_fields(entry.body_key)
+        recorded_digest, recorded_body = _body_fields(record.keys.body_key)
+        body: list[str] = []
+        opaque = False
+        if live_body is not None and recorded_body is not None:
+            body = _differing(live_body, recorded_body)
+        else:  # compared as the replay log wrote the live key: shortened past its cap
+            opaque = live_digest != (short_key(recorded_digest) or "")
+        if not query and not body and not opaque:
             continue
-        misses[host] += weight
-        params.setdefault(host, Counter()).update(dict.fromkeys(differing, weight))
-    return {
-        host: SiteRuleCandidate(
-            host=host, misses=misses[host], params=dict(sorted(params[host].items()))
+        found.append(
+            NearMiss(
+                host=host,
+                method=method,
+                path=path,
+                query=tuple(query),
+                body=tuple(body),
+                opaque_body=opaque,
+                weight=weight,
+            )
         )
-        for host in sorted(misses)
-    }
+    return found
+
+
+def site_rule_candidates(found: Iterable[NearMiss]) -> list[SiteRuleCandidate]:
+    """Near misses by endpoint (host, method, path), most frequent first.
+
+    Per endpoint: how many misses, how many of them each query parameter
+    and each body field differed in, how many bodies differed only by a
+    digest, and each distinct combination of differing fields with its
+    count — a parameter that always appears with another is a set a rule
+    would ignore together. Ties are ordered by host, path and method, and
+    a combination's ties by its fields, so the result is deterministic.
+    """
+    misses: Counter[tuple[str, str, str]] = Counter()
+    query: dict[tuple[str, str, str], Counter[str]] = {}
+    body: dict[tuple[str, str, str], Counter[str]] = {}
+    opaque: Counter[tuple[str, str, str]] = Counter()
+    sets: dict[tuple[str, str, str], Counter[tuple[tuple[str, ...], tuple[str, ...], bool]]] = {}
+    for miss in found:
+        endpoint = (miss.host, miss.path, miss.method)
+        misses[endpoint] += miss.weight
+        query.setdefault(endpoint, Counter()).update(dict.fromkeys(miss.query, miss.weight))
+        body.setdefault(endpoint, Counter()).update(dict.fromkeys(miss.body, miss.weight))
+        opaque[endpoint] += miss.weight if miss.opaque_body else 0
+        sets.setdefault(endpoint, Counter())[(miss.query, miss.body, miss.opaque_body)] += (
+            miss.weight
+        )
+    return [
+        SiteRuleCandidate(
+            host=host,
+            method=method,
+            path=path,
+            misses=misses[(host, path, method)],
+            query=dict(sorted(query[(host, path, method)].items())),
+            body=dict(sorted(body[(host, path, method)].items())),
+            opaque_body=opaque[(host, path, method)],
+            field_sets=tuple(
+                FieldSet(query=fields[0], body=fields[1], opaque_body=fields[2], misses=count)
+                for fields, count in sorted(
+                    sets[(host, path, method)].items(), key=lambda item: (-item[1], item[0])
+                )
+            ),
+        )
+        for host, path, method in sorted(misses, key=lambda key: (-misses[key], key))
+    ]
 
 
 __all__ = [
@@ -307,10 +474,13 @@ __all__ = [
     "WITH_BODY",
     "BodyCompleteness",
     "ChallengeDocument",
+    "FieldSet",
+    "NearMiss",
     "SiteRuleCandidate",
     "body_completeness",
     "challenge_documents",
     "challenge_signals",
+    "near_misses",
     "revisit_saving",
     "site_rule_candidates",
 ]

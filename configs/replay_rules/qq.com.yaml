@@ -183,3 +183,28 @@ rules:
   - normalized
   ignore_body_paths:
   - vqqcookie
+# Fan community recommendations on the play page (POST pbaccess.video.qq.com/
+# trpc.universal_backend_service.page_server_rpc.PageServer/GetPageData). Evidence: the
+# offline branch replays of 28_1288c015, 128_f87bf58f and 263_5c1e8fab in
+# lookahead_15task_20261023, made under the shared clock. The query's guid and video_omgid
+# hold the page's random visitor id (the same value as guid above); in 71 near misses, 42 of
+# them while restoring the recorded prefix, they were the only differing fields. Answers copy
+# the id into item_report strings and into next_page_context, which the next page request
+# sends back in its body, so later pages carry the recorded id, as in the recording. The
+# body's page_params (page_id, page_type, data_key) and page_context select the page and
+# stay, as do video_appid and the version fields.
+- id: tencent-video-page-data
+  scope:
+    host: pbaccess.video.qq.com
+    path: /trpc.universal_backend_service.page_server_rpc.PageServer/GetPageData
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - guid
+  - video_omgid

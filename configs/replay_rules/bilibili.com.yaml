@@ -1,12 +1,285 @@
-# Validated on one authenticated recording of one account and two offline replays of it.
-# The space page's profile request changes two fields between page loads of the same
-# profile: dm_img_inter (window size and scroll offset mixed with fresh random numbers,
-# anti-bot telemetry) and w_rid (the WBI signature: md5 over all other query fields, wts
-# and a signing key, so it changes whenever dm_img_inter does). The profile is selected by
-# mid; mid, wts, token, platform, web_location, locale/device fields and the other dm_*
-# fields stay in the key. Changing mid or wts still misses. Other signed endpoints need
-# their own evidence; this is not a rule for w_rid in general.
+# Bilibili (www.bilibili.com, search.bilibili.com, space.bilibili.com) content APIs on
+# api.bilibili.com. Pinned recording gives every tab one shared clock (T0 at run start, then
+# real time), so a replayed page signs its requests at a different second than the recording.
+#
+# Fields these rules ignore:
+# - wts: the client clock in seconds, added to every WBI-signed request.
+# - w_rid: the WBI signature, md5 over all other query fields (sorted, with !'()* removed),
+#   wts and a signing key. Across the recordings 6_144a80ce, 118_1426a023 and 158_ed5011ea,
+#   106 of 127 signed requests on 22 endpoints recompute from their other query fields and the
+#   keys in the ticket answer (GenWebTicket nav.img / nav.sub). The other 21 were sent before
+#   the page had that answer, so it signed them with a key of its own; their other fields
+#   still select the content.
+# - dm_img_inter: window size and scroll offset mixed with fresh random numbers (anti-bot
+#   telemetry); the other dm_* fields stay in the key.
+# - qv_id: a random 32-character id the search page makes for each search; no recorded answer
+#   contains it.
+# - session: a random md5 the player makes for each play request. Two recorded requests in
+#   118_1426a023 for the same video and cid carried different values.
+# No recorded answer contains a w_rid, qv_id or session; a wts value appears only inside
+# server request ids, ad links and server times.
+#
+# Evidence: the offline branch replays of those three recordings in
+# lookahead_15task_20261023, made under the shared clock. Every content request below missed,
+# and its nearest recorded request differed only in these fields; for the play URL and player
+# info also in cid, which the page takes from the video detail answer that had missed too
+# (the request then went out without it). Search results came back
+# empty (the page showed its no-results message), so 2 of 52 Bilibili forks restored their
+# checkpoint. Content selectors stay in every key: keyword, page, page_size, order, search
+# type and filters, mid, bvid, avid, cid, ids, term and the locale/device JSON fields. A
+# different search, video or profile still misses.
 rules:
+# Search results for one result type (GET /x/web-interface/wbi/search/type), the request
+# behind the result grid. Ignores wts, w_rid, qv_id.
+- id: bilibili-search-results
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/wbi/search/type
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+  - qv_id
+# The combined search page's results (GET /x/web-interface/wbi/search/all/v2). Ignores wts,
+# w_rid, qv_id.
+- id: bilibili-search-all
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/wbi/search/all/v2
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+  - qv_id
+# The search box's placeholder keyword (GET /x/web-interface/wbi/search/default). Ignores wts,
+# w_rid; web_location (which page asks) stays.
+- id: bilibili-search-placeholder
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/wbi/search/default
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+# The trending list under the search box (GET /x/web-interface/wbi/search/square). Ignores
+# wts, w_rid; limit and platform stay.
+- id: bilibili-search-trending
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/wbi/search/square
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+# Search suggestions while typing (GET /x/web-interface/suggest). Ignores wts, w_rid; term
+# (the typed text) stays.
+- id: bilibili-search-suggestions
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/suggest
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+# Page banners and promoted slots (GET /x/web-show/wbi/res/locs and its unsigned-path twin
+# /x/web-show/res/locs, which carries the same signature). Ignores wts, w_rid; pf and ids
+# (which slots) stay.
+- id: bilibili-page-slots
+  scope:
+    host: api.bilibili.com
+    path: /x/web-show/wbi/res/locs
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+- id: bilibili-page-slot
+  scope:
+    host: api.bilibili.com
+    path: /x/web-show/res/locs
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+# Video page details (GET /x/web-interface/wbi/view/detail): title, uploader, parts and
+# related videos. Ignores wts, w_rid, dm_img_inter; bvid, p, need_view, platform and the
+# locale/device JSON stay.
+- id: bilibili-video-detail
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/wbi/view/detail
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+  - dm_img_inter
+# Player settings for one video part (GET /x/player/wbi/v2). Ignores wts, w_rid,
+# dm_img_inter; aid/bvid and cid stay.
+- id: bilibili-player-info
+  scope:
+    host: api.bilibili.com
+    path: /x/player/wbi/v2
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+  - dm_img_inter
+# Stream addresses for one video part (GET /x/player/wbi/playurl), on the video page and for
+# the hover preview on result cards. Ignores wts, w_rid, dm_img_inter and session; avid,
+# bvid, cid, qn, fnval, fnver, fourk and gaia_source stay.
+- id: bilibili-play-url
+  scope:
+    host: api.bilibili.com
+    path: /x/player/wbi/playurl
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+  - dm_img_inter
+  - session
+# Video page overlays, found by mining the near misses of replays that already used the
+# rules above (the forks of 118_180a3f31 and 158_f5a61bf9 in lookahead_15task_freeze_20261023,
+# whose restored prefixes now reached the video pages): danmaku segments
+# (GET /x/v2/dm/wbi/web/seg.so, 36 near misses), danmaku settings (GET /x/v2/dm/web/view,
+# 10), subtitles (GET /x/v2/subtitle/web/view, 10) and the summary button
+# (GET /x/web-interface/view/conclusion/judge, 10). Each differed only in wts and w_rid.
+# Ignores wts, w_rid; oid, pid, cid, bvid, up_mid, type, segment_index, duration and the
+# locale/device JSON stay.
+- id: bilibili-danmaku-segments
+  scope:
+    host: api.bilibili.com
+    path: /x/v2/dm/wbi/web/seg.so
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+- id: bilibili-danmaku-settings
+  scope:
+    host: api.bilibili.com
+    path: /x/v2/dm/web/view
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+- id: bilibili-subtitles
+  scope:
+    host: api.bilibili.com
+    path: /x/v2/subtitle/web/view
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+- id: bilibili-summary-button
+  scope:
+    host: api.bilibili.com
+    path: /x/web-interface/view/conclusion/judge
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+# The space page's profile (GET /x/space/wbi/acc/info). First validated on 2026-10-20 on one
+# authenticated recording: without the rule the profile page showed an error and the replay
+# ended behind a login dialog; with it restoration passed 24 and 25 of 30 checks instead of
+# 2 and 3. Then only dm_img_inter and w_rid changed between page loads; under the shared clock
+# wts changes too (4 near misses in 6_144a80ce's forks). Ignores wts, w_rid, dm_img_inter;
+# mid, token, platform, web_location and the other dm_* fields stay.
 - id: bilibili-space-acc-info-signature
   scope:
     host: api.bilibili.com
@@ -20,5 +293,45 @@ rules:
   - exact
   - normalized
   ignore_query:
-  - dm_img_inter
+  - wts
   - w_rid
+  - dm_img_inter
+# The space page's follow state for the profile (GET /x/space/wbi/acc/relation). Ignores wts,
+# w_rid; mid stays. The profile's video list (/x/space/wbi/arc/search) is still not covered:
+# its recorded answer was an empty list (see README).
+- id: bilibili-space-relation
+  scope:
+    host: api.bilibili.com
+    path: /x/space/wbi/acc/relation
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+# The anonymous visitor ticket (POST /bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket). Its
+# answer also carries the WBI signing keys (nav.img / nav.sub) every signed request above
+# uses. context[ts] is the client clock in seconds and hexsign is HMAC-SHA256 over
+# "ts" + context[ts] with a fixed key from the page script; all 8 recorded hexsigns
+# recompute that way. key_id and csrf stay. 931 near misses in the forks, 412 of them while
+# restoring the recorded prefix. Names are fnmatch globs, so "[[]" is a literal "[".
+- id: bilibili-visitor-ticket
+  scope:
+    host: api.bilibili.com
+    path: /bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - context[[]ts]
+  - hexsign
