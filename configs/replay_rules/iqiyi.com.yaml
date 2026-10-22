@@ -26,8 +26,11 @@ rules:
   - timestamp
   - sign
 # Video page details (GET mesh.if.iqiyi.com/tvg/v2/lw/base_info): title, episodes and
-# the player's first data. entity_id selects the video; device, user and version fields
-# stay. Only timestamp and sign changed between recorded and replayed page loads.
+# the player's first data. entity_id selects the video; user and version fields stay. Under
+# the per-document clock only timestamp and sign changed between recorded and replayed page
+# loads; under the shared clock the device id changes too (see "Visitor device id" below).
+# The answer copies the device id only into URLs the page loads next (load_url,
+# load_all_url, label and ad URLs), so those carry the recorded id, as in the recording.
 - id: iqiyi-video-base-info
   scope:
     host: mesh.if.iqiyi.com
@@ -43,3 +46,384 @@ rules:
   ignore_query:
   - timestamp
   - sign
+  - device_id
+
+# Visitor device id. Evidence: the offline branch replays of 18_cec36336, 108_4724bcba and
+# 208_c296fc2e in lookahead_15task_20261023, made under the shared clock (pinned recording
+# gives every tab one clock, T0 then real time). The replayed page makes a new random device
+# id for its visitor (32 hex digits; none of the 56 values seen in the forks equals the
+# recorded one) and sends it as device, deviceId, device_id, deviceID, qyid, u, or the
+# grading body's cid.
+# Every request below missed, and its nearest recorded request differed only in that id (and,
+# where named, timestamp: the client clock in milliseconds, or sign: the same signature as the
+# rules above, recomputed on all 16 recorded app_help_info and layer_game requests). Answers do
+# not echo the id, except inside ad responses, pingback strings and URLs the page loads next.
+# In 7 forks of the re-recordings 108_aa3a5b75 and 208_a35d7d11
+# (lookahead_15task_freeze_20261023), without these rules 6 stayed on the home or search page
+# instead of the recorded one; with them all 7 reached it and 2 restored (none before).
+# Content selectors stay: channel and page fields, key (the typed text), search paging and
+# filters, tvId/entity ids, interfaceCode, versions and the other fields.
+# Experiment buckets for the visitor (GET /portal/lw/abtest): ignores device.
+- id: iqiyi-experiment-buckets
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/abtest
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+# Whether to show the device prompt (GET /portal/lw/v2/popup/device/check): ignores deviceId.
+- id: iqiyi-device-prompt
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v2/popup/device/check
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - deviceId
+# The home page's pop-up recommendation (GET /portal/lw/v2/popup/recommend): ignores deviceId.
+- id: iqiyi-popup-recommendation
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v2/popup/recommend
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - deviceId
+# Membership prompts (GET /portal/lw/vip/interact, and the same API through the
+# www.iqiyi.com/prelw proxy): ignores deviceID, qyid and timestamp; interfaceCode selects the
+# prompt and stays.
+- id: iqiyi-membership-prompts
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/vip/interact
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - deviceID
+  - qyid
+  - timestamp
+- id: iqiyi-membership-prompts-proxy
+  scope:
+    host: www.iqiyi.com
+    path: /prelw/portal/lw/vip/interact
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - deviceID
+  - qyid
+  - timestamp
+# Channel bar and its badges (GET /portal/lw/v5/channel/navigateBar, its proxy, and
+# /portal/lw/v5/channel/navigateBar/bubble): ignores device.
+- id: iqiyi-channel-bar
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v5/channel/navigateBar
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+- id: iqiyi-channel-bar-proxy
+  scope:
+    host: www.iqiyi.com
+    path: /prelw/portal/lw/v5/channel/navigateBar
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+- id: iqiyi-channel-badges
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v5/channel/navigateBar/bubble
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+# Home page feed (GET /portal/lw/v5/channel/recommend and /portal/lw/v5/channel/recoms):
+# ignores device; channelName and paging stay.
+- id: iqiyi-home-feed
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v5/channel/recommend
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+- id: iqiyi-home-feed-more
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v5/channel/recoms
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+# Search box placeholder and hot list (GET /portal/lw/search/keywords/default and
+# /portal/lw/search/keywords/hotList, and both through the proxy): ignores device_id;
+# channel_id stays.
+- id: iqiyi-search-placeholder
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/search/keywords/default
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device_id
+- id: iqiyi-search-placeholder-proxy
+  scope:
+    host: www.iqiyi.com
+    path: /prelw/portal/lw/search/keywords/default
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device_id
+- id: iqiyi-search-hot-list
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/search/keywords/hotList
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device_id
+- id: iqiyi-search-hot-list-proxy
+  scope:
+    host: www.iqiyi.com
+    path: /prelw/portal/lw/search/keywords/hotList
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device_id
+# Search suggestions while typing (GET /portal/lw/search/searchKeyWord): ignores deviceId;
+# key (the typed text) stays.
+- id: iqiyi-search-suggestions
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/search/searchKeyWord
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - deviceId
+# Search results (GET /portal/lw/search/homePageV3): ignores u, the device id; key, source,
+# suggest, paging, mode and the filter fields stay. Two near misses only: in these replays the
+# search page was rarely reached before the rules above.
+- id: iqiyi-search-results
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/search/homePageV3
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - u
+# Player overlay switches (GET /player/lw/display/control/v2): ignores deviceId and timestamp.
+- id: iqiyi-player-overlays
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/lw/display/control/v2
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - deviceId
+  - timestamp
+# App download panel and game layer (GET /tvg/app_help_info, /tvg/lw/layer_game): ignores
+# device_id, timestamp and sign.
+- id: iqiyi-app-panel
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/app_help_info
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device_id
+  - timestamp
+  - sign
+- id: iqiyi-game-layer
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/lw/layer_game
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device_id
+  - timestamp
+  - sign
+# Poster badge icons (GET /player/lw/video/mark_type/info?module=&version=): ignores
+# timestamp (the client clock in seconds) and sign (recomputed on all 8 recorded requests);
+# module and version stay. Found by mining the near misses of replays that already used
+# the rules above (3 near misses in 108_aa3a5b75's forks in lookahead_15task_freeze_20261023).
+- id: iqiyi-poster-badges
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/lw/video/mark_type/info
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+# Which page modules to load (POST /player/client/device/asset/grading, JSON body
+# {cid, mode, projects}): ignores the body's cid, the device id; mode and projects stay. It
+# decides whether the search (xfind) and player (xplayer) modules load. 366 near misses.
+- id: iqiyi-module-grading
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/client/device/asset/grading
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_body_paths:
+  - cid
+
+# Module configs (GET static.iqiyi.com/ext/config/xfind/v1.json and xplayer/v4.json, the
+# search and player modules' settings). t is a cache buster: the client clock in
+# milliseconds or 8 random letters; answers do not contain it. 698 and 154 near misses.
+- id: iqiyi-search-module-config
+  scope:
+    host: static.iqiyi.com
+    path: /ext/config/xfind/v1.json
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - t
+- id: iqiyi-player-module-config
+  scope:
+    host: static.iqiyi.com
+    path: /ext/config/xplayer/v4.json
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - t

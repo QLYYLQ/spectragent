@@ -356,6 +356,63 @@ def test_the_layout_still_selects_its_page_and_position(live: dict[str, Any]) ->
     )
 
 
+# ── fan community recommendations ───────────────────────────────────────
+
+PAGE_DATA = (
+    "https://pbaccess.video.qq.com/trpc.universal_backend_service.page_server_rpc"
+    ".PageServer/GetPageData?video_appid=1000005&vversion_name=1.0.0&vversion_platform=2"
+    "&guid={guid}&video_omgid={guid}"
+)
+FAN_PAGE = {
+    "page_params": {
+        "data_key": "<redacted>",
+        "page_id": "ip_doki_rec",
+        "page_type": "channel_operation",
+    },
+    "has_cache": 0,
+}
+
+
+def match_page_data(recorded: dict[str, Any], live: dict[str, Any]) -> MatchResult:
+    policies = rules()
+    recorded_url = PAGE_DATA.format(guid="1111aaaa2222bbbb")
+    record = indexed(
+        recorded_url,
+        record_id="recorded-page",
+        order=0,
+        method="POST",
+        body=json.dumps(recorded).encode(),
+        content_type=JSON,
+        rule=policies.require_for_request("POST", recorded_url),
+    )
+    return Matcher(ArchiveIndex([record]), rules=policies).match(
+        LiveRequest(
+            "POST",
+            PAGE_DATA.format(guid="9999ffff8888eeee"),
+            {"Content-Type": JSON},
+            json.dumps(live).encode(),
+        )
+    )
+
+
+def test_fan_recommendations_match_a_new_visitor_id() -> None:
+    result = match_page_data(FAN_PAGE, FAN_PAGE)
+    assert (result.level, result.rule_id) == ("normalized", "tencent-video-page-data")
+
+
+@pytest.mark.parametrize(
+    "live",
+    [
+        {**FAN_PAGE, "page_params": {**FAN_PAGE["page_params"], "page_id": "ip_doki_hot"}},
+        {**FAN_PAGE, "page_params": {**FAN_PAGE["page_params"], "page_type": "detail"}},
+        {**FAN_PAGE, "page_context": {"page_index": "2"}},
+        {**FAN_PAGE, "has_cache": 1},
+    ],
+)
+def test_fan_recommendations_still_select_their_page(live: dict[str, Any]) -> None:
+    assert match_page_data(FAN_PAGE, live).reason == "no_match"
+
+
 # ── membership checks ───────────────────────────────────────────────────
 
 
