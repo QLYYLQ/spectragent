@@ -2,9 +2,11 @@
 
 Pinned here against fakes: the per-tab load tracker (``MainFrameLoad``) fed by
 the control connection's ``Page.lifecycleEvent``; the wait itself
-(``wait_for_settle``): a quiet page settles early, a busy page ends at the cap,
-a page whose state cannot be read is captured at once, a document replaced
-during the wait is waited for in its place; and the capability: the wait runs
+(``wait_for_settle``): a quiet page showing content settles early, a busy page
+ends at the cap, a quiet page whose viewport stays empty ends at the cap too and
+says so, a page whose state cannot be read is captured at once, a document
+replaced during the wait is waited for in its place; the probe carries the
+content check and its named bounds; and the capability: the wait runs
 before the one capture every fragment comes from, whichever fragments the run
 negotiated, every fragment of the capture records it, and
 ``settle_max_wait_s: 0`` turns it off. The real-Chrome half is
@@ -34,10 +36,15 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.capabilities.browser.settle import (
+    _CONTENT_GRAPHICS,
+    _CONTENT_MAX_NODES,
+    _CONTENT_MIN_GRAPHIC_PX,
+    _CONTENT_MIN_TEXT_PX,
+    _CONTENT_RECHECK_MS,
     SETTLE_WORLD,
     PageSettle,
     wait_for_settle,
-    watch_quiet,
+    watch_page,
 )
 from spectragent.core.trace.encoding import decode_fragment, encode_fragment
 from tests._helpers.browser_archive import OwnedBrowser
@@ -225,15 +232,32 @@ def _probe_arguments(expression: str) -> tuple[int, int]:
 
 
 def _quiet(waited_ms: int = 0) -> dict[str, Any]:
-    value = {"quiet": True, "waited_ms": waited_ms, "mutations": 0, "resources": 0}
+    """A quiet page showing content: the probe resolves as soon as the window is quiet."""
+    value = {"quiet": True, "content": True, "waited_ms": waited_ms, "mutations": 0, "resources": 0}
+    return {"result": {"type": "object", "value": value}}
+
+
+async def _at_budget(budget_s: float, *, quiet: bool, content: bool) -> dict[str, Any]:
+    """The probe never saw the page settle: it resolves at its budget, saying what it saw then."""
+    await asyncio.sleep(budget_s)
+    value = {
+        "quiet": quiet,
+        "content": content,
+        "waited_ms": int(budget_s * 1000),
+        "mutations": 0 if quiet else 40,
+        "resources": 0 if quiet else 3,
+    }
     return {"result": {"type": "object", "value": value}}
 
 
 async def _busy(budget_s: float) -> dict[str, Any]:
-    """The page kept changing: the probe resolves at its budget, not quiet."""
-    await asyncio.sleep(budget_s)
-    value = {"quiet": False, "waited_ms": int(budget_s * 1000), "mutations": 40, "resources": 3}
-    return {"result": {"type": "object", "value": value}}
+    """The page kept changing (a ticker on a rendered page): not quiet at the budget."""
+    return await _at_budget(budget_s, quiet=False, content=True)
+
+
+async def _empty(budget_s: float) -> dict[str, Any]:
+    """The page went quiet with nothing in its viewport (a loading shell) and stayed so."""
+    return await _at_budget(budget_s, quiet=True, content=False)
 
 
 async def _settle(
@@ -295,9 +319,25 @@ class TestWaitForSettle:
         tab = _Tab(stuck)
         started = time.monotonic()
         settle = await _settle(tab, max_wait_s=0.1)
-        assert (settle.outcome, settle.waiting_for) == ("capped", ["dom"])
+        assert (settle.outcome, settle.waiting_for) == ("capped", ["dom", "content"]), (
+            "a probe that never answered saw neither the quiet window nor the content"
+        )
         # The probe's own budget plus the reply's grace, never longer.
         assert time.monotonic() - started < 2.0
+
+    async def test_a_quiet_page_with_an_empty_viewport_ends_at_the_cap(self) -> None:
+        """The 2026-10-22 blank captures: an app shell, quiet while its script downloads."""
+        tab = _Tab(_empty)
+        started = time.monotonic()
+        settle = await _settle(tab, max_wait_s=0.2)
+        assert (settle.outcome, settle.waiting_for) == ("capped", ["content"])
+        assert 0.15 <= time.monotonic() - started < 1.0
+        assert tab.probes() == 1, "the probe itself keeps looking until its budget"
+
+    async def test_a_busy_empty_page_names_both(self) -> None:
+        tab = _Tab(lambda budget: _at_budget(budget, quiet=False, content=False))
+        settle = await _settle(tab, max_wait_s=0.1)
+        assert (settle.outcome, settle.waiting_for) == ("capped", ["dom", "content"])
 
     async def test_a_loading_document_is_waited_for_first(self) -> None:
         load = MainFrameLoad(MAIN)
@@ -315,7 +355,7 @@ class TestWaitForSettle:
         load.lifecycle(MAIN, "L1", "init")
         tab = _Tab(lambda _budget: _quiet())
         first = await _settle(tab, load=load, max_wait_s=0.1)
-        assert (first.outcome, first.waiting_for) == ("capped", ["load", "dom"])
+        assert (first.outcome, first.waiting_for) == ("capped", ["load", "dom", "content"])
         assert tab.probes() == 0
         # The same document is not waited on for its load again: the page is probed.
         second = await _settle(tab, load=load, max_wait_s=0.1)
@@ -339,12 +379,24 @@ class TestWaitForSettle:
             ({"executionContextId": 7}, {}, "returned no result"),
             (
                 {"executionContextId": 7},
+                {"result": {"value": {"quiet": True, "waited_ms": 0}}},
+                "returned no result",
+            ),
+            (
+                {"executionContextId": 7},
                 {"result": {}, "exceptionDetails": {"text": "Uncaught"}},
                 "raised in the page",
             ),
             ({"executionContextId": 7}, RuntimeError("CDP error: boom"), "probe failed"),
         ],
-        ids=["no context", "world refused", "no result", "page exception", "command failed"],
+        ids=[
+            "no context",
+            "world refused",
+            "no result",
+            "no content verdict",
+            "page exception",
+            "command failed",
+        ],
     )
     async def test_an_unreadable_page_is_captured_at_once(
         self, world: Any, probe: Any, detail: str
@@ -381,23 +433,42 @@ class TestWaitForSettle:
         assert len(budgets) == 1 and 0.5 <= budgets[0] <= 0.75
 
 
-class TestWatchQuiet:
+class TestWatchPage:
     async def test_the_probe_runs_in_the_settle_world_and_waits_for_its_promise(self) -> None:
         tab = _Tab(lambda _budget: _quiet(waited_ms=512))
-        watch = await watch_quiet(
+        watch = await watch_page(
             tab,  # type: ignore[arg-type]
             session_id="S1",
             frame_id=MAIN,
             quiet_ms=300,
             budget_s=2.5,
         )
-        assert (watch.quiet, watch.waited_ms, watch.error) == (True, 512, None)
+        assert (watch.quiet, watch.content, watch.waited_ms, watch.error) == (True, True, 512, None)
         _world, (_method, params) = tab.sent
         assert params["returnByValue"] is True
         expression = params["expression"]
         assert "MutationObserver" in expression and "PerformanceObserver" in expression
         quiet_ms, budget_ms = _probe_arguments(expression)
         assert quiet_ms == 300 and 2400 <= budget_ms <= 2500
+
+    async def test_the_probe_judges_content_by_the_named_bounds(self) -> None:
+        """The in-page check reads its bounds from the module's constants, not literals of its own."""
+        tab = _Tab(lambda _budget: _quiet())
+        await watch_page(
+            tab,  # type: ignore[arg-type]
+            session_id="S1",
+            frame_id=MAIN,
+            quiet_ms=500,
+            budget_s=1.0,
+        )
+        expression = tab.sent[-1][1]["expression"]
+        assert "checkVisibility" in expression and "getClientRects" in expression
+        assert f"const recheckMs = {_CONTENT_RECHECK_MS};" in expression
+        assert f"const maxNodes = {_CONTENT_MAX_NODES};" in expression
+        assert f"const minGraphicPx = {_CONTENT_MIN_GRAPHIC_PX};" in expression
+        assert f"const minTextPx = {_CONTENT_MIN_TEXT_PX};" in expression
+        assert f"new Set({json.dumps(list(_CONTENT_GRAPHICS))})" in expression
+        assert "%" not in expression, "every placeholder was filled in"
 
 
 # ── the capability: one wait per capture, recorded on every fragment ──
@@ -498,6 +569,22 @@ class TestCapabilitySettles:
         finally:
             await cap.teardown()
 
+    async def test_an_empty_viewport_is_captured_at_the_cap_and_says_so(self) -> None:
+        browser = _EmptyPage()
+        cap = await _capability(
+            browser, "browser.screenshot", settle_quiet_ms=100, settle_max_wait_s=0.2
+        )
+        try:
+            await cap.begin_observation(1)
+            started = time.monotonic()
+            shot = await asyncio.wait_for(cap.resolve_fragment("browser.screenshot"), 5.0)
+            assert isinstance(shot, ScreenshotObs) and shot.image_bytes == browser.screenshot
+            assert shot.settle is not None
+            assert (shot.settle.outcome, shot.settle.waiting_for) == ("capped", ["content"])
+            assert 0.15 <= time.monotonic() - started < 2.0
+        finally:
+            await cap.teardown()
+
     async def test_zero_turns_the_wait_off(self) -> None:
         browser = FakeBrowser()
         cap = await _capability(browser, "browser.dom", "browser.screenshot", settle_max_wait_s=0)
@@ -544,14 +631,24 @@ class TestCapabilitySettles:
 class _HeldProbe(FakeBrowser):
     """A page that keeps changing: the settle probe resolves at its budget, not quiet."""
 
+    async def answer(self, budget_s: float) -> dict[str, Any]:
+        return await _busy(budget_s)
+
     async def handle(
         self, client: Any, method: str, params: dict[str, Any], session_id: Any
     ) -> Any:
         if method == "Runtime.evaluate" and params.get("contextId") in self.settle_contexts:
             expression = str(params.get("expression", ""))
             budget_ms = int(expression.rsplit(",", 1)[1].strip(" )\n"))
-            return await _busy(budget_ms / 1000)
+            return await self.answer(budget_ms / 1000)
         return await super().handle(client, method, params, session_id)
+
+
+class _EmptyPage(_HeldProbe):
+    """A quiet page whose viewport stays empty: the probe resolves at its budget, no content."""
+
+    async def answer(self, budget_s: float) -> dict[str, Any]:
+        return await _empty(budget_s)
 
 
 class _RefusesFirstCapture(FakeBrowser):

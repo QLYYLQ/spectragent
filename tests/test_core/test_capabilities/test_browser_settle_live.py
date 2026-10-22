@@ -12,8 +12,16 @@ the late content — in the screenshot, and in a DOM-only observation alike,
 because the wait belongs to the observation, not to one fragment. With the
 wait turned off (``settle_max_wait_s: 0``) the same observation is taken at
 once and misses it, which is what this test would see without the change. A
-page that never goes quiet is captured at the cap. The fake-CDP half is
-``test_browser_settle.py``.
+page that never goes quiet is captured at the cap.
+
+A page can also be quiet and empty: the 2026-10-22 lookahead data had two
+captures recorded as settled that were a white app shell with a 3 px loading
+bar, quiet for seconds while its script downloaded. Here a page shows only
+such a bar until its one request answers, after much longer than the quiet
+window: the observation waits past the window, until the content is drawn. A
+page that stays empty is captured at the cap. Which pages count as showing
+content is pinned on a set of small pages, through the probe itself
+(``watch_page``). The fake-CDP half is ``test_browser_settle.py``.
 """
 
 from __future__ import annotations
@@ -32,6 +40,8 @@ from PIL import Image
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
+from spectragent.core.capabilities.browser.settle import watch_page
+from spectragent.schemas.action import Action
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -68,16 +78,108 @@ _BUSY = (
     "}, 100);</script>"
 )
 
+#: How long the server takes to answer the progress page's one request: three
+#: quiet windows, so a wait that stopped at the first quiet window would capture
+#: the bare loading bar.
+DATA_DELAY_S = 1.5
+#: A loading bar along the top edge, 3 px tall and painted by CSS, the way the
+#: blank 10jqka captures showed one; its CSS animation changes no DOM.
+_BAR = (
+    "<style>#bar{position:fixed;left:0;top:0;height:3px;width:0;background:#5b8def;"
+    "animation:grow 3s linear forwards}@keyframes grow{to{width:100%}}</style>"
+    "<div id=bar></div>"
+)
+_PROGRESS = (
+    "<!doctype html><title>progress</title><link rel=icon href='data:,'>" + _BAR + "<script>"
+    "fetch('/data').then((answer) => answer.text()).then((text) => {"
+    "  document.getElementById('bar').remove();"
+    "  const box = document.createElement('div');"
+    f"  box.style.cssText = 'position:fixed;left:{BOX[0]}px;top:{BOX[1]}px;"
+    f"width:{BOX[2]}px;height:{BOX[3]}px;background:rgb{GREEN}';"
+    "  box.textContent = text;"
+    "  document.body.appendChild(box);"
+    "});"
+    "</script>"
+)
+#: The same bar with nothing ever coming: a page that stays empty.
+_EMPTY = "<!doctype html><title>empty</title><link rel=icon href='data:,'>" + _BAR
+
+#: Small pages, and whether their viewport shows content by the rule (``settle.py``).
+_HEAD = "<!doctype html><meta charset=utf-8><link rel=icon href='data:,'>"
+_VERDICT_PAGES: dict[str, tuple[str, bool]] = {
+    "text": (_HEAD + "<p>A line of text</p>", True),
+    "loading_bar": (_HEAD + _BAR, False),
+    "spinner": (
+        # Bootstrap's spinner: a CSS-drawn ring and "Loading..." for screen readers only.
+        _HEAD + "<style>.ring{width:2rem;height:2rem;border:.25em solid #333;"
+        "border-right-color:transparent;border-radius:50%}"
+        ".sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;"
+        "clip:rect(0,0,0,0);white-space:nowrap;border:0}</style>"
+        "<div class=ring role=status><span class=sr>Loading...</span></div>",
+        False,
+    ),
+    "faded_root": (_HEAD + "<div style='opacity:0'><h1>Not revealed yet</h1></div>", False),
+    "visible_child": (
+        _HEAD + "<div style='visibility:hidden'><h1 style='visibility:visible'>Shown</h1></div>",
+        True,
+    ),
+    "display_contents": (_HEAD + "<div style='display:contents'>No box of its own</div>", True),
+    "shadow_text": (
+        _HEAD + "<x-card></x-card><script>customElements.define('x-card', class extends "
+        "HTMLElement { constructor() { super(); this.attachShadow({mode: 'open'})"
+        ".innerHTML = '<p>In a shadow root</p>'; } });</script>",
+        True,
+    ),
+    "empty_svg": (_HEAD + "<svg width=600 height=400></svg>", False),
+    "thin_svg": (
+        _HEAD + "<svg width=1280 height=3><rect width=600 height=3 fill=blue /></svg>",
+        False,
+    ),
+    "icon": (_HEAD + "<svg width=24 height=24><circle cx=12 cy=12 r=10 /></svg>", True),
+    "button_at_the_edge": (
+        # Its label is centred beyond the right edge; its box shows 80 px of it.
+        _HEAD + "<style>body{width:2400px}</style><button style='position:absolute;"
+        "left:1200px;top:40px;width:200px;height:40px'>Edge</button>",
+        True,
+    ),
+    "loading_image": (
+        # Added after the load, so the navigation does not wait for it; never finishes here.
+        _HEAD + "<script>addEventListener('load', () => {"
+        "const image = new Image(200, 200); image.src = '/held.png';"
+        "document.body.appendChild(image); });</script>",
+        False,
+    ),
+    "canvas": (_HEAD + "<canvas width=300 height=150></canvas>", True),
+    "colour_block": (_HEAD + "<div style='width:400px;height:300px;background:red'></div>", False),
+    "text_offscreen": (_HEAD + "<p style='position:absolute;left:-9999px'>Away</p>", False),
+}
+#: How long the probe looks at a page judged empty before it reports: a page
+#: showing content answers at once, so this is only what an empty page costs.
+VERDICT_BUDGET_S = 0.3
+
 
 class _Pages(BaseHTTPRequestHandler):
+    #: Set when the module is done: a response held open ends.
+    release: threading.Event
+
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
+        pages = {"/late.html": _LATE, "/busy.html": _BUSY}
+        pages.update({"/progress.html": _PROGRESS, "/empty.html": _EMPTY})
+        pages.update({f"/{name}.html": page for name, (page, _) in _VERDICT_PAGES.items()})
         if path == "/part":
             time.sleep(PART_DELAY_S)
             body = f"part {self.path.rsplit('=', 1)[-1]} of 3".encode()
             kind = "text/plain"
-        elif path in ("/late.html", "/busy.html"):
-            body = (_LATE if path == "/late.html" else _BUSY).encode()
+        elif path == "/data":
+            time.sleep(DATA_DELAY_S)
+            body = LATE_TEXT.encode()
+            kind = "text/plain"
+        elif path == "/held.png":
+            self.release.wait(120)
+            body, kind = b"", "image/png"
+        elif path in pages:
+            body = pages[path].encode()
             kind = "text/html; charset=utf-8"
         else:
             self.send_response(404)
@@ -97,11 +199,14 @@ class _Pages(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def origin() -> Iterator[str]:
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Pages)
+    release = threading.Event()
+    handler = type("_ModulePages", (_Pages,), {"release": release})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{httpd.server_address[1]}"
     finally:
+        release.set()
         httpd.shutdown()
         httpd.server_close()
 
@@ -179,3 +284,61 @@ async def test_a_page_that_never_goes_quiet_is_captured_at_the_cap(origin: str) 
     assert (shot.settle.outcome, shot.settle.waiting_for) == ("capped", ["dom"])
     assert 1400 <= shot.settle.waited_ms < 2500
     assert took < 4.0
+
+
+async def test_a_page_showing_only_a_loading_bar_is_waited_for_until_its_content(
+    origin: str,
+) -> None:
+    """Quiet from its load until its request answers: the window alone would capture the bar."""
+    observed, took = await _observe(origin, "progress.html", {"browser.screenshot"})
+    shot = observed["browser.screenshot"]
+    assert isinstance(shot, ScreenshotObs)
+    assert _box_colour(shot) == GREEN, "captured before the page drew its content"
+    assert shot.settle is not None
+    assert (shot.settle.outcome, shot.settle.waiting_for) == ("settled", [])
+    # The request was in flight before the wait began; the wait still outlasted the
+    # quiet window it used to stop at by most of the request's delay.
+    assert shot.settle.waited_ms >= DATA_DELAY_S * 1000 - 500
+    assert took < 5.0
+
+
+async def test_a_page_that_stays_empty_is_captured_at_the_cap(origin: str) -> None:
+    observed, took = await _observe(
+        origin, "empty.html", {"browser.screenshot"}, settle_max_wait_s=1.5
+    )
+    shot = observed["browser.screenshot"]
+    assert isinstance(shot, ScreenshotObs) and shot.image_bytes
+    assert shot.settle is not None
+    assert (shot.settle.outcome, shot.settle.waiting_for) == ("capped", ["content"])
+    assert 1400 <= shot.settle.waited_ms < 2500
+    assert took < 4.0
+
+
+async def test_what_counts_as_content(origin: str) -> None:
+    """The in-page check on small pages: text and drawn elements count, CSS colour does not."""
+    cap = BrowserCapability()
+    cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
+    try:
+        await asyncio.wait_for(cap.setup(negotiation={"browser.screenshot"}), 60)
+        sid = cap._default_session_id
+        assert cap._cdp is not None and sid is not None
+        verdicts: dict[str, bool] = {}
+        for name in ["about:blank", *_VERDICT_PAGES]:
+            url = name if name == "about:blank" else f"{origin}/{name}.html"
+            result = await cap.execute_action(Action(name="browser.navigate", params={"url": url}))
+            assert result.success, result.error
+            watch = await watch_page(
+                cap._cdp,
+                session_id=sid,
+                frame_id=cap._main_frame_ids[sid],
+                quiet_ms=0,
+                budget_s=VERDICT_BUDGET_S,
+            )
+            assert watch.error is None and not watch.document_gone, (name, watch)
+            verdicts[name] = watch.content
+        expected = {"about:blank": True} | {
+            name: shows for name, (_page, shows) in _VERDICT_PAGES.items()
+        }
+        assert verdicts == expected
+    finally:
+        await cap.teardown()

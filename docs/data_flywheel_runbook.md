@@ -40,7 +40,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
   这一档原来叫 `off`，现在叫 `none`，不用加引号；写 `off` 会被拒（PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`）。
 - 归档器只写在 `trace_writer` 的 `archive` 列表里，键要全限定（`browser.network`）。写进 capability 块的 `archiver:` 在组装时被拒。
-- 每次观测之前，browser capability 先等页面落定，录制、原路径回放、分叉都一样：主 frame 的文档加载完（`load`），之后连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成；最多等 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集。只协商 DOM 的观测与要截图的观测等的是同一个等待。两个旋钮写在 capability 块上，发布的 YAML 不写，默认值录制与回放都适用，数字原样记进 `config.json`；`settle_max_wait_s: 0` 关掉等待，窗口比上限长时组装报错。**这是时间开销**：每次观测至少多等一个静默窗口（500 ms）；一直在变的页面（轮播、视频、ticker）每一步都等满上限。40 个真实站点上实测（architecture §4.14）：`navigate` 之后平均多等 1.75 s，滚动之后 1.98 s，点击引起导航之后 4.34 s（多数等满上限）。每个观测 fragment（`browser.dom`、`browser.screenshot`、`browser.browser_meta`）都带这次采集的 `settle` 记录：`waited_ms`、`outcome`（`settled`、`capped`、`unknown`）和 `waiting_for`（被上限截断时还没等到的 `load` 或 `dom`）；度量报告在归档开销一节按角色给出 p50、p95 和被上限截断的占比。
+- 每次观测之前，browser capability 先等页面落定，录制、原路径回放、分叉都一样：主 frame 的文档加载完（`load`），之后连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成，而且视口里看得见东西（文字或图形元素；只有 CSS 加载条的白页不算，`about:blank` 不等）；最多等 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集。只协商 DOM 的观测与要截图的观测等的是同一个等待。两个旋钮写在 capability 块上，发布的 YAML 不写，默认值录制与回放都适用，数字原样记进 `config.json`；`settle_max_wait_s: 0` 关掉等待，窗口比上限长时组装报错。**这是时间开销**：每次观测至少多等一个静默窗口（500 ms）；一直在变的页面（轮播、视频、ticker）和视口一直空着的页面每一步都等满上限。40 个真实站点上实测（architecture §4.14）：`navigate` 之后平均多等 1.75 s，滚动之后 1.98 s，点击引起导航之后 4.34 s（多数等满上限）。每个观测 fragment（`browser.dom`、`browser.screenshot`、`browser.browser_meta`）都带这次采集的 `settle` 记录：`waited_ms`、`outcome`（`settled`、`capped`、`unknown`）和 `waiting_for`（被上限截断时还没等到的 `load`、`dom` 或 `content`；只有 `content` 是页面静了、视口一直空着）；度量报告在归档开销一节按角色给出 p50、p95 和被上限截断的占比。
 - 这些组合问题全部在 `prepare()` 报：归档器与档位、provider 与它的旋钮、profile、网络来源，以及回放时与源 run 的一致性（`prepare()` 只读源 run 的环境指纹）。错误在打开 trace、启动 Chrome 之前出现，每条点名两边，`spectragent run --dry-run` 也查得出来（回放配置要加 `--replay-archive DIR`）。`spectragent bench` 开跑前先用第一个任务检查一次（pre-flight）：被拒时一个任务也不跑、不建 trace，在 stderr 印出原因，退出码 2。setup 在启动 Chrome 之前再查一遍。
 
 - 登录初态可通过任务 `BrowserSetup.storage_state` 文档或 JSON 路径输入；`pinned` 接受 fresh context + seed，仍拒绝持久 profile。选择 `browser.storage` 才记录 seed 正文为 `initial_state.json`；fingerprint 总记录 `initial_storage` 的 digest、是否非空与覆盖范围。回放 / 分叉读取初态，绝不从 step 0 动作后的 storage 快照推断。非空 seed 没录正文、摘要不符、显式 seed 冲突或持久 profile 未知 origin 覆盖，prepare 明确拒绝。正文不重复进 task_setup，原 JSON 后来删改不影响分叉。cookie、local、session（含 CHIPS / partition key / OOPIF）是声明覆盖；IndexedDB / SW / cache / 完整 profile 不在内。要在页面登录，把凭据与步骤放进 task_text，由 Agent 既有动作执行。
@@ -584,7 +584,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 媒体恢复的边界：直播、画布自己画的播放器、跳进录下字节之外的位置、对应有歧义或缺失的元素都不恢复，判 `media_mismatch`；影子树里的 iframe 与读数没有应答的跨站 frame 里的媒体不知道，这一步同样不可恢复。脚本跳转、播放之后播放器可能露出控制条，感知哈希看不出来。源页面在模型思考时播完、自动跳到下一条的，对齐救不回这次导航，表现为 URL 不同。
 - JSONP 回调名只在几种确定的包装里改写（见"离线回放一个 run"）。回调名在路径或请求体里、包装是别的写法的，照录下的字节送出，页面拿不到数据，日志里却是普通的命中。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
-- 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，不等它，下一步才看到结果。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。
+- 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，视口里也已经有内容时，不等它，下一步才看到结果（视口空着时会等）。内容只认文字与图形元素：只由 CSS 背景图、伪元素文字或闭合 shadow root 组成的页面每一步等满上限；盖住内容的遮罩、还没画东西的 iframe 与 canvas 都算有内容。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。
 - 进程外 iframe 的 storage 不读，记在 `storage.json` 的 `unread_frames` 里。
 - anti-bot 只按应答头识别，不带这些头的拦截页面认不出来。度量只认 browser 的证据格式。
 - token 上限只数 trace 里记下的用量：provider 没报用量的调用只计数、点名，不加 token；评测器的 judge 调用不在 trace 里，不计入（链默认不评测）。

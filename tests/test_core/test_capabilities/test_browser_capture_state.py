@@ -96,8 +96,14 @@ class TestTheFragment:
                 SettleState(outcome="settled", waited_ms=640),
             ),
             (
-                PageSettle(waited_ms=5000, outcome="capped", waiting_for=["load", "dom"]),
-                SettleState(outcome="capped", waited_ms=5000, pending=("load", "dom")),
+                PageSettle(
+                    waited_ms=5000, outcome="capped", waiting_for=["load", "dom", "content"]
+                ),
+                SettleState(outcome="capped", waited_ms=5000, pending=("load", "dom", "content")),
+            ),
+            (
+                PageSettle(waited_ms=5000, outcome="capped", waiting_for=["content"]),
+                SettleState(outcome="capped", waited_ms=5000, pending=("content",)),
             ),
             (
                 PageSettle(
@@ -108,7 +114,7 @@ class TestTheFragment:
                 ),
             ),
         ],
-        ids=["off", "settled", "capped", "unknown"],
+        ids=["off", "settled", "capped", "capped on an empty viewport", "unknown"],
     )
     def test_settle_is_the_captures_settle_record(
         self, settle: PageSettle | None, projected: SettleState | None
