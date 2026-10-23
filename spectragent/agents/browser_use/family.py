@@ -91,21 +91,17 @@ from spectragent.schemas.prompt import (
 #: one — the hash still pins the exact text the model was given.
 _OVERRIDE_REF_PATH = "<override_system_message>"
 
-#: Template stems written for a fine-tuned browser-use checkpoint. They
-#: carry no surface description at all (the checkpoint learned the DOM
-#: format), so they take no surface fragment.
-_FINE_TUNED_VARIANTS: frozenset[str] = frozenset(
-    {
-        "system_prompt_browser_use",
-        "system_prompt_browser_use_flash",
-        "system_prompt_browser_use_no_thinking",
-    }
-)
-
-#: Variants whose surface fragment is the compact one.
+#: Variants whose surface fragment is the compact one: the flash template
+#: and the three written for a fine-tuned browser-use checkpoint, which say
+#: as little as they can because the checkpoint learned the conventions.
+#: Every template quotes a surface: the DOM format is the serializer's to
+#: describe, so a fine-tuned run reads what this run's serializer writes.
 _TERSE_VARIANTS: frozenset[str] = frozenset(
     {
         "system_prompt_flash",
+        "system_prompt_browser_use",
+        "system_prompt_browser_use_flash",
+        "system_prompt_browser_use_no_thinking",
     }
 )
 
@@ -612,17 +608,14 @@ class BrowserUseAgent(AgentBase):
                 PromptRef(path=_OVERRIDE_REF_PATH, content_hash=hash_text(text)),
             )
         else:
-            params: dict[str, Any] = {
-                "max_actions": max_actions_per_step,
-                "action_list": _render_action_list(self._action_space.descriptors),
-            }
-            # The fine-tuned templates describe no surface, so handing
-            # them one would be a param nothing renders — which
-            # ``test_prompt_tree`` reads as "the agent computed something
-            # the model never sees", and rightly.
-            if variant not in _FINE_TUNED_VARIANTS:
-                params["surface"] = self._render_surface(variant, fragment_formats)
-            text, snapshot = self.render(variant, params)
+            text, snapshot = self.render(
+                variant,
+                {
+                    "max_actions": max_actions_per_step,
+                    "action_list": _render_action_list(self._action_space.descriptors),
+                    "surface": self._render_surface(variant, fragment_formats),
+                },
+            )
 
         if self.extend_system_message:
             # The extension is appended *after* substitution, so the

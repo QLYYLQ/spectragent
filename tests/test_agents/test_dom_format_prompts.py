@@ -48,6 +48,7 @@ _CASES: list[tuple[str, dict[str, Any]]] = [
     ("browser_use", {"agent_id": "browser_use.dom"}),
     ("browser_use", {"agent_id": "browser_use.dom_vision"}),
     ("browser_use", {"agent_id": "browser_use.dom", "flash_mode": True}),
+    ("browser_use", {"agent_id": "browser_use.dom", "is_browser_use_model": True}),
     ("skyvern", {}),
 ]
 _IDS = [f"{agent}-{sorted(overrides.items())}" for agent, overrides in _CASES]

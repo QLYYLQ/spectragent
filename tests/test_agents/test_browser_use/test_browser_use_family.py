@@ -70,7 +70,7 @@ from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_params import minimal_params
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 from tests._helpers.fragment_formats import dom_formats
 
@@ -175,7 +175,11 @@ def _observation(*, image: bytes | None = None) -> Any:
 
 
 class _Run:
-    """One assembled, negotiated, prepared run — no CDP, no network."""
+    """One assembled, negotiated, prepared run — no CDP, no network.
+
+    The agent is prepared on the space framed on its declared grid, as
+    ``AgentRuntime.prepare`` frames it.
+    """
 
     def __init__(
         self, member: type[BrowserUseAgent], *, profile: str = "standard", **kwargs: Any
@@ -199,7 +203,7 @@ class _Run:
         self.descriptors = self.action_space.descriptors
         self.agent.prepare(
             task="t",
-            action_space=space_of(self.descriptors),
+            action_space=space_for(self.agent, self.descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )
@@ -381,6 +385,31 @@ def test_each_member_quotes_its_own_surface(member: type[BrowserUseAgent]) -> No
     prompt = _Run(member, flash_mode=False).prompt()
     assert dom_formats()["dom"] in prompt
     assert ("<browser_vision>" in prompt) is (member is BrowserUseDomVisionAgent)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"flash_mode": True},
+        {"flash_mode": False, "use_thinking": True},
+        {"flash_mode": False, "use_thinking": False},
+    ],
+)
+def test_a_fine_tuned_template_quotes_the_runs_dom_format(
+    member: type[BrowserUseAgent], config: dict[str, Any]
+) -> None:
+    """The checkpoint learned one DOM format; this run's serializer may write another.
+
+    So the fine-tuned templates quote the run's surface like every other
+    template: the serializer's description, and the grid when the run has a
+    coordinate action.
+    """
+    run = _Run(member, is_browser_use_model=True, **config)
+    assert run.agent.select_prompt_variant().startswith("system_prompt_browser_use")
+    prompt = run.prompt()
+    assert dom_formats()["dom"] in prompt
+    assert ("<coordinates>" in prompt) is (member is BrowserUseDomVisionAgent)
 
 
 def test_every_member_still_captures_the_screenshot() -> None:

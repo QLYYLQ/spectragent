@@ -385,7 +385,7 @@ agent:
 - `screenshot` 在两个成员上也都是 required：它不只是模型输入，`online_mind2web` / `lexbench_browser` 从 trace 里的截图打分。成员决定模型看到什么，不决定 run 记录什么。
 - `browser_use.dom_vision` 的动作与原来的 `dom_vision` 模式相同：`click`、`type` 按序号，另有 `click_coordinate`（够到序号够不着的目标，如跨域 iframe 小部件），没有 `type_coordinate` 与 `drag`。两个点击动词互相独立，没有一个参数一半不适用的重载动词。
 - 成员之间的行为差别只有两处，都是成员覆盖根上的一个方法：`dom_vision` 每步把截图附进用户消息（这一步的截图没有字节时只发文本，与 `dom` 相同），本 run 协商到坐标动作时在系统提示的 surface 之后加 `<coordinates>` 段（下文"BrowserUse 的反馈网格"）。`coordinate_space` 与 `vision_detail` 只在 `dom_vision` 上；`browser_use.dom` 不写点，没有这两个字段。
-- surface 片段按成员取（`_surface/dom.md`、`_surface/dom_vision.md` 与各自的 terse 版），模板只有一份：成员不是选模板的一个轴，DOM 与 DOM + 截图的消融只差 surface 片段。
+- surface 片段按成员取（`_surface/dom.md`、`_surface/dom_vision.md` 与各自的 terse 版），模板只有一份：成员不是选模板的一个轴，DOM 与 DOM + 截图的消融只差 surface 片段。每个模板都引用 surface，三个 `is_browser_use_model` 模板也是（§4.4 "观测格式由提供方描述"）。
 - 历史窗口是根上的配置字段 `step_history_window`（默认 10，至少 1）：每步消息的 `<agent_history>` 重放最近多少步。它以前是 `init=False` 的私有常量，YAML 改不了，是一个看不见的实验变量；Skyvern 的对应字段 `action_history_window` 按执行过的动作计数。
 
 #### Loop 驱动示例（weave + agent.run）
@@ -1256,10 +1256,10 @@ fragment 就是新增一个 Resolver watchdog。
 **提示词**（只换格式段落，其余原文不变）：
 
 - **Skyvern**：`<element_tree>` 一节以 `{{ dom_format }}` 引用说明，删去手写的 `[42]` 示例与"没有 `[index]` 前缀的行不可交互"；保留"序号是指代元素的唯一方式，动作写成 `"index": 42`"与其余规则。发布配置因此第一次教对了 `html` 的写法。
-- **BrowserUse**：四个 DOM surface 片段（`dom`、`dom_vision` 与两个 terse 版）各有一个槽位 `{dom_format}`，由 `_render_surface` 填入（片段里不允许别的占位符，`test_prompt_tree.py` 钉住）；删去手写的格式、示例与 `*[`、`|SCROLL|`、`|SHADOW(...)|` 的说明（`|SCROLL|` 与 `text` 实际写出的 `|scroll element|` 不符，`|SHADOW(...)|` 标的是 shadow host，不是 shadow root 里的元素）；"按数字 `[index]` 指代"改为"按本步列出的序号指代"。terse 版原来的一行压缩说明（`[index]<type>text</type>`，与输出也不符）换成同一段说明。三个 `is_browser_use_model` 模板（不描述 surface）不变；纯视觉的 `vision` 片段随纯视觉成员删除（§4.1 "BrowserUse 家族"）。
+- **BrowserUse**：四个 DOM surface 片段（`dom`、`dom_vision` 与两个 terse 版）各有一个槽位 `{dom_format}`，由 `_render_surface` 填入（片段里不允许别的占位符，`test_prompt_tree.py` 钉住）；删去手写的格式、示例与 `*[`、`|SCROLL|`、`|SHADOW(...)|` 的说明（`|SCROLL|` 与 `text` 实际写出的 `|scroll element|` 不符，`|SHADOW(...)|` 标的是 shadow host，不是 shadow root 里的元素）；"按数字 `[index]` 指代"改为"按本步列出的序号指代"。terse 版原来的一行压缩说明（`[index]<type>text</type>`，与输出也不符）换成同一段说明。三个 `is_browser_use_model` 模板原来不描述 surface（检查点学过 DOM 格式），配 `html` 序列化器时模型读到一种没人说明、也没学过的格式；2026-10-23 起它们也以 `{surface}` 引用 terse 片段，与其他模板一样教本 run 序列化器写的格式，`browser_use.dom_vision` 还带截图一句与 `<coordinates>` 段。没有选在 `prepare()` 拒绝"微调模板 + `html`"：那要 Agent 认出是哪个序列化器写的 DOM，正是本节不许的按序列化器分支；引用说明则让这个组合成为写在提示词与 trace 里的显式实验条件。纯视觉的 `vision` 片段随纯视觉成员删除（§4.1 "BrowserUse 家族"）。
 - **UI-TARS** 不变。
 
-Skyvern 与 BrowserUse DOM 模式的系统提示变了，所以这次改动之前的这些录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。每步的用户消息不变。
+Skyvern 与 BrowserUse DOM 模式的系统提示变了，所以这次改动之前的这些录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。每步的用户消息不变。BrowserUse 三个微调模板引用 surface 之后同样如此。
 
 **测试**：`test_browser_dom_serializer_format.py`：每个序列化器的说明点名自己的序号标记、不提别的序列化器的，真实 `DOMState`（BrowserUse 清洗器跑合成 CDP 载荷、Skyvern 清洗器跑提交的真实 Chrome 采集）里每个显示的已索引元素都带这个标记；`text` 写出的每一种标记都在说明里，`html` 的说明不提它不写的标记；说明跟着实例旋钮。`test_dom_format_prompts.py`：发布 YAML 换成 `text` / `html` 组装，走真实的 Runtime 装配，配置的清洗器产出的真实 `DOMState` 经配置的序列化器进观测：系统提示含说明原文，它教的标记就是观测里每个元素带的，别的标记不教；换序列化器时系统提示只在说明处不同；发布的 Skyvern 配置教 `data-idx`。另有解析规则（`test_negotiation/test_fragment_formats.py`）与 environment 汇总（`test_environments/test_fragment_format_routing.py`）。
 
