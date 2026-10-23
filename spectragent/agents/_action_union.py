@@ -127,23 +127,15 @@ def _param_type(action: str, param: str, schema: Mapping[str, Any]) -> tuple[Any
     return _branch_type(action, param, schema), False
 
 
-def params_model_from_schema(
-    descriptor: ActionDescriptor,
-    *,
-    relabel: Mapping[str, str] | None = None,
-) -> type[BaseModel]:
+def params_model_from_schema(descriptor: ActionDescriptor) -> type[BaseModel]:
     """A Pydantic model for one action's params, from its ``params_schema``.
 
     Args:
         descriptor: The negotiated descriptor. Its ``params_schema`` is the
             capability's typed contract — already narrowed to the params
-            this run's observation fragments can honour.
-        relabel: Param name → the description to show instead of the
-            capability's. The one legitimate use is a unit the agent
-            converts: the capability's point actions declare viewport
-            pixels, and an agent that reads points off a screenshot teaches
-            the grid it asked the model to answer on. The *names* are never
-            relabelled — only the units differ.
+            this run's observation fragments can honour, and, in a run whose
+            model writes points on a grid of its own, describing each point
+            param on that grid (``core/loops/coordinate_frames.py``).
 
     Raises:
         UnsupportedParamsSchema: A param is outside the closed subset.
@@ -151,12 +143,11 @@ def params_model_from_schema(
     schema = descriptor.params_schema or {}
     properties: Mapping[str, Any] = schema.get("properties") or {}
     required = set(schema.get("required") or ())
-    relabel = relabel or {}
 
     fields: dict[str, Any] = {}
     for name, node in properties.items():
         annotation, nullable = _param_type(descriptor.name, name, node)
-        description = relabel.get(name) or node.get("description") or ""
+        description = node.get("description") or ""
         if name in required:
             if nullable:
                 annotation = annotation | None
@@ -190,11 +181,7 @@ def _first_error(exc: ValidationError) -> str:
     return f"{where}: {error['msg']}"
 
 
-def action_union(
-    descriptors: Sequence[ActionDescriptor],
-    *,
-    relabel: Mapping[str, Mapping[str, str]] | None = None,
-) -> tuple[Any, dict[str, type[BaseModel]]]:
+def action_union(descriptors: Sequence[ActionDescriptor]) -> tuple[Any, dict[str, type[BaseModel]]]:
     """``(annotation, verb → single-key model)`` for one run's action items.
 
     The annotation goes straight into the per-run output model's
@@ -214,11 +201,9 @@ def action_union(
             "A closed action schema needs at least one negotiated action; this "
             "run has none, so the model could not emit anything at all."
         )
-    relabel = relabel or {}
-
     items: dict[str, type[BaseModel]] = {}
     for descriptor in descriptors:
-        params = params_model_from_schema(descriptor, relabel=relabel.get(descriptor.name))
+        params = params_model_from_schema(descriptor)
         # The verb is the *field name*, dot and all. Pydantic keeps it
         # verbatim through ``model_dump_json``, so no alias is involved and
         # a recorded reply replays as the key the model wrote.

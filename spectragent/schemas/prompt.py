@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas._types import UTCDatetime
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.restoration import RestoredAction
 
 if TYPE_CHECKING:
@@ -70,6 +71,13 @@ class ReactPromptContext:
     History callers provide recorded contributions. A policy interceptor may
     append contributions before calling the Agent. The Loop passes those facts
     to its step record without interpreting their text or placement.
+
+    ``frame`` is the frame this step's points are written in (the run's
+    declared grid over the screenshot this step shows), built by the framework
+    and recorded on the step (``StepRecord.frame``): the Agent writes the
+    pointer, and a restored step's execution, on it. ``None``: the run's
+    points are the capability's own units
+    (``docs/architecture_design.md`` §4.1 "坐标系归框架").
     """
 
     step: int
@@ -79,6 +87,7 @@ class ReactPromptContext:
     contributions: list[PromptContribution] = field(default_factory=list)
     source_run_id: str | None = None
     source_reply: str | None = None
+    frame: PointFrame | None = None
     generated: set[object] = field(default_factory=set, repr=False)
 
 

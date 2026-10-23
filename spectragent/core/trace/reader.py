@@ -1179,6 +1179,11 @@ def _require_current_format(path: Path, document: Any) -> None:
 
 def _why_not_read(found: Any) -> str:
     """What changed since the format *found*, in the words of a refusal."""
+    if found == 6 and type(found) is int:
+        return (
+            "A format-6 trace does not record the coordinate frame of each step, so the grid "
+            "its replies wrote points on is unknown."
+        )
     if found == 3 and type(found) is int:
         return (
             "A format-3 trace holds every image a prompt sent inline in each call record; "

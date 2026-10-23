@@ -27,6 +27,7 @@ from spectragent.core.loops._loop_fragments import (
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import LoopInput
+from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.react import ReactLoop, ReactRun, serialize_llm_output
 from spectragent.core.loops.restore import (
@@ -467,6 +468,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         observation = source.observation(step, run.negotiated_obs)
         try:
             record = source.record(step)
+            # The frame the source step recorded: the prompt is rebuilt, and
+            # the reply read back, on the grid the source model was shown.
             new_msgs = await agent.build_react_prompt(
                 observation,
                 context=ReactPromptContext(
@@ -476,6 +479,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     contributions=list(record.prompt_contributions),
                     source_run_id=source.manifest.run_id,
                     source_reply=record.llm_output,
+                    frame=record.frame,
                 ),
             )
         except RunAbort as veto:
@@ -802,7 +806,13 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
     async def _append_restored_history(
         self, run: BranchRun, record: StepRecord, observation: Any
     ) -> None:
-        """Let the Agent express actual recovery and own its state changes."""
+        """Let the Agent express actual recovery and own its state changes.
+
+        The restored actions ran after *observation* was captured, so the Agent
+        is shown them on that observation's frame, which the step's record
+        keeps: the next step feeds this one back on the same grid
+        (``core/loops/coordinate_frames.py``).
+        """
         history = record.source_history
         assert history is not None
         history.validate_execution()
@@ -811,12 +821,14 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             loop_sourced=frozenset(getattr(run.negotiated_obs, "loop_sourced", ())),
             builders=self.loop_fragment_builders(run, record.step),
         )
+        record.frame = step_frame(run.action_space, observation)
         context = ReactPromptContext(
             step=record.step,
             phase="history",
             is_branch=True,
             source_run_id=history.source_run_id,
             source_reply=history.source_reply,
+            frame=record.frame,
         )
         messages = await run.agent.build_restored_history(
             observation,

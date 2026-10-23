@@ -211,21 +211,6 @@ _MODES_WITH_IMAGE: frozenset[str] = frozenset({"dom_vision", "vision"})
 #: Which modes put the DOM tree in the model's message.
 _MODES_WITH_DOM: frozenset[str] = frozenset({"dom", "dom_vision"})
 
-#: What a coordinate param means, per grid. ``{axis}`` is ``x`` or ``y``
-#: and ``{edge}`` the edge it is measured from, so one sentence covers
-#: ``coordinate_x``, ``start_y`` and the rest.
-_POINT_DESCRIPTIONS: Mapping[CoordinateSpace, str] = MappingProxyType(
-    {
-        "screenshot_pixels": (
-            "int -- {axis} in pixels of the screenshot you are shown, from its {edge} edge"
-        ),
-        "normalized_1000": (
-            "int -- {axis} on a 0-1000 grid laid over the screenshot whatever its "
-            "pixel size, from its {edge} edge"
-        ),
-    }
-)
-
 #: The paragraph the prompt adds when this run has a coordinate action.
 #: Said in code rather than in the surface fragment because it depends on
 #: ``coordinate_space``, which is config — the same split UI-TARS makes.
@@ -591,12 +576,10 @@ class BrowserUseAgent(AgentBase):
         self._grid = None
         self._step_grids.clear()
         variant = self.select_prompt_variant()
-        relabel = self._coordinate_relabel()
-        self._per_run_output_model = self._build_per_run_output_model(variant, relabel)
+        self._per_run_output_model = self._build_per_run_output_model(variant)
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task,
             variant,
-            relabel,
             max_actions_per_step,
         )
         # ``cache=True`` marks the static prefix. The per-step breakpoint on the
@@ -848,32 +831,7 @@ class BrowserUseAgent(AgentBase):
             return write_viewport_point
         return self._step_grids.point_writer(step)
 
-    def _coordinate_relabel(self) -> dict[str, dict[str, str]]:
-        """Descriptor name → param → the unit *the model* writes it in.
-
-        The capability declares its point params in the units it executes
-        (viewport pixels); the model answers on the grid this agent asked
-        for. Only the description differs — the names are the descriptor's
-        own, and :meth:`_points_to_viewport` is the single conversion.
-        """
-        template = _POINT_DESCRIPTIONS[self.coordinate_space]
-        relabel: dict[str, dict[str, str]] = {}
-        for descriptor in self._action_space.descriptors:
-            pairs = descriptor.point_params
-            if not pairs:
-                continue
-            labels: dict[str, str] = {}
-            for x_key, y_key in pairs:
-                labels[x_key] = template.format(axis="x", edge="left")
-                labels[y_key] = template.format(axis="y", edge="top")
-            relabel[descriptor.name] = labels
-        return relabel
-
-    def _build_per_run_output_model(
-        self,
-        variant: str,
-        relabel: Mapping[str, Mapping[str, str]],
-    ) -> type[BaseModel]:
+    def _build_per_run_output_model(self, variant: str) -> type[BaseModel]:
         """Compose this run's output model: taught reasoning + closed action.
 
         The reasoning fields are the ones *this variant's* ``<output>``
@@ -882,7 +840,7 @@ class BrowserUseAgent(AgentBase):
         set would be forced to emit a ``thinking`` block its prompt never
         asked for.
         """
-        item, _models = action_union(self._action_space.descriptors, relabel=relabel)
+        item, _models = action_union(self._action_space.descriptors)
         allowed = ", ".join(d.name for d in self._action_space.descriptors)
         # Dynamic field definitions are valid at runtime but exceed Pydantic's
         # overloads. Keep this typing escape local to the model construction.
@@ -1030,7 +988,6 @@ class BrowserUseAgent(AgentBase):
         self,
         task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
         variant: str,
-        relabel: Mapping[str, Mapping[str, str]],
         max_actions_per_step: int,
     ) -> tuple[str, PromptSnapshot]:
         """Return the system prompt and the snapshot that explains it."""
@@ -1044,7 +1001,7 @@ class BrowserUseAgent(AgentBase):
         else:
             params: dict[str, Any] = {
                 "max_actions": max_actions_per_step,
-                "action_list": _render_action_list(self._action_space.descriptors, relabel),
+                "action_list": _render_action_list(self._action_space.descriptors),
             }
             # The fine-tuned templates describe no surface, so handing
             # them one would be a param nothing renders — which
@@ -1253,10 +1210,7 @@ class BrowserUseAgent(AgentBase):
         return "\n\n".join(parts) if parts else "(empty browser state)"
 
 
-def _render_action_list(
-    descriptors: list[ActionDescriptor],
-    relabel: Mapping[str, Mapping[str, str]],
-) -> str:
+def _render_action_list(descriptors: list[ActionDescriptor]) -> str:
     """Render action descriptors as a markdown bullet list for the prompt.
 
     Each line: ``- `<descriptor_name>(<params>)` — <description>``.
@@ -1266,9 +1220,9 @@ def _render_action_list(
     on, and the trace records. There is no alias table and no local-id
     fallback: a name the model writes is a name the run holds.
 
-    Param text is verbatim too, except where *relabel* names the grid the
-    model answers on rather than the units the executor declares. The
-    *names* never change.
+    Param text is verbatim too. A point param already says the grid the
+    model writes it on: the framework framed the run's descriptors
+    (``core/loops/coordinate_frames.py::framed_action_space``).
 
     Empty list yields an empty string — only in degenerate fixtures;
     ``prepare()`` refuses to build a schema with no verbs in it.
@@ -1278,8 +1232,7 @@ def _render_action_list(
     lines: list[str] = []
     for d in descriptors:
         if d.params:
-            labels = relabel.get(d.name, {})
-            params_part = ", ".join(f"{k}: {labels.get(k, v)}" for k, v in d.params.items())
+            params_part = ", ".join(f"{k}: {v}" for k, v in d.params.items())
         else:
             params_part = "no params"
         lines.append(f"- `{d.name}({params_part})` — {d.description}")

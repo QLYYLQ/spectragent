@@ -67,7 +67,7 @@ class TestWALWriter:
     def test_init_run_writes_the_current_manifest_that_is_writing(self, wal, config):
         wal.init_run(config)
         manifest = _manifest(wal)
-        assert manifest.format_version == TRACE_FORMAT_VERSION == 6
+        assert manifest.format_version == TRACE_FORMAT_VERSION == 7
         assert manifest.run_id == "run-001"
         assert manifest.last_step_completed == -1
         assert manifest.status == TraceStatus.WRITING

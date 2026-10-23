@@ -49,10 +49,13 @@ from spectragent.schemas.restoration import BranchProvenance
 #: records holding a :class:`PromptImageRef` where each one stood. Format 5
 #: declares selected recording channels, indexes lightweight call facts and
 #: distinguishes currently missing segments from historical recording faults.
-#: A format-2
+#: Format 7 records each step's coordinate frame (``StepRecord.frame``: the grid
+#: the step's reply wrote points on, over the screenshot it showed) and the
+#: run's framed action space (``ActionSpace.coordinate_space``); a format-6
+#: step leaves the grid of its reply unsaid. A format-2
 #: ``error`` meant either outcome, and a format-3 call record holds its
 #: images inline: ``RunTrace`` refuses every version but this one.
-TRACE_FORMAT_VERSION = 6
+TRACE_FORMAT_VERSION = 7
 
 
 class TraceStatus(StrEnum):

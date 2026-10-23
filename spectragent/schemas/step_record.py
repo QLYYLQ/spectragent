@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.prompt import PromptContribution, RestoredHistory
 from spectragent.schemas.recording import ExecutionError, UsageCoverage
 from spectragent.schemas.restoration import RestorationCheck
@@ -89,6 +90,17 @@ class StepRecord(BaseModel):
     step: int
     observation_summary: str = ""
     llm_output: str = ""
+    # The frame this step's points were written in: the agent's grid over the
+    # screenshot the step showed (``docs/architecture_design.md`` §4.1
+    # "坐标系归框架"). ``llm_output`` holds points on it; ``actions`` and every
+    # effect hold the capability's units. Set by the Loop on a step the agent
+    # decided (and on a restored step whose execution it was shown), so the
+    # next step's feedback, a branch and the training export write this step's
+    # points on it without asking the agent. ``None``: the run's points are
+    # the capability's own units (no grid declared, or no point action), or
+    # the step shows the model no point (a terminal observation, a step that
+    # failed before its prompt).
+    frame: PointFrame | None = None
     # Restored steps contain exact action/returned-result pairs here. Attempts
     # that raised without returning remain in restoration.actions, including
     # their original order and exception; never shift a later result backward.

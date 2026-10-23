@@ -54,6 +54,7 @@ from spectragent.core.loops._loop_fragments import (
     pinned_step_info,
     populate_loop_fragments,
 )
+from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation.observation import IncompatibleFragmentError
@@ -73,7 +74,7 @@ from spectragent.export.translate._registrar import UntranslatablePolicy
 from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation._registrar import FragmentBase, fragment_field_name
-from spectragent.schemas.observation.geometry import CoordinateSpace, point_grid
+from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame, point_grid
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.sample import CanonicalStepSample, ThoughtRecord, UntranslatableReason
 from spectragent.schemas.step_record import StepRecord
@@ -398,6 +399,10 @@ class StudentRenderer:
         if segment is None:
             segment = self._open(item, segments)
         observation, step_info = self._with_loop_fragments(item, observation, segment)
+        # The student's frame for this step: its own declared grid over the
+        # recorded screenshot, built as a live run builds it. The teacher's
+        # recorded frame is the teacher's grid, not the student's.
+        frame = step_frame(self.space, observation)
         prompt_context = ReactPromptContext(
             step=item.record.step,
             phase="history",
@@ -410,6 +415,7 @@ class StudentRenderer:
             contributions=list(item.record.prompt_contributions),
             source_run_id=item.trace.run_id,
             source_reply=item.record.llm_output,
+            frame=frame,
         )
         self.memory.add_messages(
             await self.agent.build_react_prompt(observation, context=prompt_context)
@@ -417,7 +423,7 @@ class StudentRenderer:
         actions = sample.actions or []
         if refusal is not None:
             self._refuse(item, sample, *refusal)  # keep_as_text: counted, then the text turn
-            self._keep_as_text(segment, item, sample, refusal[0])
+            self._keep_as_text(segment, item, sample, refusal[0], frame)
             return segment, None
 
         context = tuple(m.model_copy(deep=True) for m in self.memory.get_context_messages())
@@ -427,14 +433,14 @@ class StudentRenderer:
             self._refuse(item, sample, "unrepresentable", str(written))
             if self.untranslatable != "keep_as_text":
                 return None
-            self._keep_as_text(segment, item, sample, "unrepresentable")
+            self._keep_as_text(segment, item, sample, "unrepresentable", frame)
             return segment, None
         text, actions, claim_not_written = written
         executed, errors = self._round_trip(sample, actions, text, thought)
         self.loop.remember_reply(self.memory, text, [])
         context_steps = tuple(segment.steps)
         segment.steps.append(item.record.step)
-        segment.history.append(_as_student_saw(item.record, actions))
+        segment.history.append(_as_student_saw(item.record, actions, frame))
         if not item.emit:
             return segment, None
         self.stats.step_info[step_info] += 1
@@ -535,6 +541,7 @@ class StudentRenderer:
         item: TrajectoryStep,
         sample: CanonicalStepSample,
         reason: UntranslatableReason,
+        frame: PointFrame | None,
     ) -> None:
         """``keep_as_text``: the step stays in the context, its reply written as text.
 
@@ -558,7 +565,7 @@ class StudentRenderer:
         )
         self.loop.remember_reply(self.memory, f"[not expressible: {reason}] {written}", [])
         segment.steps.append(item.record.step)
-        segment.history.append(_as_student_saw(item.record, list(actions)))
+        segment.history.append(_as_student_saw(item.record, list(actions), frame))
 
     def _open(self, item: TrajectoryStep, index: int) -> _Segment:
         """A new segment: the student's memory cleared and seeded for the task."""
@@ -740,9 +747,16 @@ def _without_true_claim(
     ]
 
 
-def _as_student_saw(record: StepRecord, actions: Sequence[Action]) -> StepRecord:
-    """A copy of *record* with its actions as the student's history shows them."""
-    return record.model_copy(update={"actions": list(actions)}, deep=True)
+def _as_student_saw(
+    record: StepRecord, actions: Sequence[Action], frame: PointFrame | None
+) -> StepRecord:
+    """A copy of *record* as the student's history holds it: its actions, on the student's frame.
+
+    The frame is the student's for that step (``step_frame`` over the recorded
+    screenshot), so the student's next prompt writes the step's points on the
+    grid it was shown, read off the record like a live run's.
+    """
+    return record.model_copy(update={"actions": list(actions), "frame": frame}, deep=True)
 
 
 __all__ = [

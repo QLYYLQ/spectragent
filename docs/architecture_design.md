@@ -443,6 +443,13 @@ ReAct 的公开 `cap_actions`、`remember_rejected`、`remember_reply`、`today_
 
 UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项返回结果渲染到 user 观测消息，与本轮截图和步数一起交给模型。返回结果按动作次序配对；没有返回结果的动作单列，不能伪造成功；截断数量、错误阶段及错误保留。`typed_into_sensitive_field` 不进入提示。`success` 是执行器结果，不是页面目标实现的断言。单动作 `loop.action_result` 不扩展成另一份批次协议；Loop 不负责拼提示文字。
 
+**坐标系归框架**（用户 2026-10-23 的裁决：Agent 是胶水，坐标系属于框架）。capability 以自己的单位执行并记录点（浏览器为 viewport 的 CSS px）；模型在截图上读点，写在它自己的网格上（截图的像素，或截图上的 0–1000，`schemas/observation/geometry.py::CoordinateSpace`）。Agent 只声明它的模型在哪个网格上写点，即它的 `coordinate_space`（`core/loops/coordinate_frames.py::DeclaresCoordinateFrame`），其余都是框架的（`core/loops/coordinate_frames.py`）：
+
+- **run 的动作空间。** `AgentRuntime.prepare` 在守卫建好动作空间之后，按 Agent 的声明给它定坐标系（`framed_action_space`）：空间里有点动作（descriptor 有 `point_params`，§4.5"参数的含义"）时，`ActionSpace.coordinate_space` 记下这个网格，每个点参数的 descriptor 说明（prompt 的 prose 与 schema 的 `description`，同一行）改写成模型写它的单位，例如 `int -- x on a 0-1000 grid laid over the screenshot whatever its pixel size, from its left edge`。名字、绑定、哪些参数是点都不变，守卫照旧执行 capability 的单位。没有点动作的 run 从不让模型写点，不教网格：`coordinate_space` 为 `None`，点照旧是 capability 的单位（BrowserUse 的 `dom` 模式、Skyvern）。所以引用 descriptor 的每一处——BrowserUse 的动作表与闭合输出 schema、`params_refusal` 退回给模型的说明（§4.1"参数不合 `Params` 的动作是解析错误"）——都说模型的单位；BrowserUse 自己改写说明的代码（`_coordinate_relabel`、`action_union(relabel=...)`）删除。`ActionSpace` 是实验身份（§4.5），坐标系随它进 run 配置。
+- **每一步的坐标系。** Loop 在 Agent 构建本步 prompt 之前，按本步的观测建本步的坐标系（`step_frame` → `schemas/observation/geometry.py::PointFrame`：声明的网格铺在本步给模型看的截图上，即观测的 `screenshot` fragment）。截图量不出尺寸、没有给模型看的图像字节、可选截图采集失败或根本没有截图时，坐标系没有网格（`grid` 为 `None`），这一步的点都没有位置；截图 fragment 不报几何（不是 `ScreenshotGeometry`）是装配错误，本步以 `TypeError` 停下（`error_phase="prompt"`），措辞与原来 Agent 报的相同。坐标系经 `ReactPromptContext.frame` 交给 Agent，并记在本步的 `StepRecord.frame` 上；没有定坐标系的 run 两处都是 `None`。
+- **为什么记在步记录上，而不是另一个历史 fragment。** `StepRecord` 本来就既是 WAL 的步格式又是 `loop.history` 的载荷（§4.4）。坐标系是这一步的回复（`llm_output`，模型网格上的点）与它的动作（capability 的单位）之间的换算，正是这一步的事实。记在步上，下一步的反馈、分叉、训练导出与 trace 读者都按步读到它，不问 Agent，也不另起一份历史；只放进 fragment 的话 trace 里没有它，分叉与导出只能再去问 Agent 的配置。trace 格式因此升为 7（§5），旧 trace 读取时被拒绝。
+- **分叉与导出。** `BranchLoop` 的 source 历史重建用源步记下的坐标系（重建的 prompt 要与源 prompt 逐字相同，所以就是源模型当时看到的那个网格）；restored 历史在本次恢复观测上建坐标系，记在那个恢复步上。训练导出按学生自己的声明、在录下的截图上建坐标系（与实时 run 同一个 `step_frame`；teacher 记下的是 teacher 的网格，不是学生的），交给学生构建 prompt，并记在学生历史里那一步的副本上。
+
 **模型看到的每个点都写在它写点的那个网格上**（用户 2026-10-22 的裁决，取代原来的"执行参数的坐标明确为 CSS viewport pixels，模型输出继续使用其配置网格"）。事实不变：trace 里的动作参数、动作效果（§4.5）与 `capture_state`（§4.4）照旧是 capability 的 viewport 单位（浏览器为 CSS px）；变的只是 Agent 怎么呈现它们（呈现归 Agent，§4.4"观测增强按消费方分层"）。原因是实测：`coordinate_space: normalized_1000` 教模型在 0–1000 网格上写点，而反馈里的每个点都是 CSS px，teacher 模型（deepseek）于是把像素数写到网格上：输入框的像素 y 是 604，它写 `(500, 604)`，在 y=435 的空白处执行；一个金融站点上 25 次失败的文本输入有 15 次按像素读就落在输入框里，越靠屏幕下方偏得越远。这条合同对每个让模型在 `coordinate_space` 上写点的 Agent 都成立：UI-TARS，以及有坐标动作的 BrowserUse（同日跟进，下文"BrowserUse 的反馈网格"）。两者共用的写法在 `agents/_feedback_points.py`：网格上的点、没有位置的点怎么说、每步网格的记录（`StepGrids`）、哪些参数是点。UI-TARS 因此：
 
 - **上一批动作**写成它自己的动作语法，例如 `click(point='(500, 858)')`：与 `format_react_output` 用同一个逐动词写法（`_Verb.write`），点经 `PointGrid.to_grid` 写在那一批动作所依据的截图（上一步的截图）的网格上，所以模型看到的正是它在那张截图上会写出的那一行。批次的其余事实（每个结果的成败与错误、没有返回结果的动作、截断数量、错误阶段及错误）照旧。这个语法写不出来的动作保留原来的 `{"name", "params"}` 对象，点参数同样换成网格点：没有对应动词、本 run 没协商、参数值写不出，或者点在网格上没有位置（见下）。它们来自训练导出 `keep_as_text` 之后的历史，也来自 restored 历史（retarget 后实际执行的动作与录下的源动作）。哪些参数是点只看动作自己的声明（§4.5“参数的含义”）：本 run 执行的动作读它的 descriptor 的 `point_params`（相对名经本 run 的绑定，`core/action_guard.py::executed_descriptor`），本 run 不执行的录下动作（导出里 teacher 的动作）读注册的 `Params`（`point_params`），两边都不认识的动作没有点；UI-TARS 的动词表不再另写哪些参数是点，从不按参数名或取值猜，所以没有标记的 `_x` / `_y` 参数从不被换算。哪个动词对应本 run 的哪个动作同样只问绑定（`executed_name`），不按名字的后缀对；本 run 不执行的动作写不成调用，拒绝的说明列出每个动词在本 run 执行成哪个动作。这一写法是 Agent 的公开可选 slot `format_action_fact(action, *, step)`（上文"可选 slot"），导出的 `keep_as_text` 文本轮也用它写。
@@ -456,9 +463,9 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 - **有坐标动作的 run**：`<agent_history>` 里每一步的 `<actions>` 仍是 BrowserUse 自己的 `name(params)` 写法，动作陈述的点参数写在那一步截图的网格上（历史窗口有多步，每步用它自己的那张截图）；`<effects>` 的效果行经 `describe(write_point=...)` 写在同一网格上（按编号的 `click` 的落点也是点，编号本身不是）；`<browser_state>` 里 `capture_state` 的指针经 `render_browser_state(..., write_point=...)` 写在本轮截图的网格上；`<llm_output>` 是模型自己的回复，本来就在网格上。restored 历史里实际执行的与录下的源动作写成动作的 JSON，点参数换成本次恢复观测截图的网格点；原来的 "Executed coordinate parameters use CSS viewport pixels." 前缀删除（没有坐标动作的 run 也删：那里没有坐标参数可说）。`<coordinates>` 段加一句 "Every point in the agent history and the browser state is on this same grid."。`screenshot_pixels` 写的是图像像素，DPR 2 时是 CSS px 的两倍，与模型写的点一致。没有可测尺寸截图的步、截图之外的点照下文照实说。
 - **没有坐标动作的 run**：模型不写点，也没被教任何网格，提示里只有一套坐标，所以反馈照旧是 viewport 单位：效果行写 `(x, y)`，指针写 `(x, y) in viewport pixels.`，每步的提示词不变（restored 历史只少了上面那句前缀）。`coordinate_space` 在这样的 run 里不起作用（字段说明写明）。
 
-BrowserUse 不实现 `format_action_fact`：这个 slot 只有训练导出读，而 BrowserUse 没有 `format_react_output`，做不了学生；它的两种写法（历史的 `name(params)`、restored 的 JSON）是 Agent 私有的。哪些参数是点同样只看动作的声明（BrowserUse 不另列坐标动作的名单：本 run 有没有坐标动作、哪些参数要换算、说明要改写成网格单位，都从本 run 的 descriptor 的 `point_params` 读出；本 run 不执行的录下动作读注册的 `Params`），两边都不认识的动作没有点。
+BrowserUse 不实现 `format_action_fact`：这个 slot 只有训练导出读，而 BrowserUse 没有 `format_react_output`，做不了学生；它的两种写法（历史的 `name(params)`、restored 的 JSON）是 Agent 私有的。哪些参数是点同样只看动作的声明（BrowserUse 不另列坐标动作的名单：本 run 有没有坐标动作、哪些参数要换算，都从本 run 的 descriptor 的 `point_params` 读出，点参数的说明已由框架写成网格单位（上文"坐标系归框架"）；本 run 不执行的录下动作读注册的 `Params`），两边都不认识的动作没有点。
 
-**较早一步的网格从哪里来。** `loop.history` 里的 `StepRecord` 不带截图几何（Loop 不认识截图，§4.4），所以 UI-TARS 与 BrowserUse 各保留一份按步号的 per-run 状态（`agents/_feedback_points.py::StepGrids`）：每次 `build_react_prompt` 记下本步截图的网格（没有可测尺寸的截图时记 `None`），渲染一步的动作时按那条记录的 `step` 取（UI-TARS 只渲染上一批，BrowserUse 的历史窗口每步各取各的）。`prepare` 清空它。每条渲染路径都在 `prepare` 之后按步序构建 prompt：实时执行；branch 的 source 历史重建（逐步用源观测）；restored 历史（`build_restored_history` 先对本次恢复观测构建本步 prompt，再写恢复执行）；训练导出的每一段（段首经 `seed_messages` 调 `prepare`，段首没有上一批，段内逐步构建）。所以要渲染的那些步的网格总在。**在网格上没有位置的点照实说，从不退回像素，也从不夹到边上**（两个 Agent 同一句话，`agents/_feedback_points.py` 的 `NOT_PLACEABLE` / `OUTSIDE_THE_SCREENSHOT`）：那一步没有可测尺寸的截图时（导出里因此被 `keep_as_text` 的步、恢复观测的截图量不出尺寸），点写成 `not placeable (no screenshot of known size)`；点在截图所示区域之外时（`to_grid` 会把它夹到边上，从而写错），写成 `outside the screenshot`。动作的 JSON 里这两个点参数取这句话，效果行与指针写成 `a point …`。这样导出与分叉都照常继续，不因一个量不出的点中止。只有那一步根本不是这个 Agent 实例在 `prepare` 之后构建的、而那一批有要写的点时，渲染报错：每条渲染路径都先构建一步的 prompt 再反馈它的批次，所以这只会是调用方跳过了一步，录下的数据造不出这种情况。
+**较早一步的网格从哪里来。** 每一步的坐标系记在它的 `StepRecord.frame` 上（上文"坐标系归框架"）；UI-TARS 与 BrowserUse 的反馈目前仍按各自保留的一份按步号的 per-run 状态写点（`agents/_feedback_points.py::StepGrids`）：每次 `build_react_prompt` 记下本步截图的网格（没有可测尺寸的截图时记 `None`），渲染一步的动作时按那条记录的 `step` 取（UI-TARS 只渲染上一批，BrowserUse 的历史窗口每步各取各的）。`prepare` 清空它。每条渲染路径都在 `prepare` 之后按步序构建 prompt：实时执行；branch 的 source 历史重建（逐步用源观测）；restored 历史（`build_restored_history` 先对本次恢复观测构建本步 prompt，再写恢复执行）；训练导出的每一段（段首经 `seed_messages` 调 `prepare`，段首没有上一批，段内逐步构建）。所以要渲染的那些步的网格总在。**在网格上没有位置的点照实说，从不退回像素，也从不夹到边上**（两个 Agent 同一句话，`agents/_feedback_points.py` 的 `NOT_PLACEABLE` / `OUTSIDE_THE_SCREENSHOT`）：那一步没有可测尺寸的截图时（导出里因此被 `keep_as_text` 的步、恢复观测的截图量不出尺寸），点写成 `not placeable (no screenshot of known size)`；点在截图所示区域之外时（`to_grid` 会把它夹到边上，从而写错），写成 `outside the screenshot`。动作的 JSON 里这两个点参数取这句话，效果行与指针写成 `a point …`。这样导出与分叉都照常继续，不因一个量不出的点中止。只有那一步根本不是这个 Agent 实例在 `prepare` 之后构建的、而那一批有要写的点时，渲染报错：每条渲染路径都先构建一步的 prompt 再反馈它的批次，所以这只会是调用方跳过了一步，录下的数据造不出这种情况。
 
 **这次改动之前的 UI-TARS 录制不能用 source 历史分叉。** `history_source: source` 先比较种子、再逐次精确比较重建的 prompt 与源录下的 prompt，而系统提示与反馈里的点都变了，所以这样的分叉在种子检查就以 `IncompatibleCheckpointError` 停下。没有兼容路径（测试数据可丢弃）：重新录制，或用 `history_source: restored`（它不比较源 prompt，按新的写法渲染）。训练导出照常读旧录制，学生的上下文按新的写法渲染，只是与源 run 录下的调用不再逐条相同（§4.15"identity 导出的期望"）。BrowserUse 有坐标动作的录制同样不能用 source 历史分叉（`<coordinates>` 段多了一句，种子检查就不符，反馈里的点也变了）；没有坐标动作的录制提示不变，照常分叉。
 
@@ -1767,7 +1774,7 @@ action_space, act_fn = build_guarded_act(
 
 > **Historical note**：`action_filter` 作为顶层 YAML 键曾经是这里的主 ablation 机制。在对称协商方案下，ablation 的首选路径是 agent wiring 的 `required/optional` 二分 + capability 的 `actions` 列表收窄；`action_filter` 仅作为可选的额外 override 保留，不是主设计。
 
-**有效动作空间是实验身份。** `ActionSpace`（`schemas/action_space.py`）记录原始 `action_filter`（`None` 与 `[]` 严格区分）、经过协商和 capability 参数收窄后最终交给 prompt 的 `descriptors`、guard 允许的全限定 `allowed_actions` 和 `action_bindings`。`build_guarded_act` 返回这一个对象与执行闭包；prompt 与 guard 使用同一结果。Runtime 在准备阶段公开它，经运行开始合同交给记录组件，`TraceConfig.action_space` 与配置摘要纳入这份事实；来源 YAML 的身份单独保留。source 历史分叉比较这些真实约束，不能只比过滤前协商结果或因为字段缺失跳过校验。
+**有效动作空间是实验身份。** `ActionSpace`（`schemas/action_space.py`）记录原始 `action_filter`（`None` 与 `[]` 严格区分）、经过协商和 capability 参数收窄后最终交给 prompt 的 `descriptors`、guard 允许的全限定 `allowed_actions` 和 `action_bindings`。`build_guarded_act` 返回这一个对象与执行闭包；prompt 与 guard 使用同一结果。Runtime 随后按 Agent 声明的坐标系给它定坐标系（`coordinate_space`，点参数的说明写成模型的单位，§4.1"坐标系归框架"；名字、绑定与守卫的执行单位不变），然后在准备阶段公开它，经运行开始合同交给记录组件，`TraceConfig.action_space` 与配置摘要纳入这份事实；来源 YAML 的身份单独保留。source 历史分叉比较这些真实约束，不能只比过滤前协商结果或因为字段缺失跳过校验。
 
 #### Function-Calling 集成
 
@@ -4160,7 +4167,7 @@ class WALWriter:
         """write_durable config.json（按需建 run 目录和 traces/），建 steps/ observations/ messages/ evals/，
         把这些目录项一批 fsync：run 目录，加上为它新建的每个目录的父目录（traces/；这个 run
         新建了 traces/ 时再加 traces/ 的父目录），然后才 atomic_write 初始 manifest
-        （format_version=6，last_step_completed=-1，complete_through=-1，status=writing）。
+        （format_version=7，last_step_completed=-1，complete_through=-1，status=writing）。
         先有 config.json 才有 manifest：run 存在了，它的配置就一定在。之后的提交只 fsync run 目录
         之内的目录，run 目录自己的名字只在这里落盘。manifest 写成之前任何一步失败，都不留下 run。"""
 
@@ -4289,7 +4296,7 @@ traces/
   ├── suite_index.json                  # 可选：后置生成的聚合索引
   │
   └── {run_id}/
-      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 6；trace 自己那本账
+      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 7；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
       │
@@ -4351,11 +4358,11 @@ traces/
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
-**manifest（format_version 6）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
+**manifest（format_version 7）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
 
 ```json
 {
-  "format_version": 6,
+  "format_version": 7,
   "run_id": "f2bbae22",
   "last_step_completed": 1,
   "status": "complete",
@@ -4433,7 +4440,7 @@ class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent �
     INCOMPLETE = "incomplete"
 
 class TraceManifest(BaseModel):
-    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 6，RunTrace 只接受 6
+    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 7，RunTrace 只接受 7
     run_id: str
     last_step_completed: int = -1            # 最大已提交步号，不是计数
     expected_steps: int = 0
@@ -4633,8 +4640,10 @@ class RestorationCheck(BaseModel):
 
 - `origin`：`policy` 是 Loop 自己的 agent 决定的一步；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
 - `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；媒体证据不通过（`media.comparisons` 里有 `missing` / `extra` / `ambiguous` 或直播，`matched` 元素的位置差超过 `media_time_tolerance_s` 或暂停状态不同，比较成立时任一边有读不到的 frame，或 `media.alignment` 里有 `failed` / `not_restorable`；§4.14 "恢复：重定位与校验"，2026-10-20 裁决；证据带 `media_areas` 时不判，§4.14 "页面上的媒体区域"，2026-10-23 裁决）→ `media_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`（媒体区域规则声明的页面上是遮掉媒体框之后的距离）。值为 `None` 的量不参与判定。
-- 当前 `AgentResult.schema_version` 为 `5.0`（4.0：`agent_reported_success` 取自结束动作结果的 `reported_success`，§4.1"agent 的任务结论"；5.0：删掉 `action_history`，它是 trace 出现之前留下的、把每个动作拼成 Python repr 字符串的副本，动作只在步记录里，评测读 `TraceView.action_history`），trace `format_version` 为 `6`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
+- 当前 `AgentResult.schema_version` 为 `5.0`（4.0：`agent_reported_success` 取自结束动作结果的 `reported_success`，§4.1"agent 的任务结论"；5.0：删掉 `action_history`，它是 trace 出现之前留下的、把每个动作拼成 Python repr 字符串的副本，动作只在步记录里，评测读 `TraceView.action_history`），trace `format_version` 为 `7`（7：每一步记下它的坐标系 `StepRecord.frame`，run 配置里的动作空间带 `coordinate_space`，§4.1"坐标系归框架"；6 的步没有说它的回复在哪个网格上写点，读取时拒绝）；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
+
+**步的坐标系（2026-10-23）**：`StepRecord.frame: PointFrame | None`（`schemas/observation/geometry.py`），JSON 为 `{"space": ..., "grid": {"space", "width", "height", "viewport_width", "viewport_height"} | null}`：这一步写点的网格铺在它给模型看的截图上（§4.1"坐标系归框架"）。Loop 在 Agent 决定的步上写它（解析失败的步也写），restored 历史下的恢复步写本次恢复观测的坐标系；`None` 表示 run 的点就是 capability 的单位，或这一步没有给模型看过点（终止观测、prompt 之前就失败的步、source 历史下的恢复步）。它随 `HistoryObs` 到 Agent 手里，与 `origin` / `restoration` 一样不是渲染的内容，而是渲染这一步的点要用的坐标系。trace 读者靠它把 `llm_output` 里的点与 `actions` 的点对上，不用知道 agent 的配置。
 
 **`TraceConfig.branch`：分叉来源（M31）**。按 §5.4 "记录一个新的 run 级事实" 的步骤：
 
@@ -4802,7 +4811,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 归档元数据不合法 | extra 索引里一条记录的 `meta["archive"]` 不能按 `ArchiveMeta` 校验通过；点名那个索引文件 |
 | 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
 | fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
-| `format_version` 不支持 | 不是 6（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
+| `format_version` 不支持 | 不是 7（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
 
 把前两者都塌缩成 `None`，会让一批旧 schema 的 trace 静默地表现为“agent 没跑完”。`AgentResult.schema_version` 只接受当前版本：旧版本字段名对不上，接受它只会换来一条指着某个被改名字段的 pydantic 报错，而不是“这个 trace 太旧”。
 
