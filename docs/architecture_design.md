@@ -2657,7 +2657,7 @@ LexBench 图像 judge 没有任务文字、没有可用截图、回复没有有�
 
 **评测器经 `TraceView` 读 trace，`TraceView` 认得步的来源（M31）**（`evaluator/trace_view.py`）。一个 trace 的步有三种来源（`StepRecord.origin`，§5.3）：
 
-- `action_history` 只含 `origin == "policy"` 的步的动作，即这个 run 的 agent 自己做的决定；恢复出来的步（分叉 run 的前缀）是重放源 run 的动作，不混进来。
+- `action_history` 只含 `origin == "policy"` 的步的动作，即这个 run 的 agent 自己做的决定；恢复出来的步（分叉 run 的前缀）是重放源 run 的动作，不混进来。它只从步记录读（`AgentResult` 不再带一份拼好的字符串，5.0 起），每个动作写成 `name(params)`，评测器用的只有这一个写法（`trace_view.py::written_action`）。
 - `restored_action_history` 单列恢复出来的动作，每条带 `[restored]` 标签；非分叉 trace 为空。`online_mind2web` 的最终判定按顺序给出两者（先带标签的恢复前缀，再是策略动作），于是非分叉 trace 的 prompt 与以前逐字节相同。
 - `screenshots` 仍是每个已提交步的截图，所以恢复出来的步的截图与终止观测的截图（`origin == "terminal"`）都在里面；终止观测的那张正是最后一个动作之后的状态。
 - `step_count` 读 `AgentMetrics.steps`，只数策略步。
@@ -4633,7 +4633,7 @@ class RestorationCheck(BaseModel):
 
 - `origin`：`policy` 是 Loop 自己的 agent 决定的一步；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
 - `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；媒体证据不通过（`media.comparisons` 里有 `missing` / `extra` / `ambiguous` 或直播，`matched` 元素的位置差超过 `media_time_tolerance_s` 或暂停状态不同，比较成立时任一边有读不到的 frame，或 `media.alignment` 里有 `failed` / `not_restorable`；§4.14 "恢复：重定位与校验"，2026-10-20 裁决；证据带 `media_areas` 时不判，§4.14 "页面上的媒体区域"，2026-10-23 裁决）→ `media_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`（媒体区域规则声明的页面上是遮掉媒体框之后的距离）。值为 `None` 的量不参与判定。
-- 当前 `AgentResult.schema_version` 为 `4.0`（4.0：`agent_reported_success` 取自结束动作结果的 `reported_success`，§4.1"agent 的任务结论"），trace `format_version` 为 `6`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
+- 当前 `AgentResult.schema_version` 为 `5.0`（4.0：`agent_reported_success` 取自结束动作结果的 `reported_success`，§4.1"agent 的任务结论"；5.0：删掉 `action_history`，它是 trace 出现之前留下的、把每个动作拼成 Python repr 字符串的副本，动作只在步记录里，评测读 `TraceView.action_history`），trace `format_version` 为 `6`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
 
 **`TraceConfig.branch`：分叉来源（M31）**。按 §5.4 "记录一个新的 run 级事实" 的步骤：
@@ -4816,7 +4816,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 **二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
-**trace 格式有版本，只读当前这一版。** `TRACE_FORMAT_VERSION = 5`。本版引入声明记录范围、独立轻量调用账、稀疏步骤缺口和历史记录诊断；仍保留每 run 内容寻址的 prompt 图片。`AgentResult.schema_version = "4.0"`，总执行时间是 `metrics.execution_ms`，未测量的 usage/call count 为 None。读者拒绝旧格式和旧结果 schema，不保留迁移转发或对测试数据的兼容分支。
+**trace 格式有版本，只读当前这一版。** `TRACE_FORMAT_VERSION = 5`。本版引入声明记录范围、独立轻量调用账、稀疏步骤缺口和历史记录诊断；仍保留每 run 内容寻址的 prompt 图片。`AgentResult.schema_version = "5.0"`，总执行时间是 `metrics.execution_ms`，未测量的 usage/call count 为 None。读者拒绝旧格式和旧结果 schema，不保留迁移转发或对测试数据的兼容分支。
 
 **离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
 

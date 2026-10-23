@@ -66,7 +66,6 @@ class LoopRun:
     step_executor: StepExecutor[Self]
     is_branch: bool = False
     step_records: list[StepRecord] = field(default_factory=list)
-    action_history: list[str] = field(default_factory=list)
     prev_step_record: StepRecord | None = None
     last_answer: str = ""
 

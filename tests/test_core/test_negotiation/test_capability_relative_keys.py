@@ -478,9 +478,9 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
         cap = env.capabilities["desktop#0"]
         assert isinstance(cap, MockDesktopCapability)
         assert cap.click.executed == [{"coordinate_x": 3, "coordinate_y": 4}]
-        # The caller keeps this object and writes it into ``StepRecord``
-        # and ``AgentResult.action_history``, so resolving onto a copy
-        # would leave the trace naming a provider the run never used.
+        # The caller keeps this object and writes it into ``StepRecord``,
+        # so resolving onto a copy would leave the trace naming a provider
+        # the run never used.
         assert emitted.name == "desktop.click_coordinate"
 
     async def test_the_environment_itself_still_rejects_a_relative_name(

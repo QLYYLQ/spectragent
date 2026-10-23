@@ -984,7 +984,6 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             if not self.recording.trajectory:
                 persisted_result = self._result.model_copy(
                     update={
-                        "action_history": [],
                         "screenshots": [],
                         "system_prompt": None,
                         "agent_metadata": {},

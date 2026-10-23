@@ -830,7 +830,7 @@ class TestUnreadableTracesSayWhy:
             _ = trace.result
 
         message = str(exc_info.value)
-        assert "predates AgentResult schema 4.0" in message
+        assert "predates AgentResult schema 5.0" in message
         assert "'2.0'" in message
         assert "result.json" in message
         # The confusing field-level noise stays out of it.
@@ -859,12 +859,12 @@ class TestUnreadableTracesSayWhy:
         with pytest.raises(TraceSchemaError) as exc_info:
             _ = trace.result
 
-        assert "predates AgentResult schema 4.0" in str(exc_info.value)
+        assert "predates AgentResult schema 5.0" in str(exc_info.value)
         assert "'3.0'" in str(exc_info.value)
 
     def test_a_malformed_current_result_keeps_the_field_errors(self, tmp_path):
         """When the versions agree, pydantic's detail is the only clue."""
-        trace = self._trace_with_result(tmp_path, {"schema_version": "4.0", "task_id": "t-1"})
+        trace = self._trace_with_result(tmp_path, {"schema_version": "5.0", "task_id": "t-1"})
 
         with pytest.raises(TraceSchemaError) as exc_info:
             _ = trace.result

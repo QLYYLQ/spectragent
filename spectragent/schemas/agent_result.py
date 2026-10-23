@@ -129,8 +129,10 @@ class AgentResult(BaseModel):
     # separated execution_ms, provider coverage and recording health; version
     # 4 reads agent_reported_success from the done result's own claim, so it
     # is None when the agent said nothing about the task, instead of the done
-    # action's execution outcome (which UI-TARS always reported as True).
-    schema_version: Literal["4.0"] = "4.0"
+    # action's execution outcome (which UI-TARS always reported as True);
+    # version 5 drops action_history, a flattened string copy of the actions
+    # the trace's step records hold (read them there, ``TraceView``).
+    schema_version: Literal["5.0"] = "5.0"
 
     # Identity
     task_id: str
@@ -167,8 +169,7 @@ class AgentResult(BaseModel):
     model_id: str = ""
     browser_id: str = ""
 
-    # Trajectory
-    action_history: list[str] = Field(default_factory=list)
+    # Trajectory: the actions themselves are the trace's step records.
     screenshots: list[str] = Field(default_factory=list)
 
     # Performance

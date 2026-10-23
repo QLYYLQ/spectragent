@@ -33,7 +33,7 @@ def test_the_claim_round_trips(claim: bool | None) -> None:
     result = _result(agent_reported_success=claim)
     back = AgentResult.model_validate_json(result.model_dump_json())
     assert back == result
-    assert back.schema_version == "4.0"
+    assert back.schema_version == "5.0"
     assert back.agent_reported_success is claim
 
 
@@ -46,3 +46,12 @@ def test_a_result_from_before_the_claim_was_its_own_fact_is_refused() -> None:
     written = _result(agent_reported_success=None).model_dump(mode="json")
     with pytest.raises(ValidationError, match="schema_version"):
         AgentResult.model_validate({**written, "schema_version": "3.0"})
+
+
+def test_a_result_that_still_carries_the_flattened_action_history_is_refused() -> None:
+    """4.0 kept a string copy of the actions the trace holds; 5.0 reads only the trace."""
+    written = _result().model_dump(mode="json")
+    with pytest.raises(ValidationError, match="schema_version"):
+        AgentResult.model_validate({**written, "schema_version": "4.0"})
+    with pytest.raises(ValidationError, match="action_history"):
+        AgentResult.model_validate({**written, "action_history": ["browser.click({'index': 1})"]})

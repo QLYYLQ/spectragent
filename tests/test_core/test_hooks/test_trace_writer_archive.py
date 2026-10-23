@@ -1632,7 +1632,6 @@ class TestThroughTheRuntime:
             None,
         )
         assert result.metrics.steps == 3
-        assert len(result.action_history) == 3
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
@@ -1694,9 +1693,9 @@ class TestThroughTheRuntime:
 
         assert result.agent_done == AgentDoneStatus.DONE
         assert (result.answer, result.error) == ("42", None)
-        assert result.action_history
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
+        assert any(record.actions for record in trace.step_records)
         assert trace.result is not None and trace.result.answer == "42"
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == -1

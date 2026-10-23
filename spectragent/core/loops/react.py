@@ -590,7 +590,6 @@ class ReactLoop(AgentLoopBase):
                 act_error = exc
                 break
             step_results.append(result)
-            run.action_history.append(f"{action.name}({action.params})")
             if result.extracted_content:
                 run.last_answer = result.extracted_content
             if result.is_done:

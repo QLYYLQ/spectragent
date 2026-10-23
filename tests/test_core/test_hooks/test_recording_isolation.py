@@ -536,7 +536,6 @@ async def test_metrics_only_result_omits_trajectory_without_changing_live_result
     await seal(writer, 0)
     result = agent_result(
         metrics=AgentMetrics(steps=1),
-        action_history=["private trajectory marker"],
         screenshots=["large screenshot marker"],
         system_prompt=TextPrompt(
             kind="text",
@@ -548,7 +547,6 @@ async def test_metrics_only_result_omits_trajectory_without_changing_live_result
     )
     original = result.model_copy(deep=True)
     await writer.on_run_end(result=result)
-    assert result.action_history == original.action_history
     assert result.screenshots == original.screenshots
     assert result.system_prompt == original.system_prompt
     assert result.agent_metadata == original.agent_metadata
@@ -561,7 +559,7 @@ async def test_metrics_only_result_omits_trajectory_without_changing_live_result
         original.answer,
         original.error,
     )
-    assert saved.action_history == saved.screenshots == []
+    assert saved.screenshots == []
     assert saved.system_prompt is None
     assert saved.agent_metadata == saved.config == {}
     assert saved.metrics.usage is not None and saved.metrics.usage.total_tokens == 15

@@ -182,8 +182,8 @@ def build_guarded_act(
             return await _reject_action(action, active_names)
         if full != action.name:
             # Resolve in place, not onto a copy: the caller keeps this
-            # object and is the one that writes it into ``StepRecord``
-            # and ``AgentResult.action_history``. A copy would leave the
+            # object and is the one that writes it into ``StepRecord``.
+            # A copy would leave the
             # trace naming a provider-less verb for an action some
             # specific capability executed — the provenance loss the
             # observation axis already refuses.
