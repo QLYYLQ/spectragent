@@ -14,6 +14,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from spectragent.core.capabilities.browser.archive.fingerprint import flags_digest
 from spectragent.core.capabilities.browser.backends import local_chrome
@@ -259,6 +260,31 @@ class TestBackgroundThrottling:
             PINNED_LIKE
         )
         assert flags_digest(default) != flags_digest(throttled)
+
+
+#: Defaults with no knob of their own, each with the knob it once had. Nothing
+#: read those knobs: ``false`` in YAML left the switch on.
+FIXED_DEFAULT_SWITCHES = {
+    "disable_background_networking": "--disable-background-networking",
+    "disable_popup_blocking": "--disable-popup-blocking",
+    "disable_translate": "--disable-translate",
+    "disable_sync": "--disable-sync",
+    "no_first_run": "--no-first-run",
+    "disable_default_apps": "--disable-default-apps",
+}
+
+
+class TestFixedDefaultSwitches:
+    def test_a_default_launch_passes_every_one(self) -> None:
+        args = LocalChromeProvider()._build_args(9222, "/tmp/p")
+        assert set(FIXED_DEFAULT_SWITCHES.values()) <= set(args)
+
+    @pytest.mark.parametrize("knob", sorted(FIXED_DEFAULT_SWITCHES))
+    def test_a_config_naming_the_old_knob_is_refused(self, knob: str) -> None:
+        from spectragent.generated._composed import LocalChromeBrowser_ProviderConfig
+
+        with pytest.raises(ValidationError, match=knob):
+            LocalChromeBrowser_ProviderConfig.model_validate({knob: False})
 
 
 class _FakeProcess:
