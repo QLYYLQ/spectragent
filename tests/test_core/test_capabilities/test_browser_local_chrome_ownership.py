@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import os
+import shutil
+import signal
 import socket
+import subprocess
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +63,13 @@ class Harness:
         self.spawn_error: Exception | None = None
         self.spawn_entered: asyncio.Event | None = None
         self.spawn_gate: asyncio.Event | None = None
+        self.spawn_options: list[dict[str, Any]] = []
+        #: The tether's reading end of each spawn, held as the child would hold it.
+        self.chrome_ends: list[int] = []
+        #: (process group, return code of its browser when it was killed). The
+        #: PIDs here are made up: a real ``killpg`` would reach whatever group
+        #: of this machine has that number.
+        self.group_kills: list[tuple[int, int | None]] = []
         harness = self
 
         def profile(**_: Any) -> str:
@@ -63,8 +78,11 @@ class Harness:
             self.created.append(path)
             return str(path)
 
-        async def spawn(*cmd: str, **_: Any) -> Process:
+        async def spawn(*cmd: str, **options: Any) -> Process:
             self.commands.append(cmd)
+            self.spawn_options.append(options)
+            if isinstance(options.get("stdin"), int):
+                self.chrome_ends.append(os.dup(options["stdin"]))
             if self.spawn_entered is not None:
                 self.spawn_entered.set()
             if self.spawn_gate is not None:
@@ -123,6 +141,10 @@ class Harness:
                     "processInfo": [{"type": "browser", "id": pid} for pid in harness.browser_pids]
                 }
 
+        def kill_group(group: int) -> None:
+            self.group_kills.append((group, self.process.returncode))
+
+        monkeypatch.setattr(local_chrome, "_kill_process_group", kill_group)
         monkeypatch.setattr(local_chrome.tempfile, "mkdtemp", profile)
         monkeypatch.setattr(local_chrome.asyncio, "create_subprocess_exec", spawn)
         monkeypatch.setattr(local_chrome.httpx, "AsyncClient", Client)
@@ -133,8 +155,11 @@ class Harness:
 
 
 @pytest.fixture
-def harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Harness:
-    return Harness(monkeypatch, tmp_path)
+def harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Harness]:
+    harness = Harness(monkeypatch, tmp_path)
+    yield harness
+    for end in harness.chrome_ends:
+        os.close(end)
 
 
 async def test_occupied_port_is_refused_before_starting_or_connecting(harness: Harness) -> None:
@@ -383,6 +408,243 @@ async def test_cancellation_still_propagates_when_profile_cleanup_fails(
     monkeypatch.setattr(local_chrome.shutil, "rmtree", remove_tree)
     await provider.close()
     assert not harness.created[0].exists()
+
+
+# ── The launcher's lifetime bounds Chrome's ────────────────────────
+
+tethered = pytest.mark.skipif(not local_chrome._TETHERED, reason="Chrome is tethered on POSIX")
+
+
+def _tether_closed(end: int) -> bool:
+    """Whether every writing end of the pipe whose reading end is ``end`` is closed."""
+    os.set_blocking(end, False)
+    try:
+        return os.read(end, 1) == b""
+    except BlockingIOError:
+        return False
+
+
+def _open_descriptors() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
+@tethered
+async def test_chrome_runs_tethered_and_leads_its_own_process_group(harness: Harness) -> None:
+    provider = harness.provider()
+    session = await provider.open()
+    command, options = harness.commands[0], harness.spawn_options[0]
+    tether = local_chrome._TETHER_EXEC
+    assert command[: len(tether)] == tether
+    assert list(command[len(tether) :]) == session.metadata["command_line"]
+    assert "--remote-debugging-pipe" in session.metadata["command_line"]
+    assert "--remote-debugging-pipe" in session.metadata["launch_flags"]
+    assert options["process_group"] == 0
+    writing_end = provider._launches[session.session_id].tether
+    assert writing_end is not None and not os.get_inheritable(writing_end)
+    [chrome_end] = harness.chrome_ends
+    assert not _tether_closed(chrome_end)
+    await provider.close(session)
+    assert _tether_closed(chrome_end)
+
+
+@tethered
+async def test_leftover_helpers_are_killed_once_the_browser_is_seen_to_exit(
+    harness: Harness,
+) -> None:
+    provider = harness.provider()
+    session = await provider.open()
+    await provider.close(session)
+    assert harness.group_kills == [(harness.process.pid, 0)]
+
+
+@tethered
+async def test_a_browser_that_exited_unseen_leaves_its_group_number_alone(
+    harness: Harness,
+) -> None:
+    """When it exited is unknown, so its process group ID may be another's by now."""
+    provider = harness.provider()
+    session = await provider.open()
+    harness.process.returncode = 1
+    await provider.close(session)
+    assert harness.group_kills == []
+    assert _tether_closed(harness.chrome_ends[0])
+
+
+@tethered
+async def test_a_failed_stop_keeps_chrome_tethered_for_the_retry(harness: Harness) -> None:
+    provider = harness.provider()
+    session = await provider.open()
+    [chrome_end] = harness.chrome_ends
+    harness.process.kill_error = PermissionError("termination denied")
+    with pytest.raises(PermissionError, match="termination denied"):
+        await provider.close(session)
+    assert not _tether_closed(chrome_end)
+    assert harness.group_kills == []
+    harness.process.kill_error = None
+    await provider.close(session)
+    assert _tether_closed(chrome_end)
+    assert harness.group_kills == [(harness.process.pid, 0)]
+
+
+@tethered
+@pytest.mark.parametrize("failure", [None, "spawn", "proof"])
+async def test_no_tether_descriptor_outlives_its_launch(
+    harness: Harness, failure: str | None
+) -> None:
+    before = _open_descriptors()
+    provider = harness.provider()
+    if failure is None:
+        await provider.close(await provider.open())
+    else:
+        if failure == "spawn":
+            harness.spawn_error = OSError("process could not start")
+        else:
+            harness.probe_error = RuntimeError("SystemInfo command refused")
+        with pytest.raises((OSError, RuntimeError)):
+            await provider.open()
+    assert _open_descriptors() == before + len(harness.chrome_ends)
+
+
+@tethered
+@pytest.mark.parametrize("executable", ["missing", "not-executable"])
+async def test_live_an_executable_the_shell_cannot_run_is_reported_as_such(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, executable: str
+) -> None:
+    """Launched directly, these raised ``FileNotFoundError`` / ``PermissionError``."""
+    path = tmp_path / executable
+    if executable == "not-executable":
+        path.write_text("not a program")
+    profiles: list[Path] = []
+
+    def profile(**_: Any) -> str:
+        profiles.append(tmp_path / f"temporary-{len(profiles)}")
+        profiles[-1].mkdir()
+        return str(profiles[-1])
+
+    monkeypatch.setattr(local_chrome.tempfile, "mkdtemp", profile)
+    provider = LocalChromeProvider(executable_path=str(path), cdp_wait_timeout=20)
+    with pytest.raises(RuntimeError, match="the Chrome executable is missing or cannot be"):
+        await provider.open()
+    assert not provider._launches
+    assert profiles and not profiles[0].exists()
+
+
+#: A launcher that dies abruptly: it opens a session, reports it and waits to be killed.
+_LAUNCHER = """
+import asyncio, json
+from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+
+async def main():
+    session = await LocalChromeProvider().open()
+    metadata = session.metadata
+    print(json.dumps({"pid": metadata["pid"], "profile": metadata["user_data_dir"]}), flush=True)
+    await asyncio.Event().wait()
+
+asyncio.run(main())
+"""
+
+
+def _processes_of(profile: str) -> list[int]:
+    """Every live process whose command line names ``profile``: a browser and its helpers."""
+    listing = subprocess.run(
+        ["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True, check=True
+    ).stdout
+    return [
+        int(pid)
+        for pid, _, command in (line.strip().partition(" ") for line in listing.splitlines())
+        if f"--user-data-dir={profile}" in command
+    ]
+
+
+def _kill_processes_of(profile: str) -> None:
+    """A failed test's cleanup: only processes found by this test's own profile path."""
+    for pid in _processes_of(profile):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+
+async def _until_gone(profile: str, seconds: float) -> list[int]:
+    """Wait for every process of ``profile`` to exit; what is left at the deadline."""
+    left = _processes_of(profile)
+    for _ in range(int(seconds * 10)):
+        if not left:
+            break
+        await asyncio.sleep(0.1)
+        left = _processes_of(profile)
+    return left
+
+
+@tethered
+@pytest.mark.requires_chrome
+async def test_live_chrome_exits_when_its_launcher_is_killed() -> None:
+    launcher = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _LAUNCHER,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    profile: str | None = None
+    try:
+        assert launcher.stdout is not None and launcher.stderr is not None
+        line = await asyncio.wait_for(launcher.stdout.readline(), 60)
+        if not line:
+            await launcher.wait()
+            pytest.fail(f"the launcher exited first: {(await launcher.stderr.read()).decode()}")
+        launched = json.loads(line)
+        pid, profile = launched["pid"], launched["profile"]
+        assert profile is not None
+        processes = _processes_of(profile)
+        assert pid in processes and len(processes) > 1, "a browser and its helpers"
+        assert os.getpgid(pid) == pid
+
+        launcher.kill()
+        assert await launcher.wait() == -signal.SIGKILL
+        # Measured about 1.2 s with the default switches, about 7 s without them.
+        left = await _until_gone(profile, 30)
+        assert not left, f"Chrome processes outlived their launcher: {left}"
+    finally:
+        if launcher.returncode is None:
+            launcher.kill()
+            await launcher.wait()
+        if profile is not None:
+            _kill_processes_of(profile)
+            # Nobody is left to delete the temporary profile on this path.
+            shutil.rmtree(profile, ignore_errors=True)
+
+
+@tethered
+@pytest.mark.requires_chrome
+@pytest.mark.parametrize("browser", ["answers SIGTERM", "is stopped"])
+async def test_live_close_kills_everything_left_in_chromes_process_group(browser: str) -> None:
+    """A process in Chrome's group that does not exit by itself is killed by close().
+
+    Chrome's own helpers exit soon after their browser (measured up to 4 s
+    after a SIGKILL), and stopping them does not hold them: the kernel hangs
+    up a stopped, orphaned process group. So a plain process placed in the
+    group stands in for a helper that never notices its browser is gone.
+    """
+    provider = LocalChromeProvider(shutdown_timeout=0.5)
+    session = await provider.open()
+    pid, profile = session.metadata["pid"], session.metadata["user_data_dir"]
+    straggler: subprocess.Popen[bytes] | None = None
+    try:
+        assert os.getpgid(pid) == pid
+        assert len(_processes_of(profile)) > 1
+        straggler = subprocess.Popen(["sleep", "300"], process_group=pid)
+        if browser == "is stopped":
+            os.kill(pid, signal.SIGSTOP)  # close() has to SIGKILL it
+        await provider.close(session)
+        assert straggler.wait(timeout=10) == -signal.SIGKILL
+        left = await _until_gone(profile, 10)
+        assert not left, f"Chrome processes outlived close(): {left}"
+        assert not Path(profile).exists()
+    finally:
+        if straggler is not None and straggler.poll() is None:
+            straggler.kill()
+            straggler.wait()
+        _kill_processes_of(profile)
+        await provider.close()
 
 
 async def _browser_pid(session: Any) -> int:
