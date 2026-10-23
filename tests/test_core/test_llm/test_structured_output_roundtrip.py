@@ -37,6 +37,7 @@ from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop, serialize_llm_output
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_of
 from tests._helpers.llm_clients import FakeClient
@@ -274,6 +275,7 @@ def _run_loop(agent: Any, llm: Any) -> Any:
         "llm": llm,
         "memory": _FakeMemory(),
         "act_fn": env.act,
+        "action_space": ActionSpace(),
         "session_id": None,
         "task_id": "t",
     }
@@ -365,6 +367,7 @@ class TestCompletionSerialization:
                     "llm": ok_llm,
                     "memory": ok_memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -388,6 +391,7 @@ class TestCompletionSerialization:
                     "llm": _RecordingLLM(completion),
                     "memory": bad_memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1043,6 +1047,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": _RaisingLLM(),
                     "memory": memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1093,6 +1098,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": _DeadLLM(),
                     "memory": memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1168,6 +1174,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": llm,
                     "memory": memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                     "step_recorder": recorder,

@@ -21,6 +21,7 @@ from spectragent.core.llm.views import ModelInvokeUsage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 
 
 class _DummyObs:
@@ -137,6 +138,7 @@ def _run(
         "llm": llm,
         "memory": _FakeMemory(),
         "act_fn": env.act,
+        "action_space": ActionSpace(),
         "task_id": "t",
         "step_recorder": recorder,
     }

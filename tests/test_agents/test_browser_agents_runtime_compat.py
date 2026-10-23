@@ -33,6 +33,7 @@ from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import extract_wiring, negotiate_action
 from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.schemas.action import ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.fragments import (
     HistoryObs,
     StepInfoObs,
@@ -489,6 +490,7 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
         "llm": llm,
         "memory": agent.memory,
         "act_fn": _act_fn,
+        "action_space": ActionSpace(),
         "negotiated_obs": _MockNegotiated(),
         "active_descriptors": [],
         "session_id": None,

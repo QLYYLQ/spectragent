@@ -13,7 +13,6 @@ import hashlib
 from collections.abc import Callable
 from typing import Any, Literal
 
-from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_chat_decisions
 from spectragent.export.errors import missing_export_slots
@@ -24,7 +23,6 @@ from spectragent.schemas.observation.image import image_media_type
 from spectragent.schemas.sample import (
     BranchSampleMeta,
     CanonicalStepSample,
-    DroppedParams,
     FragmentRef,
     ImageRef,
     SampleLabels,
@@ -108,7 +106,6 @@ def canonicalise(
             continue
         recorded_chat_decisions(trace, record.step, consumer="training export")
         executed = executed_actions(record)
-        teacher_actions, dropped = _project(executed)
         observations, image = _observations(trace, record.step, entries[record.step].fragments)
         history = [step for step in exportable if step < record.step]
         if checkpoint is not None:
@@ -131,8 +128,7 @@ def canonicalise(
                 observations=observations,
                 image=image,
                 history_steps=history,
-                teacher_actions=teacher_actions,
-                dropped_params=dropped,
+                teacher_actions=executed,
                 thought=read_thought(record.llm_output),
                 labels=SampleLabels(
                     step_status="ok" if all(r.success for r in results) else "action_failed",
@@ -164,36 +160,6 @@ def _thought_reader(
         return ThoughtRecord(text=text, source_field=source_field)
 
     return read
-
-
-def _project(actions: list[Action]) -> tuple[list[Action], list[DroppedParams]]:
-    """Each action with only the params its ``Params`` declares; the rest named.
-
-    An agent may write more into an action's params than the action reads —
-    Skyvern puts its per-action ``reasoning`` there. The executed action is
-    what the declared params say, so that is the training target. An action
-    no registered class claims is kept as recorded: its translator says
-    what it can do with it.
-    """
-    projected: list[Action] = []
-    dropped: list[DroppedParams] = []
-    for index, action in enumerate(actions):
-        cls = ActionRegistrar.get_or_none(action.name)
-        params_model = getattr(cls, "Params", None) if cls is not None else None
-        if params_model is None:
-            projected.append(Action(name=action.name, params=dict(action.params)))
-            continue
-        declared = params_model.model_fields
-        projected.append(
-            Action(
-                name=action.name,
-                params={key: value for key, value in action.params.items() if key in declared},
-            )
-        )
-        extra = sorted(key for key in action.params if key not in declared)
-        if extra:
-            dropped.append(DroppedParams(action_index=index, params=extra))
-    return projected, dropped
 
 
 def _env_sourced(key: str) -> bool:

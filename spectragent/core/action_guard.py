@@ -15,6 +15,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from collections.abc import Set as AbstractSet
 from typing import Any
 
+from pydantic import ValidationError
+
+from spectragent.core.actions._registrar import registered_params
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 
@@ -73,6 +76,40 @@ def executed_descriptor(space: ActionSpace, name: str) -> ActionDescriptor | Non
     if full is None:
         return None
     return next(descriptor for descriptor in space.descriptors if descriptor.name == full)
+
+
+def params_refusal(space: ActionSpace, action: Action) -> str | None:
+    """Why *action*'s params break the ``Params`` of the action it executes as, or ``None``.
+
+    The check every parsed action passes before it runs
+    (``ReactLoop.check_action_params``): its params validated against the
+    ``Params`` model of the action *space*'s guard executes it as. The answer
+    is written for the model that wrote the action: each problem by param
+    (``index: Field required``, ``reasoning: Extra inputs are not
+    permitted``), then what the action takes in this run, from its
+    descriptor. ``None`` when the params fit, when the guard would refuse the
+    name itself (it says so when the action is executed), and when the action
+    has no registered ``Params`` to check against.
+    """
+    descriptor = executed_descriptor(space, action.name)
+    if descriptor is None:
+        return None
+    params = registered_params(descriptor.name)
+    if params is None:
+        return None
+    try:
+        params.model_validate(action.params)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'params'}: {error['msg']}"
+            for error in exc.errors()
+        )
+        takes = (
+            ", ".join(f"{name}: {text}" for name, text in descriptor.params.items())
+            or "no parameters"
+        )
+        return f"{action.name}: {problems} ({descriptor.name} takes {takes})"
+    return None
 
 
 async def _reject_action(action: Action, active_names: frozenset[str]) -> ActionResult:

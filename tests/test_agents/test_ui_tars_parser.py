@@ -39,6 +39,7 @@ from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import browser_descriptors, space_of, wired_space
 from tests._helpers.assembly import make_agent
@@ -226,7 +227,13 @@ class TestTheRealFailures:
                 action_space=space_of(_negotiated("done")),
             )
         )
-        ctx = {"env": _Env(), "llm": _LLM(), "memory": memory, "act_fn": _act}
+        ctx = {
+            "env": _Env(),
+            "llm": _LLM(),
+            "memory": memory,
+            "act_fn": _act,
+            "action_space": ActionSpace(),
+        }
 
         import asyncio
 

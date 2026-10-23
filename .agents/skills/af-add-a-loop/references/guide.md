@@ -96,7 +96,12 @@ ReAct keeps its own phase vocabulary and knobs:
 Parsing is Agent knowledge; deciding what to do with a parse failure is Loop policy. The
 Agent raises `ParseError(detail, raw_output=...)`; ReAct's public `parse_feedback` renders
 that diagnostic for another ask. A schema validation failure carries its actual rejected
-reply. A truncated provider response follows the existing truncation policy; do not
+reply. Before any parsed action runs, ReAct's public `check_action_params(run, actions)`
+validates the ones that would run against their `Params` (`core/action_guard.py::
+params_refusal` over `run.action_space`) and raises the same `ParseError` on a misfit, so a
+malformed action is rewritten by the model, never executed and never a failed
+`ActionResult` (user ruling 2026-10-23). A new Loop that executes parsed actions calls the
+same check. A truncated provider response follows the existing truncation policy; do not
 reinterpret it as a successful parse or manufacture a partial action.
 
 `ReactLoop.execute_step(run, step_idx, *, observation=None, restoration=None)` is the

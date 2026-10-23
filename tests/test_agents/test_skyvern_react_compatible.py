@@ -481,7 +481,10 @@ class TestParseReactOutput:
         # is index-keyed and ``ClickAction.execute`` reads params["index"].
         assert actions[0].params["index"] == 7
         assert "element_id" not in actions[0].params
-        assert actions[0].params["reasoning"] == "submit form"
+        # The reasoning is the model's thought about the click, not a param of
+        # it: it stays in the reply (``parse_react_thought`` reads it), and the
+        # action carries only what ``ClickAction.Params`` declares.
+        assert actions[0].params == {"index": 7}
 
     def test_carries_every_param_the_advertised_actions_need(self) -> None:
         """scroll needs ``direction``, send_keys needs ``keys``.
@@ -508,7 +511,7 @@ class TestParseReactOutput:
         )
         assert actions[0].params["direction"] == "up"
         assert actions[1].params["keys"] == "Enter"
-        assert actions[2].params == {"reasoning": "r", "index": 3, "text": "hello"}
+        assert actions[2].params == {"index": 3, "text": "hello"}
 
     def test_done_inside_actions_keeps_the_answer(self) -> None:
         """The template says done is a top-level flag; models improvise.
@@ -589,21 +592,13 @@ class TestParseReactOutput:
         agent = _make_agent()
         typed = StepRecord(
             step=0,
-            actions=[
-                Action(
-                    name="browser.type",
-                    params={"reasoning": "search", "index": 4, "text": "hello"},
-                )
-            ],
+            actions=[Action(name="browser.type", params={"index": 4, "text": "hello"})],
             action_results=[ActionResult(success=True)],
         )
         (message,) = await agent.build_react_prompt(
             _FakeObservation(history=[typed]), context=ReactPromptContext(step=1, phase="policy")
         )
-        assert (
-            "browser.type({'reasoning': 'search', 'index': 4, 'text': 'hello'}) -> ok"
-            in message.text
-        )
+        assert "browser.type({'index': 4, 'text': 'hello'}) -> ok" in message.text
 
     def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
         """The agent must not invent a provider for a bare verb.

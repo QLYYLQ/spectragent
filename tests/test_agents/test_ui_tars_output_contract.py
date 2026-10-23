@@ -40,6 +40,7 @@ from spectragent.core.loops.react import ReactLoop
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from tests._helpers.action_spaces import space_of
 
 #: Resolved from this file, not from the CWD.
@@ -282,7 +283,13 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
         ran.append(action)
         return ActionResult(success=True)
 
-    ctx = {"env": _Env(), "llm": _LLM(), "memory": memory, "act_fn": _act}
+    ctx = {
+        "env": _Env(),
+        "llm": _LLM(),
+        "memory": memory,
+        "act_fn": _act,
+        "action_space": ActionSpace(),
+    }
     await loop._execute(agent, "t", ctx={**ctx, "step_executor": loop})
 
     assert [(a.params["coordinate_x"], a.params["coordinate_y"]) for a in ran] == [

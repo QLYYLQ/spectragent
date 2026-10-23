@@ -368,7 +368,11 @@ class SkyvernAgent(AgentBase):
                     )
                     continue
 
-                params: dict[str, Any] = {"reasoning": item.reasoning}
+                # Only the params the action reads. The item's ``reasoning`` is
+                # the model's thought about the action, not a param of it: it
+                # stays in the reply, where ``parse_react_thought`` reads it,
+                # and an action carrying it would not fit its ``Params``.
+                params: dict[str, Any] = {}
                 # ``index``, not ``element_id``: BrowserCapability's
                 # selector_map is index-keyed and every element-targeting
                 # action reads ``params["index"]``

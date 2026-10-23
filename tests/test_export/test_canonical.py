@@ -16,7 +16,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.export import canonicalise
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.restoration import BranchProvenance
-from spectragent.schemas.sample import DroppedParams, ThoughtRecord
+from spectragent.schemas.sample import ThoughtRecord
 from tests._helpers.export_traces import ExportStep, screenshot, setup_record, write_run
 from tests._helpers.trace_builder import eval_result
 
@@ -96,26 +96,13 @@ class TestExportableSteps:
 
 
 class TestTeacherActions:
-    def test_undeclared_params_are_dropped_and_named(self, tmp_path: Path) -> None:
-        run = write_run(
-            tmp_path,
-            "run-d",
-            [
-                ExportStep(
-                    actions=[
-                        _click(7, reasoning="the cart link"),
-                        Action(name="browser.scroll", params={"direction": "down"}),
-                    ]
-                )
-            ],
-            agent_id="skyvern",
-        )
+    def test_the_executed_actions_are_the_targets_as_recorded(self, tmp_path: Path) -> None:
+        """No projection: the params were checked against each ``Params`` before they ran."""
+        executed = [_click(7), Action(name="browser.scroll", params={"direction": "down"})]
+        run = write_run(tmp_path, "run-d", [ExportStep(actions=executed)], agent_id="skyvern")
         (sample,) = _samples(run)
-        assert sample.teacher_actions == [
-            Action(name="browser.click", params={"index": 7}),
-            Action(name="browser.scroll", params={"direction": "down"}),
-        ]
-        assert sample.dropped_params == [DroppedParams(action_index=0, params=["reasoning"])]
+        assert sample.teacher_actions == executed
+        assert "dropped_params" not in sample.model_dump()
 
 
 class TestThought:
@@ -134,7 +121,7 @@ class TestThought:
         run = write_run(
             tmp_path,
             "run-f",
-            [ExportStep(actions=[_click(1, reasoning="cart")], llm_output=reply)],
+            [ExportStep(actions=[_click(1)], llm_output=reply)],
             agent_id="skyvern",
         )
         (sample,) = _samples(run, thought_source="teacher", teacher_cls=SkyvernAgent)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar
@@ -23,6 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
+from spectragent.core.action_guard import params_refusal
 from spectragent.core.llm.exceptions import (
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
@@ -467,6 +469,11 @@ class ReactLoop(AgentLoopBase):
             # the next one otherwise.
             try:
                 actions = agent.parse_react_output(raw_output)
+                # The actions that would run must fit their ``Params``; one
+                # that does not is a reply to rewrite, not an action to fail.
+                self.check_action_params(
+                    run, actions[: self.max_actions_per_step], raw_output=output_text
+                )
             except RunAbort as exc:
                 # First, so the veto cannot be read as a parse failure
                 # even if a guard ever subclasses both. A parser is an
@@ -681,6 +688,34 @@ class ReactLoop(AgentLoopBase):
     # memory through these and nothing else, so the two can never disagree
     # about what a rejected reply, an accepted one or a truncation looks
     # like to the model.
+
+    def check_action_params(
+        self, run: LoopRun, actions: Sequence[Action], *, raw_output: str = ""
+    ) -> None:
+        """Refuse a reply whose actions do not fit their ``Params``, before any of them runs.
+
+        Each action is validated against the ``Params`` of the action the
+        run's guard executes it as (``core/action_guard.py::params_refusal``).
+        A misfit is a :class:`ParseError` naming every action that misfits and
+        why, so the reply goes back to the model through the parse retries
+        (``parse_retries_per_step``) and, when they are spent, is recorded as
+        the step's parse failure — never executed, never a failed
+        ``ActionResult`` (the user's ruling of 2026-10-23). A name the guard
+        refuses is not judged here: the guard refuses it when it runs.
+
+        Raises:
+            ParseError: An action's params do not fit.
+        """
+        problems = [
+            f"action {position}, {refusal}"
+            for position, action in enumerate(actions, start=1)
+            if (refusal := params_refusal(run.action_space, action)) is not None
+        ]
+        if problems:
+            raise ParseError(
+                "the parameters of an action do not fit what it takes: " + "; ".join(problems),
+                raw_output=raw_output[:500],
+            )
 
     def cap_actions(self, actions: list[Action], step_idx: int) -> tuple[list[Action], list[str]]:
         """Keep the first ``max_actions_per_step`` actions; name the ones dropped.

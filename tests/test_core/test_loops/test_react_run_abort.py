@@ -35,6 +35,7 @@ from spectragent.core.loops.errors import ParseError, RunAbort, carried_outcome
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation import build_observation_model
 
 # A loop-sourced fragment on purpose: these tests are about control flow,
@@ -122,6 +123,7 @@ def _ctx(*, env: Any, llm: Any, act_fn: Any, recorder: Any, memory: Any = None) 
         "llm": llm,
         "memory": memory if memory is not None else _Memory(),
         "act_fn": act_fn,
+        "action_space": ActionSpace(),
         "negotiated_obs": _Negotiated(_ACTIVE),
         "step_recorder": recorder,
         "task_id": "t-1",

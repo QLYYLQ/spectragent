@@ -46,7 +46,6 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, TaskObs
 from tests._helpers.action_params import minimal_params
-from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 _THINKING = "HIDDEN REASONING: the second field looks like the search box."
@@ -318,18 +317,18 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
     descriptors = [
         a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
     ]
+    env = _Env2(_observation())
+    space, act_fn = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
     agent.memory.add_messages(
         agent.prepare(
             task="Find the answer",
-            action_space=space_of(descriptors),
+            action_space=space,
             execution_limits=ReactLoop().execution_limits(),
         )
     )
 
     endpoint = _Endpoint(replies_for(descriptors), reasoning=reasoning)
     llm = _Recording(endpoint.llm())
-    env = _Env2(_observation())
-    _kept, act_fn = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
     result = await ReactLoop(max_steps=3)._execute(
         agent,
         "Find the answer",
@@ -338,6 +337,7 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
             "llm": llm,
             "memory": agent.memory,
             "act_fn": act_fn,
+            "action_space": space,
             "negotiated_obs": _Negotiated(),
             "task_id": f"reasoning-{agent_kind}",
         },
