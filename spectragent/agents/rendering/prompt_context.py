@@ -8,7 +8,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from spectragent.agents._action_effects import result_facts
+from spectragent.agents.rendering.action_effects import result_facts
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
 from spectragent.schemas.action import Action
@@ -62,7 +62,7 @@ def restored_history_message(
     Each result's effect is the one measured while restoring, never the
     source's; it is shown as its ``describe()`` line when
     *show_action_effects* is on, and its raw fields never are
-    (``agents/_action_effects.py``).
+    (``agents/rendering/action_effects.py``).
 
     Every point is written on the restored step's frame (``context.frame``):
     the restored actions ran after the observation it lies over was captured.

@@ -481,7 +481,7 @@ async def test_a_restored_observation_without_a_measurable_screenshot_does_not_e
 
 # ── An agent whose model writes no point keeps viewport units ─────────
 # (BrowserUse writes its feedback on its own grid too, or in viewport units when
-# its run has no coordinate action: tests/test_agents/test_browser_use_feedback_grid.py.)
+# its run has no coordinate action: tests/test_agents/test_browser_use/test_browser_use_feedback_grid.py.)
 
 
 async def test_skyvern_still_reads_viewport_pixels() -> None:

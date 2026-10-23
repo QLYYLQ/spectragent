@@ -27,8 +27,8 @@ import pytest
 from pydantic import BaseModel
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
-from spectragent.agents._action_union import params_model_from_schema
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions.action_union import params_model_from_schema
 from spectragent.core.actions.params import (
     PointAxis,
     RequiresFragment,

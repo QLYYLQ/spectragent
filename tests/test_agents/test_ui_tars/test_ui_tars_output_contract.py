@@ -44,7 +44,7 @@ from spectragent.schemas.action_space import ActionSpace
 from tests._helpers.action_spaces import space_of
 
 #: Resolved from this file, not from the CWD.
-SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
+SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
 _VARIANTS = list(agent_prompt_variants("ui_tars"))
 

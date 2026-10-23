@@ -102,7 +102,7 @@ in `browser/observations.py`; a desktop or Android one later inherits the same b
 may project facts from records its capture already keeps instead of measuring them twice
 (`settle_state` reads the capture's `settle`, `foreground_change` its `focus_moved`).
 Agents declare the relative key (`capture_state`, optional) and render it through one
-shared renderer (`agents/_capture_state.py::render_capture_state`) that reads fields
+shared renderer (`agents/rendering/capture_state.py::render_capture_state`) that reads fields
 structurally and imports no capability class, so a cross-platform Agent stays free of
 browser types. An Agent switch that drops the fragment narrows the Agent's *demand*
 (`capture_state_demand`, through `bounded_demand`) rather than hiding it after capture —
@@ -300,7 +300,7 @@ This is why a desktop capability that wants a screenshot registers
 `browser.screenshot` (`observations.py:534`) — and why stub fragments in tests
 must be named distinctly.
 
-The declaration form for an agent (`spectragent/agents/browser_use.py:285`):
+The declaration form for an agent (`spectragent/agents/browser_use/agent.py:285`):
 
 ```python
 "observation": (

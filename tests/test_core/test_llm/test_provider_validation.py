@@ -517,7 +517,7 @@ async def test_a_bad_reply_reaches_the_caller_still_recoverable(case: _Case) -> 
 def _closed_union_model() -> type[BaseModel]:
     """A plain ``Union`` of single-key models, each ``extra="forbid"``.
 
-    The shape ``agents/_action_union.py`` builds: ``anyOf`` of objects that
+    The shape ``core/actions/action_union.py`` builds: ``anyOf`` of objects that
     each name one verb as a *property*, so nothing beyond
     ``object``/``properties``/``required``/``anyOf`` is needed — the
     intersection of the OpenAI, Anthropic and Gemini dialects.

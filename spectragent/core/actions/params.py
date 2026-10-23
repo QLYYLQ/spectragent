@@ -372,7 +372,7 @@ def params_view(
         # per-run output model re-adds ``default: null`` on each optional
         # param, because a strict-mode provider makes every property
         # required and ``null`` is then the only way to decline one
-        # (``agents/_action_union.py``). That null never reaches
+        # (``core/actions/action_union.py``). That null never reaches
         # ``execute``: the agent strips it (``model_dump(exclude_none)``),
         # so an omission and a written null arrive identically — which is
         # what stops ``clear: null`` from overriding ``clear_by_default``.

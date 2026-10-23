@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.ui_tars import _POINT_ARGUMENTS, _VERB_TABLE, UITarsAgent
+from spectragent.agents.ui_tars.agent import _POINT_ARGUMENTS, _VERB_TABLE, UITarsAgent
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartTextParam,

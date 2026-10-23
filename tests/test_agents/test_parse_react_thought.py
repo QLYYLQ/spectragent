@@ -13,9 +13,10 @@ import json
 
 import pytest
 
-from spectragent.agents._output_models import REASONING_FIELDS, SkyvernActionItem, SkyvernOutput
 from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use.output_models import REASONING_FIELDS
 from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern.output_models import SkyvernActionItem, SkyvernOutput
 from spectragent.agents.ui_tars import UITarsAgent
 
 

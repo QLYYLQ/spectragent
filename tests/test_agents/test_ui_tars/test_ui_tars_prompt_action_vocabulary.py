@@ -40,7 +40,7 @@ import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.prompts import agent_prompt_variants
-from spectragent.agents.ui_tars import (
+from spectragent.agents.ui_tars.agent import (
     _VERB_TABLE,
     UITarsAgent,
 )

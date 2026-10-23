@@ -18,7 +18,7 @@ route.
 | `gpt-*`, and models whose own vendor speaks OpenAI protocol (`deepseek-*`, `qwen-*`, `glm-*`) | `openai` | `<root>/v1` |
 
 Measured live against dmxapi.cn this round, with af's real closed action union
-(`agents/_action_union.py` — one single-key model per verb, every branch
+(`core/actions/action_union.py` — one single-key model per verb, every branch
 `extra="forbid"`), same key, same schema:
 
 | route | model | result |

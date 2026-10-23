@@ -5,7 +5,7 @@ that knew the negotiated verb *names* and accepted three spellings of each
 (canonical, local id, upstream alias). It contributed nothing to the JSON
 schema, so a provider saw an open map and Gemini answered ``{}``.
 
-What lives here now: the union built by ``agents/_action_union.py``. One
+What lives here now: the union built by ``core/actions/action_union.py``. One
 single-key model per negotiated verb, dispatched by a ``BeforeValidator``,
 so the schema *is* the vocabulary — one spelling, the fully-qualified key,
 the same string the prompt advertises and ``env.act`` routes on.
@@ -24,9 +24,9 @@ import pytest
 from pydantic import ValidationError
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
-from spectragent.agents._action_union import UnsupportedParamsSchema, action_union
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions.action_union import UnsupportedParamsSchema, action_union
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import ActionDescriptor
 from tests._helpers.action_spaces import space_of

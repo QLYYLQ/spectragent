@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.memory.sliding_window import SlidingWindowMemory
-from spectragent.agents.prompt_context import place_prompt_contributions
+from spectragent.agents.rendering.prompt_context import place_prompt_contributions
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.environments._registrar import EnvironmentBase

@@ -26,7 +26,7 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.registries import collect_registrars
 
-SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
+SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
 
 def _roles(messages) -> list[str]:

@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from spectragent.agents._output_models import SkyvernActionItem, SkyvernOutput
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern.output_models import SkyvernActionItem, SkyvernOutput
 from spectragent.core.capabilities.browser.dom.models import DOMState
 from spectragent.core.llm.messages import (
     BaseMessage,

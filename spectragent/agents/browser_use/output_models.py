@@ -1,4 +1,4 @@
-"""Structured output Pydantic models for each agent's LLM responses."""
+"""The reasoning fields of BrowserUse's structured reply, per template variant."""
 
 from __future__ import annotations
 
@@ -6,10 +6,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-# ── browser-use ────────────────────────────────────────────────
-#
 # There is no static ``BrowserUseOutput``. The shape of a reply is a
 # function of the template the run selected, and the two used to be
 # written out twice — one model carrying every field any template might
@@ -22,8 +20,8 @@ from pydantic import BaseModel, Field
 # So the fields are declared here per variant, in the order that variant's
 # ``<output>`` block lists them, and
 # ``BrowserUseAgent._build_per_run_output_model`` composes them with the
-# closed action union (``agents/_action_union.py``).
-# ``tests/test_agents/test_browser_use_modes.py`` reads the keys back out
+# closed action union (``core/actions/action_union.py``).
+# ``tests/test_agents/test_browser_use/test_browser_use_modes.py`` reads the keys back out
 # of each rendered template and asserts they are exactly these.
 
 _FIELDS: Mapping[str, tuple[Any, Any]] = MappingProxyType(
@@ -114,64 +112,3 @@ def reasoning_fields(variant: str) -> dict[str, tuple[Any, Any]]:
     """
     names = REASONING_FIELDS[variant]
     return {name: _FIELDS[name] for name in names}
-
-
-# ── Skyvern ────────────────────────────────────────────────────
-#
-# Shape mirrors spectragent/prompts/agents/skyvern/system_prompt.md,
-# which is the only template SkyvernAgent loads. The two are pinned together
-# by tests/test_agents/test_skyvern_prompt_action_vocabulary.py: every verb
-# the template teaches has to survive ``parse_react_output`` and be accepted
-# by ``guarded_act``.
-#
-# The per-item fields are exactly the union of the params the negotiated
-# browser actions need and cannot default: ``index`` addresses the element
-# (BrowserCapability's selector_map is index-keyed — see
-# ``actions/_common.resolve_index``), ``text`` types or
-# selects, ``direction`` steers a scroll, ``keys`` drives send_keys. Anything
-# else the capability exposes has a usable default, so widening this model is
-# a decision to make deliberately, not a reflex.
-
-
-class SkyvernActionItem(BaseModel):
-    """A single action within a Skyvern step."""
-
-    action_type: str = Field(description="Canonical action name, e.g. 'browser.click'")
-    index: int | None = Field(
-        default=None,
-        description="Target element index from the element tree; null if the action takes no element",
-    )
-    text: str | None = Field(
-        default=None, description="Text to type, or visible option label to select"
-    )
-    direction: str | None = Field(
-        default=None, description="Scroll direction: up | down | left | right"
-    )
-    keys: str | None = Field(default=None, description="Keyboard keys to send, e.g. 'Enter'")
-    reasoning: str = Field(default="", description="Why this action was chosen")
-
-
-class SkyvernOutput(BaseModel):
-    """Structured output for SkyvernAgent."""
-
-    actions: list[SkyvernActionItem] = Field(
-        description="Actions to execute this step; empty when is_done is true"
-    )
-    is_done: bool = Field(
-        default=False,
-        description="True to end the run — this is how browser.done is invoked",
-    )
-    #: The agent's claim, carried into ``browser.done``'s ``success``. No
-    #: default of ``true``: a reply that leaves it out claims nothing, and the
-    #: run's ``agent_reported_success`` is then ``None``.
-    success: bool | None = Field(
-        default=None,
-        description=(
-            "Whether the goal was reached; only meaningful when is_done is true. "
-            "null if you cannot tell"
-        ),
-    )
-    extracted_content: str | None = Field(
-        default=None,
-        description="Final answer / extracted data when is_done is true, or the reason for giving up",
-    )

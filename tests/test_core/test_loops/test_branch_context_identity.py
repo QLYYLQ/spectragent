@@ -402,7 +402,7 @@ async def test_ui_tars_restored_branch_under_a_task_variant_sees_the_source_thou
     - The task is the variant's: it is the one task in the system seed.
     - The source's task text appears only where the source's own replies quoted it: restored
       history renders each restored step's recorded reply, thought included, as
-      ``source_material.recorded_reply`` (``spectragent/agents/prompt_context.py``
+      ``source_material.recorded_reply`` (``spectragent/agents/rendering/prompt_context.py``
       ``restored_history_message``, which ``UITarsAgent.build_restored_history`` appends).
     - The checkpoint step's own source reply is not rendered: the Loop hands it only to
       prompt-contribution functions (``ReactPromptContext.source_reply``).

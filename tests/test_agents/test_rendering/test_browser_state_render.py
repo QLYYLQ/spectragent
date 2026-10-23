@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from spectragent.agents._browser_state import render_browser_state
+from spectragent.agents.rendering.browser_state import render_browser_state
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.schemas.observation.capture_state import (
     FailedVisibleResources,

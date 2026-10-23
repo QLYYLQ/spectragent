@@ -166,7 +166,7 @@ class ScrollAction(SettleableAction, ActionBase):
   fields: no task judgement, `unknown` / `unavailable` said as such, a sensitive field's
   content and length never said (no fact echoes typed text, and an editable region's text
   never names it). Agents render that line and never the fields
-  (`agents/_action_effects.py::effect_line` / `result_facts`), so a cross-platform Agent
+  (`agents/rendering/action_effects.py::effect_line` / `result_facts`), so a cross-platform Agent
   never imports your type. Whether the line reaches the prompt is each Agent's
   `show_action_effects`; the trace records the effect either way.
 - **Measure around your own dispatch, within a budget.** Facts are read just before and
@@ -262,7 +262,7 @@ them. There are two ways to fall through, and af has a test for one of them.
 
 ### (a) Agent → action: does the agent emit what the descriptor declares?
 
-Tested. `tests/test_agents/test_browser_use_modes.py:483-515` walks every negotiated
+Tested. `tests/test_agents/test_browser_use/test_browser_use_modes.py:483-515` walks every negotiated
 descriptor, synthesizes the minimal legal payload from its own `params_schema`
 (`tests/_helpers/action_params.py:44`), pushes it through the agent's parser and the
 guard, and validates what arrives against the action's real `Params`:
@@ -322,7 +322,7 @@ survive three routes. This is measured, not theoretical — every rule below cam
 400 that named a protobuf field path (`tests/test_core/test_llm/test_schema_dialects.py:1-23`).
 
 **The union is a plain union of single-key models, where the verb is the field name.**
-`spectragent/agents/_action_union.py:224` builds `{"browser.click": {...}}` per verb and
+`spectragent/core/actions/action_union.py:224` builds `{"browser.click": {...}}` per verb and
 combines them into `anyOf`. A Pydantic **discriminated** union is unusable on all three
 routes, each for a different reason, which is why no single provider fix recovers it
 (`test_schema_dialects.py:381-397`):
@@ -348,7 +348,7 @@ Two more constraints your params can trip:
   opposite, so this is family-shaped, not a universal strip.
 - **`min_length=1` on a list compiles to `minItems`, which OpenAI's strict dialect
   refuses — defect F12, and the symptom is the first GPT call of every run 400ing on the
-  schema.** The Pydantic bound stays (`agents/browser_use.py:682`); the keyword is
+  schema.** The Pydantic bound stays (`agents/browser_use/agent.py:682`); the keyword is
   stripped at compile (`optimizer.py:386-398`, implied by `strict=True` at `:112`).
   Tests: `test_schema_dialects.py:215-238`, and `test_browser_use_modes.py:579`, which
   scans the strict payload against a frozenset of every keyword strict refuses
@@ -358,7 +358,7 @@ Two more constraints your params can trip:
 Practically: keep `Params` a **flat object of scalars, string enums, and nullable
 scalars**. That is the intersection of the three dialects, and everything outside it
 raises `UnsupportedParamsSchema` at `prepare()` — before the environment is even set up
-(`_action_union.py:73-92`). `test_action_params_schema.py:158` scans the whole registry
+(`action_union.py:73-92`). `test_action_params_schema.py:158` scans the whole registry
 for it, so a non-conforming param fails in CI, not on a live run. If you are changing
 the compiler rather than the params, that is `af-add-an-llm-provider`'s territory.
 

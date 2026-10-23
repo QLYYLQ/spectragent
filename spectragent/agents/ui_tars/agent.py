@@ -76,15 +76,15 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
-from spectragent.agents._action_effects import result_facts
-from spectragent.agents._capture_state import (
+from spectragent.agents._registrar import AgentBase
+from spectragent.agents.rendering.action_effects import result_facts
+from spectragent.agents.rendering.capture_state import (
     CAPTURE_STATE_KEY,
     capture_state_demand,
     render_capture_state,
 )
-from spectragent.agents._input_platform import render_computer_use_platform
-from spectragent.agents._registrar import AgentBase
-from spectragent.agents.prompt_context import (
+from spectragent.agents.rendering.platform import render_computer_use_platform
+from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
@@ -129,7 +129,7 @@ class _Verb:
             that are not a point (the bound descriptor's ``point_params``)
             are rendered into the prompt with the descriptor's own type
             text, so the model sees what its arguments turn into.
-            ``tests/test_agents/test_ui_tars_prompt_action_vocabulary.py``
+            ``tests/test_agents/test_ui_tars/test_ui_tars_prompt_action_vocabulary.py``
             holds this to the descriptor.
         to_params: Translates the verb's kwargs into the action's params.
             Raises :class:`_VerbError` when a required argument is missing
@@ -560,7 +560,7 @@ _VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
 #: What the system prompt says a point is, per coordinate space. Keyed by
 #: every member of :data:`CoordinateSpace`, which is also what the
 #: ``coordinate_space`` field's Literal lists
-#: (``tests/test_agents/test_ui_tars_coordinates.py`` holds the three equal).
+#: (``tests/test_agents/test_ui_tars/test_ui_tars_coordinates.py`` holds the three equal).
 _COORDINATE_PROMPTS: Mapping[CoordinateSpace, str] = MappingProxyType(
     {
         "screenshot_pixels": (
@@ -691,7 +691,7 @@ class UITarsAgent(AgentBase):
     # to case-fold a config value into a filename on the way to the loader
     # (``tests/test_agents/test_prompt_tree.py`` asserts the two agree);
     # ``coordinate_space``'s are :data:`CoordinateSpace`'s
-    # (``tests/test_agents/test_ui_tars_coordinates.py`` asserts that).
+    # (``tests/test_agents/test_ui_tars/test_ui_tars_coordinates.py`` asserts that).
     prompt_template: Annotated[
         Literal["computer_use", "grounding", "mobile_use"],
         PydanticField(description="Which shipped prompt variant to render"),
@@ -1194,7 +1194,7 @@ def _render_action_space(
     A negotiated action with no verb is skipped rather than advertised:
     the model has no syntax for it, so teaching its name would invite an
     unparseable call. The wiring and the table are kept in agreement by
-    ``tests/test_agents/test_ui_tars_react_compatible.py``.
+    ``tests/test_agents/test_ui_tars/test_ui_tars_react_compatible.py``.
     """
     verb_of = {descriptor.name: name for name, descriptor in bound.items()}
     blocks: list[str] = []

@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Literal
 
 import pytest
 
-from spectragent.agents._capture_state import render_capture_state
+from spectragent.agents.rendering.capture_state import render_capture_state
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
     FailedVisibleResources,

@@ -354,7 +354,7 @@ class TestAgentToCapabilityActionVocabulary:
         # Regression: every adapted agent must emit its done action
         # with the ``extracted_content`` key so the answer survives the
         # capability's DoneEvent translation.
-        from spectragent.agents._output_models import SkyvernOutput
+        from spectragent.agents.skyvern.output_models import SkyvernOutput
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )

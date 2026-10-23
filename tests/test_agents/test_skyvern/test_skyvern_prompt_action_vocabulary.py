@@ -37,9 +37,9 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents._output_models import SkyvernActionItem, SkyvernOutput
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern.output_models import SkyvernActionItem, SkyvernOutput
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
