@@ -214,8 +214,9 @@ Keep two kinds of change separate:
 - **Restoration acceptance:** change what difference is acceptable, such as a screenshot
   threshold. This may be justified by task-irrelevant animation, but requires visual and
   task evidence. Preserve old/new verdicts and raw distances; reclassification is not
-  increased fidelity. Per-URL verification, dynamic masking or semantic verification
-  require a design decision if the current framework does not implement them.
+  increased fidelity. Declared video and search pages (`media_areas` rules) already
+  leave media state unjudged and mask the media boxes; other per-URL verification, dynamic
+  masking or semantic verification require a design decision.
 
 ## Validate and feed back
 

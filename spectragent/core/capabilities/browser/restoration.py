@@ -38,6 +38,20 @@ screenshots' media playback states with the media alignment done before the
 restored capture (:func:`media_measure`, ``media.py``). Every measure is
 ``None`` when its fragment (or its bytes) is absent on either side. Never a
 verdict: thresholds and ``strict | warn`` are the restorer's.
+
+**Media areas** (:func:`media_area_measure`). On a page a media-area rule of
+the replay's rule set declares (``replay/media_areas.py``; both page URLs in
+its scope), the media facts both screenshots carry say where the media is:
+the boxes of their ``<video>`` / ``<audio>`` elements and of the embedded
+frames whose own media read did not answer. The union of both sides' boxes
+is painted over both images before their difference hash, so a player that
+plays elsewhere, shows an error offline or is not there at all leaves the
+distance alone, while any difference outside it still counts. The evidence
+names the rules, the boxes, the share of the image masked and the distance
+with and without the mask; past :data:`MAX_MASKED_SHARE` the mask is not
+applied and the whole images are compared, as on an undeclared page. The
+media playback state is still measured and kept; the restorer does not
+judge it on such a page.
 """
 
 from __future__ import annotations
@@ -45,19 +59,24 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import math
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Final
+from typing import Any, Final, Literal
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMRect
-from spectragent.core.capabilities.browser.media import media_evidence
+from spectragent.core.capabilities.browser.media import MediaRect, media_evidence
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
+)
+from spectragent.core.capabilities.browser.replay.media_areas import (
+    MediaAreaRule,
+    media_area_rule_ids,
 )
 from spectragent.core.capabilities.browser.replay.page_urls import (
     PageUrlComparison,
@@ -67,7 +86,10 @@ from spectragent.core.capabilities.browser.replay.page_urls import (
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.restoration import (
+    MaskedArea,
+    MaskedAreaKind,
     MediaAlignment,
+    MediaAreaEvidence,
     MediaEvidence,
     RestorationEvidence,
     Retarget,
@@ -88,6 +110,23 @@ subtree. Reading no deeper than this on both sides makes the recorded and
 the restored signature of one element read the same nodes. Real pages
 measure at most ~40 combined levels (the encoder's note), so nothing a run
 sees is cut.
+"""
+
+MAX_MASKED_SHARE: Final = 0.75
+"""The largest share of a screenshot a media-area mask may cover and still be compared.
+
+The difference hash reads the image as a 9x8 grid of averages, one bit per
+horizontally adjacent pair: 64 bits. Masked pixels are the same on both
+sides, so with three quarters of the image masked only about 16 bits still
+read the page, and even a wholly different rest of the page flips about half
+of them — barely past the restorer's default ``screenshot_max_distance`` of
+5 — while a smaller difference cannot fail at all. Past this share the
+masked distance would pass by construction, so the mask is not applied: the
+screenshot distance is the whole images' one, as on an undeclared page, and
+the evidence says why. Measured on the 2026-10-23 forks: Tencent Video's
+home and TV channel pages hold a frame the media read cannot reach that
+covers 100% and 87% of the viewport, and the channel page that failed to
+load offline would otherwise have passed.
 """
 
 #: (tag, id, name, aria-label, role, sha256 of the whitespace-folded subtree text).
@@ -300,19 +339,18 @@ def _retarget_tab(action: Action, recorded: Any, restored: Any) -> Retarget:
 # ── measure ───────────────────────────────────────────────────────────
 
 
-def dhash(image_bytes: bytes) -> int | None:
-    """The 64-bit difference hash of an image, or ``None`` when the bytes do not decode.
-
-    Grayscale, resized to 9x8 (Lanczos, so the hash does not depend on a
-    library default), and one bit per horizontally adjacent pixel pair:
-    set when the left one is brighter.
-    """
+def _grayscale(image_bytes: bytes) -> Image.Image | None:
+    """The image in grayscale, or ``None`` (with a warning) when the bytes do not decode."""
     try:
         with Image.open(io.BytesIO(image_bytes)) as image:
-            small = image.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
+            return image.convert("L")
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         logger.warning("screenshot does not decode for the perceptual hash: %s", exc)
         return None
+
+
+def _gray_dhash(gray: Image.Image) -> int:
+    small = gray.resize((9, 8), Image.Resampling.LANCZOS)
     pixels = small.tobytes()  # mode "L": one byte per pixel, row by row
     bits = 0
     for row in range(8):
@@ -320,6 +358,17 @@ def dhash(image_bytes: bytes) -> int | None:
             left, right = pixels[row * 9 + col], pixels[row * 9 + col + 1]
             bits = (bits << 1) | int(left > right)
     return bits
+
+
+def dhash(image_bytes: bytes) -> int | None:
+    """The 64-bit difference hash of an image, or ``None`` when the bytes do not decode.
+
+    Grayscale, resized to 9x8 (Lanczos, so the hash does not depend on a
+    library default), and one bit per horizontally adjacent pixel pair:
+    set when the left one is brighter.
+    """
+    gray = _grayscale(image_bytes)
+    return _gray_dhash(gray) if gray is not None else None
 
 
 def hamming(a: int, b: int) -> int:
@@ -352,6 +401,135 @@ def observation_url(observation: Any) -> str | None:
         return screenshot.source_url
     meta = meta_fragment(observation)
     return meta.url if meta is not None and meta.url else None
+
+
+# ── media areas ───────────────────────────────────────────────────────
+
+
+def _clipped(rect: MediaRect, width: int, height: int) -> tuple[float, float, float, float] | None:
+    """*rect* clipped to the viewport (an unknown size, 0, does not clip), or ``None`` when empty."""
+    x0, y0 = max(rect.x, 0.0), max(rect.y, 0.0)
+    x1, y1 = rect.x + rect.width, rect.y + rect.height
+    if width > 0:
+        x1 = min(x1, float(width))
+    if height > 0:
+        y1 = min(y1, float(height))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def _media_boxes(
+    shot: ScreenshotObs | None, side: Literal["recorded", "restored"]
+) -> tuple[list[MaskedArea], str | None]:
+    """The boxes *side*'s media facts measured, clipped to its viewport, and what they cannot show.
+
+    Every media element's box and every unreachable frame's box (what such
+    a frame plays is unknown). A screenshot without media state, or with a
+    state neither read measured, has no boxes: the note says so, and only
+    the other side's boxes are masked.
+    """
+    if shot is None:
+        return [], None
+    state = shot.media
+    if state is None:
+        return [], f"the {side} screenshot carries no media state, so its media boxes are unknown"
+    if not state.known:
+        return [], f"the {side} media state is unknown ({state.detail or 'no read answered'})"
+    areas: list[MaskedArea] = []
+
+    def add(kind: MaskedAreaKind, name: str, rect: MediaRect) -> None:
+        clipped = _clipped(rect, shot.viewport_width, shot.viewport_height)
+        if clipped is not None:
+            x, y, width, height = clipped
+            areas.append(
+                MaskedArea(side=side, kind=kind, element=name, x=x, y=y, width=width, height=height)
+            )
+
+    for media in state.elements:
+        add("media_element", media.label, media.rect)
+    for unreachable in state.unreachable_frames:
+        add("unreachable_frame", unreachable.frame, unreachable.rect)
+    note = (
+        f"the {side} page has more media elements than its media facts keep: "
+        "only the boxes kept are masked"
+        if state.truncated
+        else None
+    )
+    return areas, note
+
+
+def _masked(
+    gray: Image.Image, areas: Sequence[MaskedArea], viewport: tuple[int, int]
+) -> tuple[Image.Image, float]:
+    """*gray* with *areas* painted black (CSS boxes scaled to the image), and the share masked.
+
+    A box covers every pixel it touches, so a fractional edge is masked too.
+    """
+    scale_x = gray.width / viewport[0] if viewport[0] > 0 else 1.0
+    scale_y = gray.height / viewport[1] if viewport[1] > 0 else 1.0
+    mask = Image.new("L", gray.size, 0)
+    draw = ImageDraw.Draw(mask)
+    for area in areas:
+        x0 = max(math.floor(area.x * scale_x), 0)
+        y0 = max(math.floor(area.y * scale_y), 0)
+        x1 = min(math.ceil((area.x + area.width) * scale_x), gray.width)
+        y1 = min(math.ceil((area.y + area.height) * scale_y), gray.height)
+        if x1 > x0 and y1 > y0:
+            draw.rectangle((x0, y0, x1 - 1, y1 - 1), fill=255)
+    masked = gray.copy()
+    masked.paste(0, mask=mask)
+    return masked, mask.histogram()[255] / (gray.width * gray.height)
+
+
+def media_area_measure(recorded: Any, restored: Any, rule_ids: Sequence[str]) -> MediaAreaEvidence:
+    """Both screenshots compared with both sides' media boxes masked out, on a declared page.
+
+    *rule_ids* are the media-area rules whose scope matched both page URLs.
+    The mask is the union of the recorded and the restored boxes
+    (:func:`_media_boxes`), applied to both images, each scaled from its own
+    viewport. Without both images nothing is compared. Past
+    :data:`MAX_MASKED_SHARE` the mask is not applied: the masked distance is
+    kept here, and the screenshot distance is the whole images' one.
+    """
+    recorded_shot, restored_shot = screenshot_fragment(recorded), screenshot_fragment(restored)
+    areas: list[MaskedArea] = []
+    notes: list[str] = []
+    for side_areas, note in (
+        _media_boxes(recorded_shot, "recorded"),
+        _media_boxes(restored_shot, "restored"),
+    ):
+        areas += side_areas
+        if note is not None:
+            notes.append(note)
+    pair: list[tuple[Image.Image, ScreenshotObs]] = []
+    for shot in (recorded_shot, restored_shot):
+        gray = _grayscale(shot.image_bytes) if shot is not None and shot.image_bytes else None
+        if shot is not None and gray is not None:
+            pair.append((gray, shot))
+    if len(pair) != 2:
+        notes.append("no pair of decodable screenshots to compare")
+        return MediaAreaEvidence(rule_ids=list(rule_ids), areas=areas, detail="; ".join(notes))
+    masked = [
+        _masked(gray, areas, (shot.viewport_width, shot.viewport_height)) for gray, shot in pair
+    ]
+    share = round(max(masked[0][1], masked[1][1]), 4)
+    applied = share <= MAX_MASKED_SHARE
+    if not applied:
+        notes.append(
+            f"the media areas cover {share:.0%} of the screenshot, more than "
+            f"{MAX_MASKED_SHARE:.0%}: the rest says too little about the page, so the "
+            "screenshot distance is the whole images' one"
+        )
+    return MediaAreaEvidence(
+        rule_ids=list(rule_ids),
+        areas=areas,
+        masked_share=share,
+        unmasked_distance=hamming(_gray_dhash(pair[0][0]), _gray_dhash(pair[1][0])),
+        masked_distance=hamming(_gray_dhash(masked[0][0]), _gray_dhash(masked[1][0])),
+        mask_applied=applied,
+        detail="; ".join(notes),
+    )
 
 
 def media_measure(
@@ -389,6 +567,7 @@ def measure(
     document_misses: int | None,
     media: MediaEvidence | None,
     page_urls: Sequence[PageUrlRule] = (),
+    media_areas: Sequence[MediaAreaRule] = (),
 ) -> RestorationEvidence:
     """What the browser measures between a recorded and a restored observation.
 
@@ -398,7 +577,11 @@ def measure(
     capability did since its last measurement; ``page_urls`` are the replay's
     page-URL rules, whose declared query parameters the URL comparison
     leaves out (:func:`~spectragent.core.capabilities.browser.replay.page_urls.compare_page_urls`;
-    none when the network is live, and the URLs then compare exactly); the
+    none when the network is live, and the URLs then compare exactly);
+    ``media_areas`` are the replay's media-area rules: on a page one of them
+    declares, the screenshot distance is measured with the media areas
+    masked out (:func:`media_area_measure`) and the evidence carries
+    ``media_areas``, which tells the restorer not to judge ``media``; the
     rest is read from the two observations.
     """
     recorded_url, restored_url = observation_url(recorded), observation_url(restored)
@@ -416,6 +599,13 @@ def measure(
         missing, extra = (before - after).total(), (after - before).total()
         signature_match = missing == 0 and extra == 0
 
+    rule_ids = media_area_rule_ids(recorded_url, restored_url, media_areas)
+    areas = media_area_measure(recorded, restored, rule_ids) if rule_ids else None
+    if areas is None:
+        distance = screenshot_distance(recorded, restored)
+    else:
+        distance = areas.masked_distance if areas.mask_applied else areas.unmasked_distance
+
     return RestorationEvidence(
         capability_id=capability_id,
         url_match=url_match,
@@ -426,13 +616,15 @@ def measure(
         signature_match=signature_match,
         signature_missing=missing,
         signature_extra=extra,
-        screenshot_distance=screenshot_distance(recorded, restored),
+        screenshot_distance=distance,
         document_misses=document_misses,
         media=media,
+        media_areas=areas,
     )
 
 
 __all__ = [
+    "MAX_MASKED_SHARE",
     "SWITCH_TAB",
     "TEXT_DEPTH_LIMIT",
     "ElementSignature",
@@ -442,6 +634,7 @@ __all__ = [
     "element_signature",
     "hamming",
     "measure",
+    "media_area_measure",
     "media_measure",
     "meta_fragment",
     "observation_url",

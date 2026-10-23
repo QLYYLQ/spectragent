@@ -6,17 +6,18 @@ Every rule declares response-sequence exhaustion and how a recorded request
 without a body is answered. File order never selects behavior, and all rule
 collections are immutable after parsing.
 
-A rule file may also hold page-URL rules (``page_urls``, ``page_urls.py``):
-they are frozen and digested with the request rules, but only restoration
-verification reads them.
+A rule file may also hold page-URL rules (``page_urls``, ``page_urls.py``)
+and media-area rules (``media_areas``, ``media_areas.py``): they are frozen
+and digested with the request rules, but only restoration verification
+reads them.
 """
 
 import fnmatch
 import hashlib
 import json
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import parse_qsl, urlsplit
 
 import yaml
@@ -29,6 +30,7 @@ from pydantic import (
     model_validator,
 )
 
+from spectragent.core.capabilities.browser.replay.media_areas import MediaAreaRule
 from spectragent.core.capabilities.browser.replay.page_urls import PageUrlRule
 
 #: The file suffix of a site rule.
@@ -45,6 +47,29 @@ ExhaustionPolicy = Literal["repeat_last", "miss"]
 #: by the miss policy, or by an available record of the same sequence when
 #: every available record there has the same status and body (§4.14 "匹配").
 UnavailablePolicy = Literal["miss", "serve_identical"]
+#: How ``parse_query`` / ``parse_body_paths`` read a field's value: a URL-encoded
+#: query string (``a=1&b=2``) or a JSON object or array (§4.14 "请求规则").
+FieldFormat = Literal["urlencoded", "json"]
+
+
+class ParsedField(BaseModel):
+    """A field whose value is read as *format* and keyed by its sub-fields.
+
+    A sub-field is named ``<field>.<name>``: ``vinfoparam.cKey`` for the
+    ``cKey`` parameter of a URL-encoded ``vinfoparam``, or, for a JSON value,
+    the full path below the field, as if the JSON were written inline
+    (``sspAdParam.video.flow_id``). The rule's ``ignore_*`` / ``keep_*`` globs
+    then address sub-fields by those names. A value that does not parse as
+    *format* stays one field under its own name.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str = Field(
+        min_length=1,
+        description="The exact query parameter name or flattened body path; not a glob.",
+    )
+    format: FieldFormat
 
 
 class RequestScope(BaseModel):
@@ -112,8 +137,10 @@ class SiteRule(BaseModel):
     exhaustion: ExhaustionPolicy
     unavailable: UnavailablePolicy
     levels: tuple[MatchLevel, ...] | None = Field(default=None, min_length=1)
+    parse_query: tuple[ParsedField, ...] = ()
     ignore_query: tuple[str, ...] = ()
     keep_query: tuple[str, ...] = ()
+    parse_body_paths: tuple[ParsedField, ...] = ()
     ignore_body_paths: tuple[str, ...] = ()
     keep_body_paths: tuple[str, ...] = ()
     ignore_headers: tuple[str, ...] = ()
@@ -128,6 +155,40 @@ class SiteRule(BaseModel):
         if levels is not None and len(levels) != len(set(levels)):
             raise ValueError("each matching level must appear once")
         return levels
+
+    @model_validator(mode="after")
+    def parsed_fields_take_effect(self) -> Self:
+        """Refuse a parse declaration that is repeated, nested in another, or ignored whole."""
+        declared: tuple[tuple[str, tuple[ParsedField, ...], Callable[[str], bool]], ...] = (
+            ("parse_query", self.parse_query, self.ignores_query),
+            ("parse_body_paths", self.parse_body_paths, self.ignores_body_path),
+        )
+        for key, parsed, ignores in declared:
+            names = [entry.field for entry in parsed]
+            repeated = sorted({name for name in names if names.count(name) > 1})
+            if repeated:
+                raise ValueError(f"rule {self.id!r}: {key} declares {repeated} more than once")
+            for name in names:
+                outer = sorted(other for other in names if name.startswith(other + "."))
+                if outer:
+                    raise ValueError(
+                        f"rule {self.id!r}: {key} field {name!r} is a sub-field of "
+                        f"{outer[0]!r}, which is parsed already; sub-fields are not parsed again"
+                    )
+                if ignores(name):
+                    raise ValueError(
+                        f"rule {self.id!r}: {key} field {name!r} is ignored whole by this "
+                        f"rule, so parsing it has no effect"
+                    )
+        return self
+
+    def query_format(self, name: str) -> FieldFormat | None:
+        """The format ``parse_query`` declares for the query parameter *name*."""
+        return next((entry.format for entry in self.parse_query if entry.field == name), None)
+
+    def body_path_format(self, path: str) -> FieldFormat | None:
+        """The format ``parse_body_paths`` declares for the flattened body path *path*."""
+        return next((entry.format for entry in self.parse_body_paths if entry.field == path), None)
 
     def ignores_query(self, name: str) -> bool:
         return not any(fnmatch.fnmatchcase(name, p) for p in self.keep_query) and any(
@@ -220,21 +281,26 @@ class SiteRulesSnapshot(BaseModel):
 
 
 class RuleDocument(BaseModel):
-    """The only accepted YAML document shape: request rules, page-URL rules, or both.
+    """The only accepted YAML document shape: request rules, page-URL rules, media-area rules.
 
-    ``page_urls`` holds the page-URL rules restoration verification reads
-    (``page_urls.py``); request matching never reads them.
+    ``page_urls`` holds the page-URL rules (``page_urls.py``) and
+    ``media_areas`` the media-area rules (``media_areas.py``) restoration
+    verification reads; request matching never reads either. A file declares
+    at least one rule in one of the three sections.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rules: tuple[SiteRule, ...] = ()
     page_urls: tuple[PageUrlRule, ...] = ()
+    media_areas: tuple[MediaAreaRule, ...] = ()
 
     @model_validator(mode="after")
     def _declares_a_rule(self) -> "RuleDocument":
-        if not self.rules and not self.page_urls:
-            raise ValueError("a rule file declares at least one rule in rules or page_urls")
+        if not self.rules and not self.page_urls and not self.media_areas:
+            raise ValueError(
+                "a rule file declares at least one rule in rules, page_urls or media_areas"
+            )
         return self
 
 
@@ -242,14 +308,21 @@ class SiteRules:
     """An immutable set of rules, preserving the exact source read at load time."""
 
     def __init__(
-        self, rules: Sequence[SiteRule] = (), *, page_urls: Sequence[PageUrlRule] = ()
+        self,
+        rules: Sequence[SiteRule] = (),
+        *,
+        page_urls: Sequence[PageUrlRule] = (),
+        media_areas: Sequence[MediaAreaRule] = (),
     ) -> None:
         self._rules = tuple(rules)
         self._page_urls = tuple(page_urls)
+        self._media_areas = tuple(media_areas)
         self._validate_ids()
         document = (
-            RuleDocument(rules=self._rules, page_urls=self._page_urls)
-            if self._rules or self._page_urls
+            RuleDocument(
+                rules=self._rules, page_urls=self._page_urls, media_areas=self._media_areas
+            )
+            if self._rules or self._page_urls or self._media_areas
             else None
         )
         files: tuple[RuleFileSnapshot, ...] = ()
@@ -270,8 +343,12 @@ class SiteRules:
         )
 
     def _validate_ids(self) -> None:
-        """One identity space for request and page-URL rules, so a diagnostic names one rule."""
-        ids = [rule.id for rule in self._rules] + [rule.id for rule in self._page_urls]
+        """One identity space for request, page-URL and media-area rules, so a diagnostic names one rule."""
+        ids = (
+            [rule.id for rule in self._rules]
+            + [rule.id for rule in self._page_urls]
+            + [rule.id for rule in self._media_areas]
+        )
         repeated = sorted({identity for identity in ids if ids.count(identity) > 1})
         if repeated:
             raise SiteRuleError(f"duplicate replay rule ids: {repeated}")
@@ -280,6 +357,11 @@ class SiteRules:
     def page_urls(self) -> tuple[PageUrlRule, ...]:
         """The page-URL rules restoration verification applies (``page_urls.py``)."""
         return self._page_urls
+
+    @property
+    def media_areas(self) -> tuple[MediaAreaRule, ...]:
+        """The media-area rules restoration verification applies (``media_areas.py``)."""
+        return self._media_areas
 
     @property
     def sha256(self) -> str:
@@ -334,6 +416,7 @@ class SiteRules:
             raise SiteRuleError("replay rule snapshot contains duplicate file names")
         rules: list[SiteRule] = []
         page_urls: list[PageUrlRule] = []
+        media_areas: list[MediaAreaRule] = []
         listing: list[tuple[str, str]] = []
         for file in snapshot.files:
             digest = hashlib.sha256(file.text.encode("utf-8")).hexdigest()
@@ -343,9 +426,10 @@ class SiteRules:
             document = _parse_rules(file.origin, file.text)
             rules.extend(document.rules)
             page_urls.extend(document.page_urls)
+            media_areas.extend(document.media_areas)
         if _listing_digest(listing) != snapshot.sha256:
             raise SiteRuleError("replay rule snapshot: collection sha256 mismatch")
-        instance = cls(rules, page_urls=page_urls)
+        instance = cls(rules, page_urls=page_urls, media_areas=media_areas)
         instance._snapshot = snapshot
         return instance
 

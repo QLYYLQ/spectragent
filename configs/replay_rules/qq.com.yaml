@@ -208,3 +208,52 @@ rules:
   ignore_query:
   - guid
   - video_omgid
+# Player video info and ads (POST vd6.l.qq.com/proxyhttp, a JSON body whose vinfoparam and
+# adparam values are URL-encoded query strings). Evidence: the offline branch replays
+# 263_0f164596-s13-b0 and 28_c98c13b4-s25-b0 of lookahead_15task_freeze_20261023, whose live
+# requests were dumped and compared with the recorded ones, and all 15 recordings of that root.
+# buid says what is asked: onlyvinfo (the home page's focus-map preview), vinfoad (video info and
+# pre-roll ads: search page previews and, in 28, the play page) or onlyad (ads only).
+# vinfoparam selects the video info and is parsed; it ignores only:
+# - cKey: the player's encrypted key over the video, the time and its ids, new for every request;
+# - tm: the client time in seconds;
+# - guid, flowid: random ids of the player and of this play.
+# The video (vid), definition (defn), encryptVer, refer, ehost, player version and every other
+# vinfoparam field stay. adparam is parsed too: adType and vid stay; flowid (this play) and
+# sspKey are ignored. sspKey is four random letters, and the answer puts its ad part under that
+# name (xhnr, woyv ...; true for all 32 recorded requests carrying adparam), so a replayed page,
+# which asks under a new name, never finds a recorded ad answer whatever it asked. For the same
+# reason the rule ignores sspAdParam, the ad request's context (a JSON document with the visitor
+# id, the flow id, the client time, a new request UUID, the page URL and referrer and a game
+# session token): what it selects is the ad part, which the replayed page cannot read. The page
+# reads errCode, vinfo and lcAdCookie, all selected by buid, vinfoparam and adparam. Without this
+# rule every replayed request missed, the home and search page previews did not play, and in 28
+# the play page asked for its video info again through onlyvinfo and then getvinfo, which the
+# recording never needed. The play pages of 128 and 263 got their video info from vinfo_proxy
+# (above), whose answer is encrypted; their replays then asked proxyhttp for that video with
+# encryptVer 9.2, which the recordings never did, so no rule can serve it.
+- id: tencent-video-player-info
+  scope:
+    host: vd6.l.qq.com
+    path: /proxyhttp
+    method: POST
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  parse_body_paths:
+  - field: vinfoparam
+    format: urlencoded
+  - field: adparam
+    format: urlencoded
+  ignore_body_paths:
+  - vinfoparam.cKey
+  - vinfoparam.tm
+  - vinfoparam.guid
+  - vinfoparam.flowid
+  - adparam.flowid
+  - adparam.sspKey
+  - sspAdParam

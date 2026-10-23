@@ -1552,8 +1552,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         with it — both reported once, so a restorer measures each restored
         observation exactly once (the ``RestorationSupport`` contract). The
         URL comparison leaves out the query parameters the replay's frozen
-        rule set declares in its page-URL rules (none when the network is
-        live). Thresholds are the restorer's.
+        rule set declares in its page-URL rules, and on a page its media-area
+        rules declare the media areas are masked out of the screenshot
+        distance and the evidence says so (neither when the network is live).
+        Thresholds are the restorer's.
         """
         alignment: list[MediaAlignment] | None = None
         alignment_detail = ""
@@ -1576,6 +1578,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 alignment_detail=alignment_detail,
             ),
             page_urls=self._replay_server.page_urls if self._replay_server is not None else (),
+            media_areas=(
+                self._replay_server.media_areas if self._replay_server is not None else ()
+            ),
         )
 
     # ── Checkpoint restoration: media alignment (RestorationAlignment, §4.9 / §4.14) ──

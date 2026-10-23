@@ -23,6 +23,7 @@ from spectragent.schemas import (
     StepRecord,
     TaskContext,
 )
+from spectragent.schemas.restoration import MaskedArea, MediaAreaEvidence
 
 
 def _check(**overrides: object) -> RestorationCheck:
@@ -144,6 +145,74 @@ class TestRestorationCheck:
         assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
         older = RestorationEvidence.model_validate({"capability_id": "browser", "url_match": False})
         assert (older.url_ignored_query, older.url_rule_ids) == ([], [])
+
+    def test_the_media_areas_set_aside_round_trip_and_older_evidence_has_none(self) -> None:
+        evidence = RestorationEvidence(
+            capability_id="browser",
+            screenshot_distance=0,
+            media_areas=MediaAreaEvidence(
+                rule_ids=["play-media"],
+                areas=[
+                    MaskedArea(
+                        side="recorded",
+                        kind="unreachable_frame",
+                        element="main/unplaced-0",
+                        x=60,
+                        y=84,
+                        width=778,
+                        height=438,
+                    )
+                ],
+                masked_share=0.3698,
+                unmasked_distance=23,
+                masked_distance=0,
+                mask_applied=True,
+            ),
+        )
+        assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
+        older = RestorationEvidence.model_validate({"capability_id": "browser"})
+        assert older.media_areas is None
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"rule_ids": []},
+            {"rule_ids": ["a"], "masked_share": 1.5},
+            {
+                "rule_ids": ["a"],
+                "areas": [
+                    {
+                        "side": "recorded",
+                        "kind": "canvas",
+                        "element": "x",
+                        "x": 0,
+                        "y": 0,
+                        "width": 1,
+                        "height": 1,
+                    }
+                ],
+            },
+            {
+                "rule_ids": ["a"],
+                "areas": [
+                    {
+                        "side": "recorded",
+                        "kind": "media_element",
+                        "element": "x",
+                        "x": 0,
+                        "y": 0,
+                        "width": 0,
+                        "height": 1,
+                    }
+                ],
+            },
+        ],
+    )
+    def test_media_area_evidence_names_a_rule_and_only_real_boxes(
+        self, bad: dict[str, object]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            MediaAreaEvidence.model_validate(bad)
 
 
 class TestRetarget:
