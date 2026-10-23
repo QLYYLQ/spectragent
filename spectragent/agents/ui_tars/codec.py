@@ -132,8 +132,24 @@ class Verb:
 DIRECTIONS = ("up", "down", "left", "right")
 
 
+def _verb(name: str, action: str, *arguments: Argument) -> Verb:
+    return Verb(name, action, arguments)
+
+
 def _point(name: str, example: str, *spellings: str) -> Argument:
     return Argument(name, "point", example, spellings=spellings)
+
+
+def _text(name: str, example: str, param: str, *, required: bool = True) -> Argument:
+    return Argument(name, "text", example, param=param, required=required)
+
+
+def _choice(name: str, param: str, choices: tuple[str, ...]) -> Argument:
+    return Argument(name, "choice", f"'{'|'.join(choices)}'", param=param, choices=choices)
+
+
+def _keys(name: str, example: str, param: str, *spellings: str) -> Argument:
+    return Argument(name, "keys", example, param=param, spellings=spellings)
 
 
 #: Every verb UI-TARS may emit, in the order the prompt and the error hints
@@ -141,71 +157,44 @@ def _point(name: str, example: str, *spellings: str) -> Argument:
 #: made-up action name. The mobile-only verbs (``long_press``, ``open_app``,
 #: ``press_home``, ``press_back``) have no browser action and no entry here;
 #: an Android capability brings them as its actions.
+#:
+#: - ``type``: UI-TARS says ``content``, the action reads ``text``. Required:
+#:   with ``clear_by_default`` a missing text would clear the field and type
+#:   nothing, reported as a success.
+#: - ``scroll``: a direction and nothing else. Not a point (ScrollAction
+#:   scrolls under the pointer or a selector-map element, and a vision-only run
+#:   has none), not an amount (``ScrollAction.default_amount`` is the
+#:   capability's; the agent declares that it can scroll). Likewise ``wait``'s
+#:   length is ``WaitAction.default_seconds``.
+#: - ``finished``: ``done`` reads ``extracted_content``. The task claim:
+#:   ``finished`` has no argument that says whether the task was accomplished
+#:   (a model ends with ``finished(content='无法完成…')`` too), so it reads back
+#:   with no claim (``reported_success`` is ``None``), and an action that
+#:   states one, true or false, cannot be written.
 VERBS: Mapping[str, Verb] = MappingProxyType(
     {
         verb.name: verb
         for verb in (
-            Verb("click", "click_coordinate", (_point("point", "'(x, y)'", "start_box"),)),
-            # UI-TARS says ``content``; the action reads ``text``. Required:
-            # with ``clear_by_default`` a missing text would clear the field
-            # and type nothing, reported as a success.
-            Verb(
+            _verb("click", "click_coordinate", _point("point", "'(x, y)'", "start_box")),
+            _verb(
                 "type",
                 "type_coordinate",
-                (
-                    Argument("content", "text", "'text to type'", param="text"),
-                    _point("point", "'(x, y)'", "start_box"),
-                ),
+                _text("content", "'text to type'", "text"),
+                _point("point", "'(x, y)'", "start_box"),
             ),
-            # A direction and nothing else. Not a point: ScrollAction scrolls
-            # under the pointer or a selector-map element, and a vision-only
-            # run has none. Not an amount: how far is ``ScrollAction.default_amount``,
-            # capability-side config; the agent declares that it can scroll.
-            Verb(
-                "scroll",
-                "scroll",
-                (
-                    Argument(
-                        "direction",
-                        "choice",
-                        "'up|down|left|right'",
-                        param="direction",
-                        choices=DIRECTIONS,
-                    ),
-                ),
-            ),
-            Verb(
-                "hotkey",
-                "send_keys",
-                (Argument("key", "keys", "'ctrl+a'", param="keys", spellings=("keys",)),),
-            ),
-            Verb(
+            _verb("scroll", "scroll", _choice("direction", "direction", DIRECTIONS)),
+            _verb("hotkey", "send_keys", _keys("key", "'ctrl+a'", "keys", "keys")),
+            _verb(
                 "drag",
                 "drag",
-                (
-                    _point("start_point", "'(x1, y1)'", "start_box"),
-                    _point("end_point", "'(x2, y2)'", "end_box"),
-                ),
+                _point("start_point", "'(x1, y1)'", "start_box"),
+                _point("end_point", "'(x2, y2)'", "end_box"),
             ),
-            # How long a wait waits is ``WaitAction.default_seconds``.
-            Verb("wait", "wait"),
-            # ``done`` reads ``extracted_content``. The task claim: ``finished``
-            # has no argument that says whether the task was accomplished (a
-            # model ends with ``finished(content='无法完成…')`` too), so it
-            # reads back with no claim (``reported_success`` is ``None``), and
-            # an action that states one, true or false, cannot be written.
-            Verb(
+            _verb("wait", "wait"),
+            _verb(
                 "finished",
                 "done",
-                (
-                    Argument(
-                        "content",
-                        "text",
-                        "'answer if applicable'",
-                        param="extracted_content",
-                        required=False,
-                    ),
-                ),
+                _text("content", "'answer if applicable'", "extracted_content", required=False),
             ),
         )
     }
@@ -370,7 +359,8 @@ class UITarsCodec:
         :attr:`writes_thought` and *thought* is not blank, one ``Thought:``
         line with every run of whitespace collapsed to a space, so nothing in
         a thought can start an action line. The same input writes the same
-        text, and the text is a fixed point of write, read, write.
+        text; read back, and its points put on the grid again by the
+        framework, it writes the same text (arch §4.15 "round-trip").
 
         Raises:
             UnrepresentableActionError: An action no verb of this run writes,
