@@ -889,6 +889,7 @@ class Fidelity(_Model):
     #: The restorer's verdict: checks that were ``ok``.
     restorer: Ratio
     #: URL compared and equal, and the screenshot's sha256 equal to the source run's same step.
+    #: The URL is the restorer's own evidence (``url_match``), so the replay's page-URL rules apply.
     strict: Ratio
     #: Screenshot bytes equal, independent of whether URL evidence was collected.
     exact_screenshot: Ratio

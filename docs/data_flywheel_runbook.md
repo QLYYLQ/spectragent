@@ -547,7 +547,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 回放日志里是命中，页面上却少了 JSONP 取来的内容（热门搜索、广告、搜索结果是空的）：看这个请求的日志条目有没有 `callback_rewrite`。没有而回调名与录下的不同，说明应答的包装不在能改写的形状里（回调名在路径里、`window.NAME(` 这类写法），或者命中的是同一接口不带回调参数的记录；这种请求只能照录下的字节送。报告的 `sections.sites.by_site.<站点>.callback_rewrites` 是每个站点改写的应答数。
 - 恢复发散：`strict` 下 run 以 `RestorationDivergedError` 结束，`warn` 下那一步的 `restoration.verdict` 是 `warn`。`reasons` 列出这一步所有不通过的检查，按下面的顺序排列，第一个同时记在 `reason`：
   - `document_miss`：自上一次校验以来回放日志里有主 frame 文档 miss，处理同上一条。
-  - `url_mismatch`：恢复出的 URL 与录下的不逐字相同，只在录了 `browser.browser_meta` 的 run 上比较。
+  - `url_mismatch`：恢复出的 URL 与录下的不逐字相同，只在录了 `browser.browser_meta` 的 run 上比较。回放规则集的页面地址规则（`page_urls` 一节，发布的在 `configs/replay_rules/page_urls.yaml`）声明的查询参数不比：页面载入之后自己写进地址、没有请求带它、也不选内容的参数（哔哩哔哩搜索页的 `vt`、同花顺选股结果页的 `sign`）；比较时去掉了哪些参数、是哪条规则去掉的，记在 `restoration.evidence[*].url_ignored_query` / `url_rule_ids`。两个 URL 只差一个这样的参数时，先在源 run 的网络归档里确认没有请求带它（文档请求里有它就是导航地址，不是页面写的），再给这个页面写一条页面地址规则；关键词、页码、排序、id 与筛选从不写。
   - `retarget_not_found`：在 `retarget_tolerance_px` 之内找不到标签、标识属性和文本签名都相同的元素；源 run 当时用的 index 不在录下的 selector map 里（模型编出来的 index）也归这一类。
   - `retarget_ambiguous`：候选不止一个，常见于嵌套的相同元素。
   - `action_failed`：动作的成败与录制不同，或者执行时抛错。
