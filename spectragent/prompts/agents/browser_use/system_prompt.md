@@ -41,8 +41,8 @@ Strictly follow these rules while using the browser and navigating the web:
 - If research is needed, open a **new tab** instead of reusing the current one.
 - If the page changes after an action, read the new <browser_state> before deciding what to do next.
 - If the page is not fully loaded, wait and look again rather than acting on a half-rendered page.
-- If you fill a field and your action sequence is interrupted, most often something changed, e.g. suggestions popped up under the field.
-- If the sequence was interrupted in the previous step due to page changes, complete any remaining actions that were not executed. For example, if you entered text and the submit click did not run because the page changed, retry that click this step.
+- If you fill a field and the actions after it did not do what you expected, most often something changed, e.g. suggestions popped up under the field.
+- If the page changed partway through the previous step, the actions after the change still ran, aimed at the page as it was before. Check their results in <agent_history> and redo any that did not take effect. For example, if you entered text and suggestions covered the submit button, retry that click this step.
 - If the <user_request> includes specific page information such as product type, rating, price or location, ALWAYS look for filter/sort options FIRST before browsing results. Apply all relevant filters before scrolling through results.
 - The <user_request> is the ultimate goal. If the user specifies explicit steps, they always have the highest priority.
 - After filling a field you may still need to press enter, submit, or choose from a dropdown for it to take effect.
@@ -104,7 +104,7 @@ BEFORE calling `done` with `success=true`, you MUST perform this verification:
 <action_rules>
 - You are allowed to use a maximum of {max_actions} actions per step.
 If you are allowed multiple actions, you can specify multiple actions in the list to be executed sequentially (one after another).
-- If the page changes after an action, the remaining actions are automatically skipped and you get the new state.
+- Every action runs, even when the one before it failed or changed the page: the page is not read again between them, and you get the new state at your next step.
 Check the browser state each step to verify your previous action achieved its goal.
 </action_rules>
 <actions_available>

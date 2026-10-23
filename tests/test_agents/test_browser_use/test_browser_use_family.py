@@ -29,7 +29,7 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 import yaml
@@ -42,7 +42,7 @@ from spectragent.agents.browser_use import (
 )
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.prompts import AGENT_PROMPT_ROOT
-from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.action_guard import build_guarded_act, params_refusal
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -259,6 +259,23 @@ def test_only_the_member_that_shows_the_screenshot_has_screenshot_knobs() -> Non
     assert dom_vision - dom == {"coordinate_space", "vision_detail"}
 
 
+def test_the_screenshot_is_sent_at_auto_detail_by_default_as_in_skyvern() -> None:
+    """A point is read off the image, so ``low`` would make ``click_coordinate`` guess.
+
+    Both families' ``dom_vision`` members take it the same way, under one description.
+    """
+    from spectragent.agents.skyvern import SkyvernDomVisionAgent
+
+    assert BrowserUseDomVisionAgent().vision_detail == "auto"
+    assert SkyvernDomVisionAgent().vision_detail == "auto"
+    descriptions = {
+        get_type_hints(member, include_extras=True)["vision_detail"].__metadata__[0].description
+        for member in (BrowserUseDomVisionAgent, SkyvernDomVisionAgent)
+    }
+    (description,) = descriptions
+    assert "'auto' (the default" in description and "click_coordinate guess" in description
+
+
 def test_the_mode_switch_and_its_predecessor_are_gone_rather_than_aliased() -> None:
     with pytest.raises(TypeError):
         BrowserUseDomAgent(observation_mode="dom")  # type: ignore[call-arg]
@@ -331,7 +348,7 @@ async def test_dom_vision_renders_the_tree_and_shows_the_screenshot() -> None:
     text, image = content
     assert isinstance(text, ContentPartTextParam) and isinstance(image, ContentPartImageParam)
     assert "[3]<button>Submit</button>" in text.text
-    assert image.image_url.detail == "low"
+    assert image.image_url.detail == "auto"
 
 
 async def test_dom_vision_sends_text_alone_when_the_screenshot_has_no_bytes() -> None:
@@ -410,6 +427,48 @@ def test_a_fine_tuned_template_quotes_the_runs_dom_format(
     prompt = run.prompt()
     assert dom_formats()["dom"] in prompt
     assert ("<coordinates>" in prompt) is (member is BrowserUseDomVisionAgent)
+
+
+#: Every configuration's variant: the three base templates and the three
+#: written for the fine-tuned checkpoint.
+_EVERY_VARIANT: list[dict[str, Any]] = [
+    {"is_browser_use_model": tuned, **config}
+    for tuned in (False, True)
+    for config in (
+        {"flash_mode": True},
+        {"flash_mode": False, "use_thinking": True},
+        {"flash_mode": False, "use_thinking": False},
+    )
+]
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("config", _EVERY_VARIANT)
+def test_the_prompt_says_how_actions_run_and_how_indexes_hold(
+    member: type[BrowserUseAgent], config: dict[str, Any]
+) -> None:
+    """What the prompt says about execution is what the Loop and the capability do.
+
+    ``ReactLoop`` runs every action of a step, through a failed one or a page
+    change, and stops only at ``done`` or an action that raises. An index is
+    the element's backend-node handle (``dom/models.py::element_handle``), the
+    same from one observation to the next.
+    """
+    run = _Run(member, **config)
+    prompt = run.prompt()
+    for claim in (
+        "automatically skipped",
+        "interrupted",
+        "renumbered every step",
+        "rebuilt every step",
+        "may now name something else",
+    ):
+        assert claim not in prompt, (run.agent.select_prompt_variant(), claim)
+    assert "not renumbered between steps" in prompt
+    if run.agent.select_prompt_variant() in {"system_prompt", "system_prompt_no_thinking"}:
+        assert "Every action runs, even when the one before it failed or changed the page" in (
+            prompt
+        )
 
 
 def test_every_member_still_captures_the_screenshot() -> None:
@@ -704,10 +763,33 @@ async def test_the_per_run_schema_republishes_default_null_on_purpose(
     )
     verb, name = optional_nulls[0]
     descriptor = next(d for d in run.descriptors if d.name == verb)
-    item = run.model.model_validate(
-        {"memory": "m", "action": [{verb: {**minimal_params(descriptor), name: None}}]}
-    ).action[0]
-    assert name not in run.agent._action_for(item).params
+    (action,) = run.agent.parse_react_output(
+        run.reply({verb: {**minimal_params(descriptor), name: None}})
+    )
+    assert name not in action.params
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("structured", [False, True], ids=["text", "structured"])
+def test_done_with_no_answer_keeps_its_null_and_passes_the_params_check(
+    member: type[BrowserUseAgent], structured: bool
+) -> None:
+    """``done``'s ``extracted_content`` is required and nullable: null is the answer.
+
+    Only an optional param's null is a decline. Stripping every null turned
+    this correct reply into ``extracted_content: Field required`` at the
+    params check, so a task with no answer to return could not end.
+    """
+    run = _Run(member)
+    payload = {"browser.done": {"extracted_content": None, "success": None}}
+    reply: Any = (
+        run.model.model_validate({"memory": "m", "action": [payload]})
+        if structured
+        else run.reply(payload)
+    )
+    (action,) = run.agent.parse_react_output(reply)
+    assert action == Action(name="browser.done", params={"extracted_content": None})
+    assert params_refusal(run.action_space, action) is None
 
 
 @pytest.mark.parametrize("member", MEMBERS)

@@ -16,12 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+import pytest
 import yaml
 from conscribe import build_composed_config, generate_composed_config_source
 from pydantic import Field
 
 from spectragent.agents import AgentRegistrar
 from spectragent.agents._registrar import AgentBase
+from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.prompts import (
     AGENT_KEY_SEPARATOR,
     AGENT_PROMPT_ROOT,
@@ -30,6 +32,7 @@ from spectragent.agents.prompts import (
     agent_prompt_variants,
     load_prompt,
 )
+from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.negotiation._base import extract_wiring
 from spectragent.core.registries import collect_registrars
@@ -98,6 +101,46 @@ def test_members_register_under_the_family_root_and_the_root_does_not():
     }
     assert dom().agent_id == "probe_family.dom"
     assert root.__registry_key__ == _ROOT
+
+
+def test_constructing_a_family_root_is_refused_by_name_with_its_members():
+    """Not later, at ``prepare()``, on an attribute only a member defines."""
+    root, dom, _dom_vision = _define_family()
+
+    with pytest.raises(TypeError) as refused:
+        root()
+    assert str(refused.value) == (
+        "'probe_family' (ProbeFamily) is an abstract agent family root and cannot be "
+        "constructed; construct one of its members: probe_family.dom (Dom), "
+        "probe_family.dom_vision (DomVision)."
+    )
+    assert dom().agent_id == "probe_family.dom"
+
+
+@pytest.mark.parametrize(
+    ("root", "members"),
+    [
+        (BrowserUseAgent, ("browser_use.dom", "browser_use.dom_vision")),
+        (SkyvernAgent, ("skyvern.dom", "skyvern.dom_vision")),
+    ],
+)
+def test_the_shipped_family_roots_refuse_construction(
+    root: type[AgentBase], members: tuple[str, ...]
+) -> None:
+    with pytest.raises(TypeError, match="abstract agent family root") as refused:
+        root()
+    for member in members:
+        assert member in str(refused.value)
+        AgentRegistrar.get(member)()
+
+
+def test_an_abstract_class_with_no_member_says_so():
+    @dataclass
+    class Unfinished(AgentBase):
+        __abstract__ = True
+
+    with pytest.raises(TypeError, match="no registered agent derives from it"):
+        Unfinished()
 
 
 def test_no_shipped_agent_key_is_also_a_family_root():

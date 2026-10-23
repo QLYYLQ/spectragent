@@ -9,7 +9,7 @@ See docs/architecture_design.md §4.1 and docs/execution_dag.md M12.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Self
 
 from conscribe import create_registrar
 from pydantic import Field
@@ -69,7 +69,8 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
     what the members share sits on the root and merges through the MRO.
     A subclass of a registered agent that sets no key of its own is keyed
     below that agent's key in the same way, which makes that agent a family
-    root as well; a family root stays abstract instead.
+    root as well; a family root stays abstract instead. Constructing an
+    abstract class raises ``TypeError`` naming its members (``__new__``).
 
     ``__wiring__`` declares cross-registry dependencies:
     - ``agent_loop``: compatible Loop strategies (default: all)
@@ -116,6 +117,21 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
     _prompt_cache: dict[str, tuple[str, PromptRef]] = field(
         default_factory=dict, init=False, repr=False
     )
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        """Refuse an abstract agent class at construction, naming its members.
+
+        A family root holds what its members share and none of what makes a
+        member an agent (its ``__wiring__`` entries, its surface). YAML can
+        never select one, since conscribe does not register an abstract
+        class, but Python could construct it, and the run then failed late,
+        at ``prepare()``, on a member attribute (``AttributeError:
+        _SURFACE``). The mark is read off the class's own body, as conscribe
+        reads it, so a member, which does not write it, constructs as usual.
+        """
+        if cls.__dict__.get("__abstract__", False):
+            raise TypeError(_abstract_agent_refusal(cls))
+        return super().__new__(cls)
 
     @property
     def agent_id(self) -> str:
@@ -179,3 +195,28 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         template, ref = self.prompt(name)
         text = render_template(self.__prompt_engine__, template, params)
         return text, template_snapshot(template, ref, params)
+
+
+def _abstract_agent_refusal(cls: type) -> str:
+    """Why *cls* cannot be constructed, and which registered agents can be instead."""
+    key = cls.__dict__.get("__registry_key__")
+    what = (
+        f"{key!r} ({cls.__name__}) is an abstract agent family root"
+        if key
+        else f"{cls.__name__} is an abstract agent class"
+    )
+    members = sorted(
+        f"{member_key} ({member.__name__})"
+        for member_key, member in AgentRegistrar.get_all().items()
+        if issubclass(member, cls)
+    )
+    if not members:
+        return f"{what} and cannot be constructed; no registered agent derives from it."
+    if key:
+        return (
+            f"{what} and cannot be constructed; construct one of its members: {', '.join(members)}."
+        )
+    return (
+        f"{what} and cannot be constructed; construct a registered agent derived "
+        f"from it: {', '.join(members)}."
+    )

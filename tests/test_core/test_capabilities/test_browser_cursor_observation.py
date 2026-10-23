@@ -12,7 +12,7 @@ import pytest
 from PIL import Image
 
 from spectragent.agents.browser_use import BrowserUseDomVisionAgent
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
@@ -236,7 +236,7 @@ async def test_skyvern_remains_text_when_screenshot_is_available() -> None:
         dom=DOMObs(),
         platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
     )
-    messages = await SkyvernAgent().build_react_prompt(
+    messages = await SkyvernDomAgent().build_react_prompt(
         observation,
         context=ReactPromptContext(step=0, phase="policy"),
     )

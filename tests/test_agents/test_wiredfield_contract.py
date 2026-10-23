@@ -11,12 +11,18 @@ from __future__ import annotations
 import pytest
 from conscribe.wiring import WiredField
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 
-AGENT_CLASSES = [BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent, UITarsAgent]
+AGENT_CLASSES = [
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+    SkyvernDomAgent,
+    SkyvernDomVisionAgent,
+    UITarsAgent,
+]
 
 
 class TestWiredFieldContract:

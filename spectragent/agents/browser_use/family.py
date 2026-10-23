@@ -70,7 +70,7 @@ from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
-from spectragent.core.actions.action_union import action_union
+from spectragent.core.actions.action_union import action_of, action_union
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
 from spectragent.core.loops.errors import ParseError
@@ -413,7 +413,12 @@ class BrowserUseAgent(AgentBase):
                     raw_output=text[:500],
                 ) from exc
 
-        return [self._action_for(item) for item in parsed.action]
+        # ``action_of`` drops a null only where it declines an optional param
+        # (``clear: null`` must not override ``clear_by_default``) and keeps a
+        # required one (``done``'s ``extracted_content: null`` is the answer).
+        # Points stay as the model wrote them; the framework moves them into
+        # the capability's units with this step's frame.
+        return [action_of(item) for item in parsed.action]
 
     def get_react_output_model(self) -> type[BaseModel]:
         """The closed per-run model, once ``prepare()`` has built it.
@@ -529,19 +534,6 @@ class BrowserUseAgent(AgentBase):
                 ),
             ),
         )
-
-    def _action_for(self, item: BaseModel) -> Action:
-        """One validated union member as an Action, its points as the model wrote them.
-
-        The framework moves the points into the capability's units with this
-        step's frame. ``exclude_none`` matters: a model that writes
-        ``clear: null`` means "I have no opinion", and forwarding the
-        ``None`` would override the capability's own ``clear_by_default``
-        with a value nobody chose.
-        """
-        dumped = item.model_dump(exclude_none=True)
-        name, params = next(iter(dumped.items()))
-        return Action(name=name, params=params)
 
     def select_prompt_variant(self) -> str:
         """Which template on disk this configuration reads.

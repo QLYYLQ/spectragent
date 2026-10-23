@@ -372,7 +372,7 @@ agent:
 
 **prompt 按家族根取目录**：`agent_prompt_dir(agent_id)` 取第一个点之前的部分，`browser_use.dom` 与 `browser_use.dom_vision` 都读 `prompts/agents/browser_use/`，记录下的 `PromptRef.path` 也是 `agents/browser_use/<name>.md`。成员之间差的是观测与动作声明，不是模板教给模型的协议；一族一个目录，模板只有一份，不会出现各成员的副本互相漂移。不带点的键（`ui_tars`）自成一族，路径不变。
 
-**家族根保持抽象**：已注册 agent 的子类如果不写自己的键，会被推出 `<父键>.<类名>`（`ui_tars` 下得到 `ui_tars.mobile`），父键就既是 agent 又是家族根，conscribe 的 `tree()` 拒绝这种形状。把一个 agent 拆成家族，就是把它的类改成抽象根；`tests/test_agents/test_agent_families.py` 对发布的 agent 检查没有键同时是两者。
+**家族根保持抽象**：已注册 agent 的子类如果不写自己的键，会被推出 `<父键>.<类名>`（`ui_tars` 下得到 `ui_tars.mobile`），父键就既是 agent 又是家族根，conscribe 的 `tree()` 拒绝这种形状。把一个 agent 拆成家族，就是把它的类改成抽象根；`tests/test_agents/test_agent_families.py` 对发布的 agent 检查没有键同时是两者。抽象根在 Python 里也构造不出来（2026-10-23）：YAML 本来就选不到它（conscribe 不注册抽象类），但直接 `BrowserUseAgent()` 以前能构造，run 到 `prepare()` 才因为只有成员才有的属性失败（`AttributeError: _SURFACE`）。现在 `AgentBase.__new__` 对自己类体里写了 `__abstract__ = True` 的类抛 `TypeError`，点名它的成员（派生自它的已注册 agent，带键与类名），例如 `'browser_use' (BrowserUseAgent) is an abstract agent family root and cannot be constructed; construct one of its members: browser_use.dom (BrowserUseDomAgent), browser_use.dom_vision (BrowserUseDomVisionAgent).`。规则只有这一处，各家族不各写一份；标记与 conscribe 一样只读类自己的类体，成员不写它，照常构造。
 
 **BrowserUse 家族**（用户 2026-10-23 的裁决，取代 `observation_mode` 的 `dom` / `dom_vision` / `vision` 三个模式）。家族根 `BrowserUseAgent`（`agents/browser_use/family.py`）持有 Loop 范围、共有的配置字段、prompt 构建与回复解析；两个成员各写完整的 `observation` 与 `action` 条目：
 
@@ -384,9 +384,10 @@ agent:
 - `dom` 在两个成员上都是 required：配 `vision_only` profile 的 run 在协商时失败，报错写 `dom ← browser_use.dom`，不会静默降级成视觉实验。纯视觉删除：只看截图的是 computer use，归 UI-TARS 一类；它的 surface 片段 `_surface/vision*.md` 随之删除。
 - `screenshot` 在两个成员上也都是 required：它不只是模型输入，`online_mind2web` / `lexbench_browser` 从 trace 里的截图打分。成员决定模型看到什么，不决定 run 记录什么。
 - `browser_use.dom_vision` 的动作与原来的 `dom_vision` 模式相同：`click`、`type` 按序号，另有 `click_coordinate`（够到序号够不着的目标，如跨域 iframe 小部件），没有 `type_coordinate` 与 `drag`。两个点击动词互相独立，没有一个参数一半不适用的重载动词。
-- 成员之间的行为差别只有两处，都是成员覆盖根上的一个方法：`dom_vision` 每步把截图附进用户消息（这一步的截图没有字节时只发文本，与 `dom` 相同），本 run 协商到坐标动作时在系统提示的 surface 之后加 `<coordinates>` 段（下文"BrowserUse 的反馈网格"）。`coordinate_space` 与 `vision_detail` 只在 `dom_vision` 上；`browser_use.dom` 不写点，没有这两个字段。
+- 成员之间的行为差别只有两处，都是成员覆盖根上的一个方法：`dom_vision` 每步把截图附进用户消息（这一步的截图没有字节时只发文本，与 `dom` 相同），本 run 协商到坐标动作时在系统提示的 surface 之后加 `<coordinates>` 段（下文"BrowserUse 的反馈网格"）。`coordinate_space` 与 `vision_detail` 只在 `dom_vision` 上；`browser_use.dom` 不写点，没有这两个字段。`vision_detail` 默认 `auto`，与 `skyvern.dom_vision` 相同、描述也相同：点是从这张图上读的，`low` 会让 `click_coordinate` 靠猜（2026-10-23 之前默认 `low`）。
 - surface 片段按成员取（`_surface/dom.md`、`_surface/dom_vision.md` 与各自的 terse 版），模板只有一份：成员不是选模板的一个轴，DOM 与 DOM + 截图的消融只差 surface 片段。每个模板都引用 surface，三个 `is_browser_use_model` 模板也是（§4.4 "观测格式由提供方描述"）。
 - 历史窗口是根上的配置字段 `step_history_window`（默认 10，至少 1）：每步消息的 `<agent_history>` 重放最近多少步。它以前是 `init=False` 的私有常量，YAML 改不了，是一个看不见的实验变量；Skyvern 的对应字段 `action_history_window` 按执行过的动作计数。
+- **提示词说实话**（2026-10-23，与 Skyvern 的同一处更正，下文"Skyvern 家族"）：`system_prompt` 与 `system_prompt_no_thinking` 原来说页面改变之后其余动作自动跳过（"the remaining actions are automatically skipped" / "the sequence is interrupted"），并让模型补做"因页面改变没执行"的动作；而 Loop 执行一步里的每个动作，只有 `done` 或抛异常的动作才停下。现在写成：每个动作即使前一个失败或改变了页面也会执行，动作之间不重新读页面，新状态下一步才看到；页面在上一步中途改变时，之后的动作仍按改变前的页面执行，要按 `<agent_history>` 里的结果补做没生效的。四个 surface 片段原来说"序号每步重建"、页面改变后"同一个序号可能指向别的元素"；序号是稳定的 backend 节点 id（`dom/models.py::element_handle`），现在写成：元素在页面上就一直是那个序号，步与步之间不重新编号，本步没列出的元素用旧序号也够不到，被替换或删除的元素连同序号一起消失（看起来一样的新元素是新序号）。其余上游文字与语气不变；`<efficiency_guidelines>` 里"改变页面的动作放在最后"本来就对，保留。`test_browser_use_family.py` 对每个模板变体钉住这两点。
 
 **Skyvern 家族**（用户 2026-10-23 的裁决：Skyvern 与 BrowserUse 对称）。Skyvern 有自己的 DOM 清洗流程（`dom_cleaner: skyvern` / `skyvern_hit_test`），所以两个成员都带清洗后的元素树，`click` 都按元素序号；差别只在模型还看到什么：
 
@@ -1623,7 +1624,7 @@ class Params(BaseModel):
 
 **YAML 旋钮进 description，不进 `default`**：`clear_by_default` 这类当前值被插进参数的 description（prompt 和 schema 两边都看得到），但 descriptor 的 schema 里**不写 `default`**——默认值归 capability，在 `execute()` 里应用，写一个 schema default 等于声明一个"省略该参数时会得到的值"，而那个值不是它。
 
-作用域要说清楚：这是 **descriptor 那一层**的保证。agent 把 descriptor 编译成 per-run 输出模型时，每个 optional 参数会重新带上 `default: null`——strict dialect 把所有属性变成 required，`null` 于是成了模型"弃权"的唯一写法。这个 null 到不了 `execute()`：agent 在构造 Action 前把它抹掉，所以"省略"和"写 null"到达 capability 时完全一样——这才是 `clear: null` 覆盖 `clear_by_default` 被堵住的地方。抹掉的规则在框架一处：`core/actions/action_union.py::action_of(member)` 只去掉 optional 参数的 null，required 参数的 null 保留（`done` 的 `extracted_content` required 且可空，写 `null` 是"没有答案"的答案；BrowserUse 仍用 `model_dump(exclude_none=True)`，会把它也抹掉，参数校验再以 `extracted_content: Field required` 退回整条回复）。Skyvern 用 `action_of`。
+作用域要说清楚：这是 **descriptor 那一层**的保证。agent 把 descriptor 编译成 per-run 输出模型时，每个 optional 参数会重新带上 `default: null`——strict dialect 把所有属性变成 required，`null` 于是成了模型"弃权"的唯一写法。这个 null 到不了 `execute()`：agent 在构造 Action 前把它抹掉，所以"省略"和"写 null"到达 capability 时完全一样——这才是 `clear: null` 覆盖 `clear_by_default` 被堵住的地方。抹掉的规则在框架一处：`core/actions/action_union.py::action_of(member)` 只去掉 optional 参数的 null，required 参数的 null 保留（`done` 的 `extracted_content` required 且可空，写 `null` 是"没有答案"的答案）。BrowserUse 与 Skyvern 都经它构造 Action。BrowserUse 原来用 `model_dump(exclude_none=True)`，把这个 null 也抹掉，参数校验再以 `extracted_content: Field required` 退回整条回复，没有答案可交的任务结束不了；2026-10-23 改用 `action_of`（`test_browser_use_family.py` 钉住 `done(extracted_content=null)` 被接受）。
 
 **Skyvern 的 `reasoning` 不进动作参数（2026-10-23）。** Skyvern 每个动作条目的 `reasoning` 是模型对这个动作的想法，留在回复里（`parse_react_thought` 读它；闭合回复里它与 `action` 并列在条目上，§4.1"Skyvern 家族"），不再被 Agent 塞进动作参数：动作只带它的 `Params` 声明的参数，否则执行之前的参数校验（§4.1“参数不合 `Params` 的动作是解析错误”）就会把它退回去。导出层原来在消费端删掉它的补丁（`_project`、`dropped_params`）随之删除（§4.15）。这次改动之前录下的 Skyvern run 不能以 `history_source: source` 分叉（源回复重新解析出的动作不再带 `reasoning`，与录下的动作逐字比较不同），也不能导出（录下的动作参数带着 `reasoning`，不合 `Params`）；不设兼容路径，重录。
 
