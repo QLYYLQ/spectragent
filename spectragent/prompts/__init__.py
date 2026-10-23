@@ -2,14 +2,17 @@
 
 Layout is one directory per registry key, one level below the kind::
 
-    spectragent/prompts/agents/<agent_id>/<name>.md
+    spectragent/prompts/agents/<agent family>/<name>.md
     spectragent/prompts/evaluators/<evaluator_id>/<name>.txt
 
 There is deliberately no alias table anywhere: ``self.__registry_key__``
-*is* the path segment. Two loaders read this tree —
-:mod:`spectragent.agents.prompts` and :mod:`spectragent.evaluator.prompts`
-— and they share the failure mode, the content hash and the snapshot
-constructors so that a prompt behaves the same whichever side loads it.
+*is* the path segment. For an agent it is the key's family root, the part
+before the first dot, so ``browser_use.dom`` reads ``agents/browser_use/``
+and an undotted key such as ``ui_tars`` is its own family. Two loaders
+read this tree — :mod:`spectragent.agents.prompts` and
+:mod:`spectragent.evaluator.prompts` — and they share the failure mode,
+the content hash and the snapshot constructors so that a prompt behaves
+the same whichever side loads it.
 
 The extensions differ because the files do: an evaluator prompt is a
 plain-text judge instruction, an agent prompt is a markdown document with

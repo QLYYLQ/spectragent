@@ -175,9 +175,13 @@ Agent 不持有 Loop 引用 — Agent 是被动的"知识提供者"
 #### 两个独立注册表
 
 ```python
-AgentRegistrar = create_registrar("agent", BaseAgent, discriminator_field="agent_id")
+AgentRegistrar = create_registrar(
+    "agent", BaseAgent, discriminator_field="agent_id", key_separator="."
+)
 AgentLoopRegistrar = create_registrar("agent_loop", AgentLoop, discriminator_field="loop_id")
 ```
+
+Agent 的键可以分层（`browser_use.dom`），见下文"Agent 家族"。
 
 #### Loop 协议 + slot 体系
 
@@ -346,6 +350,29 @@ class SimpleSWEAgent(SWEAgent):
 ```
 
 **LLM 作为简单 IoC**：LLM 不需要协商，config → 注册表解析 → 实例化 → AgentRuntime 注入 Loop.run()。每个 agent 可独立配置 LLM（实验场景：agent A 用 gpt-4o，agent B 用 gpt-4o-mini）。真有 agent 对 LLM 有限制（如只支持 function-calling 的 provider）再通过 `__wiring__` 收窄。
+
+#### Agent 家族：抽象根 + 分层键（用户 2026-10-23 的裁决）
+
+`AgentRegistrar` 带 `key_separator="."`。一个 Agent 家族由两部分组成：
+
+- **家族根**：抽象类，`__abstract__ = True`，`__registry_key__ = "browser_use"`，本身不注册，YAML 里选不到。家族共有的东西放在根上：Loop 范围等共有的 `__wiring__` 条目、共有的配置字段、prompt 构建与输出解析。
+- **成员**：注册的子类，键是 `<根>.<成员>`。键可由类名推出（根下的 `class Dom` 得到 `browser_use.dom`），也可写全（`__registry_key__ = "browser_use.dom_vision"`）。每个成员写出自己完整的 `__wiring__` 条目（它观测什么、声明哪些动作），与根上的条目经 MRO 合并（上文"`__wiring__` 的 MRO 合并"：子类条目整条替换继承来的同名条目）。一个成员是一个类、一种观测与动作组合，不靠实例字段在模式之间切换。`AgentRegistrar.children("browser_use")` 列出一族。
+
+目标状态：BrowserUse 与 Skyvern 各成一族，成员都是 `dom` 与 `dom_vision`。DOM 必开：有 DOM 清洗时 `click` 按元素序号，有截图时可另有 `click_coordinate`；纯视觉归 computer use 一类 agent（UI-TARS 等）。拆分由后续改动完成，当前三个 agent 仍是不带点的单键。
+
+**YAML 形状**：`agent_id` 仍是一个判别字段，`agent_id: browser_use.dom` 是一个扁平判别值。conscribe 生成 `agent_id: Literal['browser_use.dom']`，不像 LLM 的 `model_type` + `provider` 那样展开成嵌套块（那是两个判别字段 `discriminator_fields`，§4.7）。默认实例 id 是 `browser_use.dom#0`。
+
+```yaml
+agent:
+  - agent_id: browser_use.dom
+    agent_loop: { loop_id: react }
+    llm: { model_type: openai, model: gpt-4o, provider: { name: direct } }
+    memory: { memory_id: simple }
+```
+
+**prompt 按家族根取目录**：`agent_prompt_dir(agent_id)` 取第一个点之前的部分，`browser_use.dom` 与 `browser_use.dom_vision` 都读 `prompts/agents/browser_use/`，记录下的 `PromptRef.path` 也是 `agents/browser_use/<name>.md`。成员之间差的是观测与动作声明，不是模板教给模型的协议；一族一个目录，模板只有一份，不会出现各成员的副本互相漂移。不带点的键（`ui_tars`）自成一族，路径不变。
+
+**家族根保持抽象**：已注册 agent 的子类如果不写自己的键，会被推出 `<父键>.<类名>`（`ui_tars` 下得到 `ui_tars.mobile`），父键就既是 agent 又是家族根，conscribe 的 `tree()` 拒绝这种形状。把一个 agent 拆成家族，就是把它的类改成抽象根；`tests/test_agents/test_agent_families.py` 对发布的 agent 检查没有键同时是两者。
 
 #### Loop 驱动示例（weave + agent.run）
 
@@ -4925,7 +4952,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 注册表 | 判别方式 | 说明 | 状态 |
 |--------|---------|------|------|
-| `AgentRegistrar` | `agent_id` (flat) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验 | ✅ |
+| `AgentRegistrar` | `agent_id` (flat, hierarchical key `family.member`) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验。`key_separator="."`：家族根是抽象类（`browser_use`），不注册；成员注册为 `browser_use.dom`，各写完整 `__wiring__`，prompt 读家族根的目录（§4.1 "Agent 家族"）；不带点的键（`ui_tars`）自成一族 | ✅；BrowserUse / Skyvern 拆成家族待做 |
 | `AgentLoopRegistrar` | `loop_id` (flat) | Loop 实现（执行策略）；通过 `__required_slots__` 声明所需 agent 方法，通过 `__loop_inputs__` 声明每任务的输入（M31） | ✅ ReactLoop；M31：`branch`（`BranchLoop`，ReactLoop 子类，§4.1）；CodeAct/FunctionCalling/PlanExecute 待 P2/P3 |
 | `LLMRegistrar` | `model_type.provider` (nested) | Chat provider 实现，保持 Chat 受体隔离 | ✅ |
 | `ReplayReviewerRegistrar` | `reviewer_id` (flat) | `replay_reviewer`：独立 replay 审查 job 的策略，`jev` 持 Decision 受体，§4.18 | ✅ |
@@ -4957,7 +4984,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 > **Provider 目录归属**：每个 capability 的 backend provider 文件物理上属于 `spectragent/core/capabilities/{cap}/backends/`，对应的 `*ProviderRegistrar` 也在该目录的 `_registrar.py` 里。Browser 已落地；Docker / Desktop / Android 等 P2/P3 时按同样模式增设。
 
-> **Dotted-key flat vs nested discriminator（2026-04 订正）**：Action / Observation 原计划上 nested discriminator，实测 conscribe 在“所有 leaf 同一 source”时会命中 Pydantic 的单字段 discriminator 冲突（见 `conscribe.config.composed._build_subset_union`）。改用 *dotted-key flat*：discriminator 仍是单字段 `action_id` / `fragment_id`，但键内嵌 source 前缀（`browser.click`、`loop.action_result`），同时避免 registry 撞名和 conscribe 的 Pydantic 冲突。语义与 nested 等价，wiring 字符串、前缀路由、config 生成都不需要特殊处理。
+> **Dotted-key flat vs nested discriminator（2026-04 订正）**：Action / Observation 原计划上 nested discriminator，实测 conscribe 在“所有 leaf 同一 source”时会命中 Pydantic 的单字段 discriminator 冲突（见 `conscribe.config.composed._build_subset_union`）。改用 *dotted-key flat*：discriminator 仍是单字段 `action_id` / `fragment_id`，但键内嵌 source 前缀（`browser.click`、`loop.action_result`），同时避免 registry 撞名和 conscribe 的 Pydantic 冲突。语义与 nested 等价，wiring 字符串、前缀路由、config 生成都不需要特殊处理。Agent 的家族键同理：`agent_id: browser_use.dom` 是单个判别值，不是嵌套块（§4.1 "Agent 家族"）。
 
 ---
 
@@ -5136,6 +5163,7 @@ environment:
 | **新增 Agent Loop（全新策略）** | 继承 `AgentLoopBase`，设 `__registry_key__` + `__required_slots__`，实现 `_execute()` | Tree-of-Thought loop |
 | **新增 Agent Loop（已有策略的微调）** | 继承现有 Loop 类，slot 集合做并集 | `ReactWithThoughtLoop(ReactLoop): __required_slots__ = ReactLoop.__required_slots__ \| {"parse_thought"}` |
 | **新增 Agent** | 继承 `AgentBase`，实现 Loop 要求的方法 slots，设 `__wiring__` | `SWEAgent` 同时满足 React 和 CodeAct 的 slots |
+| **新增 Agent 家族成员** | 继承家族的抽象根，键为 `<根>.<成员>`（由类名推出或写全），写出自己完整的 `__wiring__` 条目；prompt 放在家族根的目录里（§4.1 "Agent 家族"） | `browser_use.dom`、`browser_use.dom_vision` |
 | **新增 Environment** | 继承 `EnvironmentBase`，`__wiring__["capabilities"] = ("capability", [...])` 注入 capability 集合 | `CompositeEnvironment`（多 capability 前缀路由） |
 | **新增 Hook** | 继承 `HookBase`，设 `__intercepts__` 与 `{advice}_{method}` handler | 自定义日志、告警、live_monitor |
 | **新增 Evaluator** | 继承 `EvaluatorBase`，实现 `evaluate()` | LLM-as-judge / 测试套件 |

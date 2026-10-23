@@ -1,6 +1,10 @@
-"""Agent prompt resolution — registry key *is* the directory name.
+"""Agent prompt resolution — the registry key's family root *is* the directory name.
 
-``spectragent/prompts/agents/<agent_id>/<name>.md``
+``spectragent/prompts/agents/<agent family>/<name>.md``
+
+The family root is the key before its first dot: ``browser_use.dom`` and
+``browser_use.dom_vision`` both read ``agents/browser_use/``, and an
+undotted key (``ui_tars``) is its own family (:func:`agent_prompt_dir`).
 
 The mirror of :mod:`spectragent.evaluator.prompts`, and for the same
 reason. Before this module every agent carried its own
@@ -46,7 +50,7 @@ from spectragent.prompts import (
 from spectragent.schemas.prompt import PromptRef
 
 AGENT_PROMPT_ROOT: Path = PROMPT_PATH / "agents"
-"""Root of the single agent prompt tree, keyed by ``agent_id``."""
+"""Root of the single agent prompt tree, keyed by agent family root."""
 
 PROMPT_SUFFIX = ".md"
 """Agent prompts are markdown documents — headings, lists, fenced JSON."""
@@ -54,10 +58,36 @@ PROMPT_SUFFIX = ".md"
 PromptEngine = Literal["format", "jinja2"]
 """How a template's placeholders are substituted. Declared, never sniffed."""
 
+AGENT_KEY_SEPARATOR = "."
+"""Separator of hierarchical agent registry keys (``browser_use.dom``).
+
+Defined here rather than beside ``AgentRegistrar`` because the registrar
+module imports this one; the registrar passes it as ``key_separator``, so
+the key the registry derives and the family this module reads from it
+cannot use two different separators.
+"""
+
+
+def agent_family(agent_id: str) -> str:
+    """The family root of *agent_id*: everything before the first separator.
+
+    ``browser_use.dom`` and ``browser_use.dom_vision`` are two members of the
+    ``browser_use`` family; a key without a separator (``ui_tars``) is its
+    own family.
+    """
+    return agent_id.partition(AGENT_KEY_SEPARATOR)[0]
+
 
 def agent_prompt_dir(agent_id: str) -> Path:
-    """Directory holding one agent's prompts."""
-    return AGENT_PROMPT_ROOT / agent_id
+    """Directory holding one agent's prompts: its family root's directory.
+
+    Keyed by family, not by the full key, because the members of a family
+    differ in what they observe and which actions they declare, not in the
+    model-facing protocol their templates teach. One directory per family
+    keeps one copy of those templates; a per-member tree would duplicate
+    every file and let the copies drift.
+    """
+    return AGENT_PROMPT_ROOT / agent_family(agent_id)
 
 
 def agent_prompt_variants(agent_id: str) -> tuple[str, ...]:
