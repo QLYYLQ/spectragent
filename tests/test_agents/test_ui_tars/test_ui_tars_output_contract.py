@@ -39,19 +39,18 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
-from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.action_space import ActionSpace
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import browser_descriptors, space_of
 
 #: Resolved from this file, not from the CWD.
 SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
 _VARIANTS = list(agent_prompt_variants("ui_tars"))
 
-_NEGOTIATED = [
-    ActionDescriptor(name=f"browser.{a}", description=a)
-    for a in ("click_coordinate", "type_coordinate", "done")
-]
+#: The registered descriptors: a UI-TARS verb's points fill the points its
+#: action declares, so a hand-built descriptor without them is refused.
+_NEGOTIATED = browser_descriptors("click_coordinate", "type_coordinate", "done")
 
 _MAXIMUM = re.compile(r"maximum of (\d+) actions")
 _DROPPED = re.compile(r"Anything past the first (\d+) is dropped")
@@ -109,7 +108,7 @@ def test_the_budget_is_whatever_the_agent_is_handed(n: int) -> None:
 
 def test_no_finish_verb_no_promise_about_it() -> None:
     agent = UITarsAgent()
-    descriptors = [ActionDescriptor(name="browser.click_coordinate", description="c")]
+    descriptors = browser_descriptors("click_coordinate")
     content = agent.prepare(
         task="t",
         action_space=space_of(descriptors),
