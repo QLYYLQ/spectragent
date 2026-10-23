@@ -302,7 +302,10 @@ class TestLaunchArgsReachChrome:
         record: dict[str, Any] = {}
 
         async def _fake_exec(*cmd: str, **kw: Any) -> _FakeProcess:
-            record["cmd"] = list(cmd)
+            # What Chrome runs with: the tether's shell replaces itself with it.
+            tether = local_chrome._TETHER_EXEC if local_chrome._TETHERED else ()
+            assert cmd[: len(tether)] == tether
+            record["cmd"] = list(cmd[len(tether) :])
             record["env"] = kw.get("env")
             return _FakeProcess()
 

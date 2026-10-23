@@ -3,6 +3,13 @@
 Launches a local ``google-chrome`` / ``chromium`` subprocess with
 ``--remote-debugging-port`` and returns a CDP WebSocket URL.
 
+On macOS and Linux the launched Chrome cannot outlive the process that
+launched it: it reads a pipe only this process writes to
+(``--remote-debugging-pipe``, never used for messages) and shuts down when the
+kernel closes that pipe, however this process ended. ``close()`` stops the
+browser, then kills whatever is left of its own process group
+(``docs/architecture_design.md`` §4.9.x "启动者消失时").
+
 All Chrome CLI flags are exposed as configurable ``__init__`` parameters
 (Tier 2 conscribe config via ``Annotated[..., Field(...)]``).  This gives
 full control over Chrome's behavior from YAML config files.
@@ -16,6 +23,7 @@ fresh profile without the configuration or ``config.json`` showing it
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import hashlib
 import json
@@ -167,6 +175,31 @@ CHROME_DETERMINISTIC_RENDERING_ARGS: tuple[str, ...] = (
     "--font-render-hinting=none",
 )
 
+#: Whether a launched Chrome is tied to this process. ``--remote-debugging-pipe``
+#: takes POSIX descriptors 3 and 4 (Windows passes handles another way, not done).
+_TETHERED = os.name == "posix"
+
+#: Chrome reads DevTools messages from descriptor 3 and, when that pipe reaches
+#: end of file, shuts down as it does on SIGTERM (measured, Chrome 155 on macOS:
+#: exit code 0 about 1 s later, every helper gone with it). Nothing is ever sent
+#: on it; it is a tether. This process holds the only writing end, so when this
+#: process goes away by any route (SIGKILL, a test runner's timeout, a crash) the
+#: kernel closes it and Chrome follows. The CDP connections still use the port.
+_TETHER_SWITCH = "--remote-debugging-pipe"
+
+#: Python cannot give a child a descriptor under another number, so a shell puts
+#: the tether (its stdin) on 3, sends Chrome's replies (4) to /dev/null, empties
+#: stdin and replaces itself with Chrome: the process created *is* the browser
+#: process, under the same PID, and the shell never runs alongside it.
+_TETHER_EXEC: tuple[str, ...] = ("/bin/sh", "-c", 'exec "$@" 3<&0 4>/dev/null 0</dev/null', "sh")
+
+#: What the shell exits with when it cannot run Chrome, where a direct launch
+#: raised ``FileNotFoundError`` / ``PermissionError``. POSIX gives 127 to "not
+#: found" and 126 to "not executable", but macOS's sh answers 126 for a missing
+#: absolute path too (measured), so the two are not told apart. Chrome's own
+#: exit codes stay far below these.
+_EXEC_FAILURES = frozenset({126, 127})
+
 #: Switches whose values change every launch. ``launch_flags`` (the
 #: fingerprintable form of the command line) writes a placeholder instead.
 _VOLATILE_SWITCH_PLACEHOLDERS: dict[str, str] = {
@@ -305,12 +338,31 @@ async def _settle(task: asyncio.Task[Any]) -> Any:
     return task.result()
 
 
+def _kill_process_group(group: int) -> None:
+    """SIGKILL what is left of a Chrome's own process group, right after its browser exited.
+
+    Helpers notice by themselves that the browser is gone, but measured up to
+    4 s later after a SIGKILL, and one that is stuck may never do. Called
+    only right after this provider saw the browser exit: while any member is
+    alive its group ID cannot be given to another process, so the signal
+    reaches Chrome's own processes or nothing. ``EPERM`` is what macOS answers
+    for a group whose only members are zombies waiting for their reaper
+    (measured); it and ``ESRCH`` both mean nothing is left to kill.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(group, signal.SIGKILL)
+
+
 @dataclass
 class _OwnedChrome:
     """Resources of exactly one subprocess, never looked up again by a numeric PID."""
 
     process: asyncio.subprocess.Process
     temporary_profile: str | None
+    #: The writing end of the pipe Chrome reads as ``--remote-debugging-pipe``,
+    #: closed once the browser has exited; ``None`` where Chrome is not tethered.
+    #: A tethered Chrome also leads its own process group (its PID is the ID).
+    tether: int | None
     closing: asyncio.Task[None] | None = None
 
 
@@ -606,8 +658,10 @@ class LocalChromeProvider(BrowserProviderBase):
         if self.deterministic_rendering:
             args.extend(CHROME_DETERMINISTIC_RENDERING_ARGS)
 
-        # CDP port + user data.
+        # CDP port, the tether, user data.
         args.append(f"--remote-debugging-port={port}")
+        if _TETHERED:
+            args.append(_TETHER_SWITCH)
         args.append(f"--user-data-dir={user_data}")
         args.append(f"--profile-directory={self.profile_directory}")
 
@@ -690,8 +744,9 @@ class LocalChromeProvider(BrowserProviderBase):
         environment Chrome inherits from this process (``TZ``, the pinned
         tier's default time zone); without it Chrome inherits it unchanged.
 
-        ``metadata["command_line"]`` is the exact argv. It may carry a proxy
-        credential, so it never enters a trace; ``metadata["launch_flags"]``
+        ``metadata["command_line"]`` is the exact argv Chrome runs with (the
+        tether's shell, which replaces itself with it, is not part of it). It
+        may carry a proxy credential, so it never enters a trace; ``metadata["launch_flags"]``
         is the fingerprintable form — the variables ``launch_env`` sets as
         ``NAME=value``, then the switches without executable or startup URL,
         the per-launch profile path and port replaced by placeholders.
@@ -727,6 +782,7 @@ class LocalChromeProvider(BrowserProviderBase):
             udd = temp_dir
         udd = os.path.abspath(os.path.expanduser(udd))
         process: asyncio.subprocess.Process | None = None
+        tether: int | None = None
         try:
             chrome_args = self._chrome_args(port, udd, launch_args)
             # Raw overrides remain legal, but every occurrence spells the same
@@ -745,26 +801,42 @@ class LocalChromeProvider(BrowserProviderBase):
 
             # Both streams are discarded: an undrained pipe can stop Chrome once
             # its kernel buffer fills. Ownership is proved by a read-only CDP query.
-            spawning = asyncio.create_task(
-                asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    env={**os.environ, **env} if env else None,
-                )
-            )
+            spawn: list[str] = cmd
+            tethering: dict[str, Any] = {}
+            chrome_end: int | None = None
+            if _TETHERED:
+                # Both ends are non-inheritable, so no other child gets the
+                # writing end. Chrome leads its own process group, so close()
+                # can reach every helper and signals sent to this process's
+                # group (a terminal's Ctrl-C) are this process's to handle.
+                chrome_end, tether = os.pipe()
+                spawn = [*_TETHER_EXEC, *cmd]
+                tethering = {"stdin": chrome_end, "process_group": 0}
             try:
-                process = await asyncio.shield(spawning)
-            except asyncio.CancelledError as cancellation:
-                # Cancelling create_subprocess_exec can lose the process handle
-                # after fork. Finish acquiring it, then let the common cleanup own it.
+                spawning = asyncio.create_task(
+                    asyncio.create_subprocess_exec(
+                        *spawn,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        env={**os.environ, **env} if env else None,
+                        **tethering,
+                    )
+                )
                 try:
-                    process = await _settle(spawning)
-                except Exception as spawn_error:
-                    cancellation.add_note(f"Chrome process creation also failed: {spawn_error}")
-                raise
+                    process = await asyncio.shield(spawning)
+                except asyncio.CancelledError as cancellation:
+                    # Cancelling create_subprocess_exec can lose the process handle
+                    # after fork. Finish acquiring it, then let the common cleanup own it.
+                    try:
+                        process = await _settle(spawning)
+                    except Exception as spawn_error:
+                        cancellation.add_note(f"Chrome process creation also failed: {spawn_error}")
+                    raise
+            finally:
+                if chrome_end is not None:
+                    os.close(chrome_end)
             assert process is not None
-            self._launches[session_id] = _OwnedChrome(process, temp_dir)
+            self._launches[session_id] = _OwnedChrome(process, temp_dir, tether)
             cdp_url = await self._wait_for_cdp(port, process, udd)
             return ProviderSession(
                 session_id=session_id,
@@ -783,12 +855,15 @@ class LocalChromeProvider(BrowserProviderBase):
             )
         except BaseException as failure:
             if process is not None:
-                self._launches.setdefault(session_id, _OwnedChrome(process, temp_dir))
+                self._launches.setdefault(session_id, _OwnedChrome(process, temp_dir, tether))
                 try:
                     await _settle(asyncio.create_task(self._close_session(session_id)))
                 except BaseException as cleanup_error:
                     failure.add_note(f"Chrome cleanup also failed: {cleanup_error}")
-            elif temp_dir is not None:
+                raise
+            if tether is not None:
+                os.close(tether)
+            if temp_dir is not None:
                 try:
                     shutil.rmtree(temp_dir)
                 except OSError as cleanup_error:
@@ -965,6 +1040,12 @@ class LocalChromeProvider(BrowserProviderBase):
         launch = f"pid={process.pid}, remote_debugging_port={port}, user_data_dir={user_data!r}"
 
         def check_alive() -> None:
+            if process.returncode in _EXEC_FAILURES:
+                # The tether's shell could not replace itself with Chrome.
+                raise RuntimeError(
+                    f"local_chrome launch ({launch}) exited with code {process.returncode}: "
+                    "the Chrome executable is missing or cannot be executed"
+                )
             if process.returncode is not None:
                 raise RuntimeError(
                     f"local_chrome launch ({launch}) exited with code {process.returncode} "
@@ -1045,13 +1126,16 @@ class LocalChromeProvider(BrowserProviderBase):
             raise
 
     async def _release_session(self, session_id: str, owned: _OwnedChrome) -> None:
-        await self._kill_process(owned.process)
+        await self._stop_chrome(owned)
         # Only a confirmed exited process permits deleting its temporary profile.
         # A failed kill retains the ownership record so close() can be retried.
         if owned.process.returncode is None:
             raise RuntimeError(
                 f"Chrome process {owned.process.pid} has not exited; its profile is retained"
             )
+        if owned.tether is not None:
+            os.close(owned.tether)
+            owned.tether = None
         if owned.temporary_profile is not None:
             await self._remove_temporary_profile(owned.temporary_profile)
         self._launches.pop(session_id, None)
@@ -1077,26 +1161,28 @@ class LocalChromeProvider(BrowserProviderBase):
                     raise
                 await asyncio.sleep(0.05 * 2**attempt)
 
-    async def _kill_process(self, process: asyncio.subprocess.Process) -> None:
-        """Gracefully terminate, then force-kill if needed."""
-        if process.returncode is not None:
-            return  # Already dead.
+    async def _stop_chrome(self, owned: _OwnedChrome) -> None:
+        """SIGTERM the browser, SIGKILL it after ``shutdown_timeout``, then its leftover helpers.
 
+        The browser alone gets SIGTERM, so it shuts down as it would for a
+        user and writes a persistent profile out; only once it has exited is
+        the rest of a tethered Chrome's process group killed.
+        """
+        process = owned.process
+        if process.returncode is not None:
+            # Exited before close(), at a time this provider did not see: its
+            # group ID may belong to another process by now, so it is left alone.
+            return
         try:
             process.send_signal(signal.SIGTERM)
             try:
                 await asyncio.wait_for(process.wait(), timeout=self.shutdown_timeout)
                 logger.debug("Chrome exited gracefully (pid=%s)", process.pid)
-                return
             except TimeoutError:
-                pass
+                process.kill()
+                await process.wait()
+                logger.warning("Chrome force-killed (pid=%s)", process.pid)
         except ProcessLookupError:
-            return
-
-        # Force kill.
-        try:
-            process.kill()
-            await process.wait()
-            logger.warning("Chrome force-killed (pid=%s)", process.pid)
-        except ProcessLookupError:
-            pass
+            pass  # It exited between the check above and the signal.
+        if owned.tether is not None and process.returncode is not None:
+            _kill_process_group(process.pid)
