@@ -429,9 +429,27 @@ class TestSamePathFidelity:
                 "a later model failure does not undo restored states"
             )
 
-    @pytest.mark.parametrize("url_match, numerator", [(True, 5), (False, 0)])
+    @pytest.mark.parametrize(
+        "evidence, numerator",
+        [
+            ({"url_match": True}, 5),
+            ({"url_match": False}, 0),
+            # The strict measure reads the same URL evidence as the restorer: a URL that
+            # differs only in a parameter the replay's page-URL rules leave out is equal.
+            (
+                {
+                    "url_match": True,
+                    "recorded_url": "https://shop.test/all?vt=1",
+                    "restored_url": "https://shop.test/all?vt=2",
+                    "url_ignored_query": ["vt"],
+                    "url_rule_ids": ["shop-vt"],
+                },
+                5,
+            ),
+        ],
+    )
     def test_url_and_image_equality_requires_a_measured_match(
-        self, chain: ChainRuns, url_match: bool, numerator: int
+        self, chain: ChainRuns, evidence: dict[str, object], numerator: int
     ) -> None:
         measured = open_chain(chain.layout)
         for run in measured.role("same_path").runs:
@@ -441,7 +459,7 @@ class TestSamePathFidelity:
                         "restoration": record.restoration.model_copy(
                             update={
                                 "evidence": [
-                                    e.model_copy(update={"url_match": url_match})
+                                    e.model_copy(update=evidence)
                                     for e in record.restoration.evidence
                                 ]
                             }

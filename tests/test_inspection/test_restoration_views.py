@@ -357,3 +357,26 @@ def test_media_differences_and_alignment_problems_are_listed_unknowns_kept_apart
         "browser: media state not compared (the recorded screenshot carries no media state)"
         in unknown["unmeasured"]
     )
+
+
+def test_a_url_equal_only_by_page_url_rules_is_still_a_measured_difference():
+    """The restorer accepted it; the view still shows what differed and which rule left it out."""
+    evidence = {
+        "capability_id": "browser",
+        "url_match": True,
+        "recorded_url": "https://search.test/all?vt=1&keyword=kettle",
+        "restored_url": "https://search.test/all?vt=2&keyword=kettle",
+        "url_ignored_query": ["vt"],
+        "url_rule_ids": ["search-vt"],
+        "signature_match": True,
+        "screenshot_distance": 0,
+        "document_misses": 0,
+    }
+    gap = restoration_gap({"restoration": {"verdict": "ok", "evidence": [evidence]}})
+    assert gap is not None
+    assert gap["differences"] == [
+        "browser: URL differs in parameters page-URL rules leave out (vt)"
+    ]
+    same = {**evidence, "restored_url": evidence["recorded_url"]}
+    gap = restoration_gap({"restoration": {"verdict": "ok", "evidence": [same]}})
+    assert gap is not None and gap["status"] == "no_measured_difference"

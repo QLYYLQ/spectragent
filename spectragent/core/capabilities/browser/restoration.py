@@ -26,7 +26,8 @@ waits, an index action without an index — runs as recorded (``identity``):
 pinned replay makes the layout deterministic, and the screenshot hash checks
 it.
 
-**Measure** (:func:`measure`). URL equality, the multiset of interactive
+**Measure** (:func:`measure`). URL equality (leaving out the query
+parameters the replay's page-URL rules declare), the multiset of interactive
 element signatures, the Hamming distance between the two screenshots'
 64-bit difference hashes (:func:`dhash`), the main-frame document
 misses the capability counted since its last measurement, and the two
@@ -42,7 +43,7 @@ import hashlib
 import io
 import logging
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any, Final
 
 from PIL import Image, UnidentifiedImageError
@@ -53,6 +54,11 @@ from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
+)
+from spectragent.core.capabilities.browser.replay.page_urls import (
+    PageUrlComparison,
+    PageUrlRule,
+    compare_page_urls,
 )
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import fragment_field_name
@@ -372,19 +378,25 @@ def measure(
     capability_id: str,
     document_misses: int | None,
     media: MediaEvidence | None,
+    page_urls: Sequence[PageUrlRule] = (),
 ) -> RestorationEvidence:
     """What the browser measures between a recorded and a restored observation.
 
     ``document_misses`` is the capability's own count of main-frame document
     misses since its last measurement (``None`` when the network is live);
     ``media`` is :func:`media_measure`'s comparison with the alignment the
-    capability did since its last measurement; the rest is read from the
-    two observations.
+    capability did since its last measurement; ``page_urls`` are the replay's
+    page-URL rules, whose declared query parameters the URL comparison
+    leaves out (:func:`~spectragent.core.capabilities.browser.replay.page_urls.compare_page_urls`;
+    none when the network is live, and the URLs then compare exactly); the
+    rest is read from the two observations.
     """
     recorded_url, restored_url = observation_url(recorded), observation_url(restored)
+    url = PageUrlComparison(match=False)
     url_match: bool | None = None
     if recorded_url is not None and restored_url is not None:
-        url_match = recorded_url == restored_url
+        url = compare_page_urls(recorded_url, restored_url, page_urls)
+        url_match = url.match
 
     signature_match: bool | None = None
     missing = extra = 0
@@ -399,6 +411,8 @@ def measure(
         url_match=url_match,
         recorded_url=recorded_url,
         restored_url=restored_url,
+        url_ignored_query=list(url.ignored_query),
+        url_rule_ids=list(url.rule_ids),
         signature_match=signature_match,
         signature_missing=missing,
         signature_extra=extra,

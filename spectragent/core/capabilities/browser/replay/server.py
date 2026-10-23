@@ -75,6 +75,7 @@ from spectragent.core.capabilities.browser.replay.miss_policy import (
     MissReason,
     ReplayMiss,
 )
+from spectragent.core.capabilities.browser.replay.page_urls import PageUrlRule
 from spectragent.core.capabilities.browser.replay.replay_log import (
     Answer,
     EntryKind,
@@ -562,6 +563,11 @@ class ReplayServer(RecorderParticipantBase):
         logger.warning("replay: %s", message)
         if message not in self.warnings:
             self.warnings.append(message)
+
+    @property
+    def page_urls(self) -> tuple[PageUrlRule, ...]:
+        """The frozen rule set's page-URL rules: restoration verification reads them, matching never."""
+        return self.recorded.rules.page_urls
 
     def fingerprint(self) -> dict[str, Any]:
         """The ``network_source`` block of this run's environment fingerprint."""

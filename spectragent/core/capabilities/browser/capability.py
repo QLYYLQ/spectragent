@@ -1544,8 +1544,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         document misses since the previous call (``None`` when the network is
         live), and the media alignment done since the previous call is taken
         with it — both reported once, so a restorer measures each restored
-        observation exactly once (the ``RestorationSupport`` contract).
-        Thresholds are the restorer's.
+        observation exactly once (the ``RestorationSupport`` contract). The
+        URL comparison leaves out the query parameters the replay's frozen
+        rule set declares in its page-URL rules (none when the network is
+        live). Thresholds are the restorer's.
         """
         alignment: list[MediaAlignment] | None = None
         alignment_detail = ""
@@ -1567,6 +1569,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 alignment=alignment,
                 alignment_detail=alignment_detail,
             ),
+            page_urls=self._replay_server.page_urls if self._replay_server is not None else (),
         )
 
     # ── Checkpoint restoration: media alignment (RestorationAlignment, §4.9 / §4.14) ──
