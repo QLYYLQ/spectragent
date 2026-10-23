@@ -42,7 +42,7 @@ from typing import Any, get_args, get_type_hints
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.ui_tars import _COORDINATE_PROMPTS, UITarsAgent
+from spectragent.agents.ui_tars.agent import _COORDINATE_PROMPTS, UITarsAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability

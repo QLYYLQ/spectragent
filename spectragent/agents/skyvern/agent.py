@@ -12,7 +12,7 @@ The agent owns exactly one template,
 Skyvern's: it teaches the JSON shape :class:`SkyvernOutput` declares and
 the action names this framework's ``guarded_act`` will accept, and it
 renders the *negotiated* action set rather than a hard-coded verb list.
-``tests/test_agents/test_skyvern_prompt_action_vocabulary.py`` pins the
+``tests/test_agents/test_skyvern/test_skyvern_prompt_action_vocabulary.py`` pins the
 two together.
 
 It is also the only agent whose template is Jinja2 rather than
@@ -30,17 +30,17 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
-from spectragent.agents._action_effects import effect_line
-from spectragent.agents._browser_platform import render_browser_platform
-from spectragent.agents._browser_state import render_browser_state
-from spectragent.agents._capture_state import CAPTURE_STATE_KEY, capture_state_demand
-from spectragent.agents._output_models import SkyvernOutput
 from spectragent.agents._registrar import AgentBase
-from spectragent.agents.prompt_context import (
+from spectragent.agents.prompts import PromptEngine
+from spectragent.agents.rendering.action_effects import effect_line
+from spectragent.agents.rendering.browser_state import render_browser_state
+from spectragent.agents.rendering.capture_state import CAPTURE_STATE_KEY, capture_state_demand
+from spectragent.agents.rendering.platform import render_browser_platform
+from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
-from spectragent.agents.prompts import PromptEngine
+from spectragent.agents.skyvern.output_models import SkyvernOutput
 from spectragent.core.action_guard import executed_name
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError

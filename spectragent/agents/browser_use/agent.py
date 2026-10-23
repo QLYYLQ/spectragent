@@ -31,7 +31,7 @@ the screenshots in the trace, so a DOM-mode run still captures them — the
 mode decides what the *model* sees, not what the run records.
 
 **What the model may emit is a closed schema.** ``prepare()`` compiles the
-negotiated descriptors into a per-run union (``agents/_action_union.py``)
+negotiated descriptors into a per-run union (``core/actions/action_union.py``)
 whose ``anyOf`` branches are the verbs this run can execute and nothing
 else. There is no vocabulary map and no local-id fallback: the prompt
 advertises the fully-qualified key, the schema permits it, ``env.act``
@@ -60,22 +60,22 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, create_model
 from pydantic import Field as PydanticField
 
-from spectragent.agents._action_effects import effect_line
-from spectragent.agents._action_union import action_union
-from spectragent.agents._browser_platform import render_browser_platform
-from spectragent.agents._browser_state import render_browser_state
-from spectragent.agents._capture_state import (
+from spectragent.agents._registrar import AgentBase
+from spectragent.agents.browser_use.output_models import reasoning_fields
+from spectragent.agents.prompts import load_prompt_fragment
+from spectragent.agents.rendering.action_effects import effect_line
+from spectragent.agents.rendering.browser_state import render_browser_state
+from spectragent.agents.rendering.capture_state import (
     CAPTURE_STATE_KEY,
     capture_state_demand,
     write_viewport_pixels,
 )
-from spectragent.agents._output_models import reasoning_fields
-from spectragent.agents._registrar import AgentBase
-from spectragent.agents.prompt_context import (
+from spectragent.agents.rendering.platform import render_browser_platform
+from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
-from spectragent.agents.prompts import load_prompt_fragment
+from spectragent.core.actions.action_union import action_union
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
 from spectragent.core.loops.errors import ParseError
@@ -242,7 +242,7 @@ _TERSE_VARIANTS: frozenset[str] = frozenset(
 #: The reasoning fields a reply's thought is read from, in precedence order
 #: (``BrowserUseAgent.parse_react_thought``): the model's own reasoning block
 #: first, then the step's goal, then the running memory — the only reasoning
-#: field every template teaches (``_output_models.REASONING_FIELDS``).
+#: field every template teaches (``output_models.REASONING_FIELDS``).
 _THOUGHT_FIELDS: tuple[str, ...] = ("thinking", "next_goal", "memory")
 
 
@@ -692,7 +692,7 @@ class BrowserUseAgent(AgentBase):
 
         The first non-empty of :data:`_THOUGHT_FIELDS` — ``thinking``, then
         ``next_goal``, then ``memory`` — stripped. Which ones a reply can
-        carry is its template's (``_output_models.REASONING_FIELDS``): a flash
+        carry is its template's (``output_models.REASONING_FIELDS``): a flash
         template teaches only ``memory``, so a flash teacher's thought is its
         memory line, and the returned field name says so. Pure: reads the
         reply only (the JSON text a run records, or the parsed model), so the

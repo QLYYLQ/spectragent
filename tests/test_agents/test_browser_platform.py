@@ -270,7 +270,7 @@ async def test_composed_runtime_delivers_platform_to_the_model(
 
 async def test_ui_tars_names_the_environment_from_the_fragment_key_not_a_browser_type() -> None:
     """The same words serve any environment whose capability provides ``<env>.platform``."""
-    from spectragent.agents._input_platform import render_computer_use_platform
+    from spectragent.agents.rendering.platform import render_computer_use_platform
 
     android = SimpleNamespace(
         platform=SimpleNamespace(operating_system="linux", fragment_id="android.platform")

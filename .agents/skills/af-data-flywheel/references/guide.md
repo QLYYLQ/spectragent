@@ -492,7 +492,7 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   prompts, which carry the source's task) with an `IncompatibleCheckpointError` naming
   both settings, so the bench pre-flight stops before any setup. Restored history still
   renders every restored step's source reply, thought included
-  (`agents/prompt_context.py::restored_history_message`, `source_material.recorded_reply`),
+  (`agents/rendering/prompt_context.py::restored_history_message`, `source_material.recorded_reply`),
   and those thoughts were written for the source's task.
   A variant has no benchmark reference: `spectragent eval` records it as an evaluation
   error under a reference grader (`NoReferenceError`), and only an evaluator declaring

@@ -1,6 +1,6 @@
 """An action's effect reaches a prompt only as its ``describe()`` line.
 
-``docs/architecture_design.md`` §4.5, "动作效果". ``agents/_action_effects.py``
+``docs/architecture_design.md`` §4.5, "动作效果". ``agents/rendering/action_effects.py``
 is the one place a result becomes prompt facts: the effect's raw fields and the
 sensitivity marker never do, and ``show_action_effects`` off means no effect
 line at all — while the effect stays on the result, for the trace.
@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 
-from spectragent.agents._action_effects import (
+from spectragent.agents.rendering.action_effects import (
     PROMPT_EXCLUDED_RESULT_FIELDS,
     effect_line,
     result_facts,
 )
-from spectragent.agents.prompt_context import restored_history_message
+from spectragent.agents.rendering.prompt_context import restored_history_message
 from spectragent.core.capabilities.browser.effects import ScrollEffect, ScrollOffset
 from spectragent.schemas.action import (
     Action,

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from spectragent.agents._capture_state import render_capture_state, write_viewport_pixels
+from spectragent.agents.rendering.capture_state import render_capture_state, write_viewport_pixels
 from spectragent.schemas.action import PointWriter
 
 #: What the model reads when no media state was measured with this step's screenshot.

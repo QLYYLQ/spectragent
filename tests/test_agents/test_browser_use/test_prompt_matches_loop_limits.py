@@ -37,7 +37,7 @@ from tests._helpers.action_spaces import space_of
 #: Resolved from this file, not from the CWD — ``pytest tests/test_agents``
 #: from anywhere but the repo root used to make these two tests vanish into
 #: a ``FileNotFoundError`` that looked like a missing config.
-SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
+SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
 
 def _shipped_config(*, trace_dir: Path | None = None) -> dict[str, Any]:

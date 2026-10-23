@@ -6,7 +6,7 @@ cross-platform computer-use Agent (UI-TARS): it names the environment it
 operates from the fragment's own key (``browser.platform`` → ``browser``), so
 the Agent imports no browser type and the same words serve a desktop or an
 Android environment. Browser-specific Agents use
-``_browser_platform.render_browser_platform``.
+:func:`render_browser_platform`.
 
 Negotiation normally guarantees the fragment. An old trace or a hand-built
 observation without it must not silently acquire a platform. The structural
@@ -68,4 +68,27 @@ def render_computer_use_platform(observation: Any) -> str:
     )
 
 
-__all__ = ["keyboard_rules", "platform_fragment", "render_computer_use_platform"]
+def render_browser_platform(observation: Any) -> str:
+    """The required relative ``platform`` fragment and literal keyboard semantics.
+
+    For browser-specific Agents (Skyvern, BrowserUse). A cross-platform
+    computer-use Agent renders the same fragment with
+    :func:`render_computer_use_platform`. Negotiation normally
+    guarantees this fragment; an observation without it raises rather than
+    acquiring a platform.
+    """
+    _fragment, operating_system, label = platform_fragment(observation)
+    return (
+        "<input_platform>\n"
+        f"Actual browser input platform: {label} ({operating_system}).\n"
+        f"{keyboard_rules(operating_system, label)}\n"
+        "</input_platform>"
+    )
+
+
+__all__ = [
+    "keyboard_rules",
+    "platform_fragment",
+    "render_browser_platform",
+    "render_computer_use_platform",
+]

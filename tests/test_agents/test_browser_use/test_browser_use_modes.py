@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import _MODE_DEMAND, BrowserUseAgent, _ModeDemand
+from spectragent.agents.browser_use.agent import _MODE_DEMAND, BrowserUseAgent, _ModeDemand
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.actions._registrar import ActionRegistrar

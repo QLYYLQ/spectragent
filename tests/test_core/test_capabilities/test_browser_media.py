@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import pytest
 
-from spectragent.agents._browser_state import render_browser_state, render_media_state
+from spectragent.agents.rendering.browser_state import render_browser_state, render_media_state
 from spectragent.core.capabilities.base import RestorationAlignment, RestorationSupport
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.media import (

@@ -3,7 +3,7 @@
 A branch with ``history_source: restored`` rebuilds the prefix from what actually
 executed, and every restored step also carries the source model's reply (its
 thought included) as labelled source material (``RestoredHistory.source_reply``,
-rendered by ``agents/prompt_context.py::restored_history_message``). Under a task
+rendered by ``agents/rendering/prompt_context.py::restored_history_message``). Under a task
 variant those thoughts were written for another task. This hook is the ablation
 arm: around the Agent's ``build_restored_history`` it passes a copy of the history
 whose ``source_reply`` is empty, so the recorded actions and the actual restored

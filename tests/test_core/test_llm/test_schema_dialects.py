@@ -82,7 +82,7 @@ def _closed_union_schema() -> dict[str, Any]:
     """The shape probe 3 isolated: ``anyOf`` of closed branches, closed root.
 
     Written out rather than compiled so the test states the input it is
-    asserting on. It matches what ``agents/_action_union.py`` produces:
+    asserting on. It matches what ``core/actions/action_union.py`` produces:
     each branch names one verb as a *property*, and the params object
     inside it is closed too — which is why the transform has to open the
     whole branch subtree, not just the branch's top node.
@@ -395,7 +395,7 @@ class TestTheUnionStaysPlain:
       before a request is ever made — so it cannot even be probed.
     * **Anthropic** rejects ``oneOf``.
 
-    So ``agents/_action_union.py`` builds a *plain* ``Union`` of single-key
+    So ``core/actions/action_union.py`` builds a *plain* ``Union`` of single-key
     models: the verb is the property **name**, which needs nothing beyond
     ``object``/``properties``/``required``/``anyOf`` — the intersection of
     the three dialects. This test is what stops someone from "tidying" it
@@ -499,7 +499,7 @@ class TestOneSchemaCompiler:
 
         from pydantic import BaseModel as PydanticBaseModel
 
-        from spectragent.agents._action_union import (
+        from spectragent.core.actions.action_union import (
             UnsupportedParamsSchema,
             params_model_from_schema,
         )

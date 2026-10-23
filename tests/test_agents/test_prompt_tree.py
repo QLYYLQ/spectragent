@@ -205,9 +205,9 @@ def test_prompt_dir_is_derived_from_the_registry_key(agent_id):
 
 def test_no_agent_carries_its_own_prompt_directory_constant():
     """The regression this module exists to prevent: a fourth literal path."""
-    import spectragent.agents.browser_use as browser_use
-    import spectragent.agents.skyvern as skyvern
-    import spectragent.agents.ui_tars as ui_tars
+    import spectragent.agents.browser_use.agent as browser_use
+    import spectragent.agents.skyvern.agent as skyvern
+    import spectragent.agents.ui_tars.agent as ui_tars
 
     for module in (browser_use, skyvern, ui_tars):
         assert not hasattr(module, "_PROMPT_DIR"), module.__name__
