@@ -27,6 +27,8 @@ It models the session facts the recorder depends on (measured, ``docs/architectu
 Every client also has :meth:`FakeClient.post` (write now, wait later), and a
 write can be stalled (:meth:`FakeBrowser.stall_write`: a socket that cannot
 take the frame), so a test can hold a preparation before its resume is written.
+An answer can also come late (:meth:`FakeBrowser.delay`: a renderer slow under
+load), after the client stopped waiting for it.
 
 For the archivers (M29) it also answers what a collection and a DOM capture
 read: response bodies (:attr:`FakeBrowser.response_bodies`), cookies and
@@ -337,6 +339,8 @@ class FakeBrowser:
         self.failures: dict[tuple[str, str | None], BaseException] = {}
         #: method → event a reply waits for (optionally per session).
         self.holds: dict[tuple[str, str | None], asyncio.Event] = {}
+        #: How late each of the next answers to a command comes (:meth:`delay`).
+        self.delays: dict[tuple[str, str | None], list[float]] = {}
         #: method → event the *write* waits for (optionally per session).
         self.write_stalls: dict[tuple[str, str | None], asyncio.Event] = {}
         #: method → why its write fails (optionally per session): ``CDPClient``'s ``RuntimeError``.
@@ -434,6 +438,12 @@ class FakeBrowser:
         event = asyncio.Event()
         self.holds[(method, session_id)] = event
         return event
+
+    def delay(
+        self, method: str, seconds: float, *, count: int = 1, session_id: str | None = None
+    ) -> None:
+        """The next *count* answers to *method* come *seconds* late (a renderer slow under load)."""
+        self.delays.setdefault((method, session_id), []).extend([seconds] * count)
 
     def stall_write(self, method: str, *, session_id: str | None = None) -> asyncio.Event:
         """The next writes of *method* wait for the returned event (a socket that takes nothing)."""
@@ -561,6 +571,10 @@ class FakeBrowser:
             held = self.holds.get(key)
             if held is not None:
                 await held.wait()
+        for key in ((method, session_id), (method, None)):
+            late = self.delays.get(key)
+            if late:
+                await asyncio.sleep(late.pop(0))
 
         if method == RESUME:
             if session_id is None:

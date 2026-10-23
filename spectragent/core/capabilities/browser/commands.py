@@ -1,7 +1,10 @@
 """Shared command and batched connection contracts for browser operations."""
 
-from collections.abc import Callable
-from typing import Any, Protocol
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol, TypeVar
+
+T = TypeVar("T")
 
 
 class BrowserCommands(Protocol):
@@ -55,3 +58,34 @@ class BrowserConnection(BrowserCommands, Protocol):
     def add_close_callback(self, callback: Callable[[BaseException | None], None]) -> None: ...
 
     async def stop(self) -> None: ...
+
+
+async def measure_in_attempts(
+    attempt: Callable[[float], Awaitable[T]],
+    *,
+    timeout: float,
+    attempt_timeout: float,
+    what: str,
+) -> T:
+    """Make a start-up measurement in attempts until one is answered in time (§4.14).
+
+    *attempt* receives how long each of its commands may wait for Chrome:
+    *attempt_timeout*, or what is left of *timeout* when that is less. An
+    attempt that times out is made again until *timeout* has passed since the
+    first one began; then a ``TimeoutError`` names *what*, the attempts made
+    and the budget. Any other error ends the measurement at once: an answer
+    that was refused or wrong does not improve by asking again.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return await attempt(min(attempt_timeout, max(deadline - loop.time(), 0.0)))
+        except TimeoutError as exc:
+            if loop.time() >= deadline:
+                raise TimeoutError(
+                    f"{what}: Chrome gave no answer within {timeout:g}s "
+                    f"({attempts} attempts, each allowed {attempt_timeout:g}s)"
+                ) from exc

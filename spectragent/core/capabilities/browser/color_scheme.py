@@ -7,7 +7,7 @@ recorded value. It is not a configuration default or an OS setting to compare.
 import logging
 from typing import Any, Literal
 
-from spectragent.core.capabilities.browser.commands import BrowserCommands
+from spectragent.core.capabilities.browser.commands import BrowserCommands, measure_in_attempts
 
 ColorScheme = Literal["light", "dark"]
 COLOR_SCHEME_WORLD = "af-color-scheme"
@@ -25,13 +25,26 @@ def color_scheme_from_record(value: Any) -> ColorScheme | None:
     return value if isinstance(value, str) and value in ("light", "dark") else None
 
 
-async def measure_color_scheme(client: BrowserCommands, *, timeout: float) -> ColorScheme:
+async def measure_color_scheme(
+    client: BrowserCommands, *, timeout: float, attempt_timeout: float
+) -> ColorScheme:
     """Read the initial page in an isolated world, before any media override.
 
     The fresh browser already has an initial page. Attach only for this read,
     then detach even if measurement fails. No page script can change matchMedia
-    in the isolated world. Every failed or ambiguous read raises.
+    in the isolated world. A read Chrome does not answer within
+    *attempt_timeout* is made again, within *timeout* (``measure_in_attempts``);
+    every other failed or ambiguous read raises at once.
     """
+    return await measure_in_attempts(
+        lambda bound: _read_color_scheme(client, bound),
+        timeout=timeout,
+        attempt_timeout=attempt_timeout,
+        what="the browser's prefers-color-scheme",
+    )
+
+
+async def _read_color_scheme(client: BrowserCommands, timeout: float) -> ColorScheme:
     reply = await client.send("Target.getTargets", {}, None, timeout=timeout)
     pages = [
         info

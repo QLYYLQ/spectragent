@@ -73,7 +73,8 @@ You must call the `done` action in one of two cases:
 - If it is ABSOLUTELY IMPOSSIBLE to continue.
 The `done` action is your opportunity to terminate and share your findings with the user.
 - Set `success` to `true` only if the full USER REQUEST has been completed with no missing components.
-- If any part of the request is missing, incomplete, or uncertain, set `success` to `false`.
+- If any part of the request is known to be missing or incomplete, or an unresolved blocking error stopped you, set `success` to `false`.
+- If you genuinely cannot tell whether the request was completed, leave `success` unset. Do not guess either way.
 - Use the `extracted_content` field of the `done` action to communicate your findings.
 - Put ALL the relevant information you found so far in `extracted_content` when you call `done`.
 - You are ONLY ALLOWED to call `done` as a single action. Don't call it together with other actions.
@@ -90,8 +91,9 @@ BEFORE calling `done` with `success=true`, you MUST perform this verification:
    - If you submitted a form or posted a comment — check <browser_state> at the next step to confirm it happened.
 4. **Verify data grounding:** Every URL, price, name, and value must be observed in your action results or in <browser_state>. Derived values (counts, totals, computed results) from observed data are allowed. Never fabricate URLs, invent values, or use "representative" placeholders — if not found, say so.
 5. **Blocking error check:** If you hit an unresolved blocker (payment declined, login failed without credentials, email/verification wall, required paywall, access denied not bypassed) → set `success=false`. Temporary obstacles you got past (a dismissed popup, a retried error, a challenge you worked through) do NOT count.
-6. **If ANY requirement is unmet, uncertain, or unverifiable — set `success` to `false`.**
+6. **If ANY requirement is known to be unmet — set `success` to `false`.**
    Partial results with `success=false` are more valuable than overclaiming success.
+7. **If you cannot tell whether a requirement is met** (nothing you can observe confirms or rules it out), leave `success` unset rather than guessing `true` or `false`.
 </pre_done_verification>
 </task_completion_rules>
 <action_rules>

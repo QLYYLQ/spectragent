@@ -9,6 +9,7 @@ replay) is ``test_browser_replay_live.py``.
 
 from __future__ import annotations
 
+import gzip
 import json
 import typing
 from pathlib import Path
@@ -408,7 +409,8 @@ class TestTheReplayLogArchiver:
         (written,) = await session.collect()
         assert written.archiver_id == "browser.replay_log" and written.name == REPLAY_LOG_NAME
         assert written.scope == "step" and written.meta.captured_at == 42.0
-        lines = [json.loads(line) for line in written.data.splitlines()]
+        assert written.name.endswith(".jsonl.gz") and written.media_type == "application/gzip"
+        lines = [json.loads(line) for line in gzip.decompress(written.data).splitlines()]
         assert [line["kind"] for line in lines] == ["hit", "miss"]
         assert await session.collect() == []
 
@@ -523,17 +525,60 @@ class TestReading:
         bad = ArchiveFile(
             archiver_id="browser.replay_log",
             name=REPLAY_LOG_NAME,
-            media_type="application/x-ndjson",
-            data=json.dumps(_entry().model_dump(mode="json")).encode()
-            + b"\n"
-            + b'{"kind": "miss", "surprise": 1}\n',
+            media_type="application/gzip",
+            data=gzip.compress(
+                json.dumps(_entry().model_dump(mode="json")).encode()
+                + b"\n"
+                + b'{"kind": "miss", "surprise": 1}\n'
+            ),
             meta=ArchiveProvenance(captured_at=1.0),
         )
         wal.commit_step(1, step_record(1), extra_files=[encode_archive_file(bad, step=1)])
         wal.write_result(agent_result())
         wal.finalize(TraceStatus.COMPLETE)
-        with pytest.raises(TraceSchemaError, match=r"replay\.jsonl.*line 2|line 2.*replay\.jsonl"):
+        with pytest.raises(TraceSchemaError, match=r"replay\.jsonl\.gz.*line 2"):
             replay_log(open_archive(wal.run_dir), 1)
+
+    def test_a_log_that_does_not_decompress_names_the_file(self, tmp_path: Path) -> None:
+        wal = new_wal(tmp_path, "run-raw")
+        raw = ArchiveFile(
+            archiver_id="browser.replay_log",
+            name=REPLAY_LOG_NAME,
+            media_type="application/gzip",
+            data=json.dumps(_entry().model_dump(mode="json")).encode() + b"\n",
+            meta=ArchiveProvenance(captured_at=1.0),
+        )
+        wal.commit_step(1, step_record(1), extra_files=[encode_archive_file(raw, step=1)])
+        wal.write_result(agent_result())
+        wal.finalize(TraceStatus.COMPLETE)
+        with pytest.raises(TraceSchemaError, match=r"replay\.jsonl\.gz does not decompress"):
+            replay_log(open_archive(wal.run_dir), 1)
+
+    def test_an_uncompressed_log_from_before_is_refused_not_read_as_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """No path reads the old ``replay.jsonl``; a run that has one is replayed again."""
+        wal = new_wal(tmp_path, "run-old")
+        old = ArchiveFile(
+            archiver_id="browser.replay_log",
+            name="replay.jsonl",
+            media_type="application/x-ndjson",
+            data=json.dumps(_entry(frame="main", diverged=True).model_dump(mode="json")).encode()
+            + b"\n",
+            meta=ArchiveProvenance(captured_at=1.0),
+        )
+        wal.commit_step(1, step_record(1), extra_files=[encode_archive_file(old, step=1)])
+        wal.write_result(agent_result())
+        wal.finalize(TraceStatus.COMPLETE)
+        reader = open_archive(wal.run_dir)
+        for read in (
+            lambda: replay_log(reader, 1),
+            lambda: list(iter_replay_log(reader)),
+            lambda: diverged_steps(reader),
+            lambda: document_miss_total(reader),
+        ):
+            with pytest.raises(ValueError, match=r"/replay\.jsonl'.*replay the run again"):
+                read()
 
 
 class TestDecisions:
