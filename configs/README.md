@@ -10,7 +10,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 |---|---|
 | `browser_use_local.yaml` | BrowserUseAgent + ReactLoop + LocalChrome backend |
 | `browser_use_skyvern.yaml` | Same agent/loop, switched to the hosted Skyvern backend |
-| `skyvern_agent_local.yaml` | Skyvern (`skyvern.dom`; `skyvern.dom_vision` adds the screenshot) + ReactLoop + LocalChrome backend |
+| `skyvern_agent_local.yaml` | Skyvern (`skyvern.dom`; `skyvern.dom_vision` adds the screenshot) + ReactLoop + LocalChrome backend, with a bounded memory |
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |

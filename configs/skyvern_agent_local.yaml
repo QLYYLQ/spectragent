@@ -21,7 +21,14 @@ agent:
       model_type: openai
       model: gpt-4o
       provider: { name: direct }
-    memory: { memory_id: simple, max_messages: 200 }
+    # Bounded: every step's user message carries a whole element tree (20-33K
+    # tokens on the pages measured), so keeping 200 messages overflowed
+    # gpt-4o's 128K context at about step 6. The system prompt is always
+    # kept; of the rest only the last 3 messages, in a plain step the previous
+    # step's observation and reply and this step's observation, so at most two
+    # element trees. The action-history window, not the memory, is what
+    # carries the older actions.
+    memory: { memory_id: sliding_window, window_size: 3 }
 
 environment:
   - env_type: browser
@@ -35,6 +42,11 @@ environment:
         network_source: { source_id: live }
         dom_cleaner: { cleaner_type: skyvern }
         dom_serializer: { serializer_type: html }
+        # A budget for one element tree, so the two the memory keeps stay
+        # well inside the context however large a page is. The pages measured
+        # serialized to 56-150K characters, none of them cut; a longer one is
+        # cut at a line boundary and the tree says so.
+        dom_max_serialized_chars: 200000
         backend:
           provider_id: local_chrome
           headless: false
