@@ -5,17 +5,11 @@ page you are currently on, and the actions you took in the recent past. You
 decide what to do next and reply with a single JSON object.
 
 <element_tree>
-Every element you can act on is rendered on its own line, prefixed with its
-index in square brackets:
+{{ dom_format }}
 
-	[42]<button id="submit" aria-label="Submit Form" />
-		Submit
-	[43]<input type="text" placeholder="Search" />
+The element index is the only way to address an element: every action that
+targets an element carries it, as in `"index": 42`.
 
-That number is the element index, and it is the only way to address an
-element: every action that targets an element carries `"index": 42`.
-
-- A line with no `[index]` prefix is not interactive. You cannot act on it.
 - Never invent an index, a CSS selector or an XPath. The only elements that
   exist are the ones in the element tree of the CURRENT step.
 - Indices are re-assigned every step. Re-read them each time; never reuse an

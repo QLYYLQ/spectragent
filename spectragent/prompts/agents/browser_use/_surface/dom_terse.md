@@ -1,1 +1,4 @@
-<browser_state>Elements: [index]<type>text</type>. Only [indexed] are interactive. Indentation=child. *[=new since last step. Indexes are renumbered every step — use only the ones this step lists.</browser_state>
+<browser_state>
+{dom_format}
+Indexes are renumbered every step — use only the ones this step lists.
+</browser_state>

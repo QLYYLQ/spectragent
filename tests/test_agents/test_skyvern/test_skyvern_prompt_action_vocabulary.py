@@ -49,6 +49,7 @@ from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
+from tests._helpers.fragment_formats import dom_formats
 
 #: Anything that looks like an action name where the prompt could be
 #: teaching one: the rendered descriptor list (``- `browser.click(...)```),
@@ -94,6 +95,7 @@ def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
         task="t",
         action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        fragment_formats=dom_formats(),
     )[0].content
     assert isinstance(prompt, str)
 
@@ -193,6 +195,7 @@ class TestPromptVocabulary:
             task="t",
             action_space=space_of(elsewhere),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )[0].content
         assert isinstance(prompt, str)
 

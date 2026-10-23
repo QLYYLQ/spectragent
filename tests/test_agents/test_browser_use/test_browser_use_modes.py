@@ -58,6 +58,7 @@ from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import minimal_params
 from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
+from tests._helpers.fragment_formats import dom_formats
 
 MODES = ("dom", "dom_vision", "vision")
 
@@ -198,6 +199,7 @@ class _Run:
             task="t",
             action_space=space_of(self.descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
 
     @property

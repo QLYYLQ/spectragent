@@ -143,6 +143,15 @@ class FakeBrowserCap(CapabilityBase):
     async def begin_observation(self, cycle: int) -> None:
         self.cycle = cycle
 
+    def fragment_formats(self) -> dict[str, str]:
+        """What :func:`page_dom` writes, said the way a DOM serializer says it."""
+        return {
+            "browser.dom": (
+                "One line per element: `[101]<button id=b1>Add</button>` is a button you "
+                "can act on, 101 its index; `<p>` lines are text."
+            )
+        }
+
     async def resolve_fragment(self, fragment_key: str) -> Any:
         if fragment_key == "browser.platform":
             return BrowserPlatformObs(operating_system="macos")

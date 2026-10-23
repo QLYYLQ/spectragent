@@ -42,6 +42,7 @@ from spectragent.core.llm.schema.optimizer import (
 )
 from spectragent.core.loops.react import ReactLoop
 from tests._helpers.action_spaces import space_of
+from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.llm_clients import FakeClient, FakeGenaiClient
 
 # ── shared fixtures ────────────────────────────────────────────────
@@ -60,6 +61,7 @@ def _agent_output_model() -> type[BaseModel]:
     agent.prepare(
         task="t",
         execution_limits=ReactLoop().execution_limits(),
+        fragment_formats=dom_formats(),
         action_space=space_of(descriptors),
     )
     model = agent.get_react_output_model()

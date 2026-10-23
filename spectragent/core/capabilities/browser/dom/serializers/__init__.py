@@ -1,6 +1,13 @@
 """DOM serializers — convert DOMState to LLM-readable text.
 
 Registered via conscribe for config-driven selection.
+
+Each serializer also says, in a few lines a model can read, what its text
+looks like (:meth:`DOMSerializerProtocol.describe_format`). An agent's
+prompt quotes that description instead of describing the format itself, so
+the format knowledge lives with the code that writes it and a run's prompt
+changes with its serializer (``docs/architecture_design.md`` §4.4
+"观测格式由提供方描述", §4.12).
 """
 
 from __future__ import annotations
@@ -18,6 +25,18 @@ class DOMSerializerProtocol(Protocol):
 
     def serialize(self, state: DOMState) -> str:
         """Return an LLM-readable text representation of the DOM tree."""
+        ...
+
+    def describe_format(self) -> str:
+        """A short description, for a model, of the text :meth:`serialize` writes.
+
+        What an element line looks like, which elements can be acted on and
+        how an action addresses one by its index, and every other marker the
+        text can carry. Written for this instance, its knobs included, and
+        true of everything :meth:`serialize` emits: an agent quotes it in its
+        prompt verbatim, so a claim here that the output does not keep is a
+        claim the model is taught.
+        """
         ...
 
 

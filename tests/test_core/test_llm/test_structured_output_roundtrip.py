@@ -40,6 +40,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_of
+from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.llm_clients import FakeClient
 from tests._helpers.trace_builder import as_chat
 
@@ -57,6 +58,7 @@ def _prepared_agent() -> BrowserUseAgent:
     agent.prepare(
         task="t",
         execution_limits=ReactLoop().execution_limits(),
+        fragment_formats=dom_formats(),
         action_space=space_of(_descriptors()),
     )
     return agent
@@ -176,6 +178,7 @@ class TestHallucinatedVerbRejection:
         agent.prepare(
             task="t",
             execution_limits=ReactLoop().execution_limits(),
+            fragment_formats=dom_formats(),
             action_space=space_of(_descriptors("browser.click")),
         )
         with pytest.raises(ParseError):

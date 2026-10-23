@@ -32,6 +32,7 @@ from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent
+from tests._helpers.fragment_formats import formats_for
 
 _AGENTS: dict[str, type[Any]] = {
     "browser_use": BrowserUseAgent,
@@ -107,6 +108,7 @@ def _prepared(agent_id: str) -> Any:
         task="log in",
         action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        **formats_for(agent),
     )
     return agent
 

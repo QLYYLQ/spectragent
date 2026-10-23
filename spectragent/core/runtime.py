@@ -49,10 +49,12 @@ from spectragent.core.loops.identity import RunIdentity
 from spectragent.core.loops.limits import ExecutionLimits, validate_execution_limits
 from spectragent.core.loops.validation import MissingEnvironmentError
 from spectragent.core.negotiation import (
+    FRAGMENT_FORMATS_PARAMETER,
     negotiate_action,
     negotiate_archive,
     negotiate_memory,
     negotiate_observation,
+    quoted_fragment_formats,
 )
 from spectragent.core.step_recorder import StepRecorder, StepSink
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
@@ -150,6 +152,10 @@ class AgentRuntime:
         self._call_context = RunCallContext()
         self._execution_limits = ExecutionLimits()
         self._agent_consumes_limits = False
+        # The fragment format descriptions the agent's prompt quotes, keyed by
+        # the names it declared; ``None`` when it declares none (see
+        # :meth:`prepare`, step 2b).
+        self._fragment_formats: Mapping[str, str] | None = None
         self._execution_started: float | None = None
         self._recorder: StepSink = StepRecorder()
         self._env_needs_teardown = False
@@ -355,6 +361,9 @@ class AgentRuntime:
             IncompatibleFragmentError: A required fragment no provider here
                 serves — the environment, or the Loop for a loop-source
                 fragment it does not build.
+            FragmentFormatError: The agent quotes the format of an active
+                fragment whose provider describes none, or declares its
+                quoted formats wrongly.
             IncompatibleArchiveError: The archivers a hook asks for cannot
                 be bound to this run's environment — raised before
                 anything is woven, and before ``on_run_start``.
@@ -395,6 +404,14 @@ class AgentRuntime:
         # every fragment it *could* provide, which is how a vision-only
         # agent ends up paying for a DOM extraction on every step.
         self._negotiated_obs = negotiated_obs
+
+        # Step 2b: The format descriptions the agent's prompt quotes, from
+        # whoever writes each fragment's text (the browser: its DOM
+        # serializer). A per-run fact, read once here and handed to the
+        # agent's ``prepare`` seed slot; an active quoted fragment nobody
+        # describes is refused now, not sent out as a prompt without it
+        # (docs/architecture_design.md §4.4 "观测格式由提供方描述").
+        self._fragment_formats = quoted_fragment_formats(agent, negotiated_obs, env)
 
         # Step 2.5: Action two-party negotiation
         negotiated_actions = negotiate_action(agent, env)
@@ -565,8 +582,10 @@ class AgentRuntime:
         Calls the prepared agent's optional ``prepare`` slot with the
         effective action space this assembly's guard executes
         (:attr:`action_space`: the negotiated, guarded descriptors the prompt
-        advertises and the bindings that say what a name means) and the
-        Loop's typed execution limits when the agent declares consumption;
+        advertises and the bindings that say what a name means), the
+        Loop's typed execution limits when the agent declares consumption,
+        and the fragment format descriptions its prompt quotes when it
+        declares ``__fragment_formats__`` (keyed by the declared names);
         ``[]`` when the agent has no ``prepare``. Writes no memory, touches no
         environment: :meth:`execute` clears the memory and writes these, and
         the training export's student renderer seeds each context segment
@@ -581,15 +600,12 @@ class AgentRuntime:
         agent_prepare = getattr(agent, "prepare", None)
         if not callable(agent_prepare):
             return []
-        seeds: Any
+        inputs: dict[str, Any] = {"task": task, "action_space": self.action_space}
         if self._agent_consumes_limits:
-            seeds = agent_prepare(
-                task=task,
-                action_space=self.action_space,
-                execution_limits=self._execution_limits,
-            )
-        else:
-            seeds = agent_prepare(task=task, action_space=self.action_space)
+            inputs["execution_limits"] = self._execution_limits
+        if self._fragment_formats is not None:
+            inputs[FRAGMENT_FORMATS_PARAMETER] = self._fragment_formats
+        seeds: Any = agent_prepare(**inputs)
         return list(seeds or [])
 
     # -- execute: convenience one-shot -------------------------

@@ -59,6 +59,7 @@ from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
+from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import decided, step_context
 
 VIEWPORT = (1280, 720)
@@ -141,6 +142,7 @@ class _Run:
             task="Enter the amount",
             action_space=self.space,
             execution_limits=ExecutionLimits(max_actions_per_step=2),
+            **formats_for(self.agent),
         )
 
     def frame(self, screenshot: Any = None) -> PointFrame | None:
