@@ -1,0 +1,41 @@
+# Page-URL rules: query parameters a site writes into its own page URL, with
+# history.replaceState or client-side routing and no request, and which select no
+# content. Restoration verification leaves them out when it compares a restored page
+# URL with the recorded one (docs/architecture_design.md §4.14 "恢复：重定位与校验").
+# Request matching never reads this section. Every other part of the URL still compares
+# byte for byte; keyword, page, order, ids and filters are never listed here.
+# Evidence: the 15 recordings of lookahead_15task_freeze_20261023 and their branch forks.
+page_urls:
+# Bilibili search results (search.bilibili.com/all), parameter vt. The page adds vt to its
+# own address after it loads: the recorded document requests of /all (recordings
+# 6_18b718db, 118_180a3f31, 158_f5a61bf9) carry no vt, and no recorded request URL does
+# either; the address appears only as the referrer inside data.bilibili.com telemetry.
+# Its values read as the last eight digits of the page clock in milliseconds (01672110
+# while the clock read 20:41:12.110 UTC), so every replay writes another one. In that
+# root's forks 168 restoration checks differed from the recorded URL in vt alone. Replayed
+# again with this rule, one fork per checkpoint: 118_180a3f31 at steps 17, 21, 25 and 29
+# restored their checkpoints (url_mismatch before), and 158_f5a61bf9 at step 9 now fails
+# on media alone. keyword, order, page, from_source, search_source and spm_id_from stay in
+# the comparison.
+- id: bilibili-search-vt
+  scope:
+    host: search.bilibili.com
+    path: /all
+  ignore_query:
+  - vt
+# Tonghuashun stock screener results (search.10jqka.com.cn/screener/result), parameter sign.
+# The search page routes to this address on the client: recordings 44_5b851f00 and
+# 134_d7b73ce7 hold no document request for it. sign is the page clock in milliseconds
+# when the question was asked (1792701901115 is 20:45:01.115 UTC, three seconds before the
+# page's first request from it); the shared replay clock makes it differ on every replay.
+# It appears only in the Referer header of the page's requests and in a telemetry upload;
+# the result requests send the question itself (stream-query's body question is w), so w
+# and querytype stay in the comparison. 8 checks of 4 forks at steps 27 to 29 differed in
+# sign alone; replayed again with this rule, the step-29 forks of both recordings restored
+# their checkpoints (url_mismatch before).
+- id: tonghuashun-screener-sign
+  scope:
+    host: search.10jqka.com.cn
+    path: /screener/result
+  ignore_query:
+  - sign

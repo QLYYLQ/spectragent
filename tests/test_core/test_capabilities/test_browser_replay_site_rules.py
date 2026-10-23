@@ -472,7 +472,7 @@ class TestFrozenSnapshot:
         written = [
             (path.name, rule)
             for path in sorted(root.glob("*.yaml"))
-            for rule in yaml.safe_load(path.read_text())["rules"]
+            for rule in yaml.safe_load(path.read_text()).get("rules", [])
         ]
         assert written
         assert [name for name, rule in written if "unavailable" not in rule] == []

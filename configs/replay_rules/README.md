@@ -4,7 +4,8 @@ Rules for offline replay (`network_source: {source_id: archive}`), described in
 `docs/architecture_design.md` §4.14. The shipped replay and branch configurations
 select this directory with `matcher: {site_rules: configs/replay_rules}`.
 
-Every `*.yaml` file contains a `rules` list. Filenames organize the evidence;
+Every `*.yaml` file contains a `rules` list of request rules, a `page_urls` list of
+page-URL rules (see "Page URLs in restoration" below), or both. Filenames organize the evidence;
 they do not select a host or imply a domain suffix. Each rule declares its own
 scope, identity, priority, response exhaustion policy and its policy for a
 recorded request without a body. All files form one rule set.
@@ -270,6 +271,48 @@ section. The shipped examples are Douban's ad endpoint (`callback`) and LeTV's
 two SSO endpoints (`jsonp`). East Money's `version.jsonp` ignores its query
 callback because the recorded static answer always calls a fixed name.
 jQuery-shaped callback names have no global matching exemption.
+
+## Page URLs in restoration
+
+Some pages write a parameter into their own address after loading, with
+`history.replaceState` or client-side routing and no request, and its value changes on
+every replay. Restoration verification then fails with `url_mismatch` although the page
+is the same. A `page_urls` rule names such parameters for one site's pages; when a
+branch or same-path replay compares a restored page URL with the recorded one, it leaves
+them out. Request matching never reads `page_urls`. The rules are frozen and digested
+with the request rules, so the replay's own `site_rules_snapshot` records which version
+a check used. A run with `network_source: live` has no rule set, and its URLs compare
+exactly. Architecture §4.14 "恢复：重定位与校验" describes the comparison.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `id` | string | Rule identity, unique within the whole set (request rules included). |
+| `scope.host` | string | Required host glob, matched like a request rule's `host`; never implies subdomains. |
+| `scope.path` | string or null | Path glob; null covers every path of the host. |
+| `ignore_query` | list of name globs | At least one. Query parameters, by decoded name, left out of both URLs. |
+
+A rule applies when its scope matches both URLs; every applicable rule contributes. The
+comparison drops each `&`-separated query segment whose name a rule lists, whatever its
+value and whether one side or both have it, and compares everything else byte for byte:
+scheme, host and port, path, the remaining segments in their order and spelling, and the
+fragment. The check's evidence keeps both URLs as observed and adds `url_ignored_query`
+(the names left out) and `url_rule_ids` (the rules that left them out).
+
+List a parameter only when the recording shows the page writes it and it selects no
+content: no recorded request carries it (a document request that does makes it part of
+the navigation), and the requests that fetch the page's content select it by other
+fields. Keyword, page, order, id and filter parameters are never listed.
+`page_urls.yaml` holds the published rules, each with its evidence. On 2026-10-23 they
+were written from the branch forks of `lookahead_15task_freeze_20261023`: Bilibili's
+search page `vt` (the last eight digits of the page clock in milliseconds; 168 checks
+differed in it alone) and Tonghuashun's screener result page `sign` (the page clock in
+milliseconds when the question was asked; 8 checks). Both values change on every replay
+because of the shared replay clock. The forks were replayed again with the same branch
+configuration and only `page_urls.yaml` added, one fork per checkpoint. Restorer `ok`
+checkpoint verdicts, before → after: Bilibili 0 → 4 of 5 (`118_180a3f31` at steps 17,
+21, 25 and 29; `158_f5a61bf9` at step 9 still fails on media), Tonghuashun 0 → 2 of 2
+(`44_5b851f00` and `134_d7b73ce7` at step 29). Over those seven forks the passing checks
+rose from 110 to 148 of 166, and no check failed `url_mismatch` any more.
 
 ## Frozen versions and offline evidence
 
