@@ -23,10 +23,19 @@ step's translated actions goes into memory through the Loop's own
 ``remember_reply``. A step that is not exportable, or that the
 ``untranslatable`` policy drops, ends the segment.
 
-**Round trip.** Every reply written is parsed back at once (which also
-advances any agent state a served reply would) and must satisfy the four
-clauses of arch §4.15 "round-trip"; a failure is a :class:`RoundTripError` —
-a formatter defect, never an untranslatable step.
+**Coordinates.** Each step is rendered on the student's own frame: its
+declared grid over the recorded screenshot, built by the framework as a live
+run builds it (``core/loops/coordinate_frames.py::step_frame``; the teacher's
+recorded frame is the teacher's grid). It is handed to the student's
+``build_react_prompt`` and recorded on the step's copy in the segment's
+history, so later steps feed it back on the grid it was shown. A recorded
+action's points go onto that frame before ``format_react_output`` writes the
+target (``actions_in_model_frame``) and come back off it when the reply is
+read (``actions_in_capability_units``); the student agent converts nothing.
+
+**Round trip.** Every reply written is parsed back at once and must satisfy
+the four clauses of arch §4.15 "round-trip"; a failure is a
+:class:`RoundTripError` — a formatter defect, never an untranslatable step.
 """
 
 from __future__ import annotations
@@ -39,7 +48,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
-from typing import Any, Literal, cast, get_args
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -54,7 +63,13 @@ from spectragent.core.loops._loop_fragments import (
     pinned_step_info,
     populate_loop_fragments,
 )
-from spectragent.core.loops.coordinate_frames import step_frame
+from spectragent.core.loops.coordinate_frames import (
+    actions_in_capability_units,
+    actions_in_model_frame,
+    declared_space,
+    fact_in_model_frame,
+    step_frame,
+)
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation.observation import IncompatibleFragmentError
@@ -74,7 +89,7 @@ from spectragent.export.translate._registrar import UntranslatablePolicy
 from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation._registrar import FragmentBase, fragment_field_name
-from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame, point_grid
+from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.sample import CanonicalStepSample, ThoughtRecord, UntranslatableReason
 from spectragent.schemas.step_record import StepRecord
@@ -260,9 +275,8 @@ class StudentRenderer:
         #: The student's effective action space: what its guard executes and
         #: what its names mean (``executed_name``).
         self.space: ActionSpace = self.runtime.action_space
-        space = getattr(self.runtime.agent, "coordinate_space", None)
         self.coordinate_space: CoordinateSpace = (
-            cast(CoordinateSpace, space) if space in get_args(CoordinateSpace) else _DEFAULT_SPACE
+            declared_space(self.runtime.agent) or _DEFAULT_SPACE
         )
         self.stats = RenderStats()
         self._index_fragments: dict[str, frozenset[str]] = {}
@@ -428,7 +442,7 @@ class StudentRenderer:
 
         context = tuple(m.model_copy(deep=True) for m in self.memory.get_context_messages())
         thought, dropped = self._thought(item, sample)
-        written = self._format(actions, thought)
+        written = self._format(actions, thought, frame)
         if isinstance(written, UnrepresentableActionError):
             self._refuse(item, sample, "unrepresentable", str(written))
             if self.untranslatable != "keep_as_text":
@@ -436,7 +450,7 @@ class StudentRenderer:
             self._keep_as_text(segment, item, sample, "unrepresentable", frame)
             return segment, None
         text, actions, claim_not_written = written
-        executed, errors = self._round_trip(sample, actions, text, thought)
+        executed, errors = self._round_trip(sample, actions, text, thought, frame)
         self.loop.remember_reply(self.memory, text, [])
         context_steps = tuple(segment.steps)
         segment.steps.append(item.record.step)
@@ -467,9 +481,14 @@ class StudentRenderer:
     # ── the pieces ───────────────────────────────────────────
 
     def _format(
-        self, actions: Sequence[Action], thought: ThoughtRecord | None
+        self, actions: Sequence[Action], thought: ThoughtRecord | None, frame: PointFrame | None
     ) -> tuple[str, list[Action], bool] | UnrepresentableActionError:
         """The student's reply for *actions*: ``(text, the actions it writes, claim left out)``.
+
+        The actions' points go onto the step's *frame* first
+        (``actions_in_model_frame``): a point with no place there cannot be
+        written, which is ``unrepresentable`` like any param the format
+        cannot carry.
 
         A teacher's ending that claims the task accomplished — a ``TaskClaim``
         param set to ``true`` (``done(success=true)``) — that the student's
@@ -482,14 +501,19 @@ class StudentRenderer:
         "round-trip").
         """
         said = thought.text if thought is not None else None
+
+        def write(chosen: Sequence[Action]) -> str:
+            framed = actions_in_model_frame(chosen, frame, self.space)
+            return self.agent.format_react_output(framed, thought=said)
+
         try:
-            return self.agent.format_react_output(actions, thought=said), list(actions), False
+            return write(actions), list(actions), False
         except UnrepresentableActionError as exc:
             unclaimed = _without_true_claim(actions, exc)
             if unclaimed is None:
                 return exc
         try:
-            return self.agent.format_react_output(unclaimed, thought=said), unclaimed, True
+            return write(unclaimed), unclaimed, True
         except UnrepresentableActionError as exc:
             return exc
 
@@ -546,17 +570,18 @@ class StudentRenderer:
         """``keep_as_text``: the step stays in the context, its reply written as text.
 
         Each action is written as the student shows an action as a fact — its
-        optional ``format_action_fact`` slot, on the grid of this step's
-        screenshot, the same writing its next observation feeds the step back
-        with (arch §4.1) — or, for a student without that slot, as the action's
-        own JSON.
+        points on this step's *frame* (``fact_in_model_frame``), then its
+        optional ``format_action_fact`` slot, the same writing its next
+        observation feeds the step back with (arch §4.1) — or, for a student
+        without that slot, as the action's own JSON.
         """
         actions = sample.actions if sample.actions is not None else sample.teacher_actions
         write = getattr(self.agent, "format_action_fact", None)
-        step = item.record.step
         written = json.dumps(
             [
-                write(action, step=step) if callable(write) else action.model_dump(mode="json")
+                write(fact_in_model_frame(action, frame, self.space))
+                if callable(write)
+                else action.model_dump(mode="json")
                 for action in actions
             ],
             sort_keys=True,
@@ -655,27 +680,39 @@ class StudentRenderer:
         actions: Sequence[Action],
         text: str,
         thought: ThoughtRecord | None,
+        frame: PointFrame | None,
     ) -> tuple[list[Action], list[int]]:
         """The four round-trip clauses (arch §4.15); the executed actions and point errors.
+
+        The reply is read as a served one is: parsed by the student, its points
+        moved off the step's *frame* into the capability's units. The fixed
+        point writes those back onto the frame, and the points' tolerance is
+        the frame's grid ``quantum``.
 
         Raises:
             RoundTripError: Naming the clause that failed.
         """
         sample_id = sample.sample_id
         try:
-            parsed = list(self.agent.parse_react_output(text))
+            parsed = actions_in_capability_units(
+                self.agent.parse_react_output(text), frame, self.space
+            )
         except ParseError as exc:
             raise RoundTripError(sample_id, f"the reply does not parse: {exc}") from exc
         if len(parsed) != len(actions):
             raise RoundTripError(
                 sample_id, f"{len(actions)} action(s) written, {len(parsed)} read back"
             )
-        again = self.agent.format_react_output(
-            parsed, thought=thought.text if thought is not None else None
-        )
+        try:
+            again = self.agent.format_react_output(
+                actions_in_model_frame(parsed, frame, self.space),
+                thought=thought.text if thought is not None else None,
+            )
+        except UnrepresentableActionError as exc:
+            raise RoundTripError(sample_id, f"the parsed reply cannot be written: {exc}") from exc
         if again != text:
             raise RoundTripError(sample_id, "format(parse(text)) is not text (no fixed point)")
-        grid = point_grid(self.coordinate_space, sample.image) if sample.image else None
+        grid = frame.grid if frame is not None else None
         quantum = grid.quantum if grid is not None else 0
         executed: list[Action] = []
         errors: list[int] = []

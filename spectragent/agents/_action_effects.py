@@ -7,10 +7,10 @@ never needs to know a concrete effect type and no raw effect field reaches a
 prompt. Whether the line is shown at all is each Agent's ``show_action_effects``
 switch; the trace records the effect either way.
 
-Every point the line states is written by the Agent's ``write_point``
-(:data:`~spectragent.schemas.action.PointWriter`): viewport units by default, the
-grid its model writes points on for an Agent that passes its own (§4.1,
-"模型看到的每个点都写在它写点的那个网格上").
+Every point the line states is written by the ``write_point`` the Agent passes
+(:data:`~spectragent.schemas.action.PointWriter`): viewport units by default, and
+the framework's writer for the step's frame where the run's model writes points
+on a grid of its own (§4.1, "坐标系归框架").
 
 The sensitivity marker (``typed_into_sensitive_field``) is trace-only evidence
 and is left out of every result a prompt shows, as before.

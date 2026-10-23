@@ -21,6 +21,10 @@ declared grid laid over the screenshot that step showed the model.
   ``ReactPromptContext.frame`` and records it on ``StepRecord.frame``.
 - **In.** The Loop moves a parsed reply's points into the capability's units
   (:func:`actions_in_capability_units`) before anything checks or runs them.
+  At the parse boundary rather than in the guard's executor: a point with no
+  place is a reply for the model to rewrite (a ``ParseError``, through the
+  parse retries), which an executor answering with an ``ActionResult`` cannot
+  ask for; and the ``Params`` check must see the values that will execute.
 - **Out.** Every point shown to a model is written on the frame of the step it
   belongs to, read off that step's record: an action shown as a fact
   (:func:`fact_in_model_frame`), an effect line or the pointer
@@ -238,7 +242,11 @@ def _stated(action: Action, space: ActionSpace) -> list[tuple[str, str]]:
 
 
 def actions_in_capability_units(
-    actions: Sequence[Action], frame: PointFrame | None, space: ActionSpace
+    actions: Sequence[Action],
+    frame: PointFrame | None,
+    space: ActionSpace,
+    *,
+    raw_output: str | None = None,
 ) -> list[Action]:
     """A parsed reply's *actions*, each point moved from *frame* into the capability's units.
 
@@ -252,6 +260,7 @@ def actions_in_capability_units(
     Raises:
         ParseError: An action states a point and the step showed no screenshot
             of known size. That goes back to the model, never a guessed point.
+            It carries *raw_output*, the reply it was read from.
     """
     if frame is None:
         return list(actions)
@@ -273,7 +282,8 @@ def actions_in_capability_units(
     if unplaced:
         raise ParseError(
             f"{'; '.join(unplaced)}: a point cannot be placed, because this step's "
-            f"screenshot has no known size"
+            f"screenshot has no known size",
+            raw_output=raw_output,
         )
     return converted
 

@@ -18,10 +18,11 @@ Unmeasured = Literal["unknown", "unavailable"]
 
 #: How a prompt writes a point it states: the point's ``(x, y)`` in the
 #: capability's viewport units in, its text out. The facts stay in viewport
-#: units; only the writing is the renderer's. An Agent whose model writes
-#: points on another grid passes a writer for that grid, so every point the
+#: units; only the writing is the renderer's. The framework hands an Agent
+#: the writer for the frame of the step a point belongs to
+#: (``core/loops/coordinate_frames.py::point_writer``), so every point the
 #: model reads is on the grid it writes (``docs/architecture_design.md`` §4.1,
-#: "模型看到的每个点都写在它写点的那个网格上").
+#: "坐标系归框架").
 PointWriter = Callable[[int, int], str]
 
 
@@ -54,9 +55,9 @@ class ActionEffect(BaseModel):
     (``docs/architecture_design.md`` §4.5, "动作效果").
 
     Every *point* the line states is written by the caller's ``write_point``
-    (:data:`PointWriter`), so an Agent whose model writes points on its own
-    grid reads them on that grid; the default writes viewport units as
-    before. A distance (a scroll's offset) is not a point and stays in the
+    (:data:`PointWriter`), the framework's writer for the frame of the step
+    the effect belongs to, so a model that writes points on its own grid
+    reads them on that grid; the default writes viewport units as before. A distance (a scroll's offset) is not a point and stays in the
     viewport's pixels, its unit stated.
     """
 

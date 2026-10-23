@@ -606,3 +606,42 @@ def test_the_runtime_frames_the_space_on_the_agents_declared_grid(
     for descriptor in pointing:
         (x_key, _y_key), *_ = descriptor.point_params
         assert ("0-1000 grid" in descriptor.params[x_key]) is (framed is not None)
+
+
+async def test_react_executes_a_replys_points_in_css_px_and_records_them_so() -> None:
+    """The Agent parses the numbers it wrote; the Loop moves them off the frame before running."""
+    space = space_of(
+        browser_descriptors("click_coordinate", "done"), coordinate_space="screenshot_pixels"
+    )
+    click = json.dumps(
+        [{"name": "click_coordinate", "params": {"coordinate_x": 101, "coordinate_y": 400}}]
+    )
+    done = json.dumps([{"name": "done", "params": {"extracted_content": "ok"}}])
+    _agent, recorder, ran = await _react(
+        space, [_screenshot((2560, 1440)), _screenshot((2560, 1440))], [click, done]
+    )
+    assert ran[0].params == {"coordinate_x": 50, "coordinate_y": 200}  # DPR 2: halved
+    first = recorder.records[0]
+    assert first.actions[0].params == {"coordinate_x": 50, "coordinate_y": 200}
+    assert first.llm_output == click  # the reply keeps the model's grid
+    assert first.frame is not None and first.frame.grid is not None
+    assert (first.frame.grid.width, first.frame.grid.viewport_width) == (2560, 1280)
+
+
+async def test_react_sends_a_point_it_cannot_place_back_to_the_model() -> None:
+    """No screenshot of known size: a parse error, recorded as one; nothing runs."""
+    space = space_of(
+        browser_descriptors("click_coordinate", "done"), coordinate_space="normalized_1000"
+    )
+    click = json.dumps(
+        [{"name": "click_coordinate", "params": {"coordinate_x": 1, "coordinate_y": 2}}]
+    )
+    _agent, recorder, ran = await _react(space, [_screenshot(viewport=(0, 0))], [click])
+    assert ran == []
+    (record,) = recorder.records
+    assert record.error_phase == "parse"
+    assert record.error == (
+        "action 1, click_coordinate: a point cannot be placed, because this step's "
+        "screenshot has no known size"
+    )
+    assert record.frame == PointFrame(space="normalized_1000")

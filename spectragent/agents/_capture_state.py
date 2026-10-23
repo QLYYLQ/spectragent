@@ -15,12 +15,12 @@ An Agent that does not show the capture state excludes the fragment from its
 negotiation demand (:func:`capture_state_demand`) rather than dropping it from
 the prompt after capture, so the fragment is neither captured nor rendered.
 
-The pointer is the one point among the facts, and the one part whose writing
-the Agent decides: it passes a ``write_point``
-(:data:`~spectragent.schemas.action.PointWriter`, shared with the action
-effects' ``describe``) so its model reads the pointer on the grid it writes
-points on (§4.1, "模型看到的每个点都写在它写点的那个网格上"). The default writes
-viewport pixels, as before.
+The pointer is the one point among the facts, written by the ``write_point``
+the Agent passes (:data:`~spectragent.schemas.action.PointWriter`, shared with
+the action effects' ``describe``): the framework's writer for this step's
+frame (``core/loops/coordinate_frames.py::point_writer``), so its model reads
+the pointer on the grid it writes points on (§4.1, "坐标系归框架"). The
+default writes viewport pixels, as before.
 """
 
 from __future__ import annotations

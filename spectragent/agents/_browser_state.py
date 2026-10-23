@@ -10,10 +10,11 @@ The media playback state (§4.4 "截图的媒体状态") rides on the screenshot
 fragment and is written only when the Agent's ``show_media_state`` asks: it is
 an explicit experiment variable, off by default.
 
-The pointer in the capture state is the one point among these facts; its
-writing is the Agent's ``write_point`` (``render_capture_state``), so an Agent
-whose model writes points on a grid reads the pointer on that grid (§4.1,
-"模型看到的每个点都写在它写点的那个网格上"). The default writes viewport pixels.
+The pointer in the capture state is the one point among these facts; it is
+written by the ``write_point`` the Agent passes (``render_capture_state``), the
+framework's writer for this step's frame, so a model that writes points on a
+grid reads the pointer on that grid (§4.1, "坐标系归框架"). The default writes
+viewport pixels.
 
 Reads are structural, by relative fragment name, like
 ``render_browser_platform``: no capability or resolver class is imported.

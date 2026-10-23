@@ -36,7 +36,7 @@ from spectragent.core.loops._loop_fragments import (
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import AgentLoopBase
-from spectragent.core.loops.coordinate_frames import step_frame
+from spectragent.core.loops.coordinate_frames import actions_in_capability_units, step_frame
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.run import LoopRun
@@ -478,7 +478,15 @@ class ReactLoop(AgentLoopBase):
             # can self-correct, in this step if retries remain and on
             # the next one otherwise.
             try:
-                actions = agent.parse_react_output(raw_output)
+                # The Agent reads its own reply; the framework moves the
+                # points it states off this step's frame into the
+                # capability's units, before anything checks or runs them.
+                actions = actions_in_capability_units(
+                    agent.parse_react_output(raw_output),
+                    frame,
+                    run.action_space,
+                    raw_output=output_text[:500],
+                )
                 # The actions that would run must fit their ``Params``; one
                 # that does not is a reply to rewrite, not an action to fail.
                 self.check_action_params(

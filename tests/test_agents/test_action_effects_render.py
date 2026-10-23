@@ -24,7 +24,8 @@ from spectragent.schemas.action import (
     PointWriter,
     write_viewport_point,
 )
-from spectragent.schemas.prompt import RestoredHistory
+from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 
 #: A raw field value no ``describe()`` line contains: finding it in a prompt
@@ -121,7 +122,12 @@ def _restored() -> RestoredHistory:
 
 
 def _restored_facts(*, shown: bool) -> dict[str, object]:
-    message = restored_history_message(_restored(), show_action_effects=shown)
+    message = restored_history_message(
+        _restored(),
+        show_action_effects=shown,
+        context=ReactPromptContext(step=1, phase="history"),
+        action_space=ActionSpace(),
+    )
     assert RAW not in message.text
     return json.loads(message.text.split("\n", 1)[1])
 

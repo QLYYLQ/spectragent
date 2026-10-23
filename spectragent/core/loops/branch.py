@@ -27,7 +27,7 @@ from spectragent.core.loops._loop_fragments import (
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import LoopInput
-from spectragent.core.loops.coordinate_frames import step_frame
+from spectragent.core.loops.coordinate_frames import actions_in_capability_units, step_frame
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.react import ReactLoop, ReactRun, serialize_llm_output
 from spectragent.core.loops.restore import (
@@ -520,7 +520,14 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             reply = self._recorded_reply(source, call, output_model, step, index)
             output_text = serialize_llm_output(reply)
             try:
-                actions = agent.parse_react_output(reply)
+                # Read back off the frame the source step recorded, as the
+                # live step read it.
+                actions = actions_in_capability_units(
+                    agent.parse_react_output(reply),
+                    record.frame,
+                    run.action_space,
+                    raw_output=output_text[:500],
+                )
             except RunAbort as veto:
                 await self._note_replay_veto(run, step, veto, llm_output=output_text)
                 raise

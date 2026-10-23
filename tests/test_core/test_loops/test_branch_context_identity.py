@@ -34,6 +34,7 @@ from spectragent.core.hooks.restored_history import OmitSourceRepliesHook
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
+from spectragent.schemas.observation.geometry import PointFrame, PointGrid
 from spectragent.schemas.restoration import Checkpoint
 from tests._helpers.branch_browser import (
     TASK,
@@ -257,6 +258,61 @@ async def test_shipped_agent_restored_history_uses_live_execution(
         assert "coordinate_x" not in restored_text
         assert "viewport pixels" not in restored_text
     assert all(record.llm_output == "" for record in trace.step_records[:2])
+
+
+#: UI-TARS's frame over the fake site's screenshot: its 64x36 image's pixels over the
+#: 1280x720 viewport.
+_UI_TARS_FRAME = PointFrame(
+    space="screenshot_pixels", grid=PointGrid("screenshot_pixels", 64, 36, 1280, 720)
+)
+
+
+@pytest.mark.parametrize("history_source", ["source", "restored"])
+async def test_ui_tars_frames_are_recorded_and_branched_from_the_records(
+    tmp_path: Path, history_source: str
+) -> None:
+    """Each step records its frame; a branch reads the source's, or records the restored one.
+
+    ``source`` rebuilds every prefix prompt on the frame the source step recorded
+    (the rebuilt prompts equal the recorded ones, ``test_policy_context_equals_source``);
+    ``restored`` records the restored observation's frame on each restored step, and the
+    policy step's feedback writes them on it — no agent state is consulted for either
+    (docs/architecture_design.md §4.1 "坐标系归框架").
+    """
+    _, source = await _source(tmp_path, "ui_tars", "simple")
+    assert [record.frame for record in source.step_records] == [_UI_TARS_FRAME] * STEPS
+    loop = branch_loop()
+    loop.history_source = history_source  # type: ignore[assignment]
+    outcome = await drive(
+        tmp_path / f"frames-{history_source}",
+        kind="ui_tars",
+        memory="simple",
+        loop=loop,
+        replies=[SCRIPTS["ui_tars"]()[-1]],
+        run_id=f"frames-{history_source}",
+        id_offset=500,
+        checkpoint=Checkpoint(trace_dir=str(source.trace_dir.resolve()), step=2),
+    )
+    assert outcome.result is not None and outcome.result.error is None
+    assert outcome.run_dir is not None
+    trace = RunTrace(outcome.run_dir)
+    restored, policy = trace.step_records[:2], trace.step_records[2]
+    expected = _UI_TARS_FRAME if history_source == "restored" else None
+    assert [record.frame for record in restored] == [expected, expected]
+    assert (policy.origin, policy.frame) == ("policy", _UI_TARS_FRAME)
+    # Step 1's kept click, the viewport's (200, 400), fed back on the 64x36 grid.
+    assert restored[1].actions[0].params == {"coordinate_x": 200, "coordinate_y": 400}
+    prompt = "\n".join(
+        part["text"]
+        for message in recorded_form(outcome.teacher.prompts[0])
+        for part in (
+            message["content"]
+            if isinstance(message["content"], list)
+            else [{"text": message["content"]}]
+        )
+        if "text" in part
+    )
+    assert "click(point='(10, 20)')" in prompt and "coordinate_x" not in prompt
 
 
 @pytest.mark.parametrize("history_source", ["source", "restored"])

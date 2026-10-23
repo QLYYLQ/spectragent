@@ -10,15 +10,18 @@ from typing import Any
 
 from spectragent.agents._action_effects import result_facts
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
-from spectragent.schemas.action import Action, PointWriter, write_viewport_point
+from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
+from spectragent.schemas.action import Action
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 
-#: How an Agent writes an action it shows as a fact: a JSON value.
+#: How an Agent writes an action it shows as a fact, its points already on the
+#: model's frame: a JSON value.
 ActionWriter = Callable[[Action], Any]
 
 
 def action_json(action: Action) -> dict[str, Any]:
-    """The default :data:`ActionWriter`: the action's own JSON, points in viewport units."""
+    """The default :data:`ActionWriter`: the action's own JSON."""
     return action.model_dump(mode="json")
 
 
@@ -48,8 +51,9 @@ def restored_history_message(
     history: RestoredHistory,
     *,
     show_action_effects: bool,
+    context: ReactPromptContext,
+    action_space: ActionSpace,
     write_action: ActionWriter = action_json,
-    write_point: PointWriter = write_viewport_point,
 ) -> UserMessage:
     """Describe actual restored execution separately from its source material.
 
@@ -60,24 +64,33 @@ def restored_history_message(
     *show_action_effects* is on, and its raw fields never are
     (``agents/_action_effects.py``).
 
-    The layout is shared; how an action and a point are written is the
-    Agent's. *write_action* writes both the executed and the recorded
-    actions, *write_point* every point an effect line states. The defaults
-    write the action's JSON and viewport units; an Agent whose model writes
-    points on another grid passes writers for that grid (§4.1,
-    "模型看到的每个点都写在它写点的那个网格上").
+    Every point is written on the restored step's frame (``context.frame``):
+    the restored actions ran after the observation it lies over was captured.
+    The framework puts each action's points there (``fact_in_model_frame``,
+    with *action_space* saying which params are points) and writes each
+    effect line's (``point_writer``); a run framed on no grid keeps the
+    capability's units (``docs/architecture_design.md`` §4.1 "坐标系归框架").
+    The layout is shared; how an action reads is the Agent's: *write_action*
+    writes both the executed and the recorded actions, the action's JSON by
+    default.
     """
     history.validate_execution()
+    frame = context.frame
+
+    def written(action: Action) -> Any:
+        return write_action(fact_in_model_frame(action, frame, action_space))
+
+    write_point = point_writer(frame)
     facts = {
         "source_material": {
             "run_id": history.source_run_id,
             "step": history.source_step,
             "recorded_reply": history.source_reply,
-            "recorded_actions": [write_action(action) for action in history.source_actions],
+            "recorded_actions": [written(action) for action in history.source_actions],
         },
         "actual_restored_execution": [
             {
-                "action": write_action(action),
+                "action": written(action),
                 "result": result_facts(
                     result, show_effects=show_action_effects, write_point=write_point
                 ),

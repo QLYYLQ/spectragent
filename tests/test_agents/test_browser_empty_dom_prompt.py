@@ -24,7 +24,7 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
     browser_use = make_agent(
         BrowserUseAgent, memory=SimpleMemory(max_messages=10), observation_mode="dom"
     )
-    rendered_browser_use = browser_use._render_browser_state(observation)
+    rendered_browser_use = browser_use._render_browser_state(observation, None)
     skyvern = SkyvernAgent.__new__(SkyvernAgent)
     rendered_skyvern = skyvern._render_browser_state(observation)
 

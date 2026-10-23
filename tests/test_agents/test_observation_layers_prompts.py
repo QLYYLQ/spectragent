@@ -38,6 +38,7 @@ from spectragent.schemas.action import (
     PointWriter,
     write_viewport_point,
 )
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
     FailedVisibleResources,
@@ -47,11 +48,12 @@ from spectragent.schemas.observation.capture_state import (
 )
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
 from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, TaskObs
-from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
+from spectragent.schemas.prompt import RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
+from tests._helpers.frames import step_context
 
 AGENT_CLASSES: tuple[type[Any], ...] = (UITarsAgent, SkyvernAgent, BrowserUseAgent)
 BROWSER_AGENTS: tuple[type[Any], ...] = (SkyvernAgent, BrowserUseAgent)
@@ -145,12 +147,12 @@ def _observation(*, effects: bool = True, capture_state: bool = True) -> SimpleN
     return observation
 
 
-def _prepared(agent_class: type[Any], **switches: Any) -> Any:
+def _prepared(agent_class: type[Any], **switches: Any) -> tuple[Any, ActionSpace]:
     """*agent_class* prepared with the actions of a browser it would negotiate them from.
 
     Only the ones its own demand admits: a DOM-mode BrowserUse never holds a
     coordinate action, so it teaches no grid and writes its feedback in
-    viewport pixels.
+    viewport pixels. The space is framed as a run frames it.
     """
     agent = make_agent(agent_class, memory=SimpleMemory(max_messages=20), **switches)
     required, optional = agent.negotiation_demand("action")
@@ -166,12 +168,13 @@ def _prepared(agent_class: type[Any], **switches: Any) -> Any:
         for action in BrowserCapability().actions
         if action.action_id in keys and action.action_id.split(".")[-1] in required | optional
     ]
+    space = space_for(agent, descriptors)
     agent.prepare(
         task="Open",
-        action_space=space_of(descriptors),
+        action_space=space,
         execution_limits=ExecutionLimits(max_actions_per_step=2),
     )
-    return agent
+    return agent, space
 
 
 def _text(messages: list[BaseMessage]) -> str:
@@ -190,10 +193,10 @@ def _text(messages: list[BaseMessage]) -> str:
 
 
 async def _prompt(agent_class: type[Any], observation: Any = None, **switches: Any) -> str:
-    agent = _prepared(agent_class, **switches)
+    agent, space = _prepared(agent_class, **switches)
+    observation = observation if observation is not None else _observation()
     messages = await agent.build_react_prompt(
-        observation if observation is not None else _observation(),
-        context=ReactPromptContext(step=1, phase="policy"),
+        observation, context=step_context(space, observation, step=1)
     )
     return _text(messages)
 
@@ -548,11 +551,12 @@ def _restored_history() -> RestoredHistory:
 async def test_restored_history_renders_the_effect_measured_while_restoring(
     agent_class: type[Any], shown: bool
 ) -> None:
-    agent = _prepared(agent_class, show_action_effects=shown)
+    agent, space = _prepared(agent_class, show_action_effects=shown)
+    observation = _observation()
     messages = await agent.build_restored_history(
-        _observation(),
+        observation,
         history=_restored_history(),
-        context=ReactPromptContext(step=3, phase="history"),
+        context=step_context(space, observation, step=3, phase="history"),
     )
     restored = messages[-1].text
     facts = json.loads(restored.split("\n", 1)[1])

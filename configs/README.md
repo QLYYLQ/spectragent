@@ -201,7 +201,7 @@ capabilities:
 
 The list is the ablation switch described above, so it has to name every action the run needs: `ui_tars` requires `click_coordinate`, `type_coordinate` and `done`, and a task with a `start_url` needs `browser.navigate`, because the capability opens the landing page by executing it.
 
-**What a point is.** `ui_tars` tells the model which grid to write points on and converts each point into the capability's units (CSS pixels for the browser) using the size of the screenshot that step showed, so the device scale factor and viewport size need no setting of their own. Pick the grid the model really answers on — `screenshot_pixels` (the default) or `normalized_1000` (0-1000 on both axes, x first):
+**What a point is.** `coordinate_space` declares which grid the model writes points on, and `ui_tars` teaches it. The framework does the converting: each point the model writes goes into the capability's units (CSS pixels for the browser) using the size of the screenshot that step showed, and every point fed back to the model (actions, effects, the pointer) is written on the same grid. The device scale factor and viewport size need no setting of their own. Pick the grid the model really answers on — `screenshot_pixels` (the default) or `normalized_1000` (0-1000 on both axes, x first):
 
 ```yaml
 agent:
