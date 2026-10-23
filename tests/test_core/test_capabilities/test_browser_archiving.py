@@ -281,6 +281,9 @@ class TestTiming:
             assert [(line["kind"], line["waiting_for"]) for line in first] == [("pending", "body")]
             release.set()
             await task
+            # The first collection already waited for this read; the next one
+            # takes what it has, so let the answered read finish first.
+            await settle()
             second = _index(await cap.collect_archive())
             assert [line["kind"] for line in second] == ["exchange"]
             assert second[0]["record_id"] == first[0]["record_id"]

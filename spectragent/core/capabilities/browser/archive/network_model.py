@@ -97,6 +97,23 @@ Terminal = Literal["redirected", "finished", "failed", "websocket"]
 TARGET_DETACHED_ERROR = "the target detached before the request finished"
 
 
+#: How a ``body_note`` begins on a body read at the Fetch Response stage whose
+#: request then failed on the network: the read answered with the bytes that
+#: arrived before the failure (arch §4.14 "什么时候定下来").
+FAILED_AFTER_READ_NOTE = "the download failed after its body was read"
+
+
+def _network_failure(params: Mapping[str, Any]) -> bool:
+    """Whether ``loadingFailed`` reports the download failing, not the page or a policy.
+
+    The page cancelling (``canceled``) and a blocked or CORS-refused response
+    end a request whose body may have arrived whole.
+    """
+    return not (
+        params.get("canceled") or params.get("blockedReason") or params.get("corsErrorStatus")
+    )
+
+
 def failure_text(params: Mapping[str, Any]) -> str:
     """Why ``Network.loadingFailed`` says the request failed (its ``errorText``, else the block)."""
     return str(params.get("errorText") or params.get("blockedReason") or "loading failed")
@@ -297,9 +314,6 @@ class Exchange:
     #: The pause's response status (redirect hops pause too).
     paused_status: int | None = None
     body_reading: bool = False
-    #: The body read outlived ``body_read_timeout_s``: the response was
-    #: released and the read goes on (``late_body_timeout_s``).
-    late_body: bool = False
     body: bytes | None = None
     body_status: BodyStatus | None = None
     body_note: str | None = None
@@ -343,18 +357,21 @@ class Exchange:
     def waiting_for(self) -> str | None:
         """What the exchange still waits for, or ``None`` when it can be written.
 
-        A body read in full at the Fetch Response stage settles the exchange
-        without ``loadingFinished``: Chrome holds the response until it is
-        continued, so the read body *is* the whole body — and a ``fetch()``
-        whose body the page never consumes gets no ``loadingFinished`` at all
-        (measured, Chrome 155). Two waits are only worth one collection
-        (:data:`GRACE_WAITS`): the ``responseReceived`` event of such an
-        exchange, and the raw response headers of any.
+        A body read at the Fetch Response stage settles the exchange without
+        ``loadingFinished``: a ``fetch()`` whose body the page never consumes
+        gets no ``loadingFinished`` at all (measured, Chrome 155). The read
+        answers with the bytes that arrived, also when the download then
+        fails; that failure reaches the page with its response, so a
+        ``loadingFailed`` the exchange gets before it is written makes the
+        body incomplete (:meth:`NetworkModel.loading_failed`). Two waits are
+        only worth one collection (:data:`GRACE_WAITS`): the
+        ``responseReceived`` event of such an exchange, and the raw response
+        headers of any.
         """
         if self.is_websocket:
             return None if self.terminal is not None else "handshake"
         if self.body_reading:
-            return "late_body" if self.late_body else "body"
+            return "body"
         if self.terminal is None:
             if self.paused_session is None or self.body_status is None:
                 return "response" if self.status is None else "loading"
@@ -596,6 +613,15 @@ class NetworkModel:
         hop.terminal = "failed"
         hop.ended_at = self.end_time(hop, params.get("timestamp"))
         hop.error_text = failure_text(params)
+        if hop.body_status == "ok" and hop.paused_session is not None and _network_failure(params):
+            # Fetch.getResponseBody answered with the bytes that arrived before
+            # the download failed: what the page got was the failure.
+            self.body_finished(
+                hop,
+                status="incomplete",
+                note=f"{FAILED_AFTER_READ_NOTE} ({hop.error_text})",
+                content_range=hop.content_range,
+            )
         self._touch(hop)
 
     def target_detached(self, session_id: str | None) -> None:

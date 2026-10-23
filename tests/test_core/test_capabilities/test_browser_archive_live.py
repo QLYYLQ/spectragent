@@ -52,10 +52,8 @@ from spectragent.core.capabilities.browser.archive import (
     StorageArchiver,
 )
 from spectragent.core.capabilities.browser.archive.dom_raw import DomRawSession
-from spectragent.core.capabilities.browser.archive.network import (
-    BODY_READ_TIMEOUT_NOTE,
-    LATE_BODY_NOTE,
-)
+from spectragent.core.capabilities.browser.archive.network import BODY_READ_TIMEOUT_NOTE
+from spectragent.core.capabilities.browser.archive.network_model import FAILED_AFTER_READ_NOTE
 from spectragent.core.capabilities.browser.dom.js.skyvern_extraction import EXTRACTION_SCRIPT
 from spectragent.core.capabilities.browser.dom.sensitivity import (
     REDACTED_MARKUP,
@@ -81,6 +79,8 @@ from tests._helpers.archive_bench import (
     write_report,
 )
 from tests._helpers.fixture_site import (
+    CUT_DOWNLOAD_DELAY_S,
+    CUT_DOWNLOAD_OUTCOMES,
     FIXTURE_PASSWORD,
     SCENARIOS,
     SLOW_DOCUMENT_DELAY_S,
@@ -475,62 +475,89 @@ def test_control_connection_never_carries_bodies() -> None:
     assert statuses["/large/static.js"] == ["streamed_later"]
 
 
-# ── a document slower than the hold ───────────────────────────────────
+# ── a body read holds its response until it answers ─────────────────
 
-#: A hold well under the fixture's delay, so the inline read always outlives it.
-_SHORT_HOLD_S = 0.3
+#: A read budget well under the fixture's delays, so the read always outlives it.
+_SHORT_READ_BUDGET_S = 0.3
 
 
-def _record_slow_document(**network: Any) -> tuple[list[dict[str, Any]], str]:
-    """The ``slow_document`` page recorded with a short hold; its index lines and the DOM."""
+def _record_scenario(scenario: str, **network: Any) -> tuple[list[dict[str, Any]], str]:
+    """*scenario* recorded by ``browser.network``; its index lines and the DOM it ended with."""
 
     async def record() -> tuple[list[dict[str, Any]], str]:
-        archiver = NetworkArchiver(
-            require_replayable=False, body_read_timeout_s=_SHORT_HOLD_S, **network
-        )
+        archiver = NetworkArchiver(require_replayable=False, **network)
         with FixtureSite(mapped=True) as site:
             async with LiveRecording(site, archivers=(archiver,)) as rec:
-                await rec.step(site.url("slow_document"), wait_for=site.expected("slow_document"))
-                # The read answers when the body is in; the page's load waited for that.
-                await asyncio.sleep(SLOW_DOCUMENT_DELAY_S)
+                await rec.step(site.url(scenario), wait_for=site.expected(scenario))
+                # Each fixture's slow part is over by now; the page has seen how it ended.
+                await asyncio.sleep(max(SLOW_DOCUMENT_DELAY_S, CUT_DOWNLOAD_DELAY_S))
+                last = await rec.observe()
                 await rec.final_collect()
-                return rec.index_lines(), rec.observations[0]["serialized_dom"]
+                return rec.index_lines(), last["serialized_dom"]
 
     return _run(record())
 
 
-def _slow_document_line(lines: list[dict[str, Any]]) -> dict[str, Any]:
-    (line,) = [
-        line
-        for line in lines
-        if line["kind"] == "exchange" and line["url"].endswith("/slow_document/page.html")
-    ]
+def _exchange_line(lines: list[dict[str, Any]], path: str) -> dict[str, Any]:
+    (line,) = [line for line in lines if line["kind"] == "exchange" and line["url"].endswith(path)]
     return line
 
 
-def test_a_document_slower_than_the_hold_is_kept_whole() -> None:
-    """bilibili's results: gzip, GBK, no length, its body later than ``body_read_timeout_s``.
+def test_a_slow_document_is_held_until_its_body_is_in_and_kept_whole() -> None:
+    """bilibili's results: gzip, GBK, no length, the body a second after the headers.
 
-    The read goes on after the response is released, and Chrome answers it
-    with the bytes the server sent — GBK, not the page's decoded text.
+    The read answers with the bytes the server sent — GBK, not the page's
+    decoded text — and the response is released then, not before.
     """
-    lines, dom = _record_slow_document()
-    assert SLOW_DOCUMENT_TEXT in dom, "the page itself was not held back"
-    line = _slow_document_line(lines)
-    assert line["body_status"] == "ok", line["body_note"]
-    assert line["body_note"].startswith(LATE_BODY_NOTE)
+    lines, dom = _record_scenario("slow_document")
+    assert SLOW_DOCUMENT_TEXT in dom
+    line = _exchange_line(lines, "/slow_document/page.html")
+    assert (line["body_status"], line["body_note"]) == ("ok", None)
     body = FixtureSite.slow_document_bytes()
     assert line["payload_sha256"] == hashlib.sha256(body).hexdigest()
     assert line["original_encoding"]["content-encoding"] == "gzip"
 
 
-def test_without_the_wait_after_the_release_the_document_has_no_body() -> None:
-    """The negative control (``late_body_timeout_s: 0``): what every recording did before."""
-    lines, dom = _record_slow_document(late_body_timeout_s=0)
-    assert SLOW_DOCUMENT_TEXT in dom
-    line = _slow_document_line(lines)
+def test_a_document_slower_than_the_read_budget_has_no_body() -> None:
+    """The budget is a budget: a read that outlives it is the recorder's timeout."""
+    lines, dom = _record_scenario("slow_document", body_read_timeout_s=_SHORT_READ_BUDGET_S)
+    assert SLOW_DOCUMENT_TEXT in dom, "the page still got its document"
+    line = _exchange_line(lines, "/slow_document/page.html")
     assert line["body_status"] == "incomplete"
-    assert line["body_note"] == f"{BODY_READ_TIMEOUT_NOTE} {_SHORT_HOLD_S:g}s"
+    assert line["body_note"] == f"{BODY_READ_TIMEOUT_NOTE} {_SHORT_READ_BUDGET_S:g}s"
+
+
+def test_a_download_cut_off_mid_body_reaches_the_page_as_its_failure() -> None:
+    """iQIYI's home page: main chunks cut off mid-download must fail, not run empty.
+
+    The response is held until the read answers, so Chrome completes the
+    page's request with the network's own verdict, and the record says the
+    body is incomplete, with the error the page saw.
+    """
+    lines, dom = _record_scenario("cut_download")
+    assert CUT_DOWNLOAD_OUTCOMES["error"] in dom, dom
+    line = _exchange_line(lines, "/cut_download/app.js")
+    assert line["body_status"] == "incomplete"
+    assert line["error_text"] == "net::ERR_INCOMPLETE_CHUNKED_ENCODING"
+    assert line["body_note"].startswith(FAILED_AFTER_READ_NOTE)
+
+
+def test_a_response_released_while_its_read_runs_hides_the_cut_from_the_page() -> None:
+    """Why the response is never released early (measured, Chrome 155).
+
+    With a read budget shorter than the download, the recorder must release
+    the response while Chrome's read still runs. Chrome then completes the
+    page's request from that read when the connection is cut: a successful,
+    empty script. This is the residual left for downloads longer than
+    ``body_read_timeout_s``; if Chrome stops doing this, the residual in
+    ``docs/architecture_design.md`` §4.14 goes.
+    """
+    lines, dom = _record_scenario("cut_download", body_read_timeout_s=_SHORT_READ_BUDGET_S)
+    assert CUT_DOWNLOAD_OUTCOMES["load"] in dom, dom
+    line = _exchange_line(lines, "/cut_download/app.js")
+    assert line["body_status"] == "incomplete"
+    assert line["body_note"] == f"{BODY_READ_TIMEOUT_NOTE} {_SHORT_READ_BUDGET_S:g}s"
+    assert (line["error_text"], line["encoded_length"]) == (None, 0)
 
 
 # ── privacy: planted credentials never reach the trace ────────────────
