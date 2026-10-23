@@ -523,6 +523,13 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   the step. `media_end_lead_s` not shorter than `media_seek_timeout_s` is refused at
   construction. Nothing is aligned after the checkpoint; `pace` only approximates a position.
   Sources recorded before the field are never media-checked.
+- Media areas (architecture §4.14 "页面上的媒体区域"). On a page a `media_areas` rule of the
+  replay's rule set declares (`configs/replay_rules/media_areas.yaml`; the scope must match
+  both page URLs), the restorer does not judge the media state (kept as evidence), and the
+  boxes both screenshots' media facts measured (media elements and unreachable frames) are
+  masked out of both images before the distance; past 75% masked the whole images are
+  compared. The check's `media_areas` evidence names the rules, boxes, share and both
+  distances. Recording and alignment are unchanged; undeclared pages and live networks too.
 - Same-path replay is a branch sweep (`configs/flywheel/same_path_ui_tars_archive.yaml`):
   `step_selector: last`, `continue_steps: 0`, `verify: warn` so every step gets a check,
   `branches_per_step: 2` for replay determinism, `agent_outcome: any`,
@@ -677,7 +684,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-10` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-12` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
   browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit
@@ -696,8 +703,9 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   and the `field_sets` that differed together, both sides keyed with the replay's own
   recorded rules; `-11` groups them by site as well, counts replay runs instead of requests,
   sets aside requests that do not feed the page (`not_feeding_page`) and ranks each site's
-  endpoints by `failure_association`, proposing the top `SITE_RULE_MAX_PROPOSALS_PER_SITE`).
-  Only the current
+  endpoints by `failure_association`, proposing the top `SITE_RULE_MAX_PROPOSALS_PER_SITE`);
+  `-12` adds the same-path fidelity's `media_area_steps` (verified steps on pages media-area
+  rules declare, whose verdicts rest on that declaration). Only the current
   format is read; an older report is regenerated, never adapted. Report keys,
   headings and rule texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's
@@ -1286,7 +1294,7 @@ value on an existing one.
 | A main-frame document miss (`diverged`) | The page asked for a document the recording never fetched, such as a time-stamped URL. A restored step shows `document_miss` |
 | `IncompatibleCheckpointError` | The branch's agent, closed-set or numeric knobs, memory, `max_actions_per_step`, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |
-| A restored step fails `media_mismatch` | Read `restoration.evidence[*].media`: `comparisons` (per element `matched` / `missing` / `extra` / `ambiguous`, the two positions and paused states at the reading both sides took), `recorded_unreachable_frames` / `restored_unreachable_frames` (a frame neither read reached: its media is unknown, so the step cannot be restored), `alignment` (`aligned`, `already_aligned`, `failed` with `rolled_back`, `not_restorable`, `unknown`; `null` under `media: none`). A `failed` seek beside `range_uncovered` misses for the same media URL means the recording never fetched those bytes. `comparisons: null` with a `detail` means no comparison was made (a source recorded before the field) |
+| A restored step fails `media_mismatch` | Read `restoration.evidence[*].media`: `comparisons` (per element `matched` / `missing` / `extra` / `ambiguous`, the two positions and paused states at the reading both sides took), `recorded_unreachable_frames` / `restored_unreachable_frames` (a frame neither read reached: its media is unknown, so the step cannot be restored), `alignment` (`aligned`, `already_aligned`, `failed` with `rolled_back`, `not_restorable`, `unknown`; `null` under `media: none`). A `failed` seek beside `range_uncovered` misses for the same media URL means the recording never fetched those bytes. `comparisons: null` with a `detail` means no comparison was made (a source recorded before the field). On a video site whose playback cannot be made the same offline, confirm the failures sit in media state or in the player's boxes (re-verify with the mask), then declare the video or search page in `configs/replay_rules/media_areas.yaml` with an evidence comment; never a non-video site |
 | A restored step shows `url_mismatch` where the two URLs differ only in one query parameter whose value changes on every replay | The page writes it into its own address (`history.replaceState`, client routing). Confirm in the source run's network archive that no request carries it (a document request that does makes it part of the navigation) and that it selects no content, then add a page-URL rule to `configs/replay_rules/page_urls.yaml` (`page_urls: [{id, scope: {host, path}, ignore_query}]`, architecture §4.14). The check's `restoration.evidence[*].url_ignored_query` / `url_rule_ids` then name what the comparison left out. Never list keyword, page, order, id or filter parameters |
 | A restored step right after a click shows `url_mismatch` against a URL from another tab | Compare the step's `focus_moved` in the source and the branch (any browser fragment of that step's observation): the branch's `new_tabs` differs from the recording's, or the tab opened later than the observation captured in one of the runs. Record, replay and branch keep one `new_tabs` |
 | An agent keeps clicking a link that opens a new tab and sees no change | The run has `new_tabs: stay`, or the tab never finished its first navigation within 10 s (a WARNING `the focus cannot move to tab ...`), or Chrome reported it opened without the user's activation (the tab is listed in `browser_meta.tabs`, the trace has no `focus_moved`) |

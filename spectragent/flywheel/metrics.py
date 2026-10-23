@@ -903,6 +903,10 @@ class Fidelity(_Model):
     media_mismatches: int = 0
     #: Media alignment records by outcome, over the verified steps.
     media_alignment: dict[str, int] = {}
+    #: Verified steps on a page the replay's media-area rules declare (the evidence
+    #: carries ``media_areas``): their media state was not judged and their screenshot
+    #: distance had the media areas masked out, so their verdicts rest on a declaration.
+    media_area_steps: int = 0
     #: Runs with a restoration check at every step from zero through the checkpoint.
     runs_reaching_checkpoint: Ratio
     #: Runs with complete checkpoint coverage and every check passed.
@@ -964,6 +968,7 @@ class _FidelityTally:
     media: int = 0
     media_mismatches: int = 0
     media_alignment: Counter[str] = field(default_factory=Counter)
+    media_area_steps: int = 0
     reaching: int = 0
     passing: int = 0
     failures: list[FirstFailure] = field(default_factory=list)
@@ -988,6 +993,7 @@ class _FidelityTally:
             media_coverage=ratio(self.media, self.verified, empty="no verified step"),
             media_mismatches=self.media_mismatches,
             media_alignment=_counts(self.media_alignment),
+            media_area_steps=self.media_area_steps,
             runs_reaching_checkpoint=ratio(self.reaching, self.runs, empty="no same-path run"),
             runs_passing=ratio(self.passing, self.runs, empty="no same-path run"),
             first_failures=sorted(self.failures, key=lambda item: item.run),
@@ -1050,7 +1056,7 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
         checked = [record for record in run.steps if record.restoration is not None]
         first: FirstFailure | None = None
         verified = ok = strict_ok = strict_compared = exact_ok = exact_compared = 0
-        urls = signatures = media = media_mismatches = 0
+        urls = signatures = media = media_mismatches = media_area_steps = 0
         alignment: Counter[str] = Counter()
         for record in checked:
             check = record.restoration
@@ -1062,6 +1068,7 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
                 any(e.media is not None and e.media.comparisons is not None for e in check.evidence)
             )
             media_mismatches += int("media_mismatch" in check.reasons)
+            media_area_steps += int(any(e.media_areas is not None for e in check.evidence))
             for item in check.evidence:
                 if item.media is not None:
                     alignment.update(a.outcome for a in item.media.alignment or [])
@@ -1111,6 +1118,7 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
             tally.media += media
             tally.media_mismatches += media_mismatches
             tally.media_alignment.update(alignment)
+            tally.media_area_steps += media_area_steps
             tally.reaching += int(reaching)
             if unreadable is not None:
                 tally.skipped[run.rel] = unreadable

@@ -6,9 +6,10 @@ Every rule declares response-sequence exhaustion and how a recorded request
 without a body is answered. File order never selects behavior, and all rule
 collections are immutable after parsing.
 
-A rule file may also hold page-URL rules (``page_urls``, ``page_urls.py``):
-they are frozen and digested with the request rules, but only restoration
-verification reads them.
+A rule file may also hold page-URL rules (``page_urls``, ``page_urls.py``)
+and media-area rules (``media_areas``, ``media_areas.py``): they are frozen
+and digested with the request rules, but only restoration verification
+reads them.
 """
 
 import fnmatch
@@ -29,6 +30,7 @@ from pydantic import (
     model_validator,
 )
 
+from spectragent.core.capabilities.browser.replay.media_areas import MediaAreaRule
 from spectragent.core.capabilities.browser.replay.page_urls import PageUrlRule
 
 #: The file suffix of a site rule.
@@ -279,21 +281,26 @@ class SiteRulesSnapshot(BaseModel):
 
 
 class RuleDocument(BaseModel):
-    """The only accepted YAML document shape: request rules, page-URL rules, or both.
+    """The only accepted YAML document shape: request rules, page-URL rules, media-area rules.
 
-    ``page_urls`` holds the page-URL rules restoration verification reads
-    (``page_urls.py``); request matching never reads them.
+    ``page_urls`` holds the page-URL rules (``page_urls.py``) and
+    ``media_areas`` the media-area rules (``media_areas.py``) restoration
+    verification reads; request matching never reads either. A file declares
+    at least one rule in one of the three sections.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rules: tuple[SiteRule, ...] = ()
     page_urls: tuple[PageUrlRule, ...] = ()
+    media_areas: tuple[MediaAreaRule, ...] = ()
 
     @model_validator(mode="after")
     def _declares_a_rule(self) -> "RuleDocument":
-        if not self.rules and not self.page_urls:
-            raise ValueError("a rule file declares at least one rule in rules or page_urls")
+        if not self.rules and not self.page_urls and not self.media_areas:
+            raise ValueError(
+                "a rule file declares at least one rule in rules, page_urls or media_areas"
+            )
         return self
 
 
@@ -301,14 +308,21 @@ class SiteRules:
     """An immutable set of rules, preserving the exact source read at load time."""
 
     def __init__(
-        self, rules: Sequence[SiteRule] = (), *, page_urls: Sequence[PageUrlRule] = ()
+        self,
+        rules: Sequence[SiteRule] = (),
+        *,
+        page_urls: Sequence[PageUrlRule] = (),
+        media_areas: Sequence[MediaAreaRule] = (),
     ) -> None:
         self._rules = tuple(rules)
         self._page_urls = tuple(page_urls)
+        self._media_areas = tuple(media_areas)
         self._validate_ids()
         document = (
-            RuleDocument(rules=self._rules, page_urls=self._page_urls)
-            if self._rules or self._page_urls
+            RuleDocument(
+                rules=self._rules, page_urls=self._page_urls, media_areas=self._media_areas
+            )
+            if self._rules or self._page_urls or self._media_areas
             else None
         )
         files: tuple[RuleFileSnapshot, ...] = ()
@@ -329,8 +343,12 @@ class SiteRules:
         )
 
     def _validate_ids(self) -> None:
-        """One identity space for request and page-URL rules, so a diagnostic names one rule."""
-        ids = [rule.id for rule in self._rules] + [rule.id for rule in self._page_urls]
+        """One identity space for request, page-URL and media-area rules, so a diagnostic names one rule."""
+        ids = (
+            [rule.id for rule in self._rules]
+            + [rule.id for rule in self._page_urls]
+            + [rule.id for rule in self._media_areas]
+        )
         repeated = sorted({identity for identity in ids if ids.count(identity) > 1})
         if repeated:
             raise SiteRuleError(f"duplicate replay rule ids: {repeated}")
@@ -339,6 +357,11 @@ class SiteRules:
     def page_urls(self) -> tuple[PageUrlRule, ...]:
         """The page-URL rules restoration verification applies (``page_urls.py``)."""
         return self._page_urls
+
+    @property
+    def media_areas(self) -> tuple[MediaAreaRule, ...]:
+        """The media-area rules restoration verification applies (``media_areas.py``)."""
+        return self._media_areas
 
     @property
     def sha256(self) -> str:
@@ -393,6 +416,7 @@ class SiteRules:
             raise SiteRuleError("replay rule snapshot contains duplicate file names")
         rules: list[SiteRule] = []
         page_urls: list[PageUrlRule] = []
+        media_areas: list[MediaAreaRule] = []
         listing: list[tuple[str, str]] = []
         for file in snapshot.files:
             digest = hashlib.sha256(file.text.encode("utf-8")).hexdigest()
@@ -402,9 +426,10 @@ class SiteRules:
             document = _parse_rules(file.origin, file.text)
             rules.extend(document.rules)
             page_urls.extend(document.page_urls)
+            media_areas.extend(document.media_areas)
         if _listing_digest(listing) != snapshot.sha256:
             raise SiteRuleError("replay rule snapshot: collection sha256 mismatch")
-        instance = cls(rules, page_urls=page_urls)
+        instance = cls(rules, page_urls=page_urls, media_areas=media_areas)
         instance._snapshot = snapshot
         return instance
 

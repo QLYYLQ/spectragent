@@ -31,19 +31,29 @@ from spectragent.core.capabilities.browser.dom.models import (
     DOMRect,
     DOMState,
 )
+from spectragent.core.capabilities.browser.media import (
+    MediaElementState,
+    MediaFrameState,
+    MediaReading,
+    MediaRect,
+    MediaState,
+)
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.capabilities.browser.replay.media_areas import MediaAreaRule
 from spectragent.core.capabilities.browser.replay.page_urls import PageScope, PageUrlRule
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, ReplayLogEntry
 from spectragent.core.capabilities.browser.restoration import (
+    MAX_MASKED_SHARE,
     TEXT_DEPTH_LIMIT,
     dhash,
     element_signature,
     hamming,
     measure,
+    media_measure,
     retarget_action,
     subtree_text,
 )
@@ -52,6 +62,7 @@ from spectragent.core.trace.encoding import decode_fragment, encode_fragment
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.failure import FragmentFailure
+from spectragent.schemas.restoration import RestorationEvidence
 from tests._helpers.dom_payloads import CROSS, by_id, clean, reference_page
 from tests._helpers.fragment_samples import FRAME_BUTTON_HANDLE, dom_page
 
@@ -515,6 +526,7 @@ class TestMeasure:
             "screenshot_distance": 0,
             "document_misses": 0,
             "media": None,
+            "media_areas": None,
         }
 
     def test_page_url_rules_leave_their_parameters_out_and_the_evidence_says_which(self) -> None:
@@ -627,11 +639,15 @@ def _diverged_document() -> ReplayLogEntry:
 
 
 def replaying_capability(
-    log: ReplayLog, page_urls: tuple[PageUrlRule, ...] = ()
+    log: ReplayLog,
+    page_urls: tuple[PageUrlRule, ...] = (),
+    media_areas: tuple[MediaAreaRule, ...] = (),
 ) -> BrowserCapability:
-    """A capability whose network source intercepts: only its replay log and page-URL rules are read."""
+    """A capability whose network source intercepts: only its replay log and page rules are read."""
     capability = BrowserCapability()
-    capability._replay_server = SimpleNamespace(log=log, page_urls=page_urls)  # type: ignore[assignment]
+    capability._replay_server = SimpleNamespace(  # type: ignore[assignment]
+        log=log, page_urls=page_urls, media_areas=media_areas
+    )
     return capability
 
 
@@ -727,6 +743,224 @@ class TestReasons:
             recorded_view(fragments), restored_view(fragments)
         )
         assert evidence.document_misses is None and evidence.capability_id == "browser"
+
+
+# ── media areas on a declared page ────────────────────────────────────
+
+#: A media-area rule of the replay's rule set: the play pages of ``video.test``.
+PLAY_PAGES = MediaAreaRule(id="play-media", scope=PageScope(host="video.test", path="/play/*"))
+PLAY_URL = "https://video.test/play/7"
+#: The image is an eighth of the 1280x720 viewport (160x90), so CSS boxes are scaled down.
+IMAGE_SIZE = (160, 90)
+#: The player: 640x360 CSS px at (160, 88), a quarter of the viewport.
+PLAYER = MediaRect(x=160, y=88, width=640, height=360)
+
+
+def page_image(*, player: int | None = 5, right_column_black: bool = False) -> bytes:
+    """The page (pattern 1) with the player's frame (pattern *player*, or black: not loaded)."""
+    page = Image.open(io.BytesIO(png(1, IMAGE_SIZE))).convert("RGB")
+    box = (20, 11, 100, 56)  # PLAYER in image pixels
+    if player is None:
+        page.paste((0, 0, 0), box)
+    else:
+        frame = Image.open(io.BytesIO(png(player, IMAGE_SIZE))).convert("RGB")
+        page.paste(frame.crop(box), box[:2])
+    if right_column_black:
+        page.paste((0, 0, 0), (110, 0, 160, 90))
+    buffer = io.BytesIO()
+    page.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def playing(rect: MediaRect = PLAYER, *, time: float = 41.0) -> MediaElementState:
+    reading = MediaReading(current_time=time, paused=False, seeking=False, ready_state=4)
+    return MediaElementState(
+        frame="main",
+        order=0,
+        tag="video",
+        rect=rect,
+        source_kind="blob",
+        before=reading,
+        after=reading,
+    )
+
+
+def media_state(
+    *elements: MediaElementState, frames: tuple[MediaFrameState, ...] = ()
+) -> MediaState:
+    return MediaState(
+        read_before="measured",
+        read_after="measured",
+        elements=list(elements),
+        unreachable_frames=list(frames),
+    )
+
+
+def video_page(image: bytes, media: MediaState | None, url: str = PLAY_URL) -> ScreenshotObs:
+    screenshot = shot(image)
+    screenshot.source_url = url
+    screenshot.media = media
+    return screenshot
+
+
+def media_pair(
+    recorded: ScreenshotObs, restored: ScreenshotObs, *rules: MediaAreaRule
+) -> tuple[Any, Any, Any]:
+    """The two observations as the restorer hands them over, and their measurement."""
+    before = observation(screenshot=through_trace(recorded))
+    after = observation(screenshot=restored)
+    evidence = measure(
+        before,
+        after,
+        capability_id="browser",
+        document_misses=0,
+        media=media_measure(before, after, tolerance_px=TOLERANCE, alignment=None),
+        media_areas=rules,
+    )
+    return before, after, evidence
+
+
+def judged(evidence: Any) -> Any:
+    return judge(
+        3, [evidence], [], verify="warn", screenshot_max_distance=5, media_time_tolerance_s=1.0
+    )
+
+
+class TestMediaAreas:
+    def test_a_difference_in_the_player_alone_passes_on_a_declared_page(self) -> None:
+        """The recorded video at 0:41; the restored player did not load offline."""
+        recorded = video_page(page_image(player=5), media_state(playing()))
+        restored = video_page(page_image(player=None), media_state(playing(time=3.0)))
+        _, _, undeclared = media_pair(recorded, restored)
+        assert judged(undeclared).reasons == ["media_mismatch", "screenshot_distance"]
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        assert judged(evidence).verdict == "ok"
+        areas = evidence.media_areas
+        assert areas is not None
+        assert areas.unmasked_distance == undeclared.screenshot_distance > 5
+        assert evidence.screenshot_distance == areas.masked_distance == 0
+        assert evidence.media == undeclared.media, "the media is still measured and kept"
+
+    def test_a_difference_outside_the_player_still_fails(self) -> None:
+        recorded = video_page(page_image(player=5), media_state(playing()))
+        restored = video_page(
+            page_image(player=None, right_column_black=True), media_state(playing(time=3.0))
+        )
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        assert evidence.media_areas is not None and evidence.media_areas.mask_applied
+        assert evidence.screenshot_distance is not None and evidence.screenshot_distance > 5
+        assert judged(evidence).reasons == ["screenshot_distance"], "media is not judged"
+
+    @pytest.mark.parametrize(
+        "rules",
+        [
+            (),
+            (MediaAreaRule(id="other", scope=PageScope(host="other.test")),),
+            (MediaAreaRule(id="home", scope=PageScope(host="video.test", path="/")),),
+        ],
+    )
+    def test_an_undeclared_page_is_measured_and_judged_as_before(
+        self, rules: tuple[MediaAreaRule, ...]
+    ) -> None:
+        recorded = video_page(page_image(player=5), media_state(playing()))
+        restored = video_page(page_image(player=None), media_state(playing(time=3.0)))
+        before, after, evidence = media_pair(recorded, restored, *rules)
+        assert evidence.media_areas is None
+        recorded_hash = dhash(before.screenshot.image_bytes)
+        restored_hash = dhash(after.screenshot.image_bytes)
+        assert recorded_hash is not None and restored_hash is not None
+        assert evidence.screenshot_distance == hamming(recorded_hash, restored_hash)
+        assert judged(evidence).reasons == ["media_mismatch", "screenshot_distance"]
+
+    def test_both_urls_must_be_in_the_scope(self) -> None:
+        recorded = video_page(page_image(player=5), media_state(playing()))
+        restored = video_page(
+            page_image(player=None), media_state(playing()), url="https://video.test/home"
+        )
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        assert evidence.media_areas is None
+
+    def test_the_evidence_names_the_rules_the_boxes_and_the_share_masked(self) -> None:
+        offscreen = MediaRect(x=0, y=900, width=320, height=180)
+        recorded = video_page(
+            page_image(player=5),
+            media_state(playing(), playing(offscreen).model_copy(update={"order": 1})),
+        )
+        clipped = MediaRect(x=-40, y=600, width=200, height=200)
+        restored = video_page(page_image(player=None), media_state(playing(clipped)))
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        areas = evidence.media_areas
+        assert areas is not None
+        assert areas.rule_ids == ["play-media"]
+        boxes = [(a.side, a.kind, a.element, a.x, a.y, a.width, a.height) for a in areas.areas]
+        assert boxes == [
+            ("recorded", "media_element", "main#0 video", 160, 88, 640, 360),
+            ("restored", "media_element", "main#0 video", 0, 600, 160, 120),
+        ], "boxes are clipped to the viewport; one wholly outside it masks nothing"
+        assert areas.masked_share == pytest.approx((640 * 360 + 160 * 120) / (1280 * 720), abs=0.01)
+        assert areas.mask_applied and areas.detail == ""
+        assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
+
+    def test_a_player_frame_the_media_read_could_not_reach_is_masked_too(self) -> None:
+        """The player in a frame inside a shadow root, recorded; offline it never loaded."""
+        frame = MediaFrameState(frame="main/unplaced-0", rect=PLAYER)
+        recorded = video_page(page_image(player=5), media_state(frames=(frame,)))
+        restored = video_page(page_image(player=None), media_state())
+        _, _, undeclared = media_pair(recorded, restored)
+        assert judged(undeclared).reasons == ["media_mismatch", "screenshot_distance"]
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        assert evidence.media_areas is not None
+        assert [(a.kind, a.element) for a in evidence.media_areas.areas] == [
+            ("unreachable_frame", "main/unplaced-0")
+        ]
+        assert judged(evidence).verdict == "ok"
+
+    def test_past_the_share_limit_the_whole_images_are_compared(self) -> None:
+        whole = MediaRect(x=0, y=0, width=1280, height=720)
+        assert MAX_MASKED_SHARE < 1
+        recorded = video_page(page_image(player=5), media_state(playing(whole)))
+        restored = video_page(page_image(player=None), media_state(playing(whole)))
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        areas = evidence.media_areas
+        assert areas is not None and areas.masked_share == 1.0
+        assert not areas.mask_applied and areas.masked_distance == 0
+        assert evidence.screenshot_distance == areas.unmasked_distance
+        assert "the screenshot distance is the whole images' one" in areas.detail
+        assert judged(evidence).reasons == ["screenshot_distance"], "never a pass by a blank image"
+
+    def test_a_side_without_media_state_masks_the_other_sides_boxes_and_says_so(self) -> None:
+        recorded = video_page(page_image(player=5), media_state(playing()))
+        restored = video_page(page_image(player=None), None)
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        areas = evidence.media_areas
+        assert areas is not None and [a.side for a in areas.areas] == ["recorded"]
+        assert "the restored screenshot carries no media state" in areas.detail
+        assert evidence.screenshot_distance == 0
+
+    def test_without_both_images_nothing_is_compared(self) -> None:
+        recorded = video_page(page_image(player=5), media_state(playing()))
+        restored = video_page(b"", media_state(playing()))
+        restored.image_bytes = None
+        _, _, evidence = media_pair(recorded, restored, PLAY_PAGES)
+        areas = evidence.media_areas
+        assert areas is not None and areas.masked_share is None and not areas.mask_applied
+        assert evidence.screenshot_distance is None
+        assert "no pair of decodable screenshots" in areas.detail
+
+    async def test_the_replays_media_area_rules_decide_and_a_live_network_has_none(self) -> None:
+        recorded = observation(
+            screenshot=through_trace(video_page(page_image(player=5), media_state(playing())))
+        )
+        restored = observation(
+            screenshot=video_page(page_image(player=None), media_state(playing(time=3.0)))
+        )
+        replaying = replaying_capability(ReplayLog(), media_areas=(PLAY_PAGES,))
+        check = await verdict(replaying, recorded, restored)
+        assert check.verdict == "ok"
+        assert check.evidence[0].media_areas is not None
+        live = await verdict(BrowserCapability(), recorded, restored)
+        assert live.reasons == ["media_mismatch", "screenshot_distance"]
+        assert live.evidence[0].media_areas is None
 
 
 # ── the capability ────────────────────────────────────────────────────

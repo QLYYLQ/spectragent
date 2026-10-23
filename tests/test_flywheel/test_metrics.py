@@ -586,6 +586,43 @@ class TestSamePathFidelity:
         assert blocked.media_mismatches == 0 and blocked.media_alignment == {}
         assert found.overall.media_coverage.numerator == 6
 
+    def test_steps_under_media_area_rules_are_counted_by_site(self, chain: ChainRuns) -> None:
+        """A verdict that rests on a media-area declaration is visible, not just a higher rate."""
+        from spectragent.schemas.restoration import MediaAreaEvidence
+
+        assert same_path_fidelity(chain).overall.media_area_steps == 0
+        measured = open_chain(chain.layout)
+        declared = MediaAreaEvidence(
+            rule_ids=["shop-media"], masked_share=0.25, unmasked_distance=9, masked_distance=0
+        )
+        for run in measured.role("same_path").runs:
+            if run.site != "shop.test":
+                continue
+            run.steps = tuple(
+                record.model_copy(
+                    update={
+                        "restoration": record.restoration.model_copy(
+                            update={
+                                "evidence": [
+                                    e.model_copy(update={"media_areas": declared})
+                                    for e in record.restoration.evidence
+                                ]
+                            }
+                        )
+                    }
+                )
+                if record.restoration is not None
+                else record
+                for record in run.steps
+            )
+        found = same_path_fidelity(measured)
+        assert found.by_site["shop.test"].media_area_steps == 6
+        assert found.by_site["blocked.test"].media_area_steps == 0
+        assert found.overall.media_area_steps == 6
+        assert found.overall.restorer == same_path_fidelity(chain).overall.restorer, (
+            "counting the declaration does not change the verdicts"
+        )
+
     def test_errored_runs_count_either_ledger(self, chain: ChainRuns, tmp_path: Path) -> None:
         """Not ending cleanly: an incomplete or unclosed trace, or an agent in error / timeout / veto."""
         assert same_path_fidelity(chain).overall.errored_runs == 0

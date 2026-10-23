@@ -380,3 +380,48 @@ def test_a_url_equal_only_by_page_url_rules_is_still_a_measured_difference():
     same = {**evidence, "restored_url": evidence["recorded_url"]}
     gap = restoration_gap({"restoration": {"verdict": "ok", "evidence": [same]}})
     assert gap is not None and gap["status"] == "no_measured_difference"
+
+
+def test_on_a_declared_page_the_whole_images_distance_and_the_media_are_still_shown():
+    """The restorer judged the masked distance and not the media; the view shows both facts."""
+    evidence = {
+        "capability_id": "browser",
+        "url_match": True,
+        "recorded_url": "https://video.test/play/7",
+        "restored_url": "https://video.test/play/7",
+        "signature_match": True,
+        "screenshot_distance": 0,
+        "document_misses": 0,
+        "media": {
+            "comparisons": [{"element": "main#0 video", "correspondence": "missing"}],
+            "recorded_unreachable_frames": [],
+            "restored_unreachable_frames": [],
+        },
+        "media_areas": {
+            "rule_ids": ["play-media"],
+            "areas": [],
+            "masked_share": 0.37,
+            "unmasked_distance": 23,
+            "masked_distance": 0,
+            "mask_applied": True,
+        },
+    }
+    gap = restoration_gap({"restoration": {"verdict": "ok", "evidence": [evidence]}})
+    assert gap is not None
+    assert gap["differences"] == [
+        "browser: screenshot dHash distance 23 over the whole image, 0 with the media areas "
+        "masked (play-media; 37% of the image)",
+        "browser: media main#0 video missing (not judged: media-area rules play-media)",
+    ]
+    too_much = {
+        **evidence,
+        "screenshot_distance": 23,
+        "media": None,
+        "media_areas": {**evidence["media_areas"], "masked_share": 0.9, "mask_applied": False},
+    }
+    gap = restoration_gap({"restoration": {"verdict": "warn", "evidence": [too_much]}})
+    assert gap is not None
+    assert gap["differences"] == [
+        "browser: screenshot dHash distance 23 over the whole image "
+        "(media areas of play-media cover 90% of the image, too much to mask)"
+    ]

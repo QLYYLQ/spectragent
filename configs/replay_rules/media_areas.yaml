@@ -1,0 +1,85 @@
+# Media-area rules: video and search pages whose media restoration verification does not
+# compare. On a page a rule declares (its scope matches both the recorded and the restored
+# page URL), the media playback state is measured and kept but not judged (no
+# media_mismatch), and the boxes the two screenshots' media facts measured (every <video> /
+# <audio> element, and every embedded frame the media read could not reach) are masked out
+# of both images before the screenshot distance; past 75% of the image masked the whole
+# images are compared instead (docs/architecture_design.md §4.14 "恢复：重定位与校验").
+# Recording and media alignment do not change, and request matching never reads this
+# section. Every other difference still counts: URL, element signatures, document misses,
+# action outcomes and the pixels outside the masked boxes.
+# Evidence: the 214 same-task forks of lookahead_15task_freeze_20261023 (recordings named
+# below). Their playback could not be made identical offline: encrypted stream keys,
+# autoplay previews that start at another moment, players that do not load offline, and
+# stacked <video> elements that trade places. "Passed a -> b" counts their restoration
+# checks on the page, re-verified from the saved observations with main's rules and then
+# with this file added; README.md has the replayed before/after sample.
+media_areas:
+# Tencent Video play pages (v.qq.com/x/cover/...), recordings 128_df683952, 263_0f164596 and
+# 28_c98c13b4. The player sits in a frame inside a shadow root that the media read cannot
+# reach (main/unplaced-0, 778x438 at 60,84: 37% of the viewport), so every check failed
+# media_mismatch; offline the player shows a network error or does not load. 400 of the 454
+# checks also failed on screenshot distance, 40 still do once the frame is masked (the
+# rest of the page differs). Passed 0 -> 414.
+- id: tencent-video-play-media
+  scope:
+    host: v.qq.com
+    path: /x/cover/*
+# Tencent Video search results (v.qq.com/x/search/), the same recordings. The recorded page
+# holds two zero-size preview <video> elements the restored one does not (missing): 62 of
+# 106 checks failed media_mismatch on them. The 44 screenshot failures are result lists
+# still loading on one side, outside any media box, and still fail. Passed 2 -> 62.
+- id: tencent-video-search-media
+  scope:
+    host: v.qq.com
+    path: /x/search/*
+# iQIYI play page (www.iqiyi.com/v_....html), recording 208_a35d7d11. The player <video> is
+# 940x656 (67% of the viewport), with a zero-size second <video> that is matched one way on
+# one side and the other way on the other. 19 of 78 checks failed on media and 19 on
+# screenshot distance; none does once the player is masked. Passed 46 -> 78.
+- id: iqiyi-play-media
+  scope:
+    host: www.iqiyi.com
+    path: /v_*.html
+# iQIYI search results (www.iqiyi.com/search), recordings 108_aa3a5b75 and 208_a35d7d11. The
+# top result plays a 580x235 preview <video> on one side only (missing / extra): all 56
+# checks failed media_mismatch. The 32 screenshot failures are another query or another
+# result list, outside the preview, and still fail. Passed 0 -> 24.
+- id: iqiyi-search-media
+  scope:
+    host: www.iqiyi.com
+    path: /search
+# IGN review articles (www.ign.com/articles/...-review), recordings 25_9605d362
+# (elden-ring-review) and 125_2fb0211b (baldurs-gate-3-review). The article opens with the
+# video review player (1217x685), beside hidden and off-screen players and empty ad frames
+# the media read cannot reach: all 236 checks failed media_mismatch (ambiguous, extra or
+# missing players), 152 also on screenshot distance; 78 still do once the players are
+# masked, pages scrolled apart among them. Passed 0 -> 158.
+- id: ign-review-media
+  scope:
+    host: www.ign.com
+    path: /articles/*-review
+# IGN search results (www.ign.com/search), recordings 155_c8bf3bc0, 25_9605d362 and
+# 125_2fb0211b. A row of six vertical video previews (120x213 each) and up to 32 empty ad
+# frames the media read cannot reach: 68 of 218 checks failed media_mismatch. The 26
+# screenshot failures lie outside them and still fail. Passed 138 -> 192.
+- id: ign-search-media
+  scope:
+    host: www.ign.com
+    path: /search
+# Bilibili video pages (www.bilibili.com/video/BV...), recordings 118_180a3f31, 158_f5a61bf9
+# and 6_18b718db. The player <video> is 732x412 (33% of the viewport) and is fed by
+# script (blob:) at another position offline: 10 of 46 checks failed on media, 22 on
+# screenshot distance; 8 still do once the player is masked (BV1CGRTBfEo2 still loading on
+# one side). Passed 24 -> 34.
+- id: bilibili-video-media
+  scope:
+    host: www.bilibili.com
+    path: /video/*
+# Bilibili search results (search.bilibili.com), recordings 118_180a3f31 and 158_f5a61bf9.
+# Result cards play hover previews (<video>, up to 6% of the viewport) on one side only:
+# 14 of 256 checks failed media_mismatch. The 16 screenshot failures lie outside them and
+# still fail. Passed 226 -> 240.
+- id: bilibili-search-media
+  scope:
+    host: search.bilibili.com

@@ -5,7 +5,8 @@ Rules for offline replay (`network_source: {source_id: archive}`), described in
 select this directory with `matcher: {site_rules: configs/replay_rules}`.
 
 Every `*.yaml` file contains a `rules` list of request rules, a `page_urls` list of
-page-URL rules (see "Page URLs in restoration" below), or both. Filenames organize the evidence;
+page-URL rules (see "Page URLs in restoration" below), a `media_areas` list of media-area
+rules (see "Media areas in restoration" below), or any of them together. Filenames organize the evidence;
 they do not select a host or imply a domain suffix. Each rule declares its own
 scope, identity, priority, response exhaustion policy and its policy for a
 recorded request without a body. All files form one rule set.
@@ -409,6 +410,64 @@ checkpoint verdicts, before → after: Bilibili 0 → 4 of 5 (`118_180a3f31` at 
 21, 25 and 29; `158_f5a61bf9` at step 9 still fails on media), Tonghuashun 0 → 2 of 2
 (`44_5b851f00` and `134_d7b73ce7` at step 29). Over those seven forks the passing checks
 rose from 110 to 148 of 166, and no check failed `url_mismatch` any more.
+
+## Media areas in restoration
+
+On video sites the playback of a recording and of its offline replay can rarely be made
+the same: stream keys are encrypted per session, autoplay previews start at another
+moment, a player does not load offline, and stacked `<video>` elements trade places.
+Restoration verification then fails with `media_mismatch` and with a screenshot distance
+that sits in the player, although the rest of the page is the same. A `media_areas` rule
+declares such a page. Recording is unchanged (videos keep playing, so the data stays
+realistic), and so is media alignment (`media: align`). When a branch or same-path replay
+verifies a restored observation of a declared page:
+
+1. the media playback state is still measured and kept in `restoration.evidence[*].media`,
+   but the restorer does not judge it: no `media_mismatch` from comparisons, unreachable
+   frames or alignment outcomes;
+2. the boxes both screenshots' media facts measured are masked out of both images before
+   the screenshot distance: every `<video>` / `<audio>` element and every embedded frame
+   whose own media read did not answer (what it plays is unknown; Tencent Video's player is
+   such a frame). The mask is the union of both sides' boxes, clipped to the viewport;
+3. past 75% of the image masked (`MAX_MASKED_SHARE`), the rest says too little about the
+   page: the mask is not applied and the whole images are compared, as on an undeclared
+   page, never a pass by a nearly blank image;
+4. the check's evidence gains `media_areas`: the rules (`rule_ids`), every masked box
+   (`areas`: side, `media_element` or `unreachable_frame`, its name and box in CSS pixels),
+   the share of the image masked (`masked_share`), the distance over the whole images
+   (`unmasked_distance`) and after masking (`masked_distance`), and `mask_applied`.
+
+Everything else still counts: URL, element signatures, document misses, action outcomes and
+every pixel outside the masked boxes. A player drawn on a `<canvas>` has no box in the media
+facts and is not masked. A run with `network_source: live` has no rule set.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `id` | string | Rule identity, unique within the whole set (request and page-URL rules included). |
+| `scope.host` | string | Required host glob, matched like a page-URL rule's; never implies subdomains. |
+| `scope.path` | string or null | Path glob; null covers every path of the host. |
+
+A rule applies when its scope matches both page URLs. Declare only video and search pages
+whose checks the recorded evidence shows failing on media state or on a screenshot distance
+concentrated in player areas; never a site that is not a video site. Each rule carries a
+comment naming the site, why and the evidence run.
+
+`media_areas.yaml` holds the published rules: Tencent Video's play and search pages,
+iQIYI's play and search pages, IGN's review articles and search page, Bilibili's video
+pages and search host. They were written on 2026-10-23 from the forks of
+`lookahead_15task_freeze_20261023`. Re-verifying the saved observations of all 334 forks
+with this file added (same observations, new measurement and verdict), the checkpoint
+checks that passed went, before → after: Tencent Video 0 → 52 of 70, IGN 22 → 40 of 70,
+iQIYI 31 → 33 of 68 (most of its forks restore pages of other sites: Mango TV and a game
+advertisement), Bilibili 34 → 38 of 54, Tonghuashun unchanged at 66 of 72; no check that
+passed before failed after. Fourteen of the forks were replayed again with the same branch
+configuration, once with main's rules and once with this file added. Restorer `ok` checks,
+before → after: Tencent Video 0 → 16 of 30 (checkpoints 0 → 3 of 3), IGN 13 → 26 of 40
+(0 → 3 of 4), iQIYI 1 → 5 of 16 (1 → 1 of 4), Bilibili 19 → 21 of 26 (0 → 2 of 3). The
+masked share was at most 37% on Tencent Video, 61% on IGN, 67% on iQIYI and 33% on
+Bilibili; every mask was applied. The checks that still fail differ outside the media
+boxes (pages still loading, scrolled apart, other result lists) or on undeclared pages
+(front pages, other sites).
 
 ## Frozen versions and offline evidence
 

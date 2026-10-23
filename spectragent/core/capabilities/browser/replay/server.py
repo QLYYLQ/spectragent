@@ -69,6 +69,7 @@ from spectragent.core.capabilities.browser.replay.matcher import (
     MatcherConfig,
     MatchResult,
 )
+from spectragent.core.capabilities.browser.replay.media_areas import MediaAreaRule
 from spectragent.core.capabilities.browser.replay.miss_policy import (
     MissDecision,
     MissPolicyProtocol,
@@ -569,6 +570,11 @@ class ReplayServer(RecorderParticipantBase):
     def page_urls(self) -> tuple[PageUrlRule, ...]:
         """The frozen rule set's page-URL rules: restoration verification reads them, matching never."""
         return self.recorded.rules.page_urls
+
+    @property
+    def media_areas(self) -> tuple[MediaAreaRule, ...]:
+        """The frozen rule set's media-area rules: restoration verification reads them, matching never."""
+        return self.recorded.rules.media_areas
 
     def fingerprint(self) -> dict[str, Any]:
         """The ``network_source`` block of this run's environment fingerprint."""

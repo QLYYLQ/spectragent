@@ -17,9 +17,12 @@ same rules (``docs/architecture_design.md`` §5.3 ``RestorationCheck``):
   media tolerance or differs in its paused state; an embedded frame's media
   could not be read; or the media alignment before the capture failed or
   could not be done
-  (:func:`media_failed`);
+  (:func:`media_failed`) — never on a page a site's media-area rules
+  declare (the evidence carries ``media_areas``): there the media is kept as
+  evidence but not judged;
 - ``screenshot_distance`` — the screenshots are further apart than the
-  threshold.
+  threshold (on a declared page, the distance the capability measured with
+  the media areas masked out).
 
 A measure that is ``None`` (not taken) never takes part. The reasons are
 reported in :data:`~spectragent.schemas.restoration.REASON_ORDER`.
@@ -94,8 +97,10 @@ def failed_reasons(
             failed.add("url_mismatch")
         if item.signature_match is False:
             failed.add("signature_mismatch")
-        if item.media is not None and media_failed(
-            item.media, time_tolerance_s=media_time_tolerance_s
+        if (
+            item.media is not None
+            and item.media_areas is None
+            and media_failed(item.media, time_tolerance_s=media_time_tolerance_s)
         ):
             failed.add("media_mismatch")
         if (
