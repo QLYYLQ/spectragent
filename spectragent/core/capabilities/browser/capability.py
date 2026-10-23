@@ -1535,7 +1535,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         (:func:`~spectragent.core.capabilities.browser.restoration.retarget_action`).
         Computes only — the restorer executes the answer through ``guarded_act``.
         """
-        return retarget_action(action, recorded, restored, tolerance_px=self.retarget_tolerance_px)
+        return retarget_action(
+            action,
+            recorded,
+            restored,
+            actions=self._actions_by_name,
+            tolerance_px=self.retarget_tolerance_px,
+        )
 
     async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
         """How far the restored observation is from the recorded one.

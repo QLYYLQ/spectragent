@@ -333,9 +333,6 @@ class TestCompletedRunTrace:
         assert recorded == ["trace_e2e_cap.click", "trace_e2e_cap.done"]
         assert all("." in name for name in recorded), recorded
 
-        assert t.result is not None
-        assert [entry.split("(")[0] for entry in t.result.action_history] == recorded
-
     async def test_tokens_recorded_despite_hook_order(self, trace):
         t, _ = trace
         assert t.result is not None

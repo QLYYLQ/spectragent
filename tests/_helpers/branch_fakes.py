@@ -44,6 +44,7 @@ from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
@@ -228,13 +229,13 @@ class BranchFakeAgent:
     def prepare(
         self,
         task: str,
-        action_descriptors: list[ActionDescriptor],
+        action_space: ActionSpace,
         *,
         execution_limits: ExecutionLimits,
     ) -> list[Any]:
         max_actions_per_step = execution_limits.max_actions_per_step
         self.parsed_log = []
-        names = ", ".join(sorted(d.name for d in action_descriptors))
+        names = ", ".join(sorted(d.name for d in action_space.descriptors))
         return [
             SystemMessage(
                 content=(

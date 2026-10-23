@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, Self, TypeVar
 
 from spectragent.core.loops.identity import RunIdentity
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 
 if TYPE_CHECKING:
     from spectragent.agents.memory.base import BaseMemoryManager
@@ -56,13 +57,15 @@ class LoopRun:
     llm: BaseChatModel
     memory: BaseMemoryManager
     act_fn: Callable[[Action], Awaitable[ActionResult]]
+    #: What ``act_fn`` executes: the run's effective action space, the one
+    #: the prompt advertises (``AgentRuntime.action_space``).
+    action_space: ActionSpace
     negotiated_obs: Any
     recorder: StepSink | None
     identity: RunIdentity
     step_executor: StepExecutor[Self]
     is_branch: bool = False
     step_records: list[StepRecord] = field(default_factory=list)
-    action_history: list[str] = field(default_factory=list)
     prev_step_record: StepRecord | None = None
     last_answer: str = ""
 
@@ -84,6 +87,7 @@ class LoopRun:
             llm=ctx["llm"],
             memory=ctx["memory"],
             act_fn=ctx["act_fn"],
+            action_space=ctx["action_space"],
             negotiated_obs=ctx.get("negotiated_obs"),
             recorder=ctx.get("step_recorder"),
             identity=ctx.get("identity", RunIdentity()),

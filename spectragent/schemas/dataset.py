@@ -25,8 +25,11 @@ from spectragent.schemas.observation.geometry import CoordinateSpace
 #: The dataset format this build writes and reads (``manifest.json``'s
 #: ``format``). 2: decontamination is an explicit benchmark list
 #: (``decontamination.decontaminated``), and the leak scan counts only the
-#: samples it compared (``leak_scan.compared``).
-DATASET_FORMAT: Final = "af-sft-2"
+#: samples it compared (``leak_scan.compared``). 3: a sample's
+#: ``teacher_actions`` are the executed actions as recorded, and it carries no
+#: ``dropped_params``: an action's params are validated against its ``Params``
+#: before it runs, so there is nothing undeclared to drop.
+DATASET_FORMAT: Final = "af-sft-3"
 
 
 class _Part(BaseModel):

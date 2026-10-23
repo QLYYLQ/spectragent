@@ -155,14 +155,8 @@ def _observation(runtime: AgentRuntime, dpr: int) -> Any:
 
 
 def _point_pairs(descriptor: ActionDescriptor) -> list[tuple[str, str]]:
-    properties: Mapping[str, Any] = (descriptor.params_schema or {}).get("properties") or {}
-    return [
-        (name, name[:-2] + "_y")
-        for name in sorted(properties)
-        if name.endswith("_x")
-        and properties[name].get("type") == "integer"
-        and (properties.get(name[:-2] + "_y") or {}).get("type") == "integer"
-    ]
+    """The descriptor's own statement of which params are a point."""
+    return list(descriptor.point_params)
 
 
 def _string_params(descriptor: ActionDescriptor) -> list[str]:

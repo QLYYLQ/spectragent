@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.actions.params import RequiresFragment
+from spectragent.core.actions.params import AddressesElement
 from spectragent.core.capabilities.browser.actions._common import (
     ElementRef,
     effect_from,
@@ -69,7 +69,7 @@ class ScrollAction(SettleableAction, ActionBase):
         amount: int | None = None
         index: Annotated[
             int | None,
-            RequiresFragment("browser.dom"),
+            AddressesElement("browser.dom"),
             PydanticField(description="scroll inside specific element"),
         ] = None
 

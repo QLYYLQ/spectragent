@@ -13,7 +13,11 @@ that says what verbs exist. The parser reads it to translate model output
 into Actions, and the system prompt is *generated* from it, intersected
 with the actions this run actually negotiated. So the prompt cannot
 advertise a verb ``guarded_act`` would reject, and cannot teach a
-parameter the action does not read.
+parameter the action does not read. Which run action a verb means is the
+run's bindings' answer (``core/action_guard.py::executed_name``), and which
+of its params are a point is that action's descriptor's
+(``ActionDescriptor.point_params``): the table states neither a provider nor
+a point.
 
 **Three contracts the prompt states and the parser holds the model to.**
 
@@ -84,11 +88,11 @@ from spectragent.agents._capture_state import (
 )
 from spectragent.agents._feedback_points import (
     StepGrids,
+    action_points,
     grid_point_writer,
     inside,
     is_number,
     params_on_grid,
-    registered_point_params,
     stated_points,
 )
 from spectragent.agents._input_platform import render_computer_use_platform
@@ -97,6 +101,7 @@ from spectragent.agents.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
+from spectragent.core.action_guard import executed_descriptor, executed_name
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -108,6 +113,7 @@ from spectragent.core.llm.messages import (
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
     PointGrid,
@@ -137,9 +143,9 @@ class _Verb:
             the verb reads appears in it, so a model that follows it can
             reach every parameter :attr:`fills` names.
         fills: The action params :attr:`to_params` can produce. The ones
-            not in :attr:`points` are rendered into the prompt with the
-            descriptor's own type text, so the model sees what its
-            arguments turn into.
+            that are not a point (the bound descriptor's ``point_params``)
+            are rendered into the prompt with the descriptor's own type
+            text, so the model sees what its arguments turn into.
             ``tests/test_agents/test_ui_tars_prompt_action_vocabulary.py``
             holds this to the descriptor.
         to_params: Translates the verb's kwargs into the action's params.
@@ -151,10 +157,6 @@ class _Verb:
             same thing (``start_box`` for ``point``). Anything else is
             refused rather than dropped — ``click(button='right')`` run as
             a left click is an action the model never asked for.
-        points: The ``(x, y)`` param pairs that :attr:`to_params` leaves on
-            the model's grid. :meth:`UITarsAgent._action_for` converts each
-            pair into viewport units before the action exists, so nothing
-            downstream ever sees the model's grid.
         write: The inverse of :attr:`to_params`: the call text for the
             action's params, its points already on the model's grid
             (:meth:`UITarsAgent.format_react_output` converts them). Raises
@@ -168,7 +170,6 @@ class _Verb:
     to_params: Callable[[Mapping[str, Any]], dict[str, Any]]
     accepts: tuple[str, ...]
     write: Callable[[Mapping[str, Any]], str]
-    points: tuple[tuple[str, str], ...] = ()
 
 
 #: Argument names a UI-TARS-family model uses for the same point. The
@@ -504,7 +505,6 @@ _VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
             to_params=_click_params,
             accepts=_POINT_ARGUMENTS["point"],
             write=_write_click,
-            points=(("coordinate_x", "coordinate_y"),),
         ),
         "type": _Verb(
             action="type_coordinate",
@@ -513,7 +513,6 @@ _VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
             to_params=_type_params,
             accepts=("content", *_POINT_ARGUMENTS["point"]),
             write=_write_type,
-            points=(("coordinate_x", "coordinate_y"),),
         ),
         "scroll": _Verb(
             action="scroll",
@@ -538,7 +537,6 @@ _VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
             to_params=_drag_params,
             accepts=(*_POINT_ARGUMENTS["start_point"], *_POINT_ARGUMENTS["end_point"]),
             write=_write_drag,
-            points=(("start_x", "start_y"), ("end_x", "end_y")),
         ),
         "wait": _Verb(
             action="wait",
@@ -558,16 +556,6 @@ _VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
         ),
     }
 )
-
-#: Action id → the verb that means it. Used to render the prompt from the
-#: *negotiated* descriptors rather than from a hand-written list.
-_ACTION_TO_VERB: Mapping[str, str] = MappingProxyType(
-    {v.action: name for name, v in _VERB_TABLE.items()}
-)
-
-
-def _local_id(name: str) -> str:
-    return name.rsplit(".", 1)[-1]
 
 
 # ── The coordinate contract ───────────────────────────────────
@@ -751,15 +739,15 @@ class UITarsAgent(AgentBase):
     # ── internal state ─────────────────────────────────────────
     # Task text belongs to the prepare seed. Platform is measured by the
     # environment and becomes a system message on the first observation.
-    _action_descriptors: list[ActionDescriptor] = field(
-        default_factory=list, init=False, repr=False
-    )
-    #: The verbs this run can execute: the table narrowed to the
-    #: negotiated actions by ``prepare()``. The whole table until then,
-    #: which only a hand-driven agent ever parses with.
-    _verbs: dict[str, _Verb] = field(
-        default_factory=lambda: dict(_VERB_TABLE), init=False, repr=False
-    )
+    #: The run's effective action space, handed over by ``prepare()``: its
+    #: descriptors are what the prompt teaches, its bindings say which run
+    #: action a verb means.
+    _action_space: ActionSpace = field(default_factory=ActionSpace, init=False, repr=False)
+    #: The verbs this run can execute, each with the descriptor of the run
+    #: action it means: the table narrowed to the actions the run's bindings
+    #: resolve its verbs to, by ``prepare()``. None until then.
+    _verbs: dict[str, _Verb] = field(default_factory=dict, init=False, repr=False)
+    _bound: dict[str, ActionDescriptor] = field(default_factory=dict, init=False, repr=False)
     #: The grid over the screenshot attached to the *current* step's
     #: prompt, set by ``build_react_prompt`` and read by
     #: ``parse_react_output`` — the Loop calls the two in that order within
@@ -804,7 +792,7 @@ class UITarsAgent(AgentBase):
         return self._prompt_snapshot
 
     def get_action_space(self) -> list[ActionDescriptor]:
-        return list(self._action_descriptors)
+        return list(self._action_space.descriptors)
 
     # ── Negotiation ────────────────────────────────────────────
 
@@ -820,7 +808,7 @@ class UITarsAgent(AgentBase):
     def prepare(
         self,
         task: str,
-        action_descriptors: list[ActionDescriptor],
+        action_space: ActionSpace,
         execution_limits: ExecutionLimits,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
@@ -829,22 +817,29 @@ class UITarsAgent(AgentBase):
         platform is another system message, reset here for each execution
         or independently rendered training segment.
 
+        *action_space* is the run's effective action space
+        (``AgentRuntime.action_space``). A verb is offered when the run's
+        bindings resolve its action (``executed_descriptor``): a short name
+        two capabilities offer binds to neither, and its verb is not taught.
+
         ``max_actions_per_step`` comes from the Loop, which is what
         actually truncates; the prompt has to promise exactly that.
         """
         max_actions_per_step = execution_limits.max_actions_per_step
         if max_actions_per_step is None:
             raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
-        self._action_descriptors = list(action_descriptors)
-        negotiated = {_local_id(d.name) for d in self._action_descriptors}
-        self._verbs = {
-            name: verb for name, verb in _VERB_TABLE.items() if verb.action in negotiated
+        self._action_space = action_space
+        bound = {
+            name: executed_descriptor(action_space, verb.action)
+            for name, verb in _VERB_TABLE.items()
         }
+        self._bound = {name: d for name, d in bound.items() if d is not None}
+        self._verbs = {name: _VERB_TABLE[name] for name in self._bound}
         self._grid = None
         self._step_grids.clear()
         self._input_platform_text = None
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
-            task, self._action_descriptors, max_actions_per_step
+            task, max_actions_per_step
         )
         # cache=True: static-prefix breakpoint — see BrowserUseAgent for why it
         # is kept alongside the per-step one.
@@ -1139,42 +1134,40 @@ class UITarsAgent(AgentBase):
     def _point_pairs(self, action: Action) -> list[tuple[str, str]]:
         """The ``(x, y)`` params of *action* that are a point, as its action declares them.
 
-        ``point_params`` of the action's registered ``Params``, looked up by
-        the qualified name — a relative name by the one this run binds it to.
-        An action the registry does not know has the points of this agent's
-        verb for it, or none: a param is never taken for a point from its
-        name or value alone.
+        This run's descriptor's ``point_params`` (a relative name through the
+        run's bindings), else the registered ``Params``' points by the
+        qualified name (``action_points``). An action neither knows has none:
+        a param is never taken for a point from its name or value alone.
         """
-        registered = registered_point_params(action, self._action_descriptors)
-        if registered is not None:
-            return registered
-        verb_name = _ACTION_TO_VERB.get(_local_id(action.name))
-        return list(_VERB_TABLE[verb_name].points) if verb_name is not None else []
+        return action_points(self._action_space, action.name) or []
 
     def _call_text(self, action: Action, grid: PointGrid | None) -> str:
-        """*action* as the call :meth:`_action_for` reads back into it, its points on *grid*."""
-        local = _local_id(action.name)
-        verb_name = _ACTION_TO_VERB.get(local)
-        if verb_name is None:
-            raise UnrepresentableActionError(action.name, (), "UI-TARS has no verb for it")
-        verb = self._verbs.get(verb_name)
-        if verb is None:
-            offered = ", ".join(self._verbs) or "none"
-            raise UnrepresentableActionError(
-                action.name, (), f"this run did not negotiate {local}; it offers: {offered}"
-            )
-        bound = next(
+        """*action* as the call :meth:`_action_for` reads back into it, its points on *grid*.
+
+        The verb is the one whose action this run executes *action* as
+        (``executed_name``): a qualified name the run binds the verb to a
+        different capability for is not this run's action, and has no call.
+        """
+        full = executed_name(self._action_space, action.name)
+        verb_name = next(
             (
-                d.name
-                for d in self._action_descriptors
-                if "." in d.name and _local_id(d.name) == local
+                name
+                for name, bound in self._bound.items()
+                if full is not None and bound.name == full
             ),
             None,
         )
-        if bound is not None and "." in action.name and action.name != bound:
-            raise UnrepresentableActionError(
-                action.name, (), f"{verb_name}() runs as {bound} in this run"
+        if verb_name is None:
+            offered = "; ".join(
+                f"{name}() runs as {bound.name}" for name, bound in self._bound.items()
             )
+            detail = (
+                f"this run does not execute it ({offered or 'no verb runs here'})"
+                if full is None
+                else f"UI-TARS has no verb for {full} ({offered})"
+            )
+            raise UnrepresentableActionError(action.name, (), detail)
+        verb = self._verbs[verb_name]
         params = dict(action.params)
         extra = [
             key for key, value in params.items() if value is not None and key not in verb.fills
@@ -1183,8 +1176,9 @@ class UITarsAgent(AgentBase):
             raise UnrepresentableActionError(
                 action.name, extra, f"{verb.signature} has no argument that carries it"
             )
-        if verb.points:
-            _points_to_grid(action.name, verb, params, grid)
+        points = self._bound[verb_name].point_params
+        if points:
+            _points_to_grid(action.name, points, params, grid)
         try:
             return verb.write(params)
         except _Unwritable as exc:
@@ -1207,15 +1201,16 @@ class UITarsAgent(AgentBase):
                 f"{where}: {call.verb}() does not take {', '.join(unexpected)}; "
                 f"write it as {verb.signature}"
             )
+        points = self._bound[call.verb].point_params
         try:
             params = verb.to_params(call.kwargs)
-            if verb.points:
+            if points:
                 grid = self._grid
                 if grid is None:
                     raise _VerbError(
                         "a point cannot be placed, because this step's screenshot has no known size"
                     )
-                for x_key, y_key in verb.points:
+                for x_key, y_key in points:
                     params[x_key], params[y_key] = grid.to_viewport(params[x_key], params[y_key])
         except _VerbError as exc:
             raise _VerbError(f"{where}: {exc}") from exc
@@ -1224,7 +1219,6 @@ class UITarsAgent(AgentBase):
     def _build_system_prompt(
         self,
         task: str,
-        action_space: list[ActionDescriptor],
         max_actions_per_step: int,
     ) -> tuple[str, PromptSnapshot]:
         action_format, action_budget = _action_contract(
@@ -1234,7 +1228,7 @@ class UITarsAgent(AgentBase):
             self.prompt_template,
             {
                 "task": task,
-                "action_space": _render_action_space(action_space),
+                "action_space": _render_action_space(self._action_space.descriptors, self._bound),
                 "action_format": action_format,
                 "action_budget": action_budget,
                 "coordinate_space": (
@@ -1245,16 +1239,19 @@ class UITarsAgent(AgentBase):
 
 
 def _points_to_grid(
-    action_name: str, verb: _Verb, params: dict[str, Any], grid: PointGrid | None
+    action_name: str,
+    points: Sequence[tuple[str, str]],
+    params: dict[str, Any],
+    grid: PointGrid | None,
 ) -> None:
-    """Rewrite *verb*'s point params from viewport units onto *grid*, in place."""
+    """Rewrite the *points* of *params* from viewport units onto *grid*, in place."""
     if grid is None:
         raise UnrepresentableActionError(
             action_name,
-            [key for pair in verb.points for key in pair],
+            [key for pair in points for key in pair],
             "this step showed no screenshot of known size, so no point can be written",
         )
-    for x_key, y_key in verb.points:
+    for x_key, y_key in points:
         x, y = params.get(x_key), params.get(y_key)
         if not is_number(x) or not is_number(y):
             raise UnrepresentableActionError(
@@ -1270,7 +1267,9 @@ def _points_to_grid(
         params[x_key], params[y_key] = grid.to_grid(x, y)
 
 
-def _render_action_space(descriptors: list[ActionDescriptor]) -> str:
+def _render_action_space(
+    descriptors: Sequence[ActionDescriptor], bound: Mapping[str, ActionDescriptor]
+) -> str:
     """Render the negotiated actions as UI-TARS call syntax.
 
     One block per negotiated action::
@@ -1283,29 +1282,30 @@ def _render_action_space(descriptors: list[ActionDescriptor]) -> str:
     the parser reads; the description and the parameter types come from
     the descriptor, which is what the action actually executes. Both
     halves are derived, so the prompt has no second vocabulary to drift
-    from.
+    from. *bound* is each offered verb's descriptor (``UITarsAgent.prepare``).
 
     The ``executes`` line lists the params the verb produces *as written*,
     named as a consequence rather than as syntax: the descriptor's names
     belong to the executor (``text``), the model writes the verb's
-    (``content``). Point params are left out of it: the agent converts
-    them, so the unit the executor declares is not the one the model
-    writes, and the prompt's Coordinates section is what says what a
-    point is.
+    (``content``). Point params (the descriptor's ``point_params``) are left
+    out of it: the agent converts them, so the unit the executor declares is
+    not the one the model writes, and the prompt's Coordinates section is
+    what says what a point is.
 
     A negotiated action with no verb is skipped rather than advertised:
     the model has no syntax for it, so teaching its name would invite an
     unparseable call. The wiring and the table are kept in agreement by
     ``tests/test_agents/test_ui_tars_react_compatible.py``.
     """
+    verb_of = {descriptor.name: name for name, descriptor in bound.items()}
     blocks: list[str] = []
     for d in descriptors:
-        verb_name = _ACTION_TO_VERB.get(_local_id(d.name))
+        verb_name = verb_of.get(d.name)
         if verb_name is None:
             continue
         verb = _VERB_TABLE[verb_name]
         lines = [f"- {verb.signature}", f"  {d.description}"]
-        converted = {key for pair in verb.points for key in pair}
+        converted = {key for pair in d.point_params for key in pair}
         filled = [(k, d.params[k]) for k in verb.fills if k in d.params and k not in converted]
         if filled:
             rendered = ", ".join(f"{k}: {v}" for k, v in filled)

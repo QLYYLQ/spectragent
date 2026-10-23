@@ -1,10 +1,11 @@
 """Where a recorded action pointed, drawn as marks on an image, and how it reads to a person.
 
-The one place a recorded browser action becomes a mark. The viewer serves
-these marks to its run page and its review page (``/api/marks``,
-``/api/review/marks``); the lookahead queue builders write the same Chinese
-action lines into their items. Everything is read from a committed run through
-:class:`RunTrace`.
+The one place a recorded browser action becomes a mark, and the one place its
+Chinese wording lives. The viewer serves these marks to its run page and its
+review page (``/api/marks``, ``/api/review/marks``) and labels its steps with
+the verbs of :func:`action_verb` (the run API's ``action_verbs``); the
+lookahead queue builders write the same Chinese action lines into their items.
+Everything is read from a committed run through :class:`RunTrace`.
 
 Action parameters and measured effects are CSS viewport pixels
 (``docs/architecture_design.md`` §4.1). A mark is in the pixels of the image it
@@ -16,7 +17,10 @@ and none drawn, and says why.
 
 Which point a mark uses: the point the action's effect measured (where the
 input was actually dispatched) when there is one, else the point its
-parameters named. A page scroll is dispatched where the pointer was, so its
+parameters named. Which params are a point, and which name an element, is
+what the recorded action's registered ``Params`` declare
+(``core/actions/params.py``: ``point_params``, ``element_params``); a drag
+presses at its first point and releases at its second. A page scroll is dispatched where the pointer was, so its
 mark sits at the pointer position the step's observation recorded, moved by
 the pointer actions before it in the same step; unknown is left unknown.
 """
@@ -24,12 +28,15 @@ the pointer actions before it in the same step; unknown is left unknown.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from spectragent.core.actions._registrar import registered_params
+from spectragent.core.actions.params import element_params, point_params
 from spectragent.core.capabilities.browser.archive.frames import (
     FRAMES_ARCHIVER_ID,
     FrameRecord,
@@ -45,6 +52,10 @@ from spectragent.core.capabilities.browser.effects import (
     ViewportPoint,
     WaitEffect,
 )
+from spectragent.core.capabilities.browser.observations import (
+    BrowserCaptureStateObs,
+    ScreenshotObs,
+)
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionResult
@@ -58,6 +69,30 @@ Direction = Literal["up", "down", "left", "right"]
 NAME_CHARS = 30
 TYPED_CHARS = 40
 ANSWER_CHARS = 80
+
+#: Each browser action as the verb a person reads, by its fully-qualified name:
+#: the head of the action's line (:func:`action_text`) and the viewer's step
+#: label (:func:`action_verb`). An action not here keeps its recorded name.
+ACTION_VERBS: Mapping[str, str] = MappingProxyType(
+    {
+        "browser.click": "点击",
+        "browser.click_coordinate": "点击",
+        "browser.type": "输入",
+        "browser.type_coordinate": "输入",
+        "browser.send_keys": "按键",
+        "browser.scroll": "滚动",
+        "browser.drag": "拖动",
+        "browser.wait": "等待",
+        "browser.done": "完成",
+        "browser.navigate": "打开网址",
+        "browser.go_back": "后退",
+        "browser.go_forward": "前进",
+        "browser.switch_tab": "切换标签页",
+        "browser.select_dropdown": "在下拉框中选择",
+        "browser.extract_content": "读取页面文字",
+        "browser.screenshot": "截图",
+    }
+)
 
 _DIRECTIONS = {"up": "上", "down": "下", "left": "左", "right": "右"}
 _EDGES = {"up": "顶", "down": "底", "left": "最左边", "right": "最右边"}
@@ -215,28 +250,29 @@ TraceOpener = Callable[[str], RunTrace]
 # ── reading a run ──────────────────────────────────────────────────────
 
 
-def _local(name: str) -> str:
-    return name.rpartition(".")[2]
+#: The browser fragments a mark reads, by their fully-qualified keys.
+_SCREENSHOT = ScreenshotObs.__registry_key__
+_CAPTURE_STATE = BrowserCaptureStateObs.__registry_key__
 
 
-def _fragment_named(trace: RunTrace, step: int, local: str) -> Any:
-    """*step*'s fragment whose local name is *local* (``screenshot``), or ``None``."""
+def _fragment(trace: RunTrace, step: int, key: str) -> Any:
+    """*step*'s committed fragment *key* (``browser.screenshot``), or ``None``."""
     entry = next((entry for entry in trace.manifest.steps if entry.step == step), None)
     if entry is None:
         return None
-    for key, files in entry.fragments.items():
-        if _local(key) == local and not files.failed:
-            try:
-                return trace.observation_fragment(step, key)
-            except RecordingScopeError:
-                return None
-    return None
+    files = entry.fragments.get(key)
+    if files is None or files.failed:
+        return None
+    try:
+        return trace.observation_fragment(step, key)
+    except RecordingScopeError:
+        return None
 
 
 def observation_geometry(trace: RunTrace, step: int) -> Geometry:
     """The geometry of *step*'s committed screenshot (its image and viewport sizes)."""
     try:
-        shot = _fragment_named(trace, step, "screenshot")
+        shot = _fragment(trace, step, _SCREENSHOT)
     except (TraceSchemaError, KeyError, ValueError) as exc:
         return Geometry(None, None, None, f"这一步的截图信息读不出来：{exc}")
     if not isinstance(shot, ScreenshotGeometry):
@@ -320,11 +356,11 @@ def executed_action(record: StepRecord, call: int, name: str | None) -> int | No
 def _initial_pointer(trace: RunTrace, step: int) -> tuple[int, int] | None:
     """The pointer position *step*'s observation recorded, in CSS px, or ``None``."""
     try:
-        state = _fragment_named(trace, step, "capture_state")
+        state = _fragment(trace, step, _CAPTURE_STATE)
         pointer = getattr(state, "pointer", None)
         if pointer is not None and pointer.x is not None and pointer.y is not None:
             return pointer.x, pointer.y
-        shot = _fragment_named(trace, step, "screenshot")
+        shot = _fragment(trace, step, _SCREENSHOT)
     except (TraceSchemaError, KeyError, ValueError):
         return None
     cursor = getattr(shot, "cursor", None)
@@ -354,9 +390,24 @@ def _number(value: Any) -> int | None:
     return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
-def _param_point(params: dict[str, Any], x: str, y: str) -> tuple[int, int] | None:
-    px, py = _number(params.get(x)), _number(params.get(y))
-    return (px, py) if px is not None and py is not None else None
+def _param_points(action: Action) -> list[tuple[int, int] | None]:
+    """Each point *action*'s registered ``Params`` declare, as its params state it (``None``: not stated)."""
+    params = registered_params(action.name)
+    pairs = point_params(params) if params is not None else []
+    found: list[tuple[int, int] | None] = []
+    for x, y in pairs:
+        px, py = _number(action.params.get(x)), _number(action.params.get(y))
+        found.append((px, py) if px is not None and py is not None else None)
+    return found
+
+
+def _element(action: Action) -> Any:
+    """The element *action*'s params name (its first ``element_params`` value), or ``None``."""
+    params = registered_params(action.name)
+    for name in element_params(params) if params is not None else ():
+        if action.params.get(name) is not None:
+            return action.params[name]
+    return None
 
 
 def _point(fact: Any) -> tuple[int, int] | None:
@@ -395,21 +446,25 @@ def _typed(params: dict[str, Any], result: ActionResult | None, effect: Any) -> 
 
 
 def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] | None) -> _Css:
-    local = _local(action.name)
+    name = action.name
+    verb = action_verb(name)
     params = action.params
     effect = result.effect if result is not None else None
-    if local in ("click_coordinate", "click", "drag"):
+    points = _param_points(action)
+    first = points[0] if points else None
+    element = _element(action)
+    if name in ("browser.click_coordinate", "browser.click", "browser.drag"):
         measured = _point(effect.point) if isinstance(effect, PointerEffect) else None
         hit = element_text(effect.hit) if isinstance(effect, PointerEffect) else None
-        if local == "drag":
-            start = measured or _param_point(params, "start_x", "start_y")
+        if name == "browser.drag":
+            start = measured or first
             release = (
                 _point(effect.release_point)
                 if isinstance(effect, PointerEffect) and effect.release_point is not None
                 else None
             )
-            end = release or _param_point(params, "end_x", "end_y")
-            line = (f"拖动 {_xy(start)} → {_xy(end)}" if start and end else "拖动") + (
+            end = release or (points[-1] if len(points) > 1 else None)
+            line = (f"{verb} {_xy(start)} → {_xy(end)}" if start and end else verb) + (
                 f"，按在{hit}上" if hit else ""
             )
             return _Css(
@@ -421,12 +476,11 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
                 unplaced=None if start and end else "没有记录拖动的起点或终点",
                 pointer_after=end,
             )
-        point = measured or _param_point(params, "coordinate_x", "coordinate_y")
+        point = measured or first
         if point is not None:
-            line = f"点击 {_xy(point)}" + (f" → {hit}" if hit else "")
+            line = f"{verb} {_xy(point)}" + (f" → {hit}" if hit else "")
         else:
-            index = params.get("index")
-            line = f"点击元素 #{index}" if index is not None else "点击"
+            line = f"{verb}元素 #{element}" if element is not None else verb
             line += f" → {hit}" if hit else ""
         return _Css(
             "click",
@@ -436,22 +490,22 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             unplaced=None if point else "没有记录点击的位置",
             pointer_after=point,
         )
-    if local in ("type_coordinate", "type"):
+    if name in ("browser.type_coordinate", "browser.type"):
         typed = _typed(params, result, effect)
         target = element_text(effect.target) if isinstance(effect, TextInputEffect) else None
         if not isinstance(params.get("text"), str):
-            said = "输入"
+            said = verb
         elif typed is None:
-            said = "输入（敏感字段，内容不显示）"
+            said = f"{verb}（敏感字段，内容不显示）"
         else:
-            said = f"输入“{_clip(typed, TYPED_CHARS)}”"
+            said = f"{verb}“{_clip(typed, TYPED_CHARS)}”"
         if target:
             said += f" → {target}"
-        elif params.get("index") is not None:
-            said += f" → 元素 #{params['index']}"
-        if local == "type":
+        elif element is not None:
+            said += f" → 元素 #{element}"
+        if name == "browser.type":
             return _Css(None, said, pointer_after=None)
-        point = _param_point(params, "coordinate_x", "coordinate_y")
+        point = first
         return _Css(
             "type",
             said,
@@ -460,12 +514,12 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             unplaced=None if point else "没有记录输入的位置",
             pointer_after=point,
         )
-    if local == "scroll":
+    if name == "browser.scroll":
         direction = params.get("direction")
         if isinstance(effect, ScrollEffect):
             direction = effect.direction
         word = _DIRECTIONS.get(str(direction), "")
-        line = f"向{word}滚动" if word else "滚动"
+        line = f"向{word}{verb}" if word else verb
         amount = _number(params.get("amount"))
         delta = effect.delta if isinstance(effect, ScrollEffect) else None
         if delta is not None and isinstance(effect, ScrollEffect):
@@ -476,7 +530,7 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             line += f" {amount} 像素"
         if isinstance(effect, ScrollEffect) and effect.at_boundary is True:
             line += f"，已到{_EDGES.get(effect.direction, '边缘')}"
-        by_element = params.get("index") is not None
+        by_element = element is not None
         point = None if by_element else pointer
         unplaced = (
             "滚动的是页面中的某个元素，没有记录滚轮的位置"
@@ -493,52 +547,60 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             unplaced=unplaced,
             pointer_after=None if by_element else ...,
         )
-    if local == "send_keys":
-        return _Css(None, f"按键 {params.get('keys', '')}".strip())
-    if local == "wait":
+    if name == "browser.send_keys":
+        return _Css(None, f"{verb} {params.get('keys', '')}".strip())
+    if name == "browser.wait":
         if isinstance(effect, WaitEffect):
-            return _Css(None, f"等待 {_seconds(effect.waited_ms / 1000)} 秒")
+            return _Css(None, f"{verb} {_seconds(effect.waited_ms / 1000)} 秒")
         seconds = params.get("seconds")
         if isinstance(seconds, int | float) and not isinstance(seconds, bool):
-            return _Css(None, f"等待 {_seconds(float(seconds))} 秒")
-        return _Css(None, "等待")
-    if local == "done":
+            return _Css(None, f"{verb} {_seconds(float(seconds))} 秒")
+        return _Css(None, verb)
+    if name == "browser.done":
         answer = params.get("extracted_content")
         head = "结束（报告没有完成任务）" if params.get("success") is False else "完成并回答"
         if isinstance(answer, str) and answer.strip():
             return _Css(None, f"{head}：{_clip(answer, ANSWER_CHARS)}")
         return _Css(None, head)
-    if local == "navigate":
-        return _Css(None, f"打开网址 {params.get('url', '')}".strip())
-    if local == "go_back":
-        return _Css(None, "后退到上一页")
-    if local == "go_forward":
-        return _Css(None, "前进到下一页")
-    if local == "switch_tab":
-        return _Css(None, "切换标签页")
-    if local == "select_dropdown":
+    if name == "browser.navigate":
+        return _Css(None, f"{verb} {params.get('url', '')}".strip())
+    if name == "browser.go_back":
+        return _Css(None, f"{verb}到上一页")
+    if name == "browser.go_forward":
+        return _Css(None, f"{verb}到下一页")
+    if name == "browser.switch_tab":
+        return _Css(None, verb)
+    if name == "browser.select_dropdown":
         chosen = None
         if isinstance(effect, SelectionEffect) and not isinstance(effect.selected, str):
             chosen = effect.selected.text
         chosen = chosen or params.get("text")
         option = _number(params.get("option_index"))
         if isinstance(chosen, str) and chosen:
-            line = f"在下拉框中选择“{_clip(chosen, NAME_CHARS)}”"
+            line = f"{verb}“{_clip(chosen, NAME_CHARS)}”"
         elif option is not None:
-            line = f"在下拉框中选择第 {option + 1} 项"
+            line = f"{verb}第 {option + 1} 项"
         else:
-            line = "在下拉框中选择"
+            line = verb
         return _Css(None, line, pointer_after=None)
-    if local == "extract_content":
-        return _Css(None, "读取页面文字")
-    if local == "screenshot":
-        return _Css(None, "截图")
+    if name in ("browser.extract_content", "browser.screenshot"):
+        return _Css(None, verb)
     shown = json.dumps(params, ensure_ascii=False) if params else ""
-    return _Css(None, f"{local} {shown}".strip())
+    return _Css(None, f"{name} {shown}".strip())
 
 
 def _xy(point: tuple[int, int] | None) -> str:
     return f"({point[0]}, {point[1]})" if point is not None else "(?)"
+
+
+def action_verb(name: str) -> str:
+    """The verb a person reads for the action recorded as *name* (``点击``); else *name* itself."""
+    return ACTION_VERBS.get(name, name)
+
+
+def action_verbs(names: Iterable[str]) -> dict[str, str]:
+    """Each of *names* with its verb (:func:`action_verb`), for a page that labels actions."""
+    return {name: action_verb(name) for name in names}
 
 
 def action_text(action: Action, result: ActionResult | None) -> str:
@@ -691,6 +753,7 @@ def image_geometry(
 
 
 __all__ = [
+    "ACTION_VERBS",
     "ActionMark",
     "Geometry",
     "ImageMarks",
@@ -698,6 +761,8 @@ __all__ = [
     "MarkSet",
     "action_lines",
     "action_text",
+    "action_verb",
+    "action_verbs",
     "default_requests",
     "element_text",
     "executed_action",

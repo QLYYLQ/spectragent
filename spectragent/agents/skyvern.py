@@ -41,10 +41,12 @@ from spectragent.agents.prompt_context import (
     restored_history_message,
 )
 from spectragent.agents.prompts import PromptEngine
+from spectragent.core.action_guard import executed_name
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 from spectragent.schemas.step_record import StepRecord
 
@@ -210,9 +212,7 @@ class SkyvernAgent(AgentBase):
     # an action history: the window is the tail of the Loop's ``history``
     # fragment, the last N *executed actions* rather than the loop's full
     # per-step transcript.
-    _action_descriptors: list[ActionDescriptor] = field(
-        default_factory=list, init=False, repr=False
-    )
+    _action_space: ActionSpace = field(default_factory=ActionSpace, init=False, repr=False)
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
 
@@ -234,7 +234,7 @@ class SkyvernAgent(AgentBase):
         return self._prompt_snapshot
 
     def get_action_space(self) -> list[ActionDescriptor]:
-        return list(self._action_descriptors)
+        return list(self._action_space.descriptors)
 
     # ── Negotiation ────────────────────────────────────────────
 
@@ -250,7 +250,7 @@ class SkyvernAgent(AgentBase):
     def prepare(
         self,
         task: str,
-        action_descriptors: list[ActionDescriptor],
+        action_space: ActionSpace,
         execution_limits: ExecutionLimits,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
@@ -266,9 +266,9 @@ class SkyvernAgent(AgentBase):
         max_actions_per_step = execution_limits.max_actions_per_step
         if max_actions_per_step is None:
             raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
-        self._action_descriptors = list(action_descriptors)
+        self._action_space = action_space
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
-            task, self._action_descriptors, max_actions_per_step
+            task, max_actions_per_step
         )
         # cache=True: static-prefix breakpoint — see BrowserUseAgent for why it
         # is kept alongside the per-step one.
@@ -357,8 +357,9 @@ class SkyvernAgent(AgentBase):
                 # ``done`` is advertised like every other negotiated
                 # action but is invoked through the top-level fields. A
                 # model that writes it into ``actions`` anyway must not
-                # silently lose the answer.
-                if name.rsplit(".", 1)[-1] == "done":
+                # silently lose the answer. Whether it did is the run's
+                # bindings' answer, not the name's suffix.
+                if self._is_done(name):
                     actions.append(
                         self._done_action(
                             item.text or llm_output.extracted_content,
@@ -367,7 +368,11 @@ class SkyvernAgent(AgentBase):
                     )
                     continue
 
-                params: dict[str, Any] = {"reasoning": item.reasoning}
+                # Only the params the action reads. The item's ``reasoning`` is
+                # the model's thought about the action, not a param of it: it
+                # stays in the reply, where ``parse_react_thought`` reads it,
+                # and an action carrying it would not fit its ``Params``.
+                params: dict[str, Any] = {}
                 # ``index``, not ``element_id``: BrowserCapability's
                 # selector_map is index-keyed and every element-targeting
                 # action reads ``params["index"]``
@@ -452,18 +457,22 @@ class SkyvernAgent(AgentBase):
             params["success"] = success
         return Action(name="done", params=params)
 
+    def _is_done(self, name: str) -> bool:
+        """Whether *name* is the action this run executes ``done`` as."""
+        done = executed_name(self._action_space, "done")
+        return done is not None and executed_name(self._action_space, name) == done
+
     def _build_system_prompt(
         self,
         task: str,
-        action_space: list[ActionDescriptor],
         max_actions_per_step: int,
     ) -> tuple[str, PromptSnapshot]:
         return self.render(
             self.prompt_template,
             {
                 "navigation_goal": task,
-                "action_space": self._render_action_list(action_space),
-                "done_action": self._done_action_name(action_space),
+                "action_space": self._render_action_list(self._action_space.descriptors),
+                "done_action": self._done_action_name(),
                 "max_actions_per_step": max_actions_per_step,
                 "navigation_payload": self.navigation_payload or "",
                 "complete_criterion": self.complete_criterion or "",
@@ -472,21 +481,18 @@ class SkyvernAgent(AgentBase):
             },
         )
 
-    @staticmethod
-    def _done_action_name(descriptors: list[ActionDescriptor]) -> str:
+    def _done_action_name(self) -> str:
         """The negotiated key of the terminal action, for the prompt's prose.
 
         The template has to say which advertised action it is telling the
         model *not* to write into ``actions``, and naming it must not mean
         writing a provider into the template: the run's ``done`` is
-        whichever capability provided it. Falls back to the relative name
-        — the same one ``_done_action`` emits — when nothing named ``done``
-        is in the negotiated set, which only a degenerate fixture reaches.
+        whichever capability provided it, as the run's bindings say. Falls
+        back to the relative name — the same one ``_done_action`` emits —
+        when the run executes no ``done``, which only a degenerate fixture
+        reaches.
         """
-        for d in descriptors:
-            if d.name.rsplit(".", 1)[-1] == "done":
-                return d.name
-        return "done"
+        return executed_name(self._action_space, "done") or "done"
 
     @staticmethod
     def _render_action_list(descriptors: list[ActionDescriptor]) -> str:

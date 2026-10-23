@@ -20,7 +20,12 @@ from conscribe import create_registrar
 from pydantic import BaseModel
 
 from spectragent.core.actions.base import BaseAction
-from spectragent.core.actions.params import action_fragments, params_view
+from spectragent.core.actions.params import (
+    action_fragments,
+    element_params,
+    params_view,
+    point_params,
+)
 from spectragent.schemas.action import ActionDescriptor, ActionEffect
 
 #: Separator between the owning capability and the local action id.
@@ -65,10 +70,13 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
     **Every action declares its parameters as a typed model**, ``Params``
     — flat, scalar, ``extra="forbid"``. It is the single source of the
     descriptor's ``params_schema`` (what a provider constrains on), the
-    descriptor's ``params`` prose (what the prompt shows) and the
+    descriptor's ``params`` prose (what the prompt shows), the
     action's observation-fragment dependencies
-    (:class:`~spectragent.core.actions.params.RequiresFragment`). Nothing
-    hand-writes any of the three; :meth:`describe` renders them together.
+    (:class:`~spectragent.core.actions.params.RequiresFragment`) and what
+    some params mean: which are one point
+    (:class:`~spectragent.core.actions.params.PointAxis`) and which name an
+    element (:class:`~spectragent.core.actions.params.AddressesElement`).
+    Nothing hand-writes any of them; :meth:`describe` renders them together.
 
     Example::
 
@@ -83,7 +91,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
             class Params(BaseModel):
                 model_config = ConfigDict(extra="forbid")
                 direction: Literal["up", "down", "left", "right"]
-                index: Annotated[int, RequiresFragment("browser.dom")] | None = None
+                index: Annotated[int | None, AddressesElement("browser.dom")] = None
 
             default_amount: Annotated[
                 int, PydanticField(description="Default scroll px")
@@ -180,9 +188,28 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
                 action that needs more of it overrides ``descriptor``.
         """
         prose, schema = params_view(self.Params, hints=hints, fragments=fragments)
+        # What the params mean, narrowed with them: a param this run dropped
+        # is neither a point nor an element address of it.
         return ActionDescriptor(
             name=self.action_id,
             description=description,
             params=prose,
             params_schema=schema,
+            point_params=tuple(
+                (x, y) for x, y in point_params(self.Params) if x in prose and y in prose
+            ),
+            element_params=tuple(name for name in element_params(self.Params) if name in prose),
         )
+
+
+def registered_params(name: str) -> type[BaseModel] | None:
+    """The ``Params`` of the action registered under the fully-qualified *name*.
+
+    ``None`` when no action is registered under it — a short name an agent
+    wrote and the guard refused stays as the agent wrote it. Readers of
+    recorded actions use it to learn what the recorded params mean
+    (``point_params``, ``element_params``); an Agent reads the same facts off
+    its run's descriptors instead.
+    """
+    params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
+    return params if isinstance(params, type) and issubclass(params, BaseModel) else None

@@ -41,6 +41,7 @@ from spectragent.agents.prompts import (
 )
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
+from tests._helpers.action_spaces import space_of
 
 
 def _descriptors(*keys: str) -> list[Any]:
@@ -61,17 +62,17 @@ def _descriptors(*keys: str) -> list[Any]:
 _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
     "browser_use": {
         "task": "t",
-        "action_descriptors": _descriptors("browser.navigate", "browser.done"),
+        "action_space": space_of(_descriptors("browser.navigate", "browser.done")),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
     },
     "skyvern": {
         "task": "t",
-        "action_descriptors": [],
+        "action_space": space_of([]),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
     },
     "ui_tars": {
         "task": "t",
-        "action_descriptors": [],
+        "action_space": space_of([]),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
     },
 }

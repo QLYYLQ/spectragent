@@ -57,6 +57,7 @@ def _next(url: str) -> NextObservation:
 
 BUTTON = {"role": "button", "name": "Search"}
 FIELD = {"role": "textbox", "name": "Search"}
+SLIDER = {"role": "slider", "name": "Price"}
 CLICK = "browser.click_coordinate"
 
 
@@ -93,6 +94,17 @@ CLICK = "browser.click_coordinate"
             "unknown",
         ),
         ([_action(CLICK, hit="unknown")], [_action("browser.click", hit=BUTTON)], "unknown"),
+        # a drag aims where it starts: its first declared point
+        (
+            [_action("browser.drag", hit=SLIDER, start_x=10, start_y=10, end_x=90, end_y=10)],
+            [_action("browser.drag", hit=SLIDER, start_x=12, start_y=11, end_x=40, end_y=10)],
+            "same",
+        ),
+        (
+            [_action("browser.drag", hit=SLIDER, start_x=10, start_y=10, end_x=90, end_y=10)],
+            [_action("browser.drag", hit=SLIDER, start_x=300, start_y=200, end_x=90, end_y=10)],
+            "unknown",
+        ),
         # typing: the same text into the same field
         (
             [_action("browser.type", text="耳机 ", target=FIELD)],

@@ -553,7 +553,9 @@ class AgentRuntime:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).
 
         Calls the prepared agent's optional ``prepare`` slot with the
-        negotiated, guarded descriptors this assembly advertises and the
+        effective action space this assembly's guard executes
+        (:attr:`action_space`: the negotiated, guarded descriptors the prompt
+        advertises and the bindings that say what a name means) and the
         Loop's typed execution limits when the agent declares consumption;
         ``[]`` when the agent has no ``prepare``. Writes no memory, touches no
         environment: :meth:`execute` clears the memory and writes these, and
@@ -573,11 +575,11 @@ class AgentRuntime:
         if self._agent_consumes_limits:
             seeds = agent_prepare(
                 task=task,
-                action_descriptors=self.active_descriptors,
+                action_space=self.action_space,
                 execution_limits=self._execution_limits,
             )
         else:
-            seeds = agent_prepare(task=task, action_descriptors=self.active_descriptors)
+            seeds = agent_prepare(task=task, action_space=self.action_space)
         return list(seeds or [])
 
     # -- execute: convenience one-shot -------------------------

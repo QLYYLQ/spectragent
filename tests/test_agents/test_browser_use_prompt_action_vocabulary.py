@@ -45,6 +45,7 @@ from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import negotiate_action, negotiate_observation
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
 
 MODES = ("dom", "dom_vision", "vision")
@@ -143,7 +144,7 @@ def _run(mode: str, config: dict[str, Any]) -> tuple[BrowserUseAgent, str, set[s
     )
     agent.prepare(
         task="t",
-        action_descriptors=action_space.descriptors,
+        action_space=space_of(action_space.descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return (
@@ -277,8 +278,10 @@ def test_the_coordinate_paragraph_follows_the_configured_grid() -> None:
     actions = negotiate_action(agent, env)
     agent.prepare(
         task="t",
-        action_descriptors=env.get_action_space(
-            active_actions=actions.active_actions, fragments=obs.active_fragments
+        action_space=space_of(
+            env.get_action_space(
+                active_actions=actions.active_actions, fragments=obs.active_fragments
+            )
         ),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import PointAxis
 from spectragent.core.capabilities.browser.actions._common import (
     effect_from,
     focused_scope,
@@ -49,10 +50,14 @@ class ClickCoordinateAction(SettleableAction, ActionBase):
         model_config = ConfigDict(extra="forbid")
 
         coordinate_x: Annotated[
-            int, PydanticField(description="CSS px from the viewport's left edge")
+            int,
+            PointAxis("coordinate", "x"),
+            PydanticField(description="CSS px from the viewport's left edge"),
         ]
         coordinate_y: Annotated[
-            int, PydanticField(description="CSS px from the viewport's top edge")
+            int,
+            PointAxis("coordinate", "y"),
+            PydanticField(description="CSS px from the viewport's top edge"),
         ]
 
     def descriptor(self, **context: Any) -> ActionDescriptor:

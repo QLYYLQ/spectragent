@@ -27,8 +27,19 @@ from pathlib import Path
 from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator.errors import TraceIncompleteError
 from spectragent.schemas._types import UTCDatetime
+from spectragent.schemas.action import Action
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.eval_result import AgentResultRef
+
+
+def written_action(action: Action) -> str:
+    """One recorded action as a judge prompt writes it: ``name(params)``.
+
+    The one writing of an action for evaluators (:attr:`TraceView.action_history`
+    and :attr:`TraceView.restored_action_history`). The params are the recorded
+    ones, in the capability's viewport units.
+    """
+    return f"{action.name}({action.params})"
 
 
 class TraceView:
@@ -133,23 +144,20 @@ class TraceView:
 
     @cached_property
     def action_history(self) -> list[str]:
-        """Flat ``name(params)`` strings of the run's own agent, one per action.
+        """The run's own agent's actions as a judge prompt writes them, one ``name(params)`` each.
 
         Policy steps only: a branch run's restored prefix replays its source
         run's actions, which this run's agent did not decide
-        (:attr:`restored_action_history` lists them apart). Rebuilt from the
-        WAL step records when they carry structured ``actions``, because
-        those are written per step and survive a crash; ``result.json``'s
-        pre-flattened list only exists if the run finished. Falls back to it
-        when the policy steps carry none.
+        (:attr:`restored_action_history` lists them apart). Read from the
+        WAL step records, which are written per step and survive a crash;
+        there is no second, flattened copy (``AgentResult`` carries none).
         """
-        history: list[str] = []
-        for record in self._trace.step_records:
-            if record.origin == "policy":
-                history.extend(f"{a.name}({a.params})" for a in record.actions)
-        if history:
-            return history
-        return list(self._result.action_history)
+        return [
+            written_action(action)
+            for record in self._trace.step_records
+            if record.origin == "policy"
+            for action in record.actions
+        ]
 
     @cached_property
     def restored_action_history(self) -> list[str]:
@@ -165,13 +173,13 @@ class TraceView:
             if record.origin != "restored":
                 continue
             if record.restoration is None:
-                history.extend(f"[restored] {a.name}({a.params})" for a in record.actions)
+                history.extend(f"[restored] {written_action(a)}" for a in record.actions)
                 continue
             for attempt in record.restoration.actions:
                 action = attempt.executed
                 if action is None:
                     continue
-                text = f"[restored] {action.name}({action.params})"
+                text = f"[restored] {written_action(action)}"
                 if attempt.live_error is not None:
                     text += f" [raised: {attempt.live_error}]"
                 elif attempt.result is not None and not attempt.result.success:

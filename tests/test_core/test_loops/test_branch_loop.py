@@ -29,6 +29,7 @@ from spectragent.core.loops.validation import (
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.core.trace.redaction import OMITTED
+from spectragent.evaluator.trace_view import TraceView
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import BranchProvenance
 from tests._helpers.branch_fakes import (
@@ -205,14 +206,17 @@ class TestRecords:
         assert result is not None
         assert result.agent_done.value == "max_steps"
         assert result.metrics.steps == 1
-        assert result.action_history == []  # the restored prefix is not this run's
+        # The restored prefix is not this run's: no policy step acted.
+        assert TraceView(RunTrace(out.run_dir)).action_history == []  # type: ignore[arg-type]
         # The best answer so far is the source's: its restored results carried it.
         assert result.answer == "clicked 1"
 
     async def test_policy_actions_are_the_runs_own(self, tmp_path: Path, source: Path) -> None:
         out = await run_branch(tmp_path, source, 2, ["click 102"])
         assert out.result is not None
-        assert out.result.action_history == [f"{CLICK}({{'index': 102}})"]
+        assert TraceView(RunTrace(out.run_dir)).action_history == [  # type: ignore[arg-type]
+            f"{CLICK}({{'index': 102}})"
+        ]
 
     async def test_the_teacher_sees_the_sources_context(self, tmp_path: Path, source: Path) -> None:
         out = await run_branch(tmp_path, source, 2, ["click 102"])

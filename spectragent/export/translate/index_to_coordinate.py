@@ -1,8 +1,8 @@
 """``index_to_coordinate``: element indices become points on the recorded screenshot (arch §4.15).
 
 For a vision student learning from a DOM teacher. An action that addresses
-an element — a param marked ``RequiresFragment`` with a value
-(``core/actions/params.py::param_fragments``) — becomes its coordinate
+an element — a param marked ``AddressesElement`` with a value
+(``core/actions/params.py::element_params``) — becomes its coordinate
 counterpart at the point ``core/capabilities/browser/index_points.py``
 locates on the step's recorded screenshot; every other action passes
 unchanged. The browser knowledge (geometry, occlusion evidence) lives in
@@ -15,8 +15,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.actions.params import param_fragments
+from spectragent.core.actions._registrar import registered_params
+from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.browser import index_points
 from spectragent.core.capabilities.browser.archive.dom_raw import read_dom_document
 from spectragent.core.capabilities.browser.dom.models import DOMState
@@ -111,13 +111,13 @@ class IndexToCoordinateTranslator(ActionTranslatorBase):
         actions: list[Action] = []
         records: list[TranslationRecord] = []
         for position, action in enumerate(sample.teacher_actions):
-            cls = ActionRegistrar.get_or_none(action.name)
-            if cls is None:
+            params = registered_params(action.name)
+            if params is None:
                 return Translation.refused(
                     "no_counterpart", f"{action.name} is not a registered action", records
                 )
             addressed = sorted(
-                name for name in param_fragments(cls.Params) if action.params.get(name) is not None
+                name for name in element_params(params) if action.params.get(name) is not None
             )
             if not addressed:
                 actions.append(self.validated(sample.sample_id, action))

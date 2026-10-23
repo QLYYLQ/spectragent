@@ -22,9 +22,10 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.action_spaces import space_of, wired_space
 
 #: Stand-in for a negotiated action set. Deliberately *not* empty: the
-#: old suite passed ``action_descriptors=[]`` everywhere, which is why a
+#: old suite passed an empty action list everywhere, which is why a
 #: prompt that dropped the action space on the floor stayed green.
 _DESCRIPTORS = [
     ActionDescriptor(
@@ -105,13 +106,20 @@ def _clicks(*indexes: int) -> list[StepRecord]:
 
 
 def _make_agent(**overrides: Any) -> SkyvernAgent:
+    """An agent prepared with every action its wiring names, as a browser run gives it."""
     from tests._helpers.assembly import make_agent
 
-    return make_agent(
+    agent = make_agent(
         SkyvernAgent,
         memory=SimpleMemory(max_messages=100),
         **overrides,
     )
+    agent.prepare(
+        task="t",
+        action_space=wired_space(SkyvernAgent),
+        execution_limits=ExecutionLimits(max_actions_per_step=5),
+    )
+    return agent
 
 
 class TestSlotConformance:
@@ -177,7 +185,7 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="Find the cheapest flight",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert isinstance(seed, list)
@@ -199,7 +207,7 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="t",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         text = seed[0].content
@@ -212,7 +220,7 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="t",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=4),
         )
         text = seed[0].content
@@ -225,7 +233,7 @@ class TestPrepare:
             _make_agent()
             .prepare(
                 task="t",
-                action_descriptors=[],
+                action_space=space_of([]),
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
             )[0]
             .content
@@ -244,7 +252,7 @@ class TestPrepare:
             )
             .prepare(
                 task="t",
-                action_descriptors=[],
+                action_space=space_of([]),
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
             )[0]
             .content
@@ -266,7 +274,7 @@ class TestPrepare:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         agent.parse_react_output(
@@ -292,7 +300,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         state = DOMState(
@@ -321,7 +329,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         tail = "[173]<button>Reachable at the end</button>"
@@ -349,7 +357,7 @@ class TestBuildReactPrompt:
         agent = _make_agent(action_history_window=2)
         seed = agent.prepare(
             task="t",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert isinstance(seed[0].content, str)
@@ -386,7 +394,7 @@ class TestBuildReactPrompt:
         agent = _make_agent(action_history_window=0)
         agent.prepare(
             task="t",
-            action_descriptors=_DESCRIPTORS,
+            action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         content = (
@@ -403,7 +411,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -421,7 +429,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -440,7 +448,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
@@ -473,7 +481,10 @@ class TestParseReactOutput:
         # is index-keyed and ``ClickAction.execute`` reads params["index"].
         assert actions[0].params["index"] == 7
         assert "element_id" not in actions[0].params
-        assert actions[0].params["reasoning"] == "submit form"
+        # The reasoning is the model's thought about the click, not a param of
+        # it: it stays in the reply (``parse_react_thought`` reads it), and the
+        # action carries only what ``ClickAction.Params`` declares.
+        assert actions[0].params == {"index": 7}
 
     def test_carries_every_param_the_advertised_actions_need(self) -> None:
         """scroll needs ``direction``, send_keys needs ``keys``.
@@ -500,7 +511,7 @@ class TestParseReactOutput:
         )
         assert actions[0].params["direction"] == "up"
         assert actions[1].params["keys"] == "Enter"
-        assert actions[2].params == {"reasoning": "r", "index": 3, "text": "hello"}
+        assert actions[2].params == {"index": 3, "text": "hello"}
 
     def test_done_inside_actions_keeps_the_answer(self) -> None:
         """The template says done is a top-level flag; models improvise.
@@ -581,21 +592,13 @@ class TestParseReactOutput:
         agent = _make_agent()
         typed = StepRecord(
             step=0,
-            actions=[
-                Action(
-                    name="browser.type",
-                    params={"reasoning": "search", "index": 4, "text": "hello"},
-                )
-            ],
+            actions=[Action(name="browser.type", params={"index": 4, "text": "hello"})],
             action_results=[ActionResult(success=True)],
         )
         (message,) = await agent.build_react_prompt(
             _FakeObservation(history=[typed]), context=ReactPromptContext(step=1, phase="policy")
         )
-        assert (
-            "browser.type({'reasoning': 'search', 'index': 4, 'text': 'hello'}) -> ok"
-            in message.text
-        )
+        assert "browser.type({'index': 4, 'text': 'hello'}) -> ok" in message.text
 
     def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
         """The agent must not invent a provider for a bare verb.

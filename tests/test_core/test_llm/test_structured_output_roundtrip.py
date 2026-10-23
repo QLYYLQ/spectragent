@@ -37,7 +37,9 @@ from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop, serialize_llm_output
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of
 from tests._helpers.llm_clients import FakeClient
 from tests._helpers.trace_builder import as_chat
 
@@ -53,7 +55,9 @@ def _descriptors(*keys: str) -> list[ActionDescriptor]:
 def _prepared_agent() -> BrowserUseAgent:
     agent = BrowserUseAgent()
     agent.prepare(
-        task="t", execution_limits=ReactLoop().execution_limits(), action_descriptors=_descriptors()
+        task="t",
+        execution_limits=ReactLoop().execution_limits(),
+        action_space=space_of(_descriptors()),
     )
     return agent
 
@@ -172,7 +176,7 @@ class TestHallucinatedVerbRejection:
         agent.prepare(
             task="t",
             execution_limits=ReactLoop().execution_limits(),
-            action_descriptors=_descriptors("browser.click"),
+            action_space=space_of(_descriptors("browser.click")),
         )
         with pytest.raises(ParseError):
             agent.parse_react_output(
@@ -271,6 +275,7 @@ def _run_loop(agent: Any, llm: Any) -> Any:
         "llm": llm,
         "memory": _FakeMemory(),
         "act_fn": env.act,
+        "action_space": ActionSpace(),
         "session_id": None,
         "task_id": "t",
     }
@@ -362,6 +367,7 @@ class TestCompletionSerialization:
                     "llm": ok_llm,
                     "memory": ok_memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -385,6 +391,7 @@ class TestCompletionSerialization:
                     "llm": _RecordingLLM(completion),
                     "memory": bad_memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1040,6 +1047,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": _RaisingLLM(),
                     "memory": memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1090,6 +1098,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": _DeadLLM(),
                     "memory": memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1165,6 +1174,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": llm,
                     "memory": memory,
                     "act_fn": env.act,
+                    "action_space": ActionSpace(),
                     "session_id": None,
                     "task_id": "t",
                     "step_recorder": recorder,

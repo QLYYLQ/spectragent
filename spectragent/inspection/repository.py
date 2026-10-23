@@ -22,6 +22,7 @@ from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
 from spectragent.inspection.marks import (
     MarkRequest,
+    action_verbs,
     default_requests,
     marks_on,
     observation_marks,
@@ -386,9 +387,17 @@ class _FileRepository:
             usage = recorded_usage(trace)
             summary = _summary(trace, key, usage)
             steps = []
+            names: set[str] = set()
             for entry in trace.manifest.steps:
                 record = trace.step(entry.step)
                 assert record is not None
+                names.update(action.name for action in record.actions)
+                if record.restoration is not None:
+                    names.update(
+                        attempt.executed.name
+                        for attempt in record.restoration.actions
+                        if attempt.executed is not None
+                    )
                 steps.append(
                     {
                         **_json(record),
@@ -409,6 +418,9 @@ class _FileRepository:
                 "result": _json(trace.result),
                 "manifest": _json(trace.manifest),
                 "steps": steps,
+                # How the page names each action its steps executed: the
+                # wording's one source is ``inspection/marks.py``.
+                "action_verbs": action_verbs(sorted(names)),
                 "evaluations": _json(_evaluations(trace)[0]),
                 "evaluation_error": summary["evaluation_error"],
                 "trailing_calls": _json(trailing),

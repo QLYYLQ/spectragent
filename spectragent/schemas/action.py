@@ -174,6 +174,14 @@ class ActionDescriptor(BaseModel):
     registered action; ``None`` means an action that has not been given a
     ``Params`` model yet, not a simpler kind of action.
 
+    Two more fields say what some of those params *mean*, rendered from the
+    same ``Params`` markers (``core/actions/params.py``) and narrowed with
+    them: ``point_params``, the ``(x, y)`` pairs that are one point in the
+    capability's viewport units (``PointAxis``), and ``element_params``, the
+    params that name an element of an observation fragment
+    (``AddressesElement``). An Agent reads them here, off the action space it
+    was handed, rather than restating which params of which verb are points.
+
     There is deliberately no conversion to a provider function-calling
     schema here; see ``docs/action_descriptor_vs_tool_definition.md``.
     """
@@ -184,6 +192,8 @@ class ActionDescriptor(BaseModel):
     description: str
     params: dict[str, str] = Field(default_factory=dict)
     params_schema: dict[str, Any] | None = None
+    point_params: tuple[tuple[str, str], ...] = ()
+    element_params: tuple[str, ...] = ()
 
 
 class Action(BaseModel):

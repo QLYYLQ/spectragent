@@ -93,18 +93,6 @@ class ImageRef(_Record):
     viewport_height: int
 
 
-class DroppedParams(_Record):
-    """Params of one teacher action that its action does not declare, dropped by name.
-
-    Attributes:
-        action_index: Position in ``teacher_actions``.
-        params: The dropped names, sorted.
-    """
-
-    action_index: int
-    params: list[str]
-
-
 class ThoughtRecord(_Record):
     """The teacher's thought, as its agent's ``parse_react_thought`` read it.
 
@@ -218,10 +206,11 @@ class CanonicalStepSample(_Record):
     ``branch.checkpoint_step`` names the source run's step).
 
     ``teacher_actions`` are the step's *executed* actions, fully qualified,
-    with params projected onto what each action declares
-    (``dropped_params`` names the rest); ``actions`` is their translation
-    into the student's action space, or ``None`` with ``untranslatable``
-    saying why.
+    as recorded: their params were validated against each action's
+    ``Params`` before they ran (``ReactLoop.check_action_params``), so they
+    are what the action reads and nothing else. ``actions`` is their
+    translation into the student's action space, or ``None`` with
+    ``untranslatable`` saying why.
     """
 
     sample_id: str
@@ -240,7 +229,6 @@ class CanonicalStepSample(_Record):
     image: ImageRef | None = None
     history_steps: list[int] = Field(default_factory=list)
     teacher_actions: list[Action]
-    dropped_params: list[DroppedParams] = Field(default_factory=list)
     thought: ThoughtRecord | None = None
     actions: list[Action] | None = None
     untranslatable: Untranslatable | None = None
@@ -266,7 +254,6 @@ class CanonicalStepSample(_Record):
 __all__ = [
     "BranchSampleMeta",
     "CanonicalStepSample",
-    "DroppedParams",
     "FragmentRef",
     "ImageRef",
     "SampleLabels",

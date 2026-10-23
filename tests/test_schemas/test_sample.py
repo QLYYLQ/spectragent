@@ -11,7 +11,6 @@ from spectragent.schemas.action import Action
 from spectragent.schemas.sample import (
     BranchSampleMeta,
     CanonicalStepSample,
-    DroppedParams,
     FragmentRef,
     ImageRef,
     SampleLabels,
@@ -60,7 +59,6 @@ def _sample(*, params: dict[str, object] | None = None) -> CanonicalStepSample:
         teacher_actions=[
             Action(name="browser.click", params=params or {"index": 7}),
         ],
-        dropped_params=[DroppedParams(action_index=0, params=["reasoning"])],
         thought=ThoughtRecord(text="open the form", source_field="next_goal"),
         actions=[
             Action(name="browser.click_coordinate", params={"coordinate_x": 30, "coordinate_y": 40})

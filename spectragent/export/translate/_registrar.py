@@ -15,12 +15,12 @@ training label for a reply that fails.
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 from conscribe import create_registrar
 from pydantic import Field, ValidationError
 
-from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions._registrar import registered_params
 from spectragent.core.trace.reader import RunTrace
 from spectragent.export.errors import InvalidTranslationError
 from spectragent.schemas.action import Action
@@ -163,8 +163,7 @@ class ActionTranslatorBase(metaclass=ActionTranslatorRegistrar.Meta):
             InvalidTranslationError: No registered action has the name, or
                 the params do not validate.
         """
-        cls = ActionRegistrar.get_or_none(action.name)
-        params_model: Any = getattr(cls, "Params", None) if cls is not None else None
+        params_model = registered_params(action.name)
         if params_model is None:
             raise InvalidTranslationError(sample_id, action.name, "no registered action")
         try:

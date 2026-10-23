@@ -251,8 +251,8 @@ class TestPrepare:
         prepare_calls: list[tuple[str, list]] = []
 
         class SeedingAgent(SimpleAgent):
-            def prepare(self, task, action_descriptors):
-                prepare_calls.append((task, list(action_descriptors)))
+            def prepare(self, task, action_space):
+                prepare_calls.append((task, list(action_space.descriptors)))
                 return [seed]
 
         memory = MockMemory()
@@ -297,11 +297,11 @@ class TestSeedMessages:
         class SeedingAgent(SimpleAgent):
             __execution_limit_fields__ = frozenset({"max_actions_per_step"})
 
-            def prepare(self, task, action_descriptors, execution_limits):
+            def prepare(self, task, action_space, execution_limits):
                 calls.append(
                     {
                         "task": task,
-                        "names": sorted(d.name for d in action_descriptors),
+                        "names": sorted(d.name for d in action_space.descriptors),
                         "max_actions_per_step": execution_limits.max_actions_per_step,
                     }
                 )
@@ -610,9 +610,10 @@ class TestDescriptorContext:
 
 async def test_action_snapshots_cannot_change_the_guard_or_recorded_contract():
     class MutatingAgent(SimpleAgent):
-        def prepare(self, *, task, action_descriptors):
-            action_descriptors[0].params["changed"] = "changed"
-            action_descriptors.clear()
+        def prepare(self, *, task, action_space):
+            action_space.descriptors[0].params["changed"] = "changed"
+            action_space.descriptors.clear()
+            action_space.action_bindings["done"] = "changed.action"
             return []
 
     loop = _SpyLoop("snapshot", [])

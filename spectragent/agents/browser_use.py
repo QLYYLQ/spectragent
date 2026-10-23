@@ -73,9 +73,9 @@ from spectragent.agents._capture_state import (
 )
 from spectragent.agents._feedback_points import (
     StepGrids,
+    action_points,
     grid_point_writer,
     params_on_grid,
-    registered_point_params,
     stated_points,
 )
 from spectragent.agents._output_models import reasoning_fields
@@ -85,6 +85,7 @@ from spectragent.agents.prompt_context import (
     restored_history_message,
 )
 from spectragent.agents.prompts import load_prompt_fragment
+from spectragent.core.action_guard import executed_descriptor
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
@@ -96,6 +97,7 @@ from spectragent.schemas.action import (
     PointWriter,
     write_viewport_point,
 )
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
     PointGrid,
@@ -209,20 +211,6 @@ _MODES_WITH_IMAGE: frozenset[str] = frozenset({"dom_vision", "vision"})
 #: Which modes put the DOM tree in the model's message.
 _MODES_WITH_DOM: frozenset[str] = frozenset({"dom", "dom_vision"})
 
-#: Local id → the ``(x_param, y_param)`` pairs carrying a point the model
-#: reads off the *screenshot* while the capability executes it in its own
-#: viewport units. The param names are the descriptor's own; only the unit
-#: differs between what the model is taught and what the executor
-#: declares, and :meth:`BrowserUseAgent._points_to_viewport` is the one
-#: place that converts.
-_POINT_PARAMS: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
-    {
-        "click_coordinate": (("coordinate_x", "coordinate_y"),),
-        "type_coordinate": (("coordinate_x", "coordinate_y"),),
-        "drag": (("start_x", "start_y"), ("end_x", "end_y")),
-    }
-)
-
 #: What a coordinate param means, per grid. ``{axis}`` is ``x`` or ``y``
 #: and ``{edge}`` the edge it is measured from, so one sentence covers
 #: ``coordinate_x``, ``start_y`` and the rest.
@@ -283,10 +271,6 @@ _TERSE_VARIANTS: frozenset[str] = frozenset(
         "system_prompt_flash",
     }
 )
-
-
-def _local_id(name: str) -> str:
-    return name.rsplit(".", 1)[-1]
 
 
 #: The reasoning fields a reply's thought is read from, in precedence order
@@ -459,9 +443,7 @@ class BrowserUseAgent(AgentBase):
     # ── internal state populated by prepare() ──────────────────
     # ``task`` lives on every observation as ``obs.task.user_request``
     # (loop-source fragment), so the agent never holds its own copy.
-    _action_descriptors: list[ActionDescriptor] = field(
-        default_factory=list, init=False, repr=False
-    )
+    _action_space: ActionSpace = field(default_factory=ActionSpace, init=False, repr=False)
     _per_run_output_model: type[BaseModel] | None = field(
         default=None,
         init=False,
@@ -526,7 +508,7 @@ class BrowserUseAgent(AgentBase):
         """Domain action descriptors. The Capability owns the actual
         executable action set; this method just exposes them for
         introspection."""
-        return list(self._action_descriptors)
+        return list(self._action_space.descriptors)
 
     # ── Negotiation ────────────────────────────────────────────
 
@@ -575,7 +557,7 @@ class BrowserUseAgent(AgentBase):
     def prepare(
         self,
         task: str,
-        action_descriptors: list[ActionDescriptor],
+        action_space: ActionSpace,
         execution_limits: ExecutionLimits,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
@@ -589,11 +571,14 @@ class BrowserUseAgent(AgentBase):
         actually truncates. The agent must not carry its own copy: the
         prompt has to promise exactly what the loop will run.
 
-        The descriptors arrive already narrowed by negotiation, which the
-        mode steered — so there is nothing to filter here. What this does
-        build is the per-run output model: a closed union over exactly
-        these verbs, which is what makes "the prompt advertises what the
-        run can execute" true of the *schema* as well as the prose.
+        *action_space* is the run's effective action space, the one the
+        guard executes (``AgentRuntime.action_space``): its descriptors
+        arrive already narrowed by negotiation, which the mode steered — so
+        there is nothing to filter here — and its bindings say what a name
+        means in this run. What this does build is the per-run output model:
+        a closed union over exactly these verbs, which is what makes "the
+        prompt advertises what the run can execute" true of the *schema* as
+        well as the prose.
 
         Raises:
             UnsupportedParamsSchema: an action's params are outside the
@@ -602,7 +587,7 @@ class BrowserUseAgent(AgentBase):
         max_actions_per_step = execution_limits.max_actions_per_step
         if max_actions_per_step is None:
             raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
-        self._action_descriptors = list(action_descriptors)
+        self._action_space = action_space
         self._grid = None
         self._step_grids.clear()
         variant = self.select_prompt_variant()
@@ -809,22 +794,19 @@ class BrowserUseAgent(AgentBase):
 
     def _has_point_actions(self) -> bool:
         """Whether this run has a coordinate action, and so teaches the model a grid."""
-        return any(_local_id(d.name) in _POINT_PARAMS for d in self._action_descriptors)
+        return any(d.point_params for d in self._action_space.descriptors)
 
     # ── Writing the points of execution feedback ───────────────
 
     def _point_pairs(self, action: Action) -> list[tuple[str, str]]:
         """The ``(x, y)`` params of *action* that are a point, as its action declares them.
 
-        The registered ``Params``' points (a relative name looked up by the
-        one this run binds it to); an action the registry does not know has
-        the points :data:`_POINT_PARAMS` gives its verb, or none. A param is
-        never taken for a point from its name or value alone.
+        This run's descriptor's points (a relative name through the run's
+        bindings), else the registered ``Params``' (``action_points``); an
+        action neither knows has none. A param is never taken for a point
+        from its name or value alone.
         """
-        registered = registered_point_params(action, self._action_descriptors)
-        if registered is not None:
-            return registered
-        return list(_POINT_PARAMS.get(_local_id(action.name), ()))
+        return action_points(self._action_space, action.name) or []
 
     def _params_fed_back(
         self, params: dict[str, Any], action: Action, *, step: int
@@ -876,8 +858,8 @@ class BrowserUseAgent(AgentBase):
         """
         template = _POINT_DESCRIPTIONS[self.coordinate_space]
         relabel: dict[str, dict[str, str]] = {}
-        for descriptor in self._action_descriptors:
-            pairs = _POINT_PARAMS.get(_local_id(descriptor.name))
+        for descriptor in self._action_space.descriptors:
+            pairs = descriptor.point_params
             if not pairs:
                 continue
             labels: dict[str, str] = {}
@@ -900,8 +882,8 @@ class BrowserUseAgent(AgentBase):
         set would be forced to emit a ``thinking`` block its prompt never
         asked for.
         """
-        item, _models = action_union(self._action_descriptors, relabel=relabel)
-        allowed = ", ".join(d.name for d in self._action_descriptors)
+        item, _models = action_union(self._action_space.descriptors, relabel=relabel)
+        allowed = ", ".join(d.name for d in self._action_space.descriptors)
         # Dynamic field definitions are valid at runtime but exceed Pydantic's
         # overloads. Keep this typing escape local to the model construction.
         create_output_model: Any = create_model
@@ -935,7 +917,9 @@ class BrowserUseAgent(AgentBase):
         """
         dumped = item.model_dump(exclude_none=True)
         name, params = next(iter(dumped.items()))
-        pairs = _POINT_PARAMS.get(_local_id(name))
+        # The union's members are this run's descriptors, keyed by their names.
+        descriptor = executed_descriptor(self._action_space, name)
+        pairs = descriptor.point_params if descriptor is not None else ()
         if not pairs:
             return Action(name=name, params=params)
         return Action(name=name, params=self._points_to_viewport(name, params, pairs))
@@ -1060,7 +1044,7 @@ class BrowserUseAgent(AgentBase):
         else:
             params: dict[str, Any] = {
                 "max_actions": max_actions_per_step,
-                "action_list": _render_action_list(self._action_descriptors, relabel),
+                "action_list": _render_action_list(self._action_space.descriptors, relabel),
             }
             # The fine-tuned templates describe no surface, so handing
             # them one would be a param nothing renders — which

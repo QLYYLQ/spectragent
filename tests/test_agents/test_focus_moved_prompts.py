@@ -33,6 +33,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent
 
 _AGENTS: dict[str, type[Any]] = {
@@ -118,7 +119,7 @@ def _prepared(agent_id: str) -> Any:
     ]
     seed = agent.prepare(
         task="read the article",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return agent, seed

@@ -146,7 +146,6 @@ def write_trace(
             agent_reported_success=agent_reported_success,
             answer=answer,
             model_id=model_id,
-            action_history=[f"browser.click({{'index': {i}}})" for i in policy],
             metrics=AgentMetrics(
                 execution_ms=execution_ms,
                 steps=len(policy),

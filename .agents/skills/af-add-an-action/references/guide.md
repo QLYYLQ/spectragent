@@ -74,14 +74,24 @@ class Params(BaseModel):                                # scroll.py:46-64
     model_config = ConfigDict(extra="forbid")
     direction: Literal["up", "down", "left", "right"]
     amount: int | None = None
-    index: Annotated[int | None, RequiresFragment("browser.dom"),
+    index: Annotated[int | None, AddressesElement("browser.dom"),
                      PydanticField(description="scroll inside specific element")] = None
 ```
 
-This is the **single** source of three things (`_registrar.py:65-72`): the descriptor's
-`params_schema` (what the provider constrains on), the descriptor's `params` prose
-(what the prompt shows), and the action's fragment dependencies. Nothing hand-writes
-any of them.
+This is the **single** source of four things (`ActionBase` docstring in `_registrar.py`):
+the descriptor's `params_schema` (what the provider constrains on), the descriptor's
+`params` prose (what the prompt shows), the action's fragment dependencies, and what
+some params mean. Nothing hand-writes any of them.
+
+- **What a param means is a marker, never a name.** Mark the two params of a point with
+  `PointAxis(point, axis)` (`coordinate_x: Annotated[int, PointAxis("coordinate", "x")]`)
+  and a param whose value names an element with `AddressesElement(fragment)` (a
+  `RequiresFragment` subclass, so the dependency below follows from it). `describe()`
+  renders them into `ActionDescriptor.point_params` / `element_params`; Agents read them
+  there (through their `ActionSpace`, `core/action_guard.py::executed_descriptor`),
+  restoration, the export, the viewer's marks and lookahead read the same markers. An
+  `_x` / `_y` pair without `PointAxis` is not a point, and no reader keeps a list of
+  coordinate or index actions (`docs/architecture_design.md` §4.5 "参数的含义").
 
 - `RequiresFragment` (`core/actions/params.py:59`) is a value, not a string, so a typo
   is a name error (pinned: `test_action_params_schema.py:339`). Fully qualified — only

@@ -13,6 +13,7 @@ from typing import Any
 
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation import fragments as _  # noqa: F401
 from spectragent.schemas.observation.dynamic_model import build_observation_model
 
@@ -136,6 +137,7 @@ def _drive(
         "llm": _FakeLLM(completions),
         "memory": _FakeMemory(),
         "act_fn": env.act,
+        "action_space": ActionSpace(),
         "negotiated_obs": negotiated,
         "task_id": "task-1",
     }

@@ -312,7 +312,6 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             answer=answer,
             error=error,
             model_id=run.identity.model_id,
-            action_history=run.action_history,
             metrics=AgentMetrics(steps=run.policy_steps),
         )
 

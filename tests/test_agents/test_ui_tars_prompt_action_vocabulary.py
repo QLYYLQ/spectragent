@@ -41,11 +41,10 @@ import pytest
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.prompts import agent_prompt_variants
 from spectragent.agents.ui_tars import (
-    _ACTION_TO_VERB,
     _VERB_TABLE,
     UITarsAgent,
 )
-from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.action_guard import build_guarded_act, executed_name
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
@@ -129,12 +128,21 @@ def harness() -> tuple[UITarsAgent, Any, dict[str, Any]]:
         assert impl is not None, f"{action.name} did not route to a capability action"
         return await impl.execute(action.params, capability=fake)  # type: ignore[arg-type]
 
-    _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
+    space, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
     agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
-    return agent, guard, {"descriptors": descriptors, "scope": fake._scopes["sid_main"]}
+    return (
+        agent,
+        guard,
+        {"descriptors": descriptors, "space": space, "scope": fake._scopes["sid_main"]},
+    )
 
 
-async def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
+def _verb_of(agent: UITarsAgent) -> dict[str, str]:
+    """Run action name → the verb a prepared agent offers for it (the bindings' answer)."""
+    return {descriptor.name: verb for verb, descriptor in agent._bound.items()}
+
+
+async def _rendered(agent: UITarsAgent, space: Any, variant: Any) -> str:
     """Prepare the agent with *variant* and show it one DPR-1 screenshot.
 
     ``Any`` because ``_VARIANTS`` is read off the disk at import time, so a
@@ -144,7 +152,7 @@ async def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) ->
     agent.prompt_template = variant
     prompt = agent.prepare(
         task="t",
-        action_descriptors=descriptors,
+        action_space=space,
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )[0].content
     assert isinstance(prompt, str)
@@ -184,7 +192,7 @@ class TestPromptVocabulary:
             "is empty, so every loop in this file passes without running"
         )
         for variant in _VARIANTS:
-            calls = _TAUGHT_CALL.findall(await _rendered(agent, extra["descriptors"], variant))
+            calls = _TAUGHT_CALL.findall(await _rendered(agent, extra["space"], variant))
             assert len(calls) == len(extra["descriptors"]), variant
 
     async def test_the_prompt_teaches_the_negotiated_set_and_nothing_else(self, harness) -> None:
@@ -196,12 +204,14 @@ class TestPromptVocabulary:
         DOM element``, the block said ``type(content=..., point=...)``.
         """
         agent, _guard, extra = harness
-        expected = {d.name.rsplit(".", 1)[-1] for d in extra["descriptors"]}
+        expected = {d.name for d in extra["descriptors"]}
         for variant in _VARIANTS:
-            prompt = await _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["space"], variant)
             verbs = {c.split("(", 1)[0] for c in _TAUGHT_CALL.findall(prompt)}
             actions = {
-                agent.parse_react_output(f"Action: {_concrete(call)}")[0].name
+                executed_name(
+                    extra["space"], agent.parse_react_output(f"Action: {_concrete(call)}")[0].name
+                )
                 for call in _TAUGHT_CALL.findall(prompt)
             }
             assert actions == expected, variant
@@ -220,12 +230,12 @@ class TestPromptVocabulary:
         """
         agent, _guard, extra = harness
         for variant in _VARIANTS:
-            prompt = await _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["space"], variant)
             assert "# Coordinates" in prompt, variant
             assert "CSS px" not in prompt, variant
             for descriptor in extra["descriptors"]:
-                verb = _VERB_TABLE[_ACTION_TO_VERB[descriptor.name.rsplit(".", 1)[-1]]]
-                converted = {key for pair in verb.points for key in pair}
+                verb = _VERB_TABLE[_verb_of(agent)[descriptor.name]]
+                converted = {key for pair in descriptor.point_params for key in pair}
                 for param in verb.fills:
                     rendered = f"{param}: {descriptor.params[param]}"
                     if param in converted:
@@ -241,9 +251,14 @@ class TestPromptVocabulary:
         ``type`` could require ``index``, receive ``content``, and pass
         every test in the suite.
         """
-        _agent, _guard, extra = harness
+        agent, _guard, extra = harness
+        agent.prepare(
+            task="t",
+            action_space=extra["space"],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         for descriptor in extra["descriptors"]:
-            verb = _VERB_TABLE[_ACTION_TO_VERB[descriptor.name.rsplit(".", 1)[-1]]]
+            verb = _VERB_TABLE[_verb_of(agent)[descriptor.name]]
             declared = set(descriptor.params)
             assert set(verb.fills) <= declared, descriptor.name
             required = {
@@ -264,7 +279,7 @@ class TestPromptVocabulary:
         """
         agent, guard, extra = harness
         for variant in _VARIANTS:
-            prompt = await _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["space"], variant)
             for call in _TAUGHT_CALL.findall(prompt):
                 actions = agent.parse_react_output(f"Action: {_concrete(call)}")
                 assert len(actions) == 1, call
@@ -275,7 +290,7 @@ class TestPromptVocabulary:
     async def test_typing_carries_the_text_not_the_empty_string(self, harness) -> None:
         """The second, independent breakage: ``content`` vs ``text``."""
         agent, guard, extra = harness
-        (await _rendered(agent, extra["descriptors"], _VARIANTS[0]))
+        (await _rendered(agent, extra["space"], _VARIANTS[0]))
         actions = agent.parse_react_output("Action: type(content='hello world', point='(10, 20)')")
         result = await guard(actions[0])
         assert result.success
@@ -292,6 +307,6 @@ class TestPromptVocabulary:
         """
         agent, _guard, extra = harness
         for variant in _VARIANTS:
-            prompt = await _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["space"], variant)
             for verb in ("long_press", "open_app", "press_home", "press_back"):
                 assert verb not in prompt, variant

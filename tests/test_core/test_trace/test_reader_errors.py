@@ -59,7 +59,7 @@ JSON_INPUTS: dict[str, tuple[str, Read, bytes]] = {
     "result": (
         "result.json",
         lambda d: _trace(d).result,
-        b'{"schema_version": "4.0", "task_id": "t"}',
+        b'{"schema_version": "5.0", "task_id": "t"}',
     ),
     "step via step()": ("steps/000.json", lambda d: _trace(d).step(0), b'{"step": "zero"}'),
     "step via step_records": (

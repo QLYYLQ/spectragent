@@ -15,9 +15,11 @@ from spectragent.core.capabilities.browser.effects import (
 )
 from spectragent.core.trace.reader import RunTrace
 from spectragent.inspection.marks import (
+    ACTION_VERBS,
     MarkRequest,
     action_lines,
     action_text,
+    action_verb,
     default_requests,
     marks_on,
     observation_marks,
@@ -230,3 +232,16 @@ def test_a_missing_step_is_a_set_problem(run: RunTrace) -> None:
     geometry, _ = default_requests(run, "r", 0, None, None)
     found = marks_on(geometry, [MarkRequest("r", 9)], lambda key: run)
     assert found.sets[0].problem == "这次运行没有已提交的第 9 步"
+
+
+@pytest.mark.parametrize("name", sorted(set(ACTION_VERBS) - {"browser.done"}))
+def test_each_line_says_the_verb_the_viewer_labels_its_step_with(name: str) -> None:
+    # One wording: the line and the step label (the run API's action_verbs) agree.
+    assert action_verb(name) in action_text(Action(name=name), None)
+
+
+def test_an_action_without_a_verb_keeps_its_recorded_name() -> None:
+    assert action_verb("desktop.click") == "desktop.click"
+    assert action_text(Action(name="desktop.click", params={"x": 1}), None) == (
+        'desktop.click {"x": 1}'
+    )

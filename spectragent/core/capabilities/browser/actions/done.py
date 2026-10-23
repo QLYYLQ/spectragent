@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import TaskClaim
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ class DoneAction(ActionBase):
         #: leaves it unset rather than inventing ``true``.
         success: Annotated[
             bool | None,
+            TaskClaim(),
             PydanticField(
                 description="whether the task was accomplished; leave it unset if you cannot tell"
             ),

@@ -41,6 +41,7 @@ from spectragent.core.llm.schema.optimizer import (
     SchemaOptimizer,
 )
 from spectragent.core.loops.react import ReactLoop
+from tests._helpers.action_spaces import space_of
 from tests._helpers.llm_clients import FakeClient, FakeGenaiClient
 
 # ── shared fixtures ────────────────────────────────────────────────
@@ -59,7 +60,7 @@ def _agent_output_model() -> type[BaseModel]:
     agent.prepare(
         task="t",
         execution_limits=ReactLoop().execution_limits(),
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
     )
     model = agent.get_react_output_model()
     assert model is not None

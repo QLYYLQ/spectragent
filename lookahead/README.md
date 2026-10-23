@@ -328,7 +328,8 @@ with the reason, and stay out of every statistic, table and queue item; the
 report lists them by count and reason.
 
 - **Rules**, deciding only on strong evidence: action types (`click` =
-  `click_coordinate`, `type` = `type_coordinate`; waits are ignored); a pointer
+  `click_coordinate`, `type` = `type_coordinate`, the coordinate counterparts
+  the training export translates between; waits are ignored); a pointer
   hit is `same` for the same role and readable name at nearby points (48 CSS
   px), `different` only when both hits are named interactive targets (a click
   on a card's image and one on its title may be the same choice: `unknown`);

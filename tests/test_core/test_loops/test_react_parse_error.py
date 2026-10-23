@@ -14,6 +14,7 @@ from typing import Any
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 
 
 def _make_loop(
@@ -121,6 +122,7 @@ class TestParseErrorRecovery:
             "llm": _FakeLLM(["bad", "good"]),
             "memory": _FakeMemory(),
             "act_fn": _FakeEnv().act,
+            "action_space": ActionSpace(),
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_Agent(), "test", ctx=ctx))
@@ -159,6 +161,7 @@ class TestParseErrorRecovery:
             "llm": _FakeLLM(["a"] * 10),
             "memory": _FakeMemory(),
             "act_fn": _FakeEnv().act,
+            "action_space": ActionSpace(),
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_Agent(), "test", ctx=ctx))
@@ -191,6 +194,7 @@ class TestParseErrorTermination:
             "llm": _FakeLLM(["x"] * 10),
             "memory": _FakeMemory(),
             "act_fn": _FakeEnv().act,
+            "action_space": ActionSpace(),
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_AlwaysFail(), "test", ctx=ctx))
@@ -226,6 +230,7 @@ class TestParseErrorTermination:
             "llm": _FakeLLM(["x", "y"]),
             "memory": mem,
             "act_fn": _FakeEnv().act,
+            "action_space": ActionSpace(),
             "task_id": "t",
         }
         asyncio.run(loop._execute(_FailOnce(), "test", ctx=ctx))
@@ -265,6 +270,7 @@ class TestParseErrorTermination:
             "llm": _FakeLLM(["x", "y"]),
             "memory": _FakeMemory(),
             "act_fn": _FakeEnv().act,
+            "action_space": ActionSpace(),
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_FailThenDone(), "test", ctx=ctx))

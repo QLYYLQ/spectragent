@@ -317,18 +317,18 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
     descriptors = [
         a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
     ]
+    env = _Env2(_observation())
+    space, act_fn = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
     agent.memory.add_messages(
         agent.prepare(
             task="Find the answer",
-            action_descriptors=descriptors,
+            action_space=space,
             execution_limits=ReactLoop().execution_limits(),
         )
     )
 
     endpoint = _Endpoint(replies_for(descriptors), reasoning=reasoning)
     llm = _Recording(endpoint.llm())
-    env = _Env2(_observation())
-    _kept, act_fn = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
     result = await ReactLoop(max_steps=3)._execute(
         agent,
         "Find the answer",
@@ -337,6 +337,7 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
             "llm": llm,
             "memory": agent.memory,
             "act_fn": act_fn,
+            "action_space": space,
             "negotiated_obs": _Negotiated(),
             "task_id": f"reasoning-{agent_kind}",
         },

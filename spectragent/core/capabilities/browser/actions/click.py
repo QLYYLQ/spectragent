@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.actions.params import RequiresFragment
+from spectragent.core.actions.params import AddressesElement
 from spectragent.core.capabilities.browser.actions._common import (
     effect_from,
     focused_scope,
@@ -48,7 +48,7 @@ class ClickAction(SettleableAction, ActionBase):
 
         index: Annotated[
             int,
-            RequiresFragment("browser.dom"),
+            AddressesElement("browser.dom"),
             PydanticField(description="element index from selector_map"),
         ]
 

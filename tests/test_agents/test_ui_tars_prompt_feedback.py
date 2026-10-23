@@ -16,6 +16,7 @@ from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.action_spaces import wired_space
 from tests._helpers.branch_browser import TASK, FakeBrowserCap, drive, source_loop
 
 
@@ -50,7 +51,9 @@ def observation(*, platform: str = "macos", history: list[StepRecord] | None = N
 
 def seed(agent: UITarsAgent, task: str = TASK):
     return agent.prepare(
-        task=task, action_descriptors=[], execution_limits=ExecutionLimits(max_actions_per_step=4)
+        task=task,
+        action_space=wired_space(UITarsAgent),
+        execution_limits=ExecutionLimits(max_actions_per_step=4),
     )
 
 
@@ -172,6 +175,7 @@ async def test_partial_batch_does_not_claim_missing_results_or_repeat_old_batche
         error="second action raised before returning",
     )
     agent = UITarsAgent()
+    seed(agent)
     # Step 3's prompt is built first: its batch is written on that step's grid.
     await agent.build_react_prompt(
         observation(history=[before]), context=ReactPromptContext(step=3, phase="policy")

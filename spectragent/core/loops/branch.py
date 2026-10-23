@@ -11,15 +11,15 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
-from spectragent.core.action_guard import resolve_action_name
+from spectragent.core.action_guard import executed_name
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.loops._loop_fragments import (
     loop_fragment_builders,
@@ -78,22 +78,20 @@ COMPARED_LOOP_SETTINGS = ("max_actions_per_step",)
 class BranchRun(ReactRun):
     """A branch run's books: a :class:`LoopRun` plus its source.
 
+    The replay learns the name the guard gave each action it was handed —
+    the name the source's record carries — from this run's action space
+    (:func:`~spectragent.core.action_guard.executed_name` over
+    ``action_space``). This run's guard stands in for the source's:
+    ``weave`` proved the negotiation equal, and the seed check the seeded
+    prompt, which carries the action table the guard was built from (for an
+    agent that renders one).
+
     Attributes:
         source: The checkpoint's source run.
         step_info: The ``loop.step_info`` the source recorded at the
             checkpoint step, which pins what the policy steps are told about
             the step budget and the date (``None`` when the source recorded
             none).
-        action_names: What this run's ``guarded_act`` executes (its
-            descriptors' names, after any ``action_filter``).
-        action_bindings: The short-name bindings it resolves with. With
-            ``action_names``, what the replay hands
-            :func:`~spectragent.core.action_guard.resolve_action_name` to
-            learn the name the guard gave each action it was handed — the
-            name the source's record carries. This run's guard stands in
-            for the source's: ``weave`` proved the negotiation equal, and
-            the seed check the seeded prompt, which carries the action table
-            the guard was built from (for an agent that renders one).
     """
 
     source: SourceRun
@@ -102,8 +100,6 @@ class BranchRun(ReactRun):
     checkpoint_observation: Any = None
     checkpoint_check: RestorationCheck | None = None
     step_info: StepInfoObs | None = None
-    action_names: frozenset[str] = frozenset()
-    action_bindings: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def checkpoint_step(self) -> int:
@@ -395,7 +391,6 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         """Rebuild the context, restore the environment, decide step *t*, continue."""
         source: SourceRun = ctx["branch_source"]
         t = source.checkpoint.step
-        negotiated_actions = ctx.get("negotiated_actions")
         run = BranchRun.from_ctx(
             agent,
             task,
@@ -403,8 +398,6 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             source=source,
             step_executor=ctx.get("step_executor", self),
             step_info=source.step_info(t),
-            action_names=frozenset(d.name for d in ctx.get("active_descriptors") or ()),
-            action_bindings=dict(getattr(negotiated_actions, "action_bindings", None) or {}),
         )
         if self.history_source == "source":
             self._check_seed(run)
@@ -601,14 +594,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         # The parser names actions as the agent does; the record names them
         # as ``guarded_act`` left them — qualified in place when it resolved
         # one, as the agent wrote it when it refused one. The guard's own
-        # rule says which (``resolve_action_name``).
-        named = [
-            (
-                resolve_action_name(a.name, run.action_names, run.action_bindings) or a.name,
-                a.params,
-            )
-            for a in kept
-        ]
+        # rule says which (``executed_name``).
+        named = [(executed_name(run.action_space, a.name) or a.name, a.params) for a in kept]
         recorded = [(a.name, a.params) for a in record.actions]
         mismatches: dict[str, tuple[Any, Any]] = {}
         if named != recorded:

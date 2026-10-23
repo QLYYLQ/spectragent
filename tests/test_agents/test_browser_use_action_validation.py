@@ -29,6 +29,7 @@ from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import ActionDescriptor
+from tests._helpers.action_spaces import space_of
 
 
 def _descriptors(*keys: str) -> list[ActionDescriptor]:
@@ -48,7 +49,7 @@ class TestClosedUnion:
         agent = BrowserUseAgent(flash_mode=True)
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(*keys),
+            action_space=space_of(_descriptors(*keys)),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         return agent.get_react_output_model()
@@ -158,7 +159,7 @@ class TestClosedUnion:
         with pytest.raises(ValueError, match="at least one negotiated action"):
             agent.prepare(
                 task="t",
-                action_descriptors=[],
+                action_space=space_of([]),
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
             )
 
@@ -186,7 +187,7 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseAgent(flash_mode=True)
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors("browser.done"),
+            action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert list(agent.get_react_output_model().model_fields) == ["memory", "action"]
@@ -195,7 +196,7 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseAgent(flash_mode=False, use_thinking=True)
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors("browser.done"),
+            action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert list(agent.get_react_output_model().model_fields) == [
@@ -212,7 +213,7 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseAgent(flash_mode=False, use_thinking=False)
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors("browser.done"),
+            action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert "thinking" not in agent.get_react_output_model().model_fields
@@ -225,7 +226,7 @@ class TestRenderActionList:
     def _render(self, agent: BrowserUseAgent, *keys: str) -> str:
         seed = agent.prepare(
             task="t",
-            action_descriptors=_descriptors(*keys),
+            action_space=space_of(_descriptors(*keys)),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         return str(seed[0].content)

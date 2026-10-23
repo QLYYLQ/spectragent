@@ -33,6 +33,7 @@ from spectragent.core.loops.errors import UnrepresentableActionError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent
 
 #: Every action UI-TARS has a verb for, as the browser capability names them.
@@ -80,7 +81,7 @@ async def _agent(space: str = "screenshot_pixels", *, dpr: int = 1, **config: An
     ]
     agent.prepare(
         task="tick the box",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     (
@@ -315,13 +316,16 @@ class TestUnrepresentable:
         )
         assert _round_trip(agent, action).params["text"] == "a"
 
-    async def test_a_verb_ui_tars_has_no_word_for(self) -> None:
+    async def test_an_action_this_run_does_not_execute_has_no_call(self) -> None:
+        # Which run action a verb means is the run's bindings' answer: an action
+        # outside the run has no verb, and the refusal says what each verb runs as.
         with pytest.raises(UnrepresentableActionError) as excinfo:
             (await _agent()).format_react_output(
                 [Action(name="browser.navigate", params={"url": "u"})]
             )
         assert excinfo.value.params == ()
-        assert "no verb" in excinfo.value.detail
+        assert "this run does not execute it" in excinfo.value.detail
+        assert "click() runs as browser.click_coordinate" in excinfo.value.detail
 
     async def test_a_verb_this_run_did_not_negotiate(self) -> None:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
@@ -331,7 +335,7 @@ class TestUnrepresentable:
         ]
         agent.prepare(
             task="t",
-            action_descriptors=descriptors,
+            action_space=space_of(descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         (
@@ -339,7 +343,7 @@ class TestUnrepresentable:
                 _observation(1), context=ReactPromptContext(step=0, phase="policy")
             )
         )
-        with pytest.raises(UnrepresentableActionError, match="did not negotiate drag"):
+        with pytest.raises(UnrepresentableActionError, match="does not execute it"):
             agent.format_react_output(
                 [
                     Action(
@@ -364,7 +368,7 @@ class TestUnrepresentable:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         agent.prepare(
             task="t",
-            action_descriptors=[ActionRegistrar.get("browser.click_coordinate")().descriptor()],
+            action_space=space_of([ActionRegistrar.get("browser.click_coordinate")().descriptor()]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         (

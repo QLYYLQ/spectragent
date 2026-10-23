@@ -368,7 +368,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 - `length: { max_tokens: 65536 }`：学生每轮都保留截图，30 步的整段在 1280×720 上光图像约 36k token。有记录超出预算时，导出失败并点名这条记录，从不截断；训练器的上下文更短时，换一个 `max_steps` 更小的学生。
 - `output_dir`：发布值 `datasets/sft_v1`，相对工作目录；已存在就拒绝。
 
-学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。结束步也要看 agent 有没有说任务完成了没有：BrowserUse、Skyvern 录下的 `done` 通常带着这个结论（`success: true` 或 `false`），UI-TARS 学生的 `finished()` 写不出任何结论，所以这样的结束步不可译，原因是 `unrepresentable`；UI-TARS 自己录下的结束步没有结论，照常导出（[architecture_design.md](architecture_design.md) §4.1 "agent 的任务结论"、§4.15 "round-trip"）。
+学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。结束步也要看 agent 有没有说任务完成了没有：BrowserUse、Skyvern 录下的 `done` 通常带着这个结论（`success: true` 或 `false`），UI-TARS 学生的 `finished()` 写不出任何结论。说完成了的（`true`）照常导出，写成 `finished(...)`，`samples.jsonl` 里这个样本的 `render.claim_not_written` 是 `true`；说没完成的（`false`）不可译，原因是 `unrepresentable`；UI-TARS 自己录下的结束步没有结论，照常导出（[architecture_design.md](architecture_design.md) §4.1 "agent 的任务结论"、§4.15 "round-trip"）。
 
 样本是至少执行了一个动作、没有出错的策略步。动作失败的步照样导出，标 `labels.step_status: action_failed`。分叉 run 导出它的策略步，上下文是源 run 的前缀；同一组里检查点步动作相同的样本标 `duplicate_of`，不删。产物先写进 `<output_dir>.partial/`，图片数、坐标范围、参考答案泄漏、凭证形状和长度的检查全部通过才改名：
 
@@ -377,7 +377,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 | `train.jsonl`、`validation.jsonl` | 每行 `{"id", "messages"}`，assistant 轮带 `weight`（目标轮 1，较早的轮 0）；只写有样本的切分 |
 | `train.samples.jsonl` 等 | 同序的 canonical 样本和渲染元数据（来源、翻译记录、量化误差） |
 | `images/<sha256><后缀>` | 截图，每张只存一份 |
-| `manifest.json` | 格式 `af-sft-2`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
+| `manifest.json` | 格式 `af-sft-3`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
 
 同样的输入导出两次，输出逐字节相同。CLI 打印每个切分的样本数和按原因丢弃的步数；失败时退出码非 0，什么也不写。要评测训练出来的学生，复制一份学生配置，把 `llm` 指向训练好的模型，再加上 `trace_writer` hook；导出拒绝带 hook 的学生配置，所以评测用的那份单独放。
 

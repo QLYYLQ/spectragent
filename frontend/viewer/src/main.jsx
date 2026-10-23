@@ -1388,7 +1388,7 @@ function Trajectory({ run, route, revision }) {
             </div>
             <span className="action-name">
               {run.config.recording.trajectory
-                ? actionLabel(step)
+                ? actionLabel(step, run.action_verbs)
                 : "未记录动作"}
             </span>
             {step.gap && (
@@ -2117,7 +2117,7 @@ function EvidenceColumn({ summary, revision }) {
                   <option key={item.step} value={item.step}>
                     {item.step} · {statusLabel(item.origin)} ·{" "}
                     {data.config.recording.trajectory
-                      ? actionLabel(item)
+                      ? actionLabel(item, data.action_verbs)
                       : "未记录动作"}
                   </option>
                 ))}

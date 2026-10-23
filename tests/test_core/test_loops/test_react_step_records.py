@@ -15,6 +15,7 @@ from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation import build_observation_model
 from spectragent.schemas.observation.fragments import TaskObs
 
@@ -112,6 +113,7 @@ def _ctx(*, env, llm, memory, act_fn, negotiated, recorder, task_id="t-1"):
         "llm": llm,
         "memory": memory,
         "act_fn": act_fn,
+        "action_space": ActionSpace(),
         "negotiated_obs": negotiated,
         "step_recorder": recorder,
         "task_id": task_id,

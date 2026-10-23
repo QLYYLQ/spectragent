@@ -39,6 +39,7 @@ from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import ObservationNegotiationResult
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation._registrar import FragmentBase
 from tests._helpers.assembly import make_env
 
@@ -184,6 +185,7 @@ def _ctx(*, env: Any, llm: Any, memory: Any, act_fn: Any, recorder: Any) -> dict
         "llm": llm,
         "memory": memory,
         "act_fn": act_fn,
+        "action_space": ActionSpace(),
         "negotiated_obs": _NEGOTIATED,
         "step_recorder": recorder,
         "task_id": "t-1",

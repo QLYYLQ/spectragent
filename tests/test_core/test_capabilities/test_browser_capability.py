@@ -841,7 +841,7 @@ class TestFailedSetupReleasesResources:
             __execution_limit_fields__ = frozenset()
             __wiring__ = {"action": ("action", ["browser.done"])}
 
-            def prepare(self, *, task, action_descriptors):
+            def prepare(self, *, task, action_space):
                 return []
 
             async def build_react_prompt(self, obs, *, context: ReactPromptContext):

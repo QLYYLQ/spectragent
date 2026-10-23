@@ -15,6 +15,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from collections.abc import Set as AbstractSet
 from typing import Any
 
+from pydantic import ValidationError
+
+from spectragent.core.actions._registrar import registered_params
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 
@@ -47,6 +50,66 @@ def resolve_action_name(
         return name
     full = (bindings or {}).get(name)
     return full if full is not None and full in active_names else None
+
+
+def executed_name(space: ActionSpace, name: str) -> str | None:
+    """The fully-qualified name *space*'s guard executes an action called *name* as, or ``None``.
+
+    :func:`resolve_action_name` over the space's guarded names and its
+    bindings: the one naming helper for an Agent. An Agent that has to know
+    which of its run's actions one of its own names means (UI-TARS's
+    ``click`` verb is ``click_coordinate``), or which run action a recorded
+    name is, asks this, never the name's suffix: the bindings are computed
+    once, at negotiation, and a short name two capabilities offer binds to
+    neither (``docs/architecture_design.md`` §4.5).
+    """
+    return resolve_action_name(name, space.allowed_actions, space.action_bindings)
+
+
+def executed_descriptor(space: ActionSpace, name: str) -> ActionDescriptor | None:
+    """The descriptor of the action called *name* executes as in *space* (:func:`executed_name`).
+
+    ``None`` when the guard would refuse *name*. The descriptor says what the
+    action's params mean in this run (``point_params``, ``element_params``).
+    """
+    full = executed_name(space, name)
+    if full is None:
+        return None
+    return next(descriptor for descriptor in space.descriptors if descriptor.name == full)
+
+
+def params_refusal(space: ActionSpace, action: Action) -> str | None:
+    """Why *action*'s params break the ``Params`` of the action it executes as, or ``None``.
+
+    The check every parsed action passes before it runs
+    (``ReactLoop.check_action_params``): its params validated against the
+    ``Params`` model of the action *space*'s guard executes it as. The answer
+    is written for the model that wrote the action: each problem by param
+    (``index: Field required``, ``reasoning: Extra inputs are not
+    permitted``), then what the action takes in this run, from its
+    descriptor. ``None`` when the params fit, when the guard would refuse the
+    name itself (it says so when the action is executed), and when the action
+    has no registered ``Params`` to check against.
+    """
+    descriptor = executed_descriptor(space, action.name)
+    if descriptor is None:
+        return None
+    params = registered_params(descriptor.name)
+    if params is None:
+        return None
+    try:
+        params.model_validate(action.params)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'params'}: {error['msg']}"
+            for error in exc.errors()
+        )
+        takes = (
+            ", ".join(f"{name}: {text}" for name, text in descriptor.params.items())
+            or "no parameters"
+        )
+        return f"{action.name}: {problems} ({descriptor.name} takes {takes})"
+    return None
 
 
 async def _reject_action(action: Action, active_names: frozenset[str]) -> ActionResult:
@@ -119,8 +182,8 @@ def build_guarded_act(
             return await _reject_action(action, active_names)
         if full != action.name:
             # Resolve in place, not onto a copy: the caller keeps this
-            # object and is the one that writes it into ``StepRecord``
-            # and ``AgentResult.action_history``. A copy would leave the
+            # object and is the one that writes it into ``StepRecord``.
+            # A copy would leave the
             # trace naming a provider-less verb for an action some
             # specific capability executed — the provenance loss the
             # observation axis already refuses.

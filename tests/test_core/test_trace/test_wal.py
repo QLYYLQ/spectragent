@@ -222,7 +222,7 @@ class TestWALWriter:
         wal.write_result(agent_result())
         on_disk = json.loads((wal.run_dir / "result.json").read_text())
         assert on_disk["answer"] == "42"
-        assert on_disk["schema_version"] == "4.0"
+        assert on_disk["schema_version"] == "5.0"
 
     def test_finalize_complete(self, wal, config):
         wal.init_run(config)
