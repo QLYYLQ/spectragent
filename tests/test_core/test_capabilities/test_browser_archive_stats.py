@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +20,14 @@ import pytest
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities.browser.archive_stats import (
     BodyCompleteness,
+    ReplayNearMisses,
+    SiteRuleCandidate,
     body_completeness,
     challenge_documents,
     challenge_signals,
+    failure_association,
     near_misses,
+    not_feeding_page_counts,
     revisit_saving,
     site_rule_candidates,
 )
@@ -251,21 +256,27 @@ JSON = "application/json"
 
 
 def _source(
-    *requests: tuple[str, str, bytes | None], rules: SiteRules | None = None
+    *requests: tuple[str, str, bytes | None] | tuple[str, str, bytes | None, dict[str, Any]],
+    rules: SiteRules | None = None,
 ) -> RecordedArchive:
-    """An in-memory source archive: one record ``r<i>`` per ``(method, url, body)``, keyed with *rules*."""
+    """An in-memory source archive: one record ``r<i>`` per ``(method, url, body[, fields])``.
+
+    Keyed with *rules*; *fields* are the record's other facts (``status``,
+    ``resource_type``, ``payload_length``).
+    """
     rules = rules if rules is not None else SiteRules()
     records = [
         indexed(
-            url,
+            request[1],
             record_id=f"r{i}",
             order=i,
-            method=method,
-            body=body,
-            content_type=JSON if body is not None else None,
-            rule=rules.for_request(method, url),
+            method=request[0],
+            body=request[2],
+            content_type=JSON if request[2] is not None else None,
+            rule=rules.for_request(request[0], request[1]),
+            **(request[3] if len(request) > 3 else {}),
         )
-        for i, (method, url, body) in enumerate(requests)
+        for i, request in enumerate(requests)
     ]
     return RecordedArchive(
         run_id="source",
@@ -290,6 +301,29 @@ def _body_miss(
         record_ids=[f"r{record}"],
         body_key=keys.body_key,
     )
+
+
+Decisions = Sequence[tuple[int | None, ReplayLogEntry, int]]
+
+
+def _ranked(
+    source: RecordedArchive,
+    *runs: Decisions,
+    checks: dict[int, bool] | None = None,
+    site: str = SHOP,
+) -> list[SiteRuleCandidate]:
+    """``site_rule_candidates`` over *runs*, each replayed from *source* with the same *checks*."""
+    return site_rule_candidates(
+        ReplayNearMisses(
+            run=f"run-{i}", site=site, misses=near_misses(run, source), checks=checks or {}
+        )
+        for i, run in enumerate(runs)
+    )
+
+
+def _each_its_own_run(source: RecordedArchive, decisions: Decisions) -> list[SiteRuleCandidate]:
+    """Every decision in a run of its own: each counts once, as one request did before."""
+    return _ranked(source, *([decision] for decision in decisions))
 
 
 def test_near_misses_count_by_endpoint_and_differing_parameter() -> None:
@@ -376,24 +410,43 @@ def test_near_misses_count_by_endpoint_and_differing_parameter() -> None:
         ),
     ]
 
-    found = site_rule_candidates(near_misses(decisions, source))
+    found = _ranked(source, decisions)
 
-    assert [(c.host, c.method, c.path, c.misses, dict(c.query)) for c in found] == [
-        ("shop.test", "GET", "/data.json", 4, {"page": 3, "session": 4}),
-        ("news.test", "GET", "/p", 1, {"visit": 1}),
-        ("shop.test", "GET", "/other.json", 1, {"session": 1}),
-    ], "most near misses first; an endpoint is host, method and path, not the host alone"
-    assert [(f.query, f.body, f.misses) for f in found[0].field_sets] == [
-        (("page", "session"), (), 3),
+    assert [(c.host, c.method, c.path, c.runs, c.requests, dict(c.query)) for c in found] == [
+        ("news.test", "GET", "/p", 1, 1, {"visit": 1}),
+        ("shop.test", "GET", "/data.json", 1, 4, {"page": 1, "session": 1}),
+        ("shop.test", "GET", "/other.json", 1, 1, {"session": 1}),
+    ], "an endpoint is host, method and path, not the host alone; equal ranks by host and path"
+    assert [(f.query, f.body, f.runs) for f in found[1].field_sets] == [
+        (("page", "session"), (), 1),
         (("session",), (), 1),
-    ], "the fields that differed together, most frequent combination first"
+    ], "the fields that differed together, each combination once per run"
+
+
+def test_counts_are_in_replay_runs_not_requests() -> None:
+    """A request a page repeats every second counts once per run, like one it sends once."""
+    source = _source(
+        ("GET", f"{SHOP}/poll?t=1", None),
+        ("GET", f"{SHOP}/search?q=a&s=1", None),
+    )
+    poll = _miss(f"{SHOP}/poll?t=2", candidates=[f"{SHOP}/poll?t=1"], record_ids=["r0"])
+    search = _miss(
+        f"{SHOP}/search?q=a&s=2", candidates=[f"{SHOP}/search?q=a&s=1"], record_ids=["r1"]
+    )
+
+    found = _ranked(source, [(1, poll, 1000)], [(1, search, 1)], [(2, search, 1)])
+
+    assert [(c.path, c.runs, c.requests) for c in found] == [
+        ("/search", 2, 2),
+        ("/poll", 1, 1000),
+    ], "two runs beat a thousand requests in one"
 
 
 def test_cache_shaped_parameters_remain_candidates_without_an_explicit_rule() -> None:
     """A counter-shaped parameter is not globally assumed irrelevant to content."""
     source = _source(("GET", f"{SHOP}/poll?_=2&id=7", None))
     decisions = [(1, _miss(f"{SHOP}/poll?_=1&id=7", candidates=[f"{SHOP}/poll?_=2&id=7"]), 1)]
-    assert site_rule_candidates(near_misses(decisions, source))[0].query == {"_": 1}
+    assert _ranked(source, decisions)[0].query == {"_": 1}
 
 
 def test_body_fields_that_differ_are_counted_by_their_flattened_path() -> None:
@@ -425,11 +478,11 @@ def test_body_fields_that_differ_are_counted_by_their_flattened_path() -> None:
         (3, _body_miss(url, recorded, 0, url), 1),
     ]
 
-    [candidate] = site_rule_candidates(near_misses(decisions, source))
+    [candidate] = _each_its_own_run(source, decisions)
 
-    assert (candidate.method, candidate.path, candidate.misses) == ("POST", "/api/search", 2)
+    assert (candidate.method, candidate.path, candidate.runs) == ("POST", "/api/search", 2)
     assert candidate.query == {} and candidate.body == {"client.trace": 2, "client.ts": 1}
-    assert [(f.body, f.misses) for f in candidate.field_sets] == [
+    assert [(f.body, f.runs) for f in candidate.field_sets] == [
         (("client.trace",), 1),
         (("client.trace", "client.ts"), 1),
     ]
@@ -464,7 +517,7 @@ def test_a_field_the_replays_own_rule_ignores_is_not_reported() -> None:
         )
     ]
 
-    [candidate] = site_rule_candidates(near_misses(decisions, source))
+    [candidate] = _ranked(source, decisions)
 
     assert candidate.query == {} and candidate.body == {"page": 1}, (
         "t and client.trace are already ignored by the rule both sides were keyed with"
@@ -480,12 +533,15 @@ def test_bodies_known_only_by_digest_count_as_an_opaque_difference() -> None:
         (2, _body_miss(url, json.dumps({"blob": long_value, "n": 1}).encode(), 0, url), 1),
     ]
 
-    [candidate] = site_rule_candidates(near_misses(decisions, source))
+    [candidate] = _each_its_own_run(source, decisions)
 
-    assert (candidate.misses, candidate.opaque_body, candidate.body) == (2, 2, {}), (
-        "the second body is the recorded one: equal digests are no difference"
-    )
-    assert [(f.body, f.opaque_body, f.misses) for f in candidate.field_sets] == [((), True, 2)]
+    assert (candidate.runs, candidate.requests, candidate.opaque_body, candidate.body) == (
+        1,
+        2,
+        1,
+        {},
+    ), "the second body is the recorded one: equal digests are no difference"
+    assert [(f.body, f.opaque_body, f.runs) for f in candidate.field_sets] == [((), True, 1)]
 
 
 def test_a_body_key_longer_than_a_match_key_still_names_its_fields() -> None:
@@ -498,9 +554,9 @@ def test_a_body_key_longer_than_a_match_key_still_names_its_fields() -> None:
     assert entry.body_key is not None and MAX_KEY_CHARS < len(entry.body_key) < MAX_BODY_KEY_CHARS
     same = _body_miss(url, json.dumps(fields).encode(), 0, url)
 
-    [candidate] = site_rule_candidates(near_misses([(1, entry, 1), (2, same, 1)], source))
+    [candidate] = _ranked(source, [(1, entry, 1), (2, same, 1)])
 
-    assert (candidate.misses, candidate.opaque_body) == (1, 0)
+    assert (candidate.requests, candidate.opaque_body) == (1, 0)
     assert candidate.body == {"k0": 1, "k7": 1}
 
 
@@ -511,7 +567,7 @@ def test_a_body_key_that_is_not_a_canonical_parameter_string_names_no_field() ->
         url, candidates=[url], method="POST", record_ids=["r0"], body_key="sha256:" + "0" * 64
     )
 
-    [candidate] = site_rule_candidates(near_misses([(1, entry, 1)], source))
+    [candidate] = _ranked(source, [(1, entry, 1)])
 
     assert (candidate.body, candidate.opaque_body) == ({}, 1)
 
@@ -529,3 +585,115 @@ def test_a_candidate_the_source_does_not_hold_is_refused() -> None:
     ]
     with pytest.raises(ReplayArchiveError, match="does not hold"):
         near_misses(decisions, source)
+
+
+def test_requests_that_do_not_feed_the_page_are_counted_apart() -> None:
+    """Decided from the recording and the replay's rules, never from a list of domains."""
+    rules = SiteRules(
+        [
+            SiteRule(
+                id="collector",
+                scope=RequestScope(host="shop.test", path="/collect"),
+                exhaustion="repeat_last",
+                unavailable="miss",
+                synthesize_204=(f"{SHOP}/collect*",),
+            )
+        ]
+    )
+    source = _source(
+        ("GET", f"{SHOP}/collect?n=1", None),
+        ("GET", f"{SHOP}/pixel?n=1", None, {"resource_type": "Image"}),
+        ("POST", f"{SHOP}/beacon?n=1", None, {"resource_type": "Ping"}),
+        ("GET", f"{SHOP}/log?n=1", None, {"status": 204}),
+        ("GET", f"{SHOP}/ack?n=1", None, {"payload_length": 0}),
+        ("GET", f"{SHOP}/items?n=1", None, {"payload_length": 512}),
+        rules=rules,
+    )
+    paths = ["/collect", "/pixel", "/beacon", "/log", "/ack", "/items"]
+    decisions: Decisions = [
+        (
+            1,
+            _miss(
+                f"{SHOP}{path}?n=2",
+                candidates=[f"{SHOP}{path}?n=1"],
+                record_ids=[f"r{i}"],
+                method="POST" if path == "/beacon" else "GET",
+            ),
+            2,
+        )
+        for i, path in enumerate(paths)
+    ]
+    runs = [ReplayNearMisses(run="run-0", site=SHOP, misses=near_misses(decisions, source))]
+
+    assert [c.path for c in site_rule_candidates(runs)] == ["/items"]
+    assert {
+        reason: (count.endpoints, count.requests)
+        for reason, count in not_feeding_page_counts(runs).items()
+    } == {
+        "rule_answers_204": (1, 2),
+        "ping_or_image": (2, 4),
+        "recorded_empty": (2, 4),
+    }, "a rule's synthesize_204, Chrome's Ping or Image, a recorded 204 or empty answer"
+
+
+def test_endpoints_rank_by_how_their_near_misses_go_with_failed_checks() -> None:
+    """A request made at every step misses where restoration passes too; one that breaks it does not."""
+    source = _source(
+        ("GET", f"{SHOP}/poll?t=1", None),
+        ("GET", f"{SHOP}/search?q=a&sig=1", None),
+        ("GET", f"{SHOP}/late?t=1", None),
+    )
+    poll = _miss(f"{SHOP}/poll?t=2", candidates=[f"{SHOP}/poll?t=1"], record_ids=["r0"])
+    search = _miss(
+        f"{SHOP}/search?q=a&sig=2", candidates=[f"{SHOP}/search?q=a&sig=1"], record_ids=["r1"]
+    )
+    late = _miss(f"{SHOP}/late?t=2", candidates=[f"{SHOP}/late?t=1"], record_ids=["r2"])
+    run: Decisions = [(0, poll, 1), (1, poll, 5), (2, poll, 1), (2, search, 1), (None, late, 1)]
+
+    found = _ranked(source, run, run, checks={0: True, 1: True, 2: False})
+
+    assert [
+        (c.path, c.failed_check_steps, c.passed_check_steps, c.failed_restoration_runs)
+        for c in found
+    ] == [
+        ("/search", 2, 0, 2),
+        ("/poll", 2, 4, 2),
+        ("/late", 0, 0, 0),
+    ], "a close-out collection's near miss is at no checked step"
+    assert found[0].failure_association > found[1].failure_association > 0
+    assert found[2].failure_association == 0.0
+
+
+def test_a_failed_restoration_run_counts_only_near_misses_at_or_before_its_first_failed_check() -> (
+    None
+):
+    source = _source(("GET", f"{SHOP}/a?t=1", None), ("GET", f"{SHOP}/b?t=1", None))
+    early = _miss(f"{SHOP}/a?t=2", candidates=[f"{SHOP}/a?t=1"], record_ids=["r0"])
+    after = _miss(f"{SHOP}/b?t=2", candidates=[f"{SHOP}/b?t=1"], record_ids=["r1"])
+
+    found = _ranked(source, [(1, early, 1), (3, after, 1)], checks={1: True, 2: False, 3: False})
+
+    assert {c.path: (c.failed_restoration_runs, c.failed_check_steps) for c in found} == {
+        "/a": (1, 0),
+        "/b": (0, 1),
+    }, "/a missed before the first failed check (step 2), /b only after it"
+
+
+def test_endpoints_are_counted_and_ranked_per_site() -> None:
+    source = _source(("GET", f"{SHOP}/a?t=1", None))
+    entry = _miss(f"{SHOP}/a?t=2", candidates=[f"{SHOP}/a?t=1"], record_ids=["r0"])
+    found = site_rule_candidates(
+        ReplayNearMisses(run=f"run-{site}", site=site, misses=near_misses([(1, entry, 1)], source))
+        for site in ("z.test", "a.test", "z.test")
+    )
+    assert [(c.site, c.path, c.runs) for c in found] == [("a.test", "/a", 1), ("z.test", "/a", 2)]
+
+
+@pytest.mark.parametrize(
+    ("failed", "passed", "expected"),
+    [(0, 0, 0.0), (0, 5, 0.0), (1, 0, 0.206543), (32, 0, 0.892817), (57, 1, 0.908589)],
+)
+def test_failure_association_is_wilsons_lower_bound(
+    failed: int, passed: int, expected: float
+) -> None:
+    assert failure_association(failed, passed) == expected

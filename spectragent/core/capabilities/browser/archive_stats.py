@@ -22,8 +22,11 @@ code that writes and replays it:
   nearest recorded candidate is the same endpoint (same host, path and
   method) but for some query parameters or body fields: what a rule scoped
   to that endpoint (``ignore_query`` / ``ignore_body_paths``) would have
-  matched, counted by endpoint, by field and by the combination of fields
-  that differed together.
+  matched. Requests that do not feed the page are set aside by what the
+  recording and the replay's rules say about them (:data:`NOT_FEEDING_PAGE`);
+  the rest are counted per site and endpoint in replay runs, not requests,
+  and ranked by how strongly their near misses go with failed restoration
+  checks (:func:`failure_association`).
 
 Pure functions over what they are handed: index lines
 (:func:`~spectragent.core.capabilities.browser.replay.archive_index.iter_index_lines`),
@@ -36,15 +39,18 @@ or an :class:`~spectragent.core.archive.source.ArchiveReader`. No
 ``replay_log.py`` keeps (``tests/test_core/test_archive/test_archive_boundaries.py``).
 """
 
+import math
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 from urllib.parse import urlsplit
 
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.replay.archive_index import (
     BodyLine,
     ExchangeLine,
+    IndexedRecord,
     IndexEntry,
     PendingLine,
     RecordedArchive,
@@ -62,6 +68,7 @@ from spectragent.core.capabilities.browser.replay.canonical import (
     host_of,
 )
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLogEntry
+from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 
 #: Final states with a body in the archive: written whole, or streamed as a later blob.
 WITH_BODY: tuple[str, ...] = ("ok", "streamed_later")
@@ -245,6 +252,23 @@ def challenge_documents(reader: ArchiveReader) -> list[ChallengeDocument]:
     return found
 
 
+#: Why a near miss says nothing about the page, decided from the recording and
+#: the replay's own rules, never from a list of domains. ``rule_answers_204``:
+#: a rule the replay used already answers the request 204 (``synthesize_204``);
+#: ``ping_or_image``: Chrome typed the request ``Ping`` (``navigator.sendBeacon``
+#: and ``<a ping>``: Chrome has no separate beacon type) or ``Image``;
+#: ``recorded_empty``: the nearest recorded answer was a 204 or had an empty
+#: body. Checked in this order; the first that applies is the reason.
+NotFeedingPage = Literal["rule_answers_204", "ping_or_image", "recorded_empty"]
+NOT_FEEDING_PAGE: tuple[NotFeedingPage, ...] = (
+    "rule_answers_204",
+    "ping_or_image",
+    "recorded_empty",
+)
+#: Chrome's resource types for requests whose answer the page does not read.
+_NOT_FEEDING_TYPES = frozenset({"Ping", "Image"})
+
+
 @dataclass(frozen=True)
 class NearMiss:
     """One replay miss that only its query parameters or body fields kept from a recorded request.
@@ -262,6 +286,9 @@ class NearMiss:
             parse), so which fields differ is unknown: the matcher itself
             had nothing finer.
         weight: How many misses it stands for (a folded summary's count).
+        step: The step whose collection took it (``None``: a close-out collection).
+        not_feeding_page: Why the request does not feed the page, or ``None``
+            when nothing says so (:data:`NotFeedingPage`).
     """
 
     host: str
@@ -271,43 +298,103 @@ class NearMiss:
     body: tuple[str, ...]
     opaque_body: bool
     weight: int
+    step: int | None = None
+    not_feeding_page: NotFeedingPage | None = None
+
+
+@dataclass(frozen=True)
+class ReplayNearMisses:
+    """One replay run's near misses, and how its restoration checks went.
+
+    Attributes:
+        run: The run's name: every count :func:`site_rule_candidates` makes
+            is in distinct runs (or distinct steps of them).
+        site: The site its task belongs to: endpoints are ranked per site.
+        misses: Its near misses (:func:`near_misses`).
+        checks: Per step with a restoration check, whether it passed.
+    """
+
+    run: str
+    site: str
+    misses: Sequence[NearMiss]
+    checks: Mapping[int, bool] = field(default_factory=dict)
+
+    @property
+    def failed_at(self) -> int | None:
+        """The first step whose restoration check did not pass (``None``: none failed)."""
+        return min((step for step, passed in self.checks.items() if not passed), default=None)
 
 
 @dataclass(frozen=True)
 class FieldSet:
-    """One combination of differing fields, and how many near misses differ in exactly it."""
+    """One combination of differing fields, and in how many replay runs a near miss differed in exactly it."""
 
     query: tuple[str, ...]
     body: tuple[str, ...]
     opaque_body: bool
-    misses: int
+    runs: int
 
 
 @dataclass(frozen=True)
 class SiteRuleCandidate:
-    """The near misses of one endpoint: what a rule scoped to it would have to ignore.
+    """The near misses of one endpoint on one site: what a rule scoped to it would have to ignore.
+
+    Every count but ``requests`` is in replay runs: a request a page repeats
+    every second counts once per run, like one it sends once.
 
     Attributes:
+        site: The site of the replay runs counted.
         host: The host.
         method: The method.
         path: The path.
-        misses: How many near misses (folded ones counted by how many they fold).
-        query: Per query parameter, how many of those misses it differed in.
-        body: Per body field, how many of those misses it differed in.
-        opaque_body: How many of those misses had bodies that differ where a
+        runs: Replay runs with a near miss at this endpoint.
+        failed_restoration_runs: Of those, the runs whose restoration did not
+            pass with a near miss here at or before the first failed step.
+        failed_check_steps: Steps (of those runs) with a near miss here whose
+            own restoration check failed.
+        passed_check_steps: Steps with a near miss here whose own check passed.
+        failure_association: The lower bound of the 95% Wilson interval of
+            ``failed_check_steps / (failed_check_steps + passed_check_steps)``
+            (0 without a checked step): what the ranking puts first. A request
+            the page makes at every step misses at the steps that restore well
+            too, so it ranks below one that misses only where restoration fails.
+        requests: Near-miss requests in those runs (folded ones counted by
+            how many they fold): context, not ranked on.
+        query: Per query parameter, how many of those runs it differed in.
+        body: Per body field, how many of those runs it differed in.
+        opaque_body: How many of those runs had bodies that differ where a
             digest hides which fields.
-        field_sets: Every distinct combination of differing fields, most
-            frequent first: the fields that change together.
+        field_sets: Every distinct combination of differing fields, in the
+            most runs first: the fields that change together.
     """
 
+    site: str
     host: str
     method: str
     path: str
-    misses: int
+    runs: int
+    failed_restoration_runs: int
+    failed_check_steps: int
+    passed_check_steps: int
+    failure_association: float
+    requests: int
     query: Mapping[str, int]
     body: Mapping[str, int]
     opaque_body: int
     field_sets: tuple[FieldSet, ...]
+
+
+@dataclass(frozen=True)
+class NotFeedingPageCount:
+    """Near misses set aside for one :data:`NotFeedingPage` reason.
+
+    Attributes:
+        endpoints: Distinct (site, host, method, path) they were at.
+        requests: The near-miss requests (folded ones by how many they fold).
+    """
+
+    endpoints: int
+    requests: int
 
 
 def _differing(live: Sequence[tuple[str, str]], recorded: Sequence[tuple[str, str]]) -> list[str]:
@@ -359,7 +446,9 @@ def near_misses(
     keys. A miss counts when its nearest candidate (the first: the matcher
     ranks same method, same path, best score first) has the same host, path
     and method and their query parameters or body fields differ. Folded
-    misses carry no candidates and do not count.
+    misses carry no candidates and do not count. Each keeps the step whose
+    collection took it, and why its request does not feed the page when the
+    recording or the rules say so (:data:`NOT_FEEDING_PAGE`).
 
     Raises:
         ReplayArchiveError: A candidate names a record *recorded* does not
@@ -367,7 +456,7 @@ def near_misses(
     """
     records = {record.record_id: record for record in recorded.index.records}
     found: list[NearMiss] = []
-    for _step, entry, weight in decisions:
+    for step, entry, weight in decisions:
         if entry.kind != "miss" or entry.reason != "no_match" or not entry.candidates:
             continue
         if weight <= 0:
@@ -417,70 +506,180 @@ def near_misses(
                 body=tuple(body),
                 opaque_body=opaque,
                 weight=weight,
+                step=step,
+                not_feeding_page=_not_feeding_page(entry, record, rule),
             )
         )
     return found
 
 
-def site_rule_candidates(found: Iterable[NearMiss]) -> list[SiteRuleCandidate]:
-    """Near misses by endpoint (host, method, path), most frequent first.
+def _not_feeding_page(
+    entry: ReplayLogEntry, record: IndexedRecord, rule: SiteRule | None
+) -> NotFeedingPage | None:
+    """Why *entry*'s request does not feed the page (:data:`NOT_FEEDING_PAGE`), or ``None``."""
+    if rule is not None and rule.synthesizes_204(entry.url):
+        return "rule_answers_204"
+    if (record.resource_type or entry.resource_type) in _NOT_FEEDING_TYPES:
+        return "ping_or_image"
+    if record.status == 204 or (record.body_status == "ok" and record.payload_length == 0):
+        return "recorded_empty"
+    return None
 
-    Per endpoint: how many misses, how many of them each query parameter
-    and each body field differed in, how many bodies differed only by a
-    digest, and each distinct combination of differing fields with its
-    count — a parameter that always appears with another is a set a rule
-    would ignore together. Ties are ordered by host, path and method, and
-    a combination's ties by its fields, so the result is deterministic.
+
+_Endpoint = tuple[str, str, str, str]  # site, host, path, method
+_Fields = tuple[tuple[str, ...], tuple[str, ...], bool]
+
+
+#: The standard normal quantile of a two-sided 95% interval (Wilson's bound).
+_WILSON_Z = 1.96
+
+
+def failure_association(failed: int, passed: int) -> float:
+    """The lower bound of the 95% Wilson score interval of ``failed / (failed + passed)``.
+
+    A share with its sample size: 32 of 32 failed checks ranks above 1 of 1,
+    and 57 of 58 above 267 of 323. ``0.0`` when nothing was checked.
     """
-    misses: Counter[tuple[str, str, str]] = Counter()
-    query: dict[tuple[str, str, str], Counter[str]] = {}
-    body: dict[tuple[str, str, str], Counter[str]] = {}
-    opaque: Counter[tuple[str, str, str]] = Counter()
-    sets: dict[tuple[str, str, str], Counter[tuple[tuple[str, ...], tuple[str, ...], bool]]] = {}
-    for miss in found:
-        endpoint = (miss.host, miss.path, miss.method)
-        misses[endpoint] += miss.weight
-        query.setdefault(endpoint, Counter()).update(dict.fromkeys(miss.query, miss.weight))
-        body.setdefault(endpoint, Counter()).update(dict.fromkeys(miss.body, miss.weight))
-        opaque[endpoint] += miss.weight if miss.opaque_body else 0
-        sets.setdefault(endpoint, Counter())[(miss.query, miss.body, miss.opaque_body)] += (
-            miss.weight
-        )
+    n = failed + passed
+    if n == 0:
+        return 0.0
+    share = failed / n
+    z2 = _WILSON_Z * _WILSON_Z
+    centre = share + z2 / (2 * n)
+    margin = _WILSON_Z * math.sqrt(share * (1 - share) / n + z2 / (4 * n * n))
+    return round(max(0.0, (centre - margin) / (1 + z2 / n)), 6)
+
+
+@dataclass
+class _EndpointTally:
+    runs: int = 0
+    failed: int = 0
+    failed_steps: int = 0
+    passed_steps: int = 0
+    requests: int = 0
+    query: Counter[str] = field(default_factory=Counter)
+    body: Counter[str] = field(default_factory=Counter)
+    opaque: int = 0
+    sets: Counter[_Fields] = field(default_factory=Counter)
+
+
+def site_rule_candidates(runs: Iterable[ReplayNearMisses]) -> list[SiteRuleCandidate]:
+    """Near misses by site and endpoint (host, method, path), counted in replay runs and ranked.
+
+    A near miss whose request does not feed the page (``not_feeding_page``)
+    is left out (:func:`not_feeding_page_counts` says how many). Counts are
+    of distinct runs: a run counts once for an endpoint, once for each field
+    that differed in any of its near misses there and once for each
+    combination of fields that differed together. A run counts as a failed
+    restoration for an endpoint when it has a near miss there at or before
+    its ``failed_at`` step (a close-out collection's never does). The step
+    counts are of distinct (run, step) pairs whose step has a restoration
+    check, split by whether that check passed.
+
+    Sites in order; within a site, the highest ``failure_association``
+    first, then the most failed-restoration runs, then the most runs, ties
+    by host, path and method; a combination's ties by its fields — so the
+    result is deterministic.
+    """
+    tallies: dict[_Endpoint, _EndpointTally] = {}
+    for run in runs:
+        by_endpoint: dict[tuple[str, str, str], list[NearMiss]] = {}
+        for miss in run.misses:
+            if miss.not_feeding_page is None:
+                by_endpoint.setdefault((miss.host, miss.path, miss.method), []).append(miss)
+        for (host, path, method), misses in by_endpoint.items():
+            tally = tallies.setdefault((run.site, host, path, method), _EndpointTally())
+            tally.runs += 1
+            failed_at = run.failed_at
+            tally.failed += int(
+                failed_at is not None
+                and any(m.step is not None and m.step <= failed_at for m in misses)
+            )
+            checked = {m.step for m in misses if m.step is not None and m.step in run.checks}
+            tally.passed_steps += sum(1 for step in checked if run.checks[step])
+            tally.failed_steps += sum(1 for step in checked if not run.checks[step])
+            tally.requests += sum(m.weight for m in misses)
+            tally.query.update({name for m in misses for name in m.query})
+            tally.body.update({name for m in misses for name in m.body})
+            tally.opaque += int(any(m.opaque_body for m in misses))
+            tally.sets.update({(m.query, m.body, m.opaque_body) for m in misses})
+    association = {
+        key: failure_association(tally.failed_steps, tally.passed_steps)
+        for key, tally in tallies.items()
+    }
+    ranked = sorted(
+        tallies.items(),
+        key=lambda item: (
+            item[0][0],
+            -association[item[0]],
+            -item[1].failed,
+            -item[1].runs,
+            item[0][1:],
+        ),
+    )
     return [
         SiteRuleCandidate(
+            site=site,
             host=host,
             method=method,
             path=path,
-            misses=misses[(host, path, method)],
-            query=dict(sorted(query[(host, path, method)].items())),
-            body=dict(sorted(body[(host, path, method)].items())),
-            opaque_body=opaque[(host, path, method)],
+            runs=tally.runs,
+            failed_restoration_runs=tally.failed,
+            failed_check_steps=tally.failed_steps,
+            passed_check_steps=tally.passed_steps,
+            failure_association=association[(site, host, path, method)],
+            requests=tally.requests,
+            query=dict(sorted(tally.query.items())),
+            body=dict(sorted(tally.body.items())),
+            opaque_body=tally.opaque,
             field_sets=tuple(
-                FieldSet(query=fields[0], body=fields[1], opaque_body=fields[2], misses=count)
-                for fields, count in sorted(
-                    sets[(host, path, method)].items(), key=lambda item: (-item[1], item[0])
-                )
+                FieldSet(query=fields[0], body=fields[1], opaque_body=fields[2], runs=count)
+                for fields, count in sorted(tally.sets.items(), key=lambda i: (-i[1], i[0]))
             ),
         )
-        for host, path, method in sorted(misses, key=lambda key: (-misses[key], key))
+        for (site, host, path, method), tally in ranked
     ]
+
+
+def not_feeding_page_counts(runs: Iterable[ReplayNearMisses]) -> dict[str, NotFeedingPageCount]:
+    """The near misses :func:`site_rule_candidates` leaves out, by reason (in :data:`NOT_FEEDING_PAGE` order)."""
+    endpoints: dict[str, set[_Endpoint]] = {}
+    requests: Counter[str] = Counter()
+    for run in runs:
+        for miss in run.misses:
+            reason = miss.not_feeding_page
+            if reason is None:
+                continue
+            endpoints.setdefault(reason, set()).add((run.site, miss.host, miss.path, miss.method))
+            requests[reason] += miss.weight
+    return {
+        reason: NotFeedingPageCount(endpoints=len(endpoints[reason]), requests=requests[reason])
+        for reason in NOT_FEEDING_PAGE
+        if reason in endpoints
+    }
 
 
 __all__ = [
     "CHALLENGE_STATUSES",
     "EXPLICIT_NO_BODY",
     "FINAL_STATES",
+    "NOT_FEEDING_PAGE",
     "NO_BODY_NEEDED",
     "WITH_BODY",
     "BodyCompleteness",
     "ChallengeDocument",
     "FieldSet",
     "NearMiss",
+    "NotFeedingPage",
+    "NotFeedingPageCount",
+    "ReplayNearMisses",
     "SiteRuleCandidate",
     "body_completeness",
     "challenge_documents",
     "challenge_signals",
+    "failure_association",
     "near_misses",
+    "not_feeding_page_counts",
     "revisit_saving",
     "site_rule_candidates",
 ]

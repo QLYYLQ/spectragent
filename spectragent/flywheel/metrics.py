@@ -62,10 +62,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
 from spectragent.core.capabilities.browser.archive_stats import (
     BodyCompleteness,
-    NearMiss,
+    ReplayNearMisses,
     body_completeness,
     challenge_documents,
     near_misses,
+    not_feeding_page_counts,
     revisit_saving,
     site_rule_candidates,
 )
@@ -2355,55 +2356,100 @@ def export_yield(layout: ChainLayout, manifest: DatasetManifest | None) -> Expor
 
 
 class NearMissFieldSet(_Model):
-    """One combination of fields that differed together, and in how many near misses."""
+    """One combination of fields that differed together, and in how many replay runs."""
 
     query: list[str]
     body: list[str]
     #: The bodies differed where a digest hides which fields.
     opaque_body: bool
-    misses: int
+    runs: int
 
 
 class NearMissEndpoint(_Model):
-    """One endpoint's near misses (``archive_stats.site_rule_candidates``)."""
+    """One endpoint's near misses on one site (``archive_stats.site_rule_candidates``).
 
+    Every count but ``requests`` is in replay runs: a request repeating inside
+    one run counts once.
+    """
+
+    site: str
     host: str
     method: str
     path: str
-    misses: int
-    #: Per query parameter / body field, how many of those misses it differed in.
+    #: Replay runs with a near miss at this endpoint.
+    runs: int
+    #: Of those, runs whose restoration did not pass with a near miss here at or
+    #: before the first failed step.
+    failed_restoration_runs: int
+    #: Steps (of those runs) with a near miss here whose own restoration check
+    #: failed, and passed.
+    failed_check_steps: int
+    passed_check_steps: int
+    #: The lower 95% Wilson bound of failed / (failed + passed) checked steps:
+    #: what the ranking puts first (``archive_stats.failure_association``).
+    failure_association: float
+    #: Near-miss requests in those runs (folded ones by how many they fold): context only.
+    requests: int
+    #: Per query parameter / body field, how many of those runs it differed in.
     query: dict[str, int]
     body: dict[str, int]
-    #: Misses whose bodies differed where a digest hides which fields.
+    #: Runs whose bodies differed where a digest hides which fields.
     opaque_body: int
-    #: Each distinct combination of differing fields, most frequent first.
+    #: Each distinct combination of differing fields, in the most runs first.
     field_sets: list[NearMissFieldSet]
 
 
+class NotFeedingPageMisses(_Model):
+    """Near misses left out for one reason: the request does not feed the page."""
+
+    #: Distinct (site, host, method, path) they were at.
+    endpoints: int
+    #: Near-miss requests (folded ones by how many they fold).
+    requests: int
+
+
 class SiteRuleCandidates(_Model):
-    """Replay misses an endpoint rule would have matched (``archive_stats``), by endpoint."""
+    """Replay misses an endpoint rule would have matched (``archive_stats``), by site and endpoint."""
 
     runs: int
     #: Distinct sites of the replayed runs counted.
     sites: int
-    #: Most near misses first (ties by host, path and method).
+    #: Of ``runs``, the ones whose restoration did not pass.
+    failed_restoration_runs: int
+    #: By site; within one, the highest failure association first, then most
+    #: failed-restoration runs, then most runs (ties by host, path and method).
     endpoints: list[NearMissEndpoint]
+    #: Near misses left out because the request does not feed the page, by
+    #: reason (``archive_stats.NOT_FEEDING_PAGE``): a rule answers it 204,
+    #: Chrome typed it Ping or Image, or its recorded answer was a 204 or empty.
+    not_feeding_page: dict[str, NotFeedingPageMisses]
     #: Replayed runs (``traces/<role>/<run>``) left out, and why.
     skipped: dict[str, str] = {}
 
 
+def restoration_checks(run: Run) -> dict[int, bool]:
+    """Per step with a restoration check, whether it passed (verdict ``ok``)."""
+    return {
+        record.step: record.restoration.verdict == "ok"
+        for record in run.steps
+        if record.restoration is not None
+    }
+
+
 def site_rules(chain: ChainRuns) -> SiteRuleCandidates:
-    """Near misses in every replayed run (``same_path`` and ``branch``), by endpoint and field.
+    """Near misses in every replayed run (``same_path`` and ``branch``), by site, endpoint and field.
 
     Each replay is compared with its source run (``source_trace`` under
     ``traces/record``), loaded with the rules the replay recorded it used
     (``recorded_site_rules``), so a field the replay's own rules ignored is
     never reported as differing. A source is loaded once per rule version.
-    A replay whose source is not in the chain, or whose replay log, rule
-    snapshot or source archive does not read back, is left out with the
-    reason.
+    Counted in replay runs, with each run's restoration checks
+    (:func:`restoration_checks`); requests that do not feed the page are
+    counted apart. A replay whose source is not in the chain, or whose replay
+    log, rule snapshot or source archive does not read back, is left out with
+    the reason.
     """
-    found: list[NearMiss] = []
+    found: list[ReplayNearMisses] = []
     counted: list[Run] = []
     skipped: dict[str, str] = {}
     sources: dict[tuple[str, str], RecordedArchive | str] = {}
@@ -2434,20 +2480,35 @@ def site_rules(chain: ChainRuns) -> SiteRuleCandidates:
                 skipped[run.pointer] = recorded
                 continue
             try:
-                found.extend(near_misses(run.decisions, recorded))
+                misses = near_misses(run.decisions, recorded)
             except EVIDENCE_ERRORS as exc:
                 skipped[run.pointer] = f"its replay log does not read back ({type(exc).__name__})"
                 continue
+            found.append(
+                ReplayNearMisses(
+                    run=run.pointer,
+                    site=run.site,
+                    misses=misses,
+                    checks=restoration_checks(run),
+                )
+            )
             counted.append(run)
     return SiteRuleCandidates(
         runs=len(counted),
         sites=site_count(counted),
+        failed_restoration_runs=sum(1 for item in found if item.failed_at is not None),
         endpoints=[
             NearMissEndpoint(
+                site=candidate.site,
                 host=candidate.host,
                 method=candidate.method,
                 path=candidate.path,
-                misses=candidate.misses,
+                runs=candidate.runs,
+                failed_restoration_runs=candidate.failed_restoration_runs,
+                failed_check_steps=candidate.failed_check_steps,
+                passed_check_steps=candidate.passed_check_steps,
+                failure_association=candidate.failure_association,
+                requests=candidate.requests,
                 query=dict(candidate.query),
                 body=dict(candidate.body),
                 opaque_body=candidate.opaque_body,
@@ -2456,13 +2517,17 @@ def site_rules(chain: ChainRuns) -> SiteRuleCandidates:
                         query=list(fields.query),
                         body=list(fields.body),
                         opaque_body=fields.opaque_body,
-                        misses=fields.misses,
+                        runs=fields.runs,
                     )
                     for fields in candidate.field_sets
                 ],
             )
             for candidate in site_rule_candidates(found)
         ],
+        not_feeding_page={
+            reason: NotFeedingPageMisses(endpoints=count.endpoints, requests=count.requests)
+            for reason, count in not_feeding_page_counts(found).items()
+        },
         skipped=dict(sorted(skipped.items())),
     )
 
@@ -2546,6 +2611,7 @@ __all__ = [
     "NO_SITE",
     "NearMissEndpoint",
     "NearMissFieldSet",
+    "NotFeedingPageMisses",
     "RESULT_ERRORS",
     "ROLES",
     "TERMINAL",
@@ -2624,6 +2690,7 @@ __all__ = [
     "replay_determinism",
     "request_texts",
     "restoration",
+    "restoration_checks",
     "restoration_rate",
     "retention",
     "role_token_use",

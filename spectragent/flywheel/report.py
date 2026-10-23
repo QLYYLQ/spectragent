@@ -18,7 +18,7 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-10``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-11``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
@@ -99,7 +99,7 @@ from spectragent.schemas._types import UNLIMITED, Unlimited
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-10"
+REPORT_FORMAT = "af-flywheel-report-11"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -125,8 +125,15 @@ STRICT_MIN_IN_ARCHIVE_SHARE = 0.9
 #: Share of the branches' main-frame document misses that are GETs of URLs the recording never
 #: fetched, from which expanding recording-time coverage (prefetch, exploration) is worth it.
 EXPAND_COVERAGE_MIN_UNRECORDED_SHARE = 0.5
-#: Near misses on one host from which a generated ``ignore_query`` site rule is proposed.
-SITE_RULE_MIN_NEAR_MISSES = 2
+#: Endpoints proposed for a site rule per site, best ranked first. Each proposal needs a
+#: person to read the endpoint's responses before writing a rule (a field that selects
+#: content must not be ignored), so the list is one short review pass; the full ranking
+#: stays in ``decision_inputs.site_rule_candidates``.
+SITE_RULE_MAX_PROPOSALS_PER_SITE = 3
+#: Field names a proposal shows (the most frequent combination's first ones), and the
+#: characters of each: a flattened body path can be thousands of characters long.
+SITE_RULE_PROPOSAL_MAX_FIELDS = 4
+SITE_RULE_PROPOSAL_FIELD_MAX_CHARS = 40
 #: Records with a body, of those that need one, for capture quality to be sufficient.
 CAPTURE_MIN_BODY_SHARE = 0.95
 #: Identical terminal-screenshot pairs, of the comparable ones, for replay to count as deterministic.
@@ -290,7 +297,7 @@ class Decisions(_Model):
 
     ``miss_policy``: is ``strict`` enough, or do documents need a fallback?
     ``recording_coverage``: expand coverage at recording time? ``site_rules``:
-    generate ``ignore_query`` rules automatically? ``retention``: how much
+    which endpoints to write rules for (proposed for review, never generated)? ``retention``: how much
     disk a task takes, for a retention budget.
     """
 
@@ -303,7 +310,7 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-10"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-11"] = REPORT_FORMAT
     chain: ChainInfo
     token_use: TokenUseReport
     inputs: Inputs
@@ -1005,16 +1012,47 @@ def _decide_recording_coverage(inputs: DecisionInputs, basis: Evidence) -> Recom
     )
 
 
-def _field_set_text(fields: NearMissFieldSet) -> str:
-    """``query a, b; body c`` — one combination of differing fields, as a rule would name them."""
-    parts = []
-    if fields.query:
-        parts.append("query " + ", ".join(fields.query))
-    if fields.body:
-        parts.append("body " + ", ".join(fields.body))
+def _field_set_text(fields: NearMissFieldSet, *, limit: int | None = None) -> str:
+    """``query a, b; body c`` — one combination of differing fields, as a rule would name them.
+
+    With *limit*, at most that many names, each cut to
+    :data:`SITE_RULE_PROPOSAL_FIELD_MAX_CHARS` characters, and how many more there are.
+    """
+    names = [*(("query", n) for n in fields.query), *(("body", n) for n in fields.body)]
+    shown = names if limit is None else names[:limit]
+    parts: list[str] = []
+    for kind in ("query", "body"):
+        group = [_cut(n) if limit is not None else n for k, n in shown if k == kind]
+        if group:
+            parts.append(f"{kind} " + ", ".join(group))
+    if len(shown) < len(names):
+        parts.append(f"{len(names) - len(shown)} more")
     if fields.opaque_body:
         parts.append("body differs (digest only)")
     return "; ".join(parts)
+
+
+def _cut(name: str) -> str:
+    limit = SITE_RULE_PROPOSAL_FIELD_MAX_CHARS
+    return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def _site_rule_proposals(found: SiteRuleCandidates) -> dict[str, list[NearMissEndpoint]]:
+    """Each site's best ranked endpoints, at most :data:`SITE_RULE_MAX_PROPOSALS_PER_SITE` (sites in order)."""
+    proposals: dict[str, list[NearMissEndpoint]] = {}
+    for endpoint in found.endpoints:  # ranked within each site already
+        chosen = proposals.setdefault(endpoint.site, [])
+        if len(chosen) < SITE_RULE_MAX_PROPOSALS_PER_SITE:
+            chosen.append(endpoint)
+    return proposals
+
+
+def _proposal_text(endpoint: NearMissEndpoint) -> str:
+    fields = _field_set_text(endpoint.field_sets[0], limit=SITE_RULE_PROPOSAL_MAX_FIELDS)
+    return (
+        f"{endpoint.host} {endpoint.method} {endpoint.path} [{fields}] "
+        f"{endpoint.failed_check_steps}/{endpoint.failed_check_steps + endpoint.passed_check_steps}"
+    )
 
 
 def _decide_site_rules(inputs: DecisionInputs, basis: Evidence) -> Recommendation:
@@ -1026,25 +1064,31 @@ def _decide_site_rules(inputs: DecisionInputs, basis: Evidence) -> Recommendatio
             n=found.runs,
         ),
     ]
-    frequent = [e for e in found.endpoints if e.misses >= SITE_RULE_MIN_NEAR_MISSES]
+    proposals = _site_rule_proposals(found)
     verdict = None
     if found.runs:
         verdict = (
-            "propose endpoint rules for review: "
+            "review endpoint rules (n/m: near-miss steps whose restoration failed / checked): "
             + "; ".join(
-                f"{e.host} {e.method} {e.path} [{_field_set_text(e.field_sets[0])}]"
-                for e in frequent
+                f"{site}: " + ", ".join(_proposal_text(e) for e in endpoints)
+                for site, endpoints in proposals.items()
             )
-            if frequent
-            else f"keep hand-written rules: no endpoint reached {SITE_RULE_MIN_NEAR_MISSES} "
-            f"near misses"
+            if proposals
+            else "keep hand-written rules: no near miss outside requests that do not feed the page"
         )
     return _recommend(
         basis,
-        f"propose a rule for review (ignore_query / ignore_body_paths, scoped to the endpoint) "
-        f"for an endpoint (host, method, path) with ≥ {SITE_RULE_MIN_NEAR_MISSES} misses whose "
-        f"nearest recorded request differs only in query parameters or body fields, naming its "
-        f"most frequent combination of differing fields (SITE_RULE_MIN_NEAR_MISSES)",
+        f"per site, rank each endpoint (host, method, path) by the lower 95% Wilson bound of the "
+        f"share of its near-miss steps whose own restoration check failed (each replay run and "
+        f"step once, however often the request repeats), then by the replay runs whose "
+        f"restoration failed with a near miss there at or before the first failed step, then by "
+        f"the replay runs with a near miss there; leave out requests that do not feed the page "
+        f"(a rule answers them 204, Chrome typed them Ping or Image, or their recorded answer "
+        f"was a 204 or empty); propose the top "
+        f"{SITE_RULE_MAX_PROPOSALS_PER_SITE} per site for review (ignore_query / "
+        f"ignore_body_paths, scoped to the endpoint), with the first "
+        f"{SITE_RULE_PROPOSAL_MAX_FIELDS} fields of the combination that differed in the most "
+        f"replays (SITE_RULE_MAX_PROPOSALS_PER_SITE, SITE_RULE_PROPOSAL_MAX_FIELDS)",
         evidence,
         verdict,
         has_data=found.runs > 0,
@@ -1245,7 +1289,7 @@ _SECTION_TITLES: dict[str, str] = {
 _DECISION_TITLES: dict[str, str] = {
     "miss_policy": "Miss policy — is strict enough?",
     "recording_coverage": "Recording coverage — expand it at recording time?",
-    "site_rules": "Site rules — generate them automatically?",
+    "site_rules": "Site rules — which endpoints should get one?",
     "retention": "Retention — how much disk does a task take?",
 }
 
@@ -1279,17 +1323,28 @@ def _settle_md(wait: SettleWait) -> list[str]:
     ]
 
 
-def _near_miss_md(endpoints: Sequence[NearMissEndpoint]) -> list[str]:
-    """One line per endpoint with near misses, then one per combination of fields that differed."""
-    lines: list[str] = []
-    for endpoint in endpoints:
-        lines.append(
-            f"  - {endpoint.host} {endpoint.method} {endpoint.path}: {endpoint.misses} near "
-            f"miss(es); query {_fmt(endpoint.query)}; body {_fmt(endpoint.body)}; "
-            f"body differs (digest only) {endpoint.opaque_body}"
-        )
+def _near_miss_md(found: SiteRuleCandidates) -> list[str]:
+    """Each site's proposals, one line each with the combination of fields that differed most.
+
+    The full ranking, every field and every combination are in ``report.json``
+    (``decision_inputs.site_rule_candidates``): a page per endpoint would not be read.
+    """
+    left_out = ", ".join(
+        f"{reason} {count.endpoints} endpoint(s) / {count.requests} request(s)"
+        for reason, count in found.not_feeding_page.items()
+    )
+    lines = [f"  - left out, the request does not feed the page: {left_out or 'none'}"]
+    for site, endpoints in _site_rule_proposals(found).items():
+        listed = sum(1 for e in found.endpoints if e.site == site)
+        lines.append(f"  - {site}: {listed} endpoint(s); proposed:")
         lines += [
-            f"    - {fields.misses} × {_field_set_text(fields)}" for fields in endpoint.field_sets
+            f"    - {e.host} {e.method} {e.path}: failure association {e.failure_association:.2f} "
+            f"({e.failed_check_steps} failed / {e.passed_check_steps} passed checked steps); "
+            f"{e.runs} replay(s), {e.failed_restoration_runs} with it at or before their first "
+            f"failed check, "
+            f"{e.requests} request(s); "
+            f"{_field_set_text(e.field_sets[0], limit=SITE_RULE_PROPOSAL_MAX_FIELDS)}"
+            for e in endpoints
         ]
     return lines
 
@@ -1598,10 +1653,11 @@ def render_markdown(report: FlywheelReport) -> str:
         f"- document misses of the {misses.branches} branch(es) that acted: "
         f"{misses.document_misses}; GETs of unrecorded URLs {_ratio_md(misses.get_no_match)}",
         *_skipped_md(misses.skipped),
-        f"- site-rule candidates over {candidates.runs} replayed run(s): "
-        f"{len(candidates.endpoints)} endpoint(s), "
-        f"{sum(e.misses for e in candidates.endpoints)} near miss(es)",
-        *_near_miss_md(candidates.endpoints),
+        f"- site-rule candidates over {candidates.runs} replayed run(s) "
+        f"({candidates.failed_restoration_runs} with a failed restoration): "
+        f"{len(candidates.endpoints)} endpoint(s) on {candidates.sites} site(s), "
+        f"{sum(e.requests for e in candidates.endpoints)} near-miss request(s)",
+        *_near_miss_md(candidates),
         *_skipped_md(candidates.skipped),
         "",
     ]
@@ -1625,7 +1681,9 @@ __all__ = [
     "RESTORATION_MIN_RATE",
     "RETENTION_PROJECTION_TASKS",
     "SITE_MIN_FIDELITY",
-    "SITE_RULE_MIN_NEAR_MISSES",
+    "SITE_RULE_MAX_PROPOSALS_PER_SITE",
+    "SITE_RULE_PROPOSAL_MAX_FIELDS",
+    "SITE_RULE_PROPOSAL_FIELD_MAX_CHARS",
     "STRICT_MIN_IN_ARCHIVE_SHARE",
     "SUPPORTED_MIN_SITES",
     "Decisions",
