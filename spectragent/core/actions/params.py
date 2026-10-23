@@ -373,7 +373,7 @@ def params_view(
         # param, because a strict-mode provider makes every property
         # required and ``null`` is then the only way to decline one
         # (``core/actions/action_union.py``). That null never reaches
-        # ``execute``: the agent strips it (``model_dump(exclude_none)``),
+        # ``execute``: the agent strips it (``action_union.action_of``),
         # so an omission and a written null arrive identically — which is
         # what stops ``clear: null`` from overriding ``clear_by_default``.
         field_schema = {k: v for k, v in field_schema.items() if k not in ("title", "default")}

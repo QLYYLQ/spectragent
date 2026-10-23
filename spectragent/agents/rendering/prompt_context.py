@@ -54,6 +54,7 @@ def restored_history_message(
     context: ReactPromptContext,
     action_space: ActionSpace,
     write_action: ActionWriter = action_json,
+    max_content_chars: int | None = None,
 ) -> UserMessage:
     """Describe actual restored execution separately from its source material.
 
@@ -72,7 +73,9 @@ def restored_history_message(
     capability's units (``docs/architecture_design.md`` §4.1 "坐标系归框架").
     The layout is shared; how an action reads is the Agent's: *write_action*
     writes both the executed and the recorded actions, the action's JSON by
-    default.
+    default. *max_content_chars* bounds each result's returned content as
+    ``result_facts`` does, so an Agent whose live history bounds it shows a
+    restored result the same way.
     """
     history.validate_execution()
     frame = context.frame
@@ -92,7 +95,10 @@ def restored_history_message(
             {
                 "action": written(action),
                 "result": result_facts(
-                    result, show_effects=show_action_effects, write_point=write_point
+                    result,
+                    show_effects=show_action_effects,
+                    write_point=write_point,
+                    max_content_chars=max_content_chars,
                 ),
             }
             for action, result in zip(history.actions, history.results, strict=True)
