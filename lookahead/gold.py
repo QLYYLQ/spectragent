@@ -315,6 +315,7 @@ def gold_queue(
         "by_action": dict(Counter(main_action(row) for _, row in chosen)),
         "by_run": dict(Counter(run.key for run, _ in chosen)),
         "skipped_runs": dict(runs.skipped),
+        "excluded_runs": dict(runs.excluded),
     }
     write_json(out / "sampling.json", summary)
     return summary, path

@@ -27,7 +27,7 @@ from lookahead.stability import DEFAULT_MIN_CHANGE_AREA
 TransportFactory = Callable[[], ChatTransport]
 
 
-def _common(parser: argparse.ArgumentParser) -> None:
+def _common(parser: argparse.ArgumentParser, *, exclusions: bool = True) -> None:
     parser.add_argument(
         "--root", type=Path, required=True, help="Directory holding the recorded runs."
     )
@@ -38,6 +38,14 @@ def _common(parser: argparse.ArgumentParser) -> None:
         help="Root the trace viewer will be started with; run keys are relative to it "
         "(default: --root).",
     )
+    if exclusions:
+        parser.add_argument(
+            "--exclude-runs",
+            type=Path,
+            default=None,
+            help="A run-exclusions file (run-exclusions-1, as health writes it): the runs it "
+            "lists and the branch runs from them are left out.",
+        )
 
 
 def _queue(parser: argparse.ArgumentParser, prefix: str) -> None:
@@ -77,6 +85,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Build lookahead-observation data and review queues from recorded runs.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+
+    health = commands.add_parser(
+        "health",
+        help="Whether each recording is usable as data; writes the exclusions file of the others.",
+    )
+    _common(health, exclusions=False)
+    health.add_argument("--out", type=Path, required=True, help="Output directory.")
 
     extract = commands.add_parser("extract", help="One JSON line per step that has an observation.")
     _common(extract)
@@ -154,6 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_skipped(runs: RunSet) -> None:
+    for key, why in sorted(runs.excluded.items()):
+        print(f"excluded {key}: {why}", file=sys.stderr)
     for key, why in sorted(runs.skipped.items()):
         print(f"skipped {key}: {why}", file=sys.stderr)
 
@@ -186,7 +203,7 @@ def run(
     args = build_parser().parse_args(argv)
     factory = transport_factory or OpenAITransport.from_environment
     try:
-        runs = open_runs(args.root, args.viewer_root)
+        runs = open_runs(args.root, args.viewer_root, getattr(args, "exclude_runs", None))
     except LookaheadInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -201,6 +218,19 @@ def run(
 
 
 def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory) -> int:
+    if args.command == "health":
+        from lookahead.health import EXCLUSIONS_NAME, run_health
+
+        report = run_health(runs, args.out)
+        for health in sorted(report.runs, key=lambda health: health.run):
+            why = "; ".join(reason.code for reason in health.reasons)
+            print(f"{health.verdict:8} {health.run}" + (f" ({why})" if why else ""))
+        print(
+            f"{report.counts['unusable']} of {len(report.runs)} recording(s) unusable; "
+            f"report: {args.out / 'report.md'}; exclusions: {args.out / EXCLUSIONS_NAME}"
+        )
+        return 0
+
     if args.command == "extract":
         from lookahead.extract import write_rows
 

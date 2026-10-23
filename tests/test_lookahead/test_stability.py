@@ -250,7 +250,7 @@ def test_cli_writes_report_json_and_queue(world: World, tmp_path: Path) -> None:
     )
     assert code == 0
     report = json.loads((out / "stability.json").read_text(encoding="utf-8"))
-    assert report["format"] == "lookahead-stability-2"
+    assert report["format"] == "lookahead-stability-3"
     assert report["origins"] == ["policy", "restored"] and report["min_change_area"] == 0.01
     assert report["summary"]["changed_short"] >= 2
     text = (out / "report.md").read_text(encoding="utf-8")

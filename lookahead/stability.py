@@ -46,7 +46,7 @@ from lookahead import imaging
 from lookahead.extract import step_rows
 from lookahead.output import write_json, write_text
 from lookahead.queues import frame_image, item_title, observation_image, region
-from lookahead.report import crosstab, share, table
+from lookahead.report import crosstab, excluded_section, share, table
 from lookahead.rows import FrameRow, StepRow
 from lookahead.runs import Run, RunSet
 from spectragent.annotation import (
@@ -90,7 +90,7 @@ DHASH_LIMIT = 5
 START = "(start)"
 NO_ACTION = "(no action)"
 MACHINE_SOURCE = "lookahead-stability"
-STABILITY_FORMAT = "lookahead-stability-2"
+STABILITY_FORMAT = "lookahead-stability-3"
 
 
 class _Model(BaseModel):
@@ -155,7 +155,7 @@ class ObservationStability(_Model):
 
 
 class StabilityReport(_Model):
-    format: Literal["lookahead-stability-2"] = STABILITY_FORMAT
+    format: Literal["lookahead-stability-3"] = STABILITY_FORMAT
     runs: int
     runs_with_frames: int
     origins: list[str]
@@ -164,6 +164,8 @@ class StabilityReport(_Model):
     inputs: dict[str, str]
     summary: dict[str, int]
     skipped_runs: dict[str, str]
+    #: Runs an exclusions file left out (``--exclude-runs``), and why.
+    excluded_runs: dict[str, str]
     observations: list[ObservationStability]
 
 
@@ -756,6 +758,7 @@ def render_report(report: StabilityReport) -> str:
         lines += ["## Runs not read", ""]
         lines += [f"- `{key}`: {why}" for key, why in sorted(report.skipped_runs.items())]
         lines.append("")
+    lines += excluded_section(report.excluded_runs)
     return "\n".join(lines)
 
 
@@ -786,6 +789,7 @@ def run_stability(
         inputs={"root": str(runs.root), "viewer_root": str(runs.viewer_root)},
         summary=dict(Counter(item.verdict for item in items)),
         skipped_runs=dict(runs.skipped),
+        excluded_runs=dict(runs.excluded),
         observations=items,
     )
     queue = build_queue(

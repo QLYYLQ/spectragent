@@ -42,3 +42,12 @@ def crosstab(
 
 def share(part: int, whole: int) -> str:
     return f"{part}/{whole} ({part / whole:.0%})" if whole else f"{part}/0"
+
+
+def excluded_section(excluded: dict[str, str]) -> list[str]:
+    """The report lines naming the runs an exclusions file left out; none when it left out none."""
+    if not excluded:
+        return []
+    lines = [f"## Runs left out by the exclusions file ({len(excluded)})", ""]
+    lines += [f"- `{key}`: {why}" for key, why in sorted(excluded.items())]
+    return [*lines, ""]

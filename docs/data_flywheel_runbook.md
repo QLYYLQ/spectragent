@@ -220,7 +220,7 @@ task_loader:
 | `explicit`（`steps: [2, 5]`） | 写了的步；某个源里不是候选的步跳过并记原因 |
 | `last` | 每个源最后一个候选步 |
 
-`agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
+`agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。`exclude_runs` 也是筛选：它指向一个 `run-exclusions-1` 文件（`{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`~` 展开、相对启动目录），它列出的 run id 不当源，加载器的跳过记录里写着文件给的原因（以 `filtered:` 开头）。这份文件通常由 `python -m lookahead health` 写出（页面一直没渲染、录制时内容请求就失败了、最终回答说任务失败的录制），见 `lookahead/README.md`。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
 
 Loop 一侧：
 

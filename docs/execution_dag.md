@@ -1384,7 +1384,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 **Browser**：`retarget`——带 index 的动作先几何（`bounds` 在 `retarget_tolerance_px` 之内）再签名（tag、id / name / aria-label / role、文本哈希），唯一匹配改写 index，否则 `not_found` / `ambiguous`；`switch_tab` 按 tab 顺序与 URL；坐标与导航恒等。`verify_restoration`——URL、可交互元素签名多重集、截图 dHash（Pillow）距离、自上次校验以来的主 frame 文档 miss（回放日志的单调计数）。
 
-**分叉任务**：`trace_branches` 加载器（手写 `__init__`、惰性加载）只经 `RunTrace` 读已提交的部分，按 `sources` glob（排序）、`agent_outcome`（读 `result.json`，默认 `any`）、`require_eval`（经 `RunTrace.evals()`）、`require_archive` 筛选，在已提交、且源 trace 已关闭并完整到的策略步里（trace 自己那本账是硬条件，2026-10-13 起）经 `step_selector` 选步，每步展开 `branches_per_step` 个任务：id `<source_run_id>/s<t>/b<i>`，env 部分是源 run 的 `task_setup`（缺失或被脱敏时经源 benchmark 的加载器重解析）加 `replay_archive = 源 run 目录`，loop 部分是 `checkpoint`，branch 部分是 `BranchProvenance`（不进配置摘要）。v1 没有 `trace_branches` 的评测数据加载器。三个 browser agent 的 `__wiring__["agent_loop"]` 允许 `branch`。
+**分叉任务**：`trace_branches` 加载器（手写 `__init__`、惰性加载）只经 `RunTrace` 读已提交的部分，按 `sources` glob（排序）、`exclude_runs`（`run-exclusions-1` 文件列出的 run id，2026-10-23）、`agent_outcome`（读 `result.json`，默认 `any`）、`require_eval`（经 `RunTrace.evals()`）、`require_archive` 筛选，在已提交、且源 trace 已关闭并完整到的策略步里（trace 自己那本账是硬条件，2026-10-13 起）经 `step_selector` 选步，每步展开 `branches_per_step` 个任务：id `<source_run_id>/s<t>/b<i>`，env 部分是源 run 的 `task_setup`（缺失或被脱敏时经源 benchmark 的加载器重解析）加 `replay_archive = 源 run 目录`，loop 部分是 `checkpoint`，branch 部分是 `BranchProvenance`（不进配置摘要）。v1 没有 `trace_branches` 的评测数据加载器。三个 browser agent 的 `__wiring__["agent_loop"]` 允许 `branch`。
 
 #### 验收
 
