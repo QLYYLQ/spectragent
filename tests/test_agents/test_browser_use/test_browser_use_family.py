@@ -29,7 +29,7 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 import yaml
@@ -259,6 +259,23 @@ def test_only_the_member_that_shows_the_screenshot_has_screenshot_knobs() -> Non
     assert dom_vision - dom == {"coordinate_space", "vision_detail"}
 
 
+def test_the_screenshot_is_sent_at_auto_detail_by_default_as_in_skyvern() -> None:
+    """A point is read off the image, so ``low`` would make ``click_coordinate`` guess.
+
+    Both families' ``dom_vision`` members take it the same way, under one description.
+    """
+    from spectragent.agents.skyvern import SkyvernDomVisionAgent
+
+    assert BrowserUseDomVisionAgent().vision_detail == "auto"
+    assert SkyvernDomVisionAgent().vision_detail == "auto"
+    descriptions = {
+        get_type_hints(member, include_extras=True)["vision_detail"].__metadata__[0].description
+        for member in (BrowserUseDomVisionAgent, SkyvernDomVisionAgent)
+    }
+    (description,) = descriptions
+    assert "'auto' (the default" in description and "click_coordinate guess" in description
+
+
 def test_the_mode_switch_and_its_predecessor_are_gone_rather_than_aliased() -> None:
     with pytest.raises(TypeError):
         BrowserUseDomAgent(observation_mode="dom")  # type: ignore[call-arg]
@@ -331,7 +348,7 @@ async def test_dom_vision_renders_the_tree_and_shows_the_screenshot() -> None:
     text, image = content
     assert isinstance(text, ContentPartTextParam) and isinstance(image, ContentPartImageParam)
     assert "[3]<button>Submit</button>" in text.text
-    assert image.image_url.detail == "low"
+    assert image.image_url.detail == "auto"
 
 
 async def test_dom_vision_sends_text_alone_when_the_screenshot_has_no_bytes() -> None:

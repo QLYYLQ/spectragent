@@ -109,8 +109,15 @@ class BrowserUseDomVisionAgent(BrowserUseAgent):
         ),
     ] = "screenshot_pixels"
     vision_detail: Annotated[
-        Literal["auto", "low", "high"], PydanticField(description="Screenshot detail level")
-    ] = "low"
+        Literal["auto", "low", "high"],
+        PydanticField(
+            description=(
+                "Detail the screenshot is sent at: 'auto' (the default: the "
+                "provider decides), 'low' or 'high'. A point is read off this "
+                "image, so 'low' makes click_coordinate guess."
+            )
+        ),
+    ] = "auto"
 
     def _step_messages(self, observation: Any, frame: PointFrame | None) -> list[BaseMessage]:
         """This step's user message: the page as text, with the screenshot attached.

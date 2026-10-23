@@ -73,9 +73,9 @@ class SkyvernDomVisionAgent(SkyvernAgent):
         ImageDetail,
         PydanticField(
             description=(
-                "Detail the screenshot is sent at: 'auto' (the provider decides), "
-                "'low' or 'high'. A point is read off this image, so 'low' makes "
-                "click_coordinate guess."
+                "Detail the screenshot is sent at: 'auto' (the default: the "
+                "provider decides), 'low' or 'high'. A point is read off this "
+                "image, so 'low' makes click_coordinate guess."
             )
         ),
     ] = "auto"
