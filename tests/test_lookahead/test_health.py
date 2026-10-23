@@ -282,9 +282,11 @@ def test_the_start_document_answered_with_an_error_status(health: dict) -> None:
 # ── the final answer ──────────────────────────────────────────────────
 
 
-def test_an_answer_that_says_the_task_was_not_done(health: dict) -> None:
+def test_an_answer_that_says_the_task_was_not_done_is_a_flag_not_an_exclusion(
+    health: dict,
+) -> None:
     item = health["gave-up"]
-    assert item.verdict == "unusable" and _codes(item) == ["answer_states_failure"]
+    assert item.verdict == "usable" and _codes(item) == ["answer_states_failure"]
     assert item.reasons[0].basis == "answer"
     assert item.answer.rule == "en_could_not_complete"
 
@@ -328,8 +330,8 @@ def test_only_recordings_are_judged(health: dict) -> None:
     report = health["_report"]
     assert set(report.not_assessed) == {"branches/blank-b0"}
     assert report.counts == {
-        "usable": 3,
-        "unusable": 5,
+        "usable": 4,
+        "unusable": 4,
         "never_rendered": 1,
         "degraded_at_load": 3,
         "answer_states_failure": 2,
@@ -348,10 +350,13 @@ def test_the_command_writes_the_report_and_the_exclusions_file(
     assert document["format"] == "lookahead-run-health-1"
     assert document["thresholds"]["min_blank_steps"] == MIN_BLANK_STEPS
     excluded = read_run_exclusions(out / "exclusions.json")
-    assert set(excluded) == {"blank", "degraded", "error-page", "not-found", "gave-up"}
+    # An answer that says the task was not done is reported, not excluded.
+    assert set(excluded) == {"blank", "degraded", "error-page", "not-found"}
     assert excluded["blank"].startswith("never rendered: steps 0-5")
     report = (out / "report.md").read_text(encoding="utf-8")
     assert "### `record/degraded`" in report and "| record/healthy |" in report
+    assert "## Usable runs whose answer says the task was not done" in report
+    assert "- `record/gave-up`" in report
 
 
 def test_exclusions_leave_out_the_runs_and_their_branches(root: Path, tmp_path: Path) -> None:
@@ -361,6 +366,7 @@ def test_exclusions_leave_out_the_runs_and_their_branches(root: Path, tmp_path: 
     assert {found.key for found in runs.runs} == {
         "record/changing",
         "record/clicking",
+        "record/gave-up",
         "record/healthy",
     }
     assert runs.excluded["record/blank"].startswith("the exclusions file lists it: never rendered")

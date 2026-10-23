@@ -25,8 +25,11 @@ a named reason with its evidence:
   ``done(success=...)`` flag is never read (UI-TARS's ``finished`` verb
   always reports success).
 
-The verdict is ``unusable`` when any reason fired. Branch and replay runs are
-not judged: a branch follows its source recording's verdict.
+The verdict is ``unusable`` when a reason measured on the recording fired.
+``answer_states_failure`` alone is reported but leaves the run ``usable``: it
+is the task's failure, not the recording's, and the pages the agent saw are
+still real data (user ruling 2026-10-23). Branch and replay runs are not
+judged: a branch follows its source recording's verdict.
 
 Every fact is read through the public readers: screenshots and settle records
 through ``RunTrace``, the network index lines through the browser package's
@@ -595,7 +598,7 @@ def assess(run: Run, method: DifferenceMethod | None = None) -> RunHealth:
         site=run.site,
         task_id=run.task_id,
         task=run.config.task,
-        verdict="unusable" if why else "usable",
+        verdict="unusable" if any(reason.basis == "recording" for reason in why) else "usable",
         reasons=why,
         policy_screens=len(found),
         blank_screens=sum(1 for screen in found if screen.blank),
@@ -687,7 +690,8 @@ def render_report(report: HealthReport) -> str:
         "Chrome's error page in an early observation).",
         "- **answer_states_failure** (answer): the final answer says the task was not done "
         "(rules: " + ", ".join(name for name, _ in ANSWER_FAILURE_RULES) + "). The agent's own "
-        "statement, not a measurement of the recording.",
+        "statement, not a measurement of the recording: reported, but on its own it leaves "
+        "the run usable.",
         "",
         "## Verdicts",
         "",
@@ -727,6 +731,15 @@ def render_report(report: HealthReport) -> str:
             if health.answer.answer:
                 lines.append(f"- final answer ({health.answer.agent_done}): {health.answer.answer}")
             lines.append("")
+    flagged = [health for health in report.runs if health.verdict == "usable" and health.reasons]
+    if flagged:
+        lines += ["## Usable runs whose answer says the task was not done", ""]
+        lines += [
+            f"- `{health.run}` ({health.site or 'no site'}, task {health.task_id}): "
+            f"{health.answer.answer}"
+            for health in sorted(flagged, key=lambda health: health.run)
+        ]
+        lines.append("")
     blank_total = sum(health.blank_screens for health in report.runs)
     screens_total = sum(health.policy_screens for health in report.runs)
     lines += [

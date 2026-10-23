@@ -118,14 +118,15 @@ whose content requests failed while it was recorded, still yields steps,
 forks and queue items, and its forks even restore well because nothing on
 the screen changes; it has to be recorded again instead. Every `record` run
 gets a verdict, `usable` or `unusable`, and every signal that fired is a named
-reason with its evidence. Branch and replay runs are not judged (listed in
+reason with its evidence. A run is `unusable` when a reason measured on the
+recording fired; an answer-only reason is a flag. Branch and replay runs are not judged (listed in
 `not_assessed`): a branch follows its source recording's verdict.
 
 | reason | basis | fires when |
 |---|---|---|
 | `never_rendered` | recording | at least 5 consecutive policy screens are blank and each unchanged from the one before, and the agent waited or reloaded in at least half of them |
 | `degraded_at_load` | recording | in step 0 or 1, at least 5 % and at least 5 of the content requests failed live; or the start page's document failed |
-| `answer_states_failure` | answer | the final answer says the task was not done |
+| `answer_states_failure` | answer | the final answer says the task was not done; reported only: on its own the run stays `usable` (the task failed, the recording did not) |
 
 - **Blank**: the capture's settle wait did not see content in the viewport
   (`capped` with `content` among `waiting_for`, or no settle record) and the
@@ -168,8 +169,9 @@ Outputs:
   (counted, failed live, cancelled by the page, share, error texts and hosts
   of the failures), the start document, and the answer with the rule it
   matched; the runs not judged and the runs not read;
-- `report.md`: the signals, a verdict table, and why each unusable run is
-  unusable, with its final answer;
+- `report.md`: the signals, a verdict table, why each unusable run is
+  unusable (with its final answer), and the usable runs whose answer says the
+  task was not done;
 - `exclusions.json`: the unusable recordings as a `run-exclusions-1` file,
   built with the loader's own model (`RunExclusionsFile`): `run_id`, `reason`
   (the reasons' summaries) and `note` (the run key).
