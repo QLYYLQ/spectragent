@@ -253,7 +253,8 @@ class TestCompletedRunTrace:
         assert t.manifest.status == TraceStatus.COMPLETE
         assert t.result is not None
         assert t.result.answer == "42 dollars"
-        assert t.result.agent_reported_success is True
+        # The fake capability's done states no claim about the task.
+        assert t.result.agent_reported_success is None
 
     async def test_step_records_are_complete(self, trace):
         t, _ = trace

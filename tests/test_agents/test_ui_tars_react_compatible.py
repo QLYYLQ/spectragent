@@ -368,7 +368,9 @@ class TestParseReactOutput:
         assert len(actions) == 1
         assert actions[0].name == "done"
         assert actions[0].params["extracted_content"] == "task complete"
-        assert actions[0].params["success"] is True
+        # ``finished`` says nothing about whether the task was accomplished, so
+        # it claims nothing: no ``success`` for the done result to carry.
+        assert "success" not in actions[0].params
 
     async def test_parses_type_to_the_executable_shape(self) -> None:
         """``type`` used to emit ``{content, point}`` and be 100% dead.

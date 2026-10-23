@@ -387,8 +387,11 @@ def _wait_params(kwargs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _finished_params(kwargs: Mapping[str, Any]) -> dict[str, Any]:
-    # DoneAction reads ``extracted_content``, not ``content``.
-    return {"success": True, "extracted_content": str(kwargs.get("content", ""))}
+    # DoneAction reads ``extracted_content``, not ``content``. No ``success``:
+    # ``finished`` has no argument that says whether the task was accomplished
+    # (a model ends with ``finished(content='无法完成…')`` too), so the run's
+    # ``agent_reported_success`` is ``None``, never an invented ``True``.
+    return {"extracted_content": str(kwargs.get("content", ""))}
 
 
 # ── Writing a call: the inverse of the readers above ─────────
@@ -474,11 +477,10 @@ def _write_wait(params: Mapping[str, Any]) -> str:
 
 
 def _write_finished(params: Mapping[str, Any]) -> str:
-    # ``finished`` always reads back as ``success=True`` (``_finished_params``);
-    # a success the action leaves unset executes the same way, a failure has
-    # no spelling.
-    if params.get("success") is False:
-        raise _Unwritable(("success",), "finished() has no way to say success=False")
+    # A claim about the task (``success`` set to true or false) never reaches
+    # here: ``finished`` reads back with none (``_finished_params``), so
+    # ``success`` is outside the verb's ``fills`` and ``_call_text`` refuses it
+    # as unrepresentable, naming the param.
     content = params.get("extracted_content")
     # No content and empty content read back alike (``''``), so both are
     # written as ``finished()`` — one text per reading, which is what keeps
@@ -549,7 +551,7 @@ _VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
         "finished": _Verb(
             action="done",
             signature="finished(content='answer if applicable')",
-            fills=("extracted_content", "success"),
+            fills=("extracted_content",),
             to_params=_finished_params,
             accepts=("content",),
             write=_write_finished,
@@ -1066,7 +1068,8 @@ class UITarsAgent(AgentBase):
                 measurable screenshot behind it or outside the viewport, or a
                 param value the verb cannot carry (``type``'s ``clear``,
                 ``scroll``'s ``amount`` / ``index``, ``wait``'s ``seconds``,
-                ``success=False``, a key chord with whitespace in it). Never
+                ``done``'s ``success`` set to either claim, a key chord with
+                whitespace in it). Never
                 silently dropped: a reply that executes differently from the
                 action it was written for is a wrong training label.
             ValueError: *actions* is empty; no reply carries no action.

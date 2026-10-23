@@ -541,6 +541,16 @@ class TestParseReactOutput:
         assert actions[0].params["success"] is False
         assert actions[0].params["extracted_content"] == "hit a paywall"
 
+    def test_is_done_without_success_claims_nothing(self) -> None:
+        """A reply that leaves ``success`` out makes no claim; it is not read as ``true``."""
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            SkyvernOutput.model_validate(
+                {"actions": [], "is_done": True, "extracted_content": "the answer"}
+            )
+        )
+        assert actions[0].params == {"extracted_content": "the answer"}
+
     def test_is_done_emits_only_done_action_not_mixed(self) -> None:
         # Regression: when ``is_done`` is set, Skyvern previously
         # returned ``[click, done]`` which ReactLoop's default

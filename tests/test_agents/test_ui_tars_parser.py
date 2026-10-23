@@ -89,7 +89,6 @@ _REAL: list[tuple[str, str, list[tuple[str, dict[str, Any]]]]] = [
             (
                 "done",
                 {
-                    "success": True,
                     "extracted_content": "After clicking the reCAPTCHA checkbox, the checkbox changed from a sharp black square to a rounded square with a lighter grey border, indicating it has been clicked and is resetting or in a different state.",  # noqa: E501
                 },
             )
@@ -98,12 +97,12 @@ _REAL: list[tuple[str, str, list[tuple[str, dict[str, Any]]]]] = [
     (
         "pilot2_v3demo_step3_finished_no_args",
         "Action: finished()",
-        [("done", {"success": True, "extracted_content": ""})],
+        [("done", {"extracted_content": ""})],
     ),
     (
         "pilot3_ep01_step4_finished_with_score",
         "Thought: The score is \"Score: 0.9\". I can now call finished() with this result.\nAction: finished(content='Score: 0.9')",  # noqa: E501
-        [("done", {"success": True, "extracted_content": "Score: 0.9"})],
+        [("done", {"extracted_content": "Score: 0.9"})],
     ),
 ]
 
@@ -375,7 +374,6 @@ class TestTheRealFailures:
                 (
                     "done",
                     {
-                        "success": True,
                         "extracted_content": "It's ticked, and the widget didn't reset",
                     },
                 )
@@ -404,7 +402,7 @@ class TestTheRealFailures:
         ),
         pytest.param(
             "Thought: done\nAction_Summary: tick\nAction: finished(content='(see above)')",
-            [("done", {"success": True, "extracted_content": "(see above)"})],
+            [("done", {"extracted_content": "(see above)"})],
             id="action-summary-is-not-an-action-label",
         ),
         pytest.param(

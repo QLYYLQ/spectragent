@@ -1,9 +1,16 @@
-"""DoneAction — signal that the task is complete.
+"""DoneAction — end the run with the agent's final answer.
 
 Unlike other browser actions, ``DoneAction`` does not emit a CDP event.
 It terminates the run by returning ``ActionResult(is_done=True)`` with
-the agent-provided answer in ``extracted_content``. This is the single
-source of truth for the done-answer payload — no aliasing, no renames.
+the agent-provided answer in ``extracted_content`` and the agent's claim
+about the task in ``reported_success``. This is the single source of truth
+for the done payload — no aliasing, no renames.
+
+Its ``success`` is ``True`` whenever it executed, like every other action's:
+it says the run was closed, not that the task was accomplished. What the
+agent says about the task is ``Params.success``, carried out unchanged as
+``reported_success`` — ``None`` when the agent did not say
+(``docs/architecture_design.md`` §4.1, "agent 的任务结论").
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class DoneAction(ActionBase):
-    """Terminal action — carry the final answer out of the loop."""
+    """Terminal action — carry the final answer and the agent's claim out of the loop."""
 
     __registry_key__ = "browser.done"
 
@@ -35,7 +42,15 @@ class DoneAction(ActionBase):
         extracted_content: Annotated[
             str | None, PydanticField(description="final answer / result text")
         ]
-        success: bool | None = None
+        #: The agent's claim, not a verdict. Unset is a claim of nothing: an
+        #: agent whose reply format cannot say it (UI-TARS's ``finished``)
+        #: leaves it unset rather than inventing ``true``.
+        success: Annotated[
+            bool | None,
+            PydanticField(
+                description="whether the task was accomplished; leave it unset if you cannot tell"
+            ),
+        ] = None
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe("Signal that the task is complete.", **context)
@@ -46,9 +61,9 @@ class DoneAction(ActionBase):
         *,
         capability: BrowserCapability,
     ) -> ActionResult:
-        requested = params.get("success")
         return ActionResult(
-            success=True if requested is None else bool(requested),
+            success=True,
             is_done=True,
             extracted_content=params.get("extracted_content"),
+            reported_success=params.get("success"),
         )
