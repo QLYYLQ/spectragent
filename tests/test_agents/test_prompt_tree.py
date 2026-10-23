@@ -1,4 +1,8 @@
-"""One agent prompt tree, keyed by registry key, resolved without a path constant.
+"""One agent prompt tree, keyed by family root, resolved without a path constant.
+
+A key's family root is the part before its first dot (``browser_use.dom`` →
+``browser_use``); an undotted key is its own family. Members of one family
+share its directory.
 
 The evaluator tree got this treatment first (``test_evaluator/test_prompt_tree``);
 the agent tree kept three hand-written
@@ -35,6 +39,7 @@ from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompts import (
     AGENT_PROMPT_ROOT,
     PROMPT_SUFFIX,
+    agent_family,
     agent_prompt_variants,
     load_prompt,
     template_variables,
@@ -180,17 +185,18 @@ def test_agent_prompts_mirror_the_evaluator_tree_layout():
     assert AGENT_PROMPT_ROOT.is_dir()
 
 
-def test_every_prompt_directory_is_exactly_a_registry_key():
+def test_every_prompt_directory_is_exactly_a_family_root():
     on_disk = {
         child.name
         for child in AGENT_PROMPT_ROOT.iterdir()
         if child.is_dir() and not child.name.startswith("__")
     }
-    assert on_disk <= set(AgentRegistrar.keys()), (
-        f"Prompt directories {sorted(on_disk - set(AgentRegistrar.keys()))} "
-        f"match no registry key, so an agent would need a path constant."
+    families = {agent_family(key) for key in AgentRegistrar.get_all()}
+    assert on_disk <= families, (
+        f"Prompt directories {sorted(on_disk - families)} match no agent "
+        f"family, so an agent would need a path constant."
     )
-    assert on_disk == set(_PREPARE_KWARGS)
+    assert on_disk == {agent_family(key) for key in _PREPARE_KWARGS}
 
 
 @pytest.mark.parametrize("agent_id", sorted(AgentRegistrar.keys()))
@@ -203,7 +209,7 @@ def test_prompt_dir_is_derived_from_the_registry_key(agent_id):
     no prompts at all (the key-set check above only runs the other way).
     """
     agent = AgentRegistrar.get(agent_id)()
-    assert agent.prompt_dir == AGENT_PROMPT_ROOT / agent_id
+    assert agent.prompt_dir == AGENT_PROMPT_ROOT / agent_family(agent_id)
     assert agent.prompt_dir.is_dir()
 
 
@@ -227,7 +233,7 @@ def test_no_agent_carries_its_own_prompt_directory_constant():
 def test_each_prompt_loads_and_hashes(agent_id, name):
     text, ref = load_prompt(agent_id, name)
     assert text.strip()
-    assert ref.path == f"agents/{agent_id}/{name}{PROMPT_SUFFIX}"
+    assert ref.path == f"agents/{agent_family(agent_id)}/{name}{PROMPT_SUFFIX}"
     assert len(ref.content_hash) == 64
 
 
@@ -253,7 +259,7 @@ def test_every_agent_records_a_real_content_hash():
         snapshot = agent.system_prompt
         assert snapshot is not None, agent_id
         assert len(snapshot.ref.content_hash) == 64, agent_id
-        assert snapshot.ref.path.startswith(f"agents/{agent_id}/"), agent_id
+        assert snapshot.ref.path.startswith(f"agents/{agent_family(agent_id)}/"), agent_id
 
 
 # ── The detector ──────────────────────────────────────────────────────
@@ -293,11 +299,15 @@ def test_template_variables_are_exactly_what_the_agent_supplies(agent_id, name, 
 # ── Reachability: the field, the selector, and the disk agree ─────────
 
 
-@pytest.mark.parametrize("agent_id", sorted(_PREPARE_KWARGS))
-def test_every_file_on_disk_is_reachable_from_its_agent(agent_id):
-    """A prompt nothing can load is dead weight that still ships."""
-    reached = {name for a, name, _ in _REACHED if a == agent_id}
-    assert reached == set(agent_prompt_variants(agent_id))
+@pytest.mark.parametrize("family", sorted({agent_family(key) for key in _PREPARE_KWARGS}))
+def test_every_file_on_disk_is_reachable_from_its_family(family):
+    """A prompt nothing can load is dead weight that still ships.
+
+    Per family, not per member: the members share one directory, so a file
+    counts as reachable when any member's configuration renders it.
+    """
+    reached = {name for a, name, _ in _REACHED if agent_family(a) == family}
+    assert reached == set(agent_prompt_variants(family))
 
 
 @pytest.mark.parametrize(
@@ -359,7 +369,7 @@ def test_surface_fragments_are_not_mistaken_for_template_variants():
 
     A fragment is a *value* spliced into a template, not a prompt an agent
     can select; if ``agent_prompt_variants`` listed them,
-    ``test_every_file_on_disk_is_reachable_from_its_agent`` would demand a
+    ``test_every_file_on_disk_is_reachable_from_its_family`` would demand a
     config that renders each one on its own.
     """
     assert _SURFACE_DIR.is_dir()

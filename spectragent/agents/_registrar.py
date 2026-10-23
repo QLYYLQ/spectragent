@@ -16,6 +16,7 @@ from pydantic import Field
 
 from spectragent.agents.base import BaseAgent
 from spectragent.agents.prompts import (
+    AGENT_KEY_SEPARATOR,
     PromptEngine,
     agent_prompt_dir,
     load_prompt,
@@ -29,6 +30,7 @@ AgentRegistrar = create_registrar(
     "agent",
     BaseAgent,
     discriminator_field="agent_id",
+    key_separator=AGENT_KEY_SEPARATOR,
 )
 
 
@@ -58,6 +60,16 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
 
     Subclasses auto-register via conscribe's AutoRegistrar metaclass.
     Set ``__registry_key__ = "key"`` to specify the registration key.
+
+    Keys are hierarchical (``key_separator="."``). An agent family is an
+    abstract root holding a key (``__abstract__ = True``,
+    ``__registry_key__ = "browser_use"``), never registered itself; its
+    members register as ``browser_use.<member>``, either derived from the
+    class name or written out. Each member writes its own ``__wiring__``;
+    what the members share sits on the root and merges through the MRO.
+    A subclass of a registered agent that sets no key of its own is keyed
+    below that agent's key in the same way, which makes that agent a family
+    root as well; a family root stays abstract instead.
 
     ``__wiring__`` declares cross-registry dependencies:
     - ``agent_loop``: compatible Loop strategies (default: all)
@@ -135,9 +147,10 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         return extract_wiring(type(self), registry)
 
     # ── Prompt access ───────────────────────────────────────────────
-    # Keyed off ``__registry_key__``, exactly as ``EvaluatorBase`` does.
-    # No agent holds a path constant, so no agent can name a directory
-    # the registry does not know about.
+    # Keyed off ``__registry_key__``, exactly as ``EvaluatorBase`` does,
+    # through its family root (``agent_prompt_dir``): the members of one
+    # family share a directory. No agent holds a path constant, so no agent
+    # can name a directory the registry does not know about.
 
     @property
     def prompt_dir(self) -> Path:
