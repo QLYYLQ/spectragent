@@ -3370,8 +3370,8 @@ class ArchiveReader(Protocol):
 **规范化（`canonical.py`，唯一实现，加载与线上请求共用）**：
 
 - **先脱敏**：线上请求的 body 先过 M29 的 `redact_post_body(body, content_type)`（`archive/redaction.py`，录制时存进 WARC 的就是它的输出），再算任何键。归档里只有 `<redacted>`，所以带密码或 token 的 POST 照样精确命中。
-- **URL**：scheme 与 host 小写，去掉默认端口与 fragment，query 参数排序。格式规范化不猜内容语义：时间戳外形、`ts` / `bust` 子串、`width` / `height`、`r` / `timestamp`、缓存参数与回调名都不在全局删除或抹值；需要忽略的字段必须由适用请求的显式规则声明。两个产品编号或尺寸不能仅因外形相似变成同一资源。
-- **body**（移植 cdxj-indexer `postquery.py`，Apache-2.0，保留 notice；不依赖 cdxj-indexer / surt）：加 `__wb_method=<METHOD>`；urlencoded 与 multipart 变成参数（multipart 不看 boundary，文件部分与不是 UTF-8 的部分取 sha256）；JSON（含 `*+json`）拍平，键是**完整路径**（`a.b.0.c`，上游只用叶子名会撞键；空对象 / 空数组记成 `{}` / `[]`），逐行 JSON 逐行拍平；`text/plain` 或没有类型的先试 JSON、再试 `k=v&…` 表单形状（与 `redact_post_body` 认类型的方式一致）；解析不了的 body 记作 `__wb_post_data=<sha256>`；body 参数与 query 参数合在一起排序——**排序是我们自己写的**（上游 `postquery.py` 不排序，排序来自 AGPL 的 `surt`）。规范化后的 body 串超过 4096 字符时换成它的 sha256（上游截断到 4096 字符，大 GraphQL 请求会撞键）；适用规则的 `ignore_body_paths` 先去掉，再按剩下的参数判断长度、计算 sha256，所以被忽略的字段既不会把 body 推过上限，也不进摘要。所有带 body 的方法都参与（上游只取 POST / PUT）。
+- **URL**：scheme 与 host 小写，去掉默认端口与 fragment，适用规则 `parse_query` 声明的参数换成它的子字段（下面"字段里的字段"），query 参数排序。格式规范化不猜内容语义：时间戳外形、`ts` / `bust` 子串、`width` / `height`、`r` / `timestamp`、缓存参数与回调名都不在全局删除或抹值；需要忽略的字段必须由适用请求的显式规则声明。两个产品编号或尺寸不能仅因外形相似变成同一资源。
+- **body**（移植 cdxj-indexer `postquery.py`，Apache-2.0，保留 notice；不依赖 cdxj-indexer / surt）：加 `__wb_method=<METHOD>`；urlencoded 与 multipart 变成参数（multipart 不看 boundary，文件部分与不是 UTF-8 的部分取 sha256）；JSON（含 `*+json`）拍平，键是**完整路径**（`a.b.0.c`，上游只用叶子名会撞键；空对象 / 空数组记成 `{}` / `[]`），逐行 JSON 逐行拍平；`text/plain` 或没有类型的先试 JSON、再试 `k=v&…` 表单形状（与 `redact_post_body` 认类型的方式一致）；解析不了的 body 记作 `__wb_post_data=<sha256>`；body 参数与 query 参数合在一起排序——**排序是我们自己写的**（上游 `postquery.py` 不排序，排序来自 AGPL 的 `surt`）。规范化后的 body 串超过 4096 字符时换成它的 sha256（上游截断到 4096 字符，大 GraphQL 请求会撞键）；适用规则 `parse_body_paths` 声明的字段先换成它的子字段、`ignore_body_paths` 再去掉，然后按剩下的参数判断长度、计算 sha256，所以被忽略的字段与子字段既不会把 body 推过上限，也不进摘要。所有带 body 的方法都参与（上游只取 POST / PUT）。
 - **GraphQL**（JSON body 里有看起来是 GraphQL 文档的 `query`（以 `{`、`query`、`mutation`、`subscription` 或 `fragment` 开头，所以 `{"query": "red shoes"}` 这样的搜索 API 不算），或有 `extensions.persistedQuery.sha256Hash`；GET 的 `query` / `variables` / `operationName` / `extensions` 参数同理）：键是 `operationName` + 空白归一后的 query 的 sha256（只有 persisted query 的 hash 时用它自己的 sha256）+ 拍平后去掉易变路径（站点规则 `ignore_body_paths`，在单个操作之内匹配 `variables.cursor` 这样的路径，所以同一条规则对单个请求和批量请求都有效）的 `variables`；批量请求（顶层数组）逐项算、按顺序编号（`0.operationName`…）连起来。
 
 **三级匹配**（`matcher.py`）：
@@ -3400,6 +3400,13 @@ class ArchiveReader(Protocol):
 - 源中声明有 body、但服务时读取失败或内容校验失败，另记 `archive_unreadable`；它是环境无法提供源响应的事实，按离线 miss 应答并保留记录身份，不经本次记录器的故障通道处理。源索引或 WARC 在加载时损坏仍具名拒绝启动。
 
 **请求规则**（`site_rules.py`；`matcher.site_rules` 目录）：规则是冻结、校验的实验输入。作用域可声明 host、URL/path、HTTP method 与网络端口；明确整数优先级决定多条匹配规则中的唯一赢家，同优先级相交不得靠文件名或目录遍历顺序决定，冲突具名拒绝。候选的录制请求与实时请求必须选择同一规则身份，不能把不同规则删除参数后偶然相同的规范键拼成同一响应序列；Range 与 fuzzy 同样遵守。细规则完整声明其内容处理、耗尽策略（`exhaustion`）与无正文策略（`unavailable: miss | serve_identical`，上面"匹配"；与 `exhaustion` 一样必填、框架不给默认值，没写的规则在解析时具名拒绝），不隐式叠加另一个范围的内容假设；宽规则可显式覆盖其余请求。规则保留 `ignore_query`、`ignore_body_paths`、`ignore_headers`、`synthesize_204` 和 `response_echo` 的既有能力，并能保留明确字段、限制匹配级别以及允许文档/非 GET 的 fuzzy。响应 echo 仍只替换已有 JSON 位置，正文变化移除其摘要头。同一个规则集还有一节页面地址规则（`page_urls`，`page_urls.py`）：与请求规则一起读入、冻结、计入摘要与快照，但匹配从不读它，只有恢复校验读（下面"恢复：重定位与校验"）。
+
+**字段里的字段**（`parse_query`、`parse_body_paths`，2026-10-23）：有的请求把几个字段放进一个字段的值里。腾讯视频播放器的 `proxyhttp` 把视频号、清晰度、加密 key、客户端时间与 flow id 都写进 JSON body 里的一个 URL 编码串 `vinfoparam`；爱奇艺 `dash` 的 query 字段 `bop` 是一个 JSON 文档。整个字段忽略会连视频号一起丢掉，所以规则可以声明一个 query 参数（`parse_query`）或一个拍平后的 body 路径（`parse_body_paths`，GraphQL 的 `variables` 路径同样在单个操作之内）的值是 `urlencoded`（`a=1&b=2`，按 query 串解码）或 `json`（对象或数组）。每条声明是 `{field, format}`，`field` 是确切的名字，不是 glob。规范化时这个字段换成它的子字段，名字是 `<字段>.<子字段>`（`vinfoparam.cKey`；JSON 按完整路径，就像它写在原处：`bop.dfp`），然后与其他参数一起排序；`ignore_*` / `keep_*` 用这些名字指子字段，其余子字段留在键里。
+- 两边一致：解析在 `canonical.py` 里，录制请求加载时与线上请求暂停时用同一个函数、同一条选中的规则；body 的子字段在 4096 字符上限与摘要之前展开和忽略（上面"规范化"）。exact 级照旧比原字节；normalized 级不再区分子字段的顺序与编码（`+` 与 `%20`）。
+- 形状严格：`urlencoded` 要求每个非空的 `&` 段都是名字非空的 `name=value`，`json` 要求对象或数组。不是声明形状的值（空串、单个 token、JSON 字符串或数字）保持整个字段、原来的名字，不会和解析出来的键混在一起。只解析一层：已解析字段的子字段不再解析。
+- 加载时具名拒绝（文件与规则 id）：未知格式或多余的键、空名字、同一字段声明两次、一个声明落在另一个已解析字段之内、被同一规则整个忽略的字段（解析不起作用）。
+- 声明是规则正文的一部分，进规则快照与 `site_rules_sha256`。近邻 miss 报告两边都按回放记下的规则规范化，所以声明过的字段按子字段名列出不同。
+- 不解析 protobuf：没有 schema 时，长度分隔的字段是字符串、字节还是嵌套消息分不清，而且 protobuf 通常是整个 body，不是 body 里的一个字段（腾讯视频 `GetTabRemoteConfig` 的 protobuf 变体仍按整个 body 匹配，见 `configs/replay_rules/qq.com.yaml`）。
 
 参数忽略须有作用域证据：统计 endpoint 的随机字段不授权同域业务接口忽略同名字段。发布规则按已有证据收窄；证据不足的全域规则删除，不用命中率替代误匹配反例验收。
 
