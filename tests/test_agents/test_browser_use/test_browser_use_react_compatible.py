@@ -35,6 +35,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_of
+from tests._helpers.fragment_formats import dom_formats
 
 # ── Test fixtures ─────────────────────────────────────────────────────
 
@@ -159,6 +160,7 @@ def _prepared(**overrides: Any) -> BrowserUseAgent:
         task="t",
         action_space=space_of(_descriptors()),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        fragment_formats=dom_formats(),
     )
     return agent
 
@@ -247,6 +249,7 @@ class TestPrepare:
             task="navigate to example.com",
             action_space=space_of(descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
 
         assert isinstance(seed, list)
@@ -264,6 +267,7 @@ class TestPrepare:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         snapshot = agent.system_prompt
         assert snapshot is not None
@@ -279,6 +283,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
 
         obs = _FakeObservation(
@@ -301,6 +306,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<DOM>tree</DOM>"),
@@ -323,6 +329,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         tail = "[173]<button>Reachable at the end</button>"
         state = DOMState(serialized_dom="x" * 10_100 + tail)
@@ -343,6 +350,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             task=_FakeTask(user_request="book a flight to Tokyo"),
@@ -363,6 +371,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             task=_FakeTask(user_request="x"),
@@ -390,6 +399,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             task=_FakeTask(user_request="x"),
@@ -408,6 +418,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         # Only the required task fragment; no DOM / browser_meta / etc.
         obs = _FakeObservation(task=_FakeTask(user_request="hello"))
@@ -427,6 +438,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nfake"),
@@ -447,6 +459,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(task=_FakeTask(user_request="x"))  # no screenshot
         messages = await agent.build_react_prompt(
@@ -583,6 +596,7 @@ class TestOutputModel:
             task="t",
             action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         assert agent.get_react_output_model() is not model
 

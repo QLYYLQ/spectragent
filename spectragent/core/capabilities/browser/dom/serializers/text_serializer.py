@@ -1,27 +1,33 @@
 """Indented text serializer — matches browser-use output format.
 
-Output example::
+Output example (one tab per level, shown here as four spaces)::
 
-    [12345]<button id="submit" aria-label="Submit Form" />
-        Submit
-    *[12346]<input type="text" placeholder="Search" format=YYYY-MM-DD />
-    |scroll element|<div role="listbox" /> (1.2 pages above, 0.5 pages below)
-    |SHADOW(open)|[12347]<custom-element />
-        Open Shadow
-            ...
-        Shadow End
+    |scroll element|<html /> (2.3 pages below)
+        [10]<button id=main-btn />
+        *[52]<button id=same-btn />
+            Send
+        [15]<iframe id=cross />
+            [2147483659]<input id=cross-input />
+            |IFRAME|<iframe id=nested />
+                [4294967306]<button id=nested-btn />
 
 Markers:
 - ``[index]`` prefix: interactive element; the number is its selector_map key
   (``element_index`` — the backend node id, namespaced for an element inside
   an out-of-process frame)
-- ``*`` prefix: newly appeared element (not in previous snapshot)
-- ``|scroll element|`` prefix: scrollable container
-- ``|SHADOW(open/closed)|`` prefix: shadow host
-- ``|IFRAME|`` / ``|FRAME|`` prefix: frame owner; its document is indented below
+- ``*`` before ``[index]``: newly appeared element (not in previous snapshot)
+- ``|scroll element|`` prefix: scrollable container without an index;
+  ``|scroll element[index]`` an indexed one
+- ``|SHADOW(open/closed)|`` prefix: shadow host; its shadow content is listed
+  under it
+- ``|IFRAME|`` / ``|FRAME|`` prefix: frame owner without an index; its
+  document is indented below
 - ``<!-- SVG content collapsed -->`` suffix: SVG children skipped
-- ``(scroll info)`` suffix: scroll progress hint
+- ``(N.N pages below)`` / ``(scroll)`` suffix: scroll extent hint
 - ``compound_components=(...)`` in attributes: virtual sub-components
+
+:meth:`TextSerializer.describe_format` says the same to a model; the two
+must change together.
 """
 
 from __future__ import annotations
@@ -146,6 +152,39 @@ class TextSerializer(DOMSerializerBase):
 
     def __init__(self, *, max_text_length: int = 200) -> None:
         self.max_text_length = max_text_length
+
+    def describe_format(self) -> str:
+        """How this text reads, for a model: the lines, the index marker and every other marker.
+
+        Every marker :meth:`serialize` can write is named here, and nothing it
+        never writes; ``max_text_length`` is this instance's.
+        """
+        return (
+            "The page is listed one line per element or piece of text. A line indented "
+            "one tab deeper than an element's line is inside that element.\n"
+            "- `[42]<button id=submit aria-label=Send />` is an element you can act on. "
+            "42 is its index: an action that targets this element takes it as `index`.\n"
+            "- Only a line with a number in square brackets can be acted on. Every other "
+            "line is page structure or text.\n"
+            "- `*[42]` marks an element that was not on the page at the previous step, "
+            "such as a list of suggestions that typing opened.\n"
+            "- `|scroll element[42]` starts a scrollable element you can act on, "
+            "`|scroll element|` one you cannot. At the end of its line, "
+            "`(1.2 pages below)` says how much more there is to scroll, and `(scroll)` "
+            "that the amount is unknown.\n"
+            "- `|SHADOW(open)|` or `|SHADOW(closed)|` starts an element that hosts a "
+            "shadow root; the shadow content is listed inside it like any other.\n"
+            "- A frame is listed as its `<iframe>` or `<frame>` element with the frame's "
+            "page inside it. `|IFRAME|` or `|FRAME|` stands where the index would be when "
+            "the frame element has none.\n"
+            "- `<svg ... /> <!-- SVG content collapsed -->` is an icon whose drawing is "
+            "left out.\n"
+            "- Attributes are written `name=value` without quotes; only some are kept, and "
+            "a long value ends in `...`. `compound_components=(...)` lists the parts of a "
+            "composite control such as a slider or a date field.\n"
+            "- A line that is not a tag is text shown on the page. Text longer than "
+            f"{self.max_text_length} characters ends in `...`."
+        )
 
     def serialize(self, state: DOMState) -> str:
         if state.dom_tree is None:

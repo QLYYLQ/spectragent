@@ -44,7 +44,11 @@ from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.negotiation import negotiate_action, negotiate_observation
+from spectragent.core.negotiation import (
+    negotiate_action,
+    negotiate_observation,
+    quoted_fragment_formats,
+)
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 
@@ -146,6 +150,7 @@ def _run(mode: str, config: dict[str, Any]) -> tuple[BrowserUseAgent, str, set[s
         task="t",
         action_space=space_for(agent, action_space.descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        fragment_formats=quoted_fragment_formats(agent, obs, env) or {},
     )
     return (
         agent,
@@ -249,10 +254,13 @@ def test_a_vision_prompt_carries_no_index_vocabulary(config: dict[str, Any]) -> 
 
 @pytest.mark.parametrize("mode", ["dom", "dom_vision"])
 def test_a_dom_prompt_does_explain_the_index(mode: str) -> None:
-    """The complement: the gate above must not be satisfied by saying nothing."""
+    """The complement: the gate above must not be satisfied by saying nothing.
+
+    The explanation is the DOM serializer's own description, quoted whole.
+    """
     _agent, prompt, _names, _descriptors = _run(mode, {"flash_mode": False})
-    assert "[index]" in prompt
-    assert "interactive" in prompt.lower()
+    assert BrowserCapability().dom_serializer.describe_format() in prompt
+    assert "[42]<button" in prompt
 
 
 def test_a_vision_prompt_says_what_a_point_is() -> None:
@@ -285,6 +293,7 @@ def test_the_coordinate_paragraph_follows_the_configured_grid() -> None:
             ),
         ),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        fragment_formats={},
     )
     assert "0-1000 grid" in agent._system_prompt_text
 

@@ -28,6 +28,7 @@ from spectragent.core.capabilities.base import (
     BaseCapability,
     CaptureCheck,
     CaptureComparison,
+    FragmentFormats,
     PreparedSetupContext,
     RestorationAlignment,
     RestorationSupport,
@@ -281,6 +282,36 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     continue
                 descriptors.append(desc)
         return descriptors
+
+    # ── How the fragments read as text ────────────────────────
+
+    def fragment_formats(self) -> dict[str, str]:
+        """Every capability's fragment format descriptions, fully qualified.
+
+        Unioned over the capabilities implementing
+        :class:`~spectragent.core.capabilities.base.FragmentFormats`, in
+        capability order; one without it describes nothing. A capability
+        speaks for its own fragments only, so a key outside its prefix is a
+        contract error, not a description another capability's fragment gets.
+        Reads configuration only (``docs/architecture_design.md`` §4.4
+        "观测格式由提供方描述").
+
+        Raises:
+            ValueError: A capability described a key outside its own prefix.
+        """
+        formats: dict[str, str] = {}
+        for cap in self.capabilities.values():
+            if not isinstance(cap, FragmentFormats):
+                continue
+            for key, text in cap.fragment_formats().items():
+                prefix, sep, _rest = key.partition(".")
+                if not sep or prefix != cap.capability_id:
+                    raise ValueError(
+                        f"capability {cap.capability_id!r} described the format of {key!r}, "
+                        f"which is not one of its fragments ('{cap.capability_id}.<name>')"
+                    )
+                formats[key] = text
+        return formats
 
     # ── Action execution (prefix routing) ─────────────────────
 

@@ -34,6 +34,7 @@ from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.observation._registrar import fragment_field_name
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
+from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import step_context
 
 _AGENTS: dict[str, type[Any]] = {
@@ -122,6 +123,7 @@ def _prepared(agent_id: str) -> Any:
         task="read the article",
         action_space=space,
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        **formats_for(agent),
     )
     return agent, seed, space
 

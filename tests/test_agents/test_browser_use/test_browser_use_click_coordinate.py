@@ -38,6 +38,7 @@ from spectragent.schemas.observation.image import image_size
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
+from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.frames import decided, step_context
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -100,6 +101,7 @@ def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
         task="t",
         action_space=space,
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        fragment_formats=dom_formats(),
     )
     return {
         "space": space,
@@ -133,6 +135,7 @@ def _prompt(agent: BrowserUseAgent, descriptors: list[Any]) -> str:
         task="t",
         action_space=space_for(agent, descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        fragment_formats=dom_formats(),
     )[0].content
     assert isinstance(content, str)
     return content

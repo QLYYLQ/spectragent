@@ -167,7 +167,7 @@ from spectragent.core.capabilities.browser.navigation import (
     MainFrameNavigation,
     NavigationFeed,
 )
-from spectragent.core.capabilities.browser.observations import BrowserCaptureFragment
+from spectragent.core.capabilities.browser.observations import BrowserCaptureFragment, DOMObs
 from spectragent.core.capabilities.browser.platform import InputPlatform, measure_input_platform
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
@@ -1636,6 +1636,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             screenshot_cursor_size=self.screenshot_cursor_size,
             screenshot_quality=self.screenshot_quality,
         )
+
+    # ── How the fragments read as text (FragmentFormats, §4.4) ──────
+
+    def fragment_formats(self) -> Mapping[str, str]:
+        """``browser.dom``'s format, in its configured serializer's own words.
+
+        The DOM text is the serializer's, so is its description
+        (``DOMSerializerProtocol.describe_format``); nothing here restates
+        it. Only while this capability declares ``browser.dom``: a profile
+        without the DOM resolver (``vision_only``) describes nothing. Reads
+        configuration only — before setup and before negotiation too.
+        """
+        key = DOMObs.__registry_key__
+        if key not in self.declared_fragments:
+            return {}
+        return {key: self.dom_serializer.describe_format()}
 
     # ── What setup would refuse, refused at prepare() (SetupCheck, §4.14) ──
 

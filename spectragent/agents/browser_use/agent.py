@@ -37,6 +37,11 @@ else. There is no vocabulary map and no local-id fallback: the prompt
 advertises the fully-qualified key, the schema permits it, ``env.act``
 routes on it and the trace records it — one string the whole way.
 
+**The DOM text describes itself.** A DOM mode's surface does not say what an
+element line looks like: it quotes the run's DOM serializer's own description
+(``__fragment_formats__``), so the prompt teaches the format the run writes,
+``text`` or ``html``.
+
 **Every point the model reads is on the grid it writes.** A run with a
 coordinate action teaches the model a grid (``coordinate_space``) over the
 screenshot it is shown; the declaration is this agent's whole part in
@@ -266,6 +271,12 @@ class BrowserUseAgent(AgentBase):
     # constrained the generated config to a provider without any runtime
     # effect.
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    # The DOM text's format is its serializer's to describe: a DOM mode's
+    # surface quotes the run's description verbatim, so changing the
+    # serializer changes the prompt with it (``docs/architecture_design.md``
+    # §4.4 "观测格式由提供方描述"). ``prepare`` receives it as
+    # ``fragment_formats["dom"]``; ``vision`` excludes ``dom`` and gets none.
+    __fragment_formats__: ClassVar[frozenset[str]] = frozenset({"dom"})
 
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
@@ -510,6 +521,7 @@ class BrowserUseAgent(AgentBase):
         task: str,
         action_space: ActionSpace,
         execution_limits: ExecutionLimits,
+        fragment_formats: Mapping[str, str],
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
@@ -531,6 +543,10 @@ class BrowserUseAgent(AgentBase):
         prompt advertises what the run can execute" true of the *schema* as
         well as the prose.
 
+        *fragment_formats* holds the run's description of the DOM text
+        (``"dom"``), written by its DOM serializer, in every DOM mode; the
+        surface quotes it in place of a format of its own.
+
         Raises:
             UnsupportedParamsSchema: an action's params are outside the
                 closed-union subset — before the first LLM call, not at it.
@@ -545,6 +561,7 @@ class BrowserUseAgent(AgentBase):
             task,
             variant,
             max_actions_per_step,
+            fragment_formats,
         )
         # ``cache=True`` marks the static prefix. The per-step breakpoint on the
         # user message (``build_react_prompt``) already covers system + history,
@@ -819,21 +836,32 @@ class BrowserUseAgent(AgentBase):
         else:
             return "system_prompt_no_thinking"
 
-    def _render_surface(self) -> str:
+    def _render_surface(self, fragment_formats: Mapping[str, str]) -> str:
         """The mode's description of how this run sees and reaches the page.
 
         Loaded from ``prompts/agents/browser_use/_surface/`` — a
         subdirectory, so ``agent_prompt_variants`` (which globs the top
-        level) cannot mistake a fragment for a template variant. The
-        coordinate paragraph is appended from code because it depends on
-        ``coordinate_space``, and only when this run actually negotiated
-        an action that takes a point.
+        level) cannot mistake a fragment for a template variant. A DOM
+        mode's fragment holds one slot, ``{dom_format}``: the run's DOM
+        serializer's own description of its text (*fragment_formats*
+        ``["dom"]``), quoted verbatim, so the surface never describes a
+        format the run does not write. The coordinate paragraph is appended
+        from code because it depends on ``coordinate_space``, and only when
+        this run actually negotiated an action that takes a point.
+
+        Raises:
+            ValueError: A DOM mode without the ``dom`` format description.
         """
         stem = self.observation_mode
         if self.select_prompt_variant() in _TERSE_VARIANTS:
             stem = f"{stem}_terse"
         text, _ref = load_prompt_fragment(self.__registry_key__, "_surface", stem)
         text = text.strip()
+        if self.observation_mode in _MODES_WITH_DOM:
+            dom_format = fragment_formats.get("dom")
+            if not dom_format:
+                raise ValueError("prepare requires the dom fragment's format description")
+            text = text.format(dom_format=dom_format)
         if self._teaches_a_grid():
             text = f"{text}\n{_COORDINATE_GUIDE[self.coordinate_space]}"
         return text
@@ -843,6 +871,7 @@ class BrowserUseAgent(AgentBase):
         task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
         variant: str,
         max_actions_per_step: int,
+        fragment_formats: Mapping[str, str],
     ) -> tuple[str, PromptSnapshot]:
         """Return the system prompt and the snapshot that explains it."""
         snapshot: PromptSnapshot
@@ -862,7 +891,7 @@ class BrowserUseAgent(AgentBase):
             # ``test_prompt_tree`` reads as "the agent computed something
             # the model never sees", and rightly.
             if variant not in _FINE_TUNED_VARIANTS:
-                params["surface"] = self._render_surface()
+                params["surface"] = self._render_surface(fragment_formats)
             text, snapshot = self.render(variant, params)
 
         if self.extend_system_message:

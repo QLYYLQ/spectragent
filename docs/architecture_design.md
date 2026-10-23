@@ -253,7 +253,7 @@ class ReactLoop(AgentLoopBase):
 | 可选 slot | 谁调用 | 何时校验 |
 |---|---|---|
 | `get_react_output_model()` | `ReactLoop` 自己（每次 LLM 调用的 `output_format`） | 不校验：没有就是文本调用 |
-| `prepare(task, action_space, execution_limits=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`；`action_space` 是本 run 守卫执行的那个 `ActionSpace`，§4.5“有效动作空间是实验身份”） | 不校验：没有就没有种子消息 |
+| `prepare(task, action_space, execution_limits=..., fragment_formats=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`；`action_space` 是本 run 守卫执行的那个 `ActionSpace`，§4.5“有效动作空间是实验身份”；`fragment_formats` 只给声明了 `__fragment_formats__` 的 Agent，§4.4 “观测格式由提供方描述”） | 不校验：没有就没有种子消息 |
 | `format_react_output(actions, *, thought=None) -> str` | 训练导出器（学生一侧，§4.15） | 只在导出组装学生时 |
 | `format_action_fact(action) -> str \| dict` | 训练导出器（`keep_as_text` 的文本轮，§4.15） | 不校验：没有就写动作自己的 JSON（viewport 单位） |
 | `parse_react_thought(llm_output) -> tuple[str, str] \| None` | 训练导出器（teacher 一侧，`thought_source: teacher`） | 只在导出读 teacher 的 thought 时 |
@@ -437,7 +437,7 @@ ReAct 的公开 `cap_actions`、`remember_rejected`、`remember_reply`、`today_
 
 原因：以前结束动作的 `success` 同时承担"执行了"与"agent 说完成了"两层意思。UI-TARS 的每个 run 都"自报成功"，包括说自己做不到的；一个 `done(success=false)` 在 trace 里记成一次失败的动作：执行错误（`StepRecord.execution_errors` 的 "action reported failure"）、训练导出的 `labels.step_status: action_failed`、动作标记的"（没有成功）"。不用动作效果（§4.5）承载结论：效果是动作执行前后测得的事实，`describe()` 不含任务判断，而结论正是 agent 的任务判断；它与答案 `extracted_content` 一样，是结束动作交出的内容。`AgentResult.schema_version` 因此升为 `4.0`，3.0 的结果在读取时被拒绝（"predates AgentResult schema 4.0"），不做转换；trace 格式版本不变（缺少 `reported_success` 就是没有结论，与动作效果同一条规则），旧录制按测试数据可丢弃的裁决重新生成。
 
-**执行限制显式传递。** Loop 的 `execution_limits() -> ExecutionLimits` 是唯一来源；Agent 用 `__execution_limit_fields__` 声明消费字段（显式空集表示不适用），通过原有 `prepare(..., execution_limits=...)` 收到有类型的限制。Runtime 在 `prepare()` 检查提供与消费及显式参数是否匹配，失败先于 setup 和模型调用。未声明不能静默省略限制。Agent 自己决定系统提示和每轮提示的布局，Runtime 不拼领域提示。
+**执行限制显式传递。** Loop 的 `execution_limits() -> ExecutionLimits` 是唯一来源；Agent 用 `__execution_limit_fields__` 声明消费字段（显式空集表示不适用），通过原有 `prepare(..., execution_limits=...)` 收到有类型的限制。Runtime 在 `prepare()` 检查提供与消费及显式参数是否匹配，失败先于 setup 和模型调用。未声明不能静默省略限制。Agent 自己决定系统提示和每轮提示的布局，Runtime 不拼领域提示。观测的格式说明走同样的形状：Agent 用 `__fragment_formats__` 声明提示词引用哪些 fragment 的格式（用 wiring 里的名字），经 `prepare(..., fragment_formats=...)` 收到提供方的原话（§4.4 “观测格式由提供方描述”）；不声明的 Agent 签名不变。
 
 **UI-TARS 的稳定上下文与执行反馈。** Task 只写入 `prepare` 生成的 system 种子；首次观测的实测 `browser.platform` 另生成一次 system 消息，后续轮次不重复 Task 或平台段。每次 `prepare` 重置平台声明，因此执行、source/restored 历史重建及从非零步开始的独立导出段都得到自己的平台上下文；同一执行的平台变化明确拒绝，不能使用旧值继续。平台仍经环境 fragment 提供、记录，不从宿主机推断。
 
@@ -560,6 +560,10 @@ class AgentRuntime:
 
         # 2. Observation 三方协商（见 §4.4）：universe = 环境提供的 + 本 Loop 的 __loop_fragments__
         negotiated_obs = negotiate_observation(agent, loop, env)
+
+        # 2b. Agent 提示词引用的格式说明（§4.4 "观测格式由提供方描述"）：声明了 __fragment_formats__ 才有；
+        #     激活了而提供方不描述的 → FragmentFormatError。只读配置，交给 seed_messages
+        self._fragment_formats = quoted_fragment_formats(agent, negotiated_obs, env)
 
         # 3. Action 两方协商（见 §4.5）
         negotiated_actions = negotiate_action(agent, env)
@@ -725,7 +729,7 @@ class AgentRuntime:
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → setup 之前的检查 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
-**种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_space=..., execution_limits=...)`（`action_space` 是 Runtime 公开的有效动作空间的副本：prompt 广告的 descriptors 与说明短名含义的绑定，与守卫用的是同一份）；是否需要限制已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
+**种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_space=..., execution_limits=..., fragment_formats=...)`（`action_space` 是 Runtime 公开的有效动作空间的副本：prompt 广告的 descriptors 与说明短名含义的绑定，与守卫用的是同一份；`fragment_formats` 是第 2b 步解析出的格式说明）；是否需要限制、需要哪些格式说明，已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
 
 **两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或执行路径结束、进入结束 lifecycle 之前停止；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
 
@@ -1054,6 +1058,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
 - `align_next_observation(recorded, *, media_seek_timeout_s, media_end_lead_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
 
+**fragment 的格式说明**（`core/environments/_registrar.py`，§4.4 "观测格式由提供方描述"）：`fragment_formats() -> dict[str, str]`：按 capability 顺序合并每个实现了 §4.9 `FragmentFormats` 的 capability 交出的说明（全限定键 → 文字）；没实现的 capability 什么都不描述。capability 只为自己的 fragment 说话：交出的键不在 `<capability_id>.` 前缀下时抛 `ValueError`，不让它替别的 capability 的 fragment 写说明。只读配置：`AgentRuntime.prepare()` 第 2b 步在 setup 之前调它，而且只在 Agent 引用的 fragment 这个 run 确实激活了时才调。
+
 **录下的采集与本配置是否一致（M32）**（`core/environments/_registrar.py`）：训练导出用学生的运行配置组装一个从不 setup 的环境，再问它"你按现在的配置采，会不会采出源 trace 录下的那种观测"：`compare_capture(recorded: Mapping[str, FragmentBase]) -> CaptureComparison`（`recorded` 是一步录下的 env 来源 fragment，键全限定）。按每个键的前缀经 `_by_capability_id()` 分给 capability，交给实现了 §4.9 `CaptureCheck` 的那些，按 capability 顺序合并它们的 `mismatches` 与 `unchecked`；没实现的 capability、找不到 capability 的键都不贡献（"没有可比的"）。只读配置与传进来的 fragment：不 setup、不连浏览器、不缓存。
 
 **Observation cycle 由 env 宣告，不由 capability 推断**：`Environment.observe` 持有单调递增的 cycle 计数器，每次 observe 自增一次，并在任何 fragment 解析之前调用每个参与 capability 的 `begin_observation(cycle)`。这正是 capability 敢批量抓取的前提——browser 一次 `BrowserStateRequestEvent` 同时拿到 DOM + screenshot + tab list，然后在本 cycle 内把每个 key 服务任意多次，因为下一个 cycle 会被**告知**而不是被**猜到**。此前这条规则只以"我是否已经服务过这个 key"的形式活在 `BrowserCapability` 内部：那是用推断代替调用方本来就握有的信息，并且对任何读同一 fragment 两次的调用方都是错的。同一步内重复读同一个 fragment 是**同一次** observation，不是下一次。
@@ -1182,6 +1188,37 @@ fragment 就是新增一个 Resolver watchdog。
 - **怎么测**：截图 resolver 在 `Page.captureScreenshot` 之前、之后各读一次。每次读数里**每个 frame 在它自己的 isolated world `af-media` 里读自己的文档**（每个文档一个，按名字复用，页面脚本看不到它）：tab 自己渲染的 frame（主 frame、同源与同进程的子 frame）经 tab 的会话（`Page.getFrameTree` 列出它们），进程外的跨站 frame 经那个 frame 自己的 CDP 会话（2026-10-21 裁决；会话由 capability 为每个 tab 持有的唯一一个 `FrameTargets` 发现，不论 profile 是否采集跨站 DOM；profile 采集跨站 DOM 时 DOM resolver 用的也是这一个：Chrome 只把一个会话上已经附着的 frame 报给那个会话上的第一次 `Target.setAutoAttach`，同一个 tab 上的第二个登记表永远听不到它们——实测 standard profile 下媒体读数曾因此把每个跨站 frame 都记成读不到）。所有 frame 一起读、共用一个时限；主 frame 没有应答，这次读数整个记为未知；某个子 frame 没有应答，它进 `unreachable_frames`。每次读数的上限是 `BrowserCapability` 的 `media_state_timeout_s`（默认 1 s，最多 1.5 s；每次采集花两次，两倍的它加上 `capture_state_timeout_s` 必须小于一次采集留给探测的 4 s，见 §4.14 "命令上限"）；超时、出错或回复不合形状，这次读数记为 `unknown`（`read_before` / `read_after`，附 `detail`），从不让截图失败；测不到的值是 `None`，不是 0。录制行为不变：不暂停、不跳转、不改任何媒体元素。
 - **谁读它**：恢复校验比较两边的媒体状态，恢复时的媒体对齐以录下的媒体状态为目标（§4.14）；回放规则集的媒体区域规则声明的页面上，恢复校验不判媒体状态，只用它测到的位置框（媒体元素与读不到的 frame）把截图比较里的媒体区域遮掉（§4.14 "页面上的媒体区域"）。提示词默认不含它；Skyvern、BrowserUse 的 `show_media_state: true` 时，`render_browser_state` 在页面状态之后写一段 `<media_state>`（每个元素的 frame、顺序、标签、当前时间 / 总时长、播放或暂停、是否直播；没测到就明说没测到）。这个开关改变提示词，是显式实验变量；它不改变协商。UI-TARS 不变。
 - **测不到的**：画布自己画的播放器没有媒体元素，只能靠截图距离发现；自己的读数没有应答的 frame 里的媒体不知道（上面的 `unreachable_frames`，恢复校验据此判这一步不可恢复，§4.14）；影子树里的 iframe 永远读不到（同上，`<父路径>/unplaced-<k>`），页面里有这样的 iframe 时每一步都不可恢复（2026-10-21 裁决：接受这个保守的限制；要读它们得改用 CDP 的 frame owner 给 frame 命名，不用 `window[i]` 序号，等真实站点出现误判再做）；直播没有可比较的位置。
+
+#### 观测格式由提供方描述（用户 2026-10-23 的裁决）
+
+**规则**：fragment 的文本格式由写出这段文本的一方描述，Agent 的提示词原样引用这段描述，不再自己描述格式。浏览器的 `browser.dom` 文本由配置的 DOM 序列化器写出（§4.12），格式说明也归它：每个序列化器实现 `describe_format() -> str`（`DOMSerializerProtocol` 的方法），用几行模型读得懂的话说明元素行的样子、哪些元素可以操作、动作怎样用序号指代一个元素（动作的 `index` 参数），以及它会写出的其余每一种标记；说明按实例写，旋钮（`max_text_length`、`max_href_length`）算在内，只说它真会输出的东西。换序列化器，提示词随之改变，格式知识只在一处。起因：Skyvern 的提示词教 `[42]<button …>` 前缀，发布配置（`configs/skyvern_agent_local.yaml`）用的 `html` 序列化器写的却是 `data-idx="42"`；单元测试喂给 Agent 的是手写的 `[1]<button>`，没有东西比对两边。这是"Agent 是胶水"的一步：格式是 capability 一侧的知识，Agent 只负责把它放进自己的提示词。
+
+**合同**：说明是一个 run 的配置事实，走 run 级的通道。
+
+| 环节 | 位置 | 做什么 |
+|---|---|---|
+| 序列化器 | `dom/serializers/__init__.py::DOMSerializerProtocol.describe_format` | 本实例输出的格式说明 |
+| capability | 可选 Protocol `core/capabilities/base.py::FragmentFormats.fragment_formats() -> Mapping[str, str]`（§4.9） | 全限定 fragment 键 → 说明；browser 声明了 `browser.dom` 时返回 `{"browser.dom": dom_serializer.describe_format()}`，`vision_only` profile 没有 DOM resolver，什么都不描述 |
+| environment | `Environment.fragment_formats() -> dict[str, str]`（§4.3） | 实现了 `FragmentFormats` 的 capability 的并集；capability 描述了不在自己前缀下的键时抛 `ValueError` |
+| Agent 声明 | `__fragment_formats__: ClassVar[frozenset[str]]`，用 `__wiring__` 里的名字（BrowserUse、Skyvern：`{"dom"}`） | 本 Agent 的提示词引用哪些 fragment 的格式 |
+| Runtime | `AgentRuntime.prepare()` 第 2b 步（§4.2）：`core/negotiation/fragment_formats.py::quoted_fragment_formats(agent, negotiated_obs, env)` | 按协商结果的 `fragment_bindings` 找到每个声明名的全限定键；这个 run 没激活的（optional 而环境没有、实例排除了，如 BrowserUse `vision`）没有条目，也不问环境；激活了而提供方不描述的抛 `FragmentFormatError`（点名 Agent、fragment 与提供方）；声明不是名字集合、名字不在观测 wiring 里、`prepare` 没有显式的 `fragment_formats` 关键字参数，同样 `FragmentFormatError`。都在 setup 之前、任何模型调用之前 |
+| Agent 收到 | 原有的 `prepare(..., fragment_formats=...)` 种子 slot（§4.2 `seed_messages`），只读映射，键是声明名 | 系统提示原样引用 |
+
+这与执行限制是同一种显式消费声明（§4.1 "执行限制显式传递"）：不声明的 Agent（UI-TARS）签名不变、什么也收不到，Runtime 不按参数名机会性传入。
+
+**为什么走 `prepare()`，不走 fragment。** 候选有三条。放在协商出的 `browser.dom` fragment 上：格式由配置决定，每步都一样，放进每步的观测就是每步重复同一段文字，trace 里每个 `browser.dom` 文件也多一份；而系统提示只在 `prepare()` 里建一次，那时还没有观测，说明只能挪进每步的用户消息。另两条（经 `prepare()` 交给 Agent、capability 提供的 fragment 元数据）其实是同一条路的两端：capability 是来源（它持有配置好的序列化器实例），`prepare()` 是通道。所以来源是 capability 的 `FragmentFormats`，通道是 Agent 的 `prepare` 种子 slot，与动作轴对称：capability 的 action descriptor 经 `get_action_space` 与守卫成为 `ActionSpace`，也是从 `prepare` 进 Agent。Agent 不 import 序列化器类，也不按序列化器名分支，只按自己 wiring 里的名字（`dom`）取一段文字。说明只读配置：不 setup、不连浏览器，干跑与训练导出的学生装配（§4.15）都拿得到。
+
+**提示词**（只换格式段落，其余原文不变）：
+
+- **Skyvern**：`<element_tree>` 一节以 `{{ dom_format }}` 引用说明，删去手写的 `[42]` 示例与"没有 `[index]` 前缀的行不可交互"；保留"序号是指代元素的唯一方式，动作写成 `"index": 42`"与其余规则。发布配置因此第一次教对了 `html` 的写法。
+- **BrowserUse**：四个 DOM surface 片段（`dom`、`dom_vision` 与两个 terse 版）各有一个槽位 `{dom_format}`，由 `_render_surface` 填入（片段里不允许别的占位符，`test_prompt_tree.py` 钉住）；删去手写的格式、示例与 `*[`、`|SCROLL|`、`|SHADOW(...)|` 的说明（`|SCROLL|` 与 `text` 实际写出的 `|scroll element|` 不符，`|SHADOW(...)|` 标的是 shadow host，不是 shadow root 里的元素）；"按数字 `[index]` 指代"改为"按本步列出的序号指代"。terse 版原来的一行压缩说明（`[index]<type>text</type>`，与输出也不符）换成同一段说明。`vision` 片段与三个 `is_browser_use_model` 模板（不描述 surface）不变。
+- **UI-TARS** 不变。
+
+Skyvern 与 BrowserUse DOM 模式的系统提示变了，所以这次改动之前的这些录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。每步的用户消息不变。
+
+**测试**：`test_browser_dom_serializer_format.py`：每个序列化器的说明点名自己的序号标记、不提别的序列化器的，真实 `DOMState`（BrowserUse 清洗器跑合成 CDP 载荷、Skyvern 清洗器跑提交的真实 Chrome 采集）里每个显示的已索引元素都带这个标记；`text` 写出的每一种标记都在说明里，`html` 的说明不提它不写的标记；说明跟着实例旋钮。`test_dom_format_prompts.py`：发布 YAML 换成 `text` / `html` 组装，走真实的 Runtime 装配，配置的清洗器产出的真实 `DOMState` 经配置的序列化器进观测：系统提示含说明原文，它教的标记就是观测里每个元素带的，别的标记不教；换序列化器时系统提示只在说明处不同；发布的 Skyvern 配置教 `data-idx`。另有解析规则（`test_negotiation/test_fragment_formats.py`）与 environment 汇总（`test_environments/test_fragment_format_routing.py`）。
+
+**未处理**：训练导出的采集一致性检查（`CaptureCheck`，§4.9、§4.15）不比较序列化器，学生配置的说明可能与源 run 录下的 DOM 文本格式不同；DOM 预算（`dom/budget.py`）在文本上加的截断说明与 `dom_viewport_only` 的裁剪不在说明里，BrowserUse 提示词里"只列出可视区域里的元素"仍是 Agent 自己的话。
 
 #### Fragment 注册表
 
@@ -2287,6 +2324,20 @@ class CaptureCheck(Protocol):
 - Browser（`core/capabilities/browser/capture_check.py`，`capability.py` 只委托）：对 `browser.screenshot` 比较 `viewport_width/height`（配置 vs 录下的）、`screenshot_format`（配置 vs 录下字节的 `image_media_type`）、DPR（`replayability` 的 `device_scale_factor` vs 录下的 `image_width / viewport_width`）以及由它推出的图像尺寸（viewport × DPR）。`none` 档位用宿主机的 DPR，配置期不可知：DPR 与图像尺寸进 `unchecked`，不算差异。其余 fragment 不比较。
 - 与 `RestorationSupport` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认；路由与"没人实现就没有可比的"在 environment 一侧（§4.3）。
 
+**fragment 的格式说明也是单独的、可选的 Protocol**（`core/capabilities/base.py`，2026-10-23 裁决，§4.4 "观测格式由提供方描述"）：
+
+```python
+@runtime_checkable
+class FragmentFormats(Protocol):
+    # 本 capability 按当前配置写出的 fragment 文本长什么样：全限定键 → 给模型读的几行说明。
+    # 只说自己提供的 fragment；只读配置：不 setup、不连 backend，协商之前也能调
+    def fragment_formats(self) -> Mapping[str, str]: ...
+```
+
+- 为什么需要：写出文本的一方才知道文本的格式；Agent 在自己的提示词里另写一份，换了写的一方就漂移（Skyvern 教 `[42]`、`html` 写 `data-idx="42"`）。
+- Browser（`BrowserCapability.fragment_formats`）：声明了 `browser.dom` 时返回 `{"browser.dom": self.dom_serializer.describe_format()}`（§4.12）；`vision_only` profile 没有 DOM resolver，返回空。
+- 与 `CaptureCheck`、`SetupCheck` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认；汇总在 environment 一侧（§4.3）。
+
 **setup 之前的检查也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
 
 ```python
@@ -2686,10 +2737,15 @@ DOMWatchdog (browser.dom 唯一 resolver)
                        → 记 hit_test；covered_elements: drop 时不给全被盖住的元素编号
     └── DOMBudgetPass → DOMSerializerProtocol → str + selector_map
 
-Serialization (可插拔策略)
-    ├── text: 缩进文本 + [backend_node_id] 标记
-    └── html: HTML 格式
+Serialization (可插拔策略；每个都自带 describe_format() 格式说明)
+    ├── text: 每个元素或文本一行、tab 缩进；可操作元素前缀 [N]（N = selector map 键），
+    │         另有 *[N]（上一步没有）、|scroll element| / |scroll element[N]、
+    │         |SHADOW(open|closed)|、|IFRAME| / |FRAME|、<!-- SVG content collapsed -->
+    └── html: 精简 HTML、两空格缩进；可操作元素的第一个属性是 data-idx="N"，
+              shadow root 与 frame 的内容写在宿主元素里，不加标记
 ```
+
+**序列化器自带格式说明（用户 2026-10-23 的裁决，§4.4 "观测格式由提供方描述"）。** `DOMSerializerProtocol` 除 `serialize(state) -> str` 外还有 `describe_format() -> str`：本实例输出的文本长什么样、哪些元素可以操作、动作怎样用 `index` 指代一个元素，以及它写出的其余每种标记，几行话，按实例的旋钮写（`text` 的 `max_text_length`、`html` 的 `max_href_length`）。BrowserCapability 经可选的 `FragmentFormats` 把它作为 `browser.dom` 的说明交出，BrowserUse 与 Skyvern 的提示词原样引用。两个序列化器的模块文档串与 `describe_format` 说同一件事，改输出就要一起改：`test_browser_dom_serializer_format.py` 在真实 `DOMState` 上检查说明里的标记就是输出里的标记。`text` 只给可操作（`is_interactive`）的已索引元素写 `[N]`：BrowserUse 清洗器给不可操作的滚动容器也编号（进 selector map，`browser.scroll` 可以用它的 `index`），`text` 却把它写成不带序号的 `|scroll element|`，说明照实告诉模型这一行不能操作；`html` 对每个已索引元素都写 `data-idx`。
 
 `DOMCaptureSource` 是每次观测、按 tab 构造的运行期能力；配置层只有一个带 YAML knobs 的
 cleaner 实例，不在它身上保存某个 tab 的 scope 或 CDP session。Skyvern 的页内脚本由本项目

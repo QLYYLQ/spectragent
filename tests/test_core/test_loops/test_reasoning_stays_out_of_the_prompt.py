@@ -47,6 +47,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, TaskObs
 from tests._helpers.action_params import minimal_params
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.fragment_formats import formats_for
 
 _THINKING = "HIDDEN REASONING: the second field looks like the search box."
 _PNG = b"\x89PNG\r\n\x1a\n-pretend-this-is-a-screenshot"
@@ -324,6 +325,7 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
             task="Find the answer",
             action_space=space,
             execution_limits=ReactLoop().execution_limits(),
+            **formats_for(agent),
         )
     )
 

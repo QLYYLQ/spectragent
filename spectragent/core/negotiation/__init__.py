@@ -31,6 +31,11 @@ from spectragent.core.negotiation.archive import (
     negotiate_archive,
 )
 from spectragent.core.negotiation.engine import negotiate
+from spectragent.core.negotiation.fragment_formats import (
+    FRAGMENT_FORMATS_PARAMETER,
+    FragmentFormatError,
+    quoted_fragment_formats,
+)
 from spectragent.core.negotiation.memory import (
     IncompatibleMemoryError,
     negotiate_memory,
@@ -43,12 +48,14 @@ from spectragent.core.negotiation.observation import (
 )
 
 __all__ = [
+    "FRAGMENT_FORMATS_PARAMETER",
     "ActionNegotiationResult",
     "AmbiguousActionError",
     "AmbiguousFragmentError",
     "AmbiguousKeyError",
     "ArchiveNegotiationResult",
     "DemandOutsideWiringError",
+    "FragmentFormatError",
     "IncompatibleActionError",
     "IncompatibleArchiveError",
     "IncompatibleFragmentError",
@@ -66,4 +73,5 @@ __all__ = [
     "negotiate_archive",
     "negotiate_memory",
     "negotiate_observation",
+    "quoted_fragment_formats",
 ]
