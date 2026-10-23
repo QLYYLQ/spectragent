@@ -175,7 +175,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 | 想运行的 agent | 现成 YAML | 页面输入与动作 | 单任务命令 |
 |---|---|---|---|
 | BrowserUseAgent | `configs/browser_use_local.yaml` | 默认 DOM 文本，按元素索引操作；也支持 DOM + 截图或纯截图 | `uv run spectragent run --config configs/browser_use_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
-| SkyvernAgent | `configs/skyvern_agent_local.yaml` | Skyvern DOM 清洗与 HTML 序列化、动作历史和结构化输出 | `uv run spectragent run --config configs/skyvern_agent_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
+| Skyvern（`skyvern.dom` / `skyvern.dom_vision`） | `configs/skyvern_agent_local.yaml` | Skyvern DOM 清洗与 HTML 序列化，按元素序号操作，动作历史带每个动作的返回内容，闭合的结构化输出；`skyvern.dom_vision` 另把截图给模型看，可另用 `click_coordinate` | `uv run spectragent run --config configs/skyvern_agent_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 | UITarsAgent | `configs/ui_tars_local.yaml` | 截图驱动，解析 `Action:` 坐标动作，并接收逐项执行反馈 | `uv run spectragent run --config configs/ui_tars_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 
 三个文件中的 `llm` 都只是可编辑的 OpenAI 示例。运行 UI-TARS 专用模型时，把 `llm.model_type`、`model`、`provider`（必要时 `base_url`）改为该模型实际提供的 API；`coordinate_space` 要与它输出的坐标一致，值为 `screenshot_pixels` 或 `normalized_1000`。`prompt_template` 可选 `computer_use`、`grounding`、`mobile_use`。`ui_tars` 不请求 DOM，浏览器不会为这个 agent 提取 DOM。
@@ -214,7 +214,7 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 
 每个动作在它自己的派发前后测量它实际做了什么，记在 `ActionResult.effect`，随步记录写进 trace（`steps/NNN.json` 的 `action_results`）。点击类（`click`、`click_coordinate`、`drag`）记按下的点、按下前那一点上的元素（角色与可读名）、按编号点击时是否命中目标、执行后的焦点；输入类（`type`、`type_coordinate`、`send_keys`）记接收输入的控件、是否敏感字段、值是否变化（页面里只比较，不记内容也不记长度）、实际发出的键、执行后的焦点；`scroll` 记实际滚动的是页面还是哪个元素、前后偏移、是否到了这个方向的边缘；`navigate`、`go_back`、`go_forward` 记前后 URL 与文档是否加载完；`switch_tab` 记前后标签页；`select_dropdown` 记当前选中项；`wait` 记实际等待的时长。`done`、`screenshot`、`extract_content` 没有效果。探测失败或用完上限的事实记 `unknown`，这里测不到的（例如另一个站点的 frame 里）记 `unavailable`，两者都不是测得的 0；还有余量的滚动在上限内没看到移动，之后的位置记 `unknown`，不写成 0 位移。测量从不改变动作的成败。一批动作之后的页面状态属于下一次观测，不算在某个动作头上。
 
-模型只看到效果自己写的一行英文（`describe()`），从不看到原始字段：UI-TARS 在每个执行结果的 JSON 里多一个 `"effect"`，Skyvern 写在 `<action_history>` 每个动作后面的 `| effect: …`，BrowserUse 写在每步的 `<effects>` 里。敏感字段既不回显内容也不报长度。
+模型只看到效果自己写的一行英文（`describe()`），从不看到原始字段：UI-TARS 在每个执行结果的 JSON 里多一个 `"effect"`，Skyvern 写在 `<action_history>` 每一行 JSON 的 `result.effect` 里，BrowserUse 写在每步的 `<effects>` 里。敏感字段既不回显内容也不报长度。
 
 `capture_state` 是一个 optional 观测，说明这次采集时环境的样子：采集前的落定等待（`settled` / `capped` / `unknown`、等了多久、哪些还没落定）、环境自己引起的前台变化（页面开了新标签页、当前页自己关掉）、指针最后一次确认的位置（viewport 像素）、视口内加载失败的可见图片（个数与前几个文件名）。三个 Agent 都在每步的 `<capture_state>` 块里看到它；没测到的写明没测到，测得为零才写 none。
 
@@ -265,7 +265,7 @@ uv run spectragent run --config configs/browser_use_skyvern.yaml \
   --start-url https://example.com --task "报告当前页面标题"
 ```
 
-这里启动的是 BrowserUseAgent + Skyvern 云浏览器。要运行 SkyvernAgent + 本地 Chrome，用上表的 `skyvern_agent_local.yaml`。要组合 SkyvernAgent 与 Skyvern 云浏览器，复制该文件并把 backend 改成：
+这里启动的是 BrowserUseAgent + Skyvern 云浏览器。要运行 Skyvern agent + 本地 Chrome，用上表的 `skyvern_agent_local.yaml`。要组合 Skyvern agent 与 Skyvern 云浏览器，复制该文件并把 backend 改成：
 
 ```yaml
 backend:
@@ -347,7 +347,7 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。`format_version` 不是 6 的旧 trace 整个读不出来（构造 `RunTrace` 时就抛 `TraceSchemaError`，点名版本）：不做兼容。保留旧轨迹原件，历史复核使用冻结的已准备证据或原版本工具；要获得当前格式轨迹则重跑任务。当前格式明确记录范围、稀疏提交和轻量调用事实，并要求模型调用带 `kind: chat | decision`；旧版本测试数据需要重建。调用记录引用的图片缺失或与它的摘要不符，读那一步的调用时同样抛 `TraceSchemaError`，点名那张图片。
 
-需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use/agent.py`、`skyvern/agent.py`、`ui_tars/agent.py`（UI-TARS 的回复读写在无状态编解码 `ui_tars/codec.py`）；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
+需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use/agent.py`、`skyvern/`（家族根 `family.py`、成员 `dom.py` 与 `dom_vision.py`、闭合回复 `reply.py`）、`ui_tars/agent.py`（UI-TARS 的回复读写在无状态编解码 `ui_tars/codec.py`）；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
 
 ## 录制、回放与训练导出
 

@@ -18,7 +18,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.observations import (
@@ -55,8 +55,9 @@ class TestValidateCompatibility:
         # Should not raise.
         loop.validate_slots(agent)
 
-    def test_skyvern_agent_compatible_with_react_loop(self) -> None:
-        agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=10))
+    @pytest.mark.parametrize("member", [SkyvernDomAgent, SkyvernDomVisionAgent])
+    def test_skyvern_agents_compatible_with_react_loop(self, member: type[Any]) -> None:
+        agent = make_agent(member, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         loop.validate_slots(agent)
 
@@ -115,20 +116,40 @@ class TestObservationNegotiation:
             "browser.browser_meta",
         } <= result.active_fragments
 
-    def test_skyvern_activates_dom_and_drops_unused_optionals(self) -> None:
-        # When the env provides only what Skyvern requires (dom, platform and
-        # the page state ``browser_meta``, required since the 2026-10-20
-        # layering ruling), the optionals — screenshot, capture_state — are
-        # simply absent.
+    @pytest.mark.parametrize("member", [SkyvernDomAgent, SkyvernDomVisionAgent])
+    def test_skyvern_activates_dom_and_the_screenshot_it_records(self, member: type[Any]) -> None:
+        # Both members require the screenshot: ``skyvern.dom`` never shows it
+        # to its model, but the trace keeps it and evaluators score runs from
+        # it. The optional ``capture_state`` is simply absent when not provided.
         result = _observation_rules(
-            agent=extract_wiring(SkyvernAgent, "observation"),
+            agent=extract_wiring(member, "observation"),
             loop=extract_wiring(ReactLoop, "observation"),
-            env_provides={"browser.dom", "browser.platform", "browser.browser_meta"},
+            env_provides={
+                "browser.dom",
+                "browser.platform",
+                "browser.browser_meta",
+                "browser.screenshot",
+            },
         )
-        assert {"browser.dom", "browser.browser_meta"} <= result.active_fragments
-        assert "browser.screenshot" not in result.active_fragments
+        assert {"browser.dom", "browser.browser_meta", "browser.screenshot"} <= (
+            result.active_fragments
+        )
+        assert "browser.capture_state" not in result.active_fragments
 
-    @pytest.mark.parametrize("agent_class", [SkyvernAgent, BrowserUseAgent])
+    @pytest.mark.parametrize("member", [SkyvernDomAgent, SkyvernDomVisionAgent])
+    def test_skyvern_fails_without_a_screenshot(self, member: type[Any]) -> None:
+        from spectragent.core.negotiation import IncompatibleFragmentError
+
+        with pytest.raises(IncompatibleFragmentError, match="screenshot"):
+            _observation_rules(
+                agent=extract_wiring(member, "observation"),
+                loop=extract_wiring(ReactLoop, "observation"),
+                env_provides={"browser.dom", "browser.platform", "browser.browser_meta"},
+            )
+
+    @pytest.mark.parametrize(
+        "agent_class", [SkyvernDomAgent, SkyvernDomVisionAgent, BrowserUseAgent]
+    )
     def test_browser_agents_fail_without_page_state(self, agent_class: type[Any]) -> None:
         # Browser page state is required for the browser-specific agents.
         from spectragent.core.negotiation import IncompatibleFragmentError
@@ -357,7 +378,6 @@ class TestAgentToCapabilityActionVocabulary:
         # Regression: every adapted agent must emit its done action
         # with the ``extracted_content`` key so the answer survives the
         # capability's DoneEvent translation.
-        from spectragent.agents.skyvern.output_models import SkyvernOutput
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
@@ -387,12 +407,23 @@ class TestAgentToCapabilityActionVocabulary:
         assert await _resolve(bu, bu_actions[0], capability) == "browser.done"
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
-        # SkyvernAgent
-        sk = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=10))
-        sk_out = SkyvernOutput(
-            actions=[],
-            is_done=True,
-            extracted_content="answer sk",
+        # Skyvern — ``done`` is an action of its closed reply, like BrowserUse's.
+        sk = make_agent(SkyvernDomAgent, memory=SimpleMemory(max_messages=10))
+        sk.prepare(
+            task="t",
+            action_space=wired_space(SkyvernDomAgent),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            **formats_for(sk),
+        )
+        sk_out = sk.get_react_output_model().model_validate(
+            {
+                "actions": [
+                    {
+                        "reasoning": "",
+                        "action": {"browser.done": {"extracted_content": "answer sk"}},
+                    }
+                ]
+            }
         )
         sk_actions = sk.parse_react_output(sk_out)
         assert await _resolve(sk, sk_actions[0], capability) == "browser.done"

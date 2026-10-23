@@ -1,7 +1,16 @@
 # Skyvern-style DOM agent on local Chrome. This agent_id is independent of
 # the Skyvern cloud browser provider_id; see docs/browser_agent_runbook.md.
+#
+# The Skyvern family has two members, which differ only in what the model sees:
+#   skyvern.dom         the element tree (Skyvern's own DOM cleaning, below);
+#                       every action addressed by element index.
+#   skyvern.dom_vision  the element tree plus the screenshot; click by index,
+#                       and click_coordinate for a target with no index. It
+#                       takes `coordinate_space` (screenshot_pixels |
+#                       normalized_1000) and `vision_detail` (auto | low | high).
+# Both record the screenshot in the trace.
 agent:
-  - agent_id: skyvern
+  - agent_id: skyvern.dom
     id: main
     action_history_window: 5
     agent_loop:

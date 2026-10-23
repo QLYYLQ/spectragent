@@ -13,10 +13,10 @@ from conscribe.wiring import WiredField
 
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 
-AGENT_CLASSES = [BrowserUseAgent, SkyvernAgent, UITarsAgent]
+AGENT_CLASSES = [BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent, UITarsAgent]
 
 
 class TestWiredFieldContract:

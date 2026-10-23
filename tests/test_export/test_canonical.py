@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from spectragent.agents.browser_use import BrowserUseAgent
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.export import canonicalise
@@ -99,7 +99,7 @@ class TestTeacherActions:
     def test_the_executed_actions_are_the_targets_as_recorded(self, tmp_path: Path) -> None:
         """No projection: the params were checked against each ``Params`` before they ran."""
         executed = [_click(7), Action(name="browser.scroll", params={"direction": "down"})]
-        run = write_run(tmp_path, "run-d", [ExportStep(actions=executed)], agent_id="skyvern")
+        run = write_run(tmp_path, "run-d", [ExportStep(actions=executed)], agent_id="skyvern.dom")
         (sample,) = _samples(run)
         assert sample.teacher_actions == executed
         assert "dropped_params" not in sample.model_dump()
@@ -116,15 +116,15 @@ class TestThought:
 
     def test_skyvern_reasonings(self, tmp_path: Path) -> None:
         reply = json.dumps(
-            {"actions": [{"action_type": "browser.click", "index": 1, "reasoning": "cart"}]}
+            {"actions": [{"reasoning": "cart", "action": {"browser.click": {"index": 1}}}]}
         )
         run = write_run(
             tmp_path,
             "run-f",
             [ExportStep(actions=[_click(1)], llm_output=reply)],
-            agent_id="skyvern",
+            agent_id="skyvern.dom",
         )
-        (sample,) = _samples(run, thought_source="teacher", teacher_cls=SkyvernAgent)
+        (sample,) = _samples(run, thought_source="teacher", teacher_cls=SkyvernDomAgent)
         assert sample.thought == ThoughtRecord(text="cart", source_field="reasoning")
 
     def test_a_teacher_without_the_slot_is_named_as_the_exports_need(self, tmp_path: Path) -> None:
