@@ -466,3 +466,41 @@ rules:
   - k_uid
   - dfp
   - bop.dfp
+# Video segments from the CDN (GET <host>.71edge.com/videos/vts/<path>.ts). The segment scheduler
+# (pcw-data.video.iqiyi.com/videos/vts/..., matched exactly) answers with the CDN address; the
+# player adds start, end, sd and contentlength, which choose the bytes, and random, the client time
+# in milliseconds as a cache buster. Evidence: the dumped live requests of the offline branch
+# replays 208_a35d7d11-s17/s21/s25-b0 in lookahead_15task_freeze_20261023, made with the stream
+# address rule above: 18 replayed requests to bj3cnc.71edge.com differed from a recorded one only
+# in random, the player then tried other CDN hosts the recording never used, and the video still
+# had no data. Everything else in the address stays, so another segment or byte range still misses.
+- id: iqiyi-video-segments
+  scope:
+    host: '*.71edge.com'
+    path: /videos/vts/*
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - random
+# The player's bandwidth probe (GET data.video.iqiyi.com/v.f4v?random=): random is the client time
+# in milliseconds. 3 near misses in the same replays differed only in it.
+- id: iqiyi-bandwidth-probe
+  scope:
+    host: data.video.iqiyi.com
+    path: /v.f4v
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - random
