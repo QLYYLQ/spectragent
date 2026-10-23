@@ -229,9 +229,9 @@ rules:
 # reads errCode, vinfo and lcAdCookie, all selected by buid, vinfoparam and adparam. Without this
 # rule every replayed request missed, the home and search page previews did not play, and in 28
 # the play page asked for its video info again through onlyvinfo and then getvinfo, which the
-# recording never needed. The play page of 263 got its video info from vinfo_proxy (above), whose
-# answer is encrypted; its replay then asked proxyhttp for that video with encryptVer 9.2, which
-# the recording never did, so no rule can serve it.
+# recording never needed. The play pages of 128 and 263 got their video info from vinfo_proxy
+# (above), whose answer is encrypted; their replays then asked proxyhttp for that video with
+# encryptVer 9.2, which the recordings never did, so no rule can serve it.
 - id: tencent-video-player-info
   scope:
     host: vd6.l.qq.com
