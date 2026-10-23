@@ -587,20 +587,12 @@ def _assembled(agent: dict[str, Any]) -> Any:
             id="ui_tars",
         ),
         pytest.param(
-            {
-                "agent_id": "browser_use",
-                "observation_mode": "dom_vision",
-                "coordinate_space": "normalized_1000",
-            },
+            {"agent_id": "browser_use.dom_vision", "coordinate_space": "normalized_1000"},
             "normalized_1000",
             id="browser_use-with-a-point-action",
         ),
         pytest.param(
-            {
-                "agent_id": "browser_use",
-                "observation_mode": "dom",
-                "coordinate_space": "normalized_1000",
-            },
+            {"agent_id": "browser_use.dom"},
             None,
             id="browser_use-without-one",
         ),

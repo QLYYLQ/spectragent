@@ -614,7 +614,7 @@ def test_the_media_read_budget_is_a_capability_knob(value: float, valid: bool) -
     assert cap.media_state_timeout_s == value
 
 
-@pytest.mark.parametrize("agent_id", ["skyvern", "browser_use"])
+@pytest.mark.parametrize("agent_id", ["skyvern", "browser_use.dom", "browser_use.dom_vision"])
 def test_show_media_state_is_an_agent_knob(agent_id: str) -> None:
     import yaml
 

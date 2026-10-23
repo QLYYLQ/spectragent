@@ -8,7 +8,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 
 | File | Purpose |
 |---|---|
-| `browser_use_local.yaml` | BrowserUseAgent + ReactLoop + LocalChrome backend |
+| `browser_use_local.yaml` | BrowserUse (`browser_use.dom`) + ReactLoop + LocalChrome backend |
 | `browser_use_skyvern.yaml` | Same agent/loop, switched to the hosted Skyvern backend |
 | `skyvern_agent_local.yaml` | SkyvernAgent + ReactLoop + LocalChrome backend |
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
@@ -45,7 +45,7 @@ conscribe `inline_wiring=True` lets every wired child be inlined inside its owni
 
 ```yaml
 agent:
-  - agent_id: browser_use
+  - agent_id: browser_use.dom
     id: main
     # ...agent fields...
     agent_loop: { loop_id: react, max_steps: 30 }
@@ -112,43 +112,37 @@ The list is also an **ablation switch**: only the actions it names are instantia
 
 `action_id` uses the fully-qualified registry key (`browser.scroll`, not `scroll`).
 
-## What browser_use sees: `observation_mode`
+## What browser_use sees: two family members
 
-`browser_use` has one knob for the whole surface, and it replaces `use_vision`:
+`browser_use` is an agent family (`docs/architecture_design.md` §4.1, "Agent 家族"). Pick the member by `agent_id`; there is no mode field:
 
 ```yaml
 agent:
-  - agent_id: browser_use
-    observation_mode: dom          # dom | dom_vision | vision
+  - agent_id: browser_use.dom          # browser_use.dom | browser_use.dom_vision
 ```
 
-| mode | in the model's context | click verbs | DOM extracted |
-|---|---|---|---|
-| `dom` (default) | the element tree as text | `browser.click` (index) | yes |
-| `dom_vision` | that plus a screenshot | `browser.click` **and** `browser.click_coordinate`, independently | yes |
-| `vision` | a screenshot, plus URL / title / tabs | `browser.click_coordinate` only | **no** |
+| `agent_id` | in the model's context | click verbs |
+|---|---|---|
+| `browser_use.dom` | the element tree as text | `browser.click` (index) |
+| `browser_use.dom_vision` | that plus a screenshot | `browser.click` **and** `browser.click_coordinate`, independently |
 
-`use_vision: false` was `dom`; `use_vision: true` was `dom_vision`.
+Both members read the DOM. A model that reads only the screenshot is a computer-use agent: use `ui_tars`.
 
-Three things follow from the enum, so there is nothing else to keep in sync:
+Each member writes out what it observes and which actions it declares, so there is nothing else to keep in sync:
 
-- **what the prompt describes** — one prompt tree, one surface fragment spliced in, so a DOM/vision ablation differs by that fragment and nothing else;
-- **what the run negotiates** — `vision` never asks for `browser.dom`, so no DOM is extracted at all (not extracted and then hidden), and index-addressed actions are not activated;
-- **what the model may emit** — the output schema is compiled from the negotiated actions, so a verb this mode does not have cannot be written.
+- **what the prompt describes** — one prompt tree, one surface fragment spliced in per member, so a DOM / DOM-plus-screenshot ablation differs by that fragment and nothing else;
+- **what the run negotiates** — both require `browser.dom`; only `browser_use.dom_vision` can activate `browser.click_coordinate`;
+- **what the model may emit** — the output schema is compiled from the negotiated actions, so a verb the member does not have cannot be written.
 
-The mode is never inferred from the environment. `observation_mode: dom` against `profile: vision_only` fails at negotiation, before the browser is launched:
+The DOM is never optional. Either member against `profile: vision_only` fails at negotiation, before the browser is launched:
 
 ```
 IncompatibleFragmentError: Required observation fragments not provided by environment.
-Missing: ['dom']. Requested by: dom ← browser_use(observation_mode='dom').
+Missing: ['dom']. Requested by: dom ← browser_use.dom.
 Environment provides: ['browser.browser_meta', 'browser.screenshot'].
 ```
 
-The requester is named because the fix is not obvious without it: `observation_mode` and `profile` point at opposite edits, and a mistyped profile must not quietly turn a DOM experiment into a vision one.
-
-Screenshots are captured and recorded in **every** mode: `online_mind2web` and `lexbench_browser` score runs from the screenshots in the trace. The mode decides what the model sees, not what the run records.
-
-For a vision run, prefer `profile: standard` over `vision_only`: negotiation already skips DOM extraction, and `vision_only` additionally drops the SecurityWatchdog, so domain allow/deny lists silently stop applying.
+Screenshots are captured and recorded by **both** members: `online_mind2web` and `lexbench_browser` score runs from the screenshots in the trace. The member decides what the model sees, not what the run records.
 
 ## DOM cleaners
 
@@ -171,7 +165,7 @@ dom_cleaner:
 
 ## Vision agents
 
-A vision agent (`ui_tars`, or `browser_use` in `dom_vision` / `vision`) aims at the screenshot the step showed. Two settings decide whether that is still the page it acts on.
+A vision agent (`ui_tars`, or `browser_use.dom_vision` with `browser.click_coordinate`) aims at the screenshot the step showed. Two settings decide whether that is still the page it acts on.
 
 **When the screenshot is taken.** An action returns `post_delay_ms` after its effect was dispatched (default `0`), and the next observation then waits for the page to settle before it captures anything: the document loaded, then `settle_quiet_ms` (default 500) of no DOM change and no resource finishing with something visible in the viewport (text, an image, a video, a canvas, an SVG drawing, a frame or a form control; a white page with only a CSS loading bar does not count), for at most `settle_max_wait_s` (default 5 s; `0` turns the wait off). The wait belongs to the observation, so a DOM-only run waits the same way, and each fragment records how long it waited and whether the cap ended it (`settle`; `docs/architecture_design.md` §4.14). Both are capability knobs:
 
@@ -209,7 +203,7 @@ agent:
     coordinate_space: normalized_1000
 ```
 
-`browser_use` takes the same field, with the same two values, and uses it the same way — it is a property of the model, not of the agent class.
+`browser_use.dom_vision` takes the same field, with the same two values, and uses it the same way — it is a property of the model, not of the agent class. `browser_use.dom` writes no point and has no such field.
 
 Which grid a given model uses is not something to guess from its name: check a few of its answers against known element positions before a run. A point off the grid is clamped onto the edge of the viewport.
 

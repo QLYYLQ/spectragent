@@ -120,7 +120,7 @@ So the line runs between:
 | Record it | Do not record it |
 |---|---|
 | `trajectory_type: "learned"` — one string, an experimental variable you group runs by | the 847 coordinates it produced |
-| `screenshot_format: "jpeg"`, `observation_mode: "vision"` | the encoder's intermediate buffers |
+| `screenshot_format: "jpeg"`, `coordinate_space: "normalized_1000"` | the encoder's intermediate buffers |
 | which action was emitted, with which params, and what it returned | the CDP event sequence that delivered it |
 | that a fragment capture failed, and whether it was required | the retry timings inside the capability |
 
@@ -225,7 +225,7 @@ came in an earlier step.
 
 `TraceConfig` (`core/trace/models.py:437`) used to be nine identity strings — enough to
 say *which* agent and *which* task, not *how it was set up*. Two runs that differed in
-`observation_mode` and mouse strategy were indistinguishable on disk, so every cross-run
+the agent's observation surface and mouse strategy were indistinguishable on disk, so every cross-run
 comparison depended on an external harness keeping its own notes. That was the blank
 spot in the framework's own "Record Once, Evaluate Many" (`HANDOFF_260916_findings.md:123`,
 N6 at `HANDOFF_260916_next.md`).
@@ -372,7 +372,7 @@ Two things make a field safe (`_redact_field`, `redaction.py:234`):
    `int | None` or `int | Literal["unlimited"]`). A closed set is a *proof*, not a
    heuristic: the value can only be one of the alternatives the source enumerates, so
    recording it leaks nothing that reading the source would not; it is what makes every
-   conscribe discriminator and every mode switch (`observation_mode`,
+   conscribe discriminator and every mode switch (`agent_id`,
    `screenshot_format`, `trajectory_type`, `coordinate_space`) readable without anybody
    marking anything. Numbers are recorded raw by the user's ruling of 2026-10-13: a
    count, a limit, a size or a sampling knob (`max_steps`, `max_actions_per_step`,

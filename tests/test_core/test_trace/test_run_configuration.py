@@ -245,8 +245,8 @@ class TestResolvedConfigIsRecorded:
     def test_the_decisive_knobs_are_there(self, trace):
         agent = trace.config.resolved["agent"][0]
         cap = trace.config.resolved["environment"][0]["capabilities"][0]
-        assert agent["agent_id"] == "browser_use"
-        assert agent["observation_mode"] == "dom"
+        assert agent["agent_id"] == "browser_use.dom"
+        assert agent["flash_mode"] is False
         assert cap["screenshot_format"] == "png"
         assert cap["mouse_trajectory"]["trajectory_type"] == "instant"
         assert cap["typing_rhythm"]["rhythm_type"] == "instant"
@@ -265,8 +265,8 @@ class TestResolvedConfigIsRecorded:
         """
         agent = trace.config.resolved["agent"][0]
         source = yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8"))
-        assert "coordinate_space" not in source["agent"][0]
-        assert agent["coordinate_space"] == "screenshot_pixels"
+        assert "show_action_effects" not in source["agent"][0]
+        assert agent["show_action_effects"] is True
         assert agent["llm"]["provider"]["name"] == "direct"
 
     def test_which_llm_route_was_used(self, trace):
@@ -333,7 +333,7 @@ class TestConfigHash:
 
     async def test_a_changed_closed_set_knob_breaks_the_hash(self, tmp_path, composer):
         def flip(raw):
-            raw["agent"][0]["observation_mode"] = "vision"
+            raw["agent"][0]["flash_mode"] = True
 
         a = RunTrace(await _run(tmp_path, composer, task_id="t-c"))
         b = RunTrace(await _run(tmp_path, composer, mutate=flip, task_id="t-d"))
@@ -458,11 +458,11 @@ class TestStepTimings:
 
     async def test_measurements_do_not_change_the_public_prompt(self):
         """Recording enriches shared history without changing model input."""
-        from spectragent.agents.browser_use import BrowserUseAgent
+        from spectragent.agents.browser_use import BrowserUseDomAgent
         from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
         from spectragent.schemas.step_record import StepRecord
 
-        agent = BrowserUseAgent()
+        agent = BrowserUseDomAgent()
         plain = StepRecord(
             step=0,
             llm_output="thinking",
@@ -495,7 +495,9 @@ class TestStepTimings:
         assert "1234" not in text
         assert "999" not in text
 
-    @pytest.mark.parametrize("agent_id", ["browser_use", "skyvern", "ui_tars"])
+    @pytest.mark.parametrize(
+        "agent_id", ["browser_use.dom", "browser_use.dom_vision", "skyvern", "ui_tars"]
+    )
     async def test_action_spans_do_not_reach_the_prompt(self, agent_id):
         """When each action ran is evidence for offline readers, never model input.
 
@@ -544,7 +546,9 @@ class TestStepTimings:
         for marker in ("1761000", "unseen_marker", "raised", "action_spans"):
             assert marker not in text
 
-    @pytest.mark.parametrize("agent_id", ["browser_use", "skyvern", "ui_tars"])
+    @pytest.mark.parametrize(
+        "agent_id", ["browser_use.dom", "browser_use.dom_vision", "skyvern", "ui_tars"]
+    )
     async def test_origin_and_restoration_do_not_reach_the_prompt(self, agent_id):
         """A restored step is a copy of the source's step, and must read the same.
 

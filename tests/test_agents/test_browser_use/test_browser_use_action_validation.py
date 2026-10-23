@@ -24,7 +24,7 @@ import pytest
 from pydantic import ValidationError
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseAgent, BrowserUseDomAgent
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.action_union import UnsupportedParamsSchema, action_union
 from spectragent.core.loops.limits import ExecutionLimits
@@ -47,7 +47,7 @@ def _errors(exc: ValidationError) -> list[str]:
 
 class TestClosedUnion:
     def _model(self, *keys: str) -> Any:
-        agent = BrowserUseAgent(flash_mode=True)
+        agent = BrowserUseDomAgent(flash_mode=True)
         agent.prepare(
             task="t",
             action_space=space_of(_descriptors(*keys)),
@@ -157,7 +157,7 @@ class TestClosedUnion:
         }
 
     def test_a_run_with_no_actions_is_refused_at_prepare(self) -> None:
-        agent = BrowserUseAgent()
+        agent = BrowserUseDomAgent()
         with pytest.raises(ValueError, match="at least one negotiated action"):
             agent.prepare(
                 task="t",
@@ -187,7 +187,7 @@ class TestClosedUnion:
 
 class TestReasoningFieldsFollowTheVariant:
     def test_flash_asks_only_for_memory_and_action(self) -> None:
-        agent = BrowserUseAgent(flash_mode=True)
+        agent = BrowserUseDomAgent(flash_mode=True)
         agent.prepare(
             task="t",
             action_space=space_of(_descriptors("browser.done")),
@@ -197,7 +197,7 @@ class TestReasoningFieldsFollowTheVariant:
         assert list(agent.get_react_output_model().model_fields) == ["memory", "action"]
 
     def test_thinking_variant_asks_for_the_full_set(self) -> None:
-        agent = BrowserUseAgent(flash_mode=False, use_thinking=True)
+        agent = BrowserUseDomAgent(flash_mode=False, use_thinking=True)
         agent.prepare(
             task="t",
             action_space=space_of(_descriptors("browser.done")),
@@ -215,7 +215,7 @@ class TestReasoningFieldsFollowTheVariant:
         ]
 
     def test_no_thinking_variant_drops_thinking(self) -> None:
-        agent = BrowserUseAgent(flash_mode=False, use_thinking=False)
+        agent = BrowserUseDomAgent(flash_mode=False, use_thinking=False)
         agent.prepare(
             task="t",
             action_space=space_of(_descriptors("browser.done")),
@@ -239,22 +239,22 @@ class TestRenderActionList:
         return str(seed[0].content)
 
     def test_advertises_the_fully_qualified_name_and_the_descriptor_params(self) -> None:
-        text = self._render(BrowserUseAgent(flash_mode=True), "browser.navigate")
+        text = self._render(BrowserUseDomAgent(flash_mode=True), "browser.navigate")
         assert "- `browser.navigate(url: str)` — Navigate to a URL." in text
         assert "`navigate(" not in text
 
     def test_a_parameterless_action_says_so(self) -> None:
-        text = self._render(BrowserUseAgent(flash_mode=True), "browser.go_back")
+        text = self._render(BrowserUseDomAgent(flash_mode=True), "browser.go_back")
         assert "- `browser.go_back(no params)` — Navigate back in browser history." in text
 
     def test_param_text_is_the_descriptor_s_own(self) -> None:
-        text = self._render(BrowserUseAgent(flash_mode=True), "browser.scroll")
+        text = self._render(BrowserUseDomAgent(flash_mode=True), "browser.scroll")
         assert "direction: up|down|left|right" in text
         assert "amount: int (optional)" in text
 
     def test_the_advertised_set_is_a_field_on_the_snapshot(self) -> None:
         """Not something to regex out of 200 lines of prose."""
-        agent = BrowserUseAgent(flash_mode=True)
+        agent = BrowserUseDomAgent(flash_mode=True)
         self._render(agent, "browser.wait", "browser.done")
         snapshot = agent.system_prompt
         assert snapshot is not None
@@ -268,6 +268,6 @@ class TestRenderActionList:
 
 def test_get_react_output_model_refuses_to_answer_before_prepare() -> None:
     """Louder than a loose fallback, which is how the open schema shipped."""
-    agent = BrowserUseAgent()
+    agent = BrowserUseDomAgent()
     with pytest.raises(RuntimeError, match="before"):
         agent.get_react_output_model()

@@ -231,7 +231,7 @@ class TestComposerInjectsBackend:
         raw = {
             "agent": [
                 {
-                    "agent_id": "browser_use",
+                    "agent_id": "browser_use.dom",
                     "agent_loop": {"loop_id": "react"},
                     "llm": {
                         "model_type": "openai",

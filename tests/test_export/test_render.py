@@ -247,7 +247,7 @@ class TestAssembly:
         )
 
     def test_missing_format_slot_names_training_export(self, composer: ConfigComposer) -> None:
-        root = student_root(agent_id="browser_use", observation_mode="vision")
+        root = student_root(agent_id="browser_use.dom")
         for key in ("prompt_template", "coordinate_space"):
             root["agent"][0].pop(key)
         with pytest.raises(IncompatibleError) as excinfo:

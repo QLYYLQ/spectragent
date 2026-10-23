@@ -1,4 +1,4 @@
-# BrowserUseAgent + ReactLoop running against the hosted Skyvern backend.
+# BrowserUse (``browser_use.dom``) + ReactLoop running against the hosted Skyvern backend.
 #
 # Differs from browser_use_local.yaml only in
 # ``environment[0].capabilities[0].backend`` — every other section is
@@ -6,10 +6,9 @@
 # See browser_use_local.yaml for what the layout rules mean.
 
 agent:
-  - agent_id: browser_use
+  - agent_id: browser_use.dom    # browser_use.dom | browser_use.dom_vision
     id: main
     flash_mode: false
-    observation_mode: dom          # dom | dom_vision | vision
     use_thinking: true
 
     agent_loop:

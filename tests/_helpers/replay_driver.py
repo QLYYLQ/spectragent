@@ -4,8 +4,8 @@ The acceptance tests of ``network_source: archive`` need a recording and its
 replay that commit real steps — the replay log is attributed to the step
 whose collection takes it — so they run the whole runtime twice, no LLM spend:
 
-- **Recording** (:func:`record_config`): ``browser_use`` in ``dom_vision``
-  mode (a DOM fragment and a screenshot each step), a loopback scripted model
+- **Recording** (:func:`record_config`): ``browser_use.dom_vision``
+  (a DOM fragment and a screenshot each step), a loopback scripted model
   (``tests/_helpers/scripted_llm.py``) answering with ``navigate`` /
   ``click_coordinate`` / ``done`` only — never an index action: backend node
   ids differ from launch to launch, coordinates and URLs do not —
@@ -97,9 +97,8 @@ def record_config(
     return {
         "agent": [
             {
-                "agent_id": "browser_use",
+                "agent_id": "browser_use.dom_vision",
                 "id": "main",
-                "observation_mode": "dom_vision",
                 "use_thinking": True,
                 "flash_mode": False,
                 "agent_loop": {

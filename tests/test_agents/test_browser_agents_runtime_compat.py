@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
@@ -50,7 +50,7 @@ from tests._helpers.fragment_formats import formats_for
 
 class TestValidateCompatibility:
     def test_browser_use_agent_compatible_with_react_loop(self) -> None:
-        agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
+        agent = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         # Should not raise.
         loop.validate_slots(agent)
@@ -102,13 +102,12 @@ class TestObservationNegotiation:
             "browser.browser_meta",
         }
         result = _observation_rules(
-            agent=extract_wiring(BrowserUseAgent, "observation"),
+            agent=extract_wiring(BrowserUseDomAgent, "observation"),
             loop=extract_wiring(ReactLoop, "observation"),
             env_provides=env_provides,
         )
-        # screenshot + browser_meta are required (browser_meta since the
-        # 2026-10-20 layering ruling); dom is optional in the class and
-        # active because the env provides it.
+        # dom, screenshot and browser_meta are required (browser_meta since
+        # the 2026-10-20 layering ruling; dom by every BrowserUse member).
         assert {
             "browser.dom",
             "browser.screenshot",
@@ -128,7 +127,7 @@ class TestObservationNegotiation:
         assert {"browser.dom", "browser.browser_meta"} <= result.active_fragments
         assert "browser.screenshot" not in result.active_fragments
 
-    @pytest.mark.parametrize("agent_class", [SkyvernAgent, BrowserUseAgent])
+    @pytest.mark.parametrize("agent_class", [SkyvernAgent, BrowserUseDomAgent])
     def test_browser_agents_fail_without_page_state(self, agent_class: type[Any]) -> None:
         # Browser page state is required for the browser-specific agents.
         from spectragent.core.negotiation import IncompatibleFragmentError
@@ -286,7 +285,7 @@ class TestAgentToCapabilityActionVocabulary:
             BrowserCapability,
         )
 
-        agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
+        agent = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
         capability = BrowserCapability()
         provided = capability.provided_actions
 
@@ -308,7 +307,7 @@ class TestAgentToCapabilityActionVocabulary:
             for action in agent.parse_react_output(out):
                 routed = await _resolve(agent, action, capability)
                 assert routed in provided, (
-                    f"BrowserUseAgent emitted {action.name!r}, which resolved "
+                    f"BrowserUseDomAgent emitted {action.name!r}, which resolved "
                     f"to {routed!r} — not in BrowserCapability."
                     f"provided_actions {sorted(provided)}"
                 )
@@ -364,11 +363,11 @@ class TestAgentToCapabilityActionVocabulary:
 
         capability = BrowserCapability()
 
-        # BrowserUseAgent — ``done``'s answer field is named once, by the
+        # BrowserUseDomAgent — ``done``'s answer field is named once, by the
         # action (``extracted_content``). The agent used to rename ``text``
         # onto it, which meant the prompt, the schema and the executor each
         # had their own name for the same value.
-        bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
+        bu = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
         bu.prepare(
             task="t",
             action_space=space_of(
@@ -440,7 +439,7 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
 
     # ``max_steps`` is set on the loop below — it is the only source.
     agent = make_agent(
-        BrowserUseAgent,
+        BrowserUseDomAgent,
         memory=SimpleMemory(max_messages=100),
     )
 

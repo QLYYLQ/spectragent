@@ -21,7 +21,7 @@ from pydantic import Field
 # ``<output>`` block lists them, and
 # ``BrowserUseAgent._build_per_run_output_model`` composes them with the
 # closed action union (``core/actions/action_union.py``).
-# ``tests/test_agents/test_browser_use/test_browser_use_modes.py`` reads the keys back out
+# ``tests/test_agents/test_browser_use/test_browser_use_family.py`` reads the keys back out
 # of each rendered template and asserts they are exactly these.
 
 _FIELDS: Mapping[str, tuple[Any, Any]] = MappingProxyType(

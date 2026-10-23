@@ -3,7 +3,7 @@
 ``docs/architecture_design.md`` §4.1, "模型看到的每个点都写在它写点的那个网格上"
 and "坐标系归框架", the contract UI-TARS keeps (``test_ui_tars_feedback_grid.py``).
 The facts stay in the capability's viewport units (CSS px for a browser); a
-BrowserUse run with a coordinate action teaches its model a grid
+``browser_use.dom_vision`` run with a coordinate action teaches its model a grid
 (``coordinate_space``), and the framework writes each point it is shown — an
 executed action's params, an effect line, the pointer — on that grid, from the
 frame recorded on the step the point belongs to. Each step is driven as a Loop
@@ -35,7 +35,11 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import (
+    BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+)
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ElementFacts, PointerEffect, ViewportPoint
@@ -121,14 +125,15 @@ def _observation(
 
 
 class _Run:
-    """BrowserUse (``vision`` unless *config* says otherwise) with the actions its mode negotiates.
+    """A BrowserUse member (``dom_vision`` unless *member* says otherwise) with the actions it declares.
 
     Prepared on the framed space a run gives it; each step built as a Loop builds it.
     """
 
-    def __init__(self, **config: Any) -> None:
-        config.setdefault("observation_mode", "vision")
-        self.agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=20), **config)
+    def __init__(
+        self, member: type[BrowserUseAgent] = BrowserUseDomVisionAgent, **config: Any
+    ) -> None:
+        self.agent = make_agent(member, memory=SimpleMemory(max_messages=20), **config)
         required, optional = self.agent.negotiation_demand("action")
         descriptors = [
             action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
@@ -296,35 +301,9 @@ async def test_a_fed_back_point_parses_back_to_where_it_ran(
     assert effect.startswith(f"1. browser.click_coordinate: Clicked at {written} on ")
 
 
-async def test_a_drag_writes_both_points_on_the_grid() -> None:
-    run = _Run(coordinate_space="normalized_1000")
-    drag = Action(
-        name="browser.drag", params={"start_x": 640, "start_y": 618, "end_x": 128, "end_y": 72}
-    )
-    effect = PointerEffect(
-        effect_id="browser.drag",
-        point=ViewportPoint(x=640, y=618),
-        release_point=ViewportPoint(x=128, y=72),
-        hit=AMOUNT,
-        focus_after=AMOUNT,
-    )
-    record = StepRecord(
-        step=0,
-        frame=run.frame(),
-        actions=[drag],
-        action_results=[ActionResult(success=True, effect=effect)],
-    )
-    step = await run.build(_observation(history=[record]), step=1)
-    assert _actions(step) == [
-        ("browser.drag", {"start_x": 500, "start_y": 858, "end_x": 100, "end_y": 100})
-    ]
-    (line,) = _effects(step)
-    assert line.startswith("1. browser.drag: Dragged from (500, 858) to (100, 100), pressing on ")
-
-
 async def test_an_index_click_states_where_it_landed_on_the_grid() -> None:
-    """``dom_vision``: the index is no point and stays; the measured landing point moves."""
-    run = _Run(observation_mode="dom_vision", coordinate_space="normalized_1000")
+    """The index is no point and stays; the measured landing point moves."""
+    run = _Run(coordinate_space="normalized_1000")
     clicked = StepRecord(
         step=0,
         frame=run.frame(),
@@ -458,20 +437,12 @@ async def test_only_declared_point_params_move_onto_the_grid() -> None:
 
 async def test_a_relative_action_name_finds_its_points_through_the_runs_binding() -> None:
     run = _Run(coordinate_space="normalized_1000")
-    typed = Action(
-        name="type_coordinate",
-        params={"coordinate_x": 640, "coordinate_y": 618, "text": "12", "clear": True},
-    )
+    clicked = Action(name="click_coordinate", params={"coordinate_x": 640, "coordinate_y": 618})
     record = StepRecord(
-        step=0, frame=run.frame(), actions=[typed], action_results=[ActionResult(success=True)]
+        step=0, frame=run.frame(), actions=[clicked], action_results=[ActionResult(success=True)]
     )
     step = await run.build(_observation(history=[record]), step=1)
-    assert _actions(step) == [
-        (
-            "type_coordinate",
-            {"coordinate_x": 500, "coordinate_y": 858, "text": "12", "clear": True},
-        )
-    ]
+    assert _actions(step) == [("click_coordinate", {"coordinate_x": 500, "coordinate_y": 858})]
 
 
 # ── Restored history ──────────────────────────────────────────────────
@@ -556,8 +527,8 @@ async def test_a_restored_observation_without_a_measurable_screenshot_does_not_e
 
 
 async def test_a_dom_run_writes_no_point_and_keeps_viewport_pixels() -> None:
-    """``dom`` negotiates no coordinate action: no grid is taught, the facts read as measured."""
-    run = _Run(observation_mode="dom", coordinate_space="normalized_1000")
+    """``browser_use.dom`` declares no coordinate action: no grid is taught, the facts read as measured."""
+    run = _Run(BrowserUseDomAgent)
     assert run.space.coordinate_space is None
     assert "<coordinates>" not in _text(run.seed) and GUIDE not in _text(run.seed)
     clicked = StepRecord(

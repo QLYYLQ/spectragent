@@ -103,7 +103,7 @@ def _agent_entry(
     llm: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "agent_id": "browser_use",
+        "agent_id": "browser_use.dom",
         "id": instance_id,
         "agent_loop": {"loop_id": "react", "max_steps": max_steps},
         "llm": llm,

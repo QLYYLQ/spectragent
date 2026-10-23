@@ -31,7 +31,7 @@ async with ExperimentScope() as experiment:
 
 ```bash
 uv run spectragent config template \
-  --agent browser_use --loop react --llm openai.direct --model YOUR_MODEL \
+  --agent browser_use.dom --loop react --llm openai.direct --model YOUR_MODEL \
   --environment browser --backend local_chrome \
   --record metrics --replayability none --output experiment.yaml
 uv run spectragent config check experiment.yaml
@@ -39,7 +39,7 @@ uv run spectragent config check experiment.yaml
 uv run spectragent config template --from configs/browser_use_local.yaml --output expanded.yaml
 ```
 
-新模板的默认选型是 BrowserUse＋ReAct、`openai.direct`、simple memory、local Chrome、instant 输入、BrowserUse cleaner、text serializer、live 网络、无回放固定；型号必须用 `--model` 提供。所选组件和受体的配置字段、默认动作及各自参数全部展开，说明与约束来自当前 schema；未选的可选组件不展开。注释标明来自模板选型、用户参数、骨架或 schema 的默认值。新模板只启用 metrics，含模型报告的 token、调用次数和计时；可以重复 `--record metrics --record errors`，也可以用 `--record all` / `--record none` 全开或全关四个内容通道。`none` 不删除 trace writer，也不关闭骨架中独立选择的 archive。
+新模板的默认选型是 BrowserUse（`browser_use.dom`）＋ReAct、`openai.direct`、simple memory、local Chrome、instant 输入、BrowserUse cleaner、text serializer、live 网络、无回放固定；型号必须用 `--model` 提供。所选组件和受体的配置字段、默认动作及各自参数全部展开，说明与约束来自当前 schema；未选的可选组件不展开。注释标明来自模板选型、用户参数、骨架或 schema 的默认值。新模板只启用 metrics，含模型报告的 token、调用次数和计时；可以重复 `--record metrics --record errors`，也可以用 `--record all` / `--record none` 全开或全关四个内容通道。`none` 不删除 trace writer，也不关闭骨架中独立选择的 archive。
 
 `--replayability none|pinned` 只控制回放固定，`network_source: live|archive` 与 `trace_writer.archive` 独立；新模板为 live 和 `archive: []`，离线回放用 `--from configs/flywheel/replay_ui_tars_archive.yaml` 保留其网络与归档选择。生成只校验配置和装配，不启动 Chrome、不调用模型、不打开回放任务证据；任务相关输入仍在 `config check` 或 `run --dry-run` 中验证。必填项缺失会列出字段位置，框架不编造型号或路径。没有 `--output` 时 stdout 是纯 YAML；输出路径存在会拒绝覆盖。
 
@@ -174,7 +174,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 | 想运行的 agent | 现成 YAML | 页面输入与动作 | 单任务命令 |
 |---|---|---|---|
-| BrowserUseAgent | `configs/browser_use_local.yaml` | 默认 DOM 文本，按元素索引操作；也支持 DOM + 截图或纯截图 | `uv run spectragent run --config configs/browser_use_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
+| BrowserUse（`browser_use.dom`、`browser_use.dom_vision`） | `configs/browser_use_local.yaml` | DOM 文本，按元素索引操作；`browser_use.dom_vision` 另给模型看截图 | `uv run spectragent run --config configs/browser_use_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 | SkyvernAgent | `configs/skyvern_agent_local.yaml` | Skyvern DOM 清洗与 HTML 序列化、动作历史和结构化输出 | `uv run spectragent run --config configs/skyvern_agent_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 | UITarsAgent | `configs/ui_tars_local.yaml` | 截图驱动，解析 `Action:` 坐标动作，并接收逐项执行反馈 | `uv run spectragent run --config configs/ui_tars_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 
@@ -184,15 +184,14 @@ UI-TARS 的 Task 只在初始 system 中声明；浏览器实测平台在首次�
 
 模型客户端在一次任务或独立评测执行内惰性创建并复用，结束时由相应执行入口关闭。Runtime 统一清理主模型与显式绑定的提示辅助模型；独立 judge 由评测入口收尾。调用方注入的 HTTP transport 默认借用，框架不关闭它。成功、失败、超时和取消都走有界清理；清理异常单独报告，不改变已取得的模型回复、用量或原始错误。后一次执行重新创建自建 transport，prepare/dry-run 不打开连接。
 
-BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
+BrowserUse 是一个 agent 家族，用 `agent[0].agent_id` 选成员：
 
-| 值 | 模型看到 | 点击方式 |
+| `agent_id` | 模型看到 | 点击方式 |
 |---|---|---|
-| `dom` | DOM 文本 | 元素索引 `browser.click` |
-| `dom_vision` | DOM 文本和截图 | 元素索引或坐标 |
-| `vision` | 截图 | 坐标 `browser.click_coordinate` |
+| `browser_use.dom` | DOM 文本 | 元素索引 `browser.click` |
+| `browser_use.dom_vision` | DOM 文本和截图 | 元素索引，另有坐标 `browser.click_coordinate` |
 
-视觉模式建议保留 `profile: standard`：协商会跳过不需要的 DOM 提取，同时保留该 profile 的 SecurityWatchdog。截图会在三个 BrowserUse 模式下写入 trace。若页面动画导致坐标点击落在过时画面上，可给 `actions:` 中的 `browser.click_coordinate` 配 `post_delay_ms`；显式列出 `actions:` 后，也要列出该运行所需的其他动作，包括 `browser.navigate`（数据集起始 URL 要用它打开）。不写 `actions:` 是全部动作，`actions: []` 是一个动作都没有。详细例子见 [configs/README.md](../configs/README.md#vision-agents)。
+两个成员都要求 DOM，配 `profile: vision_only` 会在协商时失败。只看截图的运行用 UI-TARS。截图在两个成员下都写入 trace。若页面动画导致坐标点击落在过时画面上，可给 `actions:` 中的 `browser.click_coordinate` 配 `post_delay_ms`；显式列出 `actions:` 后，也要列出该运行所需的其他动作，包括 `browser.navigate`（数据集起始 URL 要用它打开）。不写 `actions:` 是全部动作，`actions: []` 是一个动作都没有。详细例子见 [configs/README.md](../configs/README.md#vision-agents)。
 
 动作引起的主 frame 跨文档导航不需要这个延迟，比如提交表单、在文本框里回车、点链接、设置 `location.href`。观测在每次采集尝试之前先等在途的导航提交或停止加载，每次最多 10 s，到时仍未结束就照常采集并记一条警告；没有在途导航时不等。所以提交表单后，下一次观测看到的是结果页。观测截图另有 10 s 上限：Chrome 不回应时，这次尝试算缺截图，再采一次（每次观测最多尝试两次）。页面定时器在观测开始采集之后才发起的导航不在这个等待之内，只受截图上限约束。
 
@@ -347,7 +346,7 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。`format_version` 不是 6 的旧 trace 整个读不出来（构造 `RunTrace` 时就抛 `TraceSchemaError`，点名版本）：不做兼容。保留旧轨迹原件，历史复核使用冻结的已准备证据或原版本工具；要获得当前格式轨迹则重跑任务。当前格式明确记录范围、稀疏提交和轻量调用事实，并要求模型调用带 `kind: chat | decision`；旧版本测试数据需要重建。调用记录引用的图片缺失或与它的摘要不符，读那一步的调用时同样抛 `TraceSchemaError`，点名那张图片。
 
-需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use/agent.py`、`skyvern/agent.py`、`ui_tars/agent.py`（UI-TARS 的回复读写在无状态编解码 `ui_tars/codec.py`）；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
+需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use/`（家族根 `family.py`，成员 `dom.py`、`dom_vision.py`）、`skyvern/agent.py`、`ui_tars/agent.py`（UI-TARS 的回复读写在无状态编解码 `ui_tars/codec.py`）；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
 
 ## 录制、回放与训练导出
 

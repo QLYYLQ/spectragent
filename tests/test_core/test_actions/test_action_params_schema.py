@@ -21,7 +21,7 @@ This file is the registry-wide scan of the replacement:
 
 from __future__ import annotations
 
-from typing import Any, get_args, get_type_hints
+from typing import Any, get_type_hints
 
 import pytest
 from pydantic import BaseModel
@@ -120,8 +120,7 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
 
 #: Which fragment each action cannot run without. Written out rather than
 #: derived, so adding a DOM-reading action to a capability is a decision
-#: someone records here — and so ``vision`` mode's exclusion list can be
-#: checked against it.
+#: someone records here.
 _GOLDEN_DEPENDENCIES: dict[str, set[str]] = {
     "browser.click": {"browser.dom"},
     "browser.type": {"browser.dom"},
@@ -131,20 +130,6 @@ _GOLDEN_DEPENDENCIES: dict[str, set[str]] = {
 
 def _action(key: str) -> Any:
     return ActionRegistrar.get(key)()
-
-
-def _configurations(cls: type) -> list[tuple[str, Any]]:
-    """Every instance of *cls* whose demand can differ, and a label for each.
-
-    Derived from the class rather than listed: an agent that grows an
-    ``observation_mode`` enum joins this scan without anyone remembering
-    to add it.
-    """
-    annotation = get_type_hints(cls, include_extras=True).get("observation_mode")
-    if annotation is None:
-        return [("", cls())]
-    members = get_args(get_args(annotation)[0])
-    return [(f"({mode})", cls(observation_mode=mode)) for mode in members]
 
 
 # ── Every action has a typed contract ─────────────────────────────────
@@ -301,11 +286,14 @@ def test_no_context_means_no_filtering() -> None:
     assert "index" in _action("browser.scroll").descriptor().params
 
 
-# ── Every mode's action set is consistent with its observation set ────
+# ── Every agent's action set is consistent with its observation set ───
 
 
-def test_every_agent_mode_can_satisfy_its_actions_dependencies() -> None:
-    """The static scan §4.2 asks for, over every agent and every mode.
+def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
+    """The static scan §4.2 asks for, over every registered agent.
+
+    A family member is a class of its own (``browser_use.dom``,
+    ``browser_use.dom_vision``), so the registry lists every demand there is.
 
     An agent whose required actions read a fragment it never requires would
     fail at the first step with ``Element N not found in selector_map`` —
@@ -322,21 +310,21 @@ def test_every_agent_mode_can_satisfy_its_actions_dependencies() -> None:
 
     scanned = 0
     for agent_id, cls in sorted(AgentRegistrar.get_all().items()):
-        for label, agent in _configurations(cls):
-            scanned += 1
-            actions, _optional = agent.negotiation_demand("action")
-            fragments, _ = agent.negotiation_demand("observation")
-            for declared in sorted(actions):
-                for full in by_local.get(declared.rsplit(".", 1)[-1], []):
-                    missing = {
-                        key
-                        for key in _action(full).requires_fragments()
-                        if key not in fragments and key.rsplit(".", 1)[-1] not in fragments
-                    }
-                    assert not missing, (
-                        f"{agent_id}{label} requires action {declared!r}, which "
-                        f"reads {sorted(missing)} — a fragment it does not require"
-                    )
+        agent = cls()
+        scanned += 1
+        actions, _optional = agent.negotiation_demand("action")
+        fragments, _ = agent.negotiation_demand("observation")
+        for declared in sorted(actions):
+            for full in by_local.get(declared.rsplit(".", 1)[-1], []):
+                missing = {
+                    key
+                    for key in _action(full).requires_fragments()
+                    if key not in fragments and key.rsplit(".", 1)[-1] not in fragments
+                }
+                assert not missing, (
+                    f"{agent_id} requires action {declared!r}, which "
+                    f"reads {sorted(missing)} — a fragment it does not require"
+                )
     assert scanned >= len(AgentRegistrar.get_all())
 
 
@@ -395,7 +383,7 @@ def test_a_point_is_a_pair_of_ints_and_an_address_requires_its_fragment(key: str
 
 
 def test_a_param_this_run_cannot_honour_names_no_element() -> None:
-    """Narrowed with the params: a vision run's scroll has no index to name an element with."""
+    """Narrowed with the params: a run without a DOM has no index for scroll to name an element with."""
     without = _action("browser.scroll").descriptor(fragments=frozenset({"browser.screenshot"}))
     assert without.element_params == ()
 

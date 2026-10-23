@@ -5,7 +5,7 @@ The live acceptance of state branching (``docs/architecture_design.md`` §4.1
 LLM spend, building on M30's ``replay_driver``:
 
 - **The recording** (:data:`RECORDING`, M30's :func:`~replay_driver.record_config`):
-  ``browser_use`` in ``dom_vision`` mode, ``replayability: pinned``, the three
+  ``browser_use.dom_vision``, ``replayability: pinned``, the three
   browser archivers, on the mapped fixture site's ``branch`` pages — and,
   unlike M30's flows, **every step an index action**: a link, a text input, a
   radio button, a link, a link. The scripted model picks each index out of

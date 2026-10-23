@@ -8,9 +8,9 @@ action returns is rendered as plain text inside the next step's
 neither a file path nor an inline base64 data URL placed here is shown to
 the model as a real image. To have the LLM actually *see* a screenshot,
 use the existing ``browser.screenshot`` observation fragment with an
-agent configured to show it — ``browser_use``'s ``observation_mode`` of
-``dom_vision`` or ``vision``, which is the multimodal channel
-(``BrowserUseAgent._build_vision_message`` → ``ContentPartImageParam``).
+agent that shows it — ``browser_use.dom_vision`` or ``ui_tars``, whose
+step message attaches it as the multimodal channel
+(``ContentPartImageParam``).
 
 This action's job is therefore to **capture and persist on demand**: write
 the PNG (or jpeg/webp) to disk so it lands as a run artifact, and hand

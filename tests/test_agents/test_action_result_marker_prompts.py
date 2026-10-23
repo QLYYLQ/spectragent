@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
@@ -35,7 +35,7 @@ from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 
 _AGENTS: dict[str, type[Any]] = {
-    "browser_use": BrowserUseAgent,
+    "browser_use": BrowserUseDomAgent,
     "skyvern": SkyvernAgent,
     "ui_tars": UITarsAgent,
 }

@@ -137,8 +137,8 @@ def load_prompt_fragment(agent_id: str, directory: str, name: str) -> tuple[str,
     """Read a prompt *fragment* from a subdirectory of an agent's tree.
 
     A fragment is a piece spliced into a template as a render param —
-    ``browser_use``'s surface descriptions, one per observation mode. It
-    lives one level down (``browser_use/_surface/vision.md``) precisely so
+    ``browser_use``'s surface descriptions, one per family member. It
+    lives one level down (``browser_use/_surface/dom_vision.md``) precisely so
     :func:`agent_prompt_variants`, which globs the top level, cannot
     mistake it for a template the agent can select: a fragment is not a
     prompt on its own, and "every file on disk is reachable as a variant"

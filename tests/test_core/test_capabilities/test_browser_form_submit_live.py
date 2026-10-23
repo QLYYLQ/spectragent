@@ -8,7 +8,7 @@ sent between that navigation's request and its commit — and fixed it in the
 observation cycle (``test_browser_navigation_settle.py`` pins the parts).
 
 Each run has the shape M30's ``replay_driver.record_config`` records with —
-``browser_use`` in ``dom_vision`` mode, ``replayability: pinned``,
+``browser_use.dom_vision``, ``replayability: pinned``,
 ``browser.network`` + ``browser.storage`` + ``browser.dom_raw`` — on the
 mapped fixture's ``form_submit`` pages, with a loopback scripted model that
 picks elements by id: a GET form and a POST form submitted with their button,

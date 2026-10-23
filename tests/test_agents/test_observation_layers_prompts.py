@@ -21,7 +21,7 @@ from typing import Any, ClassVar, Literal
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
@@ -56,8 +56,9 @@ from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import step_context
 
-AGENT_CLASSES: tuple[type[Any], ...] = (UITarsAgent, SkyvernAgent, BrowserUseAgent)
-BROWSER_AGENTS: tuple[type[Any], ...] = (SkyvernAgent, BrowserUseAgent)
+AGENT_CLASSES: tuple[type[Any], ...] = (UITarsAgent, SkyvernAgent, BrowserUseDomAgent)
+BROWSER_AGENTS: tuple[type[Any], ...] = (SkyvernAgent, BrowserUseDomAgent)
+BROWSER_USE_MEMBERS: tuple[type[Any], ...] = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
 
 #: A raw effect field value no ``describe()`` line contains.
 RAW = "RAW-EFFECT-FIELD"
@@ -151,7 +152,7 @@ def _observation(*, effects: bool = True, capture_state: bool = True) -> SimpleN
 def _prepared(agent_class: type[Any], **switches: Any) -> tuple[Any, ActionSpace]:
     """*agent_class* prepared with the actions of a browser it would negotiate them from.
 
-    Only the ones its own demand admits: a DOM-mode BrowserUse never holds a
+    Only the ones its own demand admits: ``browser_use.dom`` never holds a
     coordinate action, so it teaches no grid and writes its feedback in
     viewport pixels. The space is framed as a run frames it.
     """
@@ -269,7 +270,7 @@ async def test_skyvern_user_message() -> None:
 
 async def test_browser_use_user_message() -> None:
     """An ``<effects>`` element after a step's results; the page state opens the browser state."""
-    assert await _prompt(BrowserUseAgent) == (
+    assert await _prompt(BrowserUseDomAgent) == (
         "<agent_history>\n"
         "<step_1>\n"
         "<llm_output>reply</llm_output>\n"
@@ -414,15 +415,12 @@ def test_ui_tars_declares_no_browser_page_state_and_optional_capture_state() -> 
     [
         pytest.param(lambda: make_agent(SkyvernAgent), id="skyvern"),
         *(
-            pytest.param(
-                lambda mode=mode: make_agent(BrowserUseAgent, observation_mode=mode),
-                id=f"browser_use-{mode}",
-            )
-            for mode in ("dom", "dom_vision", "vision")
+            pytest.param(lambda member=member: make_agent(member), id=member.__registry_key__)
+            for member in BROWSER_USE_MEMBERS
         ),
     ],
 )
-def test_browser_agents_require_page_state_in_every_mode(agent: Any) -> None:
+def test_browser_agents_require_page_state(agent: Any) -> None:
     required, optional = agent().negotiation_demand("observation")
     assert "browser_meta" in required
     assert "capture_state" in optional
@@ -431,10 +429,7 @@ def test_browser_agents_require_page_state_in_every_mode(agent: Any) -> None:
 _SWITCHABLE: list[Any] = [
     pytest.param(UITarsAgent, {}, id="ui_tars"),
     pytest.param(SkyvernAgent, {}, id="skyvern"),
-    *(
-        pytest.param(BrowserUseAgent, {"observation_mode": mode}, id=f"browser_use-{mode}")
-        for mode in ("dom", "dom_vision", "vision")
-    ),
+    *(pytest.param(member, {}, id=member.__registry_key__) for member in BROWSER_USE_MEMBERS),
 ]
 
 
@@ -453,14 +448,6 @@ def test_show_capture_state_off_excludes_only_capture_state(
     assert demand_of(off, "observation") == (off_required, off_optional)
     # Actions are not the switch's business.
     assert off.negotiation_demand("action") == on.negotiation_demand("action")
-
-
-def test_browser_use_names_the_switch_only_when_it_narrows() -> None:
-    assert repr(make_agent(BrowserUseAgent)) == "browser_use(observation_mode='dom')"
-    assert (
-        repr(make_agent(BrowserUseAgent, observation_mode="vision", show_capture_state=False))
-        == "browser_use(observation_mode='vision', show_capture_state=False)"
-    )
 
 
 class _Env:

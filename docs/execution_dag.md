@@ -726,7 +726,7 @@ Browser 特有的 CDP、tab/frame 和输入实现留在 capability 内；Runtime
 
 | Agent | 当前特殊逻辑 | 适配方式 |
 |-------|------------|---------|
-| BrowserUseAgent | flash_mode 跳过 thinking、multi-action (max_actions_per_step=3)、观测模式开关 | flash_mode 保留为 Agent 配置字段；`use_vision` 已被三态 `observation_mode: dom \| dom_vision \| vision` 取代（W3），它既选 prompt 的 surface 片段，也收窄带进协商的 required/optional（`architecture_design.md` §4.4）；multi-action 通过 ReactLoop 的 max_actions_per_step 配置 |
+| BrowserUseAgent | flash_mode 跳过 thinking、multi-action (max_actions_per_step=3)、观测模式开关 | flash_mode 保留为 Agent 配置字段；`use_vision` 先被三态 `observation_mode` 取代（W3），2026-10-23 又拆成 agent 家族 `browser_use` 的两个成员 `browser_use.dom` 与 `browser_use.dom_vision`，各写完整的 `__wiring__`，纯视觉删除（`architecture_design.md` §4.1 "Agent 家族"）；multi-action 通过 ReactLoop 的 max_actions_per_step 配置 |
 | SkyvernAgent | Jinja2 模板渲染 prompt、action_history_window、TOTP/2FA 支持 | 模板渲染保留在 build_react_prompt 中（Agent 领域知识）；action_history_window 影响 Memory 策略 |
 | UITarsAgent | 坐标解析（AST parser）、prompt_template 切换（COMPUTER_USE / MOBILE_USE） | 坐标解析保留在 parse_react_output 中；prompt_template 保留为 Agent 配置字段 |
 
