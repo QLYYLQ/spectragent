@@ -104,3 +104,50 @@ def test_rule_levels_are_checked_before_opening_a_run(tmp_path: Path) -> None:
     )
     with pytest.raises(SiteRuleError, match="over-broad.*normalized.*exact"):
         source.check_config()
+
+
+PAGE_URL_TEXT = """# The fixture's search page writes vt into its own address.
+page_urls:
+  - id: search-vt
+    scope: {host: shop.test, path: /search}
+    ignore_query: [vt]
+"""
+
+
+async def test_page_url_rules_are_frozen_with_the_replay_and_read_back_from_its_record(
+    tmp_path: Path,
+) -> None:
+    """The server answers restoration from the rules it loaded; the committed run keeps them."""
+    script = RecordingScript(tmp_path / "recording", run_id="source")
+    await script.exchange("http://shop.test/poll?tick=1", body=b"first")
+    await script.commit(0)
+    recorded_dir = script.finish()
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "fixture.yaml").write_text(RULE_TEXT)
+    (rules_dir / "page_urls.yaml").write_text(PAGE_URL_TEXT)
+    source = ArchiveNetworkSource(matcher=MatcherConfig(site_rules=str(rules_dir)))
+    source.check_config()
+    recorded = source.open_replay(open_archive(recorded_dir))
+    server = source.serve(recorded, ReplayContext(recorder=None, cycle=lambda: 0))  # type: ignore[arg-type]
+    (rules_dir / "page_urls.yaml").unlink()
+
+    assert [rule.id for rule in server.page_urls] == ["search-vt"]
+    block = server.fingerprint()
+    assert {f["name"] for f in block["site_rules_snapshot"]["files"]} == {
+        "fixture.yaml",
+        "page_urls.yaml",
+    }
+    wal = new_wal(tmp_path / "replays", "replayed")
+    wal.commit_trailing(
+        extra_files=[
+            archive_file(
+                "browser",
+                "fingerprint.json",
+                json.dumps({"network_source": block}).encode(),
+                scope="run",
+                run_version=0,
+            )
+        ]
+    )
+    assert recorded_site_rules(open_archive(wal.run_dir)).page_urls == server.page_urls

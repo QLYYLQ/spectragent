@@ -68,6 +68,14 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
                     differences.append(f"{prefix}: {label} changed")
                 elif item.get(field) is None:
                     unknown.append(f"{prefix}: {label} not measured")
+            if item.get("url_match") is True and item.get("recorded_url") != item.get(
+                "restored_url"
+            ):
+                # Equal only once a page-URL rule left its parameters out: still a measured difference.
+                names = ", ".join(item.get("url_ignored_query") or [])
+                differences.append(
+                    f"{prefix}: URL differs in parameters page-URL rules leave out ({names})"
+                )
             distance = item.get("screenshot_distance")
             if distance is None:
                 unknown.append(f"{prefix}: screenshot distance not measured")

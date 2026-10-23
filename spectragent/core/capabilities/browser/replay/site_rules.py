@@ -5,6 +5,10 @@ explicit priority wins; equal-priority matches are configuration conflicts.
 Every rule declares response-sequence exhaustion and how a recorded request
 without a body is answered. File order never selects behavior, and all rule
 collections are immutable after parsing.
+
+A rule file may also hold page-URL rules (``page_urls``, ``page_urls.py``):
+they are frozen and digested with the request rules, but only restoration
+verification reads them.
 """
 
 import fnmatch
@@ -24,6 +28,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from spectragent.core.capabilities.browser.replay.page_urls import PageUrlRule
 
 #: The file suffix of a site rule.
 RULE_SUFFIX = ".yaml"
@@ -273,20 +279,38 @@ class SiteRulesSnapshot(BaseModel):
 
 
 class RuleDocument(BaseModel):
-    """The only accepted YAML document shape."""
+    """The only accepted YAML document shape: request rules, page-URL rules, or both.
+
+    ``page_urls`` holds the page-URL rules restoration verification reads
+    (``page_urls.py``); request matching never reads them.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    rules: tuple[SiteRule, ...] = Field(min_length=1)
+    rules: tuple[SiteRule, ...] = ()
+    page_urls: tuple[PageUrlRule, ...] = ()
+
+    @model_validator(mode="after")
+    def _declares_a_rule(self) -> "RuleDocument":
+        if not self.rules and not self.page_urls:
+            raise ValueError("a rule file declares at least one rule in rules or page_urls")
+        return self
 
 
 class SiteRules:
     """An immutable set of rules, preserving the exact source read at load time."""
 
-    def __init__(self, rules: Sequence[SiteRule] = ()) -> None:
+    def __init__(
+        self, rules: Sequence[SiteRule] = (), *, page_urls: Sequence[PageUrlRule] = ()
+    ) -> None:
         self._rules = tuple(rules)
+        self._page_urls = tuple(page_urls)
         self._validate_ids()
-        document = RuleDocument(rules=self._rules) if self._rules else None
+        document = (
+            RuleDocument(rules=self._rules, page_urls=self._page_urls)
+            if self._rules or self._page_urls
+            else None
+        )
         files: tuple[RuleFileSnapshot, ...] = ()
         if document is not None:
             text = document.model_dump_json()
@@ -305,10 +329,16 @@ class SiteRules:
         )
 
     def _validate_ids(self) -> None:
-        ids = [rule.id for rule in self._rules]
+        """One identity space for request and page-URL rules, so a diagnostic names one rule."""
+        ids = [rule.id for rule in self._rules] + [rule.id for rule in self._page_urls]
         repeated = sorted({identity for identity in ids if ids.count(identity) > 1})
         if repeated:
             raise SiteRuleError(f"duplicate replay rule ids: {repeated}")
+
+    @property
+    def page_urls(self) -> tuple[PageUrlRule, ...]:
+        """The page-URL rules restoration verification applies (``page_urls.py``)."""
+        return self._page_urls
 
     @property
     def sha256(self) -> str:
@@ -362,16 +392,19 @@ class SiteRules:
         if len(names) != len(set(names)):
             raise SiteRuleError("replay rule snapshot contains duplicate file names")
         rules: list[SiteRule] = []
+        page_urls: list[PageUrlRule] = []
         listing: list[tuple[str, str]] = []
         for file in snapshot.files:
             digest = hashlib.sha256(file.text.encode("utf-8")).hexdigest()
             if digest != file.sha256:
                 raise SiteRuleError(f"replay rule snapshot {file.name}: sha256 mismatch")
             listing.append((file.name, digest))
-            rules.extend(_parse_rules(file.origin, file.text))
+            document = _parse_rules(file.origin, file.text)
+            rules.extend(document.rules)
+            page_urls.extend(document.page_urls)
         if _listing_digest(listing) != snapshot.sha256:
             raise SiteRuleError("replay rule snapshot: collection sha256 mismatch")
-        instance = cls(rules)
+        instance = cls(rules, page_urls=page_urls)
         instance._snapshot = snapshot
         return instance
 
@@ -420,7 +453,7 @@ class SiteRules:
         return len(self._rules)
 
 
-def _parse_rules(source: str, text: str) -> tuple[SiteRule, ...]:
+def _parse_rules(source: str, text: str) -> RuleDocument:
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -428,7 +461,7 @@ def _parse_rules(source: str, text: str) -> tuple[SiteRule, ...]:
     if not isinstance(raw, dict):
         raise SiteRuleError(f"site rule {source} is not a mapping of rule keys")
     try:
-        return RuleDocument.model_validate(raw).rules
+        return RuleDocument.model_validate(raw)
     except ValidationError as exc:
         raise SiteRuleError(f"site rule {source} is not a valid rule: {exc}") from exc
 

@@ -130,6 +130,20 @@ class TestRestorationCheck:
         assert evidence.screenshot_distance is None
         assert evidence.document_misses is None
         assert (evidence.signature_missing, evidence.signature_extra) == (0, 0)
+        assert (evidence.url_ignored_query, evidence.url_rule_ids) == ([], [])
+
+    def test_the_url_parameters_left_out_round_trip_and_older_evidence_has_none(self) -> None:
+        evidence = RestorationEvidence(
+            capability_id="browser",
+            url_match=True,
+            recorded_url="https://a.test/all?vt=1",
+            restored_url="https://a.test/all?vt=2",
+            url_ignored_query=["vt"],
+            url_rule_ids=["a-vt"],
+        )
+        assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
+        older = RestorationEvidence.model_validate({"capability_id": "browser", "url_match": False})
+        assert (older.url_ignored_query, older.url_rule_ids) == ([], [])
 
 
 class TestRetarget:

@@ -201,12 +201,21 @@ class RestorationEvidence(BaseModel):
     when no comparison was made). ``media`` compares media playback state
     and records the media alignment done before the restored capture
     (:class:`MediaEvidence`).
+
+    ``recorded_url`` / ``restored_url`` are the two page URLs as observed;
+    ``url_match`` compares them after leaving out the query parameters a
+    site's page-URL rules declare (the browser's replay rule set,
+    ``docs/architecture_design.md`` §4.14). ``url_ignored_query`` names the
+    parameters left out of either URL, ``url_rule_ids`` the rules that left
+    them out; both are empty when the URLs were compared exactly.
     """
 
     capability_id: str
     url_match: bool | None = None
     recorded_url: str | None = None
     restored_url: str | None = None
+    url_ignored_query: list[str] = Field(default_factory=list)
+    url_rule_ids: list[str] = Field(default_factory=list)
     signature_match: bool | None = None
     signature_missing: int = Field(default=0, ge=0)
     signature_extra: int = Field(default=0, ge=0)

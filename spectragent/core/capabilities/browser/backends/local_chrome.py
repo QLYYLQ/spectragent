@@ -70,9 +70,24 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Minimal stable defaults that disable non-essential Chrome features for
-# automation reliability.  Users can override / extend via ``extra_args``.
+# automation reliability.  Users extend them via ``extra_args``;
+# ``ignore_default_args`` drops them.
 CHROME_DEFAULT_ARGS: tuple[str, ...] = (
-    # Automation fundamentals
+    # Automation fundamentals. Six of them are fixed, with no knob of their
+    # own: --disable-background-networking, --disable-default-apps,
+    # --disable-popup-blocking, --disable-sync, --disable-translate and
+    # --no-first-run. To launch without one, set ``ignore_default_args`` and
+    # list the switches you do want in ``extra_args``. Two of them matter:
+    # - --disable-popup-blocking: pages open every tab they ask for, also the
+    #   windows a real browser's popup blocker stops (opened without the
+    #   user's activation). ``new_tabs: follow`` was measured this way: those
+    #   tabs open and are listed but not followed (``tabs.py``;
+    #   docs/architecture_design.md §4.14 "页面新开的标签页").
+    # - --disable-background-networking: keeps Chrome from sending requests of
+    #   its own. ``replayability: pinned`` adds it back, with
+    #   --disable-component-update and --disable-field-trial-config, when
+    #   ``ignore_default_args`` drops this list: a recording and its replay
+    #   launch with identical switches (``replay/pinned.py``, "rule zero").
     "--disable-background-networking",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
@@ -461,26 +476,6 @@ class LocalChromeProvider(BrowserProviderBase):
     ] = None
 
     # ── misc Chrome flags ──────────────────────────────────────────────
-    disable_background_networking: Annotated[
-        bool,
-        Field(description="Disable background network requests"),
-    ] = True
-
-    disable_popup_blocking: Annotated[
-        bool,
-        Field(description="Disable popup blocking"),
-    ] = True
-
-    disable_translate: Annotated[
-        bool,
-        Field(description="Disable built-in translation"),
-    ] = True
-
-    disable_sync: Annotated[
-        bool,
-        Field(description="Disable Chrome sync"),
-    ] = True
-
     background_throttling: Annotated[
         bool,
         Field(
@@ -513,16 +508,6 @@ class LocalChromeProvider(BrowserProviderBase):
     mute_audio: Annotated[
         bool,
         Field(description="Mute all audio output (--mute-audio)"),
-    ] = True
-
-    no_first_run: Annotated[
-        bool,
-        Field(description="Skip first-run experience (--no-first-run)"),
-    ] = True
-
-    disable_default_apps: Annotated[
-        bool,
-        Field(description="Don't install default Chrome apps (--disable-default-apps)"),
     ] = True
 
     # ── deterministic rendering ────────────────────────────────────────

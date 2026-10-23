@@ -36,6 +36,7 @@ from spectragent.core.capabilities.browser.observations import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.capabilities.browser.replay.page_urls import PageScope, PageUrlRule
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, ReplayLogEntry
 from spectragent.core.capabilities.browser.restoration import (
     TEXT_DEPTH_LIMIT,
@@ -438,6 +439,12 @@ class TestDhash:
         assert dhash(b"\x89PNG\r\n\x1a\nnot really") is None
 
 
+#: A page-URL rule of the replay's rule set: the cart page writes ``session`` into its address.
+CART_SESSION = PageUrlRule(
+    id="cart-session", scope=PageScope(host="shop.test", path="/cart"), ignore_query=("session",)
+)
+
+
 def full(
     state: DOMState | None = None,
     *,
@@ -500,6 +507,8 @@ class TestMeasure:
             "url_match": True,
             "recorded_url": "https://shop.test/cart",
             "restored_url": "https://shop.test/cart",
+            "url_ignored_query": [],
+            "url_rule_ids": [],
             "signature_match": True,
             "signature_missing": 0,
             "signature_extra": 0,
@@ -507,6 +516,38 @@ class TestMeasure:
             "document_misses": 0,
             "media": None,
         }
+
+    def test_page_url_rules_leave_their_parameters_out_and_the_evidence_says_which(self) -> None:
+        recorded = full(url="https://shop.test/cart?session=1&item=7")
+        restored = full(url="https://shop.test/cart?session=2&item=7")
+        evidence = measure(
+            recorded_view(recorded),
+            restored_view(restored),
+            capability_id="browser",
+            document_misses=0,
+            media=None,
+            page_urls=(CART_SESSION,),
+        )
+        assert evidence.url_match is True
+        assert (evidence.recorded_url, evidence.restored_url) == (
+            "https://shop.test/cart?session=1&item=7",
+            "https://shop.test/cart?session=2&item=7",
+        ), "the evidence keeps both URLs as observed"
+        assert (evidence.url_ignored_query, evidence.url_rule_ids) == (
+            ["session"],
+            ["cart-session"],
+        )
+
+    def test_with_page_url_rules_every_other_difference_still_mismatches(self) -> None:
+        evidence = measure(
+            recorded_view(full(url="https://shop.test/cart?session=1&item=7")),
+            restored_view(full(url="https://shop.test/cart?session=2&item=8")),
+            capability_id="browser",
+            document_misses=0,
+            media=None,
+            page_urls=(CART_SESSION,),
+        )
+        assert evidence.url_match is False and evidence.url_ignored_query == ["session"]
 
     def test_nothing_measurable_is_none(self) -> None:
         evidence = measure(
@@ -585,10 +626,12 @@ def _diverged_document() -> ReplayLogEntry:
     )
 
 
-def replaying_capability(log: ReplayLog) -> BrowserCapability:
-    """A capability whose network source intercepts: only its replay log is read."""
+def replaying_capability(
+    log: ReplayLog, page_urls: tuple[PageUrlRule, ...] = ()
+) -> BrowserCapability:
+    """A capability whose network source intercepts: only its replay log and page-URL rules are read."""
     capability = BrowserCapability()
-    capability._replay_server = SimpleNamespace(log=log)  # type: ignore[assignment]
+    capability._replay_server = SimpleNamespace(log=log, page_urls=page_urls)  # type: ignore[assignment]
     return capability
 
 
@@ -612,6 +655,18 @@ class TestReasons:
         check = await verdict(BrowserCapability(), recorded_view(fragments), restored)
         assert check.reasons == ["url_mismatch"]
         assert check.evidence[0].restored_url == "https://shop.test/elsewhere"
+
+    async def test_the_replays_page_url_rules_decide_the_url_check(self) -> None:
+        """Under a replay its frozen page-URL rules apply; a live network has none."""
+        recorded = recorded_view(full(url="https://shop.test/cart?session=1"))
+        restored = restored_view(full(url="https://shop.test/cart?session=2"))
+        replaying = replaying_capability(ReplayLog(), page_urls=(CART_SESSION,))
+        check = await verdict(replaying, recorded, restored)
+        assert check.verdict == "ok"
+        assert check.evidence[0].url_ignored_query == ["session"]
+        live = await verdict(BrowserCapability(), recorded, restored)
+        assert live.reasons == ["url_mismatch"]
+        assert (live.evidence[0].url_ignored_query, live.evidence[0].url_rule_ids) == ([], [])
 
     async def test_signature_mismatch(self) -> None:
         fragments = full()
