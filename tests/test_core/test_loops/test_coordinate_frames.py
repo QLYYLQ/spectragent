@@ -12,26 +12,34 @@ about coordinates. These tests pin the framework's half:
   is shown none, and an assembly error when the screenshot reports no
   geometry at all;
 - ReAct builds that frame before the Agent's prompt, hands it over in the
-  prompt context and records it on the step.
+  prompt context and records it on the step;
+- a framed run whose negotiated screenshot cannot report its geometry, or
+  that negotiates none, is refused by ``AgentRuntime.prepare``, before a trace
+  is opened or anything is set up.
 """
 
 from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 import pytest
 
 from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.environments._registrar import EnvironmentBase
+from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.coordinate_frames import (
     NOT_PLACEABLE,
     OUTSIDE_THE_SCREENSHOT,
+    ScreenshotGeometryError,
     actions_in_capability_units,
     actions_in_model_frame,
+    check_frame_geometry,
     declared_space,
     fact_in_model_frame,
     framed_action_space,
@@ -43,12 +51,14 @@ from spectragent.core.loops.react import ReactLoop
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.step_recorder import StepRecorder
-from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.geometry import PointFrame, PointGrid
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_spaces import browser_descriptors, browser_space, space_of
+from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 VIEWPORT = (1280, 720)
 
@@ -645,3 +655,152 @@ async def test_react_sends_a_point_it_cannot_place_back_to_the_model() -> None:
         "screenshot has no known size"
     )
     assert record.frame == PointFrame(space="normalized_1000")
+
+
+# ── AgentRuntime refuses a frame no screenshot can carry ──────────────
+
+_SHOT = "frame_check.screenshot"
+_PAGE = "frame_check.page"
+_CLICK = "frame_check.click_coordinate"
+
+
+def _register_bare_screenshot() -> None:
+    """``frame_check.screenshot``, an image without the sizes a point needs, and a text page.
+
+    Registered per test, so the registry rolls them back.
+    """
+
+    class _BareShot(FragmentBase):
+        __registry_key__ = _SHOT
+        __source__: ClassVar[Literal["env", "loop"]] = "env"
+
+        image_bytes: bytes | None = None
+        viewport_width: int = 0
+        viewport_height: int = 0
+
+    class _Page(FragmentBase):
+        __registry_key__ = _PAGE
+        __source__: ClassVar[Literal["env", "loop"]] = "env"
+
+        text: str = ""
+
+
+class TestTheRunsScreenshotCanCarryItsFrame:
+    def test_a_screenshot_that_reports_its_geometry_passes(self) -> None:
+        check_frame_geometry(_pointing(), {"screenshot": "browser.screenshot"}, agent="ui_tars")
+
+    def test_an_unframed_run_is_not_asked(self) -> None:
+        check_frame_geometry(_pointing(None), {}, agent="ui_tars")
+
+    def test_a_screenshot_without_geometry_is_refused_by_name(self) -> None:
+        _register_bare_screenshot()
+        with pytest.raises(ScreenshotGeometryError) as excinfo:
+            check_frame_geometry(_pointing(), {"screenshot": _SHOT}, agent="ui_tars")
+        message = str(excinfo.value)
+        assert message.startswith(
+            "ui_tars writes points on the normalized_1000 grid and this run's "
+            "browser.click_coordinate, browser.drag take points, but the screenshot it "
+            "negotiates, frame_check.screenshot (_BareShot), reports no screenshot geometry"
+        )
+        assert "ScreenshotGeometry" in message
+        assert isinstance(excinfo.value, TypeError)
+
+    def test_a_run_with_no_screenshot_is_refused(self) -> None:
+        with pytest.raises(ScreenshotGeometryError, match="negotiates no screenshot"):
+            check_frame_geometry(_pointing(), {"dom": "browser.dom"}, agent="ui_tars")
+
+
+class _ClickCap(CapabilityBase):
+    """A point action and a screenshot that carries no geometry."""
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+    __registry_key__ = "frame_check"
+    __wiring__ = {
+        "observation": ("observation", [_SHOT, _PAGE]),
+        "action": ("action", [_CLICK]),
+    }
+
+    setups = 0
+
+    async def setup(self, *, negotiation: Any = None) -> None:
+        self.setups += 1
+
+    def get_action_descriptors(self, **ctx: Any) -> list[ActionDescriptor]:
+        return [
+            ActionDescriptor(
+                name=_CLICK,
+                description="Click a point.",
+                params={"coordinate_x": "int", "coordinate_y": "int"},
+                point_params=(("coordinate_x", "coordinate_y"),),
+            )
+        ]
+
+    async def execute_action(self, action: Action, **kw: Any) -> ActionResult:
+        return ActionResult(success=True)
+
+
+class _FrameCheckEnv(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
+    __registry_key__ = "frame_check_env"
+
+
+class _PointingAgent(_Agent):
+    """Writes points on 0-1000 over the screenshot it asks for."""
+
+    coordinate_space = "normalized_1000"
+    __wiring__: ClassVar[dict[str, Any]] = {
+        "observation": ("observation", ["screenshot"]),
+        "action": ("action", ["click_coordinate"]),
+    }
+
+
+class _BlindPointingAgent(_PointingAgent):
+    """Writes points on 0-1000 and asks for a text page, no screenshot."""
+
+    __wiring__: ClassVar[dict[str, Any]] = {
+        "observation": ("observation", ["page"]),
+        "action": ("action", ["click_coordinate"]),
+    }
+
+
+class _RunMemory(_Memory):
+    supports_protocols = frozenset({"user_assistant"})
+
+
+def _framed_runtime(
+    *, wants_screenshot: bool = True, hooks: list[Any] | None = None
+) -> tuple[AgentRuntime, _ClickCap]:
+    _register_bare_screenshot()
+    cap = _ClickCap()
+    env = make_env(_FrameCheckEnv, {"frame_check": cap})
+    run = make_run(
+        agent=_PointingAgent() if wants_screenshot else _BlindPointingAgent(),
+        loop=ReactLoop(),
+        env=env,
+        llm=_LLM(["[]"]),
+        memory=_RunMemory(),
+        hooks=hooks,
+    )
+    return AgentRuntime.for_agent(run, AGENT_ID), cap
+
+
+class TestPrepareRefusesAFrameNoScreenshotCanCarry:
+    def test_a_screenshot_without_geometry_is_refused_in_prepare(self) -> None:
+        runtime, cap = _framed_runtime()
+        with pytest.raises(ScreenshotGeometryError, match=r"frame_check\.screenshot \(_BareShot\)"):
+            runtime.prepare()
+        assert cap.setups == 0
+
+    def test_a_run_that_negotiates_no_screenshot_is_refused_in_prepare(self) -> None:
+        runtime, _cap = _framed_runtime(wants_screenshot=False)
+        with pytest.raises(ScreenshotGeometryError, match="negotiates no screenshot"):
+            runtime.prepare()
+
+    async def test_refused_before_a_trace_is_opened_or_anything_is_set_up(self, tmp_path) -> None:  # noqa: ANN001
+        traces = tmp_path / "traces"
+        runtime, cap = _framed_runtime(hooks=[TraceWriter(trace_dir=str(traces))])
+        with pytest.raises(ScreenshotGeometryError):
+            await runtime.execute("t", task_id="t-1")
+        assert cap.setups == 0
+        assert not traces.exists()

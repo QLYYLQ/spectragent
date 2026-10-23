@@ -43,7 +43,11 @@ from spectragent.core.llm.base import require_inference_protocol
 from spectragent.core.llm.call_context import RunCallContext
 from spectragent.core.llm.lifecycle import close_models
 from spectragent.core.loops.base import AgentLoop
-from spectragent.core.loops.coordinate_frames import declared_space, framed_action_space
+from spectragent.core.loops.coordinate_frames import (
+    check_frame_geometry,
+    declared_space,
+    framed_action_space,
+)
 from spectragent.core.loops.errors import RunAbort, carried_outcome
 from spectragent.core.loops.identity import RunIdentity
 from spectragent.core.loops.limits import ExecutionLimits, validate_execution_limits
@@ -362,6 +366,9 @@ class AgentRuntime:
                 key, in a run with no environment).
             BrowserCooperationError: (and any capability's own refusal)
                 from ``Environment.check_setup``.
+            ScreenshotGeometryError: The agent's model writes points on a
+                grid and the run's screenshot cannot carry it
+                (``coordinate_frames.check_frame_geometry``).
         """
         agent = self._agent
         loop: AgentLoop = agent.agent_loop
@@ -512,6 +519,13 @@ class AgentRuntime:
         # fed-back point on the step's frame (``core/loops/coordinate_frames.py``,
         # docs/architecture_design.md §4.1 "坐标系归框架").
         action_space = framed_action_space(action_space, declared_space(agent))
+        # A framed run whose screenshot can never say where a point on the grid
+        # is would refuse every point it is given: refused now, by name.
+        check_frame_geometry(
+            action_space,
+            negotiated_obs.fragment_bindings,
+            agent=self._identity.agent_id or type(agent).__name__,
+        )
 
         # Step 5: Loop weaving — patches wrapped_agent.run. A Loop with
         # assembly checks of its own makes them here (``BranchLoop`` checks

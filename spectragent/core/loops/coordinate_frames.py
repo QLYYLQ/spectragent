@@ -15,7 +15,10 @@ declared grid laid over the screenshot that step showed the model.
   (:func:`framed_action_space`): when the space holds a point action it carries
   the declared grid, and each point param's descriptor text says what the
   model writes on it. A run without a point action never asks its model for a
-  point, so it is taught no grid and keeps the capability's units.
+  point, so it is taught no grid and keeps the capability's units. A framed
+  run whose negotiated screenshot cannot report its geometry, or that
+  negotiates none, could never place a point; ``prepare`` refuses it there
+  (:func:`check_frame_geometry`), before a trace is opened.
 - **Each step.** The Loop builds the frame of the observation a step decides
   on (:func:`step_frame`) before the Agent builds the prompt, hands it over in
   ``ReactPromptContext.frame`` and records it on ``StepRecord.frame``.
@@ -41,7 +44,7 @@ param's name or value.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypeGuard, get_args, runtime_checkable
 
 from spectragent.core.action_guard import executed_descriptor
@@ -50,6 +53,7 @@ from spectragent.core.actions.params import point_params
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.schemas.action import Action, ActionDescriptor, PointWriter, write_viewport_point
 from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.observation._registrar import ObservationRegistrar
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
@@ -64,9 +68,11 @@ __all__ = [
     "OUTSIDE_THE_SCREENSHOT",
     "SCREENSHOT_FIELD",
     "DeclaresCoordinateFrame",
+    "ScreenshotGeometryError",
     "action_points",
     "actions_in_capability_units",
     "actions_in_model_frame",
+    "check_frame_geometry",
     "declared_space",
     "fact_in_model_frame",
     "framed_action_space",
@@ -178,6 +184,68 @@ def framed_action_space(
     )
 
 
+#: What a screenshot fragment has to carry for a point on it to be executed.
+_GEOMETRY_FIELDS = tuple(ScreenshotGeometry.__annotations__)
+
+#: Said wherever a screenshot reports no geometry: what it has to carry.
+_GEOMETRY_NEEDED = (
+    "A screenshot fragment has to carry image_width, image_height, viewport_width and "
+    "viewport_height (ScreenshotGeometry, spectragent.schemas.observation.geometry)."
+)
+
+
+class ScreenshotGeometryError(TypeError):
+    """A run framed on a grid, and no screenshot of it can say where a point on that grid is.
+
+    Raised by :func:`check_frame_geometry` in ``AgentRuntime.prepare``. A
+    ``TypeError`` like the step-level refusal in :func:`step_frame`: both are
+    an assembly error, not something the model can fix by rewriting a reply.
+    """
+
+
+def check_frame_geometry(
+    space: ActionSpace, fragment_bindings: Mapping[str, str], *, agent: str
+) -> None:
+    """Refuse a run framed on a grid that none of its steps could lay over a screenshot.
+
+    Run by ``AgentRuntime.prepare`` right after :func:`framed_action_space`
+    (AGENTS.md §2.3, "what setup would refuse, ``prepare()`` refuses"), so a
+    configuration that can never place a point fails before a trace is opened,
+    not at the first step. Nothing to check when *space* is framed on no grid.
+
+    Args:
+        space: The run's framed action space.
+        fragment_bindings: The observation negotiation's local name →
+            fully-qualified key (``ObservationNegotiationResult.fragment_bindings``).
+        agent: How the refusal names the agent.
+
+    Raises:
+        ScreenshotGeometryError: The run negotiates no screenshot
+            (:data:`SCREENSHOT_FIELD`), or the registered fragment it negotiates
+            for one does not carry :class:`ScreenshotGeometry`'s fields.
+    """
+    coordinate_space = space.coordinate_space
+    if coordinate_space is None:
+        return
+    pointing = ", ".join(sorted(d.name for d in space.descriptors if d.point_params))
+    head = f"{agent} writes points on the {coordinate_space} grid and this run's {pointing} take points"
+    key = fragment_bindings.get(SCREENSHOT_FIELD)
+    if key is None:
+        raise ScreenshotGeometryError(
+            f"{head}, but the run negotiates no screenshot to lay the grid over, so no point "
+            f"the model writes can be placed. {_GEOMETRY_NEEDED}"
+        )
+    fragment = ObservationRegistrar.get_or_none(key)
+    fields = getattr(fragment, "model_fields", {})
+    if fragment is not None and all(name in fields for name in _GEOMETRY_FIELDS):
+        return
+    shown = fragment.__name__ if fragment is not None else "no registered fragment class"
+    raise ScreenshotGeometryError(
+        f"{head}, but the screenshot it negotiates, {key} ({shown}), reports no screenshot "
+        f"geometry, so no point the model writes on it can be executed. {_GEOMETRY_NEEDED}"
+    )
+
+
 def step_frame(space: ActionSpace, observation: Any) -> PointFrame | None:
     """The frame the points of a step deciding on *observation* are written in.
 
@@ -190,7 +258,9 @@ def step_frame(space: ActionSpace, observation: Any) -> PointFrame | None:
     Raises:
         TypeError: The screenshot reports no geometry. That is an assembly
             error — no point on it could ever be executed — so it stops the
-            step rather than refusing every point the model writes.
+            step rather than refusing every point the model writes. A run
+            assembled by ``AgentRuntime.prepare`` has had its negotiated
+            screenshot checked already (:func:`check_frame_geometry`).
     """
     coordinate_space = space.coordinate_space
     if coordinate_space is None:
@@ -201,9 +271,7 @@ def step_frame(space: ActionSpace, observation: Any) -> PointFrame | None:
     if not isinstance(screenshot, ScreenshotGeometry):
         raise TypeError(
             f"{type(screenshot).__name__} reports no screenshot geometry, so no point the "
-            f"model writes on it can be executed. A screenshot fragment has to carry "
-            f"image_width, image_height, viewport_width and viewport_height "
-            f"(ScreenshotGeometry, spectragent.schemas.observation.geometry)."
+            f"model writes on it can be executed. {_GEOMETRY_NEEDED}"
         )
     if read_model_image(screenshot) is None:
         return PointFrame(space=coordinate_space)
