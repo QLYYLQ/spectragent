@@ -40,10 +40,8 @@ import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.prompts import agent_prompt_variants
-from spectragent.agents.ui_tars.agent import (
-    _VERB_TABLE,
-    UITarsAgent,
-)
+from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.agents.ui_tars.codec import BoundVerb, UITarsCodec
 from spectragent.core.action_guard import build_guarded_act, executed_name
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -137,9 +135,9 @@ def harness() -> tuple[UITarsAgent, Any, dict[str, Any]]:
     )
 
 
-def _verb_of(agent: UITarsAgent) -> dict[str, str]:
-    """Run action name → the verb a prepared agent offers for it (the bindings' answer)."""
-    return {descriptor.name: verb for verb, descriptor in agent._bound.items()}
+def _verb_of(space: Any) -> dict[str, BoundVerb]:
+    """Run action name → the verb the run's codec binds to it (the bindings' answer)."""
+    return {bound.descriptor.name: bound for bound in UITarsCodec(space).verbs.values()}
 
 
 async def _rendered(agent: UITarsAgent, space: Any, variant: Any) -> str:
@@ -234,9 +232,9 @@ class TestPromptVocabulary:
             assert "# Coordinates" in prompt, variant
             assert "CSS px" not in prompt, variant
             for descriptor in extra["descriptors"]:
-                verb = _VERB_TABLE[_verb_of(agent)[descriptor.name]]
+                verb = _verb_of(extra["space"])[descriptor.name]
                 converted = {key for pair in descriptor.point_params for key in pair}
-                for param in verb.fills:
+                for param in verb.params:
                     rendered = f"{param}: {descriptor.params[param]}"
                     if param in converted:
                         assert rendered not in prompt, (variant, descriptor.name, param)
@@ -251,24 +249,19 @@ class TestPromptVocabulary:
         ``type`` could require ``index``, receive ``content``, and pass
         every test in the suite.
         """
-        agent, _guard, extra = harness
-        agent.prepare(
-            task="t",
-            action_space=extra["space"],
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-        )
+        _agent, _guard, extra = harness
         for descriptor in extra["descriptors"]:
-            verb = _VERB_TABLE[_verb_of(agent)[descriptor.name]]
+            verb = _verb_of(extra["space"])[descriptor.name]
             declared = set(descriptor.params)
-            assert set(verb.fills) <= declared, descriptor.name
+            assert set(verb.params) <= declared, descriptor.name
             required = {
                 key
                 for key, spec in descriptor.params.items()
                 if "optional" not in str(spec).lower()
             }
-            assert required <= set(verb.fills), (
-                f"{descriptor.name} requires {sorted(required - set(verb.fills))}, "
-                f"which the {verb!r} verb never produces"
+            assert required <= set(verb.params), (
+                f"{descriptor.name} requires {sorted(required - set(verb.params))}, "
+                f"which the {verb.verb.name!r} verb never produces"
             )
 
     async def test_every_taught_call_parses_guards_and_executes(self, harness) -> None:

@@ -1094,6 +1094,13 @@ value on an existing one.
   agree (a student without the slot gets the action's own JSON). A new student format
   with its own grid declares it as `coordinate_space`, renders the facts and writers the
   framework hands it, and implements `format_action_fact`; it converts nothing itself.
+- Put the student's text protocol in a stateless codec module of its own, built once in
+  `prepare` from the run's `ActionSpace`, and make each ReAct slot a one-line call into it.
+  UI-TARS is the precedent (`spectragent/agents/ui_tars/codec.py`): one declaration per verb
+  (`VERBS`) reads a reply, writes an action and gives the prompt its signature; a point
+  argument fills the points its action declares (`ActionDescriptor.point_params`) and names
+  no param. The export keeps calling the slots, never the codec module, because it serves
+  any student.
 - `StudentRenderer.render` is async. Its callers await it; the synchronous
   `ExportRunner.run` drives the entire async rendering phase with one `asyncio.run`.
   Segment seeding still uses `AgentRuntime.seed_messages`, and assistant history uses

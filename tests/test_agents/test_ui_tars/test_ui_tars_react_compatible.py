@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.ui_tars.agent import _POINT_ARGUMENTS, _VERB_TABLE, UITarsAgent
+from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.agents.ui_tars.codec import VERBS
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartTextParam,
@@ -206,23 +207,31 @@ class TestVerbTableAndWiringAgree:
         entry = UITarsAgent.__wiring__["action"]
         required, optional = entry["keys"], entry["optional_keys"]
         wired = set(required) | set(optional)
-        assert {v.action for v in _VERB_TABLE.values()} == wired
+        assert {v.action for v in VERBS.values()} == wired
 
     def test_every_verb_names_no_capability(self) -> None:
-        assert all("." not in v.action for v in _VERB_TABLE.values())
+        assert all("." not in v.action for v in VERBS.values())
 
     def test_every_argument_a_signature_teaches_is_one_the_verb_accepts(self) -> None:
         """A taught argument the verb refused would make its own prompt unparseable."""
-        for name, verb in _VERB_TABLE.items():
+        for name, verb in VERBS.items():
             taught = set(re.findall(r"(\w+)=", verb.signature))
             assert taught <= set(verb.accepts), (name, taught - set(verb.accepts))
 
     def test_every_ui_tars_spelling_of_a_taught_point_is_accepted(self) -> None:
         """``start_box`` / ``end_box`` are what fine-tuned UI-TARS weights write."""
-        for name, verb in _VERB_TABLE.items():
-            taught = set(re.findall(r"(\w+)=", verb.signature))
-            for point in taught & set(_POINT_ARGUMENTS):
-                assert set(_POINT_ARGUMENTS[point]) <= set(verb.accepts), (name, point)
+        written_by_ui_tars = {
+            "point": {"start_box"},
+            "start_point": {"start_box"},
+            "end_point": {"end_box"},
+        }
+        for name, verb in VERBS.items():
+            for argument in verb.arguments:
+                if argument.kind == "point":
+                    assert written_by_ui_tars[argument.name] <= set(verb.accepts), (
+                        name,
+                        argument.name,
+                    )
 
 
 class TestPrepare:
