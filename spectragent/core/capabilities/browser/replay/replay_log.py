@@ -1,11 +1,11 @@
-"""The replay log, ``replay.jsonl`` (§4.14 "回放日志").
+"""The replay log, ``replay.jsonl.gz`` (§4.14 "回放日志").
 
 The replay server writes every decision it makes — a hit, a repeated
 exhausted record, a record without a body answered by an identical one, a
 synthesised preflight, a miss — into one
 :class:`ReplayLog`; the ``browser.replay_log`` archiver's session
 (``archive/replay_log.py``) drains it at each collection into that step's
-``replay.jsonl``. Collection assigns the batch to a step; it does not claim
+``replay.jsonl.gz``. Collection assigns the batch to a step; it does not claim
 that step's action caused these asynchronous events. Every event keeps its
 own occurrence time and request identity. The capability knows no step
 numbers, and the episode is the run.
@@ -37,7 +37,10 @@ writes them: :func:`replay_log` (one step),
 one place that rule is spelled; :func:`document_miss_total` and the flywheel
 metrics count through it) and :func:`diverged_steps` — "this step diverged"
 is derived at read time: the step's log holds a main-frame document miss. No
-``StepRecord`` field carries it (M31's ``restoration`` is separate).
+``StepRecord`` field carries it (M31's ``restoration`` is separate). A file of
+the archiver under any other name — an uncompressed ``replay.jsonl`` written
+before the log was gzipped — is refused (``ValueError``), not read as an empty
+log: replay the run again.
 """
 
 import hashlib
@@ -47,7 +50,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from spectragent.core.archive.source import ArchiveReader
+from spectragent.core.archive.source import ArchiveEntry, ArchiveReader
 from spectragent.core.capabilities.browser.archive.replay_log import (
     REPLAY_LOG_ARCHIVER,
     REPLAY_LOG_NAME,
@@ -95,7 +98,7 @@ class ReplayCandidate(BaseModel):
 
 
 class ReplayLogEntry(BaseModel):
-    """One line of ``replay.jsonl``."""
+    """One line of ``replay.jsonl.gz``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -321,21 +324,45 @@ def short_key(key: str | None) -> str | None:
 # ── reading ───────────────────────────────────────────────────────────
 
 
+def _log_lines(reader: ArchiveReader, entry: ArchiveEntry) -> list[ReplayLogEntry]:
+    """One committed file of the replay-log archiver, read back as entries.
+
+    Raises:
+        ValueError: The file is not named :data:`REPLAY_LOG_NAME`, so this
+            build did not write it (an uncompressed ``replay.jsonl`` comes from
+            before the log was gzipped).
+    """
+    if entry.name != REPLAY_LOG_NAME:
+        raise ValueError(
+            f"run {reader.run_id!r}: {REPLAY_LOG_ARCHIVER} file {entry.path!r} is not a replay "
+            f"log this build reads (it writes {REPLAY_LOG_NAME!r}); an uncompressed log from "
+            f"before the replay log was gzipped is not read — replay the run again"
+        )
+    return reader.archive_lines(entry.path, ReplayLogEntry)
+
+
 def replay_log(reader: ArchiveReader, step: int) -> list[ReplayLogEntry]:
-    """The replay log *step*'s collection took (``[]`` when it took none)."""
+    """The replay log *step*'s collection took (``[]`` when it took none).
+
+    Raises:
+        ValueError: As :func:`iter_replay_log`.
+    """
     entries: list[ReplayLogEntry] = []
     for entry in reader.archive_files(step, REPLAY_LOG_ARCHIVER):
-        if entry.name == REPLAY_LOG_NAME:
-            entries.extend(reader.archive_lines(entry.path, ReplayLogEntry))
+        entries.extend(_log_lines(reader, entry))
     return entries
 
 
 def iter_replay_log(reader: ArchiveReader) -> Iterator[tuple[int | None, ReplayLogEntry]]:
-    """``(step, entry)`` for every entry of the run, in step order, then the trailing ones (``None``)."""
+    """``(step, entry)`` for every entry of the run, in step order, then the trailing ones (``None``).
+
+    Raises:
+        ValueError: A file of the archiver is not named :data:`REPLAY_LOG_NAME`
+            (one written before the log was gzipped).
+    """
     for step, entry in reader.iter_archive(REPLAY_LOG_ARCHIVER, include_trailing=True):
-        if entry.name == REPLAY_LOG_NAME:
-            for line in reader.archive_lines(entry.path, ReplayLogEntry):
-                yield step, line
+        for line in _log_lines(reader, entry):
+            yield step, line
 
 
 def iter_decisions(reader: ArchiveReader) -> Iterator[tuple[int | None, ReplayLogEntry, int]]:

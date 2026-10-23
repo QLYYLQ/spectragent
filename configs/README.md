@@ -348,7 +348,7 @@ network_source:
   `NETWORK_ISOLATION` (`local_chrome`).
 - **The archive list**: a replay binds `browser.replay_log` on the trace hook where a
   recording binds `browser.network` (the other archivers stay). `browser.replay_log`
-  records the replay log (`replay.jsonl`, one per step); a replay without it is refused.
+  records the replay log (`replay.jsonl.gz`, one per step); a replay without it is refused.
   `browser.network` always records live traffic, and a replay has none, so it is refused
   under `network_source: archive`, naming `browser.replay_log`; a `live` source refuses
   `browser.replay_log` in turn. All three are refused at `prepare()`.
@@ -393,7 +393,7 @@ replay's trace records the source run by absolute path.
   expiry together and pairs with `base_time: run_start`.
 - **The replay log**: every decision (`hit`, `exhausted` repeat, `substituted` answer for a
   record without a body, synthesised CORS preflight, `miss`) goes into the step's
-  `env/steps/NNN/browser.replay_log/replay.jsonl`; a step whose log holds a main-frame
+  `env/steps/NNN/browser.replay_log/replay.jsonl.gz`; a step whose log holds a main-frame
   document miss has diverged from the recording. A `substituted` entry names the consumed
   record (`record_id`), the one served (`served_record_id`) and how the source request ended
   (`source_outcome`); a `body_unavailable` miss carries `source_outcome` too, `repeated: true`

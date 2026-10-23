@@ -6,6 +6,7 @@ so the assertions below are a round trip: what the writer was handed is
 what the reader gives back, as the same type.
 """
 
+import gzip
 import json
 from pathlib import Path
 
@@ -513,11 +514,9 @@ class _IndexLine(BaseModel):
     n: int
 
 
-def _lines_trace(tmp_path, data: bytes) -> tuple[RunTrace, str]:
+def _lines_trace(tmp_path, data: bytes, name: str = "index.jsonl") -> tuple[RunTrace, str]:
     wal = new_wal(tmp_path)
-    file = archive_file(
-        "builder.steps", "index.jsonl", data, step=0, media_type="application/x-ndjson"
-    )
+    file = archive_file("builder.steps", name, data, step=0, media_type="application/x-ndjson")
     wal.commit_step(0, step_record(0), extra_files=[file])
     return RunTrace(wal.run_dir), file.rel_path
 
@@ -574,6 +573,26 @@ class TestArchiveLines:
         trace, path = _lines_trace(tmp_path, b'{"kind": "a", "n": 1}\n')
         (trace.trace_dir / path).write_bytes(b'{"kind": "a", "n": 9}\n')
         with pytest.raises(TraceSchemaError, match="does not match its index entry"):
+            trace.archive_lines(path, _IndexLine)
+
+    def test_a_gz_file_is_read_back_decompressed(self, tmp_path):
+        """``replay.jsonl.gz``: JSON Lines stored gzip-compressed, read like any other."""
+        lines = b'{"kind": "a", "n": 1}\n{"kind": "b", "n": 2}\n'
+        trace, path = _lines_trace(tmp_path, gzip.compress(lines), name="index.jsonl.gz")
+        assert [line.n for line in trace.archive_lines(path, _IndexLine)] == [1, 2]
+
+    def test_a_gz_file_that_does_not_decompress_names_the_file(self, tmp_path):
+        trace, path = _lines_trace(tmp_path, b'{"kind": "a", "n": 1}\n', name="index.jsonl.gz")
+        with pytest.raises(
+            TraceSchemaError, match=r"index\.jsonl\.gz does not decompress as gzip"
+        ) as caught:
+            trace.archive_lines(path, _IndexLine)
+        assert caught.value.path == trace.trace_dir / path
+
+    def test_a_line_of_a_gz_file_is_named_like_any_other(self, tmp_path):
+        data = gzip.compress(b'{"kind": "a", "n": 1}\n{"kind": "b", "n": "two"}\n')
+        trace, path = _lines_trace(tmp_path, data, name="index.jsonl.gz")
+        with pytest.raises(TraceSchemaError, match=r"index\.jsonl\.gz line 2 does not parse"):
             trace.archive_lines(path, _IndexLine)
 
 

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from spectragent.core.archive.privacy import RedactionLedger
+from spectragent.core.capabilities.browser.archive.encoding import gzip_jsonl
+from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_NAME
 from spectragent.core.trace.models import (
     TaskSetupRecord,
     TraceConfig,
@@ -137,8 +139,8 @@ def test_replay_log_counts_folded_and_trailing_decisions_only_when_committed(
         extra_files=[
             archive_file(
                 "browser.replay_log",
-                "replay.jsonl",
-                "\n".join(json.dumps(entry) for entry in entries).encode(),
+                REPLAY_LOG_NAME,
+                gzip_jsonl(entries),
                 step=0,
             )
         ],
@@ -147,8 +149,8 @@ def test_replay_log_counts_folded_and_trailing_decisions_only_when_committed(
         extra_files=[
             archive_file(
                 "browser.replay_log",
-                "replay.jsonl",
-                json.dumps(_decision("miss")).encode(),
+                REPLAY_LOG_NAME,
+                gzip_jsonl([_decision("miss")]),
                 trailing=0,
             )
         ]
@@ -187,7 +189,7 @@ def test_broken_replay_archive_remains_an_explicit_error(tmp_path: Path) -> None
         extra_files=[
             archive_file(
                 "browser.replay_log",
-                "replay.jsonl",
+                REPLAY_LOG_NAME,
                 b"{",
                 step=0,
             )

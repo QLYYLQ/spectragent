@@ -2892,7 +2892,7 @@ BrowserCapability
       │     紧接着写 resume（finally 里），之后才等全部回复
       ├── 暂停类事件 → 直接派生的 task（finally 里 continue / resume；archive 来源回放时未应答的请求一律 failRequest，从不 continue），从不进 scope 队列
       ├── 回放服务 ReplayServer（network_source: archive，M30）：Request 阶段的 Fetch 暂停的主人，
-      │     匹配 → fulfill / failRequest，在暂停它的那个 session 上应答；决定写进回放日志 → browser.replay_log 的 replay.jsonl
+      │     匹配 → fulfill / failRequest，在暂停它的那个 session 上应答；决定写进回放日志 → browser.replay_log 的 replay.jsonl.gz
       └── 贡献者声明的事件 → 本地分发器（逐贡献者准入：带 session id 的小事件，字节进它的侧存储）→ browser 级 archive EventScope
                                                        ← ArchiveWatchdog（shared，provides ∅）
                                                          → 已绑定归档器的运行期会话
@@ -3170,7 +3170,7 @@ Chrome 155 的 fixture 回归 `test_browser_storage_seed_live.py` 验证首请�
 回放 run 的证据：回放服务的每个决定（下面"回放日志"）。原先由 `browser.network` 在回放时换模式来记，用户 2026-10-13 裁决拆成独立的归档器（`archive/replay_log.py`），每个归档器只有一个意思。
 
 - `needs = {"replay_log"}`：协作检查按这个需求找它，`network_source: archive` 没有它就报错（miss 必须总有记录），`network_source: live` 绑定它也报错（live 来源什么也不回放）；两条都在 `prepare()` 报（`check_setup`），`bind_archivers` 与 setup 再查一遍（上面"协作检查一览"）。
-- context 里带着回放服务的日志（`BrowserArchiveContext.replay_log`，只在回放时有），`open(ctx)` 交出 `ReplayLogSession`：不要 Fetch pattern、不订阅事件、不发命令；每次收集在一条同步调用里把这段时间的日志换出来，写成本步的 `replay.jsonl`（下面"回放日志"），这段时间没有决定就什么也不写。没有回放日志的 context 里 `open` 抛错（协作检查在那之前就拒绝了这种配置）。
+- context 里带着回放服务的日志（`BrowserArchiveContext.replay_log`，只在回放时有），`open(ctx)` 交出 `ReplayLogSession`：不要 Fetch pattern、不订阅事件、不发命令；每次收集在一条同步调用里把这段时间的日志换出来，写成本步的 `replay.jsonl.gz`（下面"回放日志"），这段时间没有决定就什么也不写。没有回放日志的 context 里 `open` 抛错（协作检查在那之前就拒绝了这种配置）。
 - 不写 WARC / `index.jsonl` / `websocket.jsonl`：命中的记录用 `record_id` 指回源归档。
 - 旋钮只有 `allow_session_state`（每个 browser 归档器都有）。日志模式与折叠（`log_mode` / `log_repeat_limit`）是回放服务的，仍是 `archive` 来源的旋钮。
 - 隐私标记是基类的 `MARKER_BROWSER_REDACTED`：日志里的 body 键由脱敏后的 body 算出，没有 cookie、没有 `Set-Cookie`，所以不声明 `contains_session_state`。
@@ -3456,9 +3456,9 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 
 **站点规则因此可以忽略回调参数**：名字带随机部分的参数忽略之后，请求命中录下的应答，名字由改写对上；应答不用这个参数的，忽略它送出的本来就是同样的字节（上面"站点规则"）。
 
-#### 回放日志（`replay.jsonl`）
+#### 回放日志（`replay.jsonl.gz`）
 
-回放服务把每个决定写进自己的日志（`replay_log.py`：`ReplayLog`），`browser.replay_log` 的 `ReplayLogSession` 在每次收集时把它换出来、写成本步的 `env/steps/NNN/browser.replay_log/replay.jsonl`。**收集取走它的那一步是批次归属，不是动作因果**（capability 不知道步号，与网络证据同一个模型；episode 就是这个 run）。每行是一个 `ReplayLogEntry`（pydantic，extra-forbid）：
+回放服务把每个决定写进自己的日志（`replay_log.py`：`ReplayLog`），`browser.replay_log` 的 `ReplayLogSession` 在每次收集时把它换出来、写成本步的 `env/steps/NNN/browser.replay_log/replay.jsonl.gz`：gzip 压缩的逐行 JSON（`archive/encoding.py::gzip_jsonl`，`mtime=0`，同样的条目得到同样的字节；`media_type` 是 `application/gzip`），与录制旁边 WARC 的 `exchanges.warc.gz` 一样压缩存。原因：日志一行接一行重复同样的 URL、规范键与候选，压缩后约为原来的十分之一（2026-10-23 实测：318 个回放与分叉 run 的 3583 个步文件共 185.5 MB，逐个文件 gzip 后 19.4 MB；最大的 6 个 run 从 11.0 MB 到 1.0 MB；最大的一个步文件 1 MB，压缩 13 ms）。读侧经 `RunTrace.archive_lines` 解压（名字以 `.gz` 结尾的逐行 JSON，§5.5），所以下面的读法不变。压缩之前写的、不压缩的 `replay.jsonl` 不再读：读侧遇到这个归档器下别的名字的文件就抛 `ValueError`（点名文件，让人重跑回放），不把它当成空日志，也不另设兼容路径。**收集取走它的那一步是批次归属，不是动作因果**（capability 不知道步号，与网络证据同一个模型；episode 就是这个 run）。每行是一个 `ReplayLogEntry`（pydantic，extra-forbid）：
 
 - `kind`：`hit` / `exhausted`（重复了用尽序列的最后一条可用响应）/ `substituted`（被消耗的记录没有正文，按规则的 `serve_identical` 用同一序列一条正文相同的可用记录代答，上面"匹配"）/ `synthetic`（合成的预检）/ `miss` / `summary`（被限流折叠的那些）；`captured_at`、`cycle`；请求事实 `method`、`url`、`resource_type`、`frame_id`、`frame`（文档：`main` / `sub`）、`target_id`、`session_id`。
 - 命中：`rule_id` 与 `exhaustion_policy`、`unavailable_policy`（规则的无正文策略）、`record_id` 与它的 `run_id`、`level`（`exact` / `normalized` / `fuzzy`）、`fuzzy_score`、`range`；送出的 JSONP 应答改写了回调名时还有 `callback_rewrite`（`parameter`、`recorded`、`requested`，上面"JSONP 回调名"）。
@@ -3584,7 +3584,7 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
   - 代答是有意的偏离（用户 2026-10-20 的裁决）：源里被页面取消或到结束都没回答的请求，回放页面却收到了一次成功，字节是服务器对同一请求给过的；页面为什么在源里取消（例如图片地址 2 ms 后改成了别的），网络证据看不到，回放页面可能因此走上源里没走的路。只在规则声明 `serve_identical`、同一序列所有可用正文相同、被消耗那条录下的状态（如有）与之相同、源里不是真实网络失败时发生，日志 `substituted` 带两条记录与源结局，度量按源结局单列。
   - 没有可代答记录的无正文记录（整个序列都没有正文，或可用正文不同，或被消耗那条录下的状态与可用记录不同，或源里是真实网络失败）照旧按 miss 策略应答（子资源 404），不是源里服务器说过的话，也不是源页面看到的事；日志带源结局。"暂不回答、等页面自己取消"最忠实，但结果受页面时序影响，是另一个待定的设计；它的前提证据（`pending` 行的开始时间、`exchange` / `body` 行的结束时间）已经开始记录（上面 `browser.network`）。
   - JSONP 回调名只在上面"JSONP 回调名"列出的形状里改写：回调名在路径或请求体里的、包装不在这几种形状里的（例如 `window.NAME(`、`if (…) NAME(`），照录下的字节送出，页面照旧拿不到数据，而日志里是普通的命中。规则若显式忽略回调参数，一个 JSONP 请求可能在该规则范围内命中同一接口不带回调参数的 JSON 记录（或反过来），这种应答没有可改的名字，必须作为规则反例检查；jQuery 名字本身没有全局忽略特权。
-  - 批次归属是"收集取走它的那一步"，不声称其中每条请求由该步动作引起：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
+  - 批次归属是"收集取走它的那一步"，不声称其中每条请求由该步动作引起：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl.gz` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
   - 第一次 live run（10 个真实 `online_mind2web` 任务上的度量）是度量链只跑录制、原路径回放与报告的那一种（§4.16）；它的链规格与命令在本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权（路由、N、token 上限），没有跑过。M30 写的 `tmp/flywheel/s2b/` 脚本已被它取代。
 - **改动之前录下的输入失败步**（2026-10-22，§4.5“动作效果”）：输入前判断焦点之前录下的 run 里，焦点不在文本框上的 `type` / `type_coordinate` 当时报告成功（文字没有去处）。分叉或原路径回放重放这些步时动作如实失败，恢复校验按“动作成败与录下的不同”记 `action_failed`，`strict` 下这一步判为发散。不为旧录制设兼容路径：要从这些步之后分叉，用改动之后重新录的 run。
@@ -4549,7 +4549,7 @@ AgentResult 结构未变，仍为 3.0。
 **`env/` 是环境证据的子树。** 它建在 M27 的通用 extra 文件机制上（任意不撞 WAL 自有名字的相对路径、每步一个索引、内容寻址文件 run 内去重、`commit_trailing` 收尾），WAL 没有为它加任何东西。布局就是上面那棵树，语义如下：
 
 - **只在开启时存在。** 没有绑定归档器的 run 不会有任何组件往 `env/` 写文件，目录根本不出现；绑定了但从没收集到文件的 run 也没有它。
-- **步级文件归取走它的那一步。** `env/steps/NNN/` 下是第 NNN 步的提交取走的证据，路径段是全限定的 `archiver_id`（provenance）和归档器自定的 `name`。这也是 capability 侧事件的步归因：例如回放 run 的 `env/steps/NNN/browser.replay_log/replay.jsonl` 是第 NNN 步收集到的回放决定（M30，§4.14），capability 自己从不知道步号。
+- **步级文件归取走它的那一步。** `env/steps/NNN/` 下是第 NNN 步的提交取走的证据，路径段是全限定的 `archiver_id`（provenance）和归档器自定的 `name`。这也是 capability 侧事件的步归因：例如回放 run 的 `env/steps/NNN/browser.replay_log/replay.jsonl.gz` 是第 NNN 步收集到的回放决定（M30，§4.14），capability 自己从不知道步号。
 - **内容寻址的文件只存一份。** 同一个响应体被很多步引用：文件在 `env/blobs/sha256/` 下只写一次，每个引用它的步的索引各列一条。
 - **trailing 证据不冒充任何一步。** 收尾时的尾部、以及一次提交失败遗留的批次，落在 `env/trailing/KK/`，`KK` 与 `steps/trailing_KK.extra.json` 是同一个位置编号。
 - **run 记录按版本提交。** capability 的 run 级证据（环境指纹等）属于 capability，不属于某个归档器。已提交的路径不可变，所以内容变化后的再次发出写成新的一版：第一版是 `env/run.<capability_id>.json`，之后依次是 `.1.json`、`.2.json`……；与最新一版字节相同的再发被丢掉。版本号记在索引的 `ArchiveMeta.run_version` 里，所以 trailing 提交与步提交交错也不会把顺序弄乱。run 记录随紧接着的那次提交落盘，读侧取已提交的最高版本（§5.5）。版本保持采集顺序，不跟提交顺序走：提交失败遗留的批次在收尾才提交，晚于之后采集的批次；它的 run 记录若比该 capability 已提交的最新一版采集得早，就不再提交（记一条日志），否则这份过时的指纹会成为最高版本，回放与分叉会照它重建环境（§5.4 "run 记录版本"）。
@@ -4749,7 +4749,7 @@ class RunTrace:
 - `iter_archive(archiver_id, *, include_trailing=False)`：按 step 顺序走每个已提交 step 的 `(step, record)`；`include_trailing=True` 时再按 `manifest.trailing` 顺序给出 trailing 批次里的 `(None, record)`。只含步级文件；格式检查在调用时立即做，不等到第一次迭代。
 - `blob(sha256)`：一个已提交的内容寻址归档文件的字节，即 `read_extra(archive_blob_path(sha256))`：没有任何已提交的索引把它列为归档文件（`meta` 带 `"archive"`）→ `KeyError`（别的生产者放在同一地址上、不带归档元数据的 extra 文件不是归档文件）；字节与索引不符 → `TraceSchemaError`。
 - `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
-- `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
+- `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl.gz`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；名字以 `.gz` 结尾的是 gzip 压缩的逐行 JSON，先解压再读（`reader.py::GZIP_SUFFIX`），解压不了 → `TraceSchemaError`；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
 - `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；目录按排序后的顺序遍历，所以几份都坏时点名的是哪一份不取决于文件系统列目录的顺序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
 - `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；然后是请求的回复 schema；最后是 prompt 图片（`manifest.prompt_images` 的顺序）。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `prompt_image` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交、回复 schema 与 prompt 图片为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
 - `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 与 prompt 图片的字节要与它的地址相符；artifact 不能为空；调用记录是盘上的样子（图片是引用）；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
@@ -5008,7 +5008,7 @@ hook:
   - hook_id: trace_writer
     trace_dir: ./traces
     archive:
-      - archiver_id: browser.replay_log     # 回放必须绑定：它记下回放日志（replay.jsonl）；browser.network 在回放里被拒
+      - archiver_id: browser.replay_log     # 回放必须绑定：它记下回放日志（replay.jsonl.gz）；browser.network 在回放里被拒
 ```
 
 **SWE-bench 配置示例（P2 待实现）**：

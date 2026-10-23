@@ -52,7 +52,9 @@ written (``docs/architecture_design.md`` §5.3).
 
 from __future__ import annotations
 
+import gzip
 import json
+import zlib
 from collections.abc import Callable, Iterator
 from copy import deepcopy
 from functools import cached_property
@@ -108,6 +110,10 @@ from spectragent.schemas.recording import RecordingTiming
 from spectragent.schemas.step_record import StepRecord
 
 M = TypeVar("M", bound=BaseModel)
+
+#: The name ending of a line-delimited archive file stored gzip-compressed
+#: (``replay.jsonl.gz``); :meth:`RunTrace.archive_lines` reads it decompressed.
+GZIP_SUFFIX = ".gz"
 T = TypeVar("T")
 
 #: Where fragment classes live. A reader in an evaluation process may never
@@ -607,20 +613,28 @@ class RunTrace:
         """A committed line-delimited JSON file, each non-blank line read back as *model*.
 
         For the evidence a capability writes one JSON object per line
-        (``index.jsonl``, ``replay.jsonl``, …), in file order. Generic on
-        purpose: the line types are the capability's (the trace layer knows
-        none of them), and "what comes back is the type that was written"
-        holds for its evidence too. The bytes come through
+        (``index.jsonl``, ``replay.jsonl.gz``, …), in file order. A name
+        ending in ``.gz`` is gzip-compressed JSON Lines and is read back
+        decompressed. Generic on purpose: the line types are the capability's
+        (the trace layer knows none of them), and "what comes back is the type
+        that was written" holds for its evidence too. The bytes come through
         :meth:`read_extra`, with its size and sha256 check.
 
         Raises:
             KeyError: *path* is not a committed extra file.
-            TraceSchemaError: As :meth:`read_extra`; or a line is not JSON,
-                or does not validate as *model* — naming the file and the
-                1-based line.
+            TraceSchemaError: As :meth:`read_extra`; or a ``.gz`` file does not
+                decompress; or a line is not JSON, or does not validate as
+                *model* — naming the file and the 1-based line.
         """
         data = self.read_extra(path)
         file = self._trace_dir / path
+        if path.endswith(GZIP_SUFFIX):
+            try:
+                data = gzip.decompress(data)
+            except (OSError, EOFError, zlib.error) as exc:  # BadGzipFile is an OSError
+                raise TraceSchemaError(
+                    f"{file} does not decompress as gzip: {exc}", path=file
+                ) from exc
         lines: list[M] = []
         for number, raw in enumerate(data.splitlines(), start=1):
             if not raw.strip():
