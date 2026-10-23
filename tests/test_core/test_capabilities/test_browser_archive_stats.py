@@ -546,7 +546,7 @@ def test_the_sub_fields_of_a_parsed_field_are_reported_by_their_names() -> None:
     live = f"{url}?ext=lt%3D1%26trace%3Db"
     decisions = [(1, _body_miss(live, b'{"info": "vid=v1&key=k2&tm=101"}', 0, recorded, rules), 1)]
 
-    [candidate] = site_rule_candidates(near_misses(decisions, source))
+    [candidate] = _each_its_own_run(source, decisions)
 
     assert candidate.query == {"ext.trace": 1} and candidate.body == {"info.tm": 1}
 
