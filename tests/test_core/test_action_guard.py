@@ -2,7 +2,12 @@
 
 import pytest
 
-from spectragent.core.action_guard import build_guarded_act, resolve_action_name
+from spectragent.core.action_guard import (
+    build_guarded_act,
+    executed_descriptor,
+    executed_name,
+    resolve_action_name,
+)
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 
@@ -131,3 +136,36 @@ class TestResolveActionName:
         assert not (await guard(refused)).success
         # Resolved in place; a refused action keeps the name the agent wrote.
         assert (resolved.name, refused.name) == ("browser.click", "scroll")
+
+
+class TestTheAgentsNamingHelper:
+    """What an Agent asks instead of matching a name's suffix: the run's own space."""
+
+    _DESCRIPTORS = [
+        ActionDescriptor(name="browser.click", description="Click"),
+        ActionDescriptor(name="browser.scroll", description="Scroll"),
+    ]
+
+    def _space(self) -> ActionSpace:
+        space, _ = build_guarded_act(
+            _mock_act,
+            self._DESCRIPTORS,
+            ["browser.click"],
+            bindings={"click": "browser.click", "scroll": "browser.scroll"},
+        )
+        return space
+
+    def test_a_name_means_what_the_guard_executes_it_as(self) -> None:
+        space = self._space()
+        assert executed_name(space, "click") == "browser.click"
+        assert executed_name(space, "browser.click") == "browser.click"
+        descriptor = executed_descriptor(space, "click")
+        assert descriptor is not None and descriptor.name == "browser.click"
+
+    def test_a_name_the_guard_refuses_means_no_action_of_the_run(self) -> None:
+        space = self._space()
+        # The filter dropped scroll, so its alias is revoked with it.
+        assert executed_name(space, "scroll") is None
+        assert executed_descriptor(space, "scroll") is None
+        # Another capability's click is not this run's, whatever its suffix.
+        assert executed_name(space, "desktop.click") is None

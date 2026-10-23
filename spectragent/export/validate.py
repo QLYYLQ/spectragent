@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions._registrar import registered_params
 from spectragent.core.actions.params import point_params
 from spectragent.core.llm.messages import (
     BaseMessage,
@@ -96,14 +96,14 @@ def check_images(record: ExportRecord, rendered: RenderedSample, dataset_root: P
 
 
 def _points(action: Action) -> list[tuple[str, int | float, int | float]]:
-    params_model = getattr(ActionRegistrar.get_or_none(action.name), "Params", None)
+    params_model = registered_params(action.name)
     if params_model is None:
         return []
     found: list[tuple[str, int | float, int | float]] = []
     for x_key, y_key in point_params(params_model):
         x, y = action.params.get(x_key), action.params.get(y_key)
         if isinstance(x, int | float) and isinstance(y, int | float):
-            found.append((f"{action.name}.{x_key[:-2]}", x, y))
+            found.append((f"{action.name} point ({x_key}, {y_key})", x, y))
     return found
 
 

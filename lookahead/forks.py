@@ -64,7 +64,7 @@ from spectragent.annotation import (
     SuggestionDisplay,
     write_queue,
 )
-from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions._registrar import registered_params
 from spectragent.core.actions.params import point_params
 from spectragent.core.capabilities.browser.index_points import COORDINATE_COUNTERPARTS
 from spectragent.inspection.marks import action_lines, observation_geometry, step_marks
@@ -331,7 +331,7 @@ def action_point(action: ActionRow) -> tuple[float, float] | None:
     point = action.facts.get("point")
     if isinstance(point, list) and len(point) == 2:
         return float(point[0]), float(point[1])
-    params = getattr(ActionRegistrar.get_or_none(action.name), "Params", None)
+    params = registered_params(action.name)
     pairs = point_params(params) if params is not None else []
     if not pairs:
         return None

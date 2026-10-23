@@ -253,7 +253,7 @@ class ReactLoop(AgentLoopBase):
 | 可选 slot | 谁调用 | 何时校验 |
 |---|---|---|
 | `get_react_output_model()` | `ReactLoop` 自己（每次 LLM 调用的 `output_format`） | 不校验：没有就是文本调用 |
-| `prepare(task, action_descriptors, execution_limits=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`） | 不校验：没有就没有种子消息 |
+| `prepare(task, action_space, execution_limits=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`；`action_space` 是本 run 守卫执行的那个 `ActionSpace`，§4.5“有效动作空间是实验身份”） | 不校验：没有就没有种子消息 |
 | `format_react_output(actions, *, thought=None) -> str` | 训练导出器（学生一侧，§4.15） | 只在导出组装学生时 |
 | `format_action_fact(action, *, step) -> str \| dict` | 训练导出器（`keep_as_text` 的文本轮，§4.15） | 不校验：没有就写动作自己的 JSON（viewport 单位） |
 | `parse_react_thought(llm_output) -> tuple[str, str] \| None` | 训练导出器（teacher 一侧，`thought_source: teacher`） | 只在导出读 teacher 的 thought 时 |
@@ -443,7 +443,7 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 
 **模型看到的每个点都写在它写点的那个网格上**（用户 2026-10-22 的裁决，取代原来的"执行参数的坐标明确为 CSS viewport pixels，模型输出继续使用其配置网格"）。事实不变：trace 里的动作参数、动作效果（§4.5）与 `capture_state`（§4.4）照旧是 capability 的 viewport 单位（浏览器为 CSS px）；变的只是 Agent 怎么呈现它们（呈现归 Agent，§4.4"观测增强按消费方分层"）。原因是实测：`coordinate_space: normalized_1000` 教模型在 0–1000 网格上写点，而反馈里的每个点都是 CSS px，teacher 模型（deepseek）于是把像素数写到网格上：输入框的像素 y 是 604，它写 `(500, 604)`，在 y=435 的空白处执行；一个金融站点上 25 次失败的文本输入有 15 次按像素读就落在输入框里，越靠屏幕下方偏得越远。这条合同对每个让模型在 `coordinate_space` 上写点的 Agent 都成立：UI-TARS，以及有坐标动作的 BrowserUse（同日跟进，下文"BrowserUse 的反馈网格"）。两者共用的写法在 `agents/_feedback_points.py`：网格上的点、没有位置的点怎么说、每步网格的记录（`StepGrids`）、哪些参数是点。UI-TARS 因此：
 
-- **上一批动作**写成它自己的动作语法，例如 `click(point='(500, 858)')`：与 `format_react_output` 用同一个逐动词写法（`_Verb.write`），点经 `PointGrid.to_grid` 写在那一批动作所依据的截图（上一步的截图）的网格上，所以模型看到的正是它在那张截图上会写出的那一行。批次的其余事实（每个结果的成败与错误、没有返回结果的动作、截断数量、错误阶段及错误）照旧。这个语法写不出来的动作保留原来的 `{"name", "params"}` 对象，点参数同样换成网格点：没有对应动词、本 run 没协商、参数值写不出，或者点在网格上没有位置（见下）。它们来自训练导出 `keep_as_text` 之后的历史，也来自 restored 历史（retarget 后实际执行的动作与录下的源动作）。哪些参数是点只看动作注册的 `Params`（`core/actions/params.py::point_params`；相对名按本 run 的绑定查全限定名，注册表里没有的动作用 UI-TARS 自己动词的点），从不按参数名或取值猜，所以不是点的 `_x` / `_y` 参数从不被换算。这一写法是 Agent 的公开可选 slot `format_action_fact(action, *, step)`（上文"可选 slot"），导出的 `keep_as_text` 文本轮也用它写。
+- **上一批动作**写成它自己的动作语法，例如 `click(point='(500, 858)')`：与 `format_react_output` 用同一个逐动词写法（`_Verb.write`），点经 `PointGrid.to_grid` 写在那一批动作所依据的截图（上一步的截图）的网格上，所以模型看到的正是它在那张截图上会写出的那一行。批次的其余事实（每个结果的成败与错误、没有返回结果的动作、截断数量、错误阶段及错误）照旧。这个语法写不出来的动作保留原来的 `{"name", "params"}` 对象，点参数同样换成网格点：没有对应动词、本 run 没协商、参数值写不出，或者点在网格上没有位置（见下）。它们来自训练导出 `keep_as_text` 之后的历史，也来自 restored 历史（retarget 后实际执行的动作与录下的源动作）。哪些参数是点只看动作自己的声明（§4.5“参数的含义”）：本 run 执行的动作读它的 descriptor 的 `point_params`（相对名经本 run 的绑定，`core/action_guard.py::executed_descriptor`），本 run 不执行的录下动作（导出里 teacher 的动作）读注册的 `Params`（`point_params`），两边都不认识的动作没有点；UI-TARS 的动词表不再另写哪些参数是点，从不按参数名或取值猜，所以没有标记的 `_x` / `_y` 参数从不被换算。哪个动词对应本 run 的哪个动作同样只问绑定（`executed_name`），不按名字的后缀对；本 run 不执行的动作写不成调用，拒绝的说明列出每个动词在本 run 执行成哪个动作。这一写法是 Agent 的公开可选 slot `format_action_fact(action, *, step)`（上文"可选 slot"），导出的 `keep_as_text` 文本轮也用它写。
 - **效果行**由 `describe(write_point=...)`（§4.5）把它陈述的每个点写在同一个网格上；**`capture_state` 的指针**由 `render_capture_state(observation, write_point=...)`（§4.4）写在本轮截图的网格上。本轮没有可测尺寸的截图时（这一步模型本来也写不了点），指针写成 `a point not placeable (no screenshot of known size)`。
 - **restored 历史**（下文"restored 历史"）里实际执行的动作和源材料里录下的动作，都写在本次恢复观测截图的网格上（每个恢复步的动作就是在这张截图之后执行的）；原来的 "Executed coordinate parameters use CSS viewport pixels." 前缀删除。源回复 `recorded_reply` 本来就是 UI-TARS 在网格上写的原文，现在与录下的动作同一个网格。
 - **系统提示**删除 "Execution feedback coordinates are CSS viewport pixels; write new action points on the output grid specified above."，改为一句：执行反馈里的点与模型写的点在同一个网格上。`screenshot_pixels` 的网格就是图像像素，所以同一条路径写出的是图像像素：DPR 1 时数字与以前相同；DPR 2 时是 CSS px 的两倍，这也修正了以前反馈写 CSS px、模型写图像像素的不一致。
@@ -454,7 +454,7 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 - **有坐标动作的 run**：`<agent_history>` 里每一步的 `<actions>` 仍是 BrowserUse 自己的 `name(params)` 写法，动作陈述的点参数写在那一步截图的网格上（历史窗口有多步，每步用它自己的那张截图）；`<effects>` 的效果行经 `describe(write_point=...)` 写在同一网格上（按编号的 `click` 的落点也是点，编号本身不是）；`<browser_state>` 里 `capture_state` 的指针经 `render_browser_state(..., write_point=...)` 写在本轮截图的网格上；`<llm_output>` 是模型自己的回复，本来就在网格上。restored 历史里实际执行的与录下的源动作写成动作的 JSON，点参数换成本次恢复观测截图的网格点；原来的 "Executed coordinate parameters use CSS viewport pixels." 前缀删除（没有坐标动作的 run 也删：那里没有坐标参数可说）。`<coordinates>` 段加一句 "Every point in the agent history and the browser state is on this same grid."。`screenshot_pixels` 写的是图像像素，DPR 2 时是 CSS px 的两倍，与模型写的点一致。没有可测尺寸截图的步、截图之外的点照下文照实说。
 - **没有坐标动作的 run**：模型不写点，也没被教任何网格，提示里只有一套坐标，所以反馈照旧是 viewport 单位：效果行写 `(x, y)`，指针写 `(x, y) in viewport pixels.`，每步的提示词不变（restored 历史只少了上面那句前缀）。`coordinate_space` 在这样的 run 里不起作用（字段说明写明）。
 
-BrowserUse 不实现 `format_action_fact`：这个 slot 只有训练导出读，而 BrowserUse 没有 `format_react_output`，做不了学生；它的两种写法（历史的 `name(params)`、restored 的 JSON）是 Agent 私有的。哪些参数是点同样只看动作注册的 `Params`（BrowserUse 不另列坐标动作的名单：本 run 有没有坐标动作、哪些参数要换算、说明要改写成网格单位，都从本 run 描述的动作的注册 `Params` 读出），注册表里没有的动作没有点。
+BrowserUse 不实现 `format_action_fact`：这个 slot 只有训练导出读，而 BrowserUse 没有 `format_react_output`，做不了学生；它的两种写法（历史的 `name(params)`、restored 的 JSON）是 Agent 私有的。哪些参数是点同样只看动作的声明（BrowserUse 不另列坐标动作的名单：本 run 有没有坐标动作、哪些参数要换算、说明要改写成网格单位，都从本 run 的 descriptor 的 `point_params` 读出；本 run 不执行的录下动作读注册的 `Params`），两边都不认识的动作没有点。
 
 **较早一步的网格从哪里来。** `loop.history` 里的 `StepRecord` 不带截图几何（Loop 不认识截图，§4.4），所以 UI-TARS 与 BrowserUse 各保留一份按步号的 per-run 状态（`agents/_feedback_points.py::StepGrids`）：每次 `build_react_prompt` 记下本步截图的网格（没有可测尺寸的截图时记 `None`），渲染一步的动作时按那条记录的 `step` 取（UI-TARS 只渲染上一批，BrowserUse 的历史窗口每步各取各的）。`prepare` 清空它。每条渲染路径都在 `prepare` 之后按步序构建 prompt：实时执行；branch 的 source 历史重建（逐步用源观测）；restored 历史（`build_restored_history` 先对本次恢复观测构建本步 prompt，再写恢复执行）；训练导出的每一段（段首经 `seed_messages` 调 `prepare`，段首没有上一批，段内逐步构建）。所以要渲染的那些步的网格总在。**在网格上没有位置的点照实说，从不退回像素，也从不夹到边上**（两个 Agent 同一句话，`agents/_feedback_points.py` 的 `NOT_PLACEABLE` / `OUTSIDE_THE_SCREENSHOT`）：那一步没有可测尺寸的截图时（导出里因此被 `keep_as_text` 的步、恢复观测的截图量不出尺寸），点写成 `not placeable (no screenshot of known size)`；点在截图所示区域之外时（`to_grid` 会把它夹到边上，从而写错），写成 `outside the screenshot`。动作的 JSON 里这两个点参数取这句话，效果行与指针写成 `a point …`。这样导出与分叉都照常继续，不因一个量不出的点中止。只有那一步根本不是这个 Agent 实例在 `prepare` 之后构建的、而那一批有要写的点时，渲染报错：每条渲染路径都先构建一步的 prompt 再反馈它的批次，所以这只会是调用方跳过了一步，录下的数据造不出这种情况。
 
@@ -714,7 +714,7 @@ class AgentRuntime:
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → setup 之前的检查 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
-**种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_descriptors=..., execution_limits=...)`；是否需要限制已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
+**种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_space=..., execution_limits=...)`（`action_space` 是 Runtime 公开的有效动作空间的副本：prompt 广告的 descriptors 与说明短名含义的绑定，与守卫用的是同一份）；是否需要限制已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
 
 **两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或执行路径结束、进入结束 lifecycle 之前停止；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
 
@@ -1501,13 +1501,20 @@ class ActionDescriptor(BaseModel):
 ```python
 class Params(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    index: Annotated[int, RequiresFragment("browser.dom")]
+    index: Annotated[int, AddressesElement("browser.dom")]   # AddressesElement 是 RequiresFragment 的子类
 ```
 
 一处声明，两级生效：
 
 - **required** 参数依赖 F ⇒ 整个 action 依赖 F（`browser.click` / `browser.type` / `browser.select_dropdown` 依赖 `browser.dom`）；
 - **optional** 参数依赖 F ⇒ F 未激活时**把这个参数从 descriptor 里删掉**（视觉 run 里 `browser.scroll` 还在，它的 `index` 不在）。
+
+**参数的含义：点与元素地址（2026-10-23）。** 哪些参数合起来是一个点、哪个参数指名一个元素，也只在参数上声明一次（`core/actions/params.py`），读的人一律读这一处，不再各自按参数名或动词另写一份（以前 `_x` / `_y` 的命名约定、BrowserUse 的坐标动作表、UI-TARS 动词的点参数、恢复校验的 index 动作名单、查看器标记里写死的参数名各写一遍）：
+
+- `PointAxis(point, axis)`：一个点的一条轴，写在两个参数上（`coordinate_x: Annotated[int, PointAxis("coordinate", "x")]`、`coordinate_y` 同理；`drag` 有 `start` 与 `end` 两个点）。`point_params(Params)` 按每个点第一条轴的声明顺序给出 `(x, y)` 参数对；一个点缺一条轴或同一条轴写两次是 `TypeError`。没有这个标记的参数不是点，名字像也不是。
+- `AddressesElement(fragment)`：参数的值指名这个 fragment 里的一个元素（`browser.click` 的 `index` 是 `browser.dom` 的 selector map 的键）。它是 `RequiresFragment` 的子类：元素离开它的 fragment 没有意义，所以上面的两级依赖照旧从这一个标记得出。`element_params(Params)` 给出这些参数。
+- **经 descriptor 交给 Agent。** `ActionBase.describe` 把两者随 prose 与 schema 一起渲染进 `ActionDescriptor.point_params` / `element_params`，并与参数一起收窄（视觉 run 的 `scroll` 没有 `index`，也就没有元素地址）。Agent 从 `prepare` 交给它的 `ActionSpace` 里读本 run 的 descriptor；读录下动作的一方（恢复的 capability 读它自己的动作实例，导出、查看器标记、lookahead 读注册的 `Params`，`core/actions/_registrar.py::registered_params`）读同一个标记。
+- **Agent 的命名只问绑定。** `core/action_guard.py::executed_name(space, name)` 是 `resolve_action_name` 套在 `ActionSpace` 上：一个名字在本 run 被守卫执行成哪个全限定动作，拒绝的是 `None`；`executed_descriptor(space, name)` 给出那个动作的 descriptor。UI-TARS 的动词、Skyvern 的 `done`、两个 Agent 的点参数查找都用它，不再按名字的最后一段去 descriptors 里对（两个 capability 都提供的短名不绑定任何一个，按后缀对会挑中一个守卫会拒绝的）。
 
 删除发生在 descriptor 的 `**context` 通道上：`AgentRuntime.prepare` Step 4 调用 `env.get_action_space(active_actions=..., fragments=negotiated_obs.active_fragments)`，环境把它转发给每个 capability、再转发给每个 `action.descriptor(**context)`——与 §4.9 里 `task_tools` 走的是同一条通道。协商规则不变；不读 `fragments` 的 capability 行为与从前完全一致。
 
@@ -1576,7 +1583,7 @@ class ScrollAction(ActionBase):
         # 保留这个 action、丢掉这个参数。
         index: Annotated[
             int | None,
-            RequiresFragment("browser.dom"),
+            AddressesElement("browser.dom"),
             Field(description="scroll inside specific element"),
         ] = None
 
@@ -3505,7 +3512,7 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 
 | 录下的动作 | 方式 |
 |---|---|
-| 带元素 index 的动作：`Params` 上带 `RequiresFragment("browser.dom")` 的参数给了值的那些（`restoration.py::element_params` 从本 capability 持有的动作实例的 `Params` 读出，恢复不另列名单，也不查注册表）。今天是 `browser.click`、`browser.type`、`browser.select_dropdown`，以及带了 `index` 的 `browser.scroll` / `browser.extract_content` | 几何再签名（`method="geometry_signature"`），见下 |
+| 带元素 index 的动作：`Params` 上带 `AddressesElement("browser.dom")` 的参数给了值的那些（`core/actions/params.py::element_params`，读本 capability 持有的动作实例的 `Params`，恢复不另列名单，也不查注册表）。今天是 `browser.click`、`browser.type`、`browser.select_dropdown`，以及带了 `index` 的 `browser.scroll` / `browser.extract_content` | 几何再签名（`method="geometry_signature"`），见下 |
 | `browser.switch_tab`（`target_id` 是每个浏览器新生成的 CDP targetId） | 按 tab 顺序与 URL（`method="tab_order_url"`）：在录下观测的 `browser_meta.tabs`（按 tab 打开的先后排，上面"页面新开的标签页"）里找到这个 `target_id` 的位置，恢复出的 `tabs` 同一位置的 tab URL 相同就换成它的 id；`target_id` 为空（"最近打开的 tab"）原样 |
 | 坐标动作、导航（`navigate` / `go_back` / `go_forward`）、`send_keys`、`wait`、`done`，以及不带 `index` 的 `scroll` / `extract_content` | 恒等（`method="identity"`）：pinned 回放下布局确定，截图哈希兜底 |
 
@@ -3672,7 +3679,7 @@ class ActionTranslator(Protocol):
 翻译只做与学生无关的换算；"学生写不写得出来"在渲染时由学生自己判定（下面），两处的不可译原因走同一个 `untranslatable` 策略（翻译器只报告原因，策略由渲染执行）。翻译后的每个动作都过一遍它的 `Params.model_validate`（只留设了的参数；过不了是 `InvalidTranslationError`，表示翻译器或数据有缺陷，不算不可译）；没注册的动作名是 `no_counterpart`；一步里任一动作不可译，整步不可译。
 
 - **`identity`**：原样交出 `teacher_actions`。UI-TARS 录下的 run 本来就是坐标动作。
-- **`index_to_coordinate`**：带元素 index 的动作（参数上带 `RequiresFragment("browser.dom")` 且这一次给了值的那些，`core/actions/params.py::param_fragments`）换成坐标动作：`browser.click` → `browser.click_coordinate`、`browser.type` → `browser.type_coordinate`（`text`、`clear` 照搬），其余带了 index 的（`select_dropdown`、带 `index` 的 `scroll` / `extract_content`）是 `no_counterpart`；不带 index 的动作原样。index 在录下的 `selector_map` 里找不到（源 run 的这个动作当时就找不到目标）也是 `no_counterpart`。换算的 browser 知识在 `core/capabilities/browser/index_points.py`（纯函数，读交进来的 fragment 与文档，不 import `core.trace`），翻译器只组织调用：
+- **`index_to_coordinate`**：带元素 index 的动作（参数上带 `AddressesElement("browser.dom")` 且这一次给了值的那些，`core/actions/params.py::element_params`）换成坐标动作：`browser.click` → `browser.click_coordinate`、`browser.type` → `browser.type_coordinate`（`text`、`clear` 照搬），其余带了 index 的（`select_dropdown`、带 `index` 的 `scroll` / `extract_content`）是 `no_counterpart`；不带 index 的动作原样。index 在录下的 `selector_map` 里找不到（源 run 的这个动作当时就找不到目标）也是 `no_counterpart`。换算的 browser 知识在 `core/capabilities/browser/index_points.py`（纯函数，读交进来的 fragment 与文档，不 import `core.trace`），翻译器只组织调用：
   - **几何**：录下的条目（M27 起自包含）的 `bounds` 是顶层文档的页面坐标（CSS px，已计入 iframe 偏移，与 DPR 无关）；减去 `DOMState.scroll_info` 的滚动得到视口坐标；与视口求交；条目在重链接的 `element_tree.dom_tree` 里找得到时，再与每一层 frame 宿主的 `bounds` 求交（被深度截断而找不到时只裁视口，来源记录里写 `frame_clip: "unknown"`）；交集为空是 `target_offscreen`（live 的 index 点击会先滚动到可见，录下的截图上表达不了）；否则取可见部分的中心，四舍五入成整数 CSS px（坐标动作的参数是 `int`）。变换过的 iframe 只按平移处理（已知限制）。
   - **遮挡**（`occlusion: check`，只对换算出的点）：证据按优先级：(a) 这一步的 `selector_map` 条目带 `hit_test`（`skyvern_hit_test` 录的）：中心命中用中心，否则用 `visible_point`，两者都没有就是 `occluded`；(b) 这一步的 `browser.dom_raw` 文档（`RunTrace.archive_files(step, "browser.dom_raw")`，`archive/dom_raw.py::read_dom_document` 解开；按文档戳挑与本步同一个文档的那份）里的 DOMSnapshot：在目标所在的主文档里，包含该点（快照 `bounds` 是设备像素，除以文档里记的 DPR）且 paint order 最大的布局节点必须是目标或它的后代（`pointer-events: none` 与 `visibility: hidden` 的节点不算，点击穿过它们；并列的 paint order 算目标的），v1 只判主文档里的目标，frame 里的目标这一条证据不适用；(c) `browser_use` 清洗过、trace 里带 `paint_order` 的 `dom_tree`：同一个查询，只在目标所在文档的、留下来的节点里做（BrowserUse cleaner 已经把整个被盖住的元素去掉了，所以这一条只抓得到部分遮挡）。(b)(c) 判定被盖住时，在可见部分里按 5×5 内点网格（内缩 2 px、行优先）找第一个不被盖住的点；找不到是 `occluded`。三条证据都没有：`occlusion_unknown: raise`（默认）抛 `OcclusionEvidenceMissingError`，点名样本与 index，并提示"绑定 `browser.dom_raw` 或用 cleaner `skyvern_hit_test` 录制"；`untranslatable` 时按不可译原因 `occlusion_unknown` 处理。`occlusion: none` 不查（原名 `off`，用户 2026-10-13 的裁决改名）。
   - **来源记录**：元素引用（`element_index`、`backend_node_id`、`target_id`）、页面 bbox、视口里的可见矩形、点的来源（`center` / `hit_test` / `grid`）、遮挡判定（`clear` / `occluded` / `unknown`）与所用证据（`hit_test` / `dom_raw` / `paint_order` / `none`）。
@@ -3684,7 +3691,7 @@ class ActionTranslator(Protocol):
 - **一个轨迹、若干段**：轨迹是一个源 run（分叉 run：源 run 的 0..t-1 加分叉自己的策略步）。段从一个可渲染的步开始：学生的 memory（学生自己的策略实例）清空、写入 `seed_messages(task)`。段内每一步 k：观测 = 学生协商出的 `NegotiatedObservation`，env 来源 fragment 取 `RunTrace.observation_fragment(k, key)`，loop 来源 fragment 由 `loop_fragment_builders(...)`（§4.1）建：`loop.step_info` 的 `step` 是 k+1，`max_steps` / `today` 取源 run 第 k 步录下的 `loop.step_info`（学生 Loop 的 `today_override` 优先；源 run 没录 step_info 时 `today` 取源 manifest 的 `created_at` 的 UTC 日期、`max_steps` 取学生 Loop 的，manifest 记下用了哪个来源），`loop.history` 是这一段里之前的步（源 `StepRecord` 的副本，`actions` 换成翻译后的；`keep_as_text` 的步换成它记成文本的那些动作），`loop.action_result` 取这一段里的上一步（段首没有上一步）；env 来源 fragment 经 `core/trace/reconstruction.py::recorded_observation` 读（与 `BranchLoop` 的 `SourceRun.observation` 同一个读法），录下的 step_info 经 `recorded_step_info` 读、按 `_loop_fragments.py::pinned_step_info` 钉住（与 `BranchLoop` 同一条规则）；`await build_react_prompt(obs, context=...)` 写进 memory；k 是样本时此刻的 `memory.get_context_messages()` 就是它的上下文；然后 `format_react_output(<k 的翻译后动作>, thought=<k 的 thought>)`、立即 `parse_react_output` 那段文本（round-trip；Agent 若有自己的解析期状态，也因此与服务时一样前进。Skyvern 的动作历史窗口不靠这一步：它从 `loop.history` 读实际执行的动作、结果与效果行），文本经 `ReactLoop.remember_reply(memory, text, [])` 写进 memory。较早的 assistant 轮 weight 0，目标轮 weight 1。
 - **缺学生要的 fragment 的步**：某一步没录下学生要的 env 来源 fragment，或在学生必需（`required_fragments`）的 fragment 上录下的是采集失败（teacher 那边它是可选的）：这一步不渲染、结束当前段，manifest 记 `steps.skipped.fragment_unavailable`。
 - **学生写不写得出来**：动作名经 `resolve_action_name(name, <学生守卫过的动作名>, <学生的 action_bindings>)` 解析不出来 → `no_counterpart`；一步的动作数超过学生 Loop 的 `max_actions_per_step` → `exceeds_action_budget`；`format_react_output` 抛 `UnrepresentableActionError` → `unrepresentable`。
-- **thought**：`thought_source: none` 时目标轮与历史轮都没有 thought。`thought_index_refs: drop`（默认）且学生协商出的 fragment 不含源 run 的 index 参数所依赖的 fragment（`param_fragments` 给出的那些，browser 上就是 `browser.dom`）时，含 `[123]` 这类 index 记号的 thought 被丢掉（样本保留、只是没有 thought），manifest 计数。
+- **thought**：`thought_source: none` 时目标轮与历史轮都没有 thought。`thought_index_refs: drop`（默认）且学生协商出的 fragment 不含源 run 的元素地址参数所在的 fragment（`element_params` 那些参数的 `AddressesElement` 键，browser 上就是 `browser.dom`）时，含 `[123]` 这类 index 记号的 thought 被丢掉（样本保留、只是没有 thought），manifest 计数。
 - **不可译的步**（翻译器给的或渲染时判的）按翻译器的 `untranslatable` 处理。`drop_step`：这一步不是样本，当前段结束，下一个可渲染的步开新段（重新播种的上下文，同一个任务）；`truncate`：这条轨迹在这一步结束；`keep_as_text`：这一步不是样本，但它的观测轮照常进上下文，assistant 轮写成 `[not expressible: <reason>] <动作的 JSON 列表>`（键排序），每个动作经学生的可选 slot `format_action_fact(action, step=k)`（§4.1）写，点在学生网格上、与下一步反馈里的写法相同；学生没有这个 slot 时是动作自己的 JSON。段不断；`fail`：抛 `UntranslatableActionError(sample_id, reason, detail)`。每个原因的丢弃数进 manifest（M33 的输入）。不可导出的步（上面）总是结束当前段。
 - **identity 导出的期望**：对 UI-TARS 录下的 run 用 `identity` 与同一份学生配置导出，第 k 个样本的上下文与源 run 第 k 步第 0 次调用的 `messages` 在 trace 的记录形态下（`core/trace/reconstruction.py::recorded_form`）逐条相同，assistant 轮按解析结果相同；预期的差异只有：源 run 的解析重问轮与截断提示（学生上下文里从不写它们）、跳过或丢弃的步造成的分段、以及 assistant 轮的书写形式（学生的规范写法 vs 模型原文）。
 
@@ -3694,7 +3701,7 @@ class ActionTranslator(Protocol):
 
 1. **名字**：`resolve_action_name(parse(format(a)).name, <学生守卫过的动作名>, <学生的绑定表>) == a.name`；
 2. **不动点**：`format(parse(format(a))) == format(a)`（文本相等，thought 在内）；
-3. **点**：每个点参数 `|parse(format(a)) − a| ≤ 学生网格的 quantum`（`PointGrid.quantum`，见下；网格是 `point_grid(<学生 agent 的 coordinate_space，没有时 screenshot_pixels>, sample.image)`）。哪些参数是点由 `core/actions/params.py::point_params` 认：动作 `Params` 里成对的整型 `<name>_x` / `<name>_y`（`coordinate_x/y`、`start_x/y`、`end_x/y`）；
+3. **点**：每个点参数 `|parse(format(a)) − a| ≤ 学生网格的 quantum`（`PointGrid.quantum`，见下；网格是 `point_grid(<学生 agent 的 coordinate_space，没有时 screenshot_pixels>, sample.image)`）。哪些参数是点由动作的 `PointAxis` 标记认（§4.5“参数的含义”）：学生 descriptor 的 `point_params`（`coordinate_x/y`、`start_x/y`、`end_x/y`）；
 4. **其余参数**：a 设了非 `None` 值的每个参数都原样回来；a 没设的参数由学生自己填。写不出来的参数在 `format` 里就抛 `UnrepresentableActionError`，从不静默丢掉（UI-TARS：`type` 的 `clear`、`scroll` 的 `amount` / `index`、`wait` 的 `seconds`、`done` 的 `success`、含空白的 `send_keys` 组合键）。`done` 的 `success` 是 agent 对任务的结论（§4.1"agent 的任务结论"）：`finished()` 读回时没有结论，所以 `true` 与 `false` 都写不出，否则学生学到的回复执行出来是一个什么也没说的结束动作（2026-10-23 起；以前 `finished` 读回 `success=True`，只拒绝 `false`）。没有结论的结束步照常写成 `finished(...)`、原样回来；BrowserUse、Skyvern 这类 teacher 录下的结束步通常带着结论，对 UI-TARS 学生是 `unrepresentable`，按翻译器的 `untranslatable` 处理（默认 `drop_step`）。
 
 **训练标签是量化后的点**（目标轮文本里写的网格点；它在服务时执行成 `parse(format(a))` 的那个视口点）。每个点的量化误差（像素，按值分桶）进 manifest。`PointGrid.to_grid(vx, vy) -> tuple[int, int]`（`schemas/observation/geometry.py`：`round(v × grid / viewport)`，夹到 `[0, width] × [0, height]`）是 `to_viewport` 的逆；`PointGrid.quantum: int` 是一次 `to_grid` → `to_viewport` 在任一轴上可能带来的最大视口误差：网格不比视口粗（`viewport / grid ≤ 1`）时为 0，否则 `floor(viewport / grid / 2 + 1/2)`（1280 px 上的 `normalized_1000` 是 1；整数 DPR 与 1.5 的 `screenshot_pixels`、1000 px 视口是 0）。round-trip 对上下文里每一个 `format_react_output` 的结果都检查（目标轮与历史轮），失败是 `RoundTripError`，表示格式器有缺陷，不算不可译。
@@ -3903,7 +3910,7 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 条目图片按 `source.kind` 解析，且只服务队列条目引用的图片，不提供任意文件接口：`observation` 走既有截图读取（Browser state 原图）；`archive` 只经 `RunTrace.archive_files(step, archiver)` 按 `name` 找到已提交文件（`step: null` 表示 trailing 证据，经 `iter_archive`），声明的 media type 与文件头都必须是 PNG/JPEG/GIF/WEBP。run 键与查看器的其它路径一样必须在根目录之内，并在输入时规范化为仓库的唯一写法（`./run`、`run/.`、`run/` 都是 `run`），同一个 run 只有一个身份。随手标注可附在任何 run 的任一步（已提交的步不会改变，因此随手标注不需要版本；只写备注时不读取截图）：备注和画在该步 Browser state 截图上的框（类别固定为 needed information / problem / other），写入 `_adhoc.jsonl`，带 `run`、`step`、`queue_id: "_adhoc"`，无 `item_id`，当前值按 `(run, step, annotator)`。
 
-**动作标记（2026-10-22）。** 用户要求截图上画出动作的鼠标位置：点击的点、拖动的起点到终点、输入的点和文字、滚动的位置和方向，否则“拖动只能靠猜”。唯一来源是 `spectragent/inspection/marks.py`：它经 `RunTrace` 读取一步已记录的动作与结果，把每个动作变成一个标记（编号即它在该步动作列表中的序号，从 1 起）和一行中文描述；查看器的运行页（`GET /api/marks?key&index`，该步动作画在该步截图上）与审阅页（`GET /api/review/marks?queue_id&item_id&role&queue_sha256`，只服务队列条目引用的图片）都只转发它的结果，lookahead 的队列构建也用它写条目里的动作文字。动作的中文措辞也只有这一份：`ACTION_VERBS`（按全限定名，每个浏览器动作一个动词）既是每行描述的开头，也是查看器步骤列表的标签，运行接口（`GET /api/run`）以 `action_verbs`（本 run 各步执行过的动作名 → 动词）转发；网页不另存措辞表，表里没有的动作照录下的名字显示。动作参数与测得效果是 CSS viewport 像素（§4.1），标记按所画图片自己的几何换算为图片像素：观测用截图 fragment 记录的图片尺寸与视口（`point_grid("screenshot_pixels", …)`，即 §4.1 的同一条换算），`browser.frames` 画面帧用帧自身的 PNG 尺寸与提交它的那一步观测的视口；任一尺寸未知时只列出动作、不画，并说明原因，绝不假设设备缩放为 1。点位优先取动作效果测得的点（实际派发输入的位置），否则取参数；页面滚动在鼠标所在处派发，因此画在该步观测记录的鼠标位置，并随同一步里此前的指针动作移动，未知就是未知；敏感字段的输入文字不显示。没有位置的动作（按键、等待、完成等）只进图例。浏览器能力目前没有双击、右键和悬停动作，因此没有对应标记；拖动的移动轨迹没有被记录，只画起点到终点的箭头。
+**动作标记（2026-10-22）。** 用户要求截图上画出动作的鼠标位置：点击的点、拖动的起点到终点、输入的点和文字、滚动的位置和方向，否则“拖动只能靠猜”。唯一来源是 `spectragent/inspection/marks.py`：它经 `RunTrace` 读取一步已记录的动作与结果，把每个动作变成一个标记（编号即它在该步动作列表中的序号，从 1 起）和一行中文描述；查看器的运行页（`GET /api/marks?key&index`，该步动作画在该步截图上）与审阅页（`GET /api/review/marks?queue_id&item_id&role&queue_sha256`，只服务队列条目引用的图片）都只转发它的结果，lookahead 的队列构建也用它写条目里的动作文字。动作的中文措辞也只有这一份：`ACTION_VERBS`（按全限定名，每个浏览器动作一个动词）既是每行描述的开头，也是查看器步骤列表的标签，运行接口（`GET /api/run`）以 `action_verbs`（本 run 各步执行过的动作名 → 动词）转发；网页不另存措辞表，表里没有的动作照录下的名字显示。动作参数与测得效果是 CSS viewport 像素（§4.1），标记按所画图片自己的几何换算为图片像素：观测用截图 fragment 记录的图片尺寸与视口（`point_grid("screenshot_pixels", …)`，即 §4.1 的同一条换算），`browser.frames` 画面帧用帧自身的 PNG 尺寸与提交它的那一步观测的视口；任一尺寸未知时只列出动作、不画，并说明原因，绝不假设设备缩放为 1。点位优先取动作效果测得的点（实际派发输入的位置），否则取参数：哪些参数是点、哪个参数指名元素，读录下动作注册的 `Params` 上的标记（§4.5“参数的含义”；拖动按在第一个点、松开在第二个点），动作名按全限定名分派，fragment 按全限定键读，不按名字的最后一段；页面滚动在鼠标所在处派发，因此画在该步观测记录的鼠标位置，并随同一步里此前的指针动作移动，未知就是未知；敏感字段的输入文字不显示。没有位置的动作（按键、等待、完成等）只进图例。浏览器能力目前没有双击、右键和悬停动作，因此没有对应标记；拖动的移动轨迹没有被记录，只画起点到终点的箭头。
 
 哪张图画谁的动作：`QueueImage.marks_from` 为 `null`（省略）时跟随图片来源——观测画该步在这一屏上决定的动作，before-action 画面帧只画它之前的那个动作（帧按 `env.act` 调用编号，与 `StepRecord.actions` 按名字顺序对齐，跳过被动作守卫拒绝、从未到达环境的动作），其它图片不画；`[]` 不画；列表 `[{run, step, label}]` 按顺序画每个指定步骤的全部动作，每项一种颜色，图例用 `label`，坐标一律换算到这张图的像素。同一位置附近的多个点在屏幕上错开显示，标记可以整体隐藏。
 

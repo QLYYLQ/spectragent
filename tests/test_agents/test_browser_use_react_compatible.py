@@ -34,6 +34,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of
 
 # ── Test fixtures ─────────────────────────────────────────────────────
 
@@ -156,7 +157,7 @@ def _prepared(**overrides: Any) -> BrowserUseAgent:
     agent = _make_agent(**overrides)
     agent.prepare(
         task="t",
-        action_descriptors=_descriptors(),
+        action_space=space_of(_descriptors()),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return agent
@@ -244,7 +245,7 @@ class TestPrepare:
         descriptors = _descriptors("browser.click")
         seed = agent.prepare(
             task="navigate to example.com",
-            action_descriptors=descriptors,
+            action_space=space_of(descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
 
@@ -253,7 +254,7 @@ class TestPrepare:
         assert isinstance(seed[0], SystemMessage)
         assert agent._system_prompt_text  # populated
         assert not hasattr(agent, "_task")  # task lives on obs.task now
-        assert agent._action_descriptors == descriptors
+        assert agent.get_action_space() == descriptors
         # prepare is a pure builder — agent memory remains untouched.
         assert agent.memory.get_messages() == []
 
@@ -261,7 +262,7 @@ class TestPrepare:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         snapshot = agent.system_prompt
@@ -276,7 +277,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
 
@@ -298,7 +299,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -320,7 +321,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         tail = "[173]<button>Reachable at the end</button>"
@@ -340,7 +341,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -360,7 +361,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -387,7 +388,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -405,7 +406,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         # Only the required task fragment; no DOM / browser_meta / etc.
@@ -424,7 +425,7 @@ class TestBuildReactPrompt:
         agent = _make_agent(observation_mode="dom_vision")
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -444,7 +445,7 @@ class TestBuildReactPrompt:
         agent = _make_agent(observation_mode="dom_vision")
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors(),
+            action_space=space_of(_descriptors()),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(task=_FakeTask(user_request="x"))  # no screenshot
@@ -580,7 +581,7 @@ class TestOutputModel:
         # negotiated descriptors rather than from the class.
         agent.prepare(
             task="t",
-            action_descriptors=_descriptors("browser.done"),
+            action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert agent.get_react_output_model() is not model

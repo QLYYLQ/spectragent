@@ -26,11 +26,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeGuard
 
-from pydantic import BaseModel
-
-from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.action_guard import executed_descriptor
+from spectragent.core.actions._registrar import registered_params
 from spectragent.core.actions.params import point_params
-from spectragent.schemas.action import Action, ActionDescriptor, PointWriter
+from spectragent.schemas.action import PointWriter
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import PointGrid
 
 #: What a point with no place on the grid is written as — never as a number in
@@ -75,27 +75,22 @@ def grid_point_writer(grid: PointGrid | None) -> PointWriter:
     return write
 
 
-def registered_point_params(
-    action: Action, descriptors: Sequence[ActionDescriptor]
-) -> list[tuple[str, str]] | None:
-    """The ``(x, y)`` params of *action* that are a point, as its registered ``Params`` declare.
+def action_points(space: ActionSpace, name: str) -> list[tuple[str, str]] | None:
+    """The ``(x, y)`` params of the action called *name* that are a point, as its action declares.
 
-    ``point_params`` of the action's registered ``Params``, looked up by the
-    qualified name — a relative name by the one this run binds it to (the
-    negotiated *descriptors*). ``None`` when the registry does not know the
-    action: the Agent then answers from its own vocabulary, never from a
-    param's name or value alone.
+    The run's own descriptor's ``point_params`` when *name* is an action of
+    *space* (a short name through the run's bindings, ``executed_descriptor``);
+    else the registered ``Params``' points by the fully-qualified *name* — a
+    recorded action this run does not execute, such as a teacher's in the
+    training export's ``keep_as_text`` turns. ``None`` when neither knows the
+    action: the Agent then states no point for it, and never takes a param
+    for a point from its name or value alone.
     """
-    name = action.name
-    if "." not in name:
-        name = next(
-            (d.name for d in descriptors if "." in d.name and d.name.rsplit(".", 1)[-1] == name),
-            name,
-        )
-    params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
-    if isinstance(params, type) and issubclass(params, BaseModel):
-        return point_params(params)
-    return None
+    descriptor = executed_descriptor(space, name)
+    if descriptor is not None:
+        return list(descriptor.point_params)
+    params = registered_params(name)
+    return point_params(params) if params is not None else None
 
 
 def stated_points(
@@ -183,11 +178,11 @@ __all__ = [
     "NOT_PLACEABLE",
     "OUTSIDE_THE_SCREENSHOT",
     "StepGrids",
+    "action_points",
     "grid_point_writer",
     "inside",
     "is_number",
     "params_on_grid",
     "placed",
-    "registered_point_params",
     "stated_points",
 ]

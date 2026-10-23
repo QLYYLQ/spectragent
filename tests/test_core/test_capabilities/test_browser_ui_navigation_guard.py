@@ -35,6 +35,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import AGENT_ID, make_run
 from tests._helpers.browser_archive import OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
@@ -128,7 +129,7 @@ async def test_ui_tars_hotkey_normalization_reaches_the_same_veto(spelling: str)
     agent = UITarsAgent()
     agent.prepare(
         task="Use page controls",
-        action_descriptors=[SendKeysAction().descriptor()],
+        action_space=space_of([SendKeysAction().descriptor()]),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     actions = agent.parse_react_output(f"Action: hotkey(key={spelling})")

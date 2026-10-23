@@ -40,6 +40,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import browser_descriptors, space_of, wired_space
 from tests._helpers.assembly import make_agent
 
 # ── Verbatim replies from recorded runs ───────────────────────────────
@@ -125,14 +126,16 @@ def _screenshot(
 
 
 async def _agent(descriptors: list[ActionDescriptor] | None = None) -> UITarsAgent:
-    """An agent one step in: prepared (when *descriptors* are given) and shown a screenshot."""
+    """An agent one step in: prepared and shown a screenshot.
+
+    Prepared with *descriptors*, or with every action its wiring names.
+    """
     agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
-    if descriptors is not None:
-        agent.prepare(
-            task="t",
-            action_descriptors=descriptors,
-            execution_limits=ExecutionLimits(max_actions_per_step=6),
-        )
+    agent.prepare(
+        task="t",
+        action_space=space_of(descriptors) if descriptors is not None else wired_space(UITarsAgent),
+        execution_limits=ExecutionLimits(max_actions_per_step=6),
+    )
     (
         await agent.build_react_prompt(
             _screenshot(), context=ReactPromptContext(step=0, phase="policy")
@@ -142,7 +145,7 @@ async def _agent(descriptors: list[ActionDescriptor] | None = None) -> UITarsAge
 
 
 def _negotiated(*local_ids: str) -> list[ActionDescriptor]:
-    return [ActionDescriptor(name=f"browser.{a}", description=a) for a in local_ids]
+    return browser_descriptors(*local_ids)
 
 
 async def _parsed(reply: str, agent: UITarsAgent | None = None) -> list[tuple[str, dict[str, Any]]]:
@@ -220,7 +223,7 @@ class TestTheRealFailures:
             agent.prepare(
                 task="t",
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
-                action_descriptors=_negotiated("done"),
+                action_space=space_of(_negotiated("done")),
             )
         )
         ctx = {"env": _Env(), "llm": _LLM(), "memory": memory, "act_fn": _act}

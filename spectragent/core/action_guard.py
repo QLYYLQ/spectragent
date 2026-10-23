@@ -49,6 +49,32 @@ def resolve_action_name(
     return full if full is not None and full in active_names else None
 
 
+def executed_name(space: ActionSpace, name: str) -> str | None:
+    """The fully-qualified name *space*'s guard executes an action called *name* as, or ``None``.
+
+    :func:`resolve_action_name` over the space's guarded names and its
+    bindings: the one naming helper for an Agent. An Agent that has to know
+    which of its run's actions one of its own names means (UI-TARS's
+    ``click`` verb is ``click_coordinate``), or which run action a recorded
+    name is, asks this, never the name's suffix: the bindings are computed
+    once, at negotiation, and a short name two capabilities offer binds to
+    neither (``docs/architecture_design.md`` §4.5).
+    """
+    return resolve_action_name(name, space.allowed_actions, space.action_bindings)
+
+
+def executed_descriptor(space: ActionSpace, name: str) -> ActionDescriptor | None:
+    """The descriptor of the action called *name* executes as in *space* (:func:`executed_name`).
+
+    ``None`` when the guard would refuse *name*. The descriptor says what the
+    action's params mean in this run (``point_params``, ``element_params``).
+    """
+    full = executed_name(space, name)
+    if full is None:
+        return None
+    return next(descriptor for descriptor in space.descriptors if descriptor.name == full)
+
+
 async def _reject_action(action: Action, active_names: frozenset[str]) -> ActionResult:
     return ActionResult(
         success=False,

@@ -32,6 +32,7 @@ from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.image import image_size
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -91,7 +92,7 @@ def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
     _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
     agent.prepare(
         task="t",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return {
@@ -123,7 +124,7 @@ def harness() -> dict[str, Any]:
 def _prompt(agent: BrowserUseAgent, descriptors: list[Any]) -> str:
     content = agent.prepare(
         task="t",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )[0].content
     assert isinstance(content, str)

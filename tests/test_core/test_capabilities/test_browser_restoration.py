@@ -24,6 +24,7 @@ import pytest
 from PIL import Image
 
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.base import RestorationSupport
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import (
@@ -42,7 +43,6 @@ from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, R
 from spectragent.core.capabilities.browser.restoration import (
     TEXT_DEPTH_LIMIT,
     dhash,
-    element_params,
     element_signature,
     hamming,
     measure,
@@ -200,7 +200,7 @@ class TestSignature:
 
 class TestIndexActions:
     def test_the_actions_that_name_an_element_are_the_ones_their_params_declare(self) -> None:
-        # Read off each action's Params (a param marked RequiresFragment("browser.dom")),
+        # Read off each action's Params (a param marked AddressesElement("browser.dom")),
         # not from a list restoration keeps of its own.
         named = {
             key: element_params(cls.Params)

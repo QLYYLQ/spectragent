@@ -26,6 +26,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of, wired_space
 
 
 @dataclass
@@ -74,13 +75,20 @@ class _FakeObservation:
 
 
 def _make_agent(**overrides: Any) -> UITarsAgent:
+    """An agent prepared with every action its wiring names, as a browser run gives it."""
     from tests._helpers.assembly import make_agent
 
-    return make_agent(
+    agent = make_agent(
         UITarsAgent,
         memory=SimpleMemory(max_messages=100),
         **overrides,
     )
+    agent.prepare(
+        task="t",
+        action_space=wired_space(UITarsAgent),
+        execution_limits=ExecutionLimits(max_actions_per_step=6),
+    )
+    return agent
 
 
 async def _looking_at_screen(**overrides: Any) -> UITarsAgent:
@@ -222,7 +230,7 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert isinstance(seed, list)
@@ -237,7 +245,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="click the search box",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -276,7 +284,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -295,7 +303,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         seed = agent.prepare(
             task="open settings menu",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
@@ -317,7 +325,7 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(task=_FakeTask(user_request="some task"))

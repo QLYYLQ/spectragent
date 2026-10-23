@@ -238,8 +238,8 @@ class TestAssembly:
         assert "index" not in (scroll.get("properties") or {}), (
             "scroll's index needs browser.dom, which a vision student does not negotiate"
         )
-        assert renderer.guarded == frozenset(descriptors)
-        assert renderer.bindings["click_coordinate"] == "browser.click_coordinate"
+        assert renderer.space.allowed_actions == frozenset(descriptors)
+        assert renderer.space.action_bindings["click_coordinate"] == "browser.click_coordinate"
         # The optional capture state is negotiated because the browser provides it.
         assert renderer.env_fragments == frozenset(
             {"browser.capture_state", "browser.screenshot", "browser.platform"}

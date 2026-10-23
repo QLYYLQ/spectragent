@@ -50,6 +50,7 @@ from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, T
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent
 
 AGENT_CLASSES: tuple[type[Any], ...] = (UITarsAgent, SkyvernAgent, BrowserUseAgent)
@@ -167,7 +168,7 @@ def _prepared(agent_class: type[Any], **switches: Any) -> Any:
     ]
     agent.prepare(
         task="Open",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=2),
     )
     return agent

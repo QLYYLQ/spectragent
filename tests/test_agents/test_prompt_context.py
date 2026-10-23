@@ -23,6 +23,7 @@ from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent
 
 AGENT_CLASSES = (BrowserUseAgent, SkyvernAgent, UITarsAgent)
@@ -65,7 +66,7 @@ def prepared(agent_class: type[Any]) -> Any:
     ]
     agent.prepare(
         task="Open the live result",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return agent

@@ -58,6 +58,7 @@ from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.geometry import CoordinateSpace
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_of, wired_space
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -85,7 +86,14 @@ def _observation(
 
 
 def _agent(**config: Any) -> UITarsAgent:
-    return make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10), **config)
+    """An agent prepared with every action its wiring names, as a browser run gives it."""
+    agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10), **config)
+    agent.prepare(
+        task="t",
+        action_space=wired_space(UITarsAgent),
+        execution_limits=ExecutionLimits(max_actions_per_step=6),
+    )
+    return agent
 
 
 async def _step_text(agent: UITarsAgent, observation: Any) -> str:
@@ -110,7 +118,7 @@ class TestThePromptNamesTheGrid:
         agent = _agent()
         prompt = agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
@@ -127,7 +135,7 @@ class TestThePromptNamesTheGrid:
         agent = _agent(coordinate_space="normalized_1000")
         prompt = agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
@@ -147,7 +155,7 @@ class TestThePromptNamesTheGrid:
         agent = _agent(coordinate_space=space)
         prompt = agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
@@ -159,7 +167,7 @@ class TestThePromptNamesTheGrid:
         agent = _agent(coordinate_space="normalized_1000")
         agent.prepare(
             task="t",
-            action_descriptors=[],
+            action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         snapshot = agent.system_prompt
@@ -447,7 +455,7 @@ async def test_every_emitted_action_meets_its_descriptor_and_executes_in_css_px(
     agent = _agent()
     prompt = agent.prepare(
         task="t",
-        action_descriptors=seam["descriptors"],
+        action_space=space_of(seam["descriptors"]),
         execution_limits=ExecutionLimits(max_actions_per_step=9),
     )[0].content
     assert isinstance(prompt, str)

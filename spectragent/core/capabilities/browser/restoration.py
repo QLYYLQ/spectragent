@@ -14,8 +14,8 @@ step numbers, no trace import, no side effects.
 browser numbers the same element differently, so a recorded
 ``click(index)`` cannot run as written. Which actions name an element, and
 by which param, is what each of the capability's own actions declares in its
-``Params`` (:func:`element_params`), never a list kept here. An action that
-names one
+``Params`` (``AddressesElement``, read by ``core/actions/params.py::element_params``),
+never a list kept here. An action that names one
 is re-found by geometry, then confirmed by signature: the recorded
 ``selector_map`` entry's ``bounds`` (page coordinates) pick the restored
 candidates whose four bounds values all lie within ``tolerance_px``; the
@@ -50,9 +50,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Final
 
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel
 
-from spectragent.core.actions.params import param_fragments
+from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMRect
 from spectragent.core.capabilities.browser.media import media_evidence
 from spectragent.core.capabilities.browser.observations import (
@@ -94,8 +93,7 @@ sees is cut.
 #: (tag, id, name, aria-label, role, sha256 of the whitespace-folded subtree text).
 ElementSignature = tuple[str, str | None, str | None, str | None, str | None, str]
 
-_DOM_KEY: Final = DOMObs.__registry_key__
-_DOM_FIELD: Final = fragment_field_name(_DOM_KEY)
+_DOM_FIELD: Final = fragment_field_name(DOMObs.__registry_key__)
 _META_FIELD: Final = fragment_field_name(BrowserMetaObs.__registry_key__)
 _SCREENSHOT_FIELD: Final = fragment_field_name(ScreenshotObs.__registry_key__)
 
@@ -177,17 +175,6 @@ def bounds_within(recorded: DOMRect, restored: DOMRect, tolerance_px: float) -> 
 
 
 # ── retarget ──────────────────────────────────────────────────────────
-
-
-def element_params(params: type[BaseModel]) -> tuple[str, ...]:
-    """The params of an action's *params* model that name an element of ``browser.dom``'s selector map.
-
-    What the action declares: the params marked ``RequiresFragment("browser.dom")``
-    (``core/actions/params.py``), in declaration order. Required ones
-    (``browser.click``'s ``index``) always name an element; optional ones
-    (``browser.scroll``'s) only when given.
-    """
-    return tuple(param for param, keys in param_fragments(params).items() if _DOM_KEY in keys)
 
 
 def _identity(action: Action) -> Retarget:
@@ -452,7 +439,6 @@ __all__ = [
     "bounds_within",
     "dhash",
     "dom_fragment",
-    "element_params",
     "element_signature",
     "hamming",
     "measure",

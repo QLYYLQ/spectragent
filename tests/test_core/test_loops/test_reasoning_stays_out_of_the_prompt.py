@@ -46,6 +46,7 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, TaskObs
 from tests._helpers.action_params import minimal_params
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 _THINKING = "HIDDEN REASONING: the second field looks like the search box."
@@ -320,7 +321,7 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
     agent.memory.add_messages(
         agent.prepare(
             task="Find the answer",
-            action_descriptors=descriptors,
+            action_space=space_of(descriptors),
             execution_limits=ReactLoop().execution_limits(),
         )
     )

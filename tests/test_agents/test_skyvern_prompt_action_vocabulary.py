@@ -14,7 +14,7 @@ model produced came out as ``Action(name='browser.CLICK')`` and was rejected
 100% of the time — including ``COMPLETE``, the only verb the template offered
 for finishing, so the agent could not terminate a task at all. The suite
 stayed green because every Skyvern test asserted the code's assumptions back
-at itself: ``action_descriptors=[]``, hand-written lower-case verbs, never the
+at itself: an empty action list, hand-written lower-case verbs, never the
 shipped template.
 
 So the fixtures here are deliberately *derived*, never hand-written:
@@ -47,6 +47,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
 
 #: Anything that looks like an action name where the prompt could be
@@ -91,7 +92,7 @@ def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
     agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
     prompt = agent.prepare(
         task="t",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )[0].content
     assert isinstance(prompt, str)
@@ -190,7 +191,7 @@ class TestPromptVocabulary:
         ]
         prompt = agent.prepare(
             task="t",
-            action_descriptors=elsewhere,
+            action_space=space_of(elsewhere),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)

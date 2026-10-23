@@ -14,7 +14,7 @@ from tests.test_core.test_runtime.test_agent_runtime import SimpleAgent, _make_e
 class LimitConsumer(SimpleAgent):
     __execution_limit_fields__ = frozenset({"max_actions_per_step"})
 
-    def prepare(self, *, task, action_descriptors, execution_limits: ExecutionLimits):
+    def prepare(self, *, task, action_space, execution_limits: ExecutionLimits):
         return [execution_limits]
 
 
@@ -72,7 +72,7 @@ def test_unknown_consumed_field_is_refused():
 
 def test_a_keyword_sink_is_not_an_explicit_limits_parameter():
     class Sink(LimitConsumer):
-        def prepare(self, *, task, action_descriptors, **kwargs):
+        def prepare(self, *, task, action_space, **kwargs):
             return []
 
     with pytest.raises(IncompatibleExecutionLimitsError, match="explicitly accept"):

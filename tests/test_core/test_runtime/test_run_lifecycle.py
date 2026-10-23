@@ -151,7 +151,7 @@ class _Agent:
     def __init__(self):
         self.prepare_calls = 0
 
-    def prepare(self, *, task, action_descriptors):
+    def prepare(self, *, task, action_space):
         self.prepare_calls += 1
         return [{"role": "system", "content": "sys"}]
 

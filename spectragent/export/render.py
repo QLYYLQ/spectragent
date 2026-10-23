@@ -35,7 +35,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
@@ -43,9 +43,9 @@ from typing import Any, Literal, cast, get_args
 
 import yaml
 
-from spectragent.core.action_guard import resolve_action_name
-from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.actions.params import param_fragments, point_params
+from spectragent.core.action_guard import executed_descriptor, executed_name
+from spectragent.core.actions._registrar import registered_params
+from spectragent.core.actions.params import element_params, param_fragments
 from spectragent.core.capabilities.base import CaptureComparison
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.llm.messages import BaseMessage
@@ -71,6 +71,7 @@ from spectragent.export.errors import (
 from spectragent.export.settings import ThoughtIndexRefs
 from spectragent.export.translate._registrar import UntranslatablePolicy
 from spectragent.schemas.action import Action
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation._registrar import FragmentBase, fragment_field_name
 from spectragent.schemas.observation.geometry import CoordinateSpace, point_grid
 from spectragent.schemas.prompt import ReactPromptContext
@@ -246,11 +247,11 @@ class StudentRenderer:
         self.thought_source = thought_source
         self.thought_index_refs = thought_index_refs
         negotiated_obs = self.runtime.negotiated_observation
-        negotiated_actions = self.runtime.negotiated_actions
-        assert negotiated_obs is not None and negotiated_actions is not None  # prepare() ran
+        assert negotiated_obs is not None  # prepare() ran
         self.negotiated: Any = negotiated_obs
-        self.guarded: frozenset[str] = frozenset(d.name for d in self.runtime.active_descriptors)
-        self.bindings: Mapping[str, str] = dict(negotiated_actions.action_bindings)
+        #: The student's effective action space: what its guard executes and
+        #: what its names mean (``executed_name``).
+        self.space: ActionSpace = self.runtime.action_space
         space = getattr(self.runtime.agent, "coordinate_space", None)
         self.coordinate_space: CoordinateSpace = (
             cast(CoordinateSpace, space) if space in get_args(CoordinateSpace) else _DEFAULT_SPACE
@@ -465,7 +466,7 @@ class StudentRenderer:
             return sample.untranslatable.reason, sample.untranslatable.detail
         actions = sample.actions or []
         for action in actions:
-            if resolve_action_name(action.name, self.guarded, self.bindings) is None:
+            if executed_name(self.space, action.name) is None:
                 return "no_counterpart", f"the student does not offer {action.name}"
         budget = self.loop.max_actions_per_step
         if len(actions) > budget:
@@ -600,10 +601,11 @@ class StudentRenderer:
             negotiation = trace.config.negotiation
             keys: set[str] = set()
             for name in negotiation.active_actions if negotiation is not None else ():
-                params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
+                params = registered_params(name)
                 if params is not None:
-                    for dependencies in param_fragments(params).values():
-                        keys |= dependencies
+                    fragments = param_fragments(params)
+                    for param in element_params(params):
+                        keys |= fragments[param]
             self._index_fragments[run_id] = frozenset(keys)
         return bool(self._index_fragments[run_id] - frozenset(self.negotiated.active_fragments))
 
@@ -638,13 +640,15 @@ class StudentRenderer:
         executed: list[Action] = []
         errors: list[int] = []
         for action, back in zip(actions, parsed, strict=True):
-            name = resolve_action_name(back.name, self.guarded, self.bindings)
+            name = executed_name(self.space, back.name)
             if name != action.name:
                 raise RoundTripError(
                     sample_id, f"{action.name} reads back as {back.name} ({name or 'unguarded'})"
                 )
-            params_model = getattr(ActionRegistrar.get_or_none(action.name), "Params", None)
-            pairs = point_params(params_model) if params_model is not None else []
+            # The student's descriptor says which params are a point: the
+            # name was resolved in its action space just above.
+            descriptor = executed_descriptor(self.space, back.name)
+            pairs = descriptor.point_params if descriptor is not None else ()
             point_keys = {key for pair in pairs for key in pair}
             for x_key, y_key in pairs:
                 if action.params.get(x_key) is None:

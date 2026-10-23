@@ -29,7 +29,13 @@ from pydantic import BaseModel
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.agents._action_union import params_model_from_schema
 from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.actions.params import RequiresFragment, param_fragments
+from spectragent.core.actions.params import (
+    PointAxis,
+    RequiresFragment,
+    element_params,
+    param_fragments,
+    point_params,
+)
 
 #: The shipped actions only. The registry is process-global and test helpers
 #: register their own fakes into it on import (``tests/_helpers/archive_fakes.py``
@@ -348,3 +354,70 @@ def test_requires_fragment_is_a_value_not_a_string() -> None:
     """So a typo is a marker nobody reads, not a silent no-op string."""
     assert RequiresFragment("browser.dom") == RequiresFragment("browser.dom")
     assert RequiresFragment("browser.dom") != RequiresFragment("desktop.dom")
+
+
+# ── What a param means: points and element addresses, declared once ───
+
+#: Which params are one point, and which name an element, as the shipped
+#: actions declare them on their ``Params`` (``PointAxis``, ``AddressesElement``).
+_GOLDEN_POINTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "browser.click_coordinate": (("coordinate_x", "coordinate_y"),),
+    "browser.type_coordinate": (("coordinate_x", "coordinate_y"),),
+    "browser.drag": (("start_x", "start_y"), ("end_x", "end_y")),
+}
+_GOLDEN_ELEMENTS: dict[str, tuple[str, ...]] = {
+    "browser.click": ("index",),
+    "browser.type": ("index",),
+    "browser.select_dropdown": ("index",),
+    "browser.scroll": ("index",),
+    "browser.extract_content": ("index",),
+}
+
+
+@pytest.mark.parametrize("key", _KEYS)
+def test_what_the_params_mean_reaches_the_descriptor(key: str) -> None:
+    """An Agent reads it off its run's descriptors; nothing restates it per verb."""
+    descriptor = _action(key).descriptor()
+    assert descriptor.point_params == _GOLDEN_POINTS.get(key, ())
+    assert descriptor.element_params == _GOLDEN_ELEMENTS.get(key, ())
+
+
+@pytest.mark.parametrize("key", _KEYS)
+def test_a_point_is_a_pair_of_ints_and_an_address_requires_its_fragment(key: str) -> None:
+    params = ActionRegistrar.get(key).Params
+    hints = get_type_hints(params)
+    for x, y in point_params(params):
+        assert hints[x] is int and hints[y] is int, (key, x, y)
+    fragments = param_fragments(params)
+    for name in element_params(params):
+        assert fragments.get(name), (key, name)
+
+
+def test_a_param_this_run_cannot_honour_names_no_element() -> None:
+    """Narrowed with the params: a vision run's scroll has no index to name an element with."""
+    without = _action("browser.scroll").descriptor(fragments=frozenset({"browser.screenshot"}))
+    assert without.element_params == ()
+
+
+def test_a_point_is_never_inferred_from_a_name() -> None:
+    class Zoom(BaseModel):
+        scale_x: int
+        scale_y: int
+
+    assert point_params(Zoom) == []
+
+
+def test_a_point_declares_both_of_its_axes_once() -> None:
+    from typing import Annotated
+
+    class OneAxis(BaseModel):
+        at_x: Annotated[int, PointAxis("at", "x")]
+
+    class Twice(BaseModel):
+        at_x: Annotated[int, PointAxis("at", "x")]
+        at_y: Annotated[int, PointAxis("at", "x")]
+
+    with pytest.raises(TypeError, match="only the x of point 'at'"):
+        point_params(OneAxis)
+    with pytest.raises(TypeError, match="declares the x of point 'at' twice"):
+        point_params(Twice)

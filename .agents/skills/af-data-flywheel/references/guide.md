@@ -1075,8 +1075,9 @@ value on an existing one.
   needed. A point with no place on the grid (its step showed no screenshot of known size,
   or it lies outside the screenshot) is written as such, never in pixels and never
   clamped, so such a step kept as text does not stop the export. Which params are points
-  comes from the action's registered `Params` (`point_params`), never from names or
-  values. The same writing is the optional ReAct slot `format_action_fact(action, *,
+  comes from the action's `PointAxis` markers (the run's descriptor's `point_params`, or
+  the registered `Params` for a recorded action the run does not execute), never from
+  names or values. The same writing is the optional ReAct slot `format_action_fact(action, *,
   step)`; `keep_as_text` writes its turn with it, so the kept turn and the next step's
   feedback agree (a student without the slot gets the action's own JSON). A new student
   format with its own grid does the same: pass a `write_point` to `ActionEffect.describe`

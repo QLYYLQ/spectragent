@@ -40,6 +40,7 @@ from spectragent.core.loops.react import ReactLoop
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from tests._helpers.action_spaces import space_of
 
 #: Resolved from this file, not from the CWD.
 SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
@@ -62,7 +63,7 @@ def _prompt(variant: Any, max_actions_per_step: int) -> str:
     agent = UITarsAgent(prompt_template=variant)
     content = agent.prepare(
         task="t",
-        action_descriptors=_NEGOTIATED,
+        action_space=space_of(_NEGOTIATED),
         execution_limits=ExecutionLimits(max_actions_per_step=max_actions_per_step),
     )[0].content
     assert isinstance(content, str)
@@ -110,7 +111,7 @@ def test_no_finish_verb_no_promise_about_it() -> None:
     descriptors = [ActionDescriptor(name="browser.click_coordinate", description="c")]
     content = agent.prepare(
         task="t",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=3),
     )[0].content
     assert isinstance(content, str)
@@ -121,7 +122,7 @@ def test_a_budget_below_one_is_a_config_error_not_a_prompt() -> None:
     with pytest.raises(ValueError, match="max_actions_per_step=0"):
         UITarsAgent().prepare(
             task="t",
-            action_descriptors=_NEGOTIATED,
+            action_space=space_of(_NEGOTIATED),
             execution_limits=ExecutionLimits(max_actions_per_step=0),
         )
 
@@ -234,7 +235,7 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
     memory.add_messages(
         agent.prepare(
             task="t",
-            action_descriptors=_NEGOTIATED,
+            action_space=space_of(_NEGOTIATED),
             execution_limits=ExecutionLimits(max_actions_per_step=loop.max_actions_per_step),
         )
     )

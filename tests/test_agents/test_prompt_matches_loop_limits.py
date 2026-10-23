@@ -32,6 +32,7 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
+from tests._helpers.action_spaces import space_of
 
 #: Resolved from this file, not from the CWD — ``pytest tests/test_agents``
 #: from anywhere but the repo root used to make these two tests vanish into
@@ -144,7 +145,7 @@ def test_agent_renders_whatever_limit_it_is_handed() -> None:
     descriptors = [ActionRegistrar.get("browser.done")().descriptor()]
     seed = agent.prepare(
         task="t",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=7),
     )
     text = _message_text(seed[0])

@@ -48,6 +48,7 @@ from spectragent.schemas.observation.geometry import CoordinateSpace, point_grid
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent
 
 VIEWPORT = (1280, 720)
@@ -122,7 +123,7 @@ def _prepared(agent_class: type[Any] = UITarsAgent, **config: Any) -> tuple[Any,
     ]
     seed = agent.prepare(
         task="Enter the amount",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=2),
     )
     return agent, seed
@@ -370,7 +371,7 @@ async def test_prepare_forgets_the_grids_of_the_previous_execution() -> None:
     )
     agent.prepare(
         task="Enter the amount",
-        action_descriptors=agent.get_action_space(),
+        action_space=space_of(agent.get_action_space()),
         execution_limits=ExecutionLimits(max_actions_per_step=2),
     )
     with pytest.raises(ValueError, match="did not build step 0's prompt"):

@@ -40,6 +40,7 @@ from spectragent.schemas.observation.fragments import (
 )
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import minimal_params
+from tests._helpers.action_spaces import space_of, wired_space
 from tests._helpers.assembly import make_agent
 
 # ── Validate compatibility ────────────────────────────────────────────
@@ -293,7 +294,7 @@ class TestAgentToCapabilityActionVocabulary:
         ]
         agent.prepare(
             task="t",
-            action_descriptors=descriptors,
+            action_space=space_of(descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         model = agent.get_react_output_model()
@@ -315,6 +316,11 @@ class TestAgentToCapabilityActionVocabulary:
         )
 
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
+        agent.prepare(
+            task="t",
+            action_space=wired_space(UITarsAgent),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         # A point is placed with the screenshot the step showed.
         (
             await agent.build_react_prompt(
@@ -361,9 +367,9 @@ class TestAgentToCapabilityActionVocabulary:
         bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         bu.prepare(
             task="t",
-            action_descriptors=[
-                a.descriptor() for a in capability.actions if a.action_id == "browser.done"
-            ],
+            action_space=space_of(
+                [a.descriptor() for a in capability.actions if a.action_id == "browser.done"]
+            ),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         bu_out = bu.get_react_output_model().model_validate(
@@ -389,6 +395,11 @@ class TestAgentToCapabilityActionVocabulary:
 
         # UITarsAgent
         ut = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
+        ut.prepare(
+            task="t",
+            action_space=wired_space(UITarsAgent),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         ut_actions = ut.parse_react_output("Action: finished(content='answer ut')")
         assert await _resolve(ut, ut_actions[0], capability) == "browser.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
@@ -463,7 +474,7 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
     ]
     seed = agent.prepare(
         task="Find the answer",
-        action_descriptors=descriptors,
+        action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     agent.memory.add_messages(seed)
