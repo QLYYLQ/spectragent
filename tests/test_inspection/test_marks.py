@@ -17,6 +17,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.inspection.marks import (
     MarkRequest,
     action_lines,
+    action_text,
     default_requests,
     marks_on,
     observation_marks,
@@ -178,6 +179,15 @@ def test_sensitive_text_is_withheld_and_done_reads_as_an_answer(run: RunTrace) -
     assert action_lines(record) == (
         "1. 输入（敏感字段，内容不显示） → 搜索框“Search”\n2. 完成并回答：播放量 120 万"
     )
+
+
+def test_a_done_that_reports_failure_executed_and_says_so() -> None:
+    """The claim is the agent's (``结束（报告没有完成任务）``); the done itself succeeded."""
+    done = Action(name="browser.done", params={"extracted_content": "没有找到", "success": False})
+    result = ActionResult(
+        success=True, is_done=True, extracted_content="没有找到", reported_success=False
+    )
+    assert action_text(done, result) == "结束（报告没有完成任务）：没有找到"
 
 
 def test_a_before_action_frame_shows_the_action_it_preceded(run: RunTrace) -> None:

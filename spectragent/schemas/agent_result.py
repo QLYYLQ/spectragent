@@ -126,8 +126,11 @@ class AgentResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Only the current execution/recording contract is readable. Version 3
-    # separates execution_ms, provider coverage and recording health.
-    schema_version: Literal["3.0"] = "3.0"
+    # separated execution_ms, provider coverage and recording health; version
+    # 4 reads agent_reported_success from the done result's own claim, so it
+    # is None when the agent said nothing about the task, instead of the done
+    # action's execution outcome (which UI-TARS always reported as True).
+    schema_version: Literal["4.0"] = "4.0"
 
     # Identity
     task_id: str
@@ -141,14 +144,18 @@ class AgentResult(BaseModel):
     env_status: NormalizedEnvironmentStatus
     # agent_done: how the agent finished the task
     agent_done: NormalizedAgentDoneStatus
-    # agent_reported_success: the agent's *self-report*, read verbatim out of
-    #   ``done(success=...)``. It is NOT a verdict — some agents hardcode
-    #   ``True`` — and no scorer should treat it as one. The verdict belongs
-    #   to ``EvalResult.predicted_label``, produced by an Evaluator from the
+    # agent_reported_success: the agent's *self-report* about the task, read
+    #   verbatim from the done result's ``reported_success`` (its
+    #   ``done(success=...)``), never from the done result's ``success``,
+    #   which only says the done action executed. It is NOT a verdict, and no
+    #   scorer should treat it as one. The verdict belongs to
+    #   ``EvalResult.predicted_label``, produced by an Evaluator from the
     #   recorded trace.
     #   True  = agent called done(success=true)
     #   False = agent called done(success=false)
-    #   None  = agent never called done (timeout, max_steps, error)
+    #   None  = agent made no claim: it called done without saying (UI-TARS's
+    #           finished() has no way to say), or never called done
+    #           (timeout, max_steps, error)
     agent_reported_success: bool | None = None
     # answer: the agent's best final output. Valid on *every* termination
     #   path — an agent that produced a correct patch and then ran out of

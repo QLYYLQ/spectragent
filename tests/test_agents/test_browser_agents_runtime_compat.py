@@ -205,16 +205,15 @@ class _MockEnv:
         return self._observation
 
     async def act(self, action: Any, *args: Any, **kwargs: Any) -> Any:
+        from spectragent.core.capabilities.browser.actions.done import DoneAction
         from spectragent.schemas.action import ActionResult
 
         self.acted.append(action)
-        # First action's result triggers done.
-        is_done = action.name == "browser.done"
-        return ActionResult(
-            success=True,
-            is_done=is_done,
-            extracted_content=action.params.get("extracted_content", ""),
-        )
+        if action.name == "browser.done":
+            # The real terminal action: it needs no browser, and its result
+            # is the contract under test (execution apart from the claim).
+            return await DoneAction().execute(dict(action.params), capability=None)  # type: ignore[arg-type]
+        return ActionResult(success=True, extracted_content=action.params.get("extracted_content"))
 
     async def setup(self, **_: Any) -> None:
         return
@@ -395,102 +394,103 @@ class TestAgentToCapabilityActionVocabulary:
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
 
+async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, Any]:
+    """Drive one BrowserUse step that emits ``done`` with *done_params* through ReactLoop."""
+    # Build a fake observation matching the fragment-based shape.
+    # ``task`` mirrors what populate_loop_fragments would inject —
+    # this driver test bypasses ReactLoop's loop-fragment path because
+    # the obs is a plain object (not a Pydantic model).
+    obs = type(
+        "Obs",
+        (),
+        {
+            "platform": BrowserPlatformObs(operating_system="macos"),
+            "dom": DOMObs(),
+            "screenshot": ScreenshotObs(image_bytes=b"\x89PNG\r\n\x1a\n"),
+            "browser_meta": BrowserMetaObs(
+                url="https://example.com",
+                page_title="Example",
+            ),
+            "task": TaskObs(user_request="Find the answer"),
+            "step_info": StepInfoObs(
+                step=1,
+                max_steps=2,
+                today="2026-05-01",
+            ),
+            "history": HistoryObs(),
+        },
+    )()
+
+    # ``max_steps`` is set on the loop below — it is the only source.
+    agent = make_agent(
+        BrowserUseAgent,
+        memory=SimpleMemory(max_messages=100),
+    )
+
+    env = _MockEnv(obs)
+    loop = ReactLoop()
+    loop.max_steps = 2
+    loop.max_actions_per_step = 3
+
+    # Drive the loop directly (skip AgentRuntime to avoid AOP weaving),
+    # but keep the guard: it is what turns the agent's ``done`` into
+    # the ``browser.done`` the environment routes on, and a loop
+    # driven without it would be testing a path production never
+    # takes.
+    from spectragent.core.capabilities.browser.capability import (
+        BrowserCapability,
+    )
+
+    negotiated_actions = negotiate_action(agent, _ActionsOnlyEnv(BrowserCapability()))
+    _kept, _act_fn = build_guarded_act(
+        env.act,
+        [
+            ActionDescriptor(name=name, description="")
+            for name in sorted(negotiated_actions.active_actions)
+        ],
+        bindings=negotiated_actions.action_bindings,
+    )
+
+    # Post-M17: AgentRuntime owns the prepare → memory.add_messages
+    # handoff. Driving the loop without AgentRuntime requires the
+    # caller to replicate that step. The descriptors are the negotiated
+    # ones, because ``prepare`` compiles them into the output schema
+    # the stub LLM below has to satisfy.
+    descriptors = [
+        a.descriptor()
+        for a in BrowserCapability().actions
+        if a.action_id in negotiated_actions.active_actions
+    ]
+    seed = agent.prepare(
+        task="Find the answer",
+        action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
+    agent.memory.add_messages(seed)
+    llm = _MockLLM(
+        agent.get_react_output_model().model_validate(
+            {"memory": "", "action": [{"browser.done": done_params}]}
+        )
+    )
+
+    ctx = {
+        "env": env,
+        "llm": llm,
+        "memory": agent.memory,
+        "act_fn": _act_fn,
+        "negotiated_obs": _MockNegotiated(),
+        "active_descriptors": [],
+        "session_id": None,
+        "identity": RunIdentity(task_id="t1"),
+    }
+    result = await loop._execute(agent, task="Find the answer", ctx={**ctx, "step_executor": loop})
+    return result, env, agent
+
+
 class TestReactLoopDriveBrowserUse:
     @pytest.mark.asyncio
     async def test_browser_use_one_step_done(self) -> None:
-        # Build a fake observation matching the fragment-based shape.
-        # ``task`` mirrors what populate_loop_fragments would inject —
-        # this driver test bypasses ReactLoop's loop-fragment path because
-        # the obs is a plain object (not a Pydantic model).
-        obs = type(
-            "Obs",
-            (),
-            {
-                "platform": BrowserPlatformObs(operating_system="macos"),
-                "dom": DOMObs(),
-                "screenshot": ScreenshotObs(image_bytes=b"\x89PNG\r\n\x1a\n"),
-                "browser_meta": BrowserMetaObs(
-                    url="https://example.com",
-                    page_title="Example",
-                ),
-                "task": TaskObs(user_request="Find the answer"),
-                "step_info": StepInfoObs(
-                    step=1,
-                    max_steps=2,
-                    today="2026-05-01",
-                ),
-                "history": HistoryObs(),
-            },
-        )()
-
-        # ``max_steps`` is set on the loop below — it is the only source.
-        agent = make_agent(
-            BrowserUseAgent,
-            memory=SimpleMemory(max_messages=100),
-        )
-
-        env = _MockEnv(obs)
-        loop = ReactLoop()
-        loop.max_steps = 2
-        loop.max_actions_per_step = 3
-
-        # Drive the loop directly (skip AgentRuntime to avoid AOP weaving),
-        # but keep the guard: it is what turns the agent's ``done`` into
-        # the ``browser.done`` the environment routes on, and a loop
-        # driven without it would be testing a path production never
-        # takes.
-        from spectragent.core.capabilities.browser.capability import (
-            BrowserCapability,
-        )
-
-        negotiated_actions = negotiate_action(agent, _ActionsOnlyEnv(BrowserCapability()))
-        _kept, _act_fn = build_guarded_act(
-            env.act,
-            [
-                ActionDescriptor(name=name, description="")
-                for name in sorted(negotiated_actions.active_actions)
-            ],
-            bindings=negotiated_actions.action_bindings,
-        )
-
-        # Post-M17: AgentRuntime owns the prepare → memory.add_messages
-        # handoff. Driving the loop without AgentRuntime requires the
-        # caller to replicate that step. The descriptors are the negotiated
-        # ones, because ``prepare`` compiles them into the output schema
-        # the stub LLM below has to satisfy.
-        descriptors = [
-            a.descriptor()
-            for a in BrowserCapability().actions
-            if a.action_id in negotiated_actions.active_actions
-        ]
-        seed = agent.prepare(
-            task="Find the answer",
-            action_descriptors=descriptors,
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-        )
-        agent.memory.add_messages(seed)
-        llm = _MockLLM(
-            agent.get_react_output_model().model_validate(
-                {
-                    "memory": "",
-                    "action": [{"browser.done": {"extracted_content": "finished"}}],
-                }
-            )
-        )
-
-        ctx = {
-            "env": env,
-            "llm": llm,
-            "memory": agent.memory,
-            "act_fn": _act_fn,
-            "negotiated_obs": _MockNegotiated(),
-            "active_descriptors": [],
-            "session_id": None,
-            "identity": RunIdentity(task_id="t1"),
-        }
-        result = await loop._execute(
-            agent, task="Find the answer", ctx={**ctx, "step_executor": loop}
-        )
+        result, env, agent = await _drive_one_done({"extracted_content": "finished"})
 
         # The agent emitted "done" → result should reflect that.
         assert result.task_id == "t1"
@@ -506,3 +506,24 @@ class TestReactLoopDriveBrowserUse:
         # loop-source fragment.
         assert not hasattr(agent, "_task")
         assert agent._system_prompt_text  # populated
+
+    async def test_a_done_that_says_the_task_failed_still_ends_the_run(self) -> None:
+        """``success: false`` is the agent's claim; the done itself executed and closed the run."""
+        result, env, _agent = await _drive_one_done(
+            {"extracted_content": "the price is not listed", "success": False}
+        )
+        from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+
+        assert result.agent_done == AgentDoneStatus.DONE
+        assert result.env_status == EnvironmentStatus.SUCCESS
+        assert result.error is None
+        assert result.answer == "the price is not listed"
+        assert result.agent_reported_success is False
+        assert [action.params.get("success") for action in env.acted] == [False]
+
+    async def test_a_done_without_a_claim_reports_none(self) -> None:
+        """A null ``success`` is stripped before the action exists: no claim, not ``true``."""
+        result, _env, _agent = await _drive_one_done(
+            {"extracted_content": "finished", "success": None}
+        )
+        assert result.agent_reported_success is None
