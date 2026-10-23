@@ -42,7 +42,7 @@ from spectragent.agents.browser_use import (
 )
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.prompts import AGENT_PROMPT_ROOT
-from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.action_guard import build_guarded_act, params_refusal
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -704,10 +704,33 @@ async def test_the_per_run_schema_republishes_default_null_on_purpose(
     )
     verb, name = optional_nulls[0]
     descriptor = next(d for d in run.descriptors if d.name == verb)
-    item = run.model.model_validate(
-        {"memory": "m", "action": [{verb: {**minimal_params(descriptor), name: None}}]}
-    ).action[0]
-    assert name not in run.agent._action_for(item).params
+    (action,) = run.agent.parse_react_output(
+        run.reply({verb: {**minimal_params(descriptor), name: None}})
+    )
+    assert name not in action.params
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("structured", [False, True], ids=["text", "structured"])
+def test_done_with_no_answer_keeps_its_null_and_passes_the_params_check(
+    member: type[BrowserUseAgent], structured: bool
+) -> None:
+    """``done``'s ``extracted_content`` is required and nullable: null is the answer.
+
+    Only an optional param's null is a decline. Stripping every null turned
+    this correct reply into ``extracted_content: Field required`` at the
+    params check, so a task with no answer to return could not end.
+    """
+    run = _Run(member)
+    payload = {"browser.done": {"extracted_content": None, "success": None}}
+    reply: Any = (
+        run.model.model_validate({"memory": "m", "action": [payload]})
+        if structured
+        else run.reply(payload)
+    )
+    (action,) = run.agent.parse_react_output(reply)
+    assert action == Action(name="browser.done", params={"extracted_content": None})
+    assert params_refusal(run.action_space, action) is None
 
 
 @pytest.mark.parametrize("member", MEMBERS)
