@@ -36,6 +36,7 @@ from spectragent.flywheel.metrics import (
     branch_document_misses,
     duplicate_branches,
     export_yield,
+    open_chain,
     post_branch_misses,
     ratio,
     read_dataset_manifest,
@@ -47,11 +48,16 @@ from spectragent.flywheel.metrics import (
 )
 from spectragent.flywheel.report import FlywheelReport, build_report, render_markdown
 from tests._helpers.flywheel_traces import (
+    SHOP,
     Step,
+    check,
     click,
     dataset_manifest,
     hit,
+    known_chain,
+    miss,
     provenance,
+    record_ids,
     write_plain,
     write_replayed,
 )
@@ -347,25 +353,70 @@ class TestDecisionInputs:
         assert found.model_dump() == {
             "runs": 6,
             "sites": 2,
+            "failed_restoration_runs": 3,
             "endpoints": [
                 {
+                    "site": "shop.test",
                     "host": "shop.test",
                     "method": "GET",
                     "path": "/results",
-                    "misses": 3,
+                    "runs": 3,
+                    "failed_restoration_runs": 0,
+                    "failed_check_steps": 0,
+                    "passed_check_steps": 3,
+                    "failure_association": 0.0,
+                    "requests": 3,
                     "query": {"session": 3},
                     "body": {},
                     "opaque_body": 0,
                     "field_sets": [
-                        {"query": ["session"], "body": [], "opaque_body": False, "misses": 3}
+                        {"query": ["session"], "body": [], "opaque_body": False, "runs": 3}
                     ],
                 }
             ],
+            "not_feeding_page": {},
             "skipped": {},
         }, (
             "the two same-path replays and br-b0 each ask results?q=kettle with a session the "
             "recording never sent; the blocked document is the recorded request itself"
         )
+
+    async def test_a_near_miss_at_a_failed_check_counts_against_its_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """Each step's own restoration check, read from the replay's step records."""
+        known = await known_chain(tmp_path / "chain")
+        results = f"http://{SHOP}/results?q=kettle"
+        record = record_ids(known.runs["rec-shop"])[results]
+        await write_replayed(
+            known.root / "traces" / "branch",
+            "br-b3",
+            [
+                Step(
+                    "restored",
+                    [click(1, 1)],
+                    color=10,
+                    restoration=check(0, "screenshot_distance"),
+                    replay=[
+                        miss(f"{results}&session=9", candidates=[results], record_ids=[record])
+                    ],
+                ),
+                Step("policy", [click(100, 200)], color=20, restoration=check(1)),
+                Step("terminal", color=50),
+            ],
+            task_id="shop-1",
+            site=SHOP,
+            branch=provenance("rec-shop", 1, 3, "shop-1"),
+        )
+        found = site_rules(open_chain(ChainLayout(known.root)))
+        [endpoint] = found.endpoints
+        assert (
+            endpoint.runs,
+            endpoint.failed_restoration_runs,
+            endpoint.failed_check_steps,
+            endpoint.passed_check_steps,
+        ) == (4, 1, 1, 3), "br-b3's near miss is at its step 0, whose check failed"
+        assert endpoint.failure_association > 0
 
 
 # ── the rules ─────────────────────────────────────────────────────────
@@ -380,10 +431,10 @@ class TestTheDecisionsOnTheKnownChain:
         )
         assert decisions.recording_coverage.verdict is not None
         assert decisions.recording_coverage.verdict.startswith("do not expand coverage: 0 of 1")
-        assert (
-            decisions.site_rules.verdict
-            == "propose endpoint rules for review: shop.test GET /results [query session]"
-        )
+        assert decisions.site_rules.verdict == (
+            "review endpoint rules (n/m: near-miss steps whose restoration failed / checked): "
+            "shop.test: shop.test GET /results [query session] 0/3"
+        ), "every near miss of the known chain is at a step whose restoration check passed"
         assert decisions.retention.verdict is not None and "per task" in decisions.retention.verdict
         for name in ("miss_policy", "recording_coverage", "site_rules", "retention"):
             item = getattr(decisions, name)
@@ -493,31 +544,62 @@ class TestRuleThresholds:
         found = rules._decide_recording_coverage(inputs, "rehearsal")
         assert (found.status, found.verdict) == ("insufficient", None)
 
-    @pytest.mark.parametrize(
-        ("misses", "verdict"),
-        [
-            (2, "propose endpoint rules for review: a.test POST /s [query q; body client.ts]"),
-            (1, "keep hand-written rules: no endpoint reached 2 near misses"),
-        ],
-    )
-    def test_site_rules(self, report: FlywheelReport, misses: int, verdict: str) -> None:
-        fields = NearMissFieldSet(query=["q"], body=["client.ts"], opaque_body=False, misses=misses)
-        endpoint = NearMissEndpoint(
-            host="a.test",
+    @staticmethod
+    def _endpoint(
+        site: str, path: str, *, query: list[str], body: tuple[str, ...] = (), failed: int = 1
+    ) -> NearMissEndpoint:
+        fields = NearMissFieldSet(query=query, body=list(body), opaque_body=False, runs=2)
+        return NearMissEndpoint(
+            site=site,
+            host=site,
             method="POST",
-            path="/s",
-            misses=misses,
-            query={"q": misses},
-            body={"client.ts": misses},
+            path=path,
+            runs=2,
+            failed_restoration_runs=1,
+            failed_check_steps=failed,
+            passed_check_steps=1,
+            failure_association=0.1,
+            requests=40,
+            query=dict.fromkeys(query, 2),
+            body=dict.fromkeys(body, 2),
             opaque_body=0,
             field_sets=[fields],
         )
-        inputs = report.decision_inputs.model_copy(
-            update={
-                "site_rule_candidates": SiteRuleCandidates(runs=4, sites=1, endpoints=[endpoint])
-            }
+
+    def _verdict(self, report: FlywheelReport, endpoints: list[NearMissEndpoint]) -> str | None:
+        candidates = SiteRuleCandidates(
+            runs=4, sites=2, failed_restoration_runs=2, endpoints=endpoints, not_feeding_page={}
         )
-        assert rules._decide_site_rules(inputs, "live").verdict == verdict
+        inputs = report.decision_inputs.model_copy(update={"site_rule_candidates": candidates})
+        return rules._decide_site_rules(inputs, "live").verdict
+
+    def test_site_rules_propose_each_sites_best_ranked_endpoints(
+        self, report: FlywheelReport
+    ) -> None:
+        a = [self._endpoint("a.test", f"/s{i}", query=["q"], body=("client.ts",)) for i in range(5)]
+        b = [self._endpoint("b.test", "/t", query=["sig"], failed=2)]
+        verdict = self._verdict(report, [*a, *b])
+        assert verdict == (
+            "review endpoint rules (n/m: near-miss steps whose restoration failed / checked): "
+            "a.test: a.test POST /s0 [query q; body client.ts] 1/2, "
+            "a.test POST /s1 [query q; body client.ts] 1/2, "
+            "a.test POST /s2 [query q; body client.ts] 1/2; "
+            "b.test: b.test POST /t [query sig] 2/3"
+        ), f"at most {rules.SITE_RULE_MAX_PROPOSALS_PER_SITE} per site, in the ranked order"
+
+    def test_a_proposal_shows_a_few_fields_each_cut_short(self, report: FlywheelReport) -> None:
+        long = "x" * 100
+        names = [long, "b", "c", "d", "e", "f"]
+        verdict = self._verdict(report, [self._endpoint("a.test", "/s", query=names)])
+        cut = "x" * (rules.SITE_RULE_PROPOSAL_FIELD_MAX_CHARS - 1) + "…"
+        assert verdict is not None and f"[query {cut}, b, c, d; 2 more]" in verdict
+
+    def test_site_rules_without_a_candidate_keep_the_hand_written_rules(
+        self, report: FlywheelReport
+    ) -> None:
+        assert self._verdict(report, []) == (
+            "keep hand-written rules: no near miss outside requests that do not feed the page"
+        )
 
     def test_no_data_anywhere_is_insufficient_everywhere(self, tmp_path: Path) -> None:
         empty = build_report(empty_layout(tmp_path), evidence="live")

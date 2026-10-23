@@ -691,7 +691,10 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `decision_inputs.site_rule_candidates` by endpoint (host, method, path) with query
   parameters and body fields counted apart, `opaque_body` for bodies known only by a digest,
   and the `field_sets` that differed together, both sides keyed with the replay's own
-  recorded rules). Only the current
+  recorded rules; `-11` groups them by site as well, counts replay runs instead of requests,
+  sets aside requests that do not feed the page (`not_feeding_page`) and ranks each site's
+  endpoints by `failure_association`, proposing the top `SITE_RULE_MAX_PROPOSALS_PER_SITE`).
+  Only the current
   format is read; an older report is regenerated, never adapted. Report keys,
   headings and rule texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's

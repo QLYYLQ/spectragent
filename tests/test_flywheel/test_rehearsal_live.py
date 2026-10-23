@@ -262,13 +262,19 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     assert metrics["body_completeness"]["complete"]["value"] == 1.0
 
     endpoints = {
-        (item["host"], item["method"], item["path"]): (item["misses"], item["query"], item["body"])
+        (item["host"], item["method"], item["path"]): (
+            item["runs"],
+            item["requests"],
+            item["query"],
+            item["body"],
+        )
         for item in report["decision_inputs"]["site_rule_candidates"]["endpoints"]
     }
-    # The drift site: two replays, each asking its URL twice (the error page's own reload).
+    # Counted once per replay run: four shop replays ask once each; the two drift replays ask
+    # their URL twice (the error page's own reload).
     assert endpoints == {
-        (SHOP, "GET", "/flywheel_shop/recommend.json"): (4, {"session": 4}, {}),
-        (DRIFT, "GET", "/flywheel_drift/next.html"): (4, {"visit": 4}, {}),
+        (SHOP, "GET", "/flywheel_shop/recommend.json"): (4, 4, {"session": 4}, {}),
+        (DRIFT, "GET", "/flywheel_drift/next.html"): (2, 4, {"visit": 2}, {}),
     }
     decisions = report["decisions"]
     assert decisions["miss_policy"]["verdict"].startswith("evaluate a fallback for documents")

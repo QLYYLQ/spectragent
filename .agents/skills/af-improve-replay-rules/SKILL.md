@@ -61,16 +61,23 @@ downstream consequences from independent failures.
 Correlate events by time, cycle, target/session/frame, request and record identity.
 Collection-step ownership is not action causation. `diverged_steps` detects main-frame
 document misses only, not every restoration failure. Summary logs count represented
-occurrences; disclose missing individual timestamps. A hashed body key cannot reveal
-the original fields. Compare clean screenshots, not cursor-decorated model images;
+occurrences; disclose missing individual timestamps. A body key the canonicaliser
+replaced by a digest cannot reveal the original fields. Compare clean screenshots, not cursor-decorated model images;
 low dHash distance does not prove equal click targets or focus.
 
 The automatic near-miss report (`decision_inputs.site_rule_candidates`) groups misses by
-endpoint (host, method, path) and lists differing query parameters and body fields apart,
-with each combination that differed together (`field_sets`). Both sides are keyed with the
-replay's own recorded rules, so a field its rule already ignores is not listed. A body whose
-canonical form is only a digest (over the canonical cap, unparsable, or past the replay
-log's 512-character key cap) counts as `opaque_body`: the fields are unknown. Compare the
+site and endpoint (host, method, path) and counts replay runs, not requests, so telemetry
+that fires every second does not outrank a content request. It lists differing query
+parameters and body fields apart, with each combination that differed together
+(`field_sets`). Requests that do not feed the page (a rule already answers them 204,
+Chrome typed them Ping or Image, or the recorded answer was a 204 or empty) are counted
+apart in `not_feeding_page`. Within a site, endpoints rank by `failure_association`: how
+reliably their near misses sit at steps whose own restoration check failed (a Wilson lower
+bound over checked steps). A site where nearly every check fails cannot separate them. Both sides are keyed with the
+replay's own recorded rules, so a field its rule already ignores is not listed. The replay
+log keeps each live body key whole, so a body counts as `opaque_body` only where the
+canonical form itself is a digest (over the 4096-character canonical cap, or unparsable):
+the matcher had nothing finer either, and the fields are unknown. Compare the
 actual recorded request body with available replay evidence then; preserve empty values when
 decoding canonical parameters (`canonical.decode_params`). For replays outside a chain, point
 a scratch root's `traces/record` and `traces/branch` at the runs and use

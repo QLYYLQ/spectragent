@@ -360,7 +360,8 @@ class ReplayServer(RecorderParticipantBase):
         # The matcher selects and consumes in this one synchronous call.
         result = self.matcher.match(live)
         base["match_key"] = short_key(result.keys.normalized)
-        base["body_key"] = short_key(result.keys.body_key)
+        # Verbatim: the canonicaliser already caps it (a body past its cap is one digest).
+        base["body_key"] = result.keys.body_key
         base["rule_id"] = result.rule_id
         base["exhaustion_policy"] = result.exhaustion_policy
         base["unavailable_policy"] = result.unavailable_policy
