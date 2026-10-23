@@ -168,7 +168,7 @@ Two layers of hook:
 
 A sealed step is committed through `WALWriter.commit_step`: selected content files first, each with data `fsync`; then the step record and extra-file index; then one `fsync` per distinct directory; finally an atomic manifest replacement. The manifest remains the authority for committed files. Orphans are invisible, paths cannot escape the run directory, and unreadable committed data raises `TraceSchemaError`. An uncertain manifest replacement must be reconciled before the next write so in-memory state cannot overwrite a commit that already became visible.
 
-Trace format version 6 declares recording scope, indexes actual committed steps and lightweight call metrics, and preserves content-addressed prompt images. Full call readers restore prompts byte for byte and validate image hashes. Lightweight records are complete within their declared scope; omitted trajectories, observations or archive channels are not corrupt empty evidence. Consumers explicitly require the channels they need. `AgentResult` uses schema version 3.0 and `execution_ms`; old data shapes are rejected, not adapted.
+Trace format version 6 declares recording scope, indexes actual committed steps and lightweight call metrics, and preserves content-addressed prompt images. Full call readers restore prompts byte for byte and validate image hashes. Lightweight records are complete within their declared scope; omitted trajectories, observations or archive channels are not corrupt empty evidence. Consumers explicitly require the channels they need. `AgentResult` uses schema version 4.0 and `execution_ms`; old data shapes are rejected, not adapted.
 
 Execution and recording have separate outcomes: `result.json` states `agent_done`, while recording health and the manifest state `writing | complete | incomplete`, diagnostics, gaps and `complete_through`, the continuous complete prefix. Recording failures never stop or veto the Agent. Later steps may commit beyond a hole, and step count is the number actually committed, not the largest index. Successful repair can restore current completeness while retaining historical fault diagnostics. Background work and close-out have explicit finite budgets; outstanding system I/O is not reported as successfully stopped. Branching and export require sufficient complete history and declared evidence, while inspection and metrics may read saved content after gaps with its coverage visible.
 
@@ -240,6 +240,13 @@ Do not wait for a run, a test sweep or a server with a fixed `sleep N` followed 
 - If you must block on the outcome (a subagent that needs a run's result to continue), wait on the event itself, with an upper bound. Run it in the foreground with an explicit tool timeout when it fits, or use `wait <pid>`, `tail -f <log> | grep -m1 '<finished line>'`, or a deadline loop such as `for _ in $(seq 300); do <condition> && break; sleep 1; done`. macOS ships no `timeout` command, so the bound is the tool's command timeout or the loop's count. Keep each blocking command under the tool's command timeout.
 - To check that a server or job started, poll for readiness (the port answers, the ready line is in the log) at a short interval with an upper bound, e.g. `for _ in $(seq 30); do curl -s localhost:<port> >/dev/null && break; sleep 1; done`. Do not use a fixed pause.
 - A fixed pause is right only where the delay itself is the point: a test that needs time to pass, or rate limiting.
+
+### 3.10 Parallel worktrees
+
+Agents often work in parallel worktrees of this one repository (`../af-worktrees/<name>`). Those worktrees share one object store, one ref namespace and **one stash list**.
+
+- Never use `git stash`. A stash pushed in one worktree can be popped in another. On 2026-10-23 two agents swapped their uncommitted work this way. To compare against a baseline, commit to your own branch, or save `git diff > file.patch`, then `git checkout`.
+- Touch only your own worktree and branch. Never check out, reset or clean another worktree.
 
 ## 4. External dependencies worth knowing
 

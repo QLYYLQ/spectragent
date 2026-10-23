@@ -5,13 +5,18 @@ walk does not descend into a run (its ``env/`` holds archived web content) and
 skips exported datasets, whose manifest lists samples. What a run is (a
 recording, an offline replay, a branch) and which run a branch came from are
 read from the recorded configuration and provenance, never from paths.
+
+A run-exclusions file (``run-exclusions-1``, the ``trace_branches`` loader's
+``exclude_runs`` format; ``health`` writes one) leaves out every run whose run
+id it lists and every branch run whose source run id it lists, with the
+file's reason (:attr:`RunSet.excluded`).
 """
 
 from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -24,6 +29,8 @@ from spectragent.core.capabilities.browser.observations import (
     BrowserCaptureStateObs,
     ScreenshotObs,
 )
+from spectragent.core.data_loader._common import BenchmarkDataError
+from spectragent.core.data_loader.task.run_exclusions import read_run_exclusions
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import StepManifestEntry, TraceConfig
 from spectragent.core.trace.reader import RunTrace
@@ -354,13 +361,15 @@ class RunSet:
 
     A run whose evidence fails to read while a command works on it is added
     to ``skipped`` with the reason (:meth:`each`); the command goes on with
-    the other runs.
+    the other runs. A run a run-exclusions file names is not among ``runs``
+    at all; it is in ``excluded`` with the reason (:meth:`exclude`).
     """
 
     root: Path
     viewer_root: Path
     runs: list[Run] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
+    excluded: dict[str, str] = field(default_factory=dict)
 
     def each(
         self, work: Callable[[Run], T], runs: Iterable[Run] | None = None
@@ -382,6 +391,28 @@ class RunSet:
 
     def skip(self, run: Run, exc: Exception) -> None:
         self.skipped[run.key] = unreadable(run.path, exc)
+
+    def exclude(self, reasons: Mapping[str, str]) -> None:
+        """Leave out every run whose run id *reasons* names, and every branch run of one.
+
+        *reasons* is why each run id is excluded (a run-exclusions file, read
+        by :func:`read_exclusions`). A branch run is matched by its recorded
+        source run id, as the loader that made it named the source.
+        """
+        kept: list[Run] = []
+        for run in self.runs:
+            branch = run.config.branch
+            if run.run_id in reasons:
+                self.excluded[run.key] = f"the exclusions file lists it: {reasons[run.run_id]}"
+            elif branch is not None and branch.source_run_id in reasons:
+                self.excluded[run.key] = (
+                    f"its source run {branch.source_run_id!r} is in the exclusions file: "
+                    f"{reasons[branch.source_run_id]}"
+                )
+            else:
+                kept.append(run)
+        self.runs = kept
+        self.__dict__.pop("by_run_id", None)
 
     @cached_property
     def by_run_id(self) -> dict[str, list[Run]]:
@@ -415,8 +446,22 @@ class RunSet:
         return matching[0] if len(matching) == 1 else None
 
 
-def open_runs(root: Path, viewer_root: Path | None = None) -> RunSet:
-    """Every readable run under *root*, keyed relative to *viewer_root* (default: *root*)."""
+def read_exclusions(path: Path) -> dict[str, str]:
+    """Why each run id the run-exclusions file *path* lists is excluded (the loader's own reader)."""
+    try:
+        return read_run_exclusions(path.expanduser())
+    except BenchmarkDataError as exc:
+        raise LookaheadInputError(f"--exclude-runs: {exc}") from exc
+
+
+def open_runs(
+    root: Path, viewer_root: Path | None = None, exclude_runs: Path | None = None
+) -> RunSet:
+    """Every readable run under *root*, keyed relative to *viewer_root* (default: *root*).
+
+    With *exclude_runs* (a run-exclusions file), the runs it names and their
+    branch runs are left out (:meth:`RunSet.exclude`).
+    """
     root = root.expanduser()
     if not root.is_dir():
         raise LookaheadInputError(f"--root {root} is not a directory")
@@ -435,4 +480,6 @@ def open_runs(root: Path, viewer_root: Path | None = None) -> RunSet:
             result.skipped[key] = unreadable(directory, exc)
             continue
         result.runs.append(run)
+    if exclude_runs is not None:
+        result.exclude(read_exclusions(exclude_runs))
     return result

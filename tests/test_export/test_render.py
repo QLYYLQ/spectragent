@@ -501,6 +501,57 @@ class TestUntranslatable:
         assert renderer.stats.untranslatable == {"unrepresentable": 1}
 
 
+class TestTheDoneClaim:
+    """UI-TARS's ``finished()`` states no claim about the task, so only an unclaimed done is its.
+
+    A teacher's ``done`` carrying a claim (another agent's ``success`` param)
+    has no ``finished`` spelling: written anyway, the student's reply would
+    execute as a done that claims nothing, a different action from the one it
+    was trained on (arch §4.15 "round-trip", clause 4).
+    """
+
+    async def test_a_done_without_a_claim_round_trips(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        renderer = _renderer(composer)
+        last = (await renderer.render(_trajectory(_three_steps(tmp_path))))[-1]
+        assert last.target == "Thought: done\nAction: finished(content='added')"
+        (executed,) = last.target_actions
+        assert executed == Action(name="browser.done", params={"extracted_content": "added"})
+        assert renderer.stats.untranslatable == {}
+
+    @pytest.mark.parametrize("claim", [False, True])
+    async def test_a_claim_is_refused_with_its_reason(
+        self, composer: ConfigComposer, tmp_path: Path, claim: bool
+    ) -> None:
+        claimed = Action(
+            name="browser.done", params={"extracted_content": "added", "success": claim}
+        )
+        trace = RunTrace(
+            write_ui_tars_run(
+                tmp_path,
+                "run-claim",
+                [
+                    ui_tars_step(click_at(640, 360), thought="open the menu", color=10),
+                    ui_tars_step(claimed, thought="done", color=30),
+                ],
+            )
+        )
+        with pytest.raises(UntranslatableActionError) as excinfo:
+            await _renderer(composer, untranslatable="fail").render(_trajectory(trace))
+        error = excinfo.value
+        assert (error.sample_id, error.reason) == ("run-claim/s1", "unrepresentable")
+        assert error.detail == (
+            "cannot write browser.done(success): finished(content='answer if applicable') "
+            "has no argument that carries it"
+        )
+
+        renderer = _renderer(composer)
+        (only,) = await renderer.render(_trajectory(trace))
+        assert only.sample.step == 0
+        assert renderer.stats.untranslatable == {"unrepresentable": 1}
+
+
 class TestStepInfo:
     def _seen(self, monkeypatch: pytest.MonkeyPatch) -> list[StepInfoObs | None]:
         seen: list[StepInfoObs | None] = []

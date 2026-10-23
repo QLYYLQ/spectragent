@@ -270,6 +270,17 @@ def _check_partial_below_the_header(partial: dict[str, Any]) -> None:
     assert partial["occlusion"] == "clear"
 
 
+def _the_claimed_done_is_not_a_sample(report: Any) -> None:
+    """The two clicks are samples; the teacher's ``done(success=true)`` is not.
+
+    UI-TARS's ``finished()`` states no claim about the task, so a done that
+    claims success has no ``finished`` spelling: the student refuses it as
+    unrepresentable and ``drop_step`` leaves it out (arch §4.15 "round-trip").
+    """
+    assert sum(report.samples.values()) == 2
+    assert report.manifest.steps.untranslatable == {"unrepresentable": 1}
+
+
 def test_browser_use_run_exports_with_dom_raw_occlusion(
     composer: ConfigComposer, tmp_path: Path
 ) -> None:
@@ -287,7 +298,7 @@ def test_browser_use_run_exports_with_dom_raw_occlusion(
             translator={"translator_id": "index_to_coordinate", "occlusion": "check"},
         ),
     )
-    assert sum(report.samples.values()) == 3
+    _the_claimed_done_is_not_a_sample(report)
     found = _translations(out)
     assert found[0]["evidence"] == "dom_raw" and found[0]["point_source"] == "grid"
     _check_partial_below_the_header(found[0])
@@ -316,7 +327,7 @@ def test_skyvern_hit_test_run_exports_with_hit_test_occlusion(
             translator={"translator_id": "index_to_coordinate", "occlusion": "check"},
         ),
     )
-    assert sum(report.samples.values()) == 3
+    _the_claimed_done_is_not_a_sample(report)
     found = _translations(out)
     assert found[0]["evidence"] == "hit_test" and found[0]["point_source"] == "hit_test"
     _check_partial_below_the_header(found[0])

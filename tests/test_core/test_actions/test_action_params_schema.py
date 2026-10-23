@@ -53,7 +53,10 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
     },
     "browser.done": {
         "extracted_content": "str | None -- final answer / result text",
-        "success": "bool (optional)",
+        # Reworded on purpose: the done action's ``success`` is the agent's
+        # claim about the task, and the bare type told no model what it meant.
+        "success": "bool (optional) -- whether the task was accomplished; "
+        "leave it unset if you cannot tell",
     },
     "browser.drag": {
         "start_x": "int -- CSS px from the viewport's left edge",

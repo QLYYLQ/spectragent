@@ -219,7 +219,9 @@ class TestFullPipeline:
         result = asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("test", task_id="t-001"))
         assert result.agent_done.value == "done"
         assert result.answer == "answer"
-        assert result.agent_reported_success is True
+        # The capability's done executed (success=True) and claimed nothing
+        # about the task: executing is not a claim.
+        assert result.agent_reported_success is None
 
 
 class TestPrepare:

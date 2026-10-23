@@ -47,7 +47,9 @@ _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: Updated 2026-10-20: the platform block names a computer-use agent and its environment.
 #: Updated 2026-10-22: the system prompt says feedback points are on the model's own grid
 #: (the only difference: the old digest comes back with the old sentence put back).
-UI_TARS_PROMPT_SHA256 = "58d6602dc5e8a3fdc9a182b858b2fc559be14f8b53158921daaff3deb536d137"
+#: Updated 2026-10-23: ``finished``'s ``executes:`` line no longer lists ``success``, which
+#: ``finished()`` cannot set (the only difference: ``, success: bool (optional)`` removed).
+UI_TARS_PROMPT_SHA256 = "8a843a077b3faeccdb70df6b0a4858ac97cb27690015672ab0b340f0f7891181"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:

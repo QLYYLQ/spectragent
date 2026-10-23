@@ -11,6 +11,7 @@ reader reads it back.
 from __future__ import annotations
 
 import io
+import itertools
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -49,7 +50,7 @@ from spectragent.core.capabilities.browser.observations import (
     BrowserCaptureStateObs,
     ScreenshotObs,
 )
-from spectragent.core.capabilities.browser.settle import PageSettle
+from spectragent.core.capabilities.browser.settle import PageSettle, SettlePending
 from spectragent.core.trace.encoding import encode_archive_file, encode_fragment, sha256_hex
 from spectragent.core.trace.models import (
     TaskSetupRecord,
@@ -89,6 +90,11 @@ def gradient(descending: bool = True, size: tuple[int, int] = SIZE) -> bytes:
         for y in range(height):
             image.putpixel((x, y), (value, value, value))
     return _png(image)
+
+
+def flat(color: tuple[int, int, int], size: tuple[int, int] = SIZE) -> bytes:
+    """One colour all over: a page that shows nothing (a dark skeleton background, say)."""
+    return _png(Image.new("RGB", size, color))
 
 
 def with_box(data: bytes, box: tuple[int, int, int, int], color: tuple[int, int, int]) -> bytes:
@@ -158,6 +164,10 @@ def scroll_down() -> tuple[Action, ActionResult]:
         Action(name="browser.scroll", params={"direction": "down"}),
         ActionResult(success=True, effect=effect),
     )
+
+
+def send_keys(keys: str) -> tuple[Action, ActionResult]:
+    return (Action(name="browser.send_keys", params={"keys": keys}), ActionResult(success=True))
 
 
 def wait() -> tuple[Action, ActionResult]:
@@ -269,6 +279,45 @@ def frames_files(
     return files
 
 
+_RECORD_IDS = itertools.count(1)
+
+
+def exchange(
+    url: str,
+    resource_type: str = "XHR",
+    *,
+    status: int | None = 200,
+    error_text: str | None = None,
+    method: str = "GET",
+) -> dict[str, Any]:
+    """One ``kind: exchange`` line of ``browser.network``'s ``index.jsonl``, as the recorder writes it.
+
+    A request that failed before any response has no status and Chrome's error text.
+    """
+    return {
+        "kind": "exchange",
+        "record_id": f"record-{next(_RECORD_IDS)}",
+        "method": method,
+        "url": url,
+        "status": status,
+        "resource_type": resource_type,
+        "body_status": "ok" if error_text is None else "incomplete",
+        "error_text": error_text,
+    }
+
+
+def network_index_file(step: int, lines: list[dict[str, Any]]) -> Any:
+    """``browser.network``'s ``index.jsonl`` of one step's commit (no WARC: nothing here serves)."""
+    item = ArchiveFile(
+        archiver_id="browser.network",
+        name="index.jsonl",
+        media_type="application/x-ndjson",
+        data="".join(json.dumps(line) + "\n" for line in lines).encode(),
+        meta=ArchiveProvenance(captured_at=1000.0 + 10 * step),
+    )
+    return encode_archive_file(item, step=step)
+
+
 def dom_raw_file(step: int, cycle: int) -> Any:
     item = ArchiveFile(
         archiver_id="browser.dom_raw",
@@ -301,14 +350,16 @@ class StepSpec:
     frames: list[Frame] | None = None
     action_spans: list[ActionSpan] | None = None
     observed: bool = True
+    #: ``index.jsonl`` lines of ``browser.network`` this step's commit takes.
+    network: list[dict[str, Any]] | None = None
 
 
 def settled(waited_ms: int = 300) -> PageSettle:
     return PageSettle(waited_ms=waited_ms, outcome="settled")
 
 
-def capped(waited_ms: int = 3000) -> PageSettle:
-    return PageSettle(waited_ms=waited_ms, outcome="capped", waiting_for=["load"])
+def capped(waited_ms: int = 3000, waiting_for: tuple[SettlePending, ...] = ("load",)) -> PageSettle:
+    return PageSettle(waited_ms=waited_ms, outcome="capped", waiting_for=list(waiting_for))
 
 
 def ok_check(step: int) -> RestorationCheck:
@@ -407,6 +458,8 @@ def write_run(
             extra.append(dom_raw_file(spec.step, spec.dom_cycle))
         if spec.frames is not None:
             extra += frames_files(spec.frames, step=spec.step)
+        if spec.network is not None:
+            extra.append(network_index_file(spec.step, spec.network))
         record = StepRecord(
             step=spec.step,
             origin=spec.origin,

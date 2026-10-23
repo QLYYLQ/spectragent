@@ -6,7 +6,7 @@ See docs/architecture_design.md §4.5 for the full Action design.
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator, model_validator
 
 #: A fact an action effect could not report as a value. ``"unknown"``: measuring
 #: it was attempted and failed or ran out of the measurement budget.
@@ -91,12 +91,26 @@ class ActionResult(BaseModel):
     never changes the outcome. ``None``: the action declares no effect, or it
     did not get as far as anything measurable. It is serialized whole, as its
     concrete type, and read back as that type by the trace reader.
+
+    ``success`` is whether the action executed, for every action, the one
+    that ends the run included: a done result's ``success`` says the run was
+    closed, never whether the task was accomplished. The ending action's
+    payload is the three fields after it: ``is_done`` closes the run,
+    ``extracted_content`` is the answer, and ``reported_success`` is what the
+    agent said about the task: ``True`` (accomplished), ``False`` (not
+    accomplished) or ``None`` (it said neither). It is the agent's own claim,
+    not a verdict; the Loop copies it into ``AgentResult.agent_reported_success``
+    (``docs/architecture_design.md`` §4.1, "agent 的任务结论").
     """
 
     success: bool
     error: str | None = None
     is_done: bool = False
     extracted_content: str | None = None
+    #: Left out of the serialized result when ``None``, like ``effect``: only a
+    #: done result can carry one, so every other result writes what it always
+    #: wrote, and a missing value and "the agent made no claim" are one fact.
+    reported_success: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     typed_into_sensitive_field: bool | None = None
     #: Left out of the serialized result when ``None``, so a result without an
     #: effect writes what it always wrote: a missing ``effect`` and "this action
@@ -104,6 +118,16 @@ class ActionResult(BaseModel):
     effect: SerializeAsAny[ActionEffect] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+
+    @model_validator(mode="after")
+    def _a_claim_ends_the_run(self) -> "ActionResult":
+        """Only the action that ends the run carries the agent's claim about the task."""
+        if self.reported_success is not None and not self.is_done:
+            raise ValueError(
+                "reported_success is the agent's claim about the task, carried by the action "
+                "that ends the run; a result with is_done=False cannot carry one"
+            )
+        return self
 
     @field_validator("effect", mode="before")
     @classmethod
