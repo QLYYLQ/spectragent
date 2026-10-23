@@ -372,7 +372,7 @@ agent:
 
 **prompt 按家族根取目录**：`agent_prompt_dir(agent_id)` 取第一个点之前的部分，`browser_use.dom` 与 `browser_use.dom_vision` 都读 `prompts/agents/browser_use/`，记录下的 `PromptRef.path` 也是 `agents/browser_use/<name>.md`。成员之间差的是观测与动作声明，不是模板教给模型的协议；一族一个目录，模板只有一份，不会出现各成员的副本互相漂移。不带点的键（`ui_tars`）自成一族，路径不变。
 
-**家族根保持抽象**：已注册 agent 的子类如果不写自己的键，会被推出 `<父键>.<类名>`（`ui_tars` 下得到 `ui_tars.mobile`），父键就既是 agent 又是家族根，conscribe 的 `tree()` 拒绝这种形状。把一个 agent 拆成家族，就是把它的类改成抽象根；`tests/test_agents/test_agent_families.py` 对发布的 agent 检查没有键同时是两者。
+**家族根保持抽象**：已注册 agent 的子类如果不写自己的键，会被推出 `<父键>.<类名>`（`ui_tars` 下得到 `ui_tars.mobile`），父键就既是 agent 又是家族根，conscribe 的 `tree()` 拒绝这种形状。把一个 agent 拆成家族，就是把它的类改成抽象根；`tests/test_agents/test_agent_families.py` 对发布的 agent 检查没有键同时是两者。抽象根在 Python 里也构造不出来（2026-10-23）：YAML 本来就选不到它（conscribe 不注册抽象类），但直接 `BrowserUseAgent()` 以前能构造，run 到 `prepare()` 才因为只有成员才有的属性失败（`AttributeError: _SURFACE`）。现在 `AgentBase.__new__` 对自己类体里写了 `__abstract__ = True` 的类抛 `TypeError`，点名它的成员（派生自它的已注册 agent，带键与类名），例如 `'browser_use' (BrowserUseAgent) is an abstract agent family root and cannot be constructed; construct one of its members: browser_use.dom (BrowserUseDomAgent), browser_use.dom_vision (BrowserUseDomVisionAgent).`。规则只有这一处，各家族不各写一份；标记与 conscribe 一样只读类自己的类体，成员不写它，照常构造。
 
 **BrowserUse 家族**（用户 2026-10-23 的裁决，取代 `observation_mode` 的 `dom` / `dom_vision` / `vision` 三个模式）。家族根 `BrowserUseAgent`（`agents/browser_use/family.py`）持有 Loop 范围、共有的配置字段、prompt 构建与回复解析；两个成员各写完整的 `observation` 与 `action` 条目：
 
