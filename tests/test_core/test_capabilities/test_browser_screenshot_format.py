@@ -179,7 +179,7 @@ class TestEncodingIsWiredThrough:
             await group.close_all()
 
     async def test_the_jpeg_fragment_still_reports_its_pixel_size(self) -> None:
-        # The geometry contract a vision agent converts points with. Read
+        # The geometry contract the framework converts a vision agent's points with. Read
         # from the bytes, so it costs no second CDP call for JPEG either.
         cap = BrowserCapability(profile="vision_only", screenshot_format="jpeg")
         cdp = _CaptureCDP(_jpeg(1280, 720))

@@ -224,7 +224,7 @@ class TestPromptVocabulary:
         ``index`` / ``text``: it only ever saw name and description.
 
         Point params are the one exception, in the other direction: the
-        agent converts them, so the executor's unit (CSS px) is exactly
+        framework converts them, so the executor's unit (CSS px) is exactly
         what the model must *not* be taught. What a point is comes from
         the Coordinates section instead.
         """

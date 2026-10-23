@@ -1067,33 +1067,33 @@ their own. The exporter validates them right before it calls them; `prepare()` n
 value on an existing one.
 
 - `format_react_output(actions, *, thought=None) -> str` is the inverse of
-  `parse_react_output`: it writes the reply this agent would be asked for when served. It
-  reads per-step agent state, so the order is `prepare`, then the step's
-  `await build_react_prompt(obs, context=ReactPromptContext(...))`, then
-  `format_react_output`, then `parse_react_output`. Historical rendering passes
-  `phase="history"` and recorded contributions; it never regenerates them with a helper
-  model. The same input gives the same text.
+  `parse_react_output`: it writes the reply this agent would be asked for when served.
+  It is stateless: the actions it is handed already have their points on the step's
+  coordinate frame (the framework's `core/loops/coordinate_frames.py::actions_in_model_frame`,
+  architecture §4.1 "坐标系归框架"), and what it writes is read back as the framework reads
+  a served reply, `parse_react_output` followed by `actions_in_capability_units`.
+  Historical rendering passes `phase="history"`, recorded contributions and the student's
+  own frame (`ReactPromptContext.frame`, built by `step_frame` over the recorded
+  screenshot); it never regenerates contributions with a helper model. The same input
+  gives the same text.
 - The student's execution feedback reuses the same per-verb writing (architecture §4.1,
   "every point the model sees is on the grid it writes"): UI-TARS shows an earlier batch
-  as the calls it would write, its effect lines and the pointer through a `write_point`
-  for its grid, so an exported context shows the previous target turn's call again, not
-  the trace's CSS pixels. It finds an earlier step's grid in per-run state keyed by step
-  number, which `prepare` (each segment's `seed_messages`) clears and each
-  `build_react_prompt` fills; a segment builds its steps in order, so nothing else is
-  needed. A point with no place on the grid (its step showed no screenshot of known size,
-  or it lies outside the screenshot) is written as such, never in pixels and never
-  clamped, so such a step kept as text does not stop the export. Which params are points
-  comes from the action's `PointAxis` markers (the run's descriptor's `point_params`, or
-  the registered `Params` for a recorded action the run does not execute), never from
-  names or values. The same writing is the optional ReAct slot `format_action_fact(action, *,
-  step)`; `keep_as_text` writes its turn with it, so the kept turn and the next step's
-  feedback agree (a student without the slot gets the action's own JSON). A new student
-  format with its own grid does the same: pass a `write_point` to `ActionEffect.describe`
-  (through `result_facts` / `effect_line`) and to `render_capture_state` (or
-  `render_browser_state`), an action writer to `restored_history_message`, and implement
-  `format_action_fact`. The grid writing, the not-placeable wording, the per-step grid
-  record and the point-param lookup are shared in `agents/_feedback_points.py`
-  (BrowserUse uses them for its own feedback, though it is not a student).
+  as the calls it would write, so an exported context shows the previous target turn's
+  call again, not the trace's CSS pixels. The points are the framework's: each history
+  record carries its frame (`StepRecord.frame`; the export records the student's on its
+  copy of each step), `fact_in_model_frame` puts an action's points on it and
+  `point_writer(frame)` writes effect lines and the pointer, so rendering needs no agent
+  state and no step order. A point with no place on the frame (its step showed no
+  screenshot of known size, or it lies outside the screenshot) is written as such, never
+  in pixels and never clamped, so such a step kept as text does not stop the export.
+  Which params are points comes from the action's `PointAxis` markers (the run's
+  descriptor's `point_params`, or the registered `Params` for a recorded action the run
+  does not execute), never from names or values. The optional ReAct slot
+  `format_action_fact(action)` writes an action already on the frame as a fact;
+  `keep_as_text` writes its turn with it, so the kept turn and the next step's feedback
+  agree (a student without the slot gets the action's own JSON). A new student format
+  with its own grid declares it as `coordinate_space`, renders the facts and writers the
+  framework hands it, and implements `format_action_fact`; it converts nothing itself.
 - `StudentRenderer.render` is async. Its callers await it; the synchronous
   `ExportRunner.run` drives the entire async rendering phase with one `asyncio.run`.
   Segment seeding still uses `AgentRuntime.seed_messages`, and assistant history uses

@@ -329,7 +329,12 @@ class SkyvernAgent(AgentBase):
         """
         history.validate_execution()
         messages = await self.build_react_prompt(observation, context=context)
-        restored = restored_history_message(history, show_action_effects=self.show_action_effects)
+        restored = restored_history_message(
+            history,
+            show_action_effects=self.show_action_effects,
+            context=context,
+            action_space=self._action_space,
+        )
         return [*messages, restored]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:

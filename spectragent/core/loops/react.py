@@ -36,6 +36,7 @@ from spectragent.core.loops._loop_fragments import (
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import AgentLoopBase
+from spectragent.core.loops.coordinate_frames import actions_in_capability_units, step_frame
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.run import LoopRun
@@ -43,6 +44,7 @@ from spectragent.core.loops.validation import IncompatibleError
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
+from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord
@@ -323,8 +325,16 @@ class ReactLoop(AgentLoopBase):
         agent = run.agent
         memory = run.memory
         prompt_context: ReactPromptContext | None = None
+        frame: PointFrame | None = None
         try:
+            # The frame this step's points are written in: the run's declared
+            # grid over the screenshot this observation shows. The Agent
+            # writes the pointer on it, the reply is read off it, and the
+            # step's record keeps it for whoever writes this step's points
+            # again (``core/loops/coordinate_frames.py``).
+            frame = step_frame(run.action_space, observation)
             prompt_context = self.prompt_context(run, step_idx)
+            prompt_context.frame = frame
             new_msgs = await agent.build_react_prompt(observation, context=prompt_context)
         except RunAbort as exc:
             await self._note_abort(
@@ -468,7 +478,15 @@ class ReactLoop(AgentLoopBase):
             # can self-correct, in this step if retries remain and on
             # the next one otherwise.
             try:
-                actions = agent.parse_react_output(raw_output)
+                # The Agent reads its own reply; the framework moves the
+                # points it states off this step's frame into the
+                # capability's units, before anything checks or runs them.
+                actions = actions_in_capability_units(
+                    agent.parse_react_output(raw_output),
+                    frame,
+                    run.action_space,
+                    raw_output=output_text[:500],
+                )
                 # The actions that would run must fit their ``Params``; one
                 # that does not is a reply to rewrite, not an action to fail.
                 self.check_action_params(
@@ -535,6 +553,7 @@ class ReactLoop(AgentLoopBase):
                 step=step_idx,
                 observation_summary=observation_summary,
                 llm_output=output_text,
+                frame=frame,
                 actions=[],
                 action_results=[],
                 error_phase="parse",
@@ -601,6 +620,7 @@ class ReactLoop(AgentLoopBase):
             step=step_idx,
             observation_summary=observation_summary,
             llm_output=output_text,
+            frame=frame,
             actions=actions,
             action_results=step_results,
             timestamp=time.time(),

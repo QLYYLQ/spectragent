@@ -18,21 +18,28 @@ image's pixels:
 :class:`ScreenshotGeometry` is what a screenshot fragment reports so the two
 can be related. :func:`point_grid` builds one step's mapping, and
 :meth:`PointGrid.to_viewport` converts, with a single rule for a point off
-the grid. An agent converts once, when it parses a reply, so the guard, the
-action and the params recorded in the trace only ever see viewport units.
+the grid. :class:`PointFrame` is the frame one step's points are written in,
+recorded on the step (``StepRecord.frame``).
 
-The other direction, :meth:`PointGrid.to_grid`, is what an agent uses to
-*write* a point it is given in viewport units — the training export renders
-a recorded action as the reply a student model should have written (arch
-§4.15). It is not an exact inverse when the grid is coarser than the
-viewport: :attr:`PointGrid.quantum` bounds what one ``to_grid`` →
-``to_viewport`` round trip can move a point.
+The conversion is the framework's, never an agent's
+(``spectragent/core/loops/coordinate_frames.py``, ``docs/architecture_design.md``
+§4.1 "坐标系归框架"): it converts a parsed reply's points once, so the guard,
+the action and the params recorded in the trace only ever see viewport
+units; and it writes every point shown to a model back on that model's grid.
+
+The other direction, :meth:`PointGrid.to_grid`, writes a point given in
+viewport units — on the feedback a model reads, and in the reply the
+training export writes for a student model (arch §4.15). It is not an exact
+inverse when the grid is coarser than the viewport: :attr:`PointGrid.quantum`
+bounds what one ``to_grid`` → ``to_viewport`` round trip can move a point.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, Self, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 CoordinateSpace = Literal["screenshot_pixels", "normalized_1000"]
 """The grid a model writes points on.
@@ -134,6 +141,49 @@ class PointGrid:
             _axis_quantum(self.viewport_width, self.width),
             _axis_quantum(self.viewport_height, self.height),
         )
+
+    def holds(self, x: float, y: float) -> bool:
+        """Whether the viewport point (x, y) lies in the area the screenshot depicts.
+
+        ``to_grid`` clamps a point outside it onto the grid's edge, which
+        would misstate where the point is; a writer asks this first.
+        """
+        return 0 <= x < self.viewport_width and 0 <= y < self.viewport_height
+
+
+class PointFrame(BaseModel):
+    """The frame one step's points were written in: a model's grid over that step's screenshot.
+
+    Recorded on the step (``StepRecord.frame``) and handed to the Agent that
+    builds the step's prompt (``ReactPromptContext.frame``), so every later
+    reader — the next step's feedback, a branch's restored history, the
+    training export, a trace reader — knows how the step's reply relates to
+    its actions without asking the Agent. ``None`` in those places, not a
+    frame, means the run's points are the capability's own units: its agent
+    declares no grid, or its action space holds no point action.
+
+    Attributes:
+        space: The grid the run's model writes points on — its agent's
+            declared ``coordinate_space``.
+        grid: That grid over the screenshot the step showed. ``None`` when
+            the step showed no screenshot of known size: no point of that
+            step has a place, so one in a reply is refused and one shown to
+            the model is said to be not placeable.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    space: CoordinateSpace
+    grid: PointGrid | None = None
+
+    @model_validator(mode="after")
+    def _grid_is_of_the_space(self) -> Self:
+        if self.grid is not None and self.grid.space != self.space:
+            raise ValueError(
+                f"a {self.space} frame cannot hold a {self.grid.space} grid; "
+                f"the grid is the declared space laid over the screenshot"
+            )
+        return self
 
 
 def _axis_quantum(viewport: int, grid: int) -> int:

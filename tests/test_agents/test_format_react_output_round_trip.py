@@ -1,7 +1,11 @@
 """Every agent that writes ReAct replies passes the round-trip definition (arch §4.15).
 
 ``format_react_output`` (an optional ReAct slot, arch §4.1) writes the reply
-a student model is trained to produce. ``parse(format(a)) == a`` cannot hold
+a student model is trained to produce, on the model's grid; the framework puts
+a recorded action's points onto the step's frame before it and moves them off
+again after ``parse_react_output`` (``core/loops/coordinate_frames.py``), so
+``format`` and ``parse`` below are those compositions, as the training export
+and a served step use them. ``parse(format(a)) == a`` cannot hold
 (a 0-1000 grid over a 1280 px viewport loses 280 x values; the agent parses
 relative names, the trace holds qualified ones; some params have no
 spelling), so for every target action ``a`` it holds in this form, or
@@ -23,8 +27,8 @@ composed with ``react`` and a browser environment (never set up),
 factor 1 and 2. Params come from the negotiated descriptors themselves
 (``variant_params``); an integer ``<name>_x`` / ``<name>_y`` pair is a
 point. An agent whose points are written on a grid declares it as
-``coordinate_space`` (``schemas/observation/geometry.py``), and every value
-that field allows is checked.
+``coordinate_space`` (``schemas/observation/geometry.py``), the runtime frames
+its action space on it, and every value that field allows is checked.
 """
 
 from __future__ import annotations
@@ -45,10 +49,16 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.loops.coordinate_frames import (
+    actions_in_capability_units,
+    actions_in_model_frame,
+    step_frame,
+)
 from spectragent.core.loops.errors import UnrepresentableActionError
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
@@ -58,7 +68,7 @@ from spectragent.schemas.observation.fragments import (
     StepInfoObs,
     TaskObs,
 )
-from spectragent.schemas.observation.geometry import CoordinateSpace, PointGrid, point_grid
+from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame, PointGrid
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import variant_params
 
@@ -202,26 +212,33 @@ def _check(
     action: Action,
     *,
     thought: str | None,
-    guarded: frozenset[str],
-    bindings: Mapping[str, str],
+    space: ActionSpace,
+    frame: PointFrame | None,
     quantum: int,
     pairs: list[tuple[str, str]],
 ) -> bool:
     """The four clauses for one action; ``False`` when it is refused by name."""
+
+    def write(actions: list[Action]) -> str:
+        return agent.format_react_output(
+            actions_in_model_frame(actions, frame, space), thought=thought
+        )
+
     try:
-        text = agent.format_react_output([action], thought=thought)
+        text = write([action])
     except UnrepresentableActionError as exc:
         assert exc.params, f"{action}: refused without naming a param: {exc}"
         unset = [name for name in exc.params if action.params.get(name) is None]
         assert not unset, f"{action}: refusal names {unset}, which the action does not set"
         return False
-    parsed_all = agent.parse_react_output(text)
+    parsed_all = actions_in_capability_units(agent.parse_react_output(text), frame, space)
     assert len(parsed_all) == 1, (action, text)
     parsed = parsed_all[0]
     # 1. name, after the run's binding
+    guarded, bindings = space.allowed_actions, space.action_bindings
     assert resolve_action_name(parsed.name, guarded, bindings) == action.name, (action, text)
     # 2. fixed point, thought included
-    assert agent.format_react_output([parsed], thought=thought) == text, (action, text)
+    assert write([parsed]) == text, (action, text)
     # 3. points, within the student grid's quantum
     for x_key, y_key in pairs:
         for key in (x_key, y_key):
@@ -242,20 +259,18 @@ async def test_every_formatting_agent_round_trips() -> None:
             runtime = _runtime(cls, space)
             agent = runtime.prepare()
             runtime.seed_messages(_TASK)  # the agent's prepare slot, as a run calls it
-            guarded = frozenset(d.name for d in runtime.active_descriptors)
-            negotiated_actions = runtime.negotiated_actions
-            assert negotiated_actions is not None
-            bindings = negotiated_actions.action_bindings
+            action_space = runtime.action_space
+            assert action_space.coordinate_space == space
             written = refused = 0
             for dpr in (1, 2):
                 observation = _observation(runtime, dpr)
+                frame = step_frame(action_space, observation)
                 (
                     await agent.build_react_prompt(
-                        observation, context=ReactPromptContext(step=0, phase="policy")
+                        observation, context=ReactPromptContext(step=0, phase="policy", frame=frame)
                     )
                 )
-                grid = point_grid(space or "screenshot_pixels", observation.screenshot)
-                assert grid is not None
+                grid = frame.grid if frame is not None else None
                 for descriptor in runtime.active_descriptors:
                     pairs = _point_pairs(descriptor)
                     for params in _cases(descriptor):
@@ -264,9 +279,9 @@ async def test_every_formatting_agent_round_trips() -> None:
                                 agent,
                                 Action(name=descriptor.name, params=params),
                                 thought=thought,
-                                guarded=guarded,
-                                bindings=bindings,
-                                quantum=grid.quantum,
+                                space=action_space,
+                                frame=frame,
+                                quantum=grid.quantum if grid is not None else 0,
                                 pairs=pairs,
                             )
                             written += ok

@@ -1,7 +1,11 @@
 """UI-TARS ``format_react_output``: the reply a student is trained to write (arch §4.1, §4.15).
 
-The inverse of ``parse_react_output``. What is pinned here is the UI-TARS
-side of the round-trip definition:
+The inverse of ``parse_react_output``, on the model's own grid: the training
+export puts a recorded action's points on the step's frame before UI-TARS
+writes the reply, and moves them off it when the reply is read back
+(``core/loops/coordinate_frames.py``), as :class:`_Student` does here. What is
+pinned here is the UI-TARS side of the round-trip definition under that
+contract:
 
 - every verb is written as the call its parser reads back into the same
   action, on both coordinate spaces and at device scale factor 1 and 2 — a
@@ -29,12 +33,18 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.loops.coordinate_frames import (
+    actions_in_capability_units,
+    actions_in_model_frame,
+)
 from spectragent.core.loops.errors import UnrepresentableActionError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
+from tests._helpers.frames import step_context
 
 #: Every action UI-TARS has a verb for, as the browser capability names them.
 _ACTIONS = (
@@ -70,32 +80,50 @@ def _observation(dpr: int) -> Any:
     )
 
 
-async def _agent(space: str = "screenshot_pixels", *, dpr: int = 1, **config: Any) -> UITarsAgent:
+class _Student:
+    """UI-TARS as the training export drives it on one step: written and read on the step's frame."""
+
+    def __init__(self, agent: UITarsAgent, space: ActionSpace, context: ReactPromptContext) -> None:
+        self.agent, self.space, self.frame = agent, space, context.frame
+
+    def write(self, actions: list[Action], *, thought: str | None = None) -> str:
+        framed = actions_in_model_frame(actions, self.frame, self.space)
+        return self.agent.format_react_output(framed, thought=thought)
+
+    def read(self, text: str) -> list[Action]:
+        return actions_in_capability_units(
+            self.agent.parse_react_output(text), self.frame, self.space
+        )
+
+
+async def _prepared(agent: UITarsAgent, keys: tuple[str, ...], observation: Any) -> _Student:
+    descriptors = [
+        ActionRegistrar.get(key)().descriptor(fragments=frozenset({"browser.screenshot"}))
+        for key in keys
+    ]
+    space = space_for(agent, descriptors)
+    agent.prepare(
+        task="tick the box",
+        action_space=space,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
+    step = step_context(space, observation)
+    await agent.build_react_prompt(observation, context=step)
+    return _Student(agent, space, step)
+
+
+async def _student(space: str = "screenshot_pixels", *, dpr: int = 1, **config: Any) -> _Student:
     """Prepared against the real browser descriptors, with one step's prompt built."""
     agent = make_agent(
         UITarsAgent, memory=SimpleMemory(max_messages=10), coordinate_space=space, **config
     )
-    descriptors = [
-        ActionRegistrar.get(key)().descriptor(fragments=frozenset({"browser.screenshot"}))
-        for key in _ACTIONS
-    ]
-    agent.prepare(
-        task="tick the box",
-        action_space=space_of(descriptors),
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
-    )
-    (
-        await agent.build_react_prompt(
-            _observation(dpr), context=ReactPromptContext(step=0, phase="policy")
-        )
-    )
-    return agent
+    return await _prepared(agent, _ACTIONS, _observation(dpr))
 
 
-def _round_trip(agent: UITarsAgent, action: Action, thought: str | None = None) -> Action:
-    text = agent.format_react_output([action], thought=thought)
-    (parsed,) = agent.parse_react_output(text)
-    assert agent.format_react_output([parsed], thought=thought) == text  # the fixed point
+def _round_trip(student: _Student, action: Action, thought: str | None = None) -> Action:
+    text = student.write([action], thought=thought)
+    (parsed,) = student.read(text)
+    assert student.write([parsed], thought=thought) == text  # the fixed point
     return parsed
 
 
@@ -106,37 +134,37 @@ _SPACES = ("screenshot_pixels", "normalized_1000")
 @pytest.mark.parametrize("dpr", [1, 2])
 class TestEveryVerb:
     async def test_click(self, space: str, dpr: int) -> None:
-        agent = await _agent(space, dpr=dpr)
+        student = await _student(space, dpr=dpr)
         action = Action(
             name="browser.click_coordinate", params={"coordinate_x": 641, "coordinate_y": 359}
         )
-        parsed = _round_trip(agent, action)
+        parsed = _round_trip(student, action)
         assert parsed.name == "click_coordinate"
         quantum = 1 if space == "normalized_1000" else 0
         assert abs(parsed.params["coordinate_x"] - 641) <= quantum
         assert abs(parsed.params["coordinate_y"] - 359) <= quantum
 
     async def test_type(self, space: str, dpr: int) -> None:
-        agent = await _agent(space, dpr=dpr)
+        student = await _student(space, dpr=dpr)
         action = Action(
             name="browser.type_coordinate",
             params={"coordinate_x": 10, "coordinate_y": 700, "text": "hello world"},
         )
-        parsed = _round_trip(agent, action)
+        parsed = _round_trip(student, action)
         assert parsed.name == "type_coordinate"
         assert parsed.params["text"] == "hello world"
         assert (parsed.params["coordinate_x"], parsed.params["coordinate_y"]) == (10, 700)
 
     async def test_drag(self, space: str, dpr: int) -> None:
-        agent = await _agent(space, dpr=dpr)
+        student = await _student(space, dpr=dpr)
         action = Action(
             name="browser.drag", params={"start_x": 0, "start_y": 0, "end_x": 1279, "end_y": 719}
         )
-        parsed = _round_trip(agent, action)
+        parsed = _round_trip(student, action)
         assert parsed.params == {"start_x": 0, "start_y": 0, "end_x": 1279, "end_y": 719}
 
     async def test_scroll_hotkey_wait_finished(self, space: str, dpr: int) -> None:
-        agent = await _agent(space, dpr=dpr)
+        student = await _student(space, dpr=dpr)
         cases = [
             (Action(name="browser.scroll", params={"direction": "down"}), {"direction": "down"}),
             (Action(name="browser.send_keys", params={"keys": "ctrl+a"}), {"keys": "ctrl+a"}),
@@ -148,13 +176,13 @@ class TestEveryVerb:
             ),
         ]
         for action, params in cases:
-            assert _round_trip(agent, action).params == params
+            assert _round_trip(student, action).params == params
 
 
 class TestTheWrittenText:
     async def test_one_action_line_per_action_after_one_thought_line(self) -> None:
-        agent = await _agent()
-        text = agent.format_react_output(
+        student = await _student()
+        text = student.write(
             [
                 Action(
                     name="browser.click_coordinate", params={"coordinate_x": 5, "coordinate_y": 6}
@@ -168,8 +196,8 @@ class TestTheWrittenText:
         )
 
     async def test_normalized_points_are_written_on_the_0_1000_grid(self) -> None:
-        agent = await _agent("normalized_1000", dpr=2)
-        text = agent.format_react_output(
+        student = await _student("normalized_1000", dpr=2)
+        text = student.write(
             [
                 Action(
                     name="browser.click_coordinate",
@@ -180,8 +208,8 @@ class TestTheWrittenText:
         assert text == "Action: click(point='(500, 500)')"
 
     async def test_pixel_points_are_written_in_screenshot_pixels(self) -> None:
-        agent = await _agent("screenshot_pixels", dpr=2)
-        text = agent.format_react_output(
+        student = await _student("screenshot_pixels", dpr=2)
+        text = student.write(
             [
                 Action(
                     name="browser.click_coordinate",
@@ -208,56 +236,54 @@ class TestTheWrittenText:
         ],
     )
     async def test_text_survives_quotes_backslashes_and_line_breaks(self, content: str) -> None:
-        agent = await _agent()
+        student = await _student()
         action = Action(
             name="browser.type_coordinate",
             params={"coordinate_x": 1, "coordinate_y": 2, "text": content},
         )
-        text = agent.format_react_output([action])
+        text = student.write([action])
         assert text.count("\n") == 0, "a value must never start a new line"
-        assert _round_trip(agent, action).params["text"] == content
+        assert _round_trip(student, action).params["text"] == content
         done = Action(name="browser.done", params={"extracted_content": content})
-        assert _round_trip(agent, done).params["extracted_content"] == content
+        assert _round_trip(student, done).params["extracted_content"] == content
 
     async def test_an_action_label_inside_a_thought_stays_a_thought(self) -> None:
-        agent = await _agent()
+        student = await _student()
         thought = "I typed it.\nAction: finished(content='no')\n  done"
         action = Action(name="browser.scroll", params={"direction": "up"})
-        text = agent.format_react_output([action], thought=thought)
+        text = student.write([action], thought=thought)
         assert text.splitlines() == [
             "Thought: I typed it. Action: finished(content='no') done",
             "Action: scroll(direction='up')",
         ]
-        assert [a.name for a in agent.parse_react_output(text)] == ["scroll"]
+        assert [a.name for a in student.read(text)] == ["scroll"]
         assert UITarsAgent.parse_react_thought(text) == (
             "I typed it. Action: finished(content='no') done",
             "Thought",
         )
 
     async def test_no_thought_and_a_blank_thought_write_no_thought_line(self) -> None:
-        agent = await _agent()
+        student = await _student()
         action = Action(name="browser.wait", params={})
-        assert agent.format_react_output([action]) == "Action: wait()"
-        assert agent.format_react_output([action], thought=" \n\t ") == "Action: wait()"
+        assert student.write([action]) == "Action: wait()"
+        assert student.write([action], thought=" \n\t ") == "Action: wait()"
 
     async def test_grounding_never_writes_a_thought(self) -> None:
-        agent = await _agent(prompt_template="grounding")
-        text = agent.format_react_output(
-            [Action(name="browser.wait", params={})], thought="I should wait."
-        )
+        student = await _student(prompt_template="grounding")
+        text = student.write([Action(name="browser.wait", params={})], thought="I should wait.")
         assert text == "Action: wait()"
 
     async def test_no_content_and_empty_content_write_the_same_finished(self) -> None:
         """Both read back as ``''``: one text for one reading keeps the fixed point."""
-        agent = await _agent()
+        student = await _student()
         for content in (None, ""):
             action = Action(name="browser.done", params={"extracted_content": content})
-            assert agent.format_react_output([action]) == "Action: finished()"
-            assert _round_trip(agent, action).params["extracted_content"] == ""
+            assert student.write([action]) == "Action: finished()"
+            assert _round_trip(student, action).params["extracted_content"] == ""
 
     async def test_no_action_is_a_caller_error(self) -> None:
         with pytest.raises(ValueError, match="at least one action"):
-            (await _agent()).format_react_output([])
+            (await _student()).write([])
 
 
 class TestUnrepresentable:
@@ -301,7 +327,7 @@ class TestUnrepresentable:
         self, name: str, params: dict[str, Any], named: tuple[str, ...]
     ) -> None:
         with pytest.raises(UnrepresentableActionError) as excinfo:
-            (await _agent()).format_react_output([Action(name=name, params=params)])
+            (await _student()).write([Action(name=name, params=params)])
         assert excinfo.value.action_name == name
         assert excinfo.value.params == named
         for param in named:
@@ -309,42 +335,31 @@ class TestUnrepresentable:
 
     async def test_an_unset_optional_param_is_the_students_to_fill(self) -> None:
         """``None`` is "not set": nothing to carry, nothing refused."""
-        agent = await _agent()
+        student = await _student()
         action = Action(
             name="browser.type_coordinate",
             params={"coordinate_x": 1, "coordinate_y": 2, "text": "a", "clear": None},
         )
-        assert _round_trip(agent, action).params["text"] == "a"
+        assert _round_trip(student, action).params["text"] == "a"
 
     async def test_an_action_this_run_does_not_execute_has_no_call(self) -> None:
         # Which run action a verb means is the run's bindings' answer: an action
         # outside the run has no verb, and the refusal says what each verb runs as.
         with pytest.raises(UnrepresentableActionError) as excinfo:
-            (await _agent()).format_react_output(
-                [Action(name="browser.navigate", params={"url": "u"})]
-            )
+            (await _student()).write([Action(name="browser.navigate", params={"url": "u"})])
         assert excinfo.value.params == ()
         assert "this run does not execute it" in excinfo.value.detail
         assert "click() runs as browser.click_coordinate" in excinfo.value.detail
 
     async def test_a_verb_this_run_did_not_negotiate(self) -> None:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
-        descriptors = [
-            ActionRegistrar.get(key)().descriptor()
-            for key in ("browser.click_coordinate", "browser.type_coordinate", "browser.done")
-        ]
-        agent.prepare(
-            task="t",
-            action_space=space_of(descriptors),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-        )
-        (
-            await agent.build_react_prompt(
-                _observation(1), context=ReactPromptContext(step=0, phase="policy")
-            )
+        student = await _prepared(
+            agent,
+            ("browser.click_coordinate", "browser.type_coordinate", "browser.done"),
+            _observation(1),
         )
         with pytest.raises(UnrepresentableActionError, match="does not execute it"):
-            agent.format_react_output(
+            student.write(
                 [
                     Action(
                         name="browser.drag",
@@ -355,7 +370,7 @@ class TestUnrepresentable:
 
     async def test_a_verb_bound_to_another_capability(self) -> None:
         with pytest.raises(UnrepresentableActionError, match="runs as browser.click_coordinate"):
-            (await _agent()).format_react_output(
+            (await _student()).write(
                 [
                     Action(
                         name="desktop.click_coordinate",
@@ -365,27 +380,20 @@ class TestUnrepresentable:
             )
 
     async def test_a_point_without_a_measurable_screenshot(self) -> None:
+        """Refused by the framework while it puts the point on the frame: there is no grid."""
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
-        agent.prepare(
-            task="t",
-            action_space=space_of([ActionRegistrar.get("browser.click_coordinate")().descriptor()]),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-        )
-        (
-            await agent.build_react_prompt(
-                SimpleNamespace(
-                    platform=SimpleNamespace(
-                        operating_system="macos", fragment_id="browser.platform"
-                    ),
-                    history=SimpleNamespace(items=[]),
-                    task=SimpleNamespace(user_request="t"),
-                    screenshot=None,
-                ),
-                context=ReactPromptContext(step=0, phase="policy"),
-            )
+        student = await _prepared(
+            agent,
+            ("browser.click_coordinate",),
+            SimpleNamespace(
+                platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
+                history=SimpleNamespace(items=[]),
+                task=SimpleNamespace(user_request="t"),
+                screenshot=None,
+            ),
         )
         with pytest.raises(UnrepresentableActionError) as excinfo:
-            agent.format_react_output(
+            student.write(
                 [
                     Action(
                         name="browser.click_coordinate",

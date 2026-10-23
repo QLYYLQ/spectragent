@@ -43,6 +43,7 @@ from spectragent.core.llm.base import require_inference_protocol
 from spectragent.core.llm.call_context import RunCallContext
 from spectragent.core.llm.lifecycle import close_models
 from spectragent.core.loops.base import AgentLoop
+from spectragent.core.loops.coordinate_frames import declared_space, framed_action_space
 from spectragent.core.loops.errors import RunAbort, carried_outcome
 from spectragent.core.loops.identity import RunIdentity
 from spectragent.core.loops.limits import ExecutionLimits, validate_execution_limits
@@ -502,6 +503,15 @@ class AgentRuntime:
             action_filter,
             bindings=negotiated_actions.action_bindings,
         )
+        # Step 4b: The run's coordinate frame. An agent whose model writes
+        # points on a grid of its own declares which (its
+        # ``coordinate_space``); when the space holds a point action it is
+        # framed on that grid, its point params' descriptor text saying what
+        # the model writes there. The guard still executes the capability's
+        # units: each step's Loop converts on the way in and writes every
+        # fed-back point on the step's frame (``core/loops/coordinate_frames.py``,
+        # docs/architecture_design.md §4.1 "坐标系归框架").
+        action_space = framed_action_space(action_space, declared_space(agent))
 
         # Step 5: Loop weaving — patches wrapped_agent.run. A Loop with
         # assembly checks of its own makes them here (``BranchLoop`` checks

@@ -18,12 +18,14 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
+from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
 
 AGENT_CLASSES = (BrowserUseAgent, SkyvernAgent, UITarsAgent)
@@ -56,20 +58,33 @@ def observation() -> Any:
     )
 
 
-def prepared(agent_class: type[Any]) -> Any:
-    agent = make_agent(agent_class, memory=SimpleMemory(max_messages=20))
+def _space(agent: Any) -> ActionSpace:
     keys = {"browser.click", "browser.click_coordinate", "browser.wait", "browser.done"}
     descriptors = [
         action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
         for action in BrowserCapability().actions
         if action.action_id in keys
     ]
+    return space_for(agent, descriptors)
+
+
+def prepared(agent_class: type[Any]) -> Any:
+    agent = make_agent(agent_class, memory=SimpleMemory(max_messages=20))
     agent.prepare(
         task="Open the live result",
-        action_space=space_of(descriptors),
+        action_space=_space(agent),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return agent
+
+
+def context(agent_class: type[Any], **fields: Any) -> ReactPromptContext:
+    """The context a Loop hands an *agent_class* agent for a step on :func:`observation`.
+
+    Its frame included: the frame of the run's framed space over the observation's screenshot.
+    """
+    space = _space(make_agent(agent_class))
+    return ReactPromptContext(frame=step_frame(space, observation()), **fields)
 
 
 def restored_history(*, coordinate: bool = False, marker: bool | None = None) -> RestoredHistory:
@@ -129,10 +144,10 @@ async def test_no_contribution_preserves_every_message_byte_across_phases(
 ) -> None:
     agent = prepared(agent_class)
     policy = await agent.build_react_prompt(
-        observation(), context=ReactPromptContext(step=4, phase="policy")
+        observation(), context=context(agent_class, step=4, phase="policy")
     )
     history = await prepared(agent_class).build_react_prompt(
-        observation(), context=ReactPromptContext(step=4, phase="history", is_branch=True)
+        observation(), context=context(agent_class, step=4, phase="history", is_branch=True)
     )
     assert serialized(policy) == serialized(history)
     payload = json.dumps(serialized(policy), sort_keys=True, ensure_ascii=False).encode()
@@ -150,20 +165,20 @@ async def test_agent_places_system_and_turn_contributions_without_changing_obser
 ) -> None:
     agent = prepared(agent_class)
     plain = await agent.build_react_prompt(
-        observation(), context=ReactPromptContext(step=4, phase="policy")
+        observation(), context=context(agent_class, step=4, phase="policy")
     )
     contributions = [
         PromptContribution(text="Compare the available options", placement="system"),
         PromptContribution(text="Check the live result first", placement="turn"),
     ]
-    context = ReactPromptContext(step=4, phase="policy", contributions=contributions)
-    shown = await prepared(agent_class).build_react_prompt(observation(), context=context)
+    turn = context(agent_class, step=4, phase="policy", contributions=contributions)
+    shown = await prepared(agent_class).build_react_prompt(observation(), context=turn)
     assert serialized(shown[1:-1]) == serialized(plain)
     assert isinstance(shown[0], SystemMessage)
     assert shown[0].text == "External prompt contribution:\nCompare the available options"
     assert isinstance(shown[-1], UserMessage)
     assert shown[-1].text == "External prompt contribution:\nCheck the live result first"
-    assert context.contributions == contributions
+    assert turn.contributions == contributions
 
 
 @pytest.mark.parametrize("agent_class", AGENT_CLASSES)
@@ -178,7 +193,7 @@ async def test_restored_history_shows_actual_execution_and_labels_source_reply(
 
     monkeypatch.setattr(agent, "parse_react_output", refuse_source_parsing)
     messages = await agent.build_restored_history(
-        observation(), history=history, context=ReactPromptContext(step=4, phase="history")
+        observation(), history=history, context=context(agent_class, step=4, phase="history")
     )
     if agent_class is UITarsAgent:
         assert isinstance(messages[0], SystemMessage)
@@ -219,7 +234,9 @@ async def test_restored_history_rejects_missing_or_mismatched_results(
         history = restored_history(coordinate=agent_class is UITarsAgent).model_copy(update=update)
         with pytest.raises(ValueError, match="restored history"):
             await agent.build_restored_history(
-                observation(), history=history, context=ReactPromptContext(step=4, phase="history")
+                observation(),
+                history=history,
+                context=context(agent_class, step=4, phase="history"),
             )
 
 
@@ -232,7 +249,7 @@ async def test_restored_result_sensitivity_marker_stays_out_of_model_input(
         messages = await prepared(agent_class).build_restored_history(
             observation(),
             history=restored_history(coordinate=agent_class is UITarsAgent, marker=marker),
-            context=ReactPromptContext(step=4, phase="history"),
+            context=context(agent_class, step=4, phase="history"),
         )
         shown.append(serialized(messages))
     assert shown[0] == shown[1] == shown[2]
@@ -249,7 +266,7 @@ async def test_skyvern_next_prompt_remembers_actual_retargeted_actions() -> None
     agent = prepared(SkyvernAgent)
     history = restored_history()
     await agent.build_restored_history(
-        observation(), history=history, context=ReactPromptContext(step=4, phase="history")
+        observation(), history=history, context=context(SkyvernAgent, step=4, phase="history")
     )
     restored = StepRecord(
         step=4,
@@ -261,22 +278,29 @@ async def test_skyvern_next_prompt_remembers_actual_retargeted_actions() -> None
     next_observation = observation()
     next_observation.history = SimpleNamespace(items=[restored])
     messages = await agent.build_react_prompt(
-        next_observation, context=ReactPromptContext(step=5, phase="policy")
+        next_observation, context=context(SkyvernAgent, step=5, phase="policy")
     )
     assert "browser.click({'index': 29}) -> error: The live button was disabled" in messages[0].text
     assert "'index': 3}" not in messages[0].text
     assert "old source thought" not in messages[0].text
 
 
-async def test_ui_tars_restored_observation_sets_the_live_coordinate_grid() -> None:
+async def test_ui_tars_restored_step_records_and_shows_the_live_coordinate_frame() -> None:
+    """The restored execution is written on the restored observation's frame, as recorded.
+
+    The frame is the framework's (``BranchLoop`` records it on the restored
+    step); the next step reads it off that record, so UI-TARS keeps no grid.
+    """
     agent = prepared(UITarsAgent)
-    await agent.build_restored_history(
-        observation(),
-        history=restored_history(coordinate=True),
-        context=ReactPromptContext(step=4, phase="history"),
+    restored = context(UITarsAgent, step=4, phase="history")
+    assert restored.frame is not None and restored.frame.grid is not None
+    assert (restored.frame.grid.width, restored.frame.grid.viewport_width) == (2000, 1000)
+    messages = await agent.build_restored_history(
+        observation(), history=restored_history(coordinate=True), context=restored
     )
-    (action,) = agent.parse_react_output("Action: click(point=(100, 200))")
-    assert action.params == {"coordinate_x": 50, "coordinate_y": 100}
+    facts = json.loads(messages[-1].text.split("\n", 1)[1])
+    assert facts["actual_restored_execution"][0]["action"] == "click(point='(28, 56)')"
+    assert not any("grid" in name for name in vars(agent))
 
 
 @pytest.mark.parametrize("agent_class", AGENT_CLASSES)
@@ -284,12 +308,10 @@ async def test_concurrent_runs_keep_contributions_in_their_own_context(
     agent_class: type[Any],
 ) -> None:
     async def build(label: str) -> list[BaseMessage]:
-        context = ReactPromptContext(
-            step=4,
-            phase="policy",
-            contributions=[PromptContribution(text=label)],
+        turn = context(
+            agent_class, step=4, phase="policy", contributions=[PromptContribution(text=label)]
         )
-        return await prepared(agent_class).build_react_prompt(observation(), context=context)
+        return await prepared(agent_class).build_react_prompt(observation(), context=turn)
 
     left, right = await asyncio.gather(
         build("left run instruction"), build("right run instruction")

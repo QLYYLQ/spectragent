@@ -363,9 +363,11 @@ class TestTheRealFailures:
             [("drag", {"start_x": 1, "start_y": 2, "end_x": 3, "end_y": 4})],
             id="ui-tars-drag-boxes",
         ),
+        # The numbers as written, on the model's grid: the framework rounds
+        # them onto the viewport (``coordinate_frames.actions_in_capability_units``).
         pytest.param(
             "Action: click(point='(10.4, 19.6)')",
-            [("click_coordinate", {"coordinate_x": 10, "coordinate_y": 20})],
+            [("click_coordinate", {"coordinate_x": 10.4, "coordinate_y": 19.6})],
             id="fractional-coordinates",
         ),
         pytest.param(

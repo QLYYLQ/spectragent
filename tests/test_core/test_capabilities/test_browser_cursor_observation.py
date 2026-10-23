@@ -25,9 +25,11 @@ from spectragent.core.capabilities.browser.watchdogs.base import WatchdogContext
 from spectragent.core.capabilities.browser.watchdogs.events import BrowserStateRequestEvent
 from spectragent.core.capabilities.browser.watchdogs.screenshot_watchdog import ScreenshotWatchdog
 from spectragent.core.llm.messages import ContentPartImageParam
+from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.trace.encoding import decode_fragment, encode_fragment
 from spectragent.schemas.observation.image import read_model_image
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import browser_space
 
 
 def png(color: str = "white", size: tuple[int, int] = (240, 160)) -> bytes:
@@ -218,13 +220,13 @@ async def test_existing_image_consumers_send_model_view_on_unchanged_grid(agent)
     ]
     assert len(images) == 1
     assert base64.b64decode(images[0].image_url.url.split(",", 1)[1]) == image.model_image_bytes()
-    grid_with_cursor = agent._grid
+    # The cursor drawn on the model view does not move the frame the framework
+    # converts the reply's points with (``core/loops/coordinate_frames.py``).
+    space = browser_space("click_coordinate", coordinate_space="screenshot_pixels")
+    grid_with_cursor = step_frame(space, observation)
+    assert grid_with_cursor is not None and grid_with_cursor.grid is not None
     observation.screenshot = image.model_copy(update={"cursor": None})
-    await agent.build_react_prompt(
-        observation,
-        context=ReactPromptContext(step=0, phase="policy"),
-    )
-    assert agent._grid == grid_with_cursor
+    assert step_frame(space, observation) == grid_with_cursor
 
 
 async def test_skyvern_remains_text_when_screenshot_is_available() -> None:

@@ -42,6 +42,7 @@ from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs, TaskObs
+from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.trace_builder import agent_result, write_verdict
@@ -89,7 +90,7 @@ class ExportStep:
     executed). ``fragments`` are fragment instances, encoded as production
     encodes them; a loop ``task`` / ``step_info`` pair is added unless
     ``loop_fragments`` is false. ``failed`` names fragments whose capture
-    failed.
+    failed. ``frame`` is the teacher's recorded coordinate frame.
     """
 
     actions: list[Action] = field(default_factory=list)
@@ -102,6 +103,7 @@ class ExportStep:
     extra_files: list[TraceFile] = field(default_factory=list)
     loop_fragments: bool = True
     restoration: RestorationCheck | None = None
+    frame: PointFrame | None = None
 
 
 def setup_record(*, redacted: bool = False) -> TaskSetupRecord:
@@ -225,6 +227,7 @@ def write_run(
                 step=index,
                 observation_summary=f"page {index}",
                 llm_output=spec.llm_output,
+                frame=spec.frame,
                 actions=list(spec.actions),
                 action_results=results,
                 origin=spec.origin,  # type: ignore[arg-type]

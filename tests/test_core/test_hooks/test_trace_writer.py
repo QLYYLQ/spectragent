@@ -251,7 +251,7 @@ class TestTraceWriterLifecycle:
         run_dir = await _start(writer)
         assert (run_dir / "manifest.json").exists()
         assert (run_dir / "config.json").exists()
-        assert RunTrace(run_dir).manifest.format_version == 6
+        assert RunTrace(run_dir).manifest.format_version == 7
 
     async def test_config_records_full_identity(self, writer):
         """A trace nothing can join back to its dataset is an orphan.

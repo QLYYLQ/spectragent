@@ -29,6 +29,7 @@ from spectragent.schemas.observation.dynamic_model import (
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
+    PointFrame,
     PointGrid,
     ScreenshotGeometry,
     point_grid,
@@ -50,6 +51,7 @@ __all__ = [
     "ImageMediaType",
     "ObservationFragment",
     "ObservationRegistrar",
+    "PointFrame",
     "PointGrid",
     "PointerState",
     "ScreenshotGeometry",

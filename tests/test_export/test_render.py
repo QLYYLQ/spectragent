@@ -16,13 +16,13 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents._feedback_points import NOT_PLACEABLE
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import AssistantMessage, SystemMessage, UserMessage
+from spectragent.core.loops.coordinate_frames import NOT_PLACEABLE
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.core.negotiation.observation import IncompatibleFragmentError
 from spectragent.core.trace.models import TraceNegotiation
@@ -38,6 +38,7 @@ from spectragent.export.render import StudentRenderer, TrajectoryStep
 from spectragent.export.translate.identity import IdentityTranslator
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation.fragments import StepInfoObs
+from spectragent.schemas.observation.geometry import PointFrame, PointGrid
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
 from tests._helpers.export_runs import STUDENT_CONFIG, student_root
 from tests._helpers.export_traces import (
@@ -664,6 +665,74 @@ class TestThought:
         assert kept[0].target.startswith("Thought: click [12] the cart")
 
 
+class TestTheStudentsFrames:
+    """Every step is rendered on the student's own frame, built from the recorded screenshot."""
+
+    async def test_the_teachers_recorded_frame_is_never_the_students(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """The teacher recorded a DPR-2 pixel grid; the student writes on its 0-1000 grid.
+
+        The target turns and the next steps' feedback both write the viewport's
+        (640, 360) as (500, 500): the frame the renderer built for the student and
+        recorded on its history, never the teacher's (which would write (1280, 720)).
+        """
+        teacher = PointFrame(
+            space="screenshot_pixels",
+            grid=PointGrid("screenshot_pixels", 2560, 1440, 1280, 720),
+        )
+        steps = [
+            ui_tars_step(click_at(640, 360), thought="open", color=10, frame=teacher),
+            ui_tars_step(click_at(640, 360), thought="again", color=20, frame=teacher),
+            ui_tars_step(finished("added"), thought="done", color=30, frame=teacher),
+        ]
+        trace = RunTrace(write_ui_tars_run(tmp_path, "run-teacher-frame", steps))
+        assert trace.step_records[0].frame == teacher
+        first, second, _last = await _renderer(composer).render(_trajectory(trace))
+        assert first.target.splitlines()[-1] == "Action: click(point='(500, 500)')"
+        assert second.target.splitlines()[-1] == "Action: click(point='(500, 500)')"
+        observation = second.context[-1]
+        assert isinstance(observation, UserMessage) and isinstance(observation.content, list)
+        text = observation.content[0].text  # type: ignore[union-attr]
+        feedback = json.loads(text.split("<action_results>\n")[1].split("\n</action_results>")[0])
+        assert [entry["action"] for entry in feedback["returned_results"]] == [
+            "click(point='(500, 500)')"
+        ]
+        assert "1280, 720" not in text
+
+    async def test_a_dpr_2_pixel_student_writes_image_pixels(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """``screenshot_pixels`` at device scale factor 2: twice the trace's CSS px, both ways."""
+        trace = RunTrace(
+            write_ui_tars_run(
+                tmp_path,
+                "run-dpr2",
+                [
+                    ExportStep(
+                        actions=[click_at(640, 360)],
+                        llm_output="Thought: open\nAction: (recorded reply)",
+                        fragments=[screenshot(dpr=2, color=10)],
+                    ),
+                    ExportStep(
+                        actions=[finished("added")],
+                        llm_output="Thought: done\nAction: (recorded reply)",
+                        fragments=[screenshot(dpr=2, color=20)],
+                    ),
+                ],
+            )
+        )
+        root = student_root(coordinate_space="screenshot_pixels")
+        capability = root["environment"][0]["capabilities"][0]
+        capability["replayability"]["device_scale_factor"] = 2
+        renderer = _renderer(composer, root=root)
+        first, _last = await renderer.render(_trajectory(trace))
+        assert first.target.splitlines()[-1] == "Action: click(point='(1280, 720)')"
+        (executed,) = first.target_actions
+        assert executed.params == {"coordinate_x": 640, "coordinate_y": 360}
+        assert first.quantization == (0,)
+
+
 class TestRoundTrip:
     async def test_a_formatter_that_is_not_a_fixed_point_is_a_round_trip_error(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -680,15 +749,20 @@ class TestRoundTrip:
     async def test_a_formatter_that_moves_a_point_past_the_quantum_is_a_round_trip_error(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Snapping to 100 px is a fixed point, so only the quantum clause can catch it."""
+        """Snapping to 300 grid units is a fixed point, so only the quantum clause can catch it.
+
+        The formatter is handed the points on the student's 0-1000 grid (the
+        framework puts them there): (640, 360) px is (500, 500), snapped to
+        (300, 300), which reads back as (384, 216) px.
+        """
         original = UITarsAgent.format_react_output
 
         def snapped(self: UITarsAgent, actions: Any, *, thought: Any = None) -> str:
-            return original(self, _shifted(actions, lambda x: x // 100 * 100), thought=thought)
+            return original(self, _shifted(actions, lambda x: x // 300 * 300), thought=thought)
 
         monkeypatch.setattr(UITarsAgent, "format_react_output", snapped)
         with pytest.raises(
-            RoundTripError, match=r"run-1/s0: .*moved 40 px, more than the grid's quantum 1"
+            RoundTripError, match=r"run-1/s0: .*moved 256 px, more than the grid's quantum 1"
         ):
             (await _renderer(composer).render(_trajectory(_three_steps(tmp_path))))
 

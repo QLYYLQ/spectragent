@@ -69,7 +69,7 @@ class TestRunTrace:
         # The agent timed out (result.json); the trace recorded all of it.
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.complete_through == 1
-        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 6
+        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 7
 
     def test_run_id(self, trace):
         assert trace.run_id == "run-test"

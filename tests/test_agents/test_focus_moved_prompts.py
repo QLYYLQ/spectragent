@@ -32,9 +32,9 @@ from spectragent.core.loops._loop_fragments import loop_fragment_builders
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.observation._registrar import fragment_field_name
-from spectragent.schemas.prompt import ReactPromptContext
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
+from tests._helpers.frames import step_context
 
 _AGENTS: dict[str, type[Any]] = {
     "browser_use": BrowserUseAgent,
@@ -117,19 +117,19 @@ def _prepared(agent_id: str) -> Any:
     descriptors = [
         a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
     ]
+    space = space_for(agent, descriptors)
     seed = agent.prepare(
         task="read the article",
-        action_space=space_of(descriptors),
+        action_space=space,
         execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
-    return agent, seed
+    return agent, seed, space
 
 
 async def _messages(agent_id: str, move: FocusMove | None) -> list[dict[str, Any]]:
-    agent, seed = _prepared(agent_id)
-    step = await agent.build_react_prompt(
-        _observation(move), context=ReactPromptContext(step=0, phase="policy")
-    )
+    agent, seed, space = _prepared(agent_id)
+    observation = _observation(move)
+    step = await agent.build_react_prompt(observation, context=step_context(space, observation))
     return [message.model_dump() for message in [*seed, *step]]
 
 
