@@ -12,17 +12,20 @@ step numbers, no trace import, no side effects.
 **Retarget** (:func:`retarget_action`). A browser element index is Chrome's
 ``backendNodeId`` (``dom/models.py::element_handle``), and a freshly started
 browser numbers the same element differently, so a recorded
-``click(index)`` cannot run as written. Index actions are re-found by
-geometry, then confirmed by signature: the recorded ``selector_map`` entry's
-``bounds`` (page coordinates) pick the restored candidates whose four bounds
-values all lie within ``tolerance_px``; the candidates whose
-:func:`element_signature` equals the recorded entry's are the matches;
-exactly one rewrites ``params["index"]`` (``geometry_signature``), none is
-``not_found`` and several are ``ambiguous``. ``browser.switch_tab``'s
+``click(index)`` cannot run as written. Which actions name an element, and
+by which param, is what each of the capability's own actions declares in its
+``Params`` (:func:`element_params`), never a list kept here. An action that
+names one
+is re-found by geometry, then confirmed by signature: the recorded
+``selector_map`` entry's ``bounds`` (page coordinates) pick the restored
+candidates whose four bounds values all lie within ``tolerance_px``; the
+candidates whose :func:`element_signature` equals the recorded entry's are
+the matches; exactly one rewrites that param (``geometry_signature``), none
+is ``not_found`` and several are ``ambiguous``. ``browser.switch_tab``'s
 ``target_id`` (a CDP targetId, fresh per browser) is re-found by its
 position in ``browser_meta.tabs`` and that position's URL
 (``tab_order_url``). Everything else — coordinate actions, navigation, keys,
-waits, an index action without an index — runs as recorded (``identity``):
+waits, an action whose optional index was left out — runs as recorded (``identity``):
 pinned replay makes the layout deterministic, and the screenshot hash checks
 it.
 
@@ -43,11 +46,13 @@ import hashlib
 import io
 import logging
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Final
 
 from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel
 
+from spectragent.core.actions.params import param_fragments
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMRect
 from spectragent.core.capabilities.browser.media import media_evidence
 from spectragent.core.capabilities.browser.observations import (
@@ -71,10 +76,6 @@ from spectragent.schemas.restoration import (
 
 logger = logging.getLogger(__name__)
 
-#: Actions whose ``index`` param always names a ``selector_map`` element.
-INDEX_ACTIONS: Final = frozenset({"browser.click", "browser.type", "browser.select_dropdown"})
-#: Actions that name an element only when they carry an ``index``.
-OPTIONAL_INDEX_ACTIONS: Final = frozenset({"browser.scroll", "browser.extract_content"})
 #: The action whose ``target_id`` is a per-browser CDP targetId.
 SWITCH_TAB: Final = "browser.switch_tab"
 
@@ -93,7 +94,8 @@ sees is cut.
 #: (tag, id, name, aria-label, role, sha256 of the whitespace-folded subtree text).
 ElementSignature = tuple[str, str | None, str | None, str | None, str | None, str]
 
-_DOM_FIELD: Final = fragment_field_name(DOMObs.__registry_key__)
+_DOM_KEY: Final = DOMObs.__registry_key__
+_DOM_FIELD: Final = fragment_field_name(_DOM_KEY)
 _META_FIELD: Final = fragment_field_name(BrowserMetaObs.__registry_key__)
 _SCREENSHOT_FIELD: Final = fragment_field_name(ScreenshotObs.__registry_key__)
 
@@ -177,6 +179,17 @@ def bounds_within(recorded: DOMRect, restored: DOMRect, tolerance_px: float) -> 
 # ── retarget ──────────────────────────────────────────────────────────
 
 
+def element_params(params: type[BaseModel]) -> tuple[str, ...]:
+    """The params of an action's *params* model that name an element of ``browser.dom``'s selector map.
+
+    What the action declares: the params marked ``RequiresFragment("browser.dom")``
+    (``core/actions/params.py``), in declaration order. Required ones
+    (``browser.click``'s ``index``) always name an element; optional ones
+    (``browser.scroll``'s) only when given.
+    """
+    return tuple(param for param, keys in param_fragments(params).items() if _DOM_KEY in keys)
+
+
 def _identity(action: Action) -> Retarget:
     return Retarget(action=action.model_copy(deep=True), method="identity")
 
@@ -188,24 +201,34 @@ def _rewritten(action: Action, **params: Any) -> Action:
 
 
 def retarget_action(
-    action: Action, recorded: Any, restored: Any, *, tolerance_px: float
+    action: Action,
+    recorded: Any,
+    restored: Any,
+    *,
+    actions: Mapping[str, Any],
+    tolerance_px: float,
 ) -> Retarget:
     """How the recorded *action* runs against the *restored* observation (module docstring).
 
-    Computes only: nothing is executed and nothing is kept.
+    *actions* are the capability's own actions by name, each with its
+    ``Params``; an action not among them — a name the guard refused stays as
+    the agent wrote it — names no element and runs as recorded. Computes
+    only: nothing is executed and nothing is kept.
     """
     if action.name == SWITCH_TAB:
         return _retarget_tab(action, recorded, restored)
-    is_index_action = action.name in INDEX_ACTIONS or action.name in OPTIONAL_INDEX_ACTIONS
-    if not is_index_action or action.params.get("index") is None:
+    own = actions.get(action.name)
+    named = element_params(own.Params) if own is not None else ()
+    given = [param for param in named if action.params.get(param) is not None]
+    if not given:
         return _identity(action)
-    return _retarget_element(action, recorded, restored, tolerance_px)
+    return _retarget_element(action, given[0], recorded, restored, tolerance_px)
 
 
 def _retarget_element(
-    action: Action, recorded: Any, restored: Any, tolerance_px: float
+    action: Action, param: str, recorded: Any, restored: Any, tolerance_px: float
 ) -> Retarget:
-    index = action.params["index"]
+    index = action.params[param]
 
     def not_found(detail: str) -> Retarget:
         return Retarget(
@@ -236,7 +259,7 @@ def _retarget_element(
     matches = [handle for handle, node in near if element_signature(node) == signature]
     if len(matches) == 1:
         return Retarget(
-            action=_rewritten(action, index=matches[0]),
+            action=_rewritten(action, **{param: matches[0]}),
             method="geometry_signature",
             detail=f"index {index} -> {matches[0]} <{entry.tag_name}>",
         )
@@ -423,14 +446,13 @@ def measure(
 
 
 __all__ = [
-    "INDEX_ACTIONS",
-    "OPTIONAL_INDEX_ACTIONS",
     "SWITCH_TAB",
     "TEXT_DEPTH_LIMIT",
     "ElementSignature",
     "bounds_within",
     "dhash",
     "dom_fragment",
+    "element_params",
     "element_signature",
     "hamming",
     "measure",

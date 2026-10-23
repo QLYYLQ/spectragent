@@ -157,6 +157,13 @@ def test_uncommitted_output_schema_is_an_inspection_error(tmp_path: Path) -> Non
         open_repository(tmp_path).step("run-test", 0)
 
 
+def test_the_run_names_its_actions_with_the_wording_marks_owns(tmp_path: Path) -> None:
+    # The step labels' verbs come from ``inspection/marks.py``; the page keeps no table.
+    build_reference_trace(tmp_path)
+    run = open_repository(tmp_path).run("run-test")
+    assert run["action_verbs"] == {"browser.click": "点击"}
+
+
 def test_broken_evaluation_does_not_hide_an_intact_trace(tmp_path: Path) -> None:
     fixture = build_reference_trace(tmp_path)
     (fixture.run_dir / "evals" / "broken.json").write_text("{")

@@ -62,13 +62,18 @@ test("history and measured gaps do not equate verification with identical histor
   );
 });
 
+const VERBS = { "browser.click": "点击", "browser.wait": "等待" };
+
 test("restored actions use executed names rather than copied source actions", () => {
   assert.equal(
-    actionLabel({
-      origin: "restored",
-      actions: [{ name: "source.click" }],
-      restoration: { actions: [{ executed: { name: "browser.click" } }] },
-    }),
+    actionLabel(
+      {
+        origin: "restored",
+        actions: [{ name: "source.click" }],
+        restoration: { actions: [{ executed: { name: "browser.click" } }] },
+      },
+      VERBS,
+    ),
     "点击",
   );
   assert.equal(
@@ -110,10 +115,13 @@ test("a source success cannot turn a failed restoration into a success", () => {
 
 test("policy and terminal action labels retain their own meaning", () => {
   assert.equal(
-    actionLabel({
-      origin: "policy",
-      actions: [{ name: "browser.click" }, { name: "browser.wait" }, { name: "desktop.click" }],
-    }),
+    actionLabel(
+      {
+        origin: "policy",
+        actions: [{ name: "browser.click" }, { name: "browser.wait" }, { name: "desktop.click" }],
+      },
+      VERBS,
+    ),
     "点击、等待、desktop.click",
   );
   assert.equal(

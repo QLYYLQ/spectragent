@@ -64,6 +64,9 @@ from spectragent.annotation import (
     SuggestionDisplay,
     write_queue,
 )
+from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions.params import point_params
+from spectragent.core.capabilities.browser.index_points import COORDINATE_COUNTERPARTS
 from spectragent.inspection.marks import action_lines, observation_geometry, step_marks
 from spectragent.schemas.restoration import BranchTaskVariant
 
@@ -75,8 +78,10 @@ COUNTED: frozenset[str] = frozenset({"judged", "rules_only"})
 INTENT_PURPOSE = "fork_intent"
 QUALITY_PURPOSE = "fork_quality"
 JUDGMENT_FORMAT = "lookahead-fork-judgment-2"
-#: Action types the rules treat as one.
-FAMILY = {"click_coordinate": "click", "type_coordinate": "type"}
+#: Action types the rules treat as one: a coordinate action and the index action
+#: it does the same thing as, the counterparts the training export translates
+#: between (``index_points.COORDINATE_COUNTERPARTS``).
+FAMILY = {coordinate: index for index, coordinate in COORDINATE_COUNTERPARTS.items()}
 #: Action types the rules leave out of the comparison.
 FILLER = frozenset({"wait"})
 #: Roles of elements a person aims a click at; a hit on anything else may be inside one.
@@ -303,8 +308,7 @@ class RuleVerdict(BaseModel):
 
 
 def action_type(name: str) -> str:
-    local = name.rpartition(".")[2]
-    return FAMILY.get(local, local)
+    return FAMILY.get(name, name).rpartition(".")[2]
 
 
 def _norm(value: Any) -> str:
@@ -318,14 +322,23 @@ def _element_text(fact: Any) -> str:
 
 
 def action_point(action: ActionRow) -> tuple[float, float] | None:
-    """Where a pointer or coordinate action aimed, in CSS px: its measured point, else its parameters."""
+    """Where a pointer or coordinate action aimed, in CSS px: its measured point, else its parameters.
+
+    The parameters' point is the action's first point param pair, as its
+    registered ``Params`` declare them (``core/actions/params.py::point_params``):
+    a drag aims where it starts.
+    """
     point = action.facts.get("point")
     if isinstance(point, list) and len(point) == 2:
         return float(point[0]), float(point[1])
-    for x_key, y_key in (("coordinate_x", "coordinate_y"), ("start_x", "start_y")):
-        x, y = action.params.get(x_key), action.params.get(y_key)
-        if isinstance(x, int | float) and isinstance(y, int | float):
-            return float(x), float(y)
+    params = getattr(ActionRegistrar.get_or_none(action.name), "Params", None)
+    pairs = point_params(params) if params is not None else []
+    if not pairs:
+        return None
+    x_key, y_key = pairs[0]
+    x, y = action.params.get(x_key), action.params.get(y_key)
+    if isinstance(x, int | float) and isinstance(y, int | float):
+        return float(x), float(y)
     return None
 
 

@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
+from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.base import RestorationSupport
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import (
@@ -41,6 +42,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, R
 from spectragent.core.capabilities.browser.restoration import (
     TEXT_DEPTH_LIMIT,
     dhash,
+    element_params,
     element_signature,
     hamming,
     measure,
@@ -125,8 +127,12 @@ def recorded_and_restored(
     return recorded, restored
 
 
+#: The browser actions as a capability holds them: by name, each with its Params.
+ACTIONS = {key: cls for key, cls in ActionRegistrar.get_all().items() if key.startswith("browser.")}
+
+
 def retarget(action: Action, recorded: Any, restored: Any, tolerance: float = TOLERANCE) -> Any:
-    return retarget_action(action, recorded, restored, tolerance_px=tolerance)
+    return retarget_action(action, recorded, restored, actions=ACTIONS, tolerance_px=tolerance)
 
 
 # ── signatures ────────────────────────────────────────────────────────
@@ -193,6 +199,28 @@ class TestSignature:
 
 
 class TestIndexActions:
+    def test_the_actions_that_name_an_element_are_the_ones_their_params_declare(self) -> None:
+        # Read off each action's Params (a param marked RequiresFragment("browser.dom")),
+        # not from a list restoration keeps of its own.
+        named = {
+            key: element_params(cls.Params)
+            for key, cls in sorted(ACTIONS.items())
+            if element_params(cls.Params)
+        }
+        assert named == {
+            "browser.click": ("index",),
+            "browser.extract_content": ("index",),
+            "browser.scroll": ("index",),
+            "browser.select_dropdown": ("index",),
+            "browser.type": ("index",),
+        }
+
+    def test_a_name_the_capability_does_not_hold_runs_as_recorded(self) -> None:
+        recorded, restored = recorded_and_restored(dom_of(dom_page()))
+        refused = Action(name="click", params={"index": 4})
+        result = retarget(refused, recorded, restored)
+        assert result.method == "identity" and result.action == refused
+
     @pytest.mark.parametrize(
         ("name", "params"),
         [

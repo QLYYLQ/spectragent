@@ -85,6 +85,8 @@ from spectragent.agents.prompt_context import (
     restored_history_message,
 )
 from spectragent.agents.prompts import load_prompt_fragment
+from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions.params import point_params
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
@@ -209,20 +211,6 @@ _MODES_WITH_IMAGE: frozenset[str] = frozenset({"dom_vision", "vision"})
 #: Which modes put the DOM tree in the model's message.
 _MODES_WITH_DOM: frozenset[str] = frozenset({"dom", "dom_vision"})
 
-#: Local id → the ``(x_param, y_param)`` pairs carrying a point the model
-#: reads off the *screenshot* while the capability executes it in its own
-#: viewport units. The param names are the descriptor's own; only the unit
-#: differs between what the model is taught and what the executor
-#: declares, and :meth:`BrowserUseAgent._points_to_viewport` is the one
-#: place that converts.
-_POINT_PARAMS: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
-    {
-        "click_coordinate": (("coordinate_x", "coordinate_y"),),
-        "type_coordinate": (("coordinate_x", "coordinate_y"),),
-        "drag": (("start_x", "start_y"), ("end_x", "end_y")),
-    }
-)
-
 #: What a coordinate param means, per grid. ``{axis}`` is ``x`` or ``y``
 #: and ``{edge}`` the edge it is measured from, so one sentence covers
 #: ``coordinate_x``, ``start_y`` and the rest.
@@ -285,8 +273,19 @@ _TERSE_VARIANTS: frozenset[str] = frozenset(
 )
 
 
-def _local_id(name: str) -> str:
-    return name.rsplit(".", 1)[-1]
+def _points_of(name: str) -> list[tuple[str, str]]:
+    """The ``(x_param, y_param)`` pairs of action *name* that carry a point.
+
+    What the action registered under the fully-qualified *name* declares
+    (``core/actions/params.py::point_params``); ``[]`` for an action the
+    registry does not know. The model reads such a point off the
+    *screenshot* while the capability executes it in its own viewport units:
+    the param names are the descriptor's own, only the unit differs, and
+    :meth:`BrowserUseAgent._points_to_viewport` is the one place that
+    converts.
+    """
+    params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
+    return point_params(params) if params is not None else []
 
 
 #: The reasoning fields a reply's thought is read from, in precedence order
@@ -809,7 +808,7 @@ class BrowserUseAgent(AgentBase):
 
     def _has_point_actions(self) -> bool:
         """Whether this run has a coordinate action, and so teaches the model a grid."""
-        return any(_local_id(d.name) in _POINT_PARAMS for d in self._action_descriptors)
+        return any(_points_of(d.name) for d in self._action_descriptors)
 
     # ── Writing the points of execution feedback ───────────────
 
@@ -818,13 +817,9 @@ class BrowserUseAgent(AgentBase):
 
         The registered ``Params``' points (a relative name looked up by the
         one this run binds it to); an action the registry does not know has
-        the points :data:`_POINT_PARAMS` gives its verb, or none. A param is
-        never taken for a point from its name or value alone.
+        none. A param is never taken for a point from its name or value alone.
         """
-        registered = registered_point_params(action, self._action_descriptors)
-        if registered is not None:
-            return registered
-        return list(_POINT_PARAMS.get(_local_id(action.name), ()))
+        return registered_point_params(action, self._action_descriptors) or []
 
     def _params_fed_back(
         self, params: dict[str, Any], action: Action, *, step: int
@@ -877,7 +872,7 @@ class BrowserUseAgent(AgentBase):
         template = _POINT_DESCRIPTIONS[self.coordinate_space]
         relabel: dict[str, dict[str, str]] = {}
         for descriptor in self._action_descriptors:
-            pairs = _POINT_PARAMS.get(_local_id(descriptor.name))
+            pairs = _points_of(descriptor.name)
             if not pairs:
                 continue
             labels: dict[str, str] = {}
@@ -935,7 +930,7 @@ class BrowserUseAgent(AgentBase):
         """
         dumped = item.model_dump(exclude_none=True)
         name, params = next(iter(dumped.items()))
-        pairs = _POINT_PARAMS.get(_local_id(name))
+        pairs = _points_of(name)
         if not pairs:
             return Action(name=name, params=params)
         return Action(name=name, params=self._points_to_viewport(name, params, pairs))
@@ -944,7 +939,7 @@ class BrowserUseAgent(AgentBase):
         self,
         name: str,
         params: dict[str, Any],
-        pairs: tuple[tuple[str, str], ...],
+        pairs: list[tuple[str, str]],
     ) -> dict[str, Any]:
         """Convert every point in *params* onto the executor's grid.
 

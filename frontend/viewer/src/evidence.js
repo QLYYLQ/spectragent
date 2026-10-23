@@ -1,30 +1,10 @@
-/** Names describe actions actually submitted in this run, including restoration. */
-/** Browser actions by the verb a person reads; any other action keeps its recorded name. */
-const ACTION_VERBS = {
-  click: "点击",
-  click_coordinate: "点击",
-  type: "输入",
-  type_coordinate: "输入",
-  send_keys: "按键",
-  scroll: "滚动",
-  drag: "拖动",
-  wait: "等待",
-  done: "完成",
-  navigate: "打开网址",
-  go_back: "后退",
-  go_forward: "前进",
-  switch_tab: "切换标签页",
-  select_dropdown: "下拉选择",
-  extract_content: "读取页面",
-  screenshot: "截图",
-};
-
-export function actionVerb(name) {
-  const local = String(name).split(".").pop();
-  return name.startsWith("browser.") && ACTION_VERBS[local] ? ACTION_VERBS[local] : name;
-}
-
-export function actionLabel(record) {
+/**
+ * Names describe actions actually submitted in this run, including restoration.
+ * `verbs` is the run's `action_verbs` (name → the verb a person reads), which
+ * the server takes from `inspection/marks.py`, the wording's one source; an
+ * action it does not name keeps its recorded name.
+ */
+export function actionLabel(record, verbs) {
   const actions =
     record.origin === "restored"
       ? (record.restoration?.actions || [])
@@ -32,7 +12,7 @@ export function actionLabel(record) {
           .filter(Boolean)
       : record.actions || [];
   return (
-    actions.map((action) => actionVerb(action.name)).join("、") ||
+    actions.map((action) => verbs[action.name] ?? action.name).join("、") ||
     (record.origin === "terminal"
       ? "终止观测"
       : record.origin === "restored"
