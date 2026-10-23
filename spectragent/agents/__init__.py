@@ -7,7 +7,7 @@ from spectragent.agents.browser_use import (
     BrowserUseDomAgent,
     BrowserUseDomVisionAgent,
 )
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 
 __all__ = [
@@ -22,4 +22,6 @@ __all__ = [
     "BrowserUseDomVisionAgent",
     "UITarsAgent",
     "SkyvernAgent",
+    "SkyvernDomAgent",
+    "SkyvernDomVisionAgent",
 ]

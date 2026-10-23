@@ -23,7 +23,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities._registrar import CapabilityBase
@@ -286,12 +286,20 @@ def _skyvern_replies(_descriptors: list[ActionDescriptor]) -> list[str]:
         json.dumps(
             {
                 "actions": [
-                    {"action_type": "browser.scroll", "direction": "down", "reasoning": "Below."}
-                ],
-                "is_done": False,
+                    {"reasoning": "Below.", "action": {"browser.scroll": {"direction": "down"}}}
+                ]
             }
         ),
-        json.dumps({"actions": [], "is_done": True, "success": True, "extracted_content": "42"}),
+        json.dumps(
+            {
+                "actions": [
+                    {
+                        "reasoning": "There it is.",
+                        "action": {"browser.done": {"extracted_content": "42", "success": True}},
+                    }
+                ]
+            }
+        ),
     ]
 
 
@@ -304,7 +312,7 @@ def _ui_tars_replies(_descriptors: list[ActionDescriptor]) -> list[str]:
 
 _AGENTS = {
     "browser_use": (BrowserUseDomAgent, _browser_use_replies),
-    "skyvern": (SkyvernAgent, _skyvern_replies),
+    "skyvern": (SkyvernDomAgent, _skyvern_replies),
     "ui_tars": (UITarsAgent, _ui_tars_replies),
 }
 

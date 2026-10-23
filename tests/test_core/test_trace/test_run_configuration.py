@@ -496,7 +496,14 @@ class TestStepTimings:
         assert "999" not in text
 
     @pytest.mark.parametrize(
-        "agent_id", ["browser_use.dom", "browser_use.dom_vision", "skyvern", "ui_tars"]
+        "agent_id",
+        [
+            "browser_use.dom",
+            "browser_use.dom_vision",
+            "skyvern.dom",
+            "skyvern.dom_vision",
+            "ui_tars",
+        ],
     )
     async def test_action_spans_do_not_reach_the_prompt(self, agent_id):
         """When each action ran is evidence for offline readers, never model input.
@@ -547,7 +554,14 @@ class TestStepTimings:
             assert marker not in text
 
     @pytest.mark.parametrize(
-        "agent_id", ["browser_use.dom", "browser_use.dom_vision", "skyvern", "ui_tars"]
+        "agent_id",
+        [
+            "browser_use.dom",
+            "browser_use.dom_vision",
+            "skyvern.dom",
+            "skyvern.dom_vision",
+            "ui_tars",
+        ],
     )
     async def test_origin_and_restoration_do_not_reach_the_prompt(self, agent_id):
         """A restored step is a copy of the source's step, and must read the same.

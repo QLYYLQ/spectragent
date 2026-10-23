@@ -36,7 +36,7 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ElementFacts, PointerEffect, ViewportPoint
@@ -486,8 +486,8 @@ async def test_a_restored_observation_without_a_measurable_screenshot_does_not_e
 # its run has no coordinate action: tests/test_agents/test_browser_use/test_browser_use_feedback_grid.py.)
 
 
-async def test_skyvern_still_reads_viewport_pixels() -> None:
-    run = _Run(SkyvernAgent)
+async def test_skyvern_dom_still_reads_viewport_pixels() -> None:
+    run = _Run(SkyvernDomAgent)
     assert run.space.coordinate_space is None
     step = await run.build(_observation(history=[_batch(None)]), step=1)
     text = _text(step)

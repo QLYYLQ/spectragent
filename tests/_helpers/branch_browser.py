@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from spectragent.agents.browser_use import BrowserUseDomVisionAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.memory.sliding_window import SlidingWindowMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.dom.models import (
@@ -265,7 +265,7 @@ def make_agent(kind: AgentKind) -> Any:
     if kind == "browser_use":
         return BrowserUseDomVisionAgent()
     if kind == "skyvern":
-        return SkyvernAgent()
+        return SkyvernDomAgent()
     return UITarsAgent()
 
 

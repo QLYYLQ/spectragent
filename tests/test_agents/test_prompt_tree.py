@@ -40,6 +40,8 @@ from spectragent.agents import (
     BrowserUseDomAgent,
     BrowserUseDomVisionAgent,
     SkyvernAgent,
+    SkyvernDomAgent,
+    SkyvernDomVisionAgent,
     UITarsAgent,
 )
 from spectragent.agents._registrar import AgentBase
@@ -83,9 +85,20 @@ _BROWSER_USE_PREPARE: dict[str, Any] = {
 _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
     "browser_use.dom": _BROWSER_USE_PREPARE,
     "browser_use.dom_vision": _BROWSER_USE_PREPARE,
-    "skyvern": {
+    # Real descriptors, as for ``browser_use``: Skyvern compiles them into
+    # its closed reply schema and refuses a run with no action.
+    "skyvern.dom": {
         "task": "t",
-        "action_space": space_of([]),
+        "action_space": space_of(_descriptors("browser.click", "browser.done")),
+        "execution_limits": ExecutionLimits(max_actions_per_step=3),
+        "fragment_formats": dom_formats(),
+    },
+    "skyvern.dom_vision": {
+        "task": "t",
+        "action_space": space_of(
+            _descriptors("browser.click", "browser.click_coordinate", "browser.done"),
+            coordinate_space="screenshot_pixels",
+        ),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
         "fragment_formats": dom_formats(),
     },
@@ -120,7 +133,10 @@ _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
     # nothing renders — fails here rather than at a run's first step.
     ("browser_use.dom_vision", {"flash_mode": False}),
     ("browser_use.dom_vision", {"flash_mode": True}),
-    ("skyvern", {"prompt_template": "system_prompt"}),
+    ("skyvern.dom", {"prompt_template": "system_prompt"}),
+    # The members share the one template; ``dom_vision`` renders its
+    # screenshot and coordinate branches, which ``dom`` never reaches.
+    ("skyvern.dom_vision", {"prompt_template": "system_prompt"}),
     ("ui_tars", {"prompt_template": "computer_use"}),
     ("ui_tars", {"prompt_template": "grounding"}),
     ("ui_tars", {"prompt_template": "mobile_use"}),
@@ -132,7 +148,8 @@ _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
 _FACTORIES: dict[str, Any] = {
     "browser_use.dom": BrowserUseDomAgent,
     "browser_use.dom_vision": BrowserUseDomVisionAgent,
-    "skyvern": SkyvernAgent,
+    "skyvern.dom": SkyvernDomAgent,
+    "skyvern.dom_vision": SkyvernDomVisionAgent,
     "ui_tars": UITarsAgent,
 }
 
@@ -228,10 +245,20 @@ def test_no_agent_carries_its_own_prompt_directory_constant():
     import spectragent.agents.browser_use.dom as browser_use_dom
     import spectragent.agents.browser_use.dom_vision as browser_use_dom_vision
     import spectragent.agents.browser_use.family as browser_use
-    import spectragent.agents.skyvern.agent as skyvern
+    import spectragent.agents.skyvern.dom as skyvern_dom
+    import spectragent.agents.skyvern.dom_vision as skyvern_dom_vision
+    import spectragent.agents.skyvern.family as skyvern
     import spectragent.agents.ui_tars.agent as ui_tars
 
-    for module in (browser_use, browser_use_dom, browser_use_dom_vision, skyvern, ui_tars):
+    for module in (
+        browser_use,
+        browser_use_dom,
+        browser_use_dom_vision,
+        skyvern,
+        skyvern_dom,
+        skyvern_dom_vision,
+        ui_tars,
+    ):
         assert not hasattr(module, "_PROMPT_DIR"), module.__name__
 
 

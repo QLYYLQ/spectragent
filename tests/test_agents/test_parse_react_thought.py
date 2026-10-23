@@ -15,12 +15,15 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.browser_use.output_models import REASONING_FIELDS
-from spectragent.agents.skyvern import SkyvernAgent
-from spectragent.agents.skyvern.output_models import SkyvernActionItem, SkyvernOutput
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
+from spectragent.agents.skyvern.reply import reply_model
 from spectragent.agents.ui_tars import UITarsAgent
+from tests._helpers.action_spaces import browser_descriptors
 
 
-@pytest.mark.parametrize("cls", [UITarsAgent, BrowserUseAgent, SkyvernAgent])
+@pytest.mark.parametrize(
+    "cls", [UITarsAgent, BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent]
+)
 def test_it_is_a_pure_function_of_the_reply(cls: type) -> None:
     assert isinstance(inspect.getattr_static(cls, "parse_react_thought"), staticmethod)
 
@@ -96,20 +99,30 @@ class TestBrowserUse:
 
 
 class TestSkyvern:
-    def test_every_reasoning_in_order(self) -> None:
-        reply = SkyvernOutput(
-            actions=[
-                SkyvernActionItem(action_type="browser.click", index=3, reasoning=" open it "),
-                SkyvernActionItem(action_type="browser.type", index=4, text="x", reasoning=""),
-                SkyvernActionItem(action_type="browser.scroll", direction="down", reasoning="more"),
+    """Each action item's ``reasoning``, read off the reply the run's closed schema validates."""
+
+    @staticmethod
+    def _reply(*items: tuple[str, dict[str, object], str]) -> dict[str, object]:
+        return {
+            "actions": [
+                {"reasoning": reasoning, "action": {verb: params}}
+                for verb, params, reasoning in items
             ]
+        }
+
+    def test_every_reasoning_in_order(self) -> None:
+        data = self._reply(
+            ("browser.click", {"index": 3}, " open it "),
+            ("browser.type", {"index": 4, "text": "x"}, ""),
+            ("browser.scroll", {"direction": "down"}, "more"),
         )
+        model = reply_model(browser_descriptors("click", "type", "scroll"))
         expected = ("open it\nmore", "reasoning")
-        assert SkyvernAgent.parse_react_thought(reply.model_dump_json()) == expected
-        assert SkyvernAgent.parse_react_thought(reply) == expected
+        assert SkyvernDomAgent.parse_react_thought(json.dumps(data)) == expected
+        assert SkyvernDomAgent.parse_react_thought(model.model_validate(data)) == expected
 
     def test_no_reasoning_is_none(self) -> None:
-        reply = SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=3)])
-        assert SkyvernAgent.parse_react_thought(reply.model_dump_json()) is None
-        assert SkyvernAgent.parse_react_thought("{") is None
-        assert SkyvernAgent.parse_react_thought(json.dumps({"actions": "x"})) is None
+        reply = json.dumps(self._reply(("browser.click", {"index": 3}, "")))
+        assert SkyvernDomAgent.parse_react_thought(reply) is None
+        assert SkyvernDomAgent.parse_react_thought("{") is None
+        assert SkyvernDomAgent.parse_react_thought(json.dumps({"actions": "x"})) is None

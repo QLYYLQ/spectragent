@@ -1,4 +1,4 @@
-"""The verbs SkyvernAgent's prompt teaches must be verbs the run accepts.
+"""The verbs a Skyvern member's prompt teaches must be verbs the run accepts.
 
 This is the general detector for a whole bug class, not one bug. Three
 independent contracts have to agree, and nothing but a test forces them to:
@@ -12,21 +12,17 @@ Skyvern's, teaching ``"action_type": "CLICK"`` under an ``id`` key, while the
 code emitted ``element_id`` and matched lower-case names. Every action the
 model produced came out as ``Action(name='browser.CLICK')`` and was rejected
 100% of the time — including ``COMPLETE``, the only verb the template offered
-for finishing, so the agent could not terminate a task at all. The suite
-stayed green because every Skyvern test asserted the code's assumptions back
-at itself: an empty action list, hand-written lower-case verbs, never the
-shipped template.
+for finishing, so the agent could not terminate a task at all.
 
 So the fixtures here are deliberately *derived*, never hand-written:
 
-- the action set comes from ``SkyvernAgent.__wiring__`` negotiated against a
+- the action set comes from each member's ``__wiring__`` negotiated against a
   real ``BrowserCapability``, through the same ``_action_rules`` /
   ``get_action_space`` / ``build_guarded_act`` path ``AgentRuntime.prepare``
   uses;
-- the verb list is scraped back out of the *rendered* system prompt.
-
-A hand-written list of verbs here would re-create the exact blind spot this
-file exists to close.
+- the verb list is scraped back out of the *rendered* system prompt;
+- each probe reply is written against the run's own closed reply schema, its
+  params filled from the descriptor's ``params_schema``.
 """
 
 from __future__ import annotations
@@ -38,11 +34,11 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
-from spectragent.agents.skyvern.output_models import SkyvernActionItem, SkyvernOutput
+from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops.coordinate_frames import declared_space
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
@@ -53,27 +49,22 @@ from tests._helpers.fragment_formats import dom_formats
 
 #: Anything that looks like an action name where the prompt could be
 #: teaching one: the rendered descriptor list (``- `browser.click(...)```),
-#: prose references (``` `browser.done` ```), and any literal
-#: ``"action_type": "..."`` in a JSON example. Case-insensitive on purpose —
-#: an UPPERCASE verb sneaking back into the template is precisely the
-#: regression, so the scraper has to see it in order for the assertions
-#: below to reject it.
+#: prose references (``` `browser.done` ```), and any verb key in a JSON
+#: example (``{"browser.click": {...}}``). Case-insensitive on purpose — an
+#: UPPERCASE verb sneaking back into the template is precisely the
+#: regression, so the scraper has to see it.
 _BACKTICKED = re.compile(r"`([A-Za-z_]+\.[A-Za-z_]+)[(`]")
-_ACTION_TYPE_LITERAL = re.compile(r'"action_type"\s*:\s*"([^"]+)"')
+_JSON_VERB_KEY = re.compile(r'"([A-Za-z_]+\.[A-Za-z_]+)"\s*:\s*\{')
+
+MEMBERS = [SkyvernDomAgent, SkyvernDomVisionAgent]
 
 
-def _negotiated() -> tuple[list[ActionDescriptor], Mapping[str, str]]:
-    """What ``AgentRuntime.prepare`` would hand ``prepare()`` and the guard.
-
-    Both halves, because both are negotiation output: the descriptors the
-    prompt advertises *and* the short → fully-qualified bindings the guard
-    resolves against. Building the guard without the bindings would test a
-    configuration the runtime never assembles.
-    """
+def _negotiated(member: type[SkyvernAgent]) -> tuple[list[ActionDescriptor], Mapping[str, str]]:
+    """What ``AgentRuntime.prepare`` would hand ``prepare()`` and the guard."""
     capability = BrowserCapability()
     env = make_env(BrowserEnvironment, {"browser": capability})
     result = _action_rules(
-        agent=extract_wiring(SkyvernAgent, "action"),
+        agent=extract_wiring(member, "action"),
         env_provides=set(capability.provided_actions),
     )
     return (
@@ -83,21 +74,43 @@ def _negotiated() -> tuple[list[ActionDescriptor], Mapping[str, str]]:
 
 
 def _taught_verbs(prompt: str) -> set[str]:
-    return set(_BACKTICKED.findall(prompt)) | set(_ACTION_TYPE_LITERAL.findall(prompt))
+    return set(_BACKTICKED.findall(prompt)) | set(_JSON_VERB_KEY.findall(prompt))
 
 
-@pytest.fixture
-def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
-    """A prepared agent plus the real guarded_act built over its action set."""
-    descriptors, bindings = _negotiated()
-    agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
-    prompt = agent.prepare(
+def _probe_value(node: Mapping[str, Any]) -> Any:
+    """A valid value for one params-schema node: the first enum member, or one of its type."""
+    branches = node.get("anyOf") or [node]
+    branch = next(b for b in branches if b.get("type") != "null")
+    if branch.get("enum"):
+        return branch["enum"][0]
+    return {"integer": 1, "number": 1.0, "string": "x", "boolean": True}[branch["type"]]
+
+
+def _probe_params(descriptor: ActionDescriptor) -> dict[str, Any]:
+    """Every required param of *descriptor*, each with a valid value."""
+    schema = descriptor.params_schema or {}
+    properties = schema.get("properties") or {}
+    return {name: _probe_value(properties[name]) for name in schema.get("required") or ()}
+
+
+def _prepare(agent: SkyvernAgent, descriptors: list[ActionDescriptor]) -> str:
+    seed = agent.prepare(
         task="t",
-        action_space=space_of(descriptors),
+        action_space=space_of(descriptors, coordinate_space=declared_space(agent)),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
         fragment_formats=dom_formats(),
-    )[0].content
+    )
+    prompt = seed[0].content
     assert isinstance(prompt, str)
+    return prompt
+
+
+@pytest.fixture(params=MEMBERS, ids=lambda cls: cls.__registry_key__)
+def prepared(request: Any) -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
+    """A prepared member plus the real guarded_act built over its action set."""
+    descriptors, bindings = _negotiated(request.param)
+    agent = make_agent(request.param, memory=SimpleMemory(max_messages=100))
+    prompt = _prepare(agent, descriptors)
 
     async def _accept(action: Action, **_kw: Any) -> ActionResult:
         return ActionResult(success=True, extracted_content=action.name)
@@ -112,120 +125,102 @@ class TestPromptVocabulary:
     ) -> None:
         """Guards the guard: an empty scrape would make everything below vacuous."""
         _agent, prompt, descriptors, _guard = prepared
-        assert _taught_verbs(prompt), (
-            "scraped no action names out of the rendered prompt — either the "
-            "template stopped rendering the action space, or the scraper "
-            "regexes no longer match its format"
-        )
+        assert _taught_verbs(prompt), "scraped no action names out of the rendered prompt"
         assert len(descriptors) >= 3
 
     def test_every_negotiated_action_reaches_the_prompt(
         self, prepared: tuple[SkyvernAgent, str, list[ActionDescriptor], Any]
     ) -> None:
-        """Nothing the run can execute is hidden from the model.
-
-        The template used to reference twelve variables the agent never
-        supplied and ignore ``action_space`` outright, so the negotiated
-        set reached zero of the 76 shipped templates.
-        """
+        """Nothing the run can execute is hidden from the model."""
         _agent, prompt, descriptors, _guard = prepared
         assert {d.name for d in descriptors} <= _taught_verbs(prompt)
 
     async def test_every_taught_verb_survives_parse_and_guard(
         self, prepared: tuple[SkyvernAgent, str, list[ActionDescriptor], Any]
     ) -> None:
-        """The load-bearing assertion: template → parser → guard, per verb."""
-        agent, prompt, _descriptors, guarded_act = prepared
+        """The load-bearing assertion: template → closed schema → parser → guard, per verb."""
+        agent, prompt, descriptors, guarded_act = prepared
+        by_name = {d.name: d for d in descriptors}
         for verb in sorted(_taught_verbs(prompt)):
-            actions = agent.parse_react_output(
-                SkyvernOutput(
-                    actions=[SkyvernActionItem(action_type=verb, index=1, reasoning="probe")]
-                )
-            )
-            assert len(actions) == 1, verb
+            assert verb in by_name, f"the prompt teaches {verb!r}, which this run never negotiated"
+            reply = {
+                "actions": [{"reasoning": "probe", "action": {verb: _probe_params(by_name[verb])}}]
+            }
+            actions = agent.parse_react_output(agent.get_react_output_model().model_validate(reply))
+            assert [a.name for a in actions] == [verb]
             result = await guarded_act(actions[0])
-            assert result.success, (
-                f"the prompt teaches {verb!r}, which parses to "
-                f"{actions[0].name!r} — and guarded_act rejects it: "
-                f"{result.error}"
-            )
+            assert result.success, f"{verb!r} parses, and guarded_act rejects it: {result.error}"
 
     async def test_the_agent_can_finish(
         self, prepared: tuple[SkyvernAgent, str, list[ActionDescriptor], Any]
     ) -> None:
-        """Termination is a verb like any other and gets the same treatment.
+        """Finishing is the negotiated ``done`` written as an action, its answer intact.
 
         The old template's only way to finish was a ``"COMPLETE"`` action,
-        which parsed to ``browser.COMPLETE`` and was rejected — the agent
-        was structurally incapable of ending a task. The template now
-        finishes through ``is_done``; this pins that it lands on an action
-        the guard accepts, with the answer intact.
+        which parsed to ``browser.COMPLETE`` and was rejected — the agent was
+        structurally incapable of ending a task.
         """
         agent, prompt, _descriptors, guarded_act = prepared
-        assert "is_done" in prompt and "extracted_content" in prompt
+        assert "`browser.done`" in prompt and "extracted_content" in prompt
 
-        actions = agent.parse_react_output(
-            SkyvernOutput(actions=[], is_done=True, extracted_content="42")
+        (action,) = agent.parse_react_output(
+            '{"actions": [{"reasoning": "found it", "action": '
+            '{"browser.done": {"extracted_content": "42", "success": false}}}]}'
         )
-        assert len(actions) == 1
-        result = await guarded_act(actions[0])
+        assert action == Action(
+            name="browser.done", params={"extracted_content": "42", "success": False}
+        )
+        result = await guarded_act(action)
         assert result.success
-        assert actions[0].params["extracted_content"] == "42"
 
-    def test_the_terminal_action_is_named_from_the_negotiated_set(self) -> None:
-        """The template names ``done``'s provider by rendering it, not by prose.
+    @pytest.mark.parametrize("member", MEMBERS, ids=lambda cls: cls.__registry_key__)
+    def test_the_terminal_and_example_actions_are_named_from_the_negotiated_set(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        """The template names ``done`` and its example verb by rendering them, not by prose.
 
-        The rewritten template still spelled ``browser.done`` into its
-        prose and told the model that ``action_type`` carries a
-        ``browser.`` prefix — while ``{{ action_space }}`` right above it
-        renders whatever was negotiated. Two vocabularies in one prompt,
-        one of them hardcoded, is the defect this file was created for;
-        it survived the rewrite in the paragraphs around the list.
+        Two vocabularies in one prompt, one of them hardcoded, is the defect
+        this file was created for.
         """
-        agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
+        agent = make_agent(member, memory=SimpleMemory(max_messages=100))
         elsewhere = [
             ActionDescriptor(
                 name="desktop.click",
                 description="Click.",
                 params={"index": "int"},
+                params_schema={
+                    "type": "object",
+                    "properties": {"index": {"type": "integer"}},
+                    "required": ["index"],
+                },
             ),
-            ActionDescriptor(name="desktop.done", description="Finish."),
+            ActionDescriptor(
+                name="desktop.done",
+                description="Finish.",
+                params_schema={"type": "object", "properties": {}, "required": []},
+            ),
         ]
-        prompt = agent.prepare(
-            task="t",
-            action_space=space_of(elsewhere),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
-        )[0].content
-        assert isinstance(prompt, str)
+        prompt = _prepare(agent, elsewhere)
 
         assert "`desktop.done`" in prompt
-        assert "browser.done" not in prompt
-        assert "`browser.` prefix" not in prompt
+        assert '{"desktop.click": {"index": 42}}' in prompt
+        assert "browser." not in prompt
+        assert _taught_verbs(prompt) == {"desktop.click", "desktop.done"}
 
-    def test_no_param_key_is_advertised_that_the_output_model_cannot_carry(
+    def test_the_reply_schema_carries_every_negotiated_action_with_its_own_params(
         self, prepared: tuple[SkyvernAgent, str, list[ActionDescriptor], Any]
     ) -> None:
-        """Required params must be expressible in ``SkyvernActionItem``.
+        """Each advertised action is a branch of the closed union, with exactly its params.
 
-        Advertising ``browser.send_keys(keys: str)`` while the output model
-        has no ``keys`` field is the same defect one layer down: the model
-        emits the action, the guard passes it, and ``SendKeysAction`` returns
-        ``Missing param: 'keys'`` every single time.
+        The flat item this replaces offered ``index``, ``text``, ``direction``
+        and ``keys`` to every action: a scroll's ``amount`` could not be said,
+        and a click could carry a ``text`` the click does not take.
         """
-        _agent, _prompt, descriptors, _guard = prepared
-        carriable = set(SkyvernActionItem.model_fields) - {"action_type", "reasoning"}
-        # ``done`` is invoked through the top-level fields, not an item.
+        agent, _prompt, descriptors, _guard = prepared
+        model = agent.get_react_output_model()
         for descriptor in descriptors:
-            if descriptor.name == "browser.done":
-                continue
-            required = {
-                key
-                for key, spec in descriptor.params.items()
-                if "optional" not in str(spec).lower()
-            }
-            assert required <= carriable, (
-                f"{descriptor.name} needs {sorted(required - carriable)}, which "
-                f"SkyvernActionItem cannot express — the model is being asked "
-                f"for a param it has no field for"
-            )
+            reply = {"actions": [{"action": {descriptor.name: _probe_params(descriptor)}}]}
+            assert model.model_validate(reply), descriptor.name
+            stray = {"actions": [{"action": {descriptor.name: {"not_a_param": 1}}}]}
+            with pytest.raises(ValueError, match="not_a_param"):
+                model.model_validate(stray)

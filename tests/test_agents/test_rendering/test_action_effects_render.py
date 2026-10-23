@@ -143,3 +143,45 @@ def test_restored_history_without_effects_shown_has_no_effect() -> None:
     facts = _restored_facts(shown=False)
     (executed,) = facts["actual_restored_execution"]  # type: ignore[misc]
     assert "effect" not in executed["result"]
+
+
+# ── Returned content, bounded ─────────────────────────────────────────
+
+
+def test_returned_content_is_shown_whole_by_default() -> None:
+    """No bound unless the Agent asks for one, so an Agent that sets none reads as before."""
+    text = "x" * 50_000
+    facts = result_facts(ActionResult(success=True, extracted_content=text), show_effects=True)
+    assert facts["extracted_content"] == text
+
+
+def test_returned_content_is_cut_at_the_bound_and_says_so() -> None:
+    result = ActionResult(success=True, extracted_content="0123456789")
+    assert result_facts(result, show_effects=True, max_content_chars=4)["extracted_content"] == (
+        "0123 ... [4 of 10 characters shown]"
+    )
+    assert result_facts(result, show_effects=True, max_content_chars=10)["extracted_content"] == (
+        "0123456789"
+    )
+    assert result.extracted_content == "0123456789"  # the trace keeps it whole
+
+
+def test_restored_history_bounds_returned_content_as_result_facts_does() -> None:
+    history = _restored()
+    long = history.results[0].model_copy(update={"extracted_content": "abcdefghij"})
+    history = history.model_copy(
+        update={
+            "results": [long],
+            "executions": [history.executions[0].model_copy(update={"result": long})],
+        }
+    )
+    message = restored_history_message(
+        history,
+        show_action_effects=True,
+        context=ReactPromptContext(step=1, phase="history"),
+        action_space=ActionSpace(),
+        max_content_chars=3,
+    )
+    (executed,) = json.loads(message.text.split("\n", 1)[1])["actual_restored_execution"]
+    assert executed["result"] == result_facts(long, show_effects=True, max_content_chars=3)
+    assert executed["result"]["extracted_content"] == "abc ... [3 of 10 characters shown]"

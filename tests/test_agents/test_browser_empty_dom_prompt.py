@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState
 from tests._helpers.assembly import make_agent
 
@@ -23,8 +23,8 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
 
     browser_use = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
     rendered_browser_use = browser_use._render_browser_state(observation, None)
-    skyvern = SkyvernAgent.__new__(SkyvernAgent)
-    rendered_skyvern = skyvern._render_browser_state(observation)
+    skyvern = SkyvernDomAgent.__new__(SkyvernDomAgent)
+    rendered_skyvern = skyvern._render_browser_state(observation, None, screenshot_note=None)
 
     assert "DOMState(" not in rendered_browser_use + rendered_skyvern
     assert "private-value" not in rendered_browser_use + rendered_skyvern

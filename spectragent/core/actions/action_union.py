@@ -43,10 +43,11 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, create_model
 from pydantic import Field as PydanticField
 
-from spectragent.schemas.action import ActionDescriptor
+from spectragent.schemas.action import Action, ActionDescriptor
 
 __all__ = [
     "UnsupportedParamsSchema",
+    "action_of",
     "action_union",
     "params_model_from_schema",
 ]
@@ -248,3 +249,28 @@ def action_union(descriptors: Sequence[ActionDescriptor]) -> tuple[Any, dict[str
 
     annotation = member_types[0] if len(member_types) == 1 else Union[member_types]  # noqa: UP007
     return Annotated[annotation, BeforeValidator(dispatch)], items
+
+
+def action_of(member: BaseModel) -> Action:
+    """The :class:`Action` one validated union member names, its declined params left out.
+
+    *member* is one item :func:`action_union` validated, ``{verb: params}``.
+    An optional param the model wrote as ``null`` is dropped, so a written
+    null and an omission reach the capability identically and its own knob
+    decides (``clear: null`` must not override ``clear_by_default``). A
+    *required* param keeps its ``null``: there the null is the value the
+    action's ``Params`` asks for (``browser.done``'s ``extracted_content``
+    is required and nullable, the honest answer to a task that has none),
+    and dropping it would turn a correct reply into a missing-param error.
+    """
+    (verb,) = type(member).model_fields
+    params: BaseModel = getattr(member, verb)
+    fields = type(params).model_fields
+    return Action(
+        name=verb,
+        params={
+            name: value
+            for name, value in params.model_dump().items()
+            if value is not None or fields[name].is_required()
+        },
+    )

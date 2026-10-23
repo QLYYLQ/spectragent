@@ -1,72 +1,68 @@
-"""Tests for the M14 SkyvernAgent ReactLoop slot adaptation."""
+"""The Skyvern family's ReactLoop slots: prompt, closed reply, action history, screenshot.
+
+Every member shares the root's slots; the members differ only in what reaches
+the model (``skyvern.dom_vision`` also shows the screenshot) and in the
+actions they ask for. So each behaviour is checked on both members, and the
+screenshot on each.
+"""
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
-from spectragent.agents.skyvern.output_models import SkyvernActionItem, SkyvernOutput
+from spectragent.agents.rendering.prompt_context import restored_history_message
+from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.core.capabilities.browser.dom.models import DOMState
+from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.messages import (
     BaseMessage,
+    ContentPartImageParam,
     SystemMessage,
     UserMessage,
 )
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.coordinate_frames import declared_space, step_frame
+from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.fragments import HistoryObs
-from spectragent.schemas.prompt import ReactPromptContext
+from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
+from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import space_of, wired_space
+from tests._helpers.action_spaces import browser_space, wired_space
+from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import dom_formats
 
-#: Stand-in for a negotiated action set. Deliberately *not* empty: the
-#: old suite passed an empty action list everywhere, which is why a
-#: prompt that dropped the action space on the floor stayed green.
-_DESCRIPTORS = [
-    ActionDescriptor(
-        name="browser.click",
-        description="Click a DOM element by its index in the selector map.",
-        params={"index": "int -- element index from selector_map"},
-    ),
-    ActionDescriptor(
-        name="browser.type",
-        description="Type text into a DOM element.",
-        params={"index": "int -- element index", "text": "str"},
-    ),
-]
+MEMBERS = [SkyvernDomAgent, SkyvernDomVisionAgent]
+member_param = pytest.mark.parametrize("member", MEMBERS, ids=lambda cls: cls.__registry_key__)
+
+#: The smallest PNG header ``image_media_type`` recognises.
+_PNG = b"\x89PNG\r\n\x1a\n"
 
 
 @dataclass
 class _FakeBrowserMeta:
     url: str = ""
     page_title: str = ""
-    tabs: list = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.tabs is None:
-            self.tabs = []
+    tabs: list | None = None
 
 
 @dataclass
 class _FakeDOM:
     element_tree: Any = None
-    selector_map: dict | None = None
 
 
 @dataclass
 class _FakeTask:
     user_request: str = "find the login button"
-    follow_ups: list[str] | None = None
-
-    def __post_init__(self) -> None:
-        if self.follow_ups is None:
-            self.follow_ups = []
 
 
 @dataclass
@@ -74,6 +70,16 @@ class _FakeStepInfo:
     step: int = 1
     max_steps: int = 50
     today: str = "2026-05-01"
+
+
+def _screenshot() -> ScreenshotObs:
+    return ScreenshotObs(
+        image_bytes=_PNG,
+        image_width=2000,
+        image_height=1000,
+        viewport_width=1000,
+        viewport_height=500,
+    )
 
 
 class _FakeObservation:
@@ -85,6 +91,7 @@ class _FakeObservation:
         task: _FakeTask | None = None,
         step_info: _FakeStepInfo | None = None,
         history: list[StepRecord] | None = None,
+        screenshot: ScreenshotObs | None = None,
     ) -> None:
         self.dom = dom
         self.browser_meta = browser_meta
@@ -92,6 +99,7 @@ class _FakeObservation:
         self.platform = SimpleNamespace(operating_system="macos", fragment_id="browser.platform")
         self.step_info = step_info
         self.history = HistoryObs(items=list(history or []))
+        self.screenshot = screenshot
 
 
 def _clicks(*indexes: int) -> list[StepRecord]:
@@ -99,565 +107,571 @@ def _clicks(*indexes: int) -> list[StepRecord]:
     return [
         StepRecord(
             step=step,
-            actions=[Action(name="browser.click", params={"index": index, "reasoning": "r"})],
+            actions=[Action(name="browser.click", params={"index": index})],
             action_results=[ActionResult(success=True)],
         )
         for step, index in enumerate(indexes)
     ]
 
 
-def _make_agent(**overrides: Any) -> SkyvernAgent:
-    """An agent prepared with every action its wiring names, as a browser run gives it."""
-    from tests._helpers.assembly import make_agent
+def _space(member: type[SkyvernAgent], agent: SkyvernAgent) -> ActionSpace:
+    return wired_space(member, coordinate_space=declared_space(agent))
 
-    agent = make_agent(
-        SkyvernAgent,
-        memory=SimpleMemory(max_messages=100),
-        **overrides,
-    )
+
+def _make_agent(member: type[SkyvernAgent], **overrides: Any) -> SkyvernAgent:
+    """A member prepared with every action its wiring names, as a browser run gives it."""
+    agent = make_agent(member, memory=SimpleMemory(max_messages=100), **overrides)
     agent.prepare(
         task="t",
-        action_space=wired_space(SkyvernAgent),
+        action_space=_space(member, agent),
         execution_limits=ExecutionLimits(max_actions_per_step=5),
         fragment_formats=dom_formats(),
     )
     return agent
 
 
+def _system(member: type[SkyvernAgent], **overrides: Any) -> str:
+    """The system prompt a member configured with *overrides* is seeded with."""
+    agent = make_agent(member, **overrides)
+    (seed,) = agent.prepare(
+        task="t",
+        action_space=_space(member, agent),
+        execution_limits=ExecutionLimits(max_actions_per_step=5),
+        fragment_formats=dom_formats(),
+    )
+    return seed.text
+
+
+def _context(agent: SkyvernAgent, observation: Any, step: int = 0) -> ReactPromptContext:
+    """The context a Loop hands *agent* for a step on *observation*, its frame included."""
+    frame = step_frame(agent._action_space, observation)
+    return ReactPromptContext(step=step, phase="policy", frame=frame)
+
+
+async def _text(agent: SkyvernAgent, observation: Any, step: int = 0) -> str:
+    (message,) = await agent.build_react_prompt(
+        observation, context=_context(agent, observation, step)
+    )
+    return message.text
+
+
+def _history_lines(text: str) -> list[str]:
+    return text.split("<action_history>\n")[1].split("\n</action_history>")[0].splitlines()
+
+
+def _reply(*actions: dict[str, Any]) -> str:
+    return json.dumps({"actions": [{"reasoning": "r", "action": a} for a in actions]})
+
+
 class TestSlotConformance:
-    def test_has_required_react_slots(self) -> None:
-        agent = _make_agent()
-        ReactLoop().validate_slots(agent)  # Should not raise
+    @member_param
+    def test_has_required_react_slots(self, member: type[SkyvernAgent]) -> None:
+        ReactLoop().validate_slots(_make_agent(member))
 
-    def test_legacy_methods_removed(self) -> None:
-        agent = _make_agent()
-        assert not hasattr(agent, "run")
-        assert not hasattr(agent, "step")
-        assert not hasattr(agent, "build_messages")
-
-    def test_agent_id_and_domain(self) -> None:
-        agent = _make_agent()
-        assert agent.agent_id == "skyvern"
+    @member_param
+    def test_agent_id_is_the_member_key(self, member: type[SkyvernAgent]) -> None:
+        agent = _make_agent(member)
+        assert agent.agent_id == member.__registry_key__
+        assert agent.agent_name == member.__registry_key__
         assert agent.domain == "web_navigation"
 
 
-class TestWiring:
-    def test_agent_loop_wiring(self) -> None:
-        wiring = SkyvernAgent.__wiring__
-        assert wiring["agent_loop"] == ("agent_loop", ["react", "branch"])
-
-    def test_no_capability_entry(self) -> None:
-        """Naming a capability constrained codegen and nothing else."""
-        assert "capability" not in SkyvernAgent.__wiring__
-
-    def test_observation_wiring_dom_required_screenshot_optional(self) -> None:
-        # Skyvern is element-tree based: DOM is required + the task. As a
-        # browser agent it requires the page state (``browser_meta``), and
-        # its bounded action-history window is rendered from the Loop's
-        # ``history`` (both were otherwise before the 2026-10-20 layering
-        # ruling: browser_meta optional, the window agent-owned state).
-        # Screenshot, step_info and the platform-neutral capture_state are
-        # optional.
-        wiring = SkyvernAgent.__wiring__
-        assert wiring["observation"] == {
-            "registry": "observation",
-            "keys": ["dom", "platform", "task", "browser_meta", "history"],
-            "optional_keys": [
-                "screenshot",
-                "step_info",
-                "capture_state",
-            ],
-            "declare_only": True,
-        }
-
-    def test_no_wiring_key_names_a_capability(self) -> None:
-        for entry in SkyvernAgent.__wiring__.values():
-            if isinstance(entry, str):
-                continue
-            for key_list in (
-                [entry["keys"], entry.get("optional_keys", [])]
-                if isinstance(entry, dict)
-                else entry[1:]
-            ):
-                assert all("." not in k for k in key_list), key_list
-
-
 class TestPrepare:
-    def test_returns_jinja_rendered_system_prompt_seed(self) -> None:
-        agent = _make_agent()
+    @member_param
+    def test_returns_jinja_rendered_system_prompt_seed(self, member: type[SkyvernAgent]) -> None:
+        agent = make_agent(member, memory=SimpleMemory(max_messages=100))
         seed = agent.prepare(
             task="Find the cheapest flight",
-            action_space=space_of(_DESCRIPTORS),
+            action_space=_space(member, agent),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )
-        assert isinstance(seed, list)
         assert len(seed) == 1
         assert isinstance(seed[0], SystemMessage)
-        # The Jinja template renders navigation_goal into the prompt
         assert "Find the cheapest flight" in seed[0].content
         # Pure builder — agent memory remains untouched.
         assert agent.memory.get_messages() == []
 
-    def test_renders_the_negotiated_action_set(self) -> None:
-        """The whole point of the action-space slot.
-
-        The old template referenced eight variables the agent never
-        supplied and ignored ``action_space`` entirely, so the negotiated
-        action set never reached the model. Passing descriptors and
-        finding nothing is the regression.
-        """
-        agent = _make_agent()
-        seed = agent.prepare(
+    @member_param
+    def test_renders_the_negotiated_action_set(self, member: type[SkyvernAgent]) -> None:
+        agent = make_agent(member)
+        space = _space(member, agent)
+        text = agent.prepare(
             task="t",
-            action_space=space_of(_DESCRIPTORS),
+            action_space=space,
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
-        )
-        text = seed[0].content
-        assert isinstance(text, str)
-        for descriptor in _DESCRIPTORS:
-            assert descriptor.name in text
+        )[0].text
+        for descriptor in space.descriptors:
+            assert f"`{descriptor.name}(" in text
             assert descriptor.description in text
 
-    def test_renders_the_loops_action_budget(self) -> None:
-        agent = _make_agent()
-        seed = agent.prepare(
+    @member_param
+    def test_renders_the_loops_action_budget(self, member: type[SkyvernAgent]) -> None:
+        agent = make_agent(member)
+        text = agent.prepare(
             task="t",
-            action_space=space_of(_DESCRIPTORS),
+            action_space=_space(member, agent),
             execution_limits=ExecutionLimits(max_actions_per_step=4),
             fragment_formats=dom_formats(),
-        )
-        text = seed[0].content
-        assert isinstance(text, str)
+        )[0].text
         assert {int(n) for n in re.findall(r"maximum of (\d+) actions", text)} == {4}
 
-    def test_optional_config_blocks_render_only_when_set(self) -> None:
-        """Every remaining knob is consumed by the template."""
-        off = (
-            _make_agent()
-            .prepare(
-                task="t",
-                action_space=space_of([]),
-                execution_limits=ExecutionLimits(max_actions_per_step=1),
-                fragment_formats=dom_formats(),
-            )[0]
-            .content
+    @member_param
+    def test_quotes_the_dom_serializers_own_description(self, member: type[SkyvernAgent]) -> None:
+        """The element tree's format is the serializer's words, not the template's."""
+        from spectragent.core.capabilities.browser.dom.serializers.html_serializer import (
+            HTMLSerializer,
         )
-        assert isinstance(off, str)
+
+        agent = make_agent(member)
+        formats = dom_formats(HTMLSerializer())
+        text = agent.prepare(
+            task="t",
+            action_space=_space(member, agent),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=formats,
+        )[0].text
+        assert formats["dom"] in text
+        assert 'data-idx="' in formats["dom"]
+
+    @member_param
+    def test_states_how_actions_run(self, member: type[SkyvernAgent]) -> None:
+        """What the prompt says about execution is what the Loop and the capability do.
+
+        The Loop runs every action of a batch, a failed one included, and
+        stops only at a ``done`` or an action that raises; indices are
+        backend-node handles, stable across observations.
+        """
+        text = _system(member)
+        assert "stop at the first" not in text
+        assert "re-assigned every step" not in text
+        assert "each one runs even when the one before it failed" in text
+        assert "indices are not renumbered between steps" in text
+
+    @member_param
+    def test_optional_config_blocks_render_only_when_set(self, member: type[SkyvernAgent]) -> None:
+        off = _system(member)
         assert "PAY ONLY WITH THE SAVED CARD" not in off
         assert "GIVE UP AFTER A PAYWALL" not in off
         assert "verification code" not in off
 
-        on = (
-            _make_agent(
-                complete_criterion="PAY ONLY WITH THE SAVED CARD",
-                terminate_criterion="GIVE UP AFTER A PAYWALL",
-                verification_code_check=True,
-                navigation_payload="username=bob",
-            )
-            .prepare(
-                task="t",
-                action_space=space_of([]),
-                execution_limits=ExecutionLimits(max_actions_per_step=1),
-                fragment_formats=dom_formats(),
-            )[0]
-            .content
+        on = _system(
+            member,
+            complete_criterion="PAY ONLY WITH THE SAVED CARD",
+            terminate_criterion="GIVE UP AFTER A PAYWALL",
+            verification_code_check=True,
+            navigation_payload="username=bob",
         )
-        assert isinstance(on, str)
         assert "PAY ONLY WITH THE SAVED CARD" in on
         assert "GIVE UP AFTER A PAYWALL" in on
         assert "verification code" in on
         assert "username=bob" in on
 
-    async def test_a_parsed_reply_never_enters_the_window(self) -> None:
-        """The window is the Loop's record of what ran, not what was proposed.
-
-        It used to be agent-owned state appended at parse time, so an
-        action the Loop cut or never reached was shown as history. Now a
-        parsed reply leaves no trace in the agent: the next prompt shows
-        only what the ``history`` fragment says ran.
-        """
-        agent = _make_agent()
-        agent.prepare(
-            task="t",
-            action_space=space_of([]),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
-        )
-        agent.parse_react_output(
-            SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=7)])
-        )
-        (message,) = await agent.build_react_prompt(
-            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
-        )
-        assert "<action_history>\n(no actions yet)\n</action_history>" in message.text
-        assert "browser.click(" not in message.text
+    @member_param
+    def test_refuses_a_run_with_no_action(self, member: type[SkyvernAgent]) -> None:
+        with pytest.raises(ValueError, match="at least one negotiated action"):
+            make_agent(member).prepare(
+                task="t",
+                action_space=ActionSpace(),
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
+                fragment_formats=dom_formats(),
+            )
 
 
 class TestBuildReactPrompt:
-    async def test_includes_dom_text(self) -> None:
-        """A real ``DOMState``, not a string.
-
-        ``DOMObs.element_tree`` carries a ``DOMState``; the form the model
-        is meant to read is its ``serialized_dom``. The old fixture passed
-        a plain ``str``, which made ``str(element_tree)`` a no-op and hid
-        the fact that a real run got a dataclass repr instead of the
-        indexed DOM the model needs.
-        """
-        agent = _make_agent()
-        agent.prepare(
-            task="t",
-            action_space=space_of(_DESCRIPTORS),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
+    @member_param
+    async def test_includes_dom_text(self, member: type[SkyvernAgent]) -> None:
+        """A real ``DOMState``: the model reads its ``serialized_dom``, never the repr."""
+        agent = _make_agent(member)
+        state = DOMState(serialized_dom="[1]<button>Submit</button>\n[2]<input placeholder='q'/>")
+        content = await _text(
+            agent,
+            _FakeObservation(
+                dom=_FakeDOM(element_tree=state),
+                browser_meta=_FakeBrowserMeta(url="https://www.example.com", page_title="Ex"),
+                task=_FakeTask(user_request="find the cheapest flight"),
+                screenshot=_screenshot(),
+            ),
         )
-        state = DOMState(
-            serialized_dom="[1]<button>Submit</button>\n[2]<input placeholder='q'/>",
-        )
-        obs = _FakeObservation(
-            dom=_FakeDOM(element_tree=state),
-            browser_meta=_FakeBrowserMeta(url="https://www.example.com", page_title="Ex"),
-            task=_FakeTask(user_request="find the cheapest flight"),
-        )
-        messages = await agent.build_react_prompt(
-            obs, context=ReactPromptContext(step=0, phase="policy")
-        )
-        assert len(messages) == 1
-        assert isinstance(messages[0], UserMessage)
-        content = messages[0].content
-        assert isinstance(content, str)
         assert "https://www.example.com" in content
         assert "[1]<button>Submit</button>" in content
-        assert "[2]<input placeholder='q'/>" in content
-        # The dataclass repr must not be what the model reads.
         assert "DOMElementNode(" not in content
         assert "serialized_dom=" not in content
 
-    async def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
-        agent = _make_agent()
-        agent.prepare(
-            task="t",
-            action_space=space_of(_DESCRIPTORS),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
-        )
+    @member_param
+    async def test_dom_text_is_not_cut_by_the_agent(self, member: type[SkyvernAgent]) -> None:
+        agent = _make_agent(member)
         tail = "[173]<button>Reachable at the end</button>"
         state = DOMState(serialized_dom="x" * 10_100 + tail)
-        content = (
-            await agent.build_react_prompt(
-                _FakeObservation(dom=_FakeDOM(element_tree=state)),
-                context=ReactPromptContext(step=0, phase="policy"),
-            )
-        )[0].content
-
-        assert isinstance(content, str)
+        content = await _text(agent, _FakeObservation(dom=_FakeDOM(element_tree=state)))
         assert tail in content
-        assert "... (truncated)" not in content
 
+    @member_param
     async def test_action_history_is_rendered_per_step_not_in_the_system_prompt(
-        self,
+        self, member: type[SkyvernAgent]
     ) -> None:
-        """The window follows the step, because it changes every step.
+        agent = _make_agent(member, action_history_window=2)
+        assert "<action_history>" not in agent._system_prompt_text
 
-        ``prepare()`` is a pure builder called once per run, so a history
-        window rendered into the system prompt is frozen at "empty"
-        forever. It belongs next to ``<user_request>`` / ``<step_info>``.
-        """
-        agent = _make_agent(action_history_window=2)
-        seed = agent.prepare(
-            task="t",
-            action_space=space_of(_DESCRIPTORS),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
-        )
-        assert isinstance(seed[0].content, str)
-        assert "<action_history>" not in seed[0].content
-
-        obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
-        first = (
-            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
-        )[0].content
-        assert isinstance(first, str)
+        first = await _text(agent, _FakeObservation(dom=_FakeDOM(element_tree="<x/>")))
         assert "<action_history>\n(no actions yet)\n</action_history>" in first
 
-        later = (
-            await agent.build_react_prompt(
-                _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), history=_clicks(0, 1, 2)),
-                context=ReactPromptContext(step=3, phase="policy"),
-            )
-        )[0].content
-        assert isinstance(later, str)
-        history = later.split("<action_history>\n")[1].split("\n</action_history>")[0]
+        later = await _text(
+            agent,
+            _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), history=_clicks(0, 1, 2)),
+            step=3,
+        )
+        lines = _history_lines(later)
         # window=2 → the two most recent actions, oldest dropped.
-        assert history.count("browser.click(") == 2
-        assert "'index': 0" not in history
-        assert "'index': 1" in history
-        assert "'index': 2" in history
+        assert [json.loads(line)["action"]["params"] for line in lines] == [
+            {"index": 1},
+            {"index": 2},
+        ]
 
-    async def test_a_zero_window_renders_nothing_not_everything(self) -> None:
-        """``lst[-0:]`` is ``lst[0:]``.
-
-        Zero is the obvious YAML spelling of "no history", and the naive
-        slice turns it into "the whole run" — the opposite of what was
-        asked for, and unbounded prompt growth.
-        """
-        agent = _make_agent(action_history_window=0)
-        agent.prepare(
-            task="t",
-            action_space=space_of(_DESCRIPTORS),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
+    @member_param
+    async def test_a_zero_window_renders_nothing_not_everything(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        """``lst[-0:]`` is ``lst[0:]``."""
+        agent = _make_agent(member, action_history_window=0)
+        content = await _text(
+            agent, _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), history=_clicks(0, 1, 2))
         )
-        content = (
-            await agent.build_react_prompt(
-                _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), history=_clicks(0, 1, 2)),
-                context=ReactPromptContext(step=3, phase="policy"),
-            )
-        )[0].content
-        assert isinstance(content, str)
         assert "<action_history>\n(disabled)\n</action_history>" in content
-        assert "browser.click(" not in content
+        assert "browser.click" not in content
 
-    async def test_user_request_prefix(self) -> None:
-        agent = _make_agent()
-        agent.prepare(
-            task="t",
-            action_space=space_of([]),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
+    @member_param
+    async def test_user_request_and_step_info(self, member: type[SkyvernAgent]) -> None:
+        content = await _text(
+            _make_agent(member),
+            _FakeObservation(
+                task=_FakeTask(user_request="reset the user password"),
+                step_info=_FakeStepInfo(step=2, max_steps=10, today="2026-05-01"),
+            ),
         )
-        obs = _FakeObservation(
-            dom=_FakeDOM(element_tree="<x/>"),
-            task=_FakeTask(user_request="reset the user password"),
-        )
-        content = (
-            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
-        )[0].content
-        assert isinstance(content, str)
-        assert "<user_request>" in content
-        assert "reset the user password" in content
+        assert "<user_request>\nreset the user password\n</user_request>" in content
+        assert "<step_info>step 2/10 (today=2026-05-01)</step_info>" in content
 
-    async def test_step_info_prefix_when_present(self) -> None:
-        agent = _make_agent()
-        agent.prepare(
-            task="t",
-            action_space=space_of([]),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
-        )
-        obs = _FakeObservation(
-            dom=_FakeDOM(element_tree="<x/>"),
-            task=_FakeTask(user_request="x"),
-            step_info=_FakeStepInfo(step=2, max_steps=10, today="2026-05-01"),
-        )
-        content = (
-            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
-        )[0].content
-        assert isinstance(content, str)
-        assert "<step_info>step 2/10" in content
-        assert "today=2026-05-01" in content
-
-    async def test_returns_only_new_user_message(self) -> None:
-        agent = _make_agent()
-        agent.prepare(
-            task="t",
-            action_space=space_of([]),
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
-            fragment_formats=dom_formats(),
-        )
-        obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
-        messages = await agent.build_react_prompt(
-            obs, context=ReactPromptContext(step=0, phase="policy")
-        )
-        assert isinstance(messages, list)
-        assert all(isinstance(m, BaseMessage) for m in messages)
-        # Pure builder: agent emits only the new step's user message.
+    @member_param
+    async def test_returns_only_the_new_user_message(self, member: type[SkyvernAgent]) -> None:
+        agent = _make_agent(member)
+        observation = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"), screenshot=_screenshot())
+        messages = await agent.build_react_prompt(observation, context=_context(agent, observation))
         assert len(messages) == 1
         assert isinstance(messages[0], UserMessage)
+        assert all(isinstance(m, BaseMessage) for m in messages)
+
+    @member_param
+    async def test_a_parsed_reply_never_enters_the_window(self, member: type[SkyvernAgent]) -> None:
+        """The window is the Loop's record of what ran, not what was proposed."""
+        agent = _make_agent(member)
+        agent.parse_react_output(_reply({"browser.click": {"index": 7}}))
+        content = await _text(agent, _FakeObservation())
+        assert "<action_history>\n(no actions yet)\n</action_history>" in content
 
 
-class TestParseReactOutput:
-    def test_parses_structured_output(self) -> None:
-        agent = _make_agent()
-        out = SkyvernOutput(
-            actions=[
-                SkyvernActionItem(
-                    action_type="browser.click",
-                    index=7,
-                    reasoning="submit form",
-                ),
-            ]
-        )
-        actions = agent.parse_react_output(out)
-        assert len(actions) == 1
-        assert actions[0].name == "browser.click"
-        # ``index``, not ``element_id``: BrowserCapability's selector_map
-        # is index-keyed and ``ClickAction.execute`` reads params["index"].
-        assert actions[0].params["index"] == 7
-        assert "element_id" not in actions[0].params
-        # The reasoning is the model's thought about the click, not a param of
-        # it: it stays in the reply (``parse_react_thought`` reads it), and the
-        # action carries only what ``ClickAction.Params`` declares.
-        assert actions[0].params == {"index": 7}
+class TestActionHistory:
+    """Each line is ``{"action", "result"}`` as ``result_facts`` writes it, returned content included."""
 
-    def test_carries_every_param_the_advertised_actions_need(self) -> None:
-        """scroll needs ``direction``, send_keys needs ``keys``.
-
-        Both are in ``__wiring__``'s optional set, so the prompt
-        advertises them; an output model that cannot express their
-        required params turns an advertised action into a guaranteed
-        ``Missing param`` at execute time.
-        """
-        agent = _make_agent()
-        actions = agent.parse_react_output(
-            SkyvernOutput(
-                actions=[
-                    SkyvernActionItem(action_type="browser.scroll", direction="up", reasoning="r"),
-                    SkyvernActionItem(action_type="browser.send_keys", keys="Enter", reasoning="r"),
-                    SkyvernActionItem(
-                        action_type="browser.type",
-                        index=3,
-                        text="hello",
-                        reasoning="r",
-                    ),
-                ]
-            )
-        )
-        assert actions[0].params["direction"] == "up"
-        assert actions[1].params["keys"] == "Enter"
-        assert actions[2].params == {"index": 3, "text": "hello"}
-
-    def test_done_inside_actions_keeps_the_answer(self) -> None:
-        """The template says done is a top-level flag; models improvise.
-
-        ``browser.done`` is in the negotiated set, so ``guarded_act``
-        accepts it and the run ends either way — the risk is ending with
-        an empty answer.
-        """
-        agent = _make_agent()
-        actions = agent.parse_react_output(
-            SkyvernOutput(
-                actions=[
-                    SkyvernActionItem(
-                        action_type="browser.done",
-                        text="42 dollars",
-                        reasoning="found it",
-                    )
-                ],
-                success=False,
-            )
-        )
-        assert len(actions) == 1
-        assert actions[0].name == "done"
-        assert actions[0].params["extracted_content"] == "42 dollars"
-        assert actions[0].params["success"] is False
-
-    def test_is_done_with_success_false_reports_failure(self) -> None:
-        agent = _make_agent()
-        actions = agent.parse_react_output(
-            SkyvernOutput(
-                actions=[],
-                is_done=True,
-                success=False,
-                extracted_content="hit a paywall",
-            )
-        )
-        assert actions[0].name == "done"
-        assert actions[0].params["success"] is False
-        assert actions[0].params["extracted_content"] == "hit a paywall"
-
-    def test_is_done_without_success_claims_nothing(self) -> None:
-        """A reply that leaves ``success`` out makes no claim; it is not read as ``true``."""
-        agent = _make_agent()
-        actions = agent.parse_react_output(
-            SkyvernOutput.model_validate(
-                {"actions": [], "is_done": True, "extracted_content": "the answer"}
-            )
-        )
-        assert actions[0].params == {"extracted_content": "the answer"}
-
-    def test_is_done_emits_only_done_action_not_mixed(self) -> None:
-        # Regression: when ``is_done`` is set, Skyvern previously
-        # returned ``[click, done]`` which ReactLoop's default
-        # max_actions_per_step=1 would truncate back to ``[click]``,
-        # preventing task completion. The fixed behaviour returns
-        # ``[done]`` alone so the task terminates correctly.
-        agent = _make_agent()
-        out = SkyvernOutput(
-            actions=[
-                SkyvernActionItem(
-                    action_type="browser.click",
-                    index=1,
-                    reasoning="x",
-                )
-            ],
-            is_done=True,
-            extracted_content="answer text",
-        )
-        actions = agent.parse_react_output(out)
-        assert len(actions) == 1
-        assert actions[0].name == "done"
-        # Regression: ``extracted_content`` is the canonical key
-        # (not ``text``).
-        assert actions[0].params["extracted_content"] == "answer text"
-        assert "text" not in actions[0].params
-
-    async def test_an_executed_action_enters_the_window_with_its_result(self) -> None:
-        agent = _make_agent()
+    @member_param
+    async def test_an_executed_action_enters_the_window_with_its_result(
+        self, member: type[SkyvernAgent]
+    ) -> None:
         typed = StepRecord(
             step=0,
             actions=[Action(name="browser.type", params={"index": 4, "text": "hello"})],
             action_results=[ActionResult(success=True)],
         )
-        (message,) = await agent.build_react_prompt(
-            _FakeObservation(history=[typed]), context=ReactPromptContext(step=1, phase="policy")
+        (line,) = _history_lines(
+            await _text(_make_agent(member), _FakeObservation(history=[typed]), step=1)
         )
-        assert "browser.type({'index': 4, 'text': 'hello'}) -> ok" in message.text
+        assert json.loads(line) == {
+            "action": {"name": "browser.type", "params": {"index": 4, "text": "hello"}},
+            "result": {
+                "success": True,
+                "error": None,
+                "is_done": False,
+                "extracted_content": None,
+            },
+        }
 
-    def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
-        """The agent must not invent a provider for a bare verb.
+    @member_param
+    async def test_extracted_content_reaches_the_model(self, member: type[SkyvernAgent]) -> None:
+        """The defect the end-to-end run found: the extraction was run and never shown.
 
-        The template teaches the negotiated (fully-qualified) names, but a
-        model that answers ``click`` gets that string forwarded verbatim:
-        ``build_guarded_act`` holds this run's short → fully-qualified
-        map, and it is the only component that can know whether ``click``
-        means ``browser.click`` or ``desktop.click``.
+        The old line was ``name(params) -> ok``, so a model that extracted the
+        page's K-line table read only "ok" and finished claiming it had the
+        data.
         """
-        agent = _make_agent()
-        actions = agent.parse_react_output(
-            SkyvernOutput(actions=[SkyvernActionItem(action_type="click", index=1, reasoning="r")])
+        extracted = StepRecord(
+            step=0,
+            actions=[Action(name="browser.extract_content", params={"index": 673})],
+            action_results=[
+                ActionResult(success=True, extracted_content="本周最高 3,412.08 最低 3,301.55")
+            ],
         )
-        assert actions[0].name == "click"
+        (line,) = _history_lines(
+            await _text(_make_agent(member), _FakeObservation(history=[extracted]), step=1)
+        )
+        assert "本周最高 3,412.08 最低 3,301.55" in line
+        assert json.loads(line)["result"]["extracted_content"] == "本周最高 3,412.08 最低 3,301.55"
+
+    @member_param
+    async def test_returned_content_is_bounded_and_says_so(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        page_text = "a" * 30 + "b" * 70
+        extracted = StepRecord(
+            step=0,
+            actions=[Action(name="browser.extract_content", params={})],
+            action_results=[ActionResult(success=True, extracted_content=page_text)],
+        )
+        agent = _make_agent(member, max_result_chars=30)
+        (line,) = _history_lines(await _text(agent, _FakeObservation(history=[extracted]), step=1))
+        shown = json.loads(line)["result"]["extracted_content"]
+        assert shown == "a" * 30 + " ... [30 of 100 characters shown]"
+        assert re.search(r"cut to 30\s+characters", agent._system_prompt_text)
+
+    @member_param
+    async def test_live_and_restored_history_show_the_same_result_facts(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        """A live step and a restored one read alike: one ``result_facts``, one bound."""
+        agent = _make_agent(member, max_result_chars=8)
+        action = Action(name="browser.extract_content", params={"index": 3})
+        result = ActionResult(success=True, extracted_content="0123456789abcdef")
+        (line,) = _history_lines(
+            await _text(
+                agent,
+                _FakeObservation(
+                    history=[StepRecord(step=0, actions=[action], action_results=[result])]
+                ),
+                step=1,
+            )
+        )
+        restored = restored_history_message(
+            RestoredHistory(
+                source_run_id="source",
+                source_step=0,
+                source_reply="{}",
+                source_actions=[action],
+                actions=[action],
+                results=[result],
+                executions=[
+                    RestoredAction(
+                        recorded=action,
+                        executed=action,
+                        method="identity",
+                        recorded_success=True,
+                        live_success=True,
+                        result=result,
+                    )
+                ],
+            ),
+            show_action_effects=agent.show_action_effects,
+            context=ReactPromptContext(step=0, phase="history"),
+            action_space=agent._action_space,
+            max_content_chars=agent.max_result_chars,
+        )
+        facts = json.loads(restored.text.split("\n", 1)[1])
+        (restored_entry,) = facts["actual_restored_execution"]
+        assert restored_entry == json.loads(line)
+
+    @member_param
+    async def test_an_action_that_raised_says_so(self, member: type[SkyvernAgent]) -> None:
+        record = StepRecord(
+            step=0,
+            actions=[
+                Action(name="browser.click", params={"index": 1}),
+                Action(name="browser.click", params={"index": 2}),
+            ],
+            action_results=[ActionResult(success=True)],
+            error_phase="act",
+            error="CDP connection lost",
+        )
+        lines = _history_lines(await _text(_make_agent(member), _FakeObservation(history=[record])))
+        assert [json.loads(line).get("raised") for line in lines] == [None, "CDP connection lost"]
+
+
+class TestParseReactOutput:
+    @member_param
+    def test_parses_the_closed_reply(self, member: type[SkyvernAgent]) -> None:
+        agent = _make_agent(member)
+        actions = agent.parse_react_output(
+            _reply(
+                {"browser.click": {"index": 7}},
+                {"browser.scroll": {"direction": "up", "amount": None, "index": None}},
+                {"browser.type": {"index": 3, "text": "hello", "clear": None}},
+            )
+        )
+        # The reasoning stays in the reply (``parse_react_thought`` reads it);
+        # a declined optional param is left out, so the capability's knob decides.
+        assert actions == [
+            Action(name="browser.click", params={"index": 7}),
+            Action(name="browser.scroll", params={"direction": "up"}),
+            Action(name="browser.type", params={"index": 3, "text": "hello"}),
+        ]
+
+    @member_param
+    def test_a_param_the_action_does_not_take_goes_back_to_the_model(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        """The flat item let a click carry ``text``; the params check then refused the whole reply."""
+        with pytest.raises(ParseError, match="browser.click: text"):
+            _make_agent(member).parse_react_output(
+                _reply({"browser.click": {"index": 7, "text": "Search"}})
+            )
+
+    @member_param
+    def test_an_unknown_or_bare_verb_goes_back_to_the_model(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        """The schema permits only the run's fully-qualified names."""
+        agent = _make_agent(member)
+        for verb in ("browser.CLICK", "click", "browser.navigate"):
+            with pytest.raises(ParseError, match="unknown action"):
+                agent.parse_react_output(_reply({verb: {"index": 1}}))
+
+    @member_param
+    def test_done_keeps_its_required_null_answer(self, member: type[SkyvernAgent]) -> None:
+        """``extracted_content`` is required and nullable; a written null is the answer."""
+        (action,) = _make_agent(member).parse_react_output(
+            _reply({"browser.done": {"extracted_content": None, "success": None}})
+        )
+        assert action == Action(name="browser.done", params={"extracted_content": None})
+
+    @member_param
+    def test_done_carries_the_claim(self, member: type[SkyvernAgent]) -> None:
+        (action,) = _make_agent(member).parse_react_output(
+            _reply({"browser.done": {"extracted_content": "hit a paywall", "success": False}})
+        )
+        assert action.params == {"extracted_content": "hit a paywall", "success": False}
+
+    @member_param
+    def test_an_empty_action_list_goes_back_to_the_model(self, member: type[SkyvernAgent]) -> None:
+        with pytest.raises(ParseError):
+            _make_agent(member).parse_react_output('{"actions": []}')
+
+    @member_param
+    def test_text_that_is_not_json_goes_back_to_the_model(self, member: type[SkyvernAgent]) -> None:
+        with pytest.raises(ParseError, match="not valid JSON"):
+            _make_agent(member).parse_react_output("click 7")
+
+    @member_param
+    def test_before_prepare_there_is_nothing_to_validate_against(
+        self, member: type[SkyvernAgent]
+    ) -> None:
+        with pytest.raises(ParseError, match="before prepare"):
+            member().parse_react_output(_reply({"browser.click": {"index": 1}}))
+        with pytest.raises(RuntimeError, match="before prepare"):
+            member().get_react_output_model()
 
 
 class TestOutputModel:
-    def test_returns_skyvern_output(self) -> None:
-        agent = _make_agent()
-        assert agent.get_react_output_model() is SkyvernOutput
-
-    def test_the_shape_survives_a_strict_provider_schema(self) -> None:
-        """Skyvern's whole advantage is a closed, provider-enforceable shape.
-
-        ``SkyvernOutput`` is flat scalars all the way down, so the
-        OpenAI-style ``strict: true`` path can constrain it for real —
-        unlike an open ``{"<verb>": {...}}`` map, which JSON Schema cannot
-        narrow. Widening the model with a free-form object would silently
-        drop it back to "the provider validates nothing".
-        """
+    @member_param
+    def test_the_reply_survives_a_strict_provider_schema(self, member: type[SkyvernAgent]) -> None:
+        """Closed all the way down, so OpenAI-style ``strict: true`` constrains it for real."""
         from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 
-        schema = SchemaOptimizer.create_optimized_json_schema(SkyvernOutput, strict=True)
+        model = _make_agent(member).get_react_output_model()
+        schema = SchemaOptimizer.create_optimized_json_schema(model, strict=True)
         assert SchemaOptimizer.is_strict_compatible(schema)
         item = schema["properties"]["actions"]["items"]
         assert item["additionalProperties"] is False
-        assert set(item["required"]) == set(SkyvernActionItem.model_fields)
+        assert set(item["required"]) == {"reasoning", "action"}
+
+    @member_param
+    def test_the_schema_holds_exactly_the_run_s_verbs(self, member: type[SkyvernAgent]) -> None:
+        agent = _make_agent(member)
+        schema = json.dumps(agent.get_react_output_model().model_json_schema())
+        for descriptor in agent._action_space.descriptors:
+            assert f'"{descriptor.name}"' in schema
+        assert '"browser.navigate"' not in schema
+
+
+class TestScreenshot:
+    """Captured in both members; shown to the model only by ``skyvern.dom_vision``."""
+
+    async def test_dom_never_shows_the_screenshot(self) -> None:
+        agent = _make_agent(SkyvernDomAgent)
+        observation = _FakeObservation(screenshot=_screenshot())
+        (message,) = await agent.build_react_prompt(
+            observation, context=_context(agent, observation)
+        )
+        assert isinstance(message.content, str)
+        assert "Screenshot" not in message.content
+        assert "screenshot" not in agent._system_prompt_text.lower()
+
+    async def test_dom_vision_shows_the_screenshot_with_its_size(self) -> None:
+        agent = _make_agent(SkyvernDomVisionAgent)
+        observation = _FakeObservation(screenshot=_screenshot())
+        (message,) = await agent.build_react_prompt(
+            observation, context=_context(agent, observation)
+        )
+        assert isinstance(message.content, list)
+        images = [part for part in message.content if isinstance(part, ContentPartImageParam)]
+        assert len(images) == 1
+        assert images[0].image_url.detail == "auto"
+        assert images[0].image_url.url.startswith("data:image/png;base64,")
+        assert "Screenshot: 2000x1000 pixels" in message.text
+        assert "<screenshot>" in agent._system_prompt_text
+
+    async def test_dom_vision_says_when_there_is_no_screenshot(self) -> None:
+        agent = _make_agent(SkyvernDomVisionAgent)
+        observation = _FakeObservation(screenshot=None)
+        (message,) = await agent.build_react_prompt(
+            observation, context=_context(agent, observation)
+        )
+        assert isinstance(message.content, str)
+        assert "No screenshot could be shown this step." in message.content
+
+    async def test_dom_vision_writes_history_points_on_the_step_s_grid(self) -> None:
+        """A ``click_coordinate`` the run executed in CSS px reads back on the model's grid."""
+        agent = _make_agent(SkyvernDomVisionAgent)
+        observation = _FakeObservation(screenshot=_screenshot())
+        frame = step_frame(agent._action_space, observation)
+        clicked = StepRecord(
+            step=0,
+            frame=frame,
+            actions=[
+                Action(
+                    name="browser.click_coordinate", params={"coordinate_x": 7, "coordinate_y": 14}
+                )
+            ],
+            action_results=[ActionResult(success=True)],
+        )
+        (line,) = _history_lines(
+            await _text(agent, _FakeObservation(history=[clicked], screenshot=_screenshot()))
+        )
+        # Image 2000x1000 over a 1000x500 viewport: pixel points are twice the CSS px.
+        assert json.loads(line)["action"]["params"] == {"coordinate_x": 14, "coordinate_y": 28}
+
+    def test_dom_vision_teaches_the_grid_only_with_a_point_action(self) -> None:
+        with_point = _system(SkyvernDomVisionAgent)
+        assert "in pixels of\nthis step's screenshot" in with_point
+
+        agent = make_agent(SkyvernDomVisionAgent)
+        agent.prepare(
+            task="t",
+            action_space=browser_space(
+                "click", "type", "done", coordinate_space=agent.coordinate_space
+            ),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
+        )
+        without = agent._system_prompt_text
+        assert "<screenshot>" in without
+        assert "takes a point" not in without
 
 
 class TestFrameElementIndices:
     """A ten-digit frame-element index survives the closed Skyvern shape."""
 
-    async def test_the_index_reaches_the_element_unchanged(self) -> None:
+    @member_param
+    async def test_the_index_reaches_the_element_unchanged(
+        self, member: type[SkyvernAgent]
+    ) -> None:
         from spectragent.core.capabilities.browser.actions.click import ClickAction
         from tests.test_core.test_capabilities.test_browser_actions.conftest import (
             FakeCapability,
@@ -666,10 +680,9 @@ class TestFrameElementIndices:
         )
 
         key = 3 * 2**31 + 7
-        out = SkyvernOutput.model_validate_json(
-            f'{{"actions": [{{"action_type": "browser.click", "index": {key}, "reasoning": "r"}}]}}'
+        (action,) = _make_agent(member).parse_react_output(
+            _reply({"browser.click": {"index": key}})
         )
-        (action,) = _make_agent().parse_react_output(out)
         assert action.params["index"] == key
 
         capability = FakeCapability()

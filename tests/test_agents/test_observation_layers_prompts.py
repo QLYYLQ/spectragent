@@ -23,7 +23,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
@@ -56,9 +56,17 @@ from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import step_context
 
-AGENT_CLASSES: tuple[type[Any], ...] = (UITarsAgent, SkyvernAgent, BrowserUseDomAgent)
-BROWSER_AGENTS: tuple[type[Any], ...] = (SkyvernAgent, BrowserUseDomAgent)
+AGENT_CLASSES: tuple[type[Any], ...] = (
+    UITarsAgent,
+    SkyvernDomAgent,
+    SkyvernDomVisionAgent,
+    BrowserUseDomAgent,
+)
+BROWSER_AGENTS: tuple[type[Any], ...] = (SkyvernDomAgent, SkyvernDomVisionAgent, BrowserUseDomAgent)
 BROWSER_USE_MEMBERS: tuple[type[Any], ...] = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
+#: The agents whose run here writes points on a grid of the screenshot (they
+#: hold a point action): the pointer is written on that grid.
+GRID_AGENTS: tuple[type[Any], ...] = (UITarsAgent, SkyvernDomVisionAgent)
 
 #: A raw effect field value no ``describe()`` line contains.
 RAW = "RAW-EFFECT-FIELD"
@@ -83,6 +91,11 @@ _CAPTURE_STATE = (
 #: 2000x1000 over a 1000x500 viewport, so the viewport's (1, 2) is (2, 4).
 _UI_TARS_CAPTURE_STATE = _CAPTURE_STATE.replace("(1, 2) in viewport pixels.", "(2, 4).")
 _PAGE_STATE = "URL: https://f.test/\n\nTitle: F\n\nTabs: [T1] F (https://f.test/)"
+
+
+def _capture_block(agent_class: type[Any]) -> str:
+    """The capture-state block *agent_class* writes: its pointer on its grid when it has one."""
+    return _UI_TARS_CAPTURE_STATE if agent_class in GRID_AGENTS else _CAPTURE_STATE
 
 
 class ProbeEffect(ActionEffect):
@@ -252,18 +265,43 @@ async def test_ui_tars_step_text() -> None:
     )
 
 
-async def test_skyvern_user_message() -> None:
+#: Skyvern's window for :func:`_history`: one JSON object per action that ran,
+#: its result as ``result_facts`` writes it (the effect as its line).
+_SKYVERN_WINDOW = (
+    "<action_history>\n"
+    '{"action": {"name": "browser.click", "params": {"index": 29}}, "result": '
+    '{"effect": "Probe moved 0 px.", "error": null, "extracted_content": null, '
+    '"is_done": false, "success": true}}\n'
+    '{"action": {"name": "browser.scroll", "params": {"direction": "down"}}, "result": '
+    '{"effect": "Probe moved 600 px.", "error": "blocked", "extracted_content": null, '
+    '"is_done": false, "success": false}}\n'
+    "</action_history>"
+)
+
+
+async def test_skyvern_dom_user_message() -> None:
     """The window lists what ran with its result and effect; the page state precedes the tree."""
-    assert await _prompt(SkyvernAgent) == (
+    assert await _prompt(SkyvernDomAgent) == (
         "<user_request>\nOpen\n</user_request>\n"
         f"{_PLATFORM}\n"
         "<step_info>step 2/10 (today=2026-10-20)</step_info>\n"
-        "<action_history>\n"
-        "browser.click({'index': 29}) -> ok | effect: Probe moved 0 px.\n"
-        "browser.scroll({'direction': 'down'}) -> error: blocked | effect: Probe moved 600 px.\n"
-        "</action_history>\n\n"
+        f"{_SKYVERN_WINDOW}\n\n"
         f"{_PAGE_STATE}\n\n"
         f"{_CAPTURE_STATE}\n\n"
+        "Element Tree:\n[29]<button>Live</button>"
+    )
+
+
+async def test_skyvern_dom_vision_user_message() -> None:
+    """The same, the pointer on the screenshot's grid and the screenshot's size before the tree."""
+    assert await _prompt(SkyvernDomVisionAgent) == (
+        "<user_request>\nOpen\n</user_request>\n"
+        f"{_PLATFORM}\n"
+        "<step_info>step 2/10 (today=2026-10-20)</step_info>\n"
+        f"{_SKYVERN_WINDOW}\n\n"
+        f"{_PAGE_STATE}\n\n"
+        f"{_UI_TARS_CAPTURE_STATE}\n\n"
+        "Screenshot: 2000x1000 pixels, showing the whole visible viewport.\n\n"
         "Element Tree:\n[29]<button>Live</button>"
     )
 
@@ -321,7 +359,7 @@ async def test_no_capture_state_renders_no_block(agent_class: type[Any]) -> None
     """What ``show_capture_state: false`` leaves the agent: no fragment, so no block."""
     shown = await _prompt(agent_class)
     absent = await _prompt(agent_class, _observation(capture_state=False))
-    block = _UI_TARS_CAPTURE_STATE if agent_class is UITarsAgent else _CAPTURE_STATE
+    block = _capture_block(agent_class)
     assert block in shown
     separator = "\n" if agent_class is UITarsAgent else "\n\n"
     assert absent == shown.replace(separator + block, "")
@@ -386,7 +424,7 @@ async def test_media_state_is_shown_only_when_switched_on(agent_class: type[Any]
     off = await _prompt(agent_class, _with_media(_observation()))
     assert off == await _prompt(agent_class)
     on = await _prompt(agent_class, _with_media(_observation()), show_media_state=True)
-    assert f"{_CAPTURE_STATE}\n\n{_MEDIA_STATE}" in on
+    assert f"{_capture_block(agent_class)}\n\n{_MEDIA_STATE}" in on
     assert on.replace(f"\n\n{_MEDIA_STATE}", "") == off
 
 
@@ -413,7 +451,8 @@ def test_ui_tars_declares_no_browser_page_state_and_optional_capture_state() -> 
 @pytest.mark.parametrize(
     "agent",
     [
-        pytest.param(lambda: make_agent(SkyvernAgent), id="skyvern"),
+        pytest.param(lambda: make_agent(SkyvernDomAgent), id="skyvern.dom"),
+        pytest.param(lambda: make_agent(SkyvernDomVisionAgent), id="skyvern.dom_vision"),
         *(
             pytest.param(lambda member=member: make_agent(member), id=member.__registry_key__)
             for member in BROWSER_USE_MEMBERS
@@ -428,7 +467,8 @@ def test_browser_agents_require_page_state(agent: Any) -> None:
 
 _SWITCHABLE: list[Any] = [
     pytest.param(UITarsAgent, {}, id="ui_tars"),
-    pytest.param(SkyvernAgent, {}, id="skyvern"),
+    pytest.param(SkyvernDomAgent, {}, id="skyvern.dom"),
+    pytest.param(SkyvernDomVisionAgent, {}, id="skyvern.dom_vision"),
     *(pytest.param(member, {}, id=member.__registry_key__) for member in BROWSER_USE_MEMBERS),
 ]
 
@@ -594,31 +634,49 @@ def _skyvern_history() -> list[StepRecord]:
 async def _window(**config: Any) -> list[str]:
     observation = _observation()
     observation.history = HistoryObs(items=_skyvern_history())
-    text = await _prompt(SkyvernAgent, observation, **config)
+    text = await _prompt(SkyvernDomAgent, observation, **config)
     return text.split("<action_history>\n")[1].split("\n</action_history>")[0].splitlines()
+
+
+def _entry(name: str, params: dict[str, Any], **outcome: Any) -> str:
+    """One window line: the action, then its result facts or what it raised."""
+    if "raised" not in outcome:
+        outcome = {
+            "result": {
+                "error": None,
+                "extracted_content": None,
+                "is_done": False,
+                **outcome,
+            }
+        }
+    return json.dumps(
+        {"action": {"name": name, "params": params}, **outcome},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+_CLICK_1 = _entry("browser.click", {"index": 1}, success=True, effect="Probe moved 1 px.")
+_TYPE = _entry(
+    "browser.type", {"index": 2, "text": "hi"}, success=False, error="field is read-only"
+)
+_CLICK_3 = _entry("browser.click", {"index": 3}, raised="Element 3 is detached")
+_WAIT = _entry("browser.wait", {}, success=True, effect="Probe moved 0 px.")
 
 
 async def test_skyvern_window_lists_executed_actions_across_steps() -> None:
     """An action that raised carries the step's error; one the Loop never reached is absent."""
-    assert await _window(action_history_window=10) == [
-        "browser.click({'index': 1}) -> ok | effect: Probe moved 1 px.",
-        "browser.type({'index': 2, 'text': 'hi'}) -> error: field is read-only",
-        "browser.click({'index': 3}) -> error: Element 3 is detached",
-        "browser.wait({}) -> ok | effect: Probe moved 0 px.",
-    ]
+    assert await _window(action_history_window=10) == [_CLICK_1, _TYPE, _CLICK_3, _WAIT]
 
 
 async def test_skyvern_window_keeps_the_most_recent_actions() -> None:
-    assert await _window(action_history_window=2) == [
-        "browser.click({'index': 3}) -> error: Element 3 is detached",
-        "browser.wait({}) -> ok | effect: Probe moved 0 px.",
-    ]
+    assert await _window(action_history_window=2) == [_CLICK_3, _WAIT]
 
 
 async def test_skyvern_window_without_effects_shown() -> None:
     assert await _window(action_history_window=10, show_action_effects=False) == [
-        "browser.click({'index': 1}) -> ok",
-        "browser.type({'index': 2, 'text': 'hi'}) -> error: field is read-only",
-        "browser.click({'index': 3}) -> error: Element 3 is detached",
-        "browser.wait({}) -> ok",
+        _entry("browser.click", {"index": 1}, success=True),
+        _TYPE,
+        _CLICK_3,
+        _entry("browser.wait", {}, success=True),
     ]

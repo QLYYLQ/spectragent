@@ -13,7 +13,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
@@ -29,13 +29,16 @@ from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 
-AGENT_CLASSES = (BrowserUseDomAgent, SkyvernAgent, UITarsAgent)
+AGENT_CLASSES = (BrowserUseDomAgent, SkyvernDomAgent, SkyvernDomVisionAgent, UITarsAgent)
 
 # Captured from the original builders before adding the explicit prompt context.
 # The complete serialized messages include image bytes, roles and cache markers.
 ORIGINAL_PROMPT_DIGESTS = {
     BrowserUseDomAgent: "d89b121aa6319adcc31f2032e14b19a73d0a021459d3ea8248820d06d12a8451",
-    SkyvernAgent: "bf357a0c812a20adaef9d691207e1a2720d6df5310bfbd7b1df7e26c1a577eb1",
+    # Skyvern split into its two members (2026-10-23): ``dom`` writes the same
+    # message as before; ``dom_vision`` attaches the screenshot and states its size.
+    SkyvernDomAgent: "bf357a0c812a20adaef9d691207e1a2720d6df5310bfbd7b1df7e26c1a577eb1",
+    SkyvernDomVisionAgent: "aed5036b0cea64543d3c401201f50f96938da0fa034978ffbe0a782ddc3e9ead",
     # UI-TARS's platform block now names it a computer-use agent operating a
     # browser environment (the user's 2026-10-20 decision); the rest is unchanged.
     UITarsAgent: "8adf8cbf432c4c669d8a4cded683557fcfcf9b2959954810b0c31d0ed4b9bdec",
@@ -265,10 +268,10 @@ async def test_skyvern_next_prompt_remembers_actual_retargeted_actions() -> None
     (``BranchLoop._restored_record``); the source's actions and reply are
     material on ``source_history`` and never enter it.
     """
-    agent = prepared(SkyvernAgent)
+    agent = prepared(SkyvernDomAgent)
     history = restored_history()
     await agent.build_restored_history(
-        observation(), history=history, context=context(SkyvernAgent, step=4, phase="history")
+        observation(), history=history, context=context(SkyvernDomAgent, step=4, phase="history")
     )
     restored = StepRecord(
         step=4,
@@ -280,10 +283,14 @@ async def test_skyvern_next_prompt_remembers_actual_retargeted_actions() -> None
     next_observation = observation()
     next_observation.history = SimpleNamespace(items=[restored])
     messages = await agent.build_react_prompt(
-        next_observation, context=context(SkyvernAgent, step=5, phase="policy")
+        next_observation, context=context(SkyvernDomAgent, step=5, phase="policy")
     )
-    assert "browser.click({'index': 29}) -> error: The live button was disabled" in messages[0].text
-    assert "'index': 3}" not in messages[0].text
+    window = messages[0].text.split("<action_history>\n")[1].split("\n</action_history>")[0]
+    (entry,) = [json.loads(line) for line in window.splitlines()]
+    assert entry["action"] == {"name": "browser.click", "params": {"index": 29}}
+    assert entry["result"]["error"] == "The live button was disabled"
+    assert entry["result"]["extracted_content"] == "actual result text"
+    assert '"index": 3}' not in messages[0].text
     assert "old source thought" not in messages[0].text
 
 

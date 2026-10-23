@@ -1,7 +1,16 @@
 # Skyvern-style DOM agent on local Chrome. This agent_id is independent of
 # the Skyvern cloud browser provider_id; see docs/browser_agent_runbook.md.
+#
+# The Skyvern family has two members, which differ only in what the model sees:
+#   skyvern.dom         the element tree (Skyvern's own DOM cleaning, below);
+#                       every action addressed by element index.
+#   skyvern.dom_vision  the element tree plus the screenshot; click by index,
+#                       and click_coordinate for a target with no index. It
+#                       takes `coordinate_space` (screenshot_pixels |
+#                       normalized_1000) and `vision_detail` (auto | low | high).
+# Both record the screenshot in the trace.
 agent:
-  - agent_id: skyvern
+  - agent_id: skyvern.dom
     id: main
     action_history_window: 5
     agent_loop:
@@ -12,7 +21,14 @@ agent:
       model_type: openai
       model: gpt-4o
       provider: { name: direct }
-    memory: { memory_id: simple, max_messages: 200 }
+    # Bounded: every step's user message carries a whole element tree (20-33K
+    # tokens on the pages measured), so keeping 200 messages overflowed
+    # gpt-4o's 128K context at about step 6. The system prompt is always
+    # kept; of the rest only the last 3 messages, in a plain step the previous
+    # step's observation and reply and this step's observation, so at most two
+    # element trees. The action-history window, not the memory, is what
+    # carries the older actions.
+    memory: { memory_id: sliding_window, window_size: 3 }
 
 environment:
   - env_type: browser
@@ -26,6 +42,11 @@ environment:
         network_source: { source_id: live }
         dom_cleaner: { cleaner_type: skyvern }
         dom_serializer: { serializer_type: html }
+        # A budget for one element tree, so the two the memory keeps stay
+        # well inside the context however large a page is. The pages measured
+        # serialized to 56-150K characters, none of them cut; a longer one is
+        # cut at a line boundary and the tree says so.
+        dom_max_serialized_chars: 200000
         backend:
           provider_id: local_chrome
           headless: false

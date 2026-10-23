@@ -15,7 +15,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import (
@@ -36,7 +36,8 @@ from tests._helpers.fragment_formats import formats_for
 
 _AGENTS: dict[str, type[Any]] = {
     "browser_use": BrowserUseDomAgent,
-    "skyvern": SkyvernAgent,
+    "skyvern.dom": SkyvernDomAgent,
+    "skyvern.dom_vision": SkyvernDomVisionAgent,
     "ui_tars": UITarsAgent,
 }
 _MARKERS = (None, False, True)

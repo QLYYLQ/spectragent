@@ -596,7 +596,12 @@ def _assembled(agent: dict[str, Any]) -> Any:
             None,
             id="browser_use-without-one",
         ),
-        pytest.param({"agent_id": "skyvern"}, None, id="skyvern-declares-none"),
+        pytest.param({"agent_id": "skyvern.dom"}, None, id="skyvern.dom-declares-none"),
+        pytest.param(
+            {"agent_id": "skyvern.dom_vision", "coordinate_space": "normalized_1000"},
+            "normalized_1000",
+            id="skyvern.dom_vision-with-click_coordinate",
+        ),
     ],
 )
 def test_the_runtime_frames_the_space_on_the_agents_declared_grid(

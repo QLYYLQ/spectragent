@@ -11,7 +11,7 @@ import yaml
 from pydantic import BaseModel
 
 from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
-from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.observations import (
@@ -34,7 +34,13 @@ from spectragent.schemas.observation.dynamic_model import build_observation_mode
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.prompt import ReactPromptContext
 
-AGENTS = (BrowserUseDomAgent, BrowserUseDomVisionAgent, SkyvernAgent, UITarsAgent)
+AGENTS = (
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+    SkyvernDomAgent,
+    SkyvernDomVisionAgent,
+    UITarsAgent,
+)
 SOURCE_URL = "https://capture-source.test/must-not-enter-vision-prompt"
 
 
@@ -120,7 +126,8 @@ async def test_missing_platform_is_not_rendered_as_a_known_platform(agent_class)
 
 
 @pytest.mark.parametrize(
-    "agent_class", [BrowserUseDomAgent, BrowserUseDomVisionAgent, SkyvernAgent]
+    "agent_class",
+    [BrowserUseDomAgent, BrowserUseDomVisionAgent, SkyvernDomAgent, SkyvernDomVisionAgent],
 )
 async def test_platform_changes_with_the_observation_not_cached_agent_state(agent_class) -> None:
     agent = agent_class()
@@ -173,7 +180,9 @@ def test_relative_platform_is_required_at_negotiation(agent_class) -> None:
         )
 
 
-@pytest.mark.parametrize("agent_id", ["browser_use.dom", "skyvern", "ui_tars"])
+@pytest.mark.parametrize(
+    "agent_id", ["browser_use.dom", "skyvern.dom", "skyvern.dom_vision", "ui_tars"]
+)
 @pytest.mark.parametrize("operating_system", ["macos", "windows", "linux"])
 async def test_composed_runtime_delivers_platform_to_the_model(
     agent_id: str, operating_system: str, monkeypatch
@@ -195,6 +204,7 @@ async def test_composed_runtime_delivers_platform_to_the_model(
         }
     ]
     raw.pop("hook", None)
+    skyvern = agent_id.startswith("skyvern.")
     if agent_id == "ui_tars":
         raw["environment"][0]["capabilities"][0]["profile"] = "vision_only"
     run = build_composer().compose(raw)
@@ -209,10 +219,10 @@ async def test_composed_runtime_delivers_platform_to_the_model(
             seen.extend(messages)
             if agent_id == "ui_tars":
                 completion = "Action: finished(content='ok')"
-            elif agent_id == "skyvern":
+            elif skyvern:
                 assert output_format is not None
                 completion = output_format.model_validate(
-                    {"actions": [], "is_done": True, "extracted_content": "ok"}
+                    {"actions": [{"action": {"browser.done": {"extracted_content": "ok"}}}]}
                 )
             else:
                 assert output_format is not None

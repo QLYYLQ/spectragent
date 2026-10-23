@@ -70,15 +70,19 @@ SCRIPTS: dict[str, Callable[[], list[Any]]] = {
     ],
     "skyvern": lambda: [
         _refusal('{"actions": "nope"}'),
-        {"actions": [{"action_type": "browser.click", "index": 101, "reasoning": "blue"}]},
+        {"actions": [{"reasoning": "blue", "action": {"browser.click": {"index": 101}}}]},
         {
             "actions": [
-                {"action_type": "browser.click", "index": 102},
-                {"action_type": "browser.click", "index": 103},
+                {"reasoning": "", "action": {"browser.click": {"index": 102}}},
+                {"reasoning": "", "action": {"browser.click": {"index": 103}}},
             ]
         },
-        {"actions": [{"action_type": "browser.click", "index": 103}]},
-        {"actions": [], "is_done": True, "extracted_content": "bought"},
+        {"actions": [{"reasoning": "", "action": {"browser.click": {"index": 103}}}]},
+        {
+            "actions": [
+                {"reasoning": "", "action": {"browser.done": {"extracted_content": "bought"}}}
+            ]
+        },
     ],
     "ui_tars": lambda: [
         "I will just describe the page instead.",
@@ -198,7 +202,7 @@ async def test_skyvern_action_history_rebuilt(tmp_path: Path, memory: str) -> No
     # ran, so it is not history (the window was agent-owned state appended at
     # parse time before 2026-10-20, and then listed it too).
     assert len(recorded_history[2]) == 2
-    assert "'index': 103" not in "\n".join(recorded_history[2])
+    assert '"index": 103' not in "\n".join(recorded_history[2])
 
 
 @pytest.mark.parametrize("kind", AGENTS)
