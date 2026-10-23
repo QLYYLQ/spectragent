@@ -61,11 +61,7 @@ from spectragent.core.capabilities.browser.replay.canonical import (
     decode_params,
     host_of,
 )
-from spectragent.core.capabilities.browser.replay.replay_log import (
-    KEY_DIGEST_PREFIX,
-    ReplayLogEntry,
-    short_key,
-)
+from spectragent.core.capabilities.browser.replay.replay_log import ReplayLogEntry
 
 #: Final states with a body in the archive: written whole, or streamed as a later blob.
 WITH_BODY: tuple[str, ...] = ("ok", "streamed_later")
@@ -261,8 +257,10 @@ class NearMiss:
             recorded request's, sorted.
         body: The body fields (flattened paths, as ``ignore_body_paths``
             names them) whose values differ, sorted.
-        opaque_body: The two bodies differ, but one of them is known only by
-            a digest, so which fields differ is unknown.
+        opaque_body: The two bodies differ, but the canonicaliser keyed one
+            of them by a digest (past its cap, or a body that does not
+            parse), so which fields differ is unknown: the matcher itself
+            had nothing finer.
         weight: How many misses it stands for (a folded summary's count).
     """
 
@@ -326,22 +324,24 @@ def _differing(live: Sequence[tuple[str, str]], recorded: Sequence[tuple[str, st
 _DIGEST_PARAMS = frozenset({BODY_SHA256_PARAM, POST_DATA_PARAM})
 
 
-def _body_fields(body_key: str | None) -> tuple[str, Params | None]:
-    """``(digest, fields)`` of a canonical body key: ``fields`` is ``None`` when only a digest is known.
+def _body_fields(body_key: str | None) -> Params | None:
+    """The fields of a canonical body key; ``None`` when the key is only a digest of the body.
 
-    ``digest`` identifies the body for an equality check either way: the
-    replay log shortens a key longer than its cap to ``sha256:<hex>``, and
-    the canonicaliser replaces a body past its own cap, or one that does not
-    parse, by a single digest parameter.
+    The replay log keeps the live body key as the matcher computed it, so a
+    digest is left only where the canonicaliser itself replaced the body by
+    one: past its own cap, or a body that does not parse. Fields are named
+    only for a canonical parameter string (every item ``name=value``, as
+    ``encode_params`` writes it); any other key still identifies the body
+    for an equality check, but names no field.
     """
-    if body_key is None:
-        return "", ()
-    if body_key.startswith(KEY_DIGEST_PREFIX):
-        return body_key, None
+    if not body_key:
+        return ()
+    if any("=" not in item for item in body_key.split("&")):
+        return None
     params = decode_params(body_key)
     if len(params) == 1 and params[0][0] in _DIGEST_PARAMS:
-        return body_key, None
-    return body_key, params
+        return None
+    return params
 
 
 def near_misses(
@@ -398,14 +398,14 @@ def near_misses(
             if not name.startswith(BODY_PARAM_PREFIX)
         ]
         query = _differing(canonical_query(live.query, rule), recorded_query)
-        live_digest, live_body = _body_fields(entry.body_key)
-        recorded_digest, recorded_body = _body_fields(record.keys.body_key)
+        live_body = _body_fields(entry.body_key)
+        recorded_body = _body_fields(record.keys.body_key)
         body: list[str] = []
         opaque = False
         if live_body is not None and recorded_body is not None:
             body = _differing(live_body, recorded_body)
-        else:  # compared as the replay log wrote the live key: shortened past its cap
-            opaque = live_digest != (short_key(recorded_digest) or "")
+        else:  # one side is a digest: whether the bodies differ, but not where
+            opaque = (entry.body_key or "") != (record.keys.body_key or "")
         if not query and not body and not opaque:
             continue
         found.append(

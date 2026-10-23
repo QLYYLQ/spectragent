@@ -39,10 +39,9 @@ from spectragent.core.capabilities.browser.replay.canonical import (
     request_keys,
 )
 from spectragent.core.capabilities.browser.replay.replay_log import (
-    KEY_DIGEST_PREFIX,
+    MAX_KEY_CHARS,
     ReplayCandidate,
     ReplayLogEntry,
-    short_key,
 )
 from spectragent.core.capabilities.browser.replay.site_rules import (
     RequestScope,
@@ -289,7 +288,7 @@ def _body_miss(
         candidates=[recorded_url],
         method="POST",
         record_ids=[f"r{record}"],
-        body_key=short_key(keys.body_key),
+        body_key=keys.body_key,
     )
 
 
@@ -489,18 +488,32 @@ def test_bodies_known_only_by_digest_count_as_an_opaque_difference() -> None:
     assert [(f.body, f.opaque_body, f.misses) for f in candidate.field_sets] == [((), True, 2)]
 
 
-def test_a_body_past_the_replay_logs_key_cap_is_compared_by_digest() -> None:
+def test_a_body_key_longer_than_a_match_key_still_names_its_fields() -> None:
+    """The log keeps the body key whole up to the canonicaliser's cap: only the matcher hashes."""
     url = f"{SHOP}/api/report"
-    fields = {f"k{i}": "v" * 20 for i in range(30)}  # over the log's 512 characters, under 4096
+    fields = {f"k{i}": "v" * 20 for i in range(30)}  # past the log's 512 characters, under 4096
     source = _source(("POST", url, json.dumps(fields).encode()))
-    changed = json.dumps({**fields, "k0": "w" * 20}).encode()
+    changed = json.dumps({**fields, "k0": "w" * 20, "k7": "w" * 20}).encode()
     entry = _body_miss(url, changed, 0, url)
-    assert entry.body_key is not None and entry.body_key.startswith(KEY_DIGEST_PREFIX)
+    assert entry.body_key is not None and MAX_KEY_CHARS < len(entry.body_key) < MAX_BODY_KEY_CHARS
     same = _body_miss(url, json.dumps(fields).encode(), 0, url)
 
-    found = site_rule_candidates(near_misses([(1, entry, 1), (2, same, 1)], source))
+    [candidate] = site_rule_candidates(near_misses([(1, entry, 1), (2, same, 1)], source))
 
-    assert [(c.misses, c.opaque_body) for c in found] == [(1, 1)]
+    assert (candidate.misses, candidate.opaque_body) == (1, 0)
+    assert candidate.body == {"k0": 1, "k7": 1}
+
+
+def test_a_body_key_that_is_not_a_canonical_parameter_string_names_no_field() -> None:
+    url = f"{SHOP}/api/report"
+    source = _source(("POST", url, json.dumps({"n": 1}).encode()))
+    entry = _miss(
+        url, candidates=[url], method="POST", record_ids=["r0"], body_key="sha256:" + "0" * 64
+    )
+
+    [candidate] = site_rule_candidates(near_misses([(1, entry, 1)], source))
+
+    assert (candidate.body, candidate.opaque_body) == ({}, 1)
 
 
 def test_a_candidate_the_source_does_not_hold_is_refused() -> None:

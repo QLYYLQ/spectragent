@@ -75,9 +75,10 @@ LogMode = Literal["full", "summary"]
 #: How the request was answered: fulfilled, failed, or not at all (Chrome
 #: never paused it — a WebSocket handshake, a nested worker's script).
 Answer = Literal["fulfilled", "failed", "none"]
-#: Longest key kept verbatim in an entry; a longer one is its sha256.
+#: Longest match key kept verbatim in an entry; a longer one is its sha256. The
+#: body key is never shortened: the canonicaliser caps it (``MAX_BODY_KEY_CHARS``).
 MAX_KEY_CHARS = 512
-#: What a key shortened past :data:`MAX_KEY_CHARS` starts with (then its sha256 hex).
+#: What a match key shortened past :data:`MAX_KEY_CHARS` starts with (then its sha256 hex).
 KEY_DIGEST_PREFIX = "sha256:"
 
 
@@ -142,8 +143,12 @@ class ReplayLogEntry(BaseModel):
     reason: MissReason | None = None
     answer: Answer | None = None
     status: int | None = None
-    #: The request's canonical key and body key (sha256 when longer than 512 chars).
+    #: The request's canonical key (sha256 when longer than 512 chars).
     match_key: str | None = None
+    #: The body's canonical parameters, verbatim, as the matcher keyed them: the
+    #: canonicaliser already replaces a body past its 4096-character cap (or one
+    #: that does not parse) by one digest parameter. What near-miss mining
+    #: diffs field by field against the recorded request (``archive_stats``).
     body_key: str | None = None
     candidates: list[ReplayCandidate] = Field(default_factory=list)
     #: A main-frame document miss: the replay left the recording here. A
@@ -307,7 +312,7 @@ class ReplayLog:
 
 
 def short_key(key: str | None) -> str | None:
-    """*key* itself, or ``sha256:<hex>`` when it is longer than :data:`MAX_KEY_CHARS`."""
+    """A match key itself, or ``sha256:<hex>`` when it is longer than :data:`MAX_KEY_CHARS`."""
     if key is None or len(key) <= MAX_KEY_CHARS:
         return key
     return KEY_DIGEST_PREFIX + hashlib.sha256(key.encode("utf-8")).hexdigest()

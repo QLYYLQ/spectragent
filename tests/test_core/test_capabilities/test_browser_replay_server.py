@@ -26,8 +26,17 @@ from spectragent.core.capabilities.browser.recorder import (
 )
 from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+from spectragent.core.capabilities.browser.replay.canonical import (
+    BODY_SHA256_PARAM,
+    MAX_BODY_KEY_CHARS,
+    decode_params,
+)
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.miss_policy import MissDecision, ReplayMiss
+from spectragent.core.capabilities.browser.replay.replay_log import (
+    KEY_DIGEST_PREFIX,
+    MAX_KEY_CHARS,
+)
 from spectragent.core.capabilities.browser.replay.responder import UNKNOWN_STATUS_PHRASE
 from spectragent.core.capabilities.browser.replay.server import (
     REQUEST_STAGE_PATTERN,
@@ -306,6 +315,36 @@ class TestAnswering:
         assert entry["kind"] == "hit" and entry["level"] == "exact"
         assert "secret" not in json.dumps(entry)
         assert entry["body_key"] == "password=%3Credacted%3E&user=ann"
+        await recorder.close()
+
+    async def test_the_body_key_is_logged_whole_up_to_the_canonicalisers_cap(
+        self, source_run: Path
+    ) -> None:
+        """Near-miss mining diffs the logged body key by field, so the log never shortens it.
+
+        The match key (URL and body together) is still shortened past 512
+        characters; a body past the canonicaliser's own cap is its one digest
+        parameter, which is all the matcher had too.
+        """
+        _browser, recorder, client, server, sid = await _serving(source_run)
+        fields = {f"k{i}": "v" * 20 for i in range(40)}
+        huge = {"blob": "x" * (MAX_BODY_KEY_CHARS + 1)}
+        for request_id, body in (("ql", fields), ("qh", huge)):
+            _pause(
+                client,
+                sid,
+                request_id,
+                "http://shop.test/api/unknown",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                post=json.dumps(body).encode(),
+            )
+        await _settle()
+        long, past_cap = _log(server)
+        assert len(long["body_key"]) > MAX_KEY_CHARS
+        assert dict(decode_params(long["body_key"])) == fields
+        assert long["match_key"].startswith(KEY_DIGEST_PREFIX)
+        assert past_cap["body_key"].startswith(f"{BODY_SHA256_PARAM}=")
         await recorder.close()
 
     async def test_a_recorded_redirect_goes_out_as_recorded(self, source_run: Path) -> None:
