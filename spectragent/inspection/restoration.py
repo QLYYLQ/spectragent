@@ -77,8 +77,11 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
                     f"{prefix}: URL differs in parameters page-URL rules leave out ({names})"
                 )
             distance = item.get("screenshot_distance")
+            areas = item.get("media_areas")
             if distance is None:
                 unknown.append(f"{prefix}: screenshot distance not measured")
+            elif areas is not None and areas.get("unmasked_distance") is not None:
+                _masked_screenshot_gap(prefix, distance, areas, differences)
             elif distance > 0:
                 differences.append(f"{prefix}: screenshot dHash distance {distance}")
             misses = item.get("document_misses")
@@ -86,7 +89,7 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
                 unknown.append(f"{prefix}: document misses not measured")
             elif misses > 0:
                 differences.append(f"{prefix}: {misses} document misses")
-            _media_gap(prefix, item.get("media"), differences, unknown)
+            _media_gap(prefix, item.get("media"), differences, unknown, areas)
         for index, action in enumerate(check.get("actions", [])):
             prefix = f"Action {index + 1}"
             if action.get("executed") is None:
@@ -111,12 +114,56 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _media_gap(
-    prefix: str, media: dict[str, Any] | None, differences: list[str], unknown: list[str]
+def _masked_screenshot_gap(
+    prefix: str, distance: int, areas: dict[str, Any], differences: list[str]
 ) -> None:
-    """Media differences and alignment problems, measured facts only; no tolerance applied."""
+    """A screenshot distance on a page media-area rules declare: the whole images' too.
+
+    The restorer judged the masked distance; the view still shows what the
+    whole images measured, and which rules masked how much.
+    """
+    unmasked = areas["unmasked_distance"]
+    rules = ", ".join(areas.get("rule_ids") or [])
+    share = areas.get("masked_share")
+    covered = f"{share:.0%} of the image" if share is not None else "an unknown share"
+    if areas.get("mask_applied"):
+        if unmasked > 0 or distance > 0:
+            differences.append(
+                f"{prefix}: screenshot dHash distance {unmasked} over the whole image, "
+                f"{distance} with the media areas masked ({rules}; {covered})"
+            )
+    elif distance > 0:
+        differences.append(
+            f"{prefix}: screenshot dHash distance {distance} over the whole image "
+            f"(media areas of {rules} cover {covered}, too much to mask)"
+        )
+
+
+def _media_gap(
+    prefix: str,
+    media: dict[str, Any] | None,
+    differences: list[str],
+    unknown: list[str],
+    areas: dict[str, Any] | None = None,
+) -> None:
+    """Media differences and alignment problems, measured facts only; no tolerance applied.
+
+    On a page media-area rules declare (*areas*), the restorer did not judge
+    them; each line says so.
+    """
     if media is None:
         return
+    first = len(differences), len(unknown)
+    _media_lines(prefix, media, differences, unknown)
+    if areas is not None:
+        note = f" (not judged: media-area rules {', '.join(areas.get('rule_ids') or [])})"
+        for lines, start in ((differences, first[0]), (unknown, first[1])):
+            lines[start:] = [line + note for line in lines[start:]]
+
+
+def _media_lines(
+    prefix: str, media: dict[str, Any], differences: list[str], unknown: list[str]
+) -> None:
     comparisons = media.get("comparisons")
     if comparisons is None:
         unknown.append(f"{prefix}: media state not compared ({media.get('detail') or 'unknown'})")

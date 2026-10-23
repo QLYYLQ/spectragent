@@ -190,6 +190,63 @@ class MediaEvidence(BaseModel):
     alignment_detail: str = ""
 
 
+#: What a masked box covers: a media element (``<video>`` / ``<audio>``), or an
+#: embedded frame whose own media read did not answer on that side, so what it
+#: plays is unknown (on the declared video sites it is the player's frame).
+MaskedAreaKind = Literal["media_element", "unreachable_frame"]
+
+
+class MaskedArea(BaseModel):
+    """One box masked out of a screenshot comparison.
+
+    ``side``: whose media facts measured it (the mask is the union of both
+    sides' boxes and is applied to both images); ``element``: the media
+    element's name (the browser's ``<frame>#<order> <tag>``) or the frame's
+    path. The box is in CSS pixels of the top viewport, clipped to it; a box
+    that falls outside the viewport masks nothing and is not listed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    side: Literal["recorded", "restored"]
+    kind: MaskedAreaKind
+    element: str
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+
+
+class MediaAreaEvidence(BaseModel):
+    """What a page's media-area rules set aside in one restoration measurement.
+
+    Present only on a page a media-area rule declares (the browser's replay
+    rule set, ``docs/architecture_design.md`` §4.14): ``rule_ids`` are the
+    rules whose scope matched both page URLs. The media playback state is
+    then not judged (the restorer reads this), and ``areas`` are masked out
+    of both screenshots before their distance. ``masked_share`` is the share
+    of the image's pixels the mask covers (the larger of the two images;
+    ``None`` without both images). ``unmasked_distance`` is the distance of
+    the whole images, ``masked_distance`` the distance after masking.
+    ``mask_applied`` says which one ``RestorationEvidence.screenshot_distance``
+    carries: the masked one, unless the mask covers so much of the image
+    that the rest says too little about the page — then the whole images'
+    one, as on an undeclared page, never a pass by a nearly blank
+    comparison. ``detail`` says why the mask was not applied, why a side's
+    boxes are unknown, or that there was no pair of images.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rule_ids: list[str] = Field(min_length=1)
+    areas: list[MaskedArea] = Field(default_factory=list)
+    masked_share: float | None = Field(default=None, ge=0, le=1)
+    unmasked_distance: int | None = Field(default=None, ge=0)
+    masked_distance: int | None = Field(default=None, ge=0)
+    mask_applied: bool = False
+    detail: str = ""
+
+
 class RestorationEvidence(BaseModel):
     """What one capability measured between a recorded and a restored observation.
 
@@ -208,6 +265,12 @@ class RestorationEvidence(BaseModel):
     ``docs/architecture_design.md`` §4.14). ``url_ignored_query`` names the
     parameters left out of either URL, ``url_rule_ids`` the rules that left
     them out; both are empty when the URLs were compared exactly.
+
+    ``media_areas`` is set only on a page a site's media-area rules declare
+    (:class:`MediaAreaEvidence`): ``media`` is still measured and kept, but
+    the restorer does not judge it, and ``screenshot_distance`` is the
+    distance with the media areas masked out of both images (the whole
+    images' distance when the mask would cover too much of them).
     """
 
     capability_id: str
@@ -222,6 +285,7 @@ class RestorationEvidence(BaseModel):
     screenshot_distance: int | None = Field(default=None, ge=0)
     document_misses: int | None = Field(default=None, ge=0)
     media: MediaEvidence | None = None
+    media_areas: MediaAreaEvidence | None = None
 
 
 class RestoredAction(BaseModel):
@@ -380,9 +444,12 @@ __all__ = [
     "BranchProvenance",
     "BranchTaskVariant",
     "Checkpoint",
+    "MaskedArea",
+    "MaskedAreaKind",
     "MediaAlignment",
     "MediaAlignmentAction",
     "MediaAlignmentOutcome",
+    "MediaAreaEvidence",
     "MediaComparison",
     "MediaCorrespondence",
     "MediaEvidence",

@@ -39,6 +39,7 @@ from spectragent.core.trace.encoding import decode_fragment, encode_fragment
 from spectragent.schemas.restoration import (
     REASON_ORDER,
     MediaAlignment,
+    MediaAreaEvidence,
     MediaComparison,
     MediaEvidence,
     RestorationEvidence,
@@ -524,6 +525,29 @@ def test_alignment_outcomes(outcome: str, fails: bool) -> None:
         alignment=[MediaAlignment(element="main#0 video", outcome=outcome)],  # type: ignore[arg-type]
     )
     assert media_failed(media, time_tolerance_s=1.0) is fails
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        _compared(state(element(time=41.0)), state(element(time=10.0))),
+        _compared(state(element()), state()),
+        MediaEvidence(comparisons=[], recorded_unreachable_frames=["main/unplaced-0"]),
+        MediaEvidence(alignment=[MediaAlignment(element="main#0 video", outcome="failed")]),
+    ],
+    ids=["position", "missing", "unreachable_frame", "alignment_failed"],
+)
+def test_on_a_page_media_area_rules_declare_the_media_is_kept_but_not_judged(
+    media: MediaEvidence,
+) -> None:
+    assert _reasons(media) == ["media_mismatch"]
+    declared = _evidence(media).model_copy(
+        update={"media_areas": MediaAreaEvidence(rule_ids=["play-media"])}
+    )
+    check = judge(
+        0, [declared], [], verify="warn", screenshot_max_distance=5, media_time_tolerance_s=1.0
+    )
+    assert check.verdict == "ok" and check.evidence[0].media == media
 
 
 # ── the screenshot fragment carries it ────────────────────────────────
