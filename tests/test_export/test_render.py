@@ -502,32 +502,23 @@ class TestUntranslatable:
 
 
 class TestTheDoneClaim:
-    """UI-TARS's ``finished()`` states no claim about the task, so only an unclaimed done is its.
+    """UI-TARS's ``finished()`` states no claim about the task.
 
-    A teacher's ``done`` carrying a claim (another agent's ``success`` param)
-    has no ``finished`` spelling: written anyway, the student's reply would
-    execute as a done that claims nothing, a different action from the one it
-    was trained on (arch §4.15 "round-trip", clause 4).
+    A teacher's ``done`` that claims the task accomplished (another agent's
+    ``success=true``) is written as the student's plain ``finished(...)``: the
+    claim is the agent's statement, not an instruction to the page, so leaving
+    it out does not change what the target executes, and the student still
+    learns when to finish. The sample says so (``claim_not_written``) and the
+    claim is not part of what must round-trip (arch §4.15 "round-trip", clause
+    4). A ``false`` claim — a gave-up ending — is not taught as a normal finish:
+    it stays unrepresentable.
     """
 
-    async def test_a_done_without_a_claim_round_trips(
-        self, composer: ConfigComposer, tmp_path: Path
-    ) -> None:
-        renderer = _renderer(composer)
-        last = (await renderer.render(_trajectory(_three_steps(tmp_path))))[-1]
-        assert last.target == "Thought: done\nAction: finished(content='added')"
-        (executed,) = last.target_actions
-        assert executed == Action(name="browser.done", params={"extracted_content": "added"})
-        assert renderer.stats.untranslatable == {}
-
-    @pytest.mark.parametrize("claim", [False, True])
-    async def test_a_claim_is_refused_with_its_reason(
-        self, composer: ConfigComposer, tmp_path: Path, claim: bool
-    ) -> None:
+    def _trace(self, tmp_path: Path, claim: bool) -> RunTrace:
         claimed = Action(
             name="browser.done", params={"extracted_content": "added", "success": claim}
         )
-        trace = RunTrace(
+        return RunTrace(
             write_ui_tars_run(
                 tmp_path,
                 "run-claim",
@@ -537,6 +528,36 @@ class TestTheDoneClaim:
                 ],
             )
         )
+
+    async def test_a_done_without_a_claim_round_trips(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        renderer = _renderer(composer)
+        last = (await renderer.render(_trajectory(_three_steps(tmp_path))))[-1]
+        assert last.target == "Thought: done\nAction: finished(content='added')"
+        (executed,) = last.target_actions
+        assert executed == Action(name="browser.done", params={"extracted_content": "added"})
+        assert not last.claim_not_written
+        assert renderer.stats.untranslatable == {}
+
+    async def test_a_true_claim_is_written_as_the_plain_ending_and_said_so(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        renderer = _renderer(composer, untranslatable="fail")
+        _first, last = await renderer.render(_trajectory(self._trace(tmp_path, True)))
+        assert last.target == "Thought: done\nAction: finished(content='added')"
+        (executed,) = last.target_actions
+        assert executed == Action(name="browser.done", params={"extracted_content": "added"})
+        assert last.claim_not_written
+        # The teacher's claim stays on record in the sample itself.
+        (teacher,) = last.sample.teacher_actions
+        assert teacher.params["success"] is True
+        assert renderer.stats.untranslatable == {}
+
+    async def test_a_false_claim_is_refused_with_its_reason(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        trace = self._trace(tmp_path, False)
         with pytest.raises(UntranslatableActionError) as excinfo:
             await _renderer(composer, untranslatable="fail").render(_trajectory(trace))
         error = excinfo.value

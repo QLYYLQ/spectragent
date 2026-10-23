@@ -45,7 +45,7 @@ import yaml
 
 from spectragent.core.action_guard import executed_descriptor, executed_name
 from spectragent.core.actions._registrar import registered_params
-from spectragent.core.actions.params import element_params, param_fragments
+from spectragent.core.actions.params import claim_params, element_params, param_fragments
 from spectragent.core.capabilities.base import CaptureComparison
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.llm.messages import BaseMessage
@@ -110,6 +110,12 @@ class RenderedSample:
         thought: The thought the target turn carries, or ``None``.
         thought_dropped: A teacher thought was dropped because it referenced
             element indices the student does not see.
+        claim_not_written: The teacher's ending claimed the task accomplished
+            (a ``TaskClaim`` param set to ``true``, ``done(success=true)``)
+            and the student's format cannot say so, so the target is the
+            student's plain ending and the claim is left out of the round
+            trip (arch §4.15 "round-trip", clause 4). The teacher's claim is
+            still in the sample's ``teacher_actions``.
         step_info: Where the step's ``max_steps`` / ``today`` came from:
             the source run's recorded ``loop.step_info``, or the fallback.
         source: The source run the step was recorded in (path relative to
@@ -127,6 +133,7 @@ class RenderedSample:
     thought_dropped: bool
     step_info: StepInfoSource
     source: str
+    claim_not_written: bool = False
 
 
 @dataclass(frozen=True)
@@ -415,16 +422,14 @@ class StudentRenderer:
 
         context = tuple(m.model_copy(deep=True) for m in self.memory.get_context_messages())
         thought, dropped = self._thought(item, sample)
-        try:
-            text = self.agent.format_react_output(
-                actions, thought=thought.text if thought is not None else None
-            )
-        except UnrepresentableActionError as exc:
-            self._refuse(item, sample, "unrepresentable", str(exc))
+        written = self._format(actions, thought)
+        if isinstance(written, UnrepresentableActionError):
+            self._refuse(item, sample, "unrepresentable", str(written))
             if self.untranslatable != "keep_as_text":
                 return None
             self._keep_as_text(segment, item, sample, "unrepresentable")
             return segment, None
+        text, actions, claim_not_written = written
         executed, errors = self._round_trip(sample, actions, text, thought)
         self.loop.remember_reply(self.memory, text, [])
         context_steps = tuple(segment.steps)
@@ -450,9 +455,37 @@ class StudentRenderer:
             thought_dropped=dropped,
             step_info=step_info,
             source=item.source,
+            claim_not_written=claim_not_written,
         )
 
     # ── the pieces ───────────────────────────────────────────
+
+    def _format(
+        self, actions: Sequence[Action], thought: ThoughtRecord | None
+    ) -> tuple[str, list[Action], bool] | UnrepresentableActionError:
+        """The student's reply for *actions*: ``(text, the actions it writes, claim left out)``.
+
+        A teacher's ending that claims the task accomplished — a ``TaskClaim``
+        param set to ``true`` (``done(success=true)``) — that the student's
+        format has no way to say is written as the student's plain ending
+        (UI-TARS's ``finished(content=...)``): the claim is not an instruction
+        to the environment, so leaving it out does not change what the target
+        executes, and a successful ending stays a sample to learn when to
+        finish from. Only that: a ``false`` claim, or any other param the
+        format cannot carry, stays the refusal it was (arch §4.15
+        "round-trip").
+        """
+        said = thought.text if thought is not None else None
+        try:
+            return self.agent.format_react_output(actions, thought=said), list(actions), False
+        except UnrepresentableActionError as exc:
+            unclaimed = _without_true_claim(actions, exc)
+            if unclaimed is None:
+                return exc
+        try:
+            return self.agent.format_react_output(unclaimed, thought=said), unclaimed, True
+        except UnrepresentableActionError as exc:
+            return exc
 
     def _refusal(self, sample: CanonicalStepSample) -> tuple[UntranslatableReason, str] | None:
         """Why the student cannot take this step before it is shown anything, or ``None``.
@@ -676,6 +709,35 @@ class StudentRenderer:
                     )
             executed.append(Action(name=action.name, params=dict(back.params)))
         return executed, errors
+
+
+def _without_true_claim(
+    actions: Sequence[Action], refusal: UnrepresentableActionError
+) -> list[Action] | None:
+    """*actions* without the ``true`` claim *refusal* is about, or ``None`` when it is about more.
+
+    The refusal names one action and the params the format cannot carry. It
+    is about a claim only when every one of them is a ``TaskClaim`` param of
+    that action (its registered ``Params``) set to ``true``.
+    """
+    refused = set(refusal.params)
+    target = next((a for a in actions if a.name == refusal.action_name), None)
+    params = registered_params(refusal.action_name)
+    if not refused or target is None or params is None:
+        return None
+    if not refused <= set(claim_params(params)):
+        return None
+    if any(target.params.get(name) is not True for name in refused):
+        return None
+    return [
+        Action(
+            name=action.name,
+            params={key: value for key, value in action.params.items() if key not in refused},
+        )
+        if action is target
+        else action
+        for action in actions
+    ]
 
 
 def _as_student_saw(record: StepRecord, actions: Sequence[Action]) -> StepRecord:

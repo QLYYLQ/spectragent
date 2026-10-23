@@ -368,7 +368,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 - `length: { max_tokens: 65536 }`：学生每轮都保留截图，30 步的整段在 1280×720 上光图像约 36k token。有记录超出预算时，导出失败并点名这条记录，从不截断；训练器的上下文更短时，换一个 `max_steps` 更小的学生。
 - `output_dir`：发布值 `datasets/sft_v1`，相对工作目录；已存在就拒绝。
 
-学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。结束步也要看 agent 有没有说任务完成了没有：BrowserUse、Skyvern 录下的 `done` 通常带着这个结论（`success: true` 或 `false`），UI-TARS 学生的 `finished()` 写不出任何结论，所以这样的结束步不可译，原因是 `unrepresentable`；UI-TARS 自己录下的结束步没有结论，照常导出（[architecture_design.md](architecture_design.md) §4.1 "agent 的任务结论"、§4.15 "round-trip"）。
+学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。结束步也要看 agent 有没有说任务完成了没有：BrowserUse、Skyvern 录下的 `done` 通常带着这个结论（`success: true` 或 `false`），UI-TARS 学生的 `finished()` 写不出任何结论。说完成了的（`true`）照常导出，写成 `finished(...)`，`samples.jsonl` 里这个样本的 `render.claim_not_written` 是 `true`；说没完成的（`false`）不可译，原因是 `unrepresentable`；UI-TARS 自己录下的结束步没有结论，照常导出（[architecture_design.md](architecture_design.md) §4.1 "agent 的任务结论"、§4.15 "round-trip"）。
 
 样本是至少执行了一个动作、没有出错的策略步。动作失败的步照样导出，标 `labels.step_status: action_failed`。分叉 run 导出它的策略步，上下文是源 run 的前缀；同一组里检查点步动作相同的样本标 `duplicate_of`，不删。产物先写进 `<output_dir>.partial/`，图片数、坐标范围、参考答案泄漏、凭证形状和长度的检查全部通过才改名：
 

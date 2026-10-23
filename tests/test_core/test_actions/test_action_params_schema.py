@@ -32,6 +32,7 @@ from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import (
     PointAxis,
     RequiresFragment,
+    claim_params,
     element_params,
     param_fragments,
     point_params,
@@ -421,3 +422,10 @@ def test_a_point_declares_both_of_its_axes_once() -> None:
         point_params(OneAxis)
     with pytest.raises(TypeError, match="declares the x of point 'at' twice"):
         point_params(Twice)
+
+
+@pytest.mark.parametrize("key", _KEYS)
+def test_only_done_carries_the_agents_claim_about_the_task(key: str) -> None:
+    """``done``'s ``success`` is the agent's statement, not an instruction to the page."""
+    expected = ("success",) if key == "browser.done" else ()
+    assert claim_params(ActionRegistrar.get(key).Params) == expected

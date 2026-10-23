@@ -514,6 +514,7 @@ def _sample_line(item: RenderedSample, record: ExportRecord, split: Split) -> di
             "quantization_px": list(item.quantization),
             "thought": item.thought.model_dump(mode="json") if item.thought else None,
             "thought_dropped": item.thought_dropped,
+            "claim_not_written": item.claim_not_written,
             "images": list(record.images),
         },
     }

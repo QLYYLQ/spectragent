@@ -22,6 +22,8 @@ everything else is derived from it:
   viewport units (:class:`PointAxis`).
 - :func:`element_params` — which params name an element of a fragment
   (:class:`AddressesElement`).
+- :func:`claim_params` — which params carry the agent's claim about the task
+  (:class:`TaskClaim`).
 
 **What a param means is declared on the param, once.** Whether two params
 are one point, and whether a param names an element, used to be restated by
@@ -63,7 +65,9 @@ __all__ = [
     "AddressesElement",
     "PointAxis",
     "RequiresFragment",
+    "TaskClaim",
     "action_fragments",
+    "claim_params",
     "element_params",
     "param_fragments",
     "point_params",
@@ -129,6 +133,24 @@ class PointAxis:
     axis: Literal["x", "y"]
 
 
+@dataclass(frozen=True)
+class TaskClaim:
+    """Marks the param that carries the agent's claim about whether the task was accomplished.
+
+    Written into the param's ``Annotated`` metadata::
+
+        success: Annotated[bool | None, TaskClaim()] = None
+
+    ``browser.done``'s ``success``: what the agent says about the task, carried
+    out as ``ActionResult.reported_success``, never a verdict
+    (``docs/architecture_design.md`` §4.1, "agent 的任务结论"). It is the one
+    param of an action that is not an instruction to the environment, which
+    is why a reader may need to tell it apart: the training export writes a
+    teacher's ``true`` claim as the student's plain ending when the student's
+    format cannot say it (§4.15 "round-trip").
+    """
+
+
 def param_fragments(params: type[BaseModel]) -> dict[str, frozenset[str]]:
     """Param name → the fragment keys it cannot exist without.
 
@@ -180,6 +202,15 @@ def point_params(params: type[BaseModel]) -> list[tuple[str, str]]:
             )
         pairs.append((found["x"], found["y"]))
     return pairs
+
+
+def claim_params(params: type[BaseModel]) -> tuple[str, ...]:
+    """The params that carry the agent's claim about the task (:class:`TaskClaim`), in declaration order."""
+    return tuple(
+        name
+        for name, field in params.model_fields.items()
+        if any(isinstance(marker, TaskClaim) for marker in field.metadata)
+    )
 
 
 def element_params(params: type[BaseModel]) -> tuple[str, ...]:

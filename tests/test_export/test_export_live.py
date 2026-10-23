@@ -270,15 +270,21 @@ def _check_partial_below_the_header(partial: dict[str, Any]) -> None:
     assert partial["occlusion"] == "clear"
 
 
-def _the_claimed_done_is_not_a_sample(report: Any) -> None:
-    """The two clicks are samples; the teacher's ``done(success=true)`` is not.
+def _the_claimed_done_is_a_plain_ending(report: Any, out: Path) -> None:
+    """The two clicks and the teacher's ``done(success=true)`` are all samples.
 
-    UI-TARS's ``finished()`` states no claim about the task, so a done that
-    claims success has no ``finished`` spelling: the student refuses it as
-    unrepresentable and ``drop_step`` leaves it out (arch §4.15 "round-trip").
+    UI-TARS's ``finished()`` states no claim about the task, so the claimed done
+    is written as its plain ``finished(...)``, and the sample says the claim was
+    not written (arch §4.15 "round-trip"): the student still learns when to
+    finish.
     """
-    assert sum(report.samples.values()) == 2
-    assert report.manifest.steps.untranslatable == {"unrepresentable": 1}
+    assert sum(report.samples.values()) == 3
+    assert report.manifest.steps.untranslatable == {}
+    lines = [line for path in sorted(out.glob("*.samples.jsonl")) for line in read_jsonl(path)]
+    ending = [line for line in lines if "finished(" in line["render"]["target"]]
+    assert [line["render"]["claim_not_written"] for line in ending] == [True]
+    (teacher,) = ending[0]["sample"]["teacher_actions"]
+    assert teacher["name"] == "browser.done" and teacher["params"]["success"] is True
 
 
 def test_browser_use_run_exports_with_dom_raw_occlusion(
@@ -298,7 +304,7 @@ def test_browser_use_run_exports_with_dom_raw_occlusion(
             translator={"translator_id": "index_to_coordinate", "occlusion": "check"},
         ),
     )
-    _the_claimed_done_is_not_a_sample(report)
+    _the_claimed_done_is_a_plain_ending(report, out)
     found = _translations(out)
     assert found[0]["evidence"] == "dom_raw" and found[0]["point_source"] == "grid"
     _check_partial_below_the_header(found[0])
@@ -327,7 +333,7 @@ def test_skyvern_hit_test_run_exports_with_hit_test_occlusion(
             translator={"translator_id": "index_to_coordinate", "occlusion": "check"},
         ),
     )
-    _the_claimed_done_is_not_a_sample(report)
+    _the_claimed_done_is_a_plain_ending(report, out)
     found = _translations(out)
     assert found[0]["evidence"] == "hit_test" and found[0]["point_source"] == "hit_test"
     _check_partial_below_the_header(found[0])
