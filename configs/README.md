@@ -144,6 +144,8 @@ Environment provides: ['browser.browser_meta', 'browser.screenshot'].
 
 Screenshots are captured and recorded by **both** members: `online_mind2web` and `lexbench_browser` score runs from the screenshots in the trace. The member decides what the model sees, not what the run records.
 
+`step_history_window` (default 10, at least 1) is how many of the most recent steps the agent history in each step's message replays, each with its reply, actions, results and effects. It changes the prompt, so it is an explicit experiment variable.
+
 ## DOM cleaners
 
 `capability.dom_cleaner` picks how the page becomes the element tree a DOM agent reads (`docs/architecture_design.md` §4.12). Three are registered:

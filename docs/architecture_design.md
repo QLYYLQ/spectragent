@@ -386,6 +386,7 @@ agent:
 - `browser_use.dom_vision` 的动作与原来的 `dom_vision` 模式相同：`click`、`type` 按序号，另有 `click_coordinate`（够到序号够不着的目标，如跨域 iframe 小部件），没有 `type_coordinate` 与 `drag`。两个点击动词互相独立，没有一个参数一半不适用的重载动词。
 - 成员之间的行为差别只有两处，都是成员覆盖根上的一个方法：`dom_vision` 每步把截图附进用户消息（这一步的截图没有字节时只发文本，与 `dom` 相同），本 run 协商到坐标动作时在系统提示的 surface 之后加 `<coordinates>` 段（下文"BrowserUse 的反馈网格"）。`coordinate_space` 与 `vision_detail` 只在 `dom_vision` 上；`browser_use.dom` 不写点，没有这两个字段。
 - surface 片段按成员取（`_surface/dom.md`、`_surface/dom_vision.md` 与各自的 terse 版），模板只有一份：成员不是选模板的一个轴，DOM 与 DOM + 截图的消融只差 surface 片段。
+- 历史窗口是根上的配置字段 `step_history_window`（默认 10，至少 1）：每步消息的 `<agent_history>` 重放最近多少步。它以前是 `init=False` 的私有常量，YAML 改不了，是一个看不见的实验变量；Skyvern 的对应字段 `action_history_window` 按执行过的动作计数。
 
 #### Loop 驱动示例（weave + agent.run）
 

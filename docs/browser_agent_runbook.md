@@ -227,6 +227,7 @@ BrowserUse 是一个 agent 家族，用 `agent[0].agent_id` 选成员：
 | 三个 Agent | `show_action_effects` | `true` | 把效果那一行写进提示词；关掉时 trace 照样记录效果，消融的两组测量开销相同 |
 | 三个 Agent | `show_capture_state` | `true` | 协商并渲染 `capture_state`；关掉时这个 fragment 不采集、不记录、不渲染 |
 | Skyvern、BrowserUse | `show_media_state` | `false` | 在页面状态之后写 `<media_state>` 块；关掉时媒体状态照样随截图记录、用于恢复校验 |
+| BrowserUse | `step_history_window` | `10` | 每步消息的 `<agent_history>` 重放最近多少步（每步含回复、动作、结果与效果），至少 1；Skyvern 的对应字段是按动作计数的 `action_history_window` |
 
 `capture_state_timeout_s` 加上两倍的 `media_state_timeout_s` 必须小于 4 s，否则构造 capability 时就拒绝并点名两个字段：一次采集在 30 s 的事件里依次采各个 fragment，DOM 采集、截图命令和三次小读取的固定上限已经占去 26 s，探测超时只能让它自己的事实记为 unknown，不能拖垮整次采集（[architecture_design.md](architecture_design.md) §4.14 "命令上限"）。
 

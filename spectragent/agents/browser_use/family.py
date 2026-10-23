@@ -214,6 +214,18 @@ class BrowserUseAgent(AgentBase):
             )
         ),
     ] = False
+    # Counts *steps*, each with its reply, actions, results and effects;
+    # Skyvern's ``action_history_window`` counts executed actions.
+    step_history_window: Annotated[
+        int,
+        PydanticField(
+            ge=1,
+            description=(
+                "Number of most recent steps, each with its reply, actions, results and "
+                "effects, replayed in the agent history of every step's message."
+            ),
+        ),
+    ] = 10
 
     # ── internal state populated by prepare() ──────────────────
     # ``task`` lives on every observation as ``obs.task.user_request``
@@ -226,7 +238,6 @@ class BrowserUseAgent(AgentBase):
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
-    _max_history_steps: int = field(default=10, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
@@ -669,7 +680,7 @@ class BrowserUseAgent(AgentBase):
         return f"<agent_state>\n{body}\n</agent_state>"
 
     def _render_history(self, history: Any) -> str:
-        """What this run already did: its past actions and their results.
+        """What this run already did: the last ``step_history_window`` steps.
 
         With ``show_action_effects`` on, a step whose results measured
         effects gets an ``<effects>`` element after ``<results>``: one line
@@ -687,10 +698,8 @@ class BrowserUseAgent(AgentBase):
         items = list(getattr(history, "items", []) or [])
         if not items:
             return "<step_1>\n(no prior steps)\n</step_1>"
-        if len(items) > self._max_history_steps:
-            items = items[-self._max_history_steps :]
         blocks: list[str] = []
-        for rec in items:
+        for rec in items[-self.step_history_window :]:
             actions_str = (
                 ", ".join(
                     f"{a.name}({fact_in_model_frame(a, rec.frame, self._action_space).params})"

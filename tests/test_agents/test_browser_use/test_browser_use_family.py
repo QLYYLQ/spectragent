@@ -65,7 +65,10 @@ from spectragent.core.negotiation import (
     negotiate_observation,
 )
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_params import minimal_params
 from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
@@ -388,6 +391,59 @@ def test_every_member_still_captures_the_screenshot() -> None:
     """
     for member in MEMBERS:
         assert "browser.screenshot" in _Run(member).obs.active_fragments
+
+
+# ── The history window ────────────────────────────────────────────────
+
+
+def _history(steps: int) -> HistoryObs:
+    return HistoryObs(
+        items=[
+            StepRecord(
+                step=number,
+                llm_output=f"reply {number}",
+                actions=[Action(name="browser.scroll", params={"direction": "down"})],
+                action_results=[ActionResult(success=True)],
+            )
+            for number in range(steps)
+        ]
+    )
+
+
+async def _replayed_steps(agent: BrowserUseAgent, steps: int) -> list[str]:
+    observation = _observation()
+    observation.history = _history(steps)
+    (message,) = await agent.build_react_prompt(
+        observation, context=ReactPromptContext(step=steps, phase="policy")
+    )
+    return re.findall(r"<(step_\d+)>", message.text)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+async def test_the_history_replays_the_last_ten_steps_by_default(
+    member: type[BrowserUseAgent],
+) -> None:
+    replayed = await _replayed_steps(_Run(member).agent, 12)
+    assert replayed == [f"step_{n}" for n in range(3, 13)]
+
+
+async def test_the_history_window_is_a_config_field() -> None:
+    """An experiment variable a YAML can set, not a constant hidden in the class."""
+    raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
+    raw["agent"][0]["step_history_window"] = 2
+    raw.pop("hook", None)
+    agent = build_composer().compose(raw).single("agent")
+    assert agent.step_history_window == 2
+    assert await _replayed_steps(agent, 5) == ["step_4", "step_5"]
+
+
+def test_a_window_of_no_steps_is_refused_by_the_config() -> None:
+    from pydantic import ValidationError
+
+    raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
+    raw["agent"][0]["step_history_window"] = 0
+    with pytest.raises(ValidationError, match="step_history_window"):
+        build_composer().compose(raw)
 
 
 # ── Loud failures ─────────────────────────────────────────────────────
