@@ -62,7 +62,7 @@ async def test_measurement_reads_only_the_owned_internal_os_cell_and_closes_it(o
     client = browser.client("ws://fake")
     await client.start()
     try:
-        assert await measure_input_platform(client, timeout=0.2) == expected
+        assert await measure_input_platform(client, timeout=0.2, attempt_timeout=0.2) == expected
         assert list(browser.targets) == ["page-1"]
         creates = [s for s in client.sent if s.method == "Target.createTarget"]
         assert creates[0].params == {"url": PLATFORM_URL, "background": True}
@@ -83,9 +83,38 @@ async def test_failed_measurement_closes_only_the_probe(value, error):
     await client.start()
     try:
         with pytest.raises(error):
-            await measure_input_platform(client, timeout=0.05)
+            await measure_input_platform(client, timeout=0.05, attempt_timeout=0.05)
         assert list(browser.targets) == ["page-1"]
     finally:
+        await client.stop()
+
+
+async def test_a_read_answered_late_is_made_again():
+    """A renderer slow under load: the first read outlives its attempt, the next is answered."""
+    browser = FakeBrowser()
+    browser.delay("Runtime.evaluate", 0.5)
+    client = browser.client("ws://fake")
+    await client.start()
+    try:
+        assert await measure_input_platform(client, timeout=5, attempt_timeout=0.1) == "macos"
+        assert client.methods().count("Runtime.evaluate") >= 2
+        assert list(browser.targets) == ["page-1"]
+    finally:
+        await client.stop()
+
+
+async def test_a_page_that_never_answers_fails_naming_its_budget():
+    browser = FakeBrowser()
+    never = browser.hold("Runtime.evaluate")
+    client = browser.client("ws://fake")
+    await client.start()
+    try:
+        with pytest.raises(TimeoutError, match=r"within 0\.3s \(\d+ reads, each allowed 0\.1s\)"):
+            await measure_input_platform(client, timeout=0.3, attempt_timeout=0.1)
+        assert client.methods().count("Runtime.evaluate") >= 2
+        assert list(browser.targets) == ["page-1"]
+    finally:
+        never.set()
         await client.stop()
 
 
@@ -94,7 +123,7 @@ async def test_cancelled_measurement_closes_its_probe():
     browser.browser_os = None
     client = browser.client("ws://fake")
     await client.start()
-    task = asyncio.create_task(measure_input_platform(client, timeout=2))
+    task = asyncio.create_task(measure_input_platform(client, timeout=2, attempt_timeout=2))
     try:
         for _ in range(100):
             if browser.platform_contexts:
@@ -114,7 +143,7 @@ async def test_repeated_cancellation_during_cleanup_still_closes_only_the_probe(
     release_close = browser.hold("Target.closeTarget")
     client = browser.client("ws://fake")
     await client.start()
-    task = asyncio.create_task(measure_input_platform(client, timeout=2))
+    task = asyncio.create_task(measure_input_platform(client, timeout=2, attempt_timeout=2))
     try:
         for _ in range(100):
             if browser.platform_contexts:

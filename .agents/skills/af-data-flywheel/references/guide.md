@@ -17,7 +17,7 @@ record   spectragent bench | spectragent run    configs/flywheel/record_ui_tars_
 replay   spectragent run --replay-archive DIR    configs/flywheel/replay_ui_tars_archive.yaml
            network_source: archive (isolated, strict misses), base_time: from_archive,
            trace_writer.archive: browser.replay_log in browser.network's place
-           -> env/steps/NNN/browser.replay_log/replay.jsonl
+           -> env/steps/NNN/browser.replay_log/replay.jsonl.gz
 branch   spectragent bench --no-eval             configs/flywheel/branch_ui_tars_archive.yaml
            agent_loop: branch (restorer: prefix_replay), task_loader: trace_branches
            -> branch runs: restored steps, the policy step(s), a terminal observation
@@ -78,7 +78,7 @@ The shipped flywheel code gives each kind of new piece a precedent:
   `replay/replay_log.py::iter_decisions` / `document_miss_total` / `diverged_steps`, and
   `archive_stats.py` (`body_completeness`, `revisit_saving`, `challenge_documents`,
   `site_rule_candidates`). The export and the metrics call them and never parse `index.jsonl`
-  or `replay.jsonl` themselves. Rule 5 of
+  or `replay.jsonl.gz` themselves. Rule 5 of
   `tests/test_core/test_archive/test_archive_boundaries.py` forbids those readers to import
   `core.trace` or `spectragent.flywheel`.
 - The translator only arranges the call; the browser geometry it uses lives in
@@ -295,7 +295,7 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
 - A replay binds `browser.replay_log` where a recording binds `browser.network`; the other
   archivers stay. Each archiver has one meaning (the user's ruling of 2026-10-13):
   `browser.network` always records live traffic, `browser.replay_log` the replay server's
-  decisions, one `replay.jsonl` per step and nothing else (its only knob is
+  decisions, one `replay.jsonl.gz` per step and nothing else (its only knob is
   `allow_session_state`). The cooperation check matches them to the source by need, never
   by id, and names both sides in each row:
   - an `archive` source without an archiver with the `replay_log` need:
@@ -383,7 +383,7 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   counts as a hit in the metrics.
 - Read the log with `replay_log(reader, step)`, `iter_replay_log(reader)` or
   `diverged_steps(reader)` over `spectragent.core.archive.source.open_archive(run_dir)`.
-  They find it under `browser.replay_log`; a file named `replay.jsonl` under another
+  They find it under `browser.replay_log`; a file named `replay.jsonl.gz` under another
   archiver is not read.
 
 ### 2.3 Branch, and same-path replay
@@ -1230,7 +1230,7 @@ value on an existing one.
   `test_flywheel_boundaries.py` scan field names against `price|cost|usd|dollar`, so even a
   `cost` that means something else fails.
 - Evidence belongs to the step whose commit collected it. A request a page sends after it
-  loaded can land in the next step's `index.jsonl` or `replay.jsonl`; the metrics label such
+  loaded can land in the next step's `index.jsonl` or `replay.jsonl.gz`; the metrics label such
   misses `terminal` or `trailing`.
 - An export and a report computed twice from the same inputs are byte-identical. They hold no
   wall clock and no absolute path; a skipped source is named by its run-relative file, and
@@ -1291,7 +1291,7 @@ value on an existing one.
 | `ReplayArchiveError` | An index line or WARC record of the source does not read back; the source run is damaged |
 | `RecorderLostError` | The recorder connection dropped, and observation, action and collection fail closed. Look at Chrome, not at the archive |
 | A collection raises about dropped or failed events | The archive channel counts emitted against handled events, and `ArchiveChannel.errors` counts sessions that raised in `admit_event` or `on_event`. The step stays uncommitted |
-| Many `no_match` misses on near-identical URLs of one host | The candidates in `replay.jsonl` (`iter_replay_log`) and the report's site-rule candidates. Add `ignore_query` or `ignore_body_paths` to `configs/replay_rules/<domain>.yaml` |
+| Many `no_match` misses on near-identical URLs of one host | The candidates in `replay.jsonl.gz` (`iter_replay_log`) and the report's site-rule candidates. Add `ignore_query` or `ignore_body_paths` to `configs/replay_rules/<domain>.yaml` |
 | A main-frame document miss (`diverged`) | The page asked for a document the recording never fetched, such as a time-stamped URL. A restored step shows `document_miss` |
 | `IncompatibleCheckpointError` | The branch's agent, closed-set or numeric knobs, memory, `max_actions_per_step`, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |

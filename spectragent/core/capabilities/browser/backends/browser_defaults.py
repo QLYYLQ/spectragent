@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from spectragent.core.capabilities.browser.commands import BrowserCommands
+from spectragent.core.capabilities.browser.commands import BrowserCommands, measure_in_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -257,18 +257,30 @@ class _CoreFoundation:
 # ── right after launch: Chrome's own answer ──────────────────────────
 
 
-async def measure_browser_defaults(client: BrowserCommands, *, timeout: float) -> BrowserDefaults:
+async def measure_browser_defaults(
+    client: BrowserCommands, *, timeout: float, attempt_timeout: float
+) -> BrowserDefaults:
     """What a frame no override reached reads, asked of Chrome right after launch.
 
     In the first page target, before any override was sent to it: attached
     to on *client* (flatten), read in an isolated world of its main frame (no
     page script sees the read or changes it), detached again. A value Chrome
-    does not report is ``None``.
+    does not report is ``None``. A read Chrome does not answer within
+    *attempt_timeout* is made again, within *timeout* (``measure_in_attempts``).
 
     Raises:
-        RuntimeError: No page target to measure in.
-        TimeoutError, RuntimeError: A command failed.
+        RuntimeError: No page target to measure in, or a command failed.
+        TimeoutError: Chrome answered no read within *timeout*.
     """
+    return await measure_in_attempts(
+        lambda bound: _read_browser_defaults(client, bound),
+        timeout=timeout,
+        attempt_timeout=attempt_timeout,
+        what="the browser's default time zone and locale",
+    )
+
+
+async def _read_browser_defaults(client: BrowserCommands, timeout: float) -> BrowserDefaults:
     reply = await client.send("Target.getTargets", {}, None, timeout=timeout)
     pages = [
         info

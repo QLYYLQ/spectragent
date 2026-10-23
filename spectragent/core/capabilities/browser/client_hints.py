@@ -239,52 +239,65 @@ def identifier_problems(user_agent: str, hints: ClientHints) -> list[str]:
     return problems
 
 
-async def measure_client_hints(client: BrowserCommands, *, timeout: float) -> ClientHints:
+async def measure_client_hints(
+    client: BrowserCommands, *, timeout: float, attempt_timeout: float
+) -> ClientHints:
     """Chrome's own client hints, read right after launch in a page no override reaches.
 
     A temporary ``chrome://version`` tab (module docstring), opened in the
-    background; the read is retried until its document is a secure context,
-    within *timeout*. The tab is closed again, and gone from ``Target.getTargets``,
-    before this returns.
+    background; the read is made again until its document is a secure context,
+    each read allowed *attempt_timeout* (one Chrome does not answer is abandoned)
+    and all of it, opening the tab included, *timeout*. The tab is closed again,
+    and gone from ``Target.getTargets``, before this returns.
 
     Raises:
         TimeoutError: The page did not report within *timeout*.
-        RuntimeError: A command failed.
+        RuntimeError: Opening or attaching to the tab failed.
     """
     loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    def remaining() -> float:
+        return max(deadline - loop.time(), 0.0)
+
     created = await client.send(
         "Target.createTarget",
         {"url": CLIENT_HINTS_URL, "background": True},
         None,
-        timeout=timeout,
+        timeout=remaining(),
     )
     target_id = str((created or {}).get("targetId") or "")
     if not target_id:
         raise RuntimeError("Target.createTarget returned no targetId")
     try:
         attached = await client.send(
-            "Target.attachToTarget", {"targetId": target_id, "flatten": True}, None, timeout=timeout
+            "Target.attachToTarget",
+            {"targetId": target_id, "flatten": True},
+            None,
+            timeout=remaining(),
         )
         session_id = str((attached or {}).get("sessionId") or "")
         if not session_id:
             raise RuntimeError("Target.attachToTarget returned no sessionId")
-        deadline = loop.time() + timeout
         last: Exception | None = None
+        reads = 0
         while True:
+            reads += 1
             try:
-                values = await _read(client, session_id, timeout)
+                values = await _read(client, session_id, min(attempt_timeout, remaining()))
                 if values is not None:
                     return ClientHints.from_page(values)
-            except Exception as exc:  # the document is still being replaced
+            except Exception as exc:  # the document is still being replaced, or slow
                 last = exc
             if loop.time() >= deadline:
                 raise TimeoutError(
-                    f"{CLIENT_HINTS_URL} reported no client hints within {timeout:g}s"
-                    + (f" (last error: {last!r})" if last else "")
+                    f"{CLIENT_HINTS_URL} reported no client hints within {timeout:g}s "
+                    f"({reads} reads, each allowed {attempt_timeout:g}s)"
+                    + (f"; last error: {last!r}" if last else "")
                 )
             await asyncio.sleep(0.05)
     finally:
-        await _close(client, target_id, timeout)
+        await _close(client, target_id, attempt_timeout)
 
 
 async def _read(client: BrowserCommands, session_id: str, timeout: float) -> dict[str, Any] | None:

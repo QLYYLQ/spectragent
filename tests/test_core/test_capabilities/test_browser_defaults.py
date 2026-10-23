@@ -117,7 +117,7 @@ class TestMeasurement:
         browser.default_timezone, browser.default_locale = "Asia/Tokyo", "zh-CN"
         client = browser.client("ws://fake/devtools/browser")
         await client.start()
-        measured = await measure_browser_defaults(client, timeout=1.0)
+        measured = await measure_browser_defaults(client, timeout=1.0, attempt_timeout=1.0)
         assert measured == BrowserDefaults(timezone="Asia/Tokyo", locale="zh-CN")
         assert client.methods() == [
             "Target.getTargets",
@@ -138,5 +138,31 @@ class TestMeasurement:
         client = browser.client("ws://fake/devtools/browser")
         await client.start()
         with pytest.raises(RuntimeError, match="no page target"):
-            await measure_browser_defaults(client, timeout=1.0)
+            await measure_browser_defaults(client, timeout=1.0, attempt_timeout=1.0)
+        assert client.methods() == ["Target.getTargets"], "a refusal is not asked again"
         await client.stop()
+
+    async def test_a_read_answered_late_is_made_again(self) -> None:
+        """A renderer slow under load: the first attempt times out, the next is answered."""
+        browser = FakeBrowser()
+        browser.default_timezone, browser.default_locale = "Asia/Tokyo", "zh-CN"
+        browser.delay("Runtime.evaluate", 0.5)
+        client = browser.client("ws://fake/devtools/browser")
+        await client.start()
+        measured = await measure_browser_defaults(client, timeout=5.0, attempt_timeout=0.1)
+        assert measured == BrowserDefaults(timezone="Asia/Tokyo", locale="zh-CN")
+        assert client.methods().count("Target.attachToTarget") == 2
+        assert browser.targets["page-1"].sessions == {}, "every measuring session is gone"
+        await client.stop()
+
+    async def test_a_page_that_never_answers_fails_naming_its_budget(self) -> None:
+        browser = FakeBrowser()
+        never = browser.hold("Runtime.evaluate")
+        client = browser.client("ws://fake/devtools/browser")
+        await client.start()
+        try:
+            with pytest.raises(TimeoutError, match=r"no answer within 0\.3s \(\d+ attempts"):
+                await measure_browser_defaults(client, timeout=0.3, attempt_timeout=0.1)
+        finally:
+            never.set()
+            await client.stop()

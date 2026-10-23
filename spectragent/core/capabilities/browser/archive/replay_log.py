@@ -1,12 +1,18 @@
-"""``browser.replay_log`` — a replay's serving decisions, one ``replay.jsonl`` per step (§4.14).
+"""``browser.replay_log`` — a replay's serving decisions, one ``replay.jsonl.gz`` per step (§4.14).
 
 A run that replays an archive (``network_source: archive``) has no live
 traffic to record: every byte it serves is already in the source run's
 archive. What it does have is the replay server's log — every hit, exhausted
 repeat, synthesised preflight and miss — and this archiver records it: its
 session drains the log at each collection, in one synchronous call, into
-that step's ``replay.jsonl``. An empty window writes nothing. The step whose
+that step's ``replay.jsonl.gz``. An empty window writes nothing. The step whose
 collection takes an entry is the step it is attributed to.
+
+The file is gzip-compressed JSON Lines, as the WARC beside a recording is
+gzip: a log repeats the same URLs, keys and candidates line after line, and
+compressed it is about a tenth of its size (measured 2026-10-23 on 318 replay
+and branch runs: 185.5 MB of logs, 19.4 MB gzipped one step file at a time).
+``RunTrace.archive_lines`` reads a ``.gz`` file back decompressed.
 
 The archiver has one meaning, whatever else the run is configured with, and
 so does ``browser.network`` (always live traffic). Whether the two fit the
@@ -35,12 +41,12 @@ from spectragent.core.capabilities.browser.archive.base import (
     BrowserArchiveSession,
     ReplayLogFeed,
 )
-from spectragent.core.capabilities.browser.archive.encoding import jsonl
+from spectragent.core.capabilities.browser.archive.encoding import gzip_jsonl
 
 #: The archiver's key: the readers find a run's replay log by it.
 REPLAY_LOG_ARCHIVER = "browser.replay_log"
-#: The replay server's decisions of one step.
-REPLAY_LOG_NAME = "replay.jsonl"
+#: The replay server's decisions of one step, gzip-compressed JSON Lines.
+REPLAY_LOG_NAME = "replay.jsonl.gz"
 
 
 class ReplayLogArchiver(BrowserArchiverBase):
@@ -96,8 +102,8 @@ class ReplayLogSession(BrowserArchiveSession):
             ArchiveFile(
                 archiver_id=self.archiver.archiver_id,
                 name=REPLAY_LOG_NAME,
-                media_type="application/x-ndjson",
-                data=jsonl(entries),
+                media_type="application/gzip",
+                data=gzip_jsonl(entries),
                 meta=ArchiveProvenance(captured_at=self.ctx.clock()),
             )
         ]

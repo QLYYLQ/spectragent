@@ -56,6 +56,7 @@ import pytest
 from warcio.archiveiterator import ArchiveIterator
 
 from spectragent.core.archive.source import open_archive
+from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_NAME
 from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLogEntry,
     diverged_steps,
@@ -552,7 +553,7 @@ def test_strict_classes_end_to_end(strict: Runs) -> None:
 
 
 def test_unrecorded_requests_are_attributed(strict: Runs) -> None:
-    """Step, frame and resourceType, in that step's ``browser.replay_log/replay.jsonl``."""
+    """Step, frame and resourceType, in that step's ``browser.replay_log/replay.jsonl.gz``."""
     trace = strict.replays["strict"].outcome.trace
     reader = open_archive(strict.replays["strict"].outcome.run_dir)
     found = [
@@ -566,7 +567,7 @@ def test_unrecorded_requests_are_attributed(strict: Runs) -> None:
     assert (canary.kind, canary.resource_type, canary.method) == ("miss", "XHR", "GET")
     assert canary.frame_id and canary.target_id and canary.session_id
     names = [record.name for record in trace.archive_files(step, "browser.replay_log")]
-    assert names == ["replay.jsonl"]
+    assert names == [REPLAY_LOG_NAME]
     assert trace.archive_files(step, "browser.network") == [], "a replay records no traffic"
 
 

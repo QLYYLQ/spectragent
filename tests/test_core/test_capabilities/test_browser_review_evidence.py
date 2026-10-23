@@ -15,13 +15,13 @@ usable reading.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser.archive.encoding import gzip_json
+from spectragent.core.capabilities.browser.archive.encoding import gzip_json, gzip_jsonl
+from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_NAME
 from spectragent.core.capabilities.browser.observations import BrowserCaptureStateObs, DOMObs
 from spectragent.core.capabilities.browser.review_evidence import (
     CAPTURE_STATE_IMAGES_NOT_COVERED,
@@ -136,8 +136,8 @@ def replay_trace(
                 extra.append(
                     archive_file(
                         "browser.replay_log",
-                        "replay.jsonl",
-                        "\n".join(json.dumps(entry) for entry in log).encode(),
+                        REPLAY_LOG_NAME,
+                        gzip_jsonl(log),
                         step=at,
                     )
                 )
@@ -270,13 +270,13 @@ def test_only_the_reviewed_steps_collection_counts(tmp_path):
         )
     )
     document = gzip_json(dom_document([IMAGE_IN_VIEW]))
-    log = json.dumps(decision("miss", at=900.0)).encode()
+    log = gzip_jsonl([decision("miss", at=900.0)])
     wal.commit_step(
         0,
         step_record(0),
         extra_files=[
             archive_file("browser.dom_raw", "dom.json.gz", document, step=0),
-            archive_file("browser.replay_log", "replay.jsonl", log, step=0),
+            archive_file("browser.replay_log", REPLAY_LOG_NAME, log, step=0),
         ],
     )
     wal.commit_step(

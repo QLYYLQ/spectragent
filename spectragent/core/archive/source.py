@@ -114,7 +114,10 @@ class ArchiveReader(Protocol):
         ...
 
     def archive_lines(self, path: str, model: type[M]) -> list[M]:
-        """A committed line-delimited JSON file, each non-blank line read back as *model*."""
+        """A committed line-delimited JSON file, each non-blank line read back as *model*.
+
+        A name ending in ``.gz`` is gzip-compressed JSON Lines, read back decompressed.
+        """
         ...
 
 

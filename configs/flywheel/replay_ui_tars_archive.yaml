@@ -16,7 +16,7 @@
 #   --no-proxy-server).
 # - base_time: from_archive — the page clock starts at the recording's T0.
 # - browser.replay_log takes browser.network's place in trace_writer.archive:
-#   it records the replay log (env/steps/NNN/browser.replay_log/replay.jsonl:
+#   it records the replay log (env/steps/NNN/browser.replay_log/replay.jsonl.gz:
 #   hits, misses, divergence). A replay has no live traffic of its own, so
 #   browser.network is refused under network_source: archive.
 # Before Chrome starts, setup checks the source run's environment fingerprint

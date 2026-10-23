@@ -98,7 +98,7 @@ def _host_browser(host_theme: str, *, replay: bool, observed: list[str]) -> Loca
         client = CDPClient(session.cdp_url, proxy=None, compression=None)
         try:
             await client.start()
-            observed.append(await measure_color_scheme(client, timeout=5))
+            observed.append(await measure_color_scheme(client, timeout=5, attempt_timeout=5))
         except BaseException:
             await provider.close(session)
             raise

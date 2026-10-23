@@ -19,6 +19,10 @@ Three of them shipped, in five templates inherited from upstream:
 - **"CAPTCHAs are automatically solved by the browser."** They are not,
   by anything in this framework, and the claim directly contradicts the
   anti-bot work these prompts are used for.
+- **"uncertain" taught as ``success: false``.** ``done``'s ``success`` is
+  whether the task was accomplished, left unset when the agent cannot tell
+  (``ActionResult.reported_success`` ``None``); a template that maps doubt
+  to ``false`` makes an unknown outcome read as a known failure.
 
 And one the modes introduce: a ``vision`` run has no element list and no
 index-addressed action, so a template that still talks about ``[index]``
@@ -211,6 +215,19 @@ class TestEveryRenderedPrompt:
         assert "text field of the `done`" not in prompt
         assert "done action's text field" not in prompt
         assert "files_to_display" not in prompt
+
+    def test_teaches_done_s_success_as_the_action_reads_it(
+        self, mode: str, config: dict[str, Any]
+    ) -> None:
+        """Known unmet or blocked: ``false``; verified: ``true``; cannot tell: unset."""
+        _agent, prompt, _names, _descriptors = _run(mode, config)
+        if "`success`" not in prompt:
+            return  # the template leaves ``success`` to the action list's own description
+        assert "leave `success` unset" in prompt
+        assert "`success=false`" in prompt or "set `success` to `false`" in prompt
+        for line in prompt.splitlines():
+            doubt = "uncertain" in line or "unverifiable" in line
+            assert not (doubt and "false" in line), f"{mode}{config}: {line!r}"
 
 
 @pytest.mark.parametrize(

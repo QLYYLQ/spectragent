@@ -16,8 +16,9 @@ from pydantic import ValidationError
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.capabilities.browser.archive import DomRawArchiver
 from spectragent.core.capabilities.browser.archive.dom_raw import read_dom_document
-from spectragent.core.capabilities.browser.archive.encoding import gzip_json
+from spectragent.core.capabilities.browser.archive.encoding import gzip_json, gzip_jsonl
 from spectragent.core.capabilities.browser.archive.redaction import redact_raw_capture
+from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_NAME
 from spectragent.core.capabilities.browser.observations import (
     BrowserCaptureStateObs,
     BrowserMetaObs,
@@ -925,8 +926,8 @@ async def _recorded_pair(
             extra.append(
                 archive_file(
                     "browser.replay_log",
-                    "replay.jsonl",
-                    "\n".join(json.dumps(entry) for entry in replay_log).encode(),
+                    REPLAY_LOG_NAME,
+                    gzip_jsonl(replay_log),
                     step=0,
                 )
             )

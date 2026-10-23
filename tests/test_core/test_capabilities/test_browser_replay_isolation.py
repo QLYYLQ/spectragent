@@ -6,7 +6,7 @@ without them and says so in the replay fingerprint; a replay without the
 replay-log archiver is refused naming both; ``base_time: from_archive`` pins
 the recording's T0; and once set up, the capability's replay server answers
 the recorder's paused requests from the source run, ``browser.replay_log``
-writes the decision into the step's ``replay.jsonl`` and the fingerprint
+writes the decision into the step's ``replay.jsonl.gz`` and the fingerprint
 carries the replay block. The real Chrome counterpart is
 ``test_browser_replay_live.py``.
 """
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import json
 import re
 import time
@@ -25,6 +26,7 @@ import pytest
 
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import ReplayLogArchiver, StorageArchiver
+from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_NAME
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
@@ -228,11 +230,11 @@ class TestServing:
 
             batch = await cap.collect_archive()
             files = {(f.archiver_id, f.name): f for f in batch.files}
-            log = files[("browser.replay_log", "replay.jsonl")]
-            (entry,) = [json.loads(line) for line in log.data.splitlines()]
+            log = files[("browser.replay_log", REPLAY_LOG_NAME)]
+            (entry,) = [json.loads(line) for line in gzip.decompress(log.data).splitlines()]
             assert entry["kind"] == "hit" and entry["run_id"] == "run-src"
             assert set(files) == {
-                ("browser.replay_log", "replay.jsonl"),
+                ("browser.replay_log", REPLAY_LOG_NAME),
                 ("browser", "fingerprint.json"),
             }, "a replay records its log, no traffic of its own"
             block = json.loads(files[("browser", "fingerprint.json")].data)["network_source"]
