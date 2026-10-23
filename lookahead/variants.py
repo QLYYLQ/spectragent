@@ -248,4 +248,5 @@ async def generate(
         "checkpoints_without_variants": sum(1 for reply in replies if reply.value is None),
         "variants": len(document.variants),
         "skipped_runs": skipped,
+        "excluded_runs": dict(runs.excluded),
     }
