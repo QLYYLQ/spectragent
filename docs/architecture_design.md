@@ -1408,7 +1408,7 @@ IncompatibleError: Cannot pair SWEAgent with BrowserEnvironment.
 
 违反任一条抛 `DemandOutsideWiringError`。这是 agent 类的编程错误，不是用户的配置错误：它在 `prepare()` 阶段、环境启动之前就炸。
 
-**失败要点名是谁在要。** 协商把各方的 required 并在一起再求解，缺了一个键时结果里已经看不出是谁要的，所以 `demand_of` 之外还有一个 `demand_label(owner)`，它只做一件事——给诊断取名字。规则是：`__repr__` 以 registry key 开头，就当作实例对自己的紧凑描述整段采用；否则退回 registry key（`browser_use.dom`）。这条规则把 dataclass 自动生成的 `__repr__`（开头是**类名**，而且会把 LLM 客户端整个 dump 进错误信息）和 `object` 的 `<... at 0x…>` 一起挡在外面。
+**失败要点名是谁在要。** 协商把各方的 required 并在一起再求解，缺了一个键时结果里已经看不出是谁要的，所以 `demand_of` 之外还有一个 `demand_label(owner)`，它只做一件事——给诊断取名字。名字就是 registry key（`browser_use.dom`、`react`）：YAML 里选它用的那个字符串，家族成员的键本身就说出了它观测什么、声明哪些动作。不用 `__repr__`：dataclass 自动生成的 `__repr__` 开头是**类名**，而且会把 LLM 客户端整个 dump 进错误信息，`object` 的 `<... at 0x…>` 在进程之间都不稳定。BrowserUse 以前为模式写过一个以 registry key 开头的 `__repr__`（`browser_use(observation_mode='dom')`），`demand_label` 整段采用它；模式变成家族成员之后，这条规则随之删除。
 
 标签只走到错误信息里：`_observation_rules` / `_action_rules` 多收两个 `*_source` 形参，它们不进 `resolve_demand`，改不了协商结果。`IncompatibleFragmentError` / `IncompatibleActionError` 于是能写出
 

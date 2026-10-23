@@ -85,31 +85,20 @@ class DemandOutsideWiringError(Exception):
 
 
 def demand_label(owner: Any) -> str:
-    """How *owner* names itself in a negotiation diagnosis.
+    """How *owner* is named in a negotiation diagnosis: its registry key.
 
     A missing fragment is a puzzle until the message says who asked for
-    it, and "the agent" is not enough when one agent class has three
-    configurations that ask for different things. So an instance may
-    describe itself: a ``__repr__`` that *starts with the registry key* is
-    taken as a deliberate, compact self-description and used whole —
-    ``browser_use(observation_mode='dom')``.
-
-    Anything else falls back to the registry key, which is the string the
-    YAML named it by. That rule is what keeps a dataclass's generated
-    ``__repr__`` (``BrowserUseAgent(llm=ChatOpenAI(...), memory=...)``) and
-    ``object``'s ``<... at 0x7f…>`` out of the error: neither tells the
-    reader which knob to change, and the second is not even stable
-    between processes.
-
-    A class passed where an instance belongs answers with its key — the
-    only thing it can honestly say.
+    it. The registry key is the string the YAML named the party by
+    (``browser_use.dom``, ``react``), and a family member's key already
+    says what it observes and which actions it declares. Never the
+    ``repr``: a dataclass's generated one
+    (``BrowserUseDomAgent(llm=ChatOpenAI(...), memory=...)``) would dump the
+    LLM client into the error, and ``object``'s ``<... at 0x7f…>`` is not
+    even stable between processes. A class without a key is named by its
+    class name.
     """
     cls = owner if isinstance(owner, type) else type(owner)
-    key = str(getattr(cls, "__registry_key__", cls.__name__))
-    if isinstance(owner, type):
-        return key
-    text = repr(owner)
-    return text if text.startswith(f"{key}(") else key
+    return str(getattr(cls, "__registry_key__", cls.__name__))
 
 
 def bounded_demand(
@@ -123,8 +112,7 @@ def bounded_demand(
     Args:
         owner: The instance doing the narrowing. Its class carries the
             ``__wiring__`` that bounds it, and :func:`demand_label` names
-            it in the error — ``browser_use(observation_mode='vision')``
-            says far more than ``BrowserUseAgent``.
+            it in the error by its registry key.
         registry: Which wiring entry is being narrowed (``"observation"``).
         required: The keys this instance must have.
         optional: The keys it can use if present.
@@ -167,9 +155,8 @@ def demand_of(owner: Any, registry: str) -> tuple[set[str], set[str]]:
     The narrowed answer goes back through :func:`bounded_demand` here,
     where the framework can enforce the boundary rather than trust every
     override to enforce it on itself. An implementation that already calls
-    ``bounded_demand`` (``BrowserUseAgent`` does, so that a typo in its
-    mode table is attributed to the mode table) gets the same sets back:
-    the check is idempotent. One that forgot to is caught anyway, which is
+    ``bounded_demand`` (``capture_state_demand`` does) gets the same sets
+    back: the check is idempotent. One that forgot to is caught anyway, which is
     the point — this is the single new degree of freedom in the
     negotiation path, and it is not the one to leave on trust.
 
