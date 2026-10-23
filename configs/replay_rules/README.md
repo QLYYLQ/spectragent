@@ -175,12 +175,42 @@ with the recorded ones:
 - `iqiyi.com.yaml`: the player's stream address request (`GET cache.video.iqiyi.com/dash`)
   ignores `tm`, `authKey` (md5 over `tm` and `tvid`, recomputed), the signature `vf`, the device
   id `k_uid` and the device fingerprint `dfp`, also inside the JSON field `bop` (`bop.dfp`).
-  `tvid`, `bid` and the other fields stay.
+  `tvid`, `bid` and the other fields stay. Video segments on `*.71edge.com/videos/vts/*` and the
+  bandwidth probe `data.video.iqiyi.com/v.f4v` ignore only `random`, the client time the player
+  adds as a cache buster; the byte range fields stay.
 
-Across the 15 recordings of that root, every group of records these rules join has one HTTP
-status, the same video and definition; the joined video info answers differ only in the server
-time, signature, test bucket and CDN tokens, and the joined ad answers sit under different
-`sspKey` names.
+Across the 15 recordings of that root (35,943 recorded requests), these rules change the keys of
+39 player info and 5 stream address requests and nothing else. Every group of records they join
+has one HTTP status, the same video and definition; the joined video info answers differ only in
+the server time, signature, test bucket and CDN tokens, and the joined ad answers sit under
+different `sspKey` names. The segment and probe rules join no recorded requests.
+
+Restoration was compared on the same recordings with the same branch configuration, only
+`site_rules` changed, one fork per checkpoint: Tencent Video 23 forks, iQIYI 6 forks whose
+checkpoints had failed the media check. Restorer `ok` verdicts did not change: Tencent Video 0 of
+23 before and after, iQIYI 0 of 6, and every fork still fails the media check. What changed:
+
+- Tencent Video: no player info request was served before; after, they were on all 23 forks. On
+  8 forks (5 play page checkpoints of 28 and 3 home page checkpoints of 128 and 263) the restored
+  page now builds the player as the recording did, and one of them (28, step 5) is now within the
+  screenshot threshold (distance 10 → 3). On the search page of 28
+  (step 25) the two recorded preview videos were missing before; after, both correspond and one
+  plays, but the seek to the recorded time stops at 25.2 s of 42.4 s: the segments after that come
+  from a CDN host the recording never contacted.
+- The Tencent Video media check cannot pass on 22 of these 23 checkpoints whatever the requests:
+  every page but the search page renders the player inside an iframe in a shadow root
+  (`<fake-iframe-video>`), which the media reader lists as unreachable (`main/unplaced-0`), so the
+  recorded step is not restorable (`docs/architecture_design.md` §4.4, accepted 2026-10-21 until a
+  real site needed it).
+- The play pages of 128 and 263 got their video info from `vinfo_proxy`, whose answer is
+  encrypted; the replayed player then asks `proxyhttp` again with encryption version 9.2, which
+  the recording never did, so no rule can serve it. A scratch run that also served the protobuf
+  variant of `GetTabRemoteConfig` (keyed without its visitor id) changed nothing there, so that
+  request is not the cause.
+- iQIYI: every stream address request and every recorded segment request was served after, none
+  before; the restored play page video still had no data, because the recording kept no body for
+  its first segment (the page cancelled it while the body arrived), and the player then asked a
+  host the recording never contacted.
 
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another
