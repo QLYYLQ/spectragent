@@ -45,6 +45,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     short_key,
 )
 from spectragent.core.capabilities.browser.replay.site_rules import (
+    ParsedField,
     RequestScope,
     SiteRule,
     SiteRules,
@@ -470,6 +471,32 @@ def test_a_field_the_replays_own_rule_ignores_is_not_reported() -> None:
     assert candidate.query == {} and candidate.body == {"page": 1}, (
         "t and client.trace are already ignored by the rule both sides were keyed with"
     )
+
+
+def test_the_sub_fields_of_a_parsed_field_are_reported_by_their_names() -> None:
+    """With the field parsed by the replay's rule, the report names the sub-fields that differ."""
+    url = f"{SHOP}/api/play"
+    rules = SiteRules(
+        [
+            SiteRule(
+                id="play",
+                scope=RequestScope(host="shop.test", path="/api/play", method="POST"),
+                exhaustion="repeat_last",
+                unavailable="miss",
+                parse_query=(ParsedField(field="ext", format="urlencoded"),),
+                parse_body_paths=(ParsedField(field="info", format="urlencoded"),),
+                ignore_body_paths=("info.key",),
+            )
+        ]
+    )
+    recorded = f"{url}?ext=lt%3D1%26trace%3Da"
+    source = _source(("POST", recorded, b'{"info": "vid=v1&key=k1&tm=100"}'), rules=rules)
+    live = f"{url}?ext=lt%3D1%26trace%3Db"
+    decisions = [(1, _body_miss(live, b'{"info": "vid=v1&key=k2&tm=101"}', 0, recorded, rules), 1)]
+
+    [candidate] = site_rule_candidates(near_misses(decisions, source))
+
+    assert candidate.query == {"ext.trace": 1} and candidate.body == {"info.tm": 1}
 
 
 def test_bodies_known_only_by_digest_count_as_an_opaque_difference() -> None:
