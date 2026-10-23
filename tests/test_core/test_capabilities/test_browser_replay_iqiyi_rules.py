@@ -406,3 +406,50 @@ def test_other_requests_keep_the_device_id_and_cache_buster(address: str) -> Non
     policy = rules().require_for_request("GET", address)
     for field in ("device", "deviceId", "device_id", "deviceID", "qyid", "u", "t"):
         assert not policy.ignores_query(field), (address, field)
+
+
+# ── player stream addresses ─────────────────────────────────────────────
+
+DASH = "https://cache.video.iqiyi.com/dash"
+STREAMS = {
+    "tvid": "1000000000000000",
+    "bid": "600",
+    "src": "01080031010000000000",
+    "k_uid": RECORDED_DEVICE,
+    "authKey": "0" * 32,
+    "dfp": "a0" * 30,
+    "tm": "1700000000111",
+    "bop": json.dumps({"version": "10.0", "dfp": "a0" * 30, "b_ft1": 60}, separators=(",", ":")),
+    "ut": "0",
+    "vf": "1" * 32,
+}
+#: The replayed player: a new time and signature, a new device id, and no fingerprint yet.
+RESTREAMS = {
+    **STREAMS,
+    "k_uid": LIVE_DEVICE,
+    "authKey": "f" * 32,
+    "dfp": "",
+    "tm": "1700000009999",
+    "bop": json.dumps({"version": "10.0", "dfp": "", "b_ft1": 60}, separators=(",", ":")),
+    "vf": "e" * 32,
+}
+
+
+def test_stream_addresses_match_across_a_new_time_signature_device_and_fingerprint() -> None:
+    result = match_one(DASH, STREAMS, RESTREAMS)
+    assert (result.reason, result.rule_id) == (None, "iqiyi-player-streams")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tvid": "2000000000000000"},
+        {"bid": "500"},
+        {"src": "01010031010000000000"},
+        {"ut": "1"},
+        {"bop": json.dumps({"version": "11.0", "dfp": "", "b_ft1": 60}, separators=(",", ":"))},
+        {"bop": json.dumps({"version": "10.0", "dfp": "", "b_ft1": 30}, separators=(",", ":"))},
+    ],
+)
+def test_stream_addresses_still_select_the_video_and_its_bitrate(change: dict[str, str]) -> None:
+    assert match_one(DASH, STREAMS, {**RESTREAMS, **change}).reason == "no_match"

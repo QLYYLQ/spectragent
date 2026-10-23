@@ -7,6 +7,7 @@ shape of each body follow the recorded requests named in ``configs/replay_rules/
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import pytest
 
@@ -523,7 +524,7 @@ def test_play_info_still_selects_the_video_and_its_resume_point(field: str, othe
             "https://pbaccess.video.qq.com/trpc.universal_backend_service.union_extra_data"
             ".UnionExtraData/FillUnionInfo",
         ),
-        ("POST", "https://vd6.l.qq.com/proxyhttp"),
+        ("POST", "https://vi.l.qq.com/proxyhttp"),
         ("POST", "https://vi.l.qq.com/vinfo_proxy"),
         ("GET", PLAY_INFO),
         ("GET", "https://access.video.qq.com/common_config/get_config"),
@@ -548,3 +549,137 @@ def test_other_requests_keep_visitor_ids_cookies_and_callbacks(method: str, url:
         assert not policy.ignores_body_path(field)
     for field in ("callback", "_", "vdevice_guid"):
         assert not policy.ignores_query(field)
+
+
+# ── player video info and ads ───────────────────────────────────────────
+
+PLAYER_INFO = "https://vd6.l.qq.com/proxyhttp"
+TEXT = "text/plain;charset=UTF-8"
+
+
+def vinfoparam(**fields: str) -> str:
+    """The player's URL-encoded video info request, with the recorded field order."""
+    values = {
+        "charge": "0",
+        "otype": "ojson",
+        "defnpayver": "3",
+        "host": "v.qq.com",
+        "refer": "https://v.qq.com/",
+        "ehost": "https://v.qq.com/",
+        "encryptVer": "8.5",
+        "cKey": "--01" + "A" * 60,
+        "guid": "1111aaaa2222bbbb3333cccc4444dddd",
+        "flowid": "5555eeee6666ffff7777000088881111",
+        "platform": "10201",
+        "appVer": "1.74.0",
+        "vid": "b0000000000",
+        "defn": "shd",
+        "tm": "1700000000",
+        "track": "undefined",
+        "screeninfo": '[{"rw":800,"rh":600}]',
+        "scene": "play_source%3Dfocus_map",
+        **fields,
+    }
+    return urlencode(values, quote_via=quote)
+
+
+def adparam(**fields: str) -> str:
+    values = {"adType": "preAd", "vid": "b0000000000", "sspKey": "xhnr", **fields}
+    return urlencode(values, quote_via=quote)
+
+
+def ssp_ad_param(guid: str, flow: str, stamp: str) -> str:
+    return json.dumps(
+        {
+            "ad_scene": 1,
+            "pre_ad_params": {
+                "video": {
+                    "base": {"vid": "b0000000000"},
+                    "flow_id": flow,
+                    "url": "https://v.qq.com/",
+                },
+                "platform": {"guid": guid, "site": "web"},
+                "req_extra_info": {"now_timestamp_s": int(stamp), "ad_request_id": flow[:8]},
+            },
+        }
+    )
+
+
+RECORDED_INFO = {"buid": "onlyvinfo", "vinfoparam": vinfoparam()}
+#: The replayed page's next request for the same video: a new key, time and ids.
+REPLAYED_INFO = {
+    "buid": "onlyvinfo",
+    "vinfoparam": vinfoparam(
+        cKey="--01" + "B" * 60,
+        tm="1700000042",
+        guid="9999ffff8888eeee7777dddd6666cccc",
+        flowid="0000111122223333444455556666777",
+    ),
+}
+
+
+def test_player_info_matches_across_a_new_key_time_and_ids() -> None:
+    result = match_one(rules(), PLAYER_INFO, RECORDED_INFO, REPLAYED_INFO, content_type=TEXT)
+    assert (result.reason, result.level, result.rule_id) == (
+        None,
+        "normalized",
+        "tencent-video-player-info",
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"vid": "c0000000000"},
+        {"defn": "hd"},
+        {"encryptVer": "9.2"},
+        {"refer": "https://v.qq.com/x/search/"},
+        {"track": ""},
+        {"platform": "10101"},
+    ],
+)
+def test_player_info_still_selects_the_video_and_how_it_is_played(field: dict[str, str]) -> None:
+    """Only the key, the time and the two ids inside vinfoparam are ignored."""
+    live = {"buid": "onlyvinfo", "vinfoparam": vinfoparam(cKey="--01" + "B" * 60, **field)}
+    result = match_one(rules(), PLAYER_INFO, RECORDED_INFO, live, content_type=TEXT)
+    assert result.reason == "no_match"
+
+
+def test_player_info_and_ads_match_across_a_new_ad_key_and_ad_context() -> None:
+    """The ad answer sits under the recorded sspKey, so the ad request's context selects nothing the page reads."""
+    recorded = {
+        "buid": "vinfoad",
+        "vinfoparam": vinfoparam(),
+        "adparam": adparam(flowid="5555eeee6666ffff7777000088881111"),
+        "sspAdParam": ssp_ad_param(
+            "1111aaaa2222bbbb", "5555eeee6666ffff7777000088881111", "1700000000"
+        ),
+    }
+    live = {
+        "buid": "vinfoad",
+        "vinfoparam": vinfoparam(cKey="--01" + "B" * 60, tm="1700000042"),
+        "adparam": adparam(sspKey="woyv", flowid="0000111122223333444455556666777"),
+        "sspAdParam": ssp_ad_param(
+            "9999ffff8888eeee", "0000111122223333444455556666777", "1700000042"
+        ),
+    }
+    assert match_one(rules(), PLAYER_INFO, recorded, live, content_type=TEXT).reason is None
+    for change in ({"vid": "c0000000000"}, {"adType": "postAd"}):
+        other = {**live, "adparam": adparam(sspKey="woyv", **change)}
+        assert (
+            match_one(rules(), PLAYER_INFO, recorded, other, content_type=TEXT).reason == "no_match"
+        )
+    for buid in ("onlyad", "onlyvinfo"):
+        other = {**live, "buid": buid}
+        assert (
+            match_one(rules(), PLAYER_INFO, recorded, other, content_type=TEXT).reason == "no_match"
+        )
+
+
+def test_player_info_keeps_the_rest_of_vinfoparam_in_the_key() -> None:
+    policy = rules().require_for_request("POST", PLAYER_INFO)
+    keyed = dict(body_params(json.dumps(RECORDED_INFO).encode(), TEXT, policy))
+    assert keyed["vinfoparam.vid"] == "b0000000000"
+    assert keyed["vinfoparam.defn"] == "shd"
+    assert keyed["vinfoparam.scene"] == "play_source%3Dfocus_map"
+    assert not {"vinfoparam", "vinfoparam.cKey", "vinfoparam.tm"} & set(keyed)
