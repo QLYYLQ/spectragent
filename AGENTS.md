@@ -248,6 +248,14 @@ Agents often work in parallel worktrees of this one repository (`../af-worktrees
 - Never use `git stash`. A stash pushed in one worktree can be popped in another. On 2026-10-23 two agents swapped their uncommitted work this way. To compare against a baseline, commit to your own branch, or save `git diff > file.patch`, then `git checkout`.
 - Touch only your own worktree and branch. Never check out, reset or clean another worktree.
 
+### 3.11 Running tests while other work shares the machine
+
+About 320 tests launch a real headless Chrome, usually a fresh one per test. All of them carry the `requires_chrome` marker. On 2026-10-23 several agents each ran the whole suite while live runs were going. Load reached 95–195 and real-Chrome tests failed on timeouts, yet every one of them passed when run alone.
+
+- **While working on a change (subagents, parallel worktrees):** run `uv run pytest -q -m "not requires_chrome"`, plus only the real-Chrome test files your change touches.
+- **The full suite, real Chrome included:** runs once, when changes are merged, on a quiet machine. Check `uptime` first.
+- **A real-Chrome failure while the machine is loaded:** rerun it alone before calling it load. If it also fails on the base commit, say so; do not mute it.
+
 ## 4. External dependencies worth knowing
 
 - `conscribe` (v≥2.1.0,<3, in-house) — the registrar + `__wiring__` + config-generation framework. Its three-element `__wiring__` tuple (`(registry, required, optional)`) is the keystone of the whole design. M01 in the DAG = already shipped.
