@@ -3,10 +3,11 @@
 Both failed silently in the 2026-10-21/22 rounds (fixture pages modelled on them):
 
 - **A document slower than the recorder's hold** — bilibili's search results
-  (gzip, GBK, no ``Content-Length``), whose body took longer than
-  ``body_read_timeout_s``. The recording gave its read up and kept no body;
-  every replay of that step failed the document. Now the read goes on after
-  the response is released and the body is kept whole.
+  (gzip, GBK, no ``Content-Length``), whose body took longer than the 10 s
+  ``body_read_timeout_s`` of the time. The recording gave its read up and
+  kept no body; every replay of that step failed the document. Now the
+  response is held until the read answers (within a budget of minutes, not
+  seconds) and the body is kept whole.
 - **A status with no standard reason phrase, recorded without one** —
   ctrip's 432 over HTTP/2. The replay sent no phrase, Chrome refused the
   fulfilment ("Invalid http status code or phrase"), the recorder failed the
@@ -19,8 +20,8 @@ The flow is recorded once through the real runtime with a scripted model —
 step 0 clicks the slow document's ``again`` link, which opens it in a new tab
 (the focus follows), step 1 clicks its ``status`` link, which opens the 432
 page in that tab — a click, so the action succeeds whatever the page then
-gets, as bilibili's Enter did — and step 2 finishes. The recording holds a
-response well under the fixture's delay. Then it is replayed with the
+gets, as bilibili's Enter did — and step 2 finishes. The fixture's document
+takes a second to arrive. Then it is replayed with the
 recording's own completions, and branched at step 2 (steps 0 and 1
 restored, each observation verified); both again with the phrase rule as it
 was (the negative control), where the 432 page's answer is refused.
@@ -60,8 +61,6 @@ pytestmark = pytest.mark.requires_chrome
 
 _TIMEOUT_S = 180
 TASK = "Open the results again, then the status page."
-#: The recording's hold: well under the fixture's delay, so both slow reads outlive it.
-SHORT_HOLD_S = 0.3
 #: The step the branches fork at: the 432 page, after steps 0 and 1 are restored.
 CHECKPOINT = 2
 #: The phrase rule the replay applies, kept before any test patches it.
@@ -104,13 +103,6 @@ def flow(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Flow:
     ]
     with ScriptedLLMServer(recording) as llm:
         raw = driver.record_config(site=site, llm=llm, trace_dir=base / "recorded")
-        (writer,) = [hook for hook in raw["hook"] if hook["hook_id"] == "trace_writer"]
-        writer["archive"] = [
-            {**entry, "body_read_timeout_s": SHORT_HOLD_S}
-            if entry["archiver_id"] == "browser.network"
-            else entry
-            for entry in writer["archive"]
-        ]
         source = asyncio.run(driver.run_task(raw, task=TASK, start_url=start, timeout=_TIMEOUT_S))
     assert llm.errors == [], llm.errors
     source.require_finished(len(recording), "shown")
@@ -179,8 +171,7 @@ def test_the_recording_kept_both_slow_documents_whole(flow: Flow) -> None:
     lines = _index_lines(flow.source.run_dir, "/slow_document/page.html")
     assert len(lines) == 2, "the first tab's document and the new tab's"
     for line in lines:
-        assert line["body_status"] == "ok", line["body_note"]
-        assert str(line["body_note"]).startswith("read after the response was released")
+        assert (line["body_status"], line["body_note"]) == ("ok", None)
     (status,) = _index_lines(flow.source.run_dir, "/unusual_status/page.html")
     assert (status["status"], status["status_text"], status["body_status"]) == (
         UNUSUAL_STATUS,
@@ -212,15 +203,28 @@ def test_the_branch_restores_both_documents(flow: Flow) -> None:
 
 
 def test_a_refused_document_is_a_divergence_the_replay_counts(flow: Flow) -> None:
-    """The negative control: the 432 page's answer goes out without a phrase."""
-    *served, refused = _documents(flow.refused_replay.run_dir)
+    """The negative control: the 432 page's answer goes out without a phrase.
+
+    Chrome reloads a failed main-frame document by itself about a second
+    later (its error page's auto-reload, on unless ``--enable-automation`` or
+    ``--disable-auto-reload``), so a run still on that page asks again and is
+    refused again: every refusal is counted.
+    """
+    documents = _documents(flow.refused_replay.run_dir)
+    served, refusals = documents[:2], documents[2:]
     assert [(d.kind, d.answer) for d in served] == [("hit", "fulfilled"), ("hit", "fulfilled")]
-    assert (refused.kind, refused.reason, refused.answer) == ("miss", "fulfil_failed", "failed")
-    assert (refused.frame, refused.request_class, refused.diverged) == ("main", "document", True)
-    assert refused.record_id is not None
-    assert refused.fulfil_error is not None
-    assert "Invalid http status code or phrase" in refused.fulfil_error
-    assert document_miss_total(open_archive(flow.refused_replay.run_dir)) == 1
+    assert refusals and {d.url for d in refusals} == {refusals[0].url}
+    for refused in refusals:
+        assert (refused.kind, refused.reason, refused.answer) == ("miss", "fulfil_failed", "failed")
+        assert (refused.frame, refused.request_class, refused.diverged) == (
+            "main",
+            "document",
+            True,
+        )
+        assert refused.record_id is not None
+        assert refused.fulfil_error is not None
+        assert "Invalid http status code or phrase" in refused.fulfil_error
+    assert document_miss_total(open_archive(flow.refused_replay.run_dir)) == len(refusals)
     shown = branch.page_text(flow.refused_replay.trace, CHECKPOINT)
     assert f"status {UNUSUAL_STATUS}" not in shown, "Chrome's error page, not the recorded one"
 
@@ -238,4 +242,5 @@ def test_a_refused_document_fails_the_branchs_restoration(flow: Flow) -> None:
     (check,) = failing
     assert check.verdict == "diverged" and "document_miss" in check.reasons
     (evidence,) = check.evidence
-    assert evidence.document_misses == 1
+    # One refusal, or more when Chrome's error-page auto-reload asked again in time.
+    assert evidence.document_misses is not None and evidence.document_misses >= 1

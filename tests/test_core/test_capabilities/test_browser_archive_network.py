@@ -24,14 +24,16 @@ from spectragent.core.capabilities.browser.archive import network as network_mod
 from spectragent.core.capabilities.browser.archive.network import (
     BODY_READ_TIMEOUT_NOTE,
     INDEX_NAME,
-    LATE_BODY_NOTE,
     MAX_BODY_BYTES,
     WARC_NAME,
     WEBSOCKET_NAME,
     NetworkSession,
     parse_content_range,
 )
-from spectragent.core.capabilities.browser.archive.network_model import TARGET_DETACHED_ERROR
+from spectragent.core.capabilities.browser.archive.network_model import (
+    FAILED_AFTER_READ_NOTE,
+    TARGET_DETACHED_ERROR,
+)
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay.archive_source import (
     DEFAULT_FULFILL_BODY_BYTES,
@@ -369,7 +371,7 @@ class TestBodies:
         A POST body read and a stream that does not start, then the body read inline.
         """
         session, _ = _session()
-        assert session.pause_budget_s == 2 * 1.0 + 10.0
+        assert session.pause_budget_s == 2 * 1.0 + 70.0
         slow, _ = _session(body_read_timeout_s=30.0, command_timeout_s=2.0)
         assert slow.pause_budget_s == 34.0
 
@@ -452,8 +454,7 @@ class TestBodies:
         assert "Network.streamResourceContent" not in recorder.methods()
 
     async def test_a_body_read_that_times_out_is_incomplete(self) -> None:
-        """With no wait after the release (``late_body_timeout_s: 0``), the hold is the budget."""
-        session, recorder = _session(body_read_timeout_s=0.05, late_body_timeout_s=0)
+        session, recorder = _session(body_read_timeout_s=0.05)
         recorder.holds["Fetch.getResponseBody"] = asyncio.Event()
         await _one_exchange(session, recorder)
         (line,) = _index(await session.collect())
@@ -461,65 +462,62 @@ class TestBodies:
         assert line["body_note"] == f"{BODY_READ_TIMEOUT_NOTE} 0.05s"
 
 
-class TestBodiesReadAfterTheRelease:
-    """A body read that outlives the hold goes on after the response is released (§4.14).
+class TestTheResponseIsHeldUntilTheReadAnswers:
+    """An inline read keeps its response held until it answers (§4.14 ``browser.network``).
 
-    The bilibili case: a search-results document took 15.9 s to arrive, past
-    the 10 s ``body_read_timeout_s``; given up there, it was recorded without
-    a body, and every replay of that step failed the document.
+    Once ``Fetch.getResponseBody`` runs, Chrome gives the page none of the
+    body before the download completes, released or not, and a
+    content-encoded download that fails after the release reaches the page
+    as a successful empty body: iQIYI's home page ran its main chunks as
+    empty scripts and stayed on its skeleton. The read answers with the
+    bytes that arrived, so a download that then fails is recorded incomplete.
     """
 
-    async def _slow_document(
-        self, session: NetworkSession, recorder: ScriptedRecorder, body: bytes
-    ) -> asyncio.Event:
-        """A document whose body read is still running when the hold ends; set the event to answer it."""
+    async def _start_read(
+        self,
+        session: NetworkSession,
+        recorder: ScriptedRecorder,
+        body: bytes,
+        **pause: Any,
+    ) -> tuple[asyncio.Event, asyncio.Task[None]]:
+        """A pause whose body read runs until the returned event is set."""
         gate = asyncio.Event()
         recorder.holds["Fetch.getResponseBody"] = gate
         recorder.bodies["i1"] = body
         deliver(session, _request_event("n1"))
-        # on_paused returns — the recorder releases the response — while the read runs.
-        await asyncio.wait_for(
-            session.on_paused(
-                paused(request_id="i1", network_id="n1", url=URL, resource_type="Document")
-            ),
-            1.0,
+        handling = asyncio.ensure_future(
+            session.on_paused(paused(request_id="i1", network_id="n1", url=URL, **pause))
         )
-        deliver(session, _response_event("n1"))
-        return gate
-
-    async def test_a_read_answered_after_the_release_keeps_the_whole_body(self) -> None:
-        session, recorder = _session(body_read_timeout_s=0.05)
-        body = "搜索结果".encode("gbk") * 100
-        gate = await self._slow_document(session, recorder, body)
-        (pending,) = _index(await session.collect())
-        assert (pending["kind"], pending["waiting_for"]) == ("pending", "late_body")
-        deliver(session, _finished("n1"))
-        gate.set()
         await asyncio.sleep(0.05)
+        return gate, handling
+
+    async def test_a_slow_read_is_answered_before_the_response_is_released(self) -> None:
+        """bilibili's results: a GBK document whose body came 15.9 s after its headers."""
+        session, recorder = _session(body_read_timeout_s=5.0)
+        body = "搜索结果".encode("gbk") * 100
+        gate, handling = await self._start_read(session, recorder, body, resource_type="Document")
+        assert not handling.done(), "the recorder continues the response when on_paused returns"
+        (pending,) = _index(await session.collect())
+        assert (pending["kind"], pending["waiting_for"]) == ("pending", "body")
+        gate.set()
+        await asyncio.wait_for(handling, 1.0)
+        deliver(session, _response_event("n1"))
+        deliver(session, _finished("n1"))
         files = await session.collect()
         (line,) = _index(files)
-        assert (line["kind"], line["body_status"]) == ("exchange", "ok")
+        assert (line["kind"], line["body_status"], line["body_note"]) == ("exchange", "ok", None)
         assert line["payload_length"] == len(body)
-        assert line["body_note"].startswith(LATE_BODY_NOTE)
         records = _warc(files)
         assert [record[0] for record in records] == ["request", "response"]
         assert records[1][3] == body, "the bytes the server sent, not re-encoded text"
-        assert recorder.methods().count("Fetch.getResponseBody") == 1, "one read, awaited twice"
 
-    async def test_a_read_that_never_answers_is_the_recorders_timeout(self) -> None:
-        session, recorder = _session(body_read_timeout_s=0.05, late_body_timeout_s=0.1)
-        await self._slow_document(session, recorder, b"never")
-        deliver(session, _finished("n1"))
-        await asyncio.sleep(0.2)
-        (line,) = _index(await session.collect())
-        assert line["body_status"] == "incomplete"
-        assert line["body_note"].startswith(f"{BODY_READ_TIMEOUT_NOTE} 0.15s")
-        assert line["error_text"] is None
-
-    async def test_a_read_chrome_fails_after_the_release_is_incomplete(self) -> None:
-        session, recorder = _session(body_read_timeout_s=0.05)
-        gate = await self._slow_document(session, recorder, b"lost")
-        recorder.failures["Fetch.getResponseBody"] = RuntimeError("CDP error: connection reset")
+    async def test_a_download_that_fails_after_the_read_answered_is_incomplete(self) -> None:
+        session, recorder = _session(body_read_timeout_s=5.0)
+        gate, handling = await self._start_read(session, recorder, b"cut sh")
+        gate.set()
+        await asyncio.wait_for(handling, 1.0)
+        # Continued, Chrome hands the page the response and then the failure.
+        deliver(session, _response_event("n1"))
         deliver(
             session,
             event(
@@ -527,46 +525,75 @@ class TestBodiesReadAfterTheRelease:
                 {"requestId": "n1", "timestamp": 11.0, "errorText": "net::ERR_CONNECTION_RESET"},
             ),
         )
-        gate.set()
-        await asyncio.sleep(0.05)
-        (line,) = _index(await session.collect())
+        files = await session.collect()
+        (line,) = _index(files)
         assert line["body_status"] == "incomplete"
-        assert "failed after the response was released" in line["body_note"]
+        assert line["body_note"] == f"{FAILED_AFTER_READ_NOTE} (net::ERR_CONNECTION_RESET)"
         assert line["error_text"] == "net::ERR_CONNECTION_RESET"
+        assert line["payload_sha256"] is None
+        assert [record[0] for record in _warc(files)] == ["request"], "no cut-short response"
 
-    async def test_a_large_document_read_late_says_so_first(self) -> None:
-        """A document over the inline tier is read inline too; its note leads with the late read."""
-        session, recorder = _session(body_read_timeout_s=0.05, max_inline_body_bytes=8)
-        gate = asyncio.Event()
-        recorder.holds["Fetch.getResponseBody"] = gate
-        recorder.bodies["i1"] = b"<html>" + b"x" * 64 + b"</html>"
-        deliver(session, _request_event("n1"))
-        await session.on_paused(
-            paused(
-                request_id="i1",
-                network_id="n1",
-                url=URL,
-                resource_type="Document",
-                headers={"Content-Type": "text/html", "Content-Length": "77"},
-            )
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            {"errorText": "net::ERR_ABORTED", "canceled": True},
+            {
+                "errorText": "net::ERR_FAILED",
+                "corsErrorStatus": {"corsError": "MissingAllowOriginHeader"},
+            },
+            {"errorText": "net::ERR_BLOCKED_BY_ORB", "blockedReason": "orb"},
+        ],
+        ids=["page_cancelled", "cors_refused", "blocked"],
+    )
+    async def test_a_request_the_page_or_a_policy_ended_keeps_its_read_body(
+        self, ending: dict[str, Any]
+    ) -> None:
+        session, recorder = _session()
+        await _one_exchange(session, recorder, body=b"whole")
+        deliver(
+            session,
+            event("Network.loadingFailed", {"requestId": "n1", "timestamp": 11.0, **ending}),
         )
+        (line,) = _index(await session.collect())
+        assert (line["body_status"], line["payload_length"]) == ("ok", 5)
+
+    async def test_a_slow_read_is_waited_for_by_one_collection(self) -> None:
+        session, recorder = _session(body_read_timeout_s=5.0, drain_timeout_s=0.3)
+        gate, handling = await self._start_read(session, recorder, b"slow")
+        started = asyncio.get_running_loop().time()
+        await session.collect()
+        first = asyncio.get_running_loop().time() - started
+        started = asyncio.get_running_loop().time()
+        await session.collect()
+        second = asyncio.get_running_loop().time() - started
+        assert first >= 0.25, "the first collection gives the read its drain"
+        assert second < 0.15, "a read that outlived one drain is not waited for again"
+        gate.set()
+        await asyncio.wait_for(handling, 1.0)
+
+    async def test_a_large_document_is_read_inline_and_held(self) -> None:
+        """A document over the inline tier is read inline too, the response held until it answers."""
+        session, recorder = _session(body_read_timeout_s=5.0, max_inline_body_bytes=8)
+        body = b"<html>" + b"x" * 64 + b"</html>"
+        gate, handling = await self._start_read(
+            session,
+            recorder,
+            body,
+            resource_type="Document",
+            headers={"Content-Type": "text/html", "Content-Length": "77"},
+        )
+        assert not handling.done()
+        gate.set()
+        await asyncio.wait_for(handling, 1.0)
         deliver(session, _response_event("n1"))
         deliver(session, _finished("n1"))
-        gate.set()
-        await asyncio.sleep(0.05)
         (line,) = _index(await session.collect())
         assert line["body_status"] == "ok"
-        assert line["body_note"].startswith(LATE_BODY_NOTE)
-        assert "a document is read inline" in line["body_note"]
+        assert line["body_note"] == "a document is read inline (declared Content-Length 77)"
         assert "Network.streamResourceContent" not in recorder.methods()
 
-    async def test_closing_the_session_stops_waiting(self) -> None:
-        session, recorder = _session(body_read_timeout_s=0.05)
-        await self._slow_document(session, recorder, b"late")
-        assert session._late_reads
-        await session.aclose()
-        assert not session._late_reads
 
+class TestBodiesWithoutAPause:
     async def test_without_a_pause_the_body_is_incomplete_unless_empty_by_protocol(self) -> None:
         session, _ = _session()
         deliver(session, _request_event("n1", "http://shop.test/nested.js"))

@@ -263,6 +263,22 @@ SLOW_DOCUMENT_BOXES: dict[str, tuple[int, int, int, int]] = {
 }
 #: The status ``unusual_status/page.html`` answers with: a code with no standard reason phrase.
 UNUSUAL_STATUS = 432
+#: A download the network cuts off mid-body (architecture §4.14 ``browser.network``):
+#: ``cut_download/page.html`` runs ``app.js``, whose headers — gzip, chunked —
+#: come at once, and whose connection the server ends
+#: :data:`CUT_DOWNLOAD_DELAY_S` later without a byte of the body: iQIYI's main
+#: chunks, cut off after half a minute of a congested download. The page
+#: writes what its script element reported into ``#outcome``
+#: (:data:`CUT_DOWNLOAD_OUTCOMES`).
+DOWNLOAD_SCENARIOS: tuple[str, ...] = ("cut_download",)
+#: How long after its headers ``cut_download/app.js`` ends its connection.
+CUT_DOWNLOAD_DELAY_S = 1.0
+#: What ``cut_download/page.html`` shows in ``#outcome``, by the script element's event.
+CUT_DOWNLOAD_OUTCOMES: dict[str, str] = {
+    "waiting": "script pending",
+    "load": "script loaded",
+    "error": "script failed",
+}
 #: What the first script of every ``new_tab`` document, worker and frame
 #: reports: the shim's mark, the clock, the seeded randomness, time zone,
 #: locale, language, user agent and brands, reduced motion — and whether any
@@ -380,6 +396,7 @@ class LoggedRequest:
             or head in JSONP_SCENARIOS
             or head in FRAMES_SCENARIOS
             or head in DOCUMENT_SCENARIOS
+            or head in DOWNLOAD_SCENARIOS
         )
         return head if known else None
 
@@ -616,6 +633,7 @@ class FixtureSite:
             + JSONP_SCENARIOS
             + FRAMES_SCENARIOS
             + DOCUMENT_SCENARIOS
+            + DOWNLOAD_SCENARIOS
         )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
@@ -687,6 +705,7 @@ class FixtureSite:
             "frames": ["/frames/page.html"],
             "slow_document": ["/slow_document/page.html"],
             "unusual_status": ["/unusual_status/page.html"],
+            "cut_download": ["/cut_download/page.html", "/cut_download/app.js"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -1163,6 +1182,9 @@ class FixtureSite:
             # ── documents kept and answered as recorded ──
             "/slow_document/page.html": self._slow_document,
             "/unusual_status/page.html": self._unusual_status,
+            # ── a download the network cuts off ──
+            "/cut_download/page.html": static(self._cut_download_page(), _HTML),
+            "/cut_download/app.js": self._cut_download_script,
         }
 
     def _frames_page(self) -> bytes:
@@ -1211,6 +1233,30 @@ class FixtureSite:
             handler.wfile.flush()
             time.sleep(pause)
         handler.wfile.write(b"0\r\n\r\n")
+
+    def _cut_download_page(self) -> bytes:
+        outcomes = CUT_DOWNLOAD_OUTCOMES
+        return self._page(
+            "cut download",
+            f'<p id="outcome">{outcomes["waiting"]}</p>'
+            "<script>function outcome(text) {"
+            " document.getElementById('outcome').textContent = text; }</script>"
+            f'<script src="/cut_download/app.js" onload="outcome(\'{outcomes["load"]}\')"'
+            f" onerror=\"outcome('{outcomes['error']}')\"></script>",
+        )
+
+    def _cut_download_script(self, handler: _Handler, _body: bytes) -> None:
+        """Headers now; :data:`CUT_DOWNLOAD_DELAY_S` later the connection ends, no body sent."""
+        handler.send_response(200)
+        handler.send_header("Content-Type", _JS)
+        handler.send_header("Content-Encoding", "gzip")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        handler.wfile.flush()
+        time.sleep(CUT_DOWNLOAD_DELAY_S)  # the delay is the point: the cut comes mid-download
+        handler.close_connection = True
+        handler.connection.shutdown(socket.SHUT_RDWR)
 
     def _unusual_status(self, handler: _Handler, _body: bytes) -> None:
         """:data:`UNUSUAL_STATUS` with an empty reason phrase, and a page to show."""

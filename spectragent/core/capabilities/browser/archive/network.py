@@ -13,15 +13,23 @@ The archiver is a recorder participant twice over:
 
   - up to ``max_inline_body_bytes``, or none declared: read inline with
     ``Fetch.getResponseBody`` (bounded by ``body_read_timeout_s`` — at this
-    stage the read includes the download). A read that outlives it is not
-    given up: the response is released and the same command is awaited for
-    up to ``late_body_timeout_s`` more. Chrome answers it when the download
-    completes, with the bytes the server sent (measured, Chrome 155: a gzip
-    document, a GBK one and a 3 MB one, each answered whole about 1 s after
-    its 0.4 s timeout — also when the page navigated away or its tab closed
-    meanwhile). ``Network.getResponseBody`` after the load is no substitute:
-    it hands a non-UTF-8 document back as decoded text (1875 GBK bytes came
-    back as 2675 UTF-8 ones);
+    stage the read includes the download), and the response stays held
+    until the read answers. Releasing it earlier gains the page nothing and
+    can hide a failed download from it (measured, Chrome 155): once the read
+    has started, Chrome hands the page none of the body before the download
+    completes, continued or not (a body trickled over 5 s reached a released
+    page in one piece at 5.03 s); and a content-encoded body whose download
+    fails after the release reaches the page as a *successful* empty
+    response — ``loadingFinished`` with ``encodedDataLength`` 0, the
+    script's ``load`` event, not ``error`` — where a response still held
+    when the download fails reaches it as the network error (8 of 8 each
+    way). That is how iQIYI's home page stayed on its skeleton: its main
+    chunks, cut off mid-download after the release, ran as empty scripts.
+    Chrome answers the read with the bytes that arrived, so a read whose
+    request then fails is recorded ``incomplete`` (``network_model.py``).
+    ``Network.getResponseBody`` after the load is no substitute: it hands a
+    non-UTF-8 document back as decoded text (1875 GBK bytes came back as
+    2675 UTF-8 ones);
   - above it, up to :data:`MAX_BODY_BYTES` (64 MiB, the replay's default
     limit for one body): **streamed while the page reads it** —
     ``Network.streamResourceContent`` on the session that reported the
@@ -54,8 +62,9 @@ The archiver is a recorder participant twice over:
   appends it to its stream (the side store) and admits nothing.
 
 Each collection waits up to ``drain_timeout_s`` for inline body reads in
-flight (never for a stream, nor for a read awaited after its response was
-released: each ends when the page's download does), then
+flight that no earlier collection waited for (never for a stream: it ends
+when the page's download does; a read that outlived one wait is a slow
+download, which ends when it ends), then
 swaps everything settled out in one synchronous statement and writes, for
 that step: ``exchanges.warc.gz`` (``archive/warc.py``), ``index.jsonl`` (one
 ``exchange`` line per exchange, exactly once, when it settles; a ``pending``
@@ -140,15 +149,11 @@ _CONTENT_RANGE = re.compile(r"^\s*(\w+)\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)\s*$")
 WARC_NAME = "exchanges.warc.gz"
 INDEX_NAME = "index.jsonl"
 WEBSOCKET_NAME = "websocket.jsonl"
-#: How a ``body_note`` begins when the body read never answered — not while
-#: the response was held (``body_read_timeout_s``), nor in the
-#: ``late_body_timeout_s`` after it was released (the seconds follow):
-#: replay's loading reads it as the recorder's timeout, not the page's or the
+#: How a ``body_note`` begins when the body read did not answer while the
+#: response was held (``body_read_timeout_s``; the seconds follow): replay's
+#: loading reads it as the recorder's timeout, not the page's or the
 #: network's (arch §4.14 "加载").
 BODY_READ_TIMEOUT_NOTE = "Fetch.getResponseBody did not answer within"
-#: How a ``body_note`` begins on a body kept whole although its read answered
-#: only after the response was released (arch §4.14 "体积分档").
-LATE_BODY_NOTE = "read after the response was released"
 
 
 def parse_content_range(value: str | None) -> dict[str, Any] | None:
@@ -216,26 +221,15 @@ class NetworkArchiver(BrowserArchiverBase):
                 description=(
                     "Seconds Chrome holds a response while its inline Fetch.getResponseBody "
                     "runs. At the Response stage the read includes the download itself, so "
-                    "this is a download budget, not a cache read. A read still running then "
-                    "is not abandoned: the response is released and the read awaited for "
-                    "late_body_timeout_s more."
+                    "this is a download budget, not a cache read. The response is held until "
+                    "the read answers: once the read has started Chrome gives the page none "
+                    "of the body before the download completes, and a response released "
+                    "while its read runs reaches the page as a successful empty or cut-short "
+                    "body if the download then fails. A read still running at the limit is "
+                    "recorded incomplete and the response released."
                 ),
             ),
-        ] = 10.0,
-        late_body_timeout_s: Annotated[
-            float,
-            Field(
-                ge=0,
-                description=(
-                    "Seconds an inline body read that outlived body_read_timeout_s is still "
-                    "awaited after the response is released. Chrome answers it when the "
-                    "download completes, with the bytes the server sent, and the body is "
-                    "kept whole; the exchange stays pending meanwhile, and no collection "
-                    "waits for it. A read that does not answer in time is recorded "
-                    "incomplete. 0: give up when the response is released."
-                ),
-            ),
-        ] = 60.0,
+        ] = 70.0,
         command_timeout_s: Annotated[
             float,
             Field(
@@ -296,7 +290,6 @@ class NetworkArchiver(BrowserArchiverBase):
     ) -> None:
         self.max_inline_body_bytes = max_inline_body_bytes
         self.body_read_timeout_s = body_read_timeout_s
-        self.late_body_timeout_s = late_body_timeout_s
         self.command_timeout_s = command_timeout_s
         self.drain_timeout_s = drain_timeout_s
         self.max_post_data_size = max_post_data_size
@@ -422,10 +415,9 @@ class NetworkSession(BrowserArchiveSession):
         self._held: dict[str, HeldBytes] = {}
         #: Body reads in flight (one per pause being handled).
         self._reads: set[asyncio.Future[None]] = set()
-        #: Body reads still awaited after their response was released. No
-        #: collection waits for one: like a stream, it ends when the page's
-        #: download does.
-        self._late_reads: set[asyncio.Task[None]] = set()
+        #: Reads in flight that a collection already waited for: a slow
+        #: download, which no later collection waits for again.
+        self._waited: set[asyncio.Future[None]] = set()
         #: Bodies streaming while the page reads them, by network request id.
         self._streams: dict[str, _Stream] = {}
         self._body_lines: list[_BodyLine] = []
@@ -675,6 +667,7 @@ class NetworkSession(BrowserArchiveSession):
                 self.model.body_finished(hop, status="incomplete", note=f"internal error: {exc!r}")
         finally:
             self._reads.discard(done)
+            self._waited.discard(done)
             if not done.done():
                 done.set_result(None)
 
@@ -713,27 +706,17 @@ class NetworkSession(BrowserArchiveSession):
                 if refused is None:
                     return
                 note = refused
-        # One command for the whole wait: Chrome holds the response for the
-        # first body_read_timeout_s of it, then the recorder releases it and
-        # the same read goes on (``_await_late_body``).
-        read = asyncio.ensure_future(
-            self.ctx.recorder.send(
+        # The response stays held until the read answers (module docstring):
+        # released earlier, a download that then fails would reach the page
+        # as a successful empty body.
+        try:
+            reply = await self.ctx.recorder.send(
                 "Fetch.getResponseBody",
                 {"requestId": paused.request_id},
                 paused.session_id,
-                timeout=archiver.body_read_timeout_s + archiver.late_body_timeout_s,
+                timeout=archiver.body_read_timeout_s,
             )
-        )
-        try:
-            reply = await asyncio.wait_for(asyncio.shield(read), archiver.body_read_timeout_s)
         except TimeoutError:
-            if archiver.late_body_timeout_s > 0 and not read.done():
-                hop.late_body = True
-                late = asyncio.ensure_future(self._await_late_body(hop, read, note, content_range))
-                self._late_reads.add(late)
-                late.add_done_callback(self._late_reads.discard)
-                return
-            read.cancel()
             self.model.body_finished(
                 hop,
                 status="incomplete",
@@ -742,7 +725,6 @@ class NetworkSession(BrowserArchiveSession):
             )
             return
         except asyncio.CancelledError:
-            read.cancel()
             raise
         except Exception as exc:  # a CDP error: no body for this response
             self.model.body_finished(
@@ -775,54 +757,6 @@ class NetworkSession(BrowserArchiveSession):
         self.model.body_finished(
             hop, status="ok", body=body, note=note, content_range=content_range
         )
-
-    async def _await_late_body(
-        self,
-        hop: Exchange,
-        read: "asyncio.Future[Any]",
-        note: str | None,
-        content_range: dict[str, Any] | None,
-    ) -> None:
-        """The rest of a body read whose response was released before it answered.
-
-        Chrome answers when the download completes, with the bytes the
-        server sent: the body is kept whole. A read that runs out of
-        ``late_body_timeout_s`` is the recorder's timeout; one Chrome fails
-        is incomplete, and how the request ended (the page cancelled it, the
-        network failed) is on its exchange line.
-        """
-        archiver = self.archiver
-        held, late = archiver.body_read_timeout_s, archiver.late_body_timeout_s
-        try:
-            reply = await read
-        except TimeoutError:
-            self.model.body_finished(
-                hop,
-                status="incomplete",
-                note=(
-                    f"{BODY_READ_TIMEOUT_NOTE} {held + late:g}s "
-                    f"({held:g}s holding the response, {late:g}s after releasing it)"
-                ),
-                content_range=content_range,
-            )
-            return
-        except Exception as exc:
-            self.model.body_finished(
-                hop,
-                status="incomplete",
-                note=f"Fetch.getResponseBody failed after the response was released: {exc}",
-                content_range=content_range,
-            )
-            return
-        late_note = f"{LATE_BODY_NOTE}: it took longer than body_read_timeout_s ({held:g}s)"
-        try:
-            self._keep_body(
-                hop, reply, f"{late_note}; {note}" if note else late_note, content_range
-            )
-        except Exception as exc:  # a bug here must not pass silently
-            self._errors.append(f"late body read {hop.url}: {exc!r}")
-            if hop.body_reading:
-                self.model.body_finished(hop, status="incomplete", note=f"internal error: {exc!r}")
 
     async def _start_stream(
         self,
@@ -895,15 +829,18 @@ class NetworkSession(BrowserArchiveSession):
     async def collect(self) -> list[ArchiveFile]:
         """Wait (bounded) for inline reads in flight, swap, then write this step's files.
 
-        Never for a stream, nor for a read that goes on after its response
-        was released: each ends when the page's download does, which a
+        Never for a stream: it ends when the page's download does, which a
         stalled consumer (a paused video, a body nobody reads) may never let
-        happen; it stays ``pending`` until it ends.
+        happen; it stays ``pending`` until it ends. Nor, a second time, for an
+        inline read: one still running after a collection waited for it is a
+        slow download (up to ``body_read_timeout_s``), and waiting for it in
+        every collection would add ``drain_timeout_s`` to every step it spans.
         """
         archiver = self.archiver
-        inflight = list(self._reads)
+        inflight = [read for read in self._reads if read not in self._waited]
         if inflight and archiver.drain_timeout_s > 0:
             await asyncio.wait(inflight, timeout=archiver.drain_timeout_s)
+        self._waited.update(read for read in inflight if not read.done())
         if self._errors:
             errors, self._errors = self._errors, []
             raise RuntimeError(
@@ -1108,8 +1045,3 @@ class NetworkSession(BrowserArchiveSession):
         self._closed = True
         self._held.clear()
         self._streams.clear()
-        late = list(self._late_reads)
-        for task in late:
-            task.cancel()
-        if late:
-            await asyncio.gather(*late, return_exceptions=True)
