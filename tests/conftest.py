@@ -26,11 +26,13 @@ from __future__ import annotations
 import subprocess
 import sys
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from spectragent.core.data_loader._common import resolve_data_dir
+from tests._helpers.signal_guard import SignalGuard
 
 pytest_plugins = ["conscribe.testing.pytest_plugin"]
 
@@ -48,6 +50,43 @@ def archive_fakes():
 def _isolate_registries(conscribe_isolated):
     """Roll back classes registered inside each test, including failing tests."""
     yield
+
+
+# ── Tests signal only the processes they started ─────────────────────
+#
+# A fake process handle carries a made-up PID. Once code under test passed
+# one to ``os.killpg``, and a real SIGKILL reached an unrelated process group
+# of the machine (2026-10-23). For the whole session ``os.kill`` and
+# ``os.killpg`` refuse any target this process did not start through
+# ``subprocess.Popen`` / ``asyncio.create_subprocess_exec``, other than this
+# process, those processes' descendants and their process groups; the rules
+# are in ``tests/_helpers/signal_guard.py``. A refusal raises at the call site
+# and also fails the test it happened in, so code that swallows the exception
+# cannot hide it. A fake that stands for a real process must replace the
+# function that sends the signal (see ``kill_group`` in
+# ``test_browser_local_chrome_ownership.py``), never let its PID reach the OS.
+
+
+@pytest.fixture(scope="session", autouse=True)
+def process_signal_guard() -> Iterator[SignalGuard]:
+    """Install the guard for every fixture and test of the session."""
+    with SignalGuard().installed() as guard:
+        yield guard
+        _fail_if_refused(guard, "after the last test, in a session-wide fixture's teardown")
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_unowned_signal(process_signal_guard: SignalGuard) -> Iterator[None]:
+    """Fail the test whose code tried to signal a process it did not start."""
+    _fail_if_refused(process_signal_guard, "before this test, in a wider fixture's teardown")
+    yield
+    _fail_if_refused(process_signal_guard, "in this test")
+
+
+def _fail_if_refused(guard: SignalGuard, when: str) -> None:
+    refused = guard.take_violations()
+    if refused:
+        pytest.fail(f"Refused signal {when}:\n" + "\n".join(refused), pytrace=False)
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
