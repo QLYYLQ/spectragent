@@ -23,6 +23,7 @@ from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_spaces import space_of, wired_space
+from tests._helpers.fragment_formats import dom_formats
 
 #: Stand-in for a negotiated action set. Deliberately *not* empty: the
 #: old suite passed an empty action list everywhere, which is why a
@@ -118,6 +119,7 @@ def _make_agent(**overrides: Any) -> SkyvernAgent:
         task="t",
         action_space=wired_space(SkyvernAgent),
         execution_limits=ExecutionLimits(max_actions_per_step=5),
+        fragment_formats=dom_formats(),
     )
     return agent
 
@@ -187,6 +189,7 @@ class TestPrepare:
             task="Find the cheapest flight",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         assert isinstance(seed, list)
         assert len(seed) == 1
@@ -209,6 +212,7 @@ class TestPrepare:
             task="t",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         text = seed[0].content
         assert isinstance(text, str)
@@ -222,6 +226,7 @@ class TestPrepare:
             task="t",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=4),
+            fragment_formats=dom_formats(),
         )
         text = seed[0].content
         assert isinstance(text, str)
@@ -235,6 +240,7 @@ class TestPrepare:
                 task="t",
                 action_space=space_of([]),
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
+                fragment_formats=dom_formats(),
             )[0]
             .content
         )
@@ -254,6 +260,7 @@ class TestPrepare:
                 task="t",
                 action_space=space_of([]),
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
+                fragment_formats=dom_formats(),
             )[0]
             .content
         )
@@ -276,6 +283,7 @@ class TestPrepare:
             task="t",
             action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         agent.parse_react_output(
             SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=7)])
@@ -302,6 +310,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         state = DOMState(
             serialized_dom="[1]<button>Submit</button>\n[2]<input placeholder='q'/>",
@@ -331,6 +340,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         tail = "[173]<button>Reachable at the end</button>"
         state = DOMState(serialized_dom="x" * 10_100 + tail)
@@ -359,6 +369,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         assert isinstance(seed[0].content, str)
         assert "<action_history>" not in seed[0].content
@@ -396,6 +407,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of(_DESCRIPTORS),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         content = (
             await agent.build_react_prompt(
@@ -413,6 +425,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<x/>"),
@@ -431,6 +444,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<x/>"),
@@ -450,6 +464,7 @@ class TestBuildReactPrompt:
             task="t",
             action_space=space_of([]),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
         messages = await agent.build_react_prompt(

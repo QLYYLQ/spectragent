@@ -33,6 +33,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.action_spaces import space_of
+from tests._helpers.fragment_formats import dom_formats
 
 #: Resolved from this file, not from the CWD — ``pytest tests/test_agents``
 #: from anywhere but the repo root used to make these two tests vanish into
@@ -147,6 +148,7 @@ def test_agent_renders_whatever_limit_it_is_handed() -> None:
         task="t",
         action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=7),
+        fragment_formats=dom_formats(),
     )
     text = _message_text(seed[0])
     assert {int(n) for n in re.findall(r"maximum of (\d+) actions", text)} == {7}

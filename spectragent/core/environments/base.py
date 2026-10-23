@@ -243,6 +243,20 @@ class Environment(Protocol):
         """
         ...
 
+    def fragment_formats(self) -> dict[str, str]:
+        """How each described fragment reads as text: fully-qualified key → description.
+
+        The union over capabilities implementing
+        :class:`~spectragent.core.capabilities.base.FragmentFormats`; a
+        capability without it describes nothing. ``AgentRuntime.prepare()``
+        reads it once and hands an agent the descriptions of the fragments
+        its prompt quotes. Reads configuration only: no setup, no backend.
+
+        Raises:
+            ValueError: A capability described a key outside its own prefix.
+        """
+        ...
+
     # ── Lifecycle ─────────────────────────────────────────────
 
     def prepare_setup_context(

@@ -43,6 +43,7 @@ from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import minimal_params
 from tests._helpers.action_spaces import space_of, wired_space
 from tests._helpers.assembly import make_agent
+from tests._helpers.fragment_formats import formats_for
 
 # ── Validate compatibility ────────────────────────────────────────────
 
@@ -297,6 +298,7 @@ class TestAgentToCapabilityActionVocabulary:
             task="t",
             action_space=space_of(descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            **formats_for(agent),
         )
         model = agent.get_react_output_model()
 
@@ -321,6 +323,7 @@ class TestAgentToCapabilityActionVocabulary:
             task="t",
             action_space=wired_space(UITarsAgent),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            **formats_for(agent),
         )
         # A point is placed with the screenshot the step showed.
         (
@@ -372,6 +375,7 @@ class TestAgentToCapabilityActionVocabulary:
                 [a.descriptor() for a in capability.actions if a.action_id == "browser.done"]
             ),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            **formats_for(bu),
         )
         bu_out = bu.get_react_output_model().model_validate(
             {
@@ -400,6 +404,7 @@ class TestAgentToCapabilityActionVocabulary:
             task="t",
             action_space=wired_space(UITarsAgent),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            **formats_for(ut),
         )
         ut_actions = ut.parse_react_output("Action: finished(content='answer ut')")
         assert await _resolve(ut, ut_actions[0], capability) == "browser.done"
@@ -477,6 +482,7 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
         task="Find the answer",
         action_space=space_of(descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
+        **formats_for(agent),
     )
     agent.memory.add_messages(seed)
     llm = _MockLLM(

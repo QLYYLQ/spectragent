@@ -53,6 +53,7 @@ from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
+from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import step_context
 
 AGENT_CLASSES: tuple[type[Any], ...] = (UITarsAgent, SkyvernAgent, BrowserUseAgent)
@@ -173,6 +174,7 @@ def _prepared(agent_class: type[Any], **switches: Any) -> tuple[Any, ActionSpace
         task="Open",
         action_space=space,
         execution_limits=ExecutionLimits(max_actions_per_step=2),
+        **formats_for(agent),
     )
     return agent, space
 

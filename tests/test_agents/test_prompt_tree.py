@@ -42,6 +42,7 @@ from spectragent.agents.prompts import (
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
 from tests._helpers.action_spaces import space_of
+from tests._helpers.fragment_formats import dom_formats
 
 
 def _descriptors(*keys: str) -> list[Any]:
@@ -58,17 +59,20 @@ def _descriptors(*keys: str) -> list[Any]:
 
 
 #: ``prepare()`` arguments per agent. All three take the Loop's
-#: ``max_actions_per_step``, because all three advertise a per-step budget.
+#: ``max_actions_per_step``, because all three advertise a per-step budget;
+#: the two DOM agents also take the DOM serializer's format description.
 _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
     "browser_use": {
         "task": "t",
         "action_space": space_of(_descriptors("browser.navigate", "browser.done")),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
+        "fragment_formats": dom_formats(),
     },
     "skyvern": {
         "task": "t",
         "action_space": space_of([]),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
+        "fragment_formats": dom_formats(),
     },
     "ui_tars": {
         "task": "t",
@@ -374,19 +378,29 @@ def test_every_surface_fragment_is_reachable_from_some_mode():
             snapshot = agent.system_prompt
             assert snapshot is not None
             reached.add(snapshot.params["surface"])  # type: ignore[union-attr]
-    on_disk = {p.read_text("utf-8").strip() for p in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}")}
-    # A rendered surface may carry an appended coordinate paragraph, so
-    # match on "the fragment is a prefix of something rendered".
+    # A DOM fragment's one slot holds the serializer's description, as the
+    # agent fills it; a rendered surface may also carry an appended
+    # coordinate paragraph, so match on "the filled fragment is a prefix of
+    # something rendered".
+    dom_format = _PREPARE_KWARGS["browser_use"]["fragment_formats"]["dom"]
+    on_disk = {
+        p.read_text("utf-8").strip().replace("{dom_format}", dom_format)
+        for p in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}")
+    }
     unused = [text for text in on_disk if not any(r.startswith(text) for r in reached)]
     assert not unused, f"{len(unused)} surface fragment(s) no mode renders"
+    assert not any("{dom_format}" in r for r in reached), "a slot reached the model unfilled"
 
 
-def test_surface_fragments_substitute_nothing():
+def test_surface_fragments_substitute_only_the_dom_format():
     """They are values, and ``str.format`` does not recurse into one.
 
-    A ``{placeholder}`` here would reach the model verbatim — so the one
-    part of the surface that *is* configuration (the coordinate grid) is
-    composed in Python, not left as a token in the file.
+    So the agent fills the one slot a DOM surface has itself: ``{dom_format}``,
+    the run's DOM serializer's own description of its text. Any other
+    ``{placeholder}`` would reach the model verbatim — the other part of the
+    surface that *is* configuration (the coordinate grid) is composed in
+    Python, not left as a token in the file.
     """
     for path in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}"):
-        assert not template_variables("format", path.read_text("utf-8")), path.name
+        expected = {"dom_format"} if path.stem.startswith("dom") else set()
+        assert template_variables("format", path.read_text("utf-8")) == expected, path.name

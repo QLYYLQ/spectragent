@@ -4,13 +4,25 @@ Produces minimal HTML that preserves interactive element structure while
 aggressively trimming attributes to a reserved set.  Optimized for LLM
 token efficiency.
 
-Output example::
+Output example (the Skyvern fixture capture)::
 
-    <div id="app">
-      <button id="aB3k" aria-label="Submit">Submit</button>
-      <input id="cD5m" type="text" name="email" placeholder="Email" />
-      <a id="eF7n" href="/about">About</a>
-    </div>
+    <header id="nav">
+      <a data-idx="4" href="#home" id="home">
+        Home
+      </a>
+    </header>
+    <input data-idx="8" id="agree" type="checkbox" value="on" />
+    <iframe data-idx="10" id="frame">
+      <button data-idx="11" id="inside" type="button">
+        Inside
+      </button>
+    </iframe>
+
+An indexed element carries its selector-map key as ``data-idx``, its first
+attribute; an element without one is structure or text and cannot be acted
+on. Shadow-root and frame content is rendered inside its host, with no
+marker. :meth:`HTMLSerializer.describe_format` says the same to a model; the
+two must change together.
 """
 
 from __future__ import annotations
@@ -87,6 +99,28 @@ class HTMLSerializer(DOMSerializerBase):
 
     def __init__(self, *, max_href_length: int = 150) -> None:
         self.max_href_length = max_href_length
+
+    def describe_format(self) -> str:
+        """How this HTML reads, for a model: the index attribute and what else is kept.
+
+        Every marker :meth:`serialize` can write is named here, and nothing it
+        never writes (it marks neither new nor scrollable elements);
+        ``max_href_length`` is this instance's.
+        """
+        return (
+            "The page is compact HTML: each element sits inside its parent, indented two "
+            "spaces deeper, with its text inside it.\n"
+            "- An element you can act on carries `data-idx` as its first attribute, as in "
+            '`<button data-idx="42" id="submit">`. 42 is its index: an action that targets '
+            "this element takes it as `index`.\n"
+            "- Only an element with `data-idx` can be acted on. Every other element is page "
+            "structure or text.\n"
+            "- The content of a shadow root is listed inside its host element, and the page "
+            "of a frame inside its `<iframe>` or `<frame>` element, like any other children.\n"
+            "- Only some attributes are kept. An `href` or `src` longer than "
+            f"{self.max_href_length} characters ends in `...`, and an inline `data:` "
+            "address is left out."
+        )
 
     def serialize(self, state: DOMState) -> str:
         if state.dom_tree is None:

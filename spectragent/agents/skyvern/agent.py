@@ -13,7 +13,9 @@ Skyvern's: it teaches the JSON shape :class:`SkyvernOutput` declares and
 the action names this framework's ``guarded_act`` will accept, and it
 renders the *negotiated* action set rather than a hard-coded verb list.
 ``tests/test_agents/test_skyvern/test_skyvern_prompt_action_vocabulary.py`` pins the
-two together.
+two together. It does not describe the element tree's format either: it
+quotes the run's DOM serializer's own description (``__fragment_formats__``),
+so the prompt is right for ``html`` and ``text`` alike.
 
 It is also the only agent whose template is Jinja2 rather than
 ``str.format`` — the template branches on optional criteria, which
@@ -24,6 +26,7 @@ It is also the only agent whose template is Jinja2 rather than
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -64,6 +67,12 @@ class SkyvernAgent(AgentBase):
     # No ``capability`` entry — it was read by nothing at runtime and
     # only pinned the generated config to one provider.
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    # The element tree's format is the DOM serializer's to describe: the
+    # system prompt quotes the run's description verbatim, so changing the
+    # serializer changes the prompt with it (``docs/architecture_design.md``
+    # §4.4 "观测格式由提供方描述"). ``prepare`` receives it as
+    # ``fragment_formats["dom"]``.
+    __fragment_formats__: ClassVar[frozenset[str]] = frozenset({"dom"})
 
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
@@ -252,6 +261,7 @@ class SkyvernAgent(AgentBase):
         task: str,
         action_space: ActionSpace,
         execution_limits: ExecutionLimits,
+        fragment_formats: Mapping[str, str],
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
@@ -262,13 +272,20 @@ class SkyvernAgent(AgentBase):
         actually truncates. ``SkyvernOutput.actions`` is a list, so
         without it the prompt would invite a plan the loop silently cuts
         short.
+
+        *fragment_formats* holds the run's description of the element tree
+        (``"dom"``), written by its DOM serializer; the system prompt quotes
+        it in place of a format of its own.
         """
         max_actions_per_step = execution_limits.max_actions_per_step
         if max_actions_per_step is None:
             raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
+        dom_format = fragment_formats.get("dom")
+        if not dom_format:
+            raise ValueError("prepare requires the dom fragment's format description")
         self._action_space = action_space
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
-            task, max_actions_per_step
+            task, max_actions_per_step, dom_format
         )
         # cache=True: static-prefix breakpoint — see BrowserUseAgent for why it
         # is kept alongside the per-step one.
@@ -471,11 +488,13 @@ class SkyvernAgent(AgentBase):
         self,
         task: str,
         max_actions_per_step: int,
+        dom_format: str,
     ) -> tuple[str, PromptSnapshot]:
         return self.render(
             self.prompt_template,
             {
                 "navigation_goal": task,
+                "dom_format": dom_format,
                 "action_space": self._render_action_list(self._action_space.descriptors),
                 "done_action": self._done_action_name(),
                 "max_actions_per_step": max_actions_per_step,

@@ -320,6 +320,32 @@ class CaptureCheck(Protocol):
 
 
 @runtime_checkable
+class FragmentFormats(Protocol):
+    """Optional: how this capability's fragments read as text, as it is configured.
+
+    Whoever writes a fragment's model-readable text knows its format; an agent
+    that described the format in its own prompt would keep a second copy that
+    drifts the moment the writer changes (``docs/architecture_design.md`` §4.4
+    "观测格式由提供方描述"). The browser's ``browser.dom`` text is written by
+    the configured DOM serializer, which describes itself. A run's
+    ``AgentRuntime.prepare()`` reads the descriptions through
+    ``Environment.fragment_formats`` and hands an agent the ones it declared it
+    quotes. A per-run fact, so it is read once, from configuration, and never
+    rides on an observation. Not part of :class:`BaseCapability`;
+    ``CapabilityBase`` gives no default: a capability without it describes
+    nothing.
+    """
+
+    def fragment_formats(self) -> Mapping[str, str]:
+        """Fully-qualified fragment key → a short description of its text, for a model.
+
+        Only fragments this capability provides, keyed under its own prefix.
+        Reads configuration only: no setup, no backend, before negotiation too.
+        """
+        ...
+
+
+@runtime_checkable
 class SetupCheck(Protocol):
     """Optional: refuse now, acquiring nothing, what this capability's setup would refuse.
 

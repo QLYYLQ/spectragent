@@ -30,6 +30,7 @@ from spectragent.core.actions.action_union import UnsupportedParamsSchema, actio
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import ActionDescriptor
 from tests._helpers.action_spaces import space_of
+from tests._helpers.fragment_formats import dom_formats
 
 
 def _descriptors(*keys: str) -> list[ActionDescriptor]:
@@ -51,6 +52,7 @@ class TestClosedUnion:
             task="t",
             action_space=space_of(_descriptors(*keys)),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         return agent.get_react_output_model()
 
@@ -161,6 +163,7 @@ class TestClosedUnion:
                 task="t",
                 action_space=space_of([]),
                 execution_limits=ExecutionLimits(max_actions_per_step=1),
+                fragment_formats=dom_formats(),
             )
 
     def test_a_params_schema_outside_the_subset_fails_at_prepare(self) -> None:
@@ -189,6 +192,7 @@ class TestReasoningFieldsFollowTheVariant:
             task="t",
             action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         assert list(agent.get_react_output_model().model_fields) == ["memory", "action"]
 
@@ -198,6 +202,7 @@ class TestReasoningFieldsFollowTheVariant:
             task="t",
             action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         assert list(agent.get_react_output_model().model_fields) == [
             "thinking",
@@ -215,6 +220,7 @@ class TestReasoningFieldsFollowTheVariant:
             task="t",
             action_space=space_of(_descriptors("browser.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         assert "thinking" not in agent.get_react_output_model().model_fields
 
@@ -228,6 +234,7 @@ class TestRenderActionList:
             task="t",
             action_space=space_of(_descriptors(*keys)),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
+            fragment_formats=dom_formats(),
         )
         return str(seed[0].content)
 
