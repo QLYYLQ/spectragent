@@ -412,6 +412,48 @@ def test_a_fine_tuned_template_quotes_the_runs_dom_format(
     assert ("<coordinates>" in prompt) is (member is BrowserUseDomVisionAgent)
 
 
+#: Every configuration's variant: the three base templates and the three
+#: written for the fine-tuned checkpoint.
+_EVERY_VARIANT: list[dict[str, Any]] = [
+    {"is_browser_use_model": tuned, **config}
+    for tuned in (False, True)
+    for config in (
+        {"flash_mode": True},
+        {"flash_mode": False, "use_thinking": True},
+        {"flash_mode": False, "use_thinking": False},
+    )
+]
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("config", _EVERY_VARIANT)
+def test_the_prompt_says_how_actions_run_and_how_indexes_hold(
+    member: type[BrowserUseAgent], config: dict[str, Any]
+) -> None:
+    """What the prompt says about execution is what the Loop and the capability do.
+
+    ``ReactLoop`` runs every action of a step, through a failed one or a page
+    change, and stops only at ``done`` or an action that raises. An index is
+    the element's backend-node handle (``dom/models.py::element_handle``), the
+    same from one observation to the next.
+    """
+    run = _Run(member, **config)
+    prompt = run.prompt()
+    for claim in (
+        "automatically skipped",
+        "interrupted",
+        "renumbered every step",
+        "rebuilt every step",
+        "may now name something else",
+    ):
+        assert claim not in prompt, (run.agent.select_prompt_variant(), claim)
+    assert "not renumbered between steps" in prompt
+    if run.agent.select_prompt_variant() in {"system_prompt", "system_prompt_no_thinking"}:
+        assert "Every action runs, even when the one before it failed or changed the page" in (
+            prompt
+        )
+
+
 def test_every_member_still_captures_the_screenshot() -> None:
     """Evaluators read screenshots out of the trace, not out of the prompt.
 
