@@ -1,7 +1,7 @@
-"""Everything browser_use's prompt teaches must exist in the run it teaches it to.
+"""Everything a BrowserUse prompt teaches must exist in the run it teaches it to.
 
 The Skyvern and UI-TARS siblings of this file pin template → parser →
-guard for agents whose prompts *name* their verbs in prose. browser_use's
+guard for agents whose prompts *name* their verbs in prose. BrowserUse's
 prompts do not: the verb list is generated from the negotiated descriptors
 (``{action_list}``), so the interesting failures are the ones prose can
 still cause around it.
@@ -24,9 +24,9 @@ Three of them shipped, in five templates inherited from upstream:
   (``ActionResult.reported_success`` ``None``); a template that maps doubt
   to ``false`` makes an unknown outcome read as a known failure.
 
-And one the modes introduce: a ``vision`` run has no element list and no
-index-addressed action, so a template that still talks about ``[index]``
-teaches a way of acting the run cannot perform.
+And one the family members introduce: ``browser_use.dom`` shows the model no
+image, so a surface that calls a screenshot the ground truth would teach a
+channel the run does not have.
 """
 
 from __future__ import annotations
@@ -36,7 +36,11 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import (
+    BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+)
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.actions._registrar import ActionRegistrar
@@ -52,19 +56,17 @@ from spectragent.core.negotiation import (
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 
-MODES = ("dom", "dom_vision", "vision")
+MEMBERS: tuple[type[BrowserUseAgent], ...] = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
 
-#: Every ``(observation_mode, config)`` that reaches a distinct template.
-#: The fine-tuned three are DOM-only by construction, so they are paired
-#: with DOM modes alone.
-_CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
-    *[(mode, {"flash_mode": True}) for mode in MODES],
-    *[(mode, {"flash_mode": False, "use_thinking": True}) for mode in MODES],
-    *[(mode, {"flash_mode": False, "use_thinking": False}) for mode in MODES],
-    ("dom", {"is_browser_use_model": True, "flash_mode": True}),
-    ("dom_vision", {"is_browser_use_model": True, "flash_mode": False}),
+#: Every ``(member, config)`` that reaches a distinct template.
+_CONFIGURATIONS: list[tuple[type[BrowserUseAgent], dict[str, Any]]] = [
+    *[(member, {"flash_mode": True}) for member in MEMBERS],
+    *[(member, {"flash_mode": False, "use_thinking": True}) for member in MEMBERS],
+    *[(member, {"flash_mode": False, "use_thinking": False}) for member in MEMBERS],
+    (BrowserUseDomAgent, {"is_browser_use_model": True, "flash_mode": True}),
+    (BrowserUseDomVisionAgent, {"is_browser_use_model": True, "flash_mode": False}),
     (
-        "dom",
+        BrowserUseDomAgent,
         {"is_browser_use_model": True, "flash_mode": False, "use_thinking": False},
     ),
 ]
@@ -90,12 +92,6 @@ _FALSE_CLAIMS = (
     "auto-solved",
     "handled automatically",
 )
-
-#: Vocabulary that only means something when an element list exists.
-#: Deliberately the *format tokens* rather than the bare word: the vision
-#: surface says "there is no element index in this run", which is exactly
-#: the sentence a bare-word gate would ban.
-_INDEX_WORDS = ("[index]", "Interactive Elements", "*[", "selector map", "selector_map")
 
 #: A verb taught as a call or in backticks, e.g. ``click(index)`` or
 #: `` `evaluate` ``. The generated ``{action_list}`` block is excluded
@@ -127,16 +123,13 @@ _NOT_ACTIONS = frozenset(
 )
 
 
-def _run(mode: str, config: dict[str, Any]) -> tuple[BrowserUseAgent, str, set[str], Any]:
+def _run(
+    member: type[BrowserUseAgent], config: dict[str, Any]
+) -> tuple[BrowserUseAgent, str, set[str], Any]:
     """Negotiate and prepare one configuration; return the rendered prompt."""
     capability = BrowserCapability()
     env = make_env(BrowserEnvironment, {"browser": capability})
-    agent = make_agent(
-        BrowserUseAgent,
-        memory=SimpleMemory(max_messages=10),
-        observation_mode=mode,
-        **config,
-    )
+    agent = make_agent(member, memory=SimpleMemory(max_messages=10), **config)
     loop = ReactLoop(max_actions_per_step=1)
     obs = negotiate_observation(agent, loop, env)
     actions = negotiate_action(agent, env)
@@ -160,15 +153,15 @@ def _run(mode: str, config: dict[str, Any]) -> tuple[BrowserUseAgent, str, set[s
     )
 
 
-_IDS = [f"{mode}-{sorted(config.items())}" for mode, config in _CONFIGURATIONS]
+_IDS = [f"{member.__registry_key__}-{sorted(config.items())}" for member, config in _CONFIGURATIONS]
 
 
-@pytest.mark.parametrize("mode,config", _CONFIGURATIONS, ids=_IDS)
+@pytest.mark.parametrize("member,config", _CONFIGURATIONS, ids=_IDS)
 class TestEveryRenderedPrompt:
     def test_advertises_exactly_the_negotiated_actions(
-        self, mode: str, config: dict[str, Any]
+        self, member: type[BrowserUseAgent], config: dict[str, Any]
     ) -> None:
-        _agent, prompt, names, descriptors = _run(mode, config)
+        _agent, prompt, names, descriptors = _run(member, config)
         block = _ACTION_BLOCK.search(prompt)
         assert block is not None, "the template no longer renders {action_list}"
         for descriptor in descriptors:
@@ -177,14 +170,14 @@ class TestEveryRenderedPrompt:
                 assert f"{param}:" in block.group(0), descriptor.name
 
     def test_teaches_no_verb_outside_the_negotiated_set(
-        self, mode: str, config: dict[str, Any]
+        self, member: type[BrowserUseAgent], config: dict[str, Any]
     ) -> None:
         """Prose may not name an action this run did not negotiate.
 
-        ``extract_content`` is the live case: real everywhere except
-        ``vision``, where the prompt must stop mentioning it.
+        ``click_coordinate`` is the live case: real in ``browser_use.dom_vision``,
+        absent from ``browser_use.dom``, whose prompt must not mention it.
         """
-        _agent, prompt, names, _descriptors = _run(mode, config)
+        _agent, prompt, names, _descriptors = _run(member, config)
         prose = _ACTION_BLOCK.sub("", prompt)
         registered = {key.rsplit(".", 1)[-1] for key in ActionRegistrar.get_all()}
         active = {name.rsplit(".", 1)[-1] for name in names}
@@ -193,112 +186,73 @@ class TestEveryRenderedPrompt:
             if verb in _NOT_ACTIONS or verb not in registered:
                 continue
             assert verb in active, (
-                f"{mode}{config}: the prompt teaches {verb!r}, which this run "
+                f"{member.__registry_key__}{config}: the prompt teaches {verb!r}, which this run "
                 f"did not negotiate — the model cannot emit it and the closed "
                 f"schema will refuse it"
             )
 
     def test_teaches_no_tool_this_framework_does_not_have(
-        self, mode: str, config: dict[str, Any]
+        self, member: type[BrowserUseAgent], config: dict[str, Any]
     ) -> None:
-        _agent, prompt, _names, _descriptors = _run(mode, config)
+        _agent, prompt, _names, _descriptors = _run(member, config)
         for tool in _NONEXISTENT_TOOLS:
-            assert tool not in prompt, f"{mode}{config} still teaches {tool!r}"
+            assert tool not in prompt, f"{member.__registry_key__}{config} still teaches {tool!r}"
 
     def test_claims_nothing_is_handled_automatically(
-        self, mode: str, config: dict[str, Any]
+        self, member: type[BrowserUseAgent], config: dict[str, Any]
     ) -> None:
-        _agent, prompt, _names, _descriptors = _run(mode, config)
+        _agent, prompt, _names, _descriptors = _run(member, config)
         for claim in _FALSE_CLAIMS:
-            assert claim not in prompt.lower(), f"{mode}{config}: {claim!r}"
+            assert claim not in prompt.lower(), f"{member.__registry_key__}{config}: {claim!r}"
 
     def test_names_done_s_answer_field_as_the_action_reads_it(
-        self, mode: str, config: dict[str, Any]
+        self, member: type[BrowserUseAgent], config: dict[str, Any]
     ) -> None:
-        _agent, prompt, _names, _descriptors = _run(mode, config)
+        _agent, prompt, _names, _descriptors = _run(member, config)
         assert "`text` field" not in prompt
         assert "text field of the `done`" not in prompt
         assert "done action's text field" not in prompt
         assert "files_to_display" not in prompt
 
     def test_teaches_done_s_success_as_the_action_reads_it(
-        self, mode: str, config: dict[str, Any]
+        self, member: type[BrowserUseAgent], config: dict[str, Any]
     ) -> None:
         """Known unmet or blocked: ``false``; verified: ``true``; cannot tell: unset."""
-        _agent, prompt, _names, _descriptors = _run(mode, config)
+        _agent, prompt, _names, _descriptors = _run(member, config)
         if "`success`" not in prompt:
             return  # the template leaves ``success`` to the action list's own description
         assert "leave `success` unset" in prompt
         assert "`success=false`" in prompt or "set `success` to `false`" in prompt
         for line in prompt.splitlines():
             doubt = "uncertain" in line or "unverifiable" in line
-            assert not (doubt and "false" in line), f"{mode}{config}: {line!r}"
+            assert not (doubt and "false" in line), f"{member.__registry_key__}{config}: {line!r}"
 
 
-@pytest.mark.parametrize(
-    "config",
-    [c for mode, c in _CONFIGURATIONS if mode == "vision"],
-    ids=[str(sorted(c.items())) for mode, c in _CONFIGURATIONS if mode == "vision"],
-)
-def test_a_vision_prompt_carries_no_index_vocabulary(config: dict[str, Any]) -> None:
-    """No element list exists, so nothing may suggest addressing one."""
-    _agent, prompt, _names, descriptors = _run("vision", config)
-    for word in _INDEX_WORDS:
-        assert word not in prompt, f"vision{config} still says {word!r}"
-    # And no *advertised parameter* is an index or a selector, which is the
-    # machine-checkable half of the same claim.
-    for descriptor in descriptors:
-        assert "index" not in descriptor.params, descriptor.name
-        assert "selector" not in descriptor.params, descriptor.name
-
-
-@pytest.mark.parametrize("mode", ["dom", "dom_vision"])
-def test_a_dom_prompt_does_explain_the_index(mode: str) -> None:
-    """The complement: the gate above must not be satisfied by saying nothing.
-
-    The explanation is the DOM serializer's own description, quoted whole.
-    """
-    _agent, prompt, _names, _descriptors = _run(mode, {"flash_mode": False})
+@pytest.mark.parametrize("member", MEMBERS)
+def test_every_member_explains_the_index(member: type[BrowserUseAgent]) -> None:
+    """The explanation is the DOM serializer's own description, quoted whole."""
+    _agent, prompt, _names, _descriptors = _run(member, {"flash_mode": False})
     assert BrowserCapability().dom_serializer.describe_format() in prompt
     assert "[42]<button" in prompt
 
 
-def test_a_vision_prompt_says_what_a_point_is() -> None:
-    _agent, prompt, _names, _descriptors = _run("vision", {"flash_mode": False})
+def test_a_prompt_with_a_coordinate_action_says_what_a_point_is() -> None:
+    _agent, prompt, names, _descriptors = _run(BrowserUseDomVisionAgent, {"flash_mode": False})
+    assert "browser.click_coordinate" in names
     assert "<coordinates>" in prompt
     assert "top-left" in prompt
 
 
 def test_the_coordinate_paragraph_follows_the_configured_grid() -> None:
-    _agent, pixels, _n, _d = _run("vision", {"flash_mode": False})
+    _agent, pixels, _n, _d = _run(BrowserUseDomVisionAgent, {"flash_mode": False})
     assert "pixels of the screenshot" in pixels
-
-    capability = BrowserCapability()
-    env = make_env(BrowserEnvironment, {"browser": capability})
-    agent = make_agent(
-        BrowserUseAgent,
-        memory=SimpleMemory(max_messages=10),
-        observation_mode="vision",
-        coordinate_space="normalized_1000",
-        flash_mode=False,
+    _agent, grid, _n, _d = _run(
+        BrowserUseDomVisionAgent, {"flash_mode": False, "coordinate_space": "normalized_1000"}
     )
-    obs = negotiate_observation(agent, ReactLoop(), env)
-    actions = negotiate_action(agent, env)
-    agent.prepare(
-        task="t",
-        action_space=space_for(
-            agent,
-            env.get_action_space(
-                active_actions=actions.active_actions, fragments=obs.active_fragments
-            ),
-        ),
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
-        fragment_formats={},
-    )
-    assert "0-1000 grid" in agent._system_prompt_text
+    assert "0-1000 grid" in grid
 
 
-def test_no_prompt_promises_a_channel_its_mode_does_not_have() -> None:
-    """``dom`` shows the model no image, so nothing may call one ground truth."""
-    _agent, prompt, _names, _descriptors = _run("dom", {"flash_mode": False})
+def test_no_prompt_promises_a_channel_its_member_does_not_have() -> None:
+    """``browser_use.dom`` shows the model no image, so nothing may call one ground truth."""
+    _agent, prompt, _names, _descriptors = _run(BrowserUseDomAgent, {"flash_mode": False})
     assert "screenshot" not in prompt.lower()

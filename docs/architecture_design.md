@@ -358,7 +358,7 @@ class SimpleSWEAgent(SWEAgent):
 - **家族根**：抽象类，`__abstract__ = True`，`__registry_key__ = "browser_use"`，本身不注册，YAML 里选不到。家族共有的东西放在根上：Loop 范围等共有的 `__wiring__` 条目、共有的配置字段、prompt 构建与输出解析。
 - **成员**：注册的子类，键是 `<根>.<成员>`。键可由类名推出（根下的 `class Dom` 得到 `browser_use.dom`），也可写全（`__registry_key__ = "browser_use.dom_vision"`）。每个成员写出自己完整的 `__wiring__` 条目（它观测什么、声明哪些动作），与根上的条目经 MRO 合并（上文"`__wiring__` 的 MRO 合并"：子类条目整条替换继承来的同名条目）。一个成员是一个类、一种观测与动作组合，不靠实例字段在模式之间切换。`AgentRegistrar.children("browser_use")` 列出一族。
 
-目标状态：BrowserUse 与 Skyvern 各成一族，成员都是 `dom` 与 `dom_vision`。DOM 必开：有 DOM 清洗时 `click` 按元素序号，有截图时可另有 `click_coordinate`；纯视觉归 computer use 一类 agent（UI-TARS 等）。Skyvern 已拆成 `skyvern.dom` 与 `skyvern.dom_vision`（下文"Skyvern 家族"）；BrowserUse 的拆分由后续改动完成，它与 UI-TARS 仍是不带点的单键。
+BrowserUse 与 Skyvern 各成一族，成员都是 `dom` 与 `dom_vision`。DOM 必开：有 DOM 清洗时 `click` 按元素序号，有截图时可另有 `click_coordinate`；纯视觉归 computer use 一类 agent（UI-TARS 等）。两族都已拆成这两个成员（下文"BrowserUse 家族"、"Skyvern 家族"）；UI-TARS 仍是不带点的单键。
 
 **YAML 形状**：`agent_id` 仍是一个判别字段，`agent_id: browser_use.dom` 是一个扁平判别值。conscribe 生成 `agent_id: Literal['browser_use.dom']`，不像 LLM 的 `model_type` + `provider` 那样展开成嵌套块（那是两个判别字段 `discriminator_fields`，§4.7）。默认实例 id 是 `browser_use.dom#0`。
 
@@ -374,9 +374,21 @@ agent:
 
 **家族根保持抽象**：已注册 agent 的子类如果不写自己的键，会被推出 `<父键>.<类名>`（`ui_tars` 下得到 `ui_tars.mobile`），父键就既是 agent 又是家族根，conscribe 的 `tree()` 拒绝这种形状。把一个 agent 拆成家族，就是把它的类改成抽象根；`tests/test_agents/test_agent_families.py` 对发布的 agent 检查没有键同时是两者。
 
-#### Skyvern 家族（用户 2026-10-23 的裁决：Skyvern 与 BrowserUse 对称）
+**BrowserUse 家族**（用户 2026-10-23 的裁决，取代 `observation_mode` 的 `dom` / `dom_vision` / `vision` 三个模式）。家族根 `BrowserUseAgent`（`agents/browser_use/family.py`）持有 Loop 范围、共有的配置字段、prompt 构建与回复解析；两个成员各写完整的 `observation` 与 `action` 条目：
 
-Skyvern 有自己的 DOM 清洗流程（`dom_cleaner: skyvern` / `skyvern_hit_test`），所以两个成员都带清洗后的元素树，`click` 都按元素序号；差别只在模型还看到什么：
+| 成员 | 类（文件） | 进入模型上下文 | observation required / optional | action required / optional |
+|---|---|---|---|---|
+| `browser_use.dom` | `BrowserUseDomAgent`（`dom.py`） | DOM 文本 | `dom`、`screenshot`、`platform`、`task`、`browser_meta` / `step_info`、`history`、`capture_state` | `navigate`、`done`、`click`、`type` / `scroll`、`send_keys`、`extract_content`、`go_back`、`go_forward`、`switch_tab`、`wait` |
+| `browser_use.dom_vision` | `BrowserUseDomVisionAgent`（`dom_vision.py`） | DOM 文本 + 截图 | 同上 | 同上，optional 另有 `click_coordinate` |
+
+- `dom` 在两个成员上都是 required：配 `vision_only` profile 的 run 在协商时失败，报错写 `dom ← browser_use.dom`，不会静默降级成视觉实验。纯视觉删除：只看截图的是 computer use，归 UI-TARS 一类；它的 surface 片段 `_surface/vision*.md` 随之删除。
+- `screenshot` 在两个成员上也都是 required：它不只是模型输入，`online_mind2web` / `lexbench_browser` 从 trace 里的截图打分。成员决定模型看到什么，不决定 run 记录什么。
+- `browser_use.dom_vision` 的动作与原来的 `dom_vision` 模式相同：`click`、`type` 按序号，另有 `click_coordinate`（够到序号够不着的目标，如跨域 iframe 小部件），没有 `type_coordinate` 与 `drag`。两个点击动词互相独立，没有一个参数一半不适用的重载动词。
+- 成员之间的行为差别只有两处，都是成员覆盖根上的一个方法：`dom_vision` 每步把截图附进用户消息（这一步的截图没有字节时只发文本，与 `dom` 相同），本 run 协商到坐标动作时在系统提示的 surface 之后加 `<coordinates>` 段（下文"BrowserUse 的反馈网格"）。`coordinate_space` 与 `vision_detail` 只在 `dom_vision` 上；`browser_use.dom` 不写点，没有这两个字段。
+- surface 片段按成员取（`_surface/dom.md`、`_surface/dom_vision.md` 与各自的 terse 版），模板只有一份：成员不是选模板的一个轴，DOM 与 DOM + 截图的消融只差 surface 片段。每个模板都引用 surface，三个 `is_browser_use_model` 模板也是（§4.4 "观测格式由提供方描述"）。
+- 历史窗口是根上的配置字段 `step_history_window`（默认 10，至少 1）：每步消息的 `<agent_history>` 重放最近多少步。它以前是 `init=False` 的私有常量，YAML 改不了，是一个看不见的实验变量；Skyvern 的对应字段 `action_history_window` 按执行过的动作计数。
+
+**Skyvern 家族**（用户 2026-10-23 的裁决：Skyvern 与 BrowserUse 对称）。Skyvern 有自己的 DOM 清洗流程（`dom_cleaner: skyvern` / `skyvern_hit_test`），所以两个成员都带清洗后的元素树，`click` 都按元素序号；差别只在模型还看到什么：
 
 | 成员 | 模型看到 | 动作 |
 |---|---|---|
@@ -514,7 +526,7 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 - **系统提示**删除 "Execution feedback coordinates are CSS viewport pixels; write new action points on the output grid specified above."，改为一句：执行反馈里的点与模型写的点在同一个网格上。`screenshot_pixels` 的网格就是图像像素，所以同一条路径写出的是图像像素：DPR 1 时数字与以前相同；DPR 2 时是 CSS px 的两倍，这也修正了以前反馈写 CSS px、模型写图像像素的不一致。
 - **距离不是点**：滚动的位移与滚动位置照旧是 viewport 的 px，位移写明单位（§4.5）。
 
-**BrowserUse 的反馈网格**（2026-10-22，同一裁决）。BrowserUse 只在本 run 有坐标动作（`click_coordinate`、`type_coordinate`、`drag`，`dom_vision` 与 `vision` 协商得到）时才把 `coordinate_space` 教给模型：系统提示的 `<coordinates>` 段与坐标参数的说明都只在那时出现。判断就是框架有没有给本 run 的动作空间定坐标系（`ActionSpace.coordinate_space`，即本 run 的动作里有没有坐标动作），与带不带 `<coordinates>` 段是同一个条件；`dom` 模式的协商排除坐标动作，所以 `dom` 的 run 总是第二种：
+**BrowserUse 的反馈网格**（2026-10-22，同一裁决）。BrowserUse 只在本 run 有坐标动作（`click_coordinate`，只有 `browser_use.dom_vision` 声明它）时才把 `coordinate_space` 教给模型：系统提示的 `<coordinates>` 段与坐标参数的说明都只在那时出现。判断就是框架有没有给本 run 的动作空间定坐标系（`ActionSpace.coordinate_space`，即本 run 的动作里有没有坐标动作），与带不带 `<coordinates>` 段是同一个条件；`browser_use.dom` 不声明坐标动作，所以它的 run 总是第二种：
 
 - **有坐标动作的 run**：`<agent_history>` 里每一步的 `<actions>` 仍是 BrowserUse 自己的 `name(params)` 写法，动作陈述的点参数由框架写在那一步记录的坐标系上（历史窗口有多步，每步读它自己的 `StepRecord.frame`）；`<effects>` 的效果行经 `describe(write_point=...)` 写在同一坐标系上（按编号的 `click` 的落点也是点，编号本身不是）；`<browser_state>` 里 `capture_state` 的指针经 `render_browser_state(..., write_point=...)` 写在本步的坐标系上；`<llm_output>` 是模型自己的回复，本来就在网格上。restored 历史里实际执行的与录下的源动作写成动作的 JSON，点参数由框架换成本次恢复观测坐标系上的点；原来的 "Executed coordinate parameters use CSS viewport pixels." 前缀删除（没有坐标动作的 run 也删：那里没有坐标参数可说）。`<coordinates>` 段加一句 "Every point in the agent history and the browser state is on this same grid."。`screenshot_pixels` 写的是图像像素，DPR 2 时是 CSS px 的两倍，与模型写的点一致。没有可测尺寸截图的步、截图之外的点照下文照实说。
 - **没有坐标动作的 run**：模型不写点，也没被教任何网格，提示里只有一套坐标，所以反馈照旧是 viewport 单位：效果行写 `(x, y)`，指针写 `(x, y) in viewport pixels.`，每步的提示词不变（restored 历史只少了上面那句前缀）。`coordinate_space` 在这样的 run 里不起作用（字段说明写明）。
@@ -1131,19 +1143,16 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 **Agent 声明 capability 需求**（通过 `__wiring__`，替代 `required_capabilities` property）：
 
 ```python
-class BrowserUseAgent(AgentBase):
+class BrowserUseDomAgent(BrowserUseAgent):  # browser_use.dom；agent_loop 与 llm 在家族根上
     __wiring__ = {
-        "agent_loop": ("agent_loop", ["react"]),
-        # 类声明是**跨模式的超集**：所有模式都要的进 required，
-        # 因模式而异的进 optional，由 observation_mode 提升或排除（见下）。
+        # 一个成员写出它完整的需求，不在别的声明上做增减。
         "observation": ("observation",
-                        ["screenshot", "task"],
-                        ["dom", "browser_meta", "step_info", "history"]),
+                        ["dom", "screenshot", "platform", "task", "browser_meta"],
+                        ["step_info", "history", "capture_state"]),
         "action": ("action",
-                   ["navigate", "done"],
-                   ["click", "type", "click_coordinate", "type_coordinate",
-                    "drag", "scroll", "send_keys", "extract_content",
-                    "go_back", "go_forward", "switch_tab", "wait"]),
+                   ["navigate", "done", "click", "type"],
+                   ["scroll", "send_keys", "extract_content", "go_back",
+                    "go_forward", "switch_tab", "wait"]),
     }
 
 class GAIAAgent(AgentBase):
@@ -1153,7 +1162,7 @@ class GAIAAgent(AgentBase):
     }
 ```
 
-注意两处：(1) 没有 `capability` 条目——写它只会把生成的 config 收窄到某个 capability，运行时没人读；capability 归属由协商在 action / observation 两个轴上回答。(2) `dom` 在类上是 **optional**，DOM 模式再把它提升为 required；这样"跑 DOM 却配了 vision_only profile"仍然在协商期大声失败，而不是静默降级成视觉模式。
+注意两处：(1) 没有 `capability` 条目——写它只会把生成的 config 收窄到某个 capability，运行时没人读；capability 归属由协商在 action / observation 两个轴上回答。(2) 每个成员写出完整的集合：`dom` 在两个 BrowserUse 成员上都是 required，所以"跑 DOM 却配了 vision_only profile"在协商期大声失败，而不是静默降级成视觉模式（§4.1 "BrowserUse 家族"）。
 
 运行前 AgentRuntime 自动验证兼容性：Agent 需要的 fragment / action ⊆ Environment 提供的集合。
 
@@ -1255,7 +1264,7 @@ fragment 就是新增一个 Resolver watchdog。
 | capability | 可选 Protocol `core/capabilities/base.py::FragmentFormats.fragment_formats() -> Mapping[str, str]`（§4.9） | 全限定 fragment 键 → 说明；browser 声明了 `browser.dom` 时返回 `{"browser.dom": dom_serializer.describe_format()}`，`vision_only` profile 没有 DOM resolver，什么都不描述 |
 | environment | `Environment.fragment_formats() -> dict[str, str]`（§4.3） | 实现了 `FragmentFormats` 的 capability 的并集；capability 描述了不在自己前缀下的键时抛 `ValueError` |
 | Agent 声明 | `__fragment_formats__: ClassVar[frozenset[str]]`，用 `__wiring__` 里的名字（BrowserUse、Skyvern：`{"dom"}`） | 本 Agent 的提示词引用哪些 fragment 的格式 |
-| Runtime | `AgentRuntime.prepare()` 第 2b 步（§4.2）：`core/negotiation/fragment_formats.py::quoted_fragment_formats(agent, negotiated_obs, env)` | 按协商结果的 `fragment_bindings` 找到每个声明名的全限定键；这个 run 没激活的（optional 而环境没有、实例排除了，如 BrowserUse `vision`）没有条目，也不问环境；激活了而提供方不描述的抛 `FragmentFormatError`（点名 Agent、fragment 与提供方）；声明不是名字集合、名字不在观测 wiring 里、`prepare` 没有显式的 `fragment_formats` 关键字参数，同样 `FragmentFormatError`。都在 setup 之前、任何模型调用之前 |
+| Runtime | `AgentRuntime.prepare()` 第 2b 步（§4.2）：`core/negotiation/fragment_formats.py::quoted_fragment_formats(agent, negotiated_obs, env)` | 按协商结果的 `fragment_bindings` 找到每个声明名的全限定键；这个 run 没激活的（optional 而环境没有、实例排除了）没有条目，也不问环境；激活了而提供方不描述的抛 `FragmentFormatError`（点名 Agent、fragment 与提供方）；声明不是名字集合、名字不在观测 wiring 里、`prepare` 没有显式的 `fragment_formats` 关键字参数，同样 `FragmentFormatError`。都在 setup 之前、任何模型调用之前 |
 | Agent 收到 | 原有的 `prepare(..., fragment_formats=...)` 种子 slot（§4.2 `seed_messages`），只读映射，键是声明名 | 系统提示原样引用 |
 
 这与执行限制是同一种显式消费声明（§4.1 "执行限制显式传递"）：不声明的 Agent（UI-TARS）签名不变、什么也收不到，Runtime 不按参数名机会性传入。
@@ -1265,10 +1274,10 @@ fragment 就是新增一个 Resolver watchdog。
 **提示词**（只换格式段落，其余原文不变）：
 
 - **Skyvern**：`<element_tree>` 一节以 `{{ dom_format }}` 引用说明，删去手写的 `[42]` 示例与"没有 `[index]` 前缀的行不可交互"；保留"序号是指代元素的唯一方式，动作写成 `"index": 42`"与其余规则。发布配置因此第一次教对了 `html` 的写法。
-- **BrowserUse**：四个 DOM surface 片段（`dom`、`dom_vision` 与两个 terse 版）各有一个槽位 `{dom_format}`，由 `_render_surface` 填入（片段里不允许别的占位符，`test_prompt_tree.py` 钉住）；删去手写的格式、示例与 `*[`、`|SCROLL|`、`|SHADOW(...)|` 的说明（`|SCROLL|` 与 `text` 实际写出的 `|scroll element|` 不符，`|SHADOW(...)|` 标的是 shadow host，不是 shadow root 里的元素）；"按数字 `[index]` 指代"改为"按本步列出的序号指代"。terse 版原来的一行压缩说明（`[index]<type>text</type>`，与输出也不符）换成同一段说明。`vision` 片段与三个 `is_browser_use_model` 模板（不描述 surface）不变。
+- **BrowserUse**：四个 DOM surface 片段（`dom`、`dom_vision` 与两个 terse 版）各有一个槽位 `{dom_format}`，由 `_render_surface` 填入（片段里不允许别的占位符，`test_prompt_tree.py` 钉住）；删去手写的格式、示例与 `*[`、`|SCROLL|`、`|SHADOW(...)|` 的说明（`|SCROLL|` 与 `text` 实际写出的 `|scroll element|` 不符，`|SHADOW(...)|` 标的是 shadow host，不是 shadow root 里的元素）；"按数字 `[index]` 指代"改为"按本步列出的序号指代"。terse 版原来的一行压缩说明（`[index]<type>text</type>`，与输出也不符）换成同一段说明。三个 `is_browser_use_model` 模板原来不描述 surface（检查点学过 DOM 格式），配 `html` 序列化器时模型读到一种没人说明、也没学过的格式；2026-10-23 起它们也以 `{surface}` 引用 terse 片段，与其他模板一样教本 run 序列化器写的格式，`browser_use.dom_vision` 还带截图一句与 `<coordinates>` 段。没有选在 `prepare()` 拒绝"微调模板 + `html`"：那要 Agent 认出是哪个序列化器写的 DOM，正是本节不许的按序列化器分支；引用说明则让这个组合成为写在提示词与 trace 里的显式实验条件。纯视觉的 `vision` 片段随纯视觉成员删除（§4.1 "BrowserUse 家族"）。
 - **UI-TARS** 不变。
 
-Skyvern 与 BrowserUse DOM 模式的系统提示变了，所以这次改动之前的这些录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。每步的用户消息不变。
+Skyvern 与 BrowserUse DOM 模式的系统提示变了，所以这次改动之前的这些录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。每步的用户消息不变。BrowserUse 三个微调模板引用 surface 之后同样如此。
 
 **测试**：`test_browser_dom_serializer_format.py`：每个序列化器的说明点名自己的序号标记、不提别的序列化器的，真实 `DOMState`（BrowserUse 清洗器跑合成 CDP 载荷、Skyvern 清洗器跑提交的真实 Chrome 采集）里每个显示的已索引元素都带这个标记；`text` 写出的每一种标记都在说明里，`html` 的说明不提它不写的标记；说明跟着实例旋钮。`test_dom_format_prompts.py`：发布 YAML 换成 `text` / `html` 组装，走真实的 Runtime 装配，配置的清洗器产出的真实 `DOMState` 经配置的序列化器进观测：系统提示含说明原文，它教的标记就是观测里每个元素带的，别的标记不教；换序列化器时系统提示只在说明处不同；发布的 Skyvern 配置教 `data-idx`。另有解析规则（`test_negotiation/test_fragment_formats.py`）与 environment 汇总（`test_environments/test_fragment_format_routing.py`）。
 
@@ -1409,7 +1418,7 @@ IncompatibleError: Cannot pair SWEAgent with BrowserEnvironment.
 - `AgentBase.negotiation_demand(registry) -> (required, optional)`。默认返回类 wiring；需要收窄的 agent 覆盖它。
 - `negotiate_observation` / `negotiate_action` 在 agent 那一侧改用 `demand_of(agent, registry)` 取这对集合。Loop 那一侧仍然读 `type(loop)`——loop 要的东西不归 agent 收窄。
 
-边界由框架强制，不靠约定：`demand_of()` 把任何覆盖的返回值再过一遍 `bounded_demand()`。这是整条协商路径上唯一新增的自由度，它不该是靠"每个实现自觉调用"来守的那个。`browser_use` 自己也调一次 `bounded_demand`（幂等），因为两次检查回答的是不同的问题：`_ModeDemand.apply` 怪的是模式表，`bounded_demand` 怪的是实例。
+边界由框架强制，不靠约定：`demand_of()` 把任何覆盖的返回值再过一遍 `bounded_demand()`。这是整条协商路径上唯一新增的自由度，它不该是靠"每个实现自觉调用"来守的那个。
 
 边界之所以是硬的，有两个独立理由：
 
@@ -1418,30 +1427,20 @@ IncompatibleError: Cannot pair SWEAgent with BrowserEnvironment.
 
 违反任一条抛 `DemandOutsideWiringError`。这是 agent 类的编程错误，不是用户的配置错误：它在 `prepare()` 阶段、环境启动之前就炸。
 
-**失败要点名是谁在要。** 实例能收窄之后，"谁 required 了 `dom`"就不再是类的属性了：同一个 `browser_use`，两个模式要它、一个模式排除它。所以 `demand_of` 之外还有一个 `demand_label(owner)`，它只做一件事——给诊断取名字。规则是：`__repr__` 以 registry key 开头，就当作实例对自己的紧凑描述整段采用（`browser_use(observation_mode='dom')`）；否则退回 registry key。这条规则把 dataclass 自动生成的 `__repr__`（开头是**类名**，而且会把 LLM 客户端整个 dump 进错误信息）和 `object` 的 `<... at 0x…>` 一起挡在外面。
+**失败要点名是谁在要。** 协商把各方的 required 并在一起再求解，缺了一个键时结果里已经看不出是谁要的，所以 `demand_of` 之外还有一个 `demand_label(owner)`，它只做一件事——给诊断取名字。名字就是 registry key（`browser_use.dom`、`react`）：YAML 里选它用的那个字符串，家族成员的键本身就说出了它观测什么、声明哪些动作。不用 `__repr__`：dataclass 自动生成的 `__repr__` 开头是**类名**，而且会把 LLM 客户端整个 dump 进错误信息，`object` 的 `<... at 0x…>` 在进程之间都不稳定。BrowserUse 以前为模式写过一个以 registry key 开头的 `__repr__`（`browser_use(observation_mode='dom')`），`demand_label` 整段采用它；模式变成家族成员之后，这条规则随之删除。
 
 标签只走到错误信息里：`_observation_rules` / `_action_rules` 多收两个 `*_source` 形参，它们不进 `resolve_demand`，改不了协商结果。`IncompatibleFragmentError` / `IncompatibleActionError` 于是能写出
 
 ```
-Missing: ['dom']. Requested by: dom ← browser_use(observation_mode='dom').
+Missing: ['dom']. Requested by: dom ← browser_use.dom.
 Environment provides: ['browser.browser_meta', 'browser.screenshot'].
 ```
 
-—— `observation_mode` 和 `profile` 指向相反的两处修改，没有这一行，用户只能猜改哪一个。
+—— 是 agent 要了 `dom` 还是 Loop 要了它，修法不同（换 agent 成员还是换 `profile`），没有这一行，用户只能猜改哪一个。
 
-**第一个使用者：`browser_use.observation_mode`**（`dom` / `dom_vision` / `vision`）。三个模式共用一个 `agent_id`、一棵 prompt 树，只在协商需求和 surface 片段上分叉：
+**使用者：`show_capture_state`**。三个 Agent（BrowserUse 家族根、Skyvern、UI-TARS）在它为 `false` 时排除 optional 的 `capture_state`（`agents/rendering/capture_state.py::capture_state_demand`），这个 fragment 不采集也不渲染（上文"跨平台采集状态"）。
 
-| 模式 | 进入模型上下文 | observation 调整 | action 调整 | 点击动词 |
-|---|---|---|---|---|
-| `dom` | DOM 文本 | 提升 `dom` | 提升 `click`/`type`；排除 `click_coordinate`/`type_coordinate`/`drag` | `click` |
-| `dom_vision` | DOM 文本 + 截图 | 提升 `dom` | 提升 `click`/`type`；排除 `type_coordinate`/`drag` | `click` 与 `click_coordinate`，互相独立 |
-| `vision` | 截图 + URL/标题/tab 文本 | 排除 `dom` | 提升 `click_coordinate`/`type_coordinate`；排除 `click`/`type`/`extract_content` | 仅 `click_coordinate` |
-
-模式表（`_MODE_DEMAND`）里的 `promote` / `exclude` 只能点名类 wiring 的 **optional** 键，`_ModeDemand.apply` 当场校验。两种失败不对称，这是为什么校验不能只交给 `bounded_demand`：写错的 `promote` 会把 required 集合撑出声明空间，下游必然抓到；写错的 `exclude` 只是减掉一个本来就不存在的键——拼错的、或者类里 required 因而不许 mode 碰的——得到的两个集合完全合法，只是悄悄地不对。模式表是三个 surface 的唯一定义，它里面的笔误必须是错误，不能是耸肩。
-
-模式是**显式配置**，不从环境推导。"环境没有 dom，那这次大概是视觉模式"这种推导，会让一个打错的 capability profile 把 DOM 实验静默降级成视觉实验——分不清是消融还是笔误的消融不算消融。
-
-`screenshot` 在**所有**模式下都是 required：它不只是模型输入，`online_mind2web` / `lexbench_browser` 是从 trace 里的截图打分的。模式决定**模型看到什么**，不决定**run 记录什么**。
+收窄不用来在观测模式之间切换。BrowserUse 以前这样做：一个类声明三种模式的并集，私有的模式表在并集上写 promote / exclude 的差量，`observation_mode` 选一行。任何真实配置都不是那个并集，差量写错了得出的集合仍然合法、只是悄悄不对，为此又要另一层校验。根源是 `__wiring__` 不能随配置值变化。2026-10-23 起观测与动作的组合是类本身：每个家族成员写出完整的 `__wiring__`（§4.1 "BrowserUse 家族"），conscribe 把它编进生成的 config，trace 的 `agent_id` 直接说是哪一种，收窄只剩下"少要一个不渲染的 optional fragment"。
 
 #### Resolver 模式（IoC 激活，消除 if-else）
 
@@ -1550,7 +1549,7 @@ def build_observation_model(active_fragments: set[str]) -> type[BaseModel]:
 
 环境证据（§5.1）沿用 observation / action 的同一套形状：每个归档器独立注册，键是全限定的 `<capability>.<id>`；capability 在 `__wiring__["archiver"]` 里声明 provides，`provided_archivers` 由它派生（与 `declared_fragments` 同一种做法，`CapabilityBase` 的默认实现，§4.9）；environment 聚合；`negotiate_archive` 在 `prepare()` 里校验，结果是绑定表，下游只读这张表。
 
-**唯一的不对称**：requires 来自 trace hook **实例**的配置，而且永远全限定。记录什么是每次 run 的选择（用户裁决 D3，2026-10-09），它既不是某个 agent 类的领域知识（§4.4："模式决定模型看到什么，不决定 run 记录什么"），也不是记录器类的固有属性。所以没有类级 `__wiring__` 需求，也就没有 relative key 要绑定：`ArchiveConsumer.archive` 里每个归档器的 `archiver_id` 本身就点名了 provider。
+**唯一的不对称**：requires 来自 trace hook **实例**的配置，而且永远全限定。记录什么是每次 run 的选择（用户裁决 D3，2026-10-09），它既不是某个 agent 类的领域知识（§4.1 "BrowserUse 家族"：成员决定模型看到什么，不决定 run 记录什么），也不是记录器类的固有属性。所以没有类级 `__wiring__` 需求，也就没有 relative key 要绑定：`ArchiveConsumer.archive` 里每个归档器的 `archiver_id` 本身就点名了 provider。
 
 **协商规则**（`core/negotiation/archive.py`）。`negotiate_archive(consumers, env)` 接收的是 runtime 筛出来的、`archive` 非空的 `ArchiveConsumer` 对象，不是一个扁平的归档器列表，因为请求方是谁、同一个键是不是跨消费者重复，只有从消费者那里才看得出来。`consumers` 为空是编程错误（`ValueError`），`archive` 里的元素不满足 `Archiver` Protocol 同样是编程错误（`TypeError`，点名消费者与元素类型）。消费者按身份（`is`）比较，不按相等：同一个对象列两次算一个消费者，两个相等的不同对象仍是两个。环境一侧的事实是 `env.env_type`，以及 `env.capabilities` 里每个 capability 的 `(capability_id, provided_archivers)`，不实现 `ArchivingCapability` 的 capability 视为一个也不提供；报错里"环境提供了什么"是这些集合的并集（按构造等于 `env.provided_archivers`）。请求方标签用 `demand_label(consumer)`（`trace_writer`）。每个请求的键按第一段找 capability，该 capability 必须提供这个键。下面的问题**全部收集完一次报出**，每条一行，按字典序排序，合成一个 `IncompatibleArchiveError`：
 
@@ -1796,7 +1795,7 @@ class BrowserCapability(CapabilityBase):
 `actions` 字段是 discriminated union list，每个条目通过 `action_id` 路由到对应 action 类，其他字段作为构造参数注入：
 
 ```yaml
-agent: browser_use
+agent: browser_use.dom
 capability:
   browser:
     backend: local_chrome
@@ -4979,7 +4978,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 注册表 | 判别方式 | 说明 | 状态 |
 |--------|---------|------|------|
-| `AgentRegistrar` | `agent_id` (flat, hierarchical key `family.member`) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验。`key_separator="."`：家族根是抽象类（`browser_use`），不注册；成员注册为 `browser_use.dom`，各写完整 `__wiring__`，prompt 读家族根的目录（§4.1 "Agent 家族"）；不带点的键（`ui_tars`）自成一族 | ✅；Skyvern 已拆成 `skyvern.dom` / `skyvern.dom_vision`（§4.1 "Skyvern 家族"）；BrowserUse 拆成家族待做 |
+| `AgentRegistrar` | `agent_id` (flat, hierarchical key `family.member`) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验。`key_separator="."`：家族根是抽象类（`browser_use`），不注册；成员注册为 `browser_use.dom`，各写完整 `__wiring__`，prompt 读家族根的目录（§4.1 "Agent 家族"）；不带点的键（`ui_tars`）自成一族 | ✅；发布的两族：`browser_use.dom` / `browser_use.dom_vision`（§4.1 "BrowserUse 家族"）与 `skyvern.dom` / `skyvern.dom_vision`（§4.1 "Skyvern 家族"） |
 | `AgentLoopRegistrar` | `loop_id` (flat) | Loop 实现（执行策略）；通过 `__required_slots__` 声明所需 agent 方法，通过 `__loop_inputs__` 声明每任务的输入（M31） | ✅ ReactLoop；M31：`branch`（`BranchLoop`，ReactLoop 子类，§4.1）；CodeAct/FunctionCalling/PlanExecute 待 P2/P3 |
 | `LLMRegistrar` | `model_type.provider` (nested) | Chat provider 实现，保持 Chat 受体隔离 | ✅ |
 | `ReplayReviewerRegistrar` | `reviewer_id` (flat) | `replay_reviewer`：独立 replay 审查 job 的策略，`jev` 持 Decision 受体，§4.18 | ✅ |
@@ -5052,10 +5051,9 @@ YAML 形态与 `spectragent/generated/_composed.py` 的 discriminated-union sche
 # 通过 YAML 驱动全部组件选择和组装
 
 agent:
-  - agent_id: browser_use
-    # dom | dom_vision | vision —— 决定什么进模型上下文、以及有哪些点击动词。
+  - agent_id: browser_use.dom_vision
+    # browser_use.dom | browser_use.dom_vision —— 决定什么进模型上下文、以及有哪些点击动词。
     # max_steps / max_actions_per_step 归 loop，agent 不持有第二份。
-    observation_mode: dom_vision
     flash_mode: false
 
 agent_loop:

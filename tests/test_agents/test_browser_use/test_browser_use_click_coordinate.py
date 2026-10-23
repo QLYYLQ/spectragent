@@ -1,6 +1,6 @@
-"""browser_use's second click verb: ``click_coordinate``, a point on the screenshot.
+"""``browser_use.dom_vision``'s second click verb: ``click_coordinate``, a point on the screenshot.
 
-Two distinct verbs in ``observation_mode: dom_vision`` — ``click`` (selector-map
+Two distinct verbs in ``browser_use.dom_vision`` — ``click`` (selector-map
 index) and ``click_coordinate`` (point) — never one overloaded ``click``. The
 point is taught on the grid ``coordinate_space`` names and executed by
 ``browser.click_coordinate`` in **CSS viewport pixels**; the two differ by the
@@ -22,7 +22,11 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import (
+    BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+)
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -74,12 +78,7 @@ def _observation(*, image: tuple[int, int], viewport: tuple[int, int] = (1280, 7
 
 
 def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
-    """Negotiate *this agent instance* against a real BrowserCapability.
-
-    The instance, not the class: ``observation_mode`` narrows what goes
-    into negotiation, so a class-level extraction would hand the agent
-    descriptors a real run of that mode would never see.
-    """
+    """Negotiate *this agent instance* against a real BrowserCapability."""
     capability = BrowserCapability()
     env = make_env(BrowserEnvironment, {"browser": capability})
     negotiated = negotiate_action(agent, env)
@@ -113,13 +112,8 @@ def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
     }
 
 
-def _agent(mode: str = "dom_vision", **kwargs: Any) -> BrowserUseAgent:
-    return make_agent(
-        BrowserUseAgent,
-        memory=SimpleMemory(max_messages=10),
-        observation_mode=mode,
-        **kwargs,
-    )
+def _agent(member: type[BrowserUseAgent] = BrowserUseDomVisionAgent, **kwargs: Any) -> Any:
+    return make_agent(member, memory=SimpleMemory(max_messages=10), **kwargs)
 
 
 @pytest.fixture
@@ -172,14 +166,9 @@ class TestNegotiation:
         active = harness["negotiated"].active_actions
         assert {"browser.click", "browser.click_coordinate"} <= active
 
-    def test_dom_mode_activates_only_the_index_click(self) -> None:
-        """The inconsistency this replaces: the guard would have executed it.
-
-        ``use_vision: false`` dropped ``click_coordinate`` from what the
-        agent taught and parsed, but negotiation still activated it, so the
-        run carried an executable verb no prompt mentioned.
-        """
-        active = _harness(_agent("dom"))["negotiated"].active_actions
+    def test_the_dom_member_activates_only_the_index_click(self) -> None:
+        """It does not declare the coordinate verb, so no run of it can execute one."""
+        active = _harness(_agent(BrowserUseDomAgent))["negotiated"].active_actions
         assert "browser.click" in active
         assert "browser.click_coordinate" not in active
 
@@ -281,8 +270,8 @@ class TestRefusals:
                 _reply({"browser.click_coordinate": {"coordinate_x": "left", "coordinate_y": 2}})
             )
 
-    def test_in_dom_mode_it_is_neither_taught_nor_accepted(self) -> None:
-        agent = _agent("dom")
+    def test_in_the_dom_member_it_is_neither_taught_nor_accepted(self) -> None:
+        agent = _agent(BrowserUseDomAgent)
         prepared = _harness(agent)
         prompt = _prompt(agent, prepared["descriptors"])
         assert "click_coordinate" not in prompt

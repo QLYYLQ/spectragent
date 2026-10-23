@@ -887,7 +887,7 @@ async def _recorded_pair(
         wal.init_run(
             TraceConfig(
                 task="Read the visible results",
-                agent_id="browser_use",
+                agent_id="browser_use.dom",
                 loop_id="react",
                 resolved=redact_config(composed.top_level_cfg),
                 negotiation=TraceNegotiation(

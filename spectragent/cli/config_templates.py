@@ -123,7 +123,7 @@ def _browser_recipe(catalog: ConfigurationCatalog) -> dict[str, Any]:
     return {
         "agent": [
             {
-                **_selector(catalog, "agent", "browser_use"),
+                **_selector(catalog, "agent", "browser_use.dom"),
                 "id": "main",
                 "agent_loop": _selector(catalog, "agent_loop", "react"),
                 "llm": _selector(catalog, "llm", "openai.direct"),

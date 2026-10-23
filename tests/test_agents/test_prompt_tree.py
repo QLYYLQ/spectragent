@@ -37,6 +37,8 @@ import pytest
 from spectragent.agents import (
     AgentRegistrar,
     BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
     SkyvernAgent,
     SkyvernDomAgent,
     SkyvernDomVisionAgent,
@@ -60,7 +62,7 @@ from tests._helpers.fragment_formats import dom_formats
 def _descriptors(*keys: str) -> list[Any]:
     """Real descriptors for a few registered actions.
 
-    Not hand-written stand-ins: ``browser_use`` compiles the descriptors
+    Not hand-written stand-ins: BrowserUse compiles the descriptors
     into a closed output schema, so a fixture of empty ones would exercise
     a run that can emit nothing — and it refuses to build one, rightly.
     """
@@ -70,16 +72,19 @@ def _descriptors(*keys: str) -> list[Any]:
     return [ActionRegistrar.get(key)().descriptor() for key in keys]
 
 
-#: ``prepare()`` arguments per agent. All three take the Loop's
-#: ``max_actions_per_step``, because all three advertise a per-step budget;
-#: the two DOM agents also take the DOM serializer's format description.
+_BROWSER_USE_PREPARE: dict[str, Any] = {
+    "task": "t",
+    "action_space": space_of(_descriptors("browser.navigate", "browser.done")),
+    "execution_limits": ExecutionLimits(max_actions_per_step=3),
+    "fragment_formats": dom_formats(),
+}
+
+#: ``prepare()`` arguments per agent. All of them take the Loop's
+#: ``max_actions_per_step``, because all of them advertise a per-step budget;
+#: the DOM agents also take the DOM serializer's format description.
 _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
-    "browser_use": {
-        "task": "t",
-        "action_space": space_of(_descriptors("browser.navigate", "browser.done")),
-        "execution_limits": ExecutionLimits(max_actions_per_step=3),
-        "fragment_formats": dom_formats(),
-    },
+    "browser_use.dom": _BROWSER_USE_PREPARE,
+    "browser_use.dom_vision": _BROWSER_USE_PREPARE,
     # Real descriptors, as for ``browser_use``: Skyvern compiles them into
     # its closed reply schema and refuses a run with no action.
     "skyvern.dom": {
@@ -105,30 +110,29 @@ _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
 }
 
 #: Every ``(agent_id, kwargs)`` that reaches a *distinct* template. For
-#: ``browser_use`` this is the config matrix its selector branches on; for
-#: the other two it is the ``prompt_template`` Literal. Derived below into
+#: the BrowserUse family this is the config matrix its selector branches on;
+#: for the other two it is the ``prompt_template`` Literal. Derived below into
 #: "which file did that actually load", so a selector change shows up as a
 #: reachability failure rather than as a silently stale list.
 _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
-    ("browser_use", {"is_browser_use_model": True, "flash_mode": True}),
+    ("browser_use.dom", {"is_browser_use_model": True, "flash_mode": True}),
     (
-        "browser_use",
+        "browser_use.dom",
         {"is_browser_use_model": True, "flash_mode": False, "use_thinking": True},
     ),
     (
-        "browser_use",
+        "browser_use.dom",
         {"is_browser_use_model": True, "flash_mode": False, "use_thinking": False},
     ),
-    ("browser_use", {"flash_mode": True}),
-    ("browser_use", {"flash_mode": False, "use_thinking": True}),
-    ("browser_use", {"flash_mode": False, "use_thinking": False}),
-    # ``observation_mode`` is orthogonal to the template selector: it picks
-    # the surface fragment spliced in, not the file. Both axes are walked
-    # so a mode that renders a fragment nothing supplies — or supplies one
+    ("browser_use.dom", {"flash_mode": True}),
+    ("browser_use.dom", {"flash_mode": False, "use_thinking": True}),
+    ("browser_use.dom", {"flash_mode": False, "use_thinking": False}),
+    # The member is orthogonal to the template selector: it picks the
+    # surface fragment spliced in, not the file. Both axes are walked so a
+    # member that renders a fragment nothing supplies — or supplies one
     # nothing renders — fails here rather than at a run's first step.
-    ("browser_use", {"flash_mode": False, "observation_mode": "dom_vision"}),
-    ("browser_use", {"flash_mode": False, "observation_mode": "vision"}),
-    ("browser_use", {"flash_mode": True, "observation_mode": "vision"}),
+    ("browser_use.dom_vision", {"flash_mode": False}),
+    ("browser_use.dom_vision", {"flash_mode": True}),
     ("skyvern.dom", {"prompt_template": "system_prompt"}),
     # The members share the one template; ``dom_vision`` renders its
     # screenshot and coordinate branches, which ``dom`` never reaches.
@@ -142,7 +146,8 @@ _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
 #: ``system_prompt`` are Loop-slot / Protocol surface on the concrete
 #: agents, not on the base, and this file walks all three uniformly.
 _FACTORIES: dict[str, Any] = {
-    "browser_use": BrowserUseAgent,
+    "browser_use.dom": BrowserUseDomAgent,
+    "browser_use.dom_vision": BrowserUseDomVisionAgent,
     "skyvern.dom": SkyvernDomAgent,
     "skyvern.dom_vision": SkyvernDomVisionAgent,
     "ui_tars": UITarsAgent,
@@ -237,13 +242,23 @@ def test_prompt_dir_is_derived_from_the_registry_key(agent_id):
 
 def test_no_agent_carries_its_own_prompt_directory_constant():
     """The regression this module exists to prevent: a fourth literal path."""
-    import spectragent.agents.browser_use.agent as browser_use
+    import spectragent.agents.browser_use.dom as browser_use_dom
+    import spectragent.agents.browser_use.dom_vision as browser_use_dom_vision
+    import spectragent.agents.browser_use.family as browser_use
     import spectragent.agents.skyvern.dom as skyvern_dom
     import spectragent.agents.skyvern.dom_vision as skyvern_dom_vision
     import spectragent.agents.skyvern.family as skyvern
     import spectragent.agents.ui_tars.agent as ui_tars
 
-    for module in (browser_use, skyvern, skyvern_dom, skyvern_dom_vision, ui_tars):
+    for module in (
+        browser_use,
+        browser_use_dom,
+        browser_use_dom_vision,
+        skyvern,
+        skyvern_dom,
+        skyvern_dom_vision,
+        ui_tars,
+    ):
         assert not hasattr(module, "_PROMPT_DIR"), module.__name__
 
 
@@ -356,8 +371,9 @@ def test_browser_use_selects_rather_than_naming_its_template():
     Adding one would let ``flash_mode: true`` and
     ``prompt_template: system_prompt`` disagree in the same YAML.
     """
-    assert "prompt_template" not in get_type_hints(BrowserUseAgent, include_extras=True)
-    assert BrowserUseAgent(flash_mode=True).select_prompt_variant() == ("system_prompt_flash")
+    for member in (BrowserUseDomAgent, BrowserUseDomVisionAgent):
+        assert "prompt_template" not in get_type_hints(member, include_extras=True)
+    assert BrowserUseDomAgent(flash_mode=True).select_prompt_variant() == ("system_prompt_flash")
 
 
 # ── Engine ────────────────────────────────────────────────────────────
@@ -402,13 +418,13 @@ def test_surface_fragments_are_not_mistaken_for_template_variants():
     }
 
 
-def test_every_surface_fragment_is_reachable_from_some_mode():
+def test_every_surface_fragment_is_reachable_from_some_member():
     """The same rule as for templates: a file nothing loads still ships."""
     reached: set[str] = set()
-    for mode in ("dom", "dom_vision", "vision"):
+    for member in (BrowserUseDomAgent, BrowserUseDomVisionAgent):
         for flash in (True, False):
-            agent = BrowserUseAgent(observation_mode=mode, flash_mode=flash)
-            agent.prepare(**_PREPARE_KWARGS["browser_use"])
+            agent = member(flash_mode=flash)
+            agent.prepare(**_BROWSER_USE_PREPARE)
             snapshot = agent.system_prompt
             assert snapshot is not None
             reached.add(snapshot.params["surface"])  # type: ignore[union-attr]
@@ -416,25 +432,24 @@ def test_every_surface_fragment_is_reachable_from_some_mode():
     # agent fills it; a rendered surface may also carry an appended
     # coordinate paragraph, so match on "the filled fragment is a prefix of
     # something rendered".
-    dom_format = _PREPARE_KWARGS["browser_use"]["fragment_formats"]["dom"]
+    dom_format = _BROWSER_USE_PREPARE["fragment_formats"]["dom"]
     on_disk = {
         p.read_text("utf-8").strip().replace("{dom_format}", dom_format)
         for p in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}")
     }
     unused = [text for text in on_disk if not any(r.startswith(text) for r in reached)]
-    assert not unused, f"{len(unused)} surface fragment(s) no mode renders"
+    assert not unused, f"{len(unused)} surface fragment(s) no member renders"
     assert not any("{dom_format}" in r for r in reached), "a slot reached the model unfilled"
 
 
 def test_surface_fragments_substitute_only_the_dom_format():
     """They are values, and ``str.format`` does not recurse into one.
 
-    So the agent fills the one slot a DOM surface has itself: ``{dom_format}``,
+    So the agent fills the one slot every surface has itself: ``{dom_format}``,
     the run's DOM serializer's own description of its text. Any other
     ``{placeholder}`` would reach the model verbatim — the other part of the
     surface that *is* configuration (the coordinate grid) is composed in
     Python, not left as a token in the file.
     """
     for path in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}"):
-        expected = {"dom_format"} if path.stem.startswith("dom") else set()
-        assert template_variables("format", path.read_text("utf-8")) == expected, path.name
+        assert template_variables("format", path.read_text("utf-8")) == {"dom_format"}, path.name

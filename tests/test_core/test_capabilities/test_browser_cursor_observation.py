@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomVisionAgent
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser import BrowserCapability
@@ -197,7 +197,7 @@ def test_restoration_measures_clean_scene_when_only_cursor_differs() -> None:
     assert evidence.screenshot_distance == 0
 
 
-@pytest.mark.parametrize("agent", [BrowserUseAgent(observation_mode="vision"), UITarsAgent()])
+@pytest.mark.parametrize("agent", [BrowserUseDomVisionAgent(), UITarsAgent()])
 async def test_existing_image_consumers_send_model_view_on_unchanged_grid(agent) -> None:
     image = shot(cursor=ScreenshotCursor(position=(30, 40)))
     observation = SimpleNamespace(

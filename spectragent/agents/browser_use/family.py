@@ -1,57 +1,49 @@
-"""BrowserUseAgent — one browser agent, three observation modes.
+"""The BrowserUse family root: what ``browser_use.dom`` and ``browser_use.dom_vision`` share.
 
 A passive domain-knowledge provider: it knows how to build a browser
 prompt and how to read a browser reply. ``ReactLoop`` drives it, woven in
 by ``AgentRuntime``.
 
-**The mode is configured, never inferred.** ``observation_mode`` says
-whether this run reads the page as DOM text, as DOM text plus a
-screenshot, or as a screenshot alone. It picks the surface fragment the
-prompt is built from *and* narrows what the agent takes into negotiation,
-so the three follow from one enum value:
+**A member is a class, never a mode.** ``BrowserUseAgent`` is the abstract
+family root (``docs/architecture_design.md`` §4.1 "Agent 家族"): it holds the
+prompt building and reply parsing, and registers nothing. Each member writes
+its own complete ``__wiring__``, so the trace's ``agent_id`` says what the
+model saw and which actions it could take:
 
-============ ================= =============================== ===========
-mode         in model context  click verbs                     DOM reached
-============ ================= =============================== ===========
-dom          DOM text          ``click`` (index)               yes
-dom_vision   DOM text + image  ``click`` and ``click_coordinate``, yes
-                               independently
-vision       image             ``click_coordinate`` only       never
-============ ================= =============================== ===========
+========================== ======================== ===========================
+member                     in model context         click verbs
+========================== ======================== ===========================
+``browser_use.dom``        DOM text                 ``click`` (index)
+``browser_use.dom_vision`` DOM text + screenshot    ``click`` and
+                                                    ``click_coordinate``
+========================== ======================== ===========================
 
-Deriving the mode from the environment instead — "there is no ``dom``
-fragment, so this must be a vision run" — would make a mistyped capability
-profile silently downgrade a DOM experiment into a vision one. Here a DOM
-mode keeps ``dom`` *required*, so that mistake is an
-``IncompatibleFragmentError`` naming the mode that asked for it.
+**The DOM is required by every member.** Both declare ``dom`` required, so a
+capability profile without a DOM (``vision_only``) fails negotiation by
+name instead of quietly turning a DOM run into a vision one. A model that
+reads only the screenshot is a computer-use agent (``ui_tars``).
 
-The screenshot fragment is required in **every** mode. It is not only
+The screenshot fragment is required by every member too. It is not only
 model input: ``online_mind2web`` and ``lexbench_browser`` score runs from
-the screenshots in the trace, so a DOM-mode run still captures them — the
-mode decides what the *model* sees, not what the run records.
+the screenshots in the trace, so a ``browser_use.dom`` run still captures
+them — the member decides what the *model* sees, not what the run records.
 
 **What the model may emit is a closed schema.** ``prepare()`` compiles the
 negotiated descriptors into a per-run union (``core/actions/action_union.py``)
 whose ``anyOf`` branches are the verbs this run can execute and nothing
-else. There is no vocabulary map and no local-id fallback: the prompt
-advertises the fully-qualified key, the schema permits it, ``env.act``
-routes on it and the trace records it — one string the whole way.
+else. The prompt advertises the fully-qualified key, the schema permits it,
+``env.act`` routes on it and the trace records it — one string the whole way.
 
-**The DOM text describes itself.** A DOM mode's surface does not say what an
+**The DOM text describes itself.** The surface fragment does not say what an
 element line looks like: it quotes the run's DOM serializer's own description
 (``__fragment_formats__``), so the prompt teaches the format the run writes,
 ``text`` or ``html``.
 
-**Every point the model reads is on the grid it writes.** A run with a
-coordinate action teaches the model a grid (``coordinate_space``) over the
-screenshot it is shown; the declaration is this agent's whole part in
-coordinates. The framework converts every point the reply writes into the
-capability's units, and writes every point fed back — the actions a step
-ran, their effects, the pointer — on the frame of the step it belongs to
-(``core/loops/coordinate_frames.py``, ``docs/architecture_design.md`` §4.1
-"坐标系归框架"), the same contract UI-TARS keeps. A run without a coordinate
-action writes no point and is taught no grid, so its feedback keeps
-viewport units.
+**Points are the framework's.** A run whose model writes points declares its
+grid (``coordinate_space``, on ``browser_use.dom_vision`` only); the framework
+converts every point the reply writes and writes every point fed back on the
+frame of the step it belongs to (``core/loops/coordinate_frames.py``). This
+module calls those writers and never converts a point itself.
 """
 
 from __future__ import annotations
@@ -59,8 +51,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, create_model
 from pydantic import Field as PydanticField
@@ -71,7 +62,6 @@ from spectragent.agents.prompts import load_prompt_fragment
 from spectragent.agents.rendering.action_effects import effect_line
 from spectragent.agents.rendering.browser_state import render_browser_state
 from spectragent.agents.rendering.capture_state import (
-    CAPTURE_STATE_KEY,
     capture_state_demand,
     write_viewport_pixels,
 )
@@ -85,12 +75,10 @@ from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessag
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.core.negotiation import bounded_demand
 from spectragent.prompts import hash_text, text_snapshot
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
-from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame
-from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.prompt import (
     PromptRef,
     PromptSnapshot,
@@ -103,146 +91,19 @@ from spectragent.schemas.prompt import (
 #: one — the hash still pins the exact text the model was given.
 _OVERRIDE_REF_PATH = "<override_system_message>"
 
-
-@dataclass(frozen=True)
-class _ModeDemand:
-    """How one mode narrows the class ``__wiring__``, per registry.
-
-    ``promote`` moves a declared optional key into required; ``exclude``
-    drops one. Both may name **only** the class's optional keys: the
-    optional set is precisely the space the modes disagree about, and a
-    required key is one no mode may touch.
-    """
-
-    promote: frozenset[str] = frozenset()
-    exclude: frozenset[str] = frozenset()
-
-    def apply(
-        self, required: set[str], optional: set[str], *, where: str
-    ) -> tuple[set[str], set[str]]:
-        """This mode's ``(required, optional)``, from the class's own.
-
-        The check is here rather than left to ``bounded_demand`` because
-        the two failures are not symmetrical. A stray ``promote`` grows
-        the required set and leaves the declared space, so it would be
-        caught downstream anyway; a stray ``exclude`` subtracts a key
-        nothing has — a misspelling, or a required key a mode may not drop
-        — and produces sets that are perfectly legal and quietly wrong.
-        The mode table is the single definition of the three surfaces, so
-        a typo in it has to be an error, not a shrug.
-        """
-        stray = sorted((self.promote | self.exclude) - optional)
-        if stray:
-            raise ValueError(
-                f"{where}: {stray} is not an optional key of "
-                f"BrowserUseAgent.__wiring__ (optional: {sorted(optional)}). A "
-                f"mode narrows only inside the optional set — it can neither "
-                f"invent a key nor release one the class declared required."
-            )
-        return required | self.promote, (optional - self.promote) - self.exclude
-
-
-#: Mode → registry → how it narrows. A module-level immutable table, not
-#: state: it is read, never written, and every run builds its own agent.
-_MODE_DEMAND: Mapping[str, Mapping[str, _ModeDemand]] = MappingProxyType(
+#: Variants whose surface fragment is the compact one: the flash template
+#: and the three written for a fine-tuned browser-use checkpoint, which say
+#: as little as they can because the checkpoint learned the conventions.
+#: Every template quotes a surface: the DOM format is the serializer's to
+#: describe, so a fine-tuned run reads what this run's serializer writes.
+_TERSE_VARIANTS: frozenset[str] = frozenset(
     {
-        "dom": MappingProxyType(
-            {
-                "observation": _ModeDemand(promote=frozenset({"dom"})),
-                "action": _ModeDemand(
-                    promote=frozenset({"click", "type"}),
-                    # The coordinate verbs read a point off an image this
-                    # mode never shows the model. Previously they were
-                    # negotiated, executable and simply never taught —
-                    # the guard would have run one the model could not
-                    # have known to ask for.
-                    exclude=frozenset({"click_coordinate", "type_coordinate", "drag"}),
-                ),
-            }
-        ),
-        "dom_vision": MappingProxyType(
-            {
-                "observation": _ModeDemand(promote=frozenset({"dom"})),
-                "action": _ModeDemand(
-                    promote=frozenset({"click", "type"}),
-                    # Two *click* verbs, kept distinct on purpose; typing
-                    # and dragging stay index-addressed here, where an
-                    # index exists.
-                    exclude=frozenset({"type_coordinate", "drag"}),
-                ),
-            }
-        ),
-        "vision": MappingProxyType(
-            {
-                "observation": _ModeDemand(exclude=frozenset({"dom"})),
-                "action": _ModeDemand(
-                    # ``send_keys`` presses keys; it cannot type text into
-                    # a field nobody focused, so ``type_coordinate`` is
-                    # required rather than optional.
-                    promote=frozenset({"click_coordinate", "type_coordinate"}),
-                    # ``extract_content`` returns innerText or outerHTML —
-                    # DOM-derived text under another name. Letting it in
-                    # would make "vision-only" mean "vision plus a text
-                    # channel", and every ablation drawn against it wrong.
-                    exclude=frozenset({"click", "type", "extract_content"}),
-                ),
-            }
-        ),
-    }
-)
-
-#: Which modes attach the screenshot to the model's message.
-_MODES_WITH_IMAGE: frozenset[str] = frozenset({"dom_vision", "vision"})
-
-#: Which modes put the DOM tree in the model's message.
-_MODES_WITH_DOM: frozenset[str] = frozenset({"dom", "dom_vision"})
-
-#: The paragraph the prompt adds when this run has a coordinate action.
-#: Said in code rather than in the surface fragment because it depends on
-#: ``coordinate_space``, which is config — the same split UI-TARS makes.
-_COORDINATE_GUIDE: Mapping[CoordinateSpace, str] = MappingProxyType(
-    {
-        "screenshot_pixels": (
-            "<coordinates>\n"
-            "A point is (x, y) in pixels of the screenshot you are shown: (0, 0) "
-            "is its top-left corner, x grows to the right and y downwards. Every "
-            "step states the screenshot's size in pixels. Write the numbers only "
-            "— nothing there names an element, it only says where one is. Every "
-            "point in the agent history and the browser state is on this same grid.\n"
-            "</coordinates>"
-        ),
-        "normalized_1000": (
-            "<coordinates>\n"
-            "A point is (x, y) on a 0-1000 grid laid over the screenshot, whatever "
-            "its size in pixels: (0, 0) is the top-left corner, (1000, 1000) the "
-            "bottom-right corner, x grows to the right and y downwards. Write the "
-            "numbers only — nothing there names an element, it only says where one "
-            "is. Every point in the agent history and the browser state is on this "
-            "same grid.\n"
-            "</coordinates>"
-        ),
-    }
-)
-
-#: Template stems written for a fine-tuned browser-use checkpoint. They
-#: carry no surface description at all (the checkpoint learned the DOM
-#: format), so they take no surface fragment — and are refused outside a
-#: DOM mode, where that assumption no longer holds.
-_FINE_TUNED_VARIANTS: frozenset[str] = frozenset(
-    {
+        "system_prompt_flash",
         "system_prompt_browser_use",
         "system_prompt_browser_use_flash",
         "system_prompt_browser_use_no_thinking",
     }
 )
-
-#: Variants whose surface fragment is the compact one.
-_TERSE_VARIANTS: frozenset[str] = frozenset(
-    {
-        "system_prompt_flash",
-    }
-)
-
 
 #: The reasoning fields a reply's thought is read from, in precedence order
 #: (``BrowserUseAgent.parse_react_thought``): the model's own reasoning block
@@ -253,113 +114,45 @@ _THOUGHT_FIELDS: tuple[str, ...] = ("thinking", "next_goal", "memory")
 
 @dataclass
 class BrowserUseAgent(AgentBase):
-    """Browser-use style agent with multi-action, flash mode and three surfaces."""
+    """Browser-use style agent: multi-action, flash mode, the page as DOM text.
 
+    The abstract family root. Its members are ``browser_use.dom``
+    (:class:`~spectragent.agents.browser_use.dom.BrowserUseDomAgent`) and
+    ``browser_use.dom_vision``
+    (:class:`~spectragent.agents.browser_use.dom_vision.BrowserUseDomVisionAgent`).
+    """
+
+    __abstract__ = True
     __registry_key__ = "browser_use"
 
-    # ── Cross-registry wiring ────────────────────────────────────
-    # The declared space, across *all* modes. Required here means "no
-    # mode can do without it"; optional means "some mode promotes it and
-    # some mode excludes it", and ``_MODE_DEMAND`` is where that is said.
-    # conscribe compiles this into the generated config's ``Literal``, so
-    # it is also the boundary ``negotiation_demand`` may not cross.
-    #
+    # ``observation`` and ``action`` are written out by each member, whole:
+    # what a member sees and what it can do is the member's definition, and
+    # an entry a member writes replaces the root's (the MRO merge, §4.1).
     # Keys are capability-relative on purpose: ``click`` is what this
     # agent knows how to do, ``browser.click`` is who executes it, and
     # negotiation is the only place that can answer the second question.
-    # There is no ``capability`` entry for the same reason — naming one
-    # constrained the generated config to a provider without any runtime
-    # effect.
-    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
-    # The DOM text's format is its serializer's to describe: a DOM mode's
-    # surface quotes the run's description verbatim, so changing the
-    # serializer changes the prompt with it (``docs/architecture_design.md``
-    # §4.4 "观测格式由提供方描述"). ``prepare`` receives it as
-    # ``fragment_formats["dom"]``; ``vision`` excludes ``dom`` and gets none.
-    __fragment_formats__: ClassVar[frozenset[str]] = frozenset({"dom"})
-
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
-        # ``screenshot`` is required in every mode because the evaluators
-        # read it out of the trace, not because the model always sees it.
-        # ``browser_meta`` (URL, title, tabs) is required because this is a
-        # browser agent: no mode reads a page without knowing which page.
-        # ``capture_state`` is the platform-neutral capture fact every agent
-        # declares optional; ``show_capture_state`` may exclude it
-        # (``docs/architecture_design.md`` §4.4, "观测增强按消费方分层").
-        "observation": {
-            "registry": "observation",
-            "keys": ["screenshot", "platform", "task", "browser_meta"],
-            "optional_keys": ["dom", "step_info", "history", CAPTURE_STATE_KEY],
-            "declare_only": True,
-        },
-        "action": {
-            "registry": "action",
-            "keys": ["navigate", "done"],
-            "optional_keys": [
-                # Index-addressed and point-addressed verbs are never
-                # merged: ``click`` takes a selector-map index, which only
-                # exists when ``browser.dom`` was negotiated;
-                # ``click_coordinate`` takes a point on the screenshot,
-                # which reaches what an index cannot (a cross-origin iframe
-                # widget). One overloaded verb would have half-inapplicable
-                # params in either mode.
-                "click",
-                "type",
-                "click_coordinate",
-                "type_coordinate",
-                "drag",
-                "scroll",
-                "send_keys",
-                "extract_content",
-                "go_back",
-                "go_forward",
-                "switch_tab",
-                "wait",
-            ],
-            "declare_only": True,
-        },
         "llm": "llm",  # auto-discovery — any registered LLM
     }
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    # The DOM text's format is its serializer's to describe: the surface
+    # quotes the run's description verbatim, so changing the serializer
+    # changes the prompt with it (``docs/architecture_design.md`` §4.4
+    # "观测格式由提供方描述"). ``prepare`` receives it as
+    # ``fragment_formats["dom"]``; every member requires ``dom``.
+    __fragment_formats__: ClassVar[frozenset[str]] = frozenset({"dom"})
+
+    #: The stem of this member's surface fragment under ``_surface/``: how
+    #: the system prompt says this run sees the page.
+    _SURFACE: ClassVar[str]
 
     # ── config (conscribe visible) ─────────────────────────────
     # ``max_steps`` / ``max_actions_per_step`` / ``timeout_seconds`` are
     # deliberately absent: the Loop owns and enforces them. AgentRuntime
     # hands the loop's limits to ``prepare()`` so the prompt advertises
     # exactly what will be executed.
-    #
-    observation_mode: Annotated[
-        Literal["dom", "dom_vision", "vision"],
-        PydanticField(
-            description=(
-                "What reaches the model: 'dom' (the element tree as text), "
-                "'dom_vision' (that plus a screenshot), or 'vision' (a "
-                "screenshot alone — no DOM is extracted, and the only click "
-                "verb is a coordinate one). Screenshots are captured and "
-                "recorded in every mode."
-            ),
-        ),
-    ] = "dom"
-    coordinate_space: Annotated[
-        Literal["screenshot_pixels", "normalized_1000"],
-        PydanticField(
-            description=(
-                "The grid the model writes points on: 'screenshot_pixels' "
-                "(pixels of the screenshot it is shown) or 'normalized_1000' "
-                "(0-1000 over the screenshot on both axes, x first). The "
-                "prompt teaches it; the framework converts every point the "
-                "model writes into the units of the capability's point "
-                "actions, and writes every point fed back (the actions run, "
-                "their effects, the pointer) on this grid. Unused when this "
-                "run negotiated no coordinate action: its feedback keeps "
-                "viewport pixels."
-            ),
-        ),
-    ] = "screenshot_pixels"
     flash_mode: Annotated[bool, PydanticField(description="Skip thinking for speed")] = True
-    vision_detail: Annotated[
-        Literal["auto", "low", "high"], PydanticField(description="Screenshot detail level")
-    ] = "low"
     use_thinking: Annotated[bool, PydanticField(description="Enable extended thinking")] = True
     is_browser_use_model: Annotated[
         bool, PydanticField(description="Using fine-tuned browser-use model")
@@ -417,6 +210,18 @@ class BrowserUseAgent(AgentBase):
             )
         ),
     ] = False
+    # Counts *steps*, each with its reply, actions, results and effects;
+    # Skyvern's ``action_history_window`` counts executed actions.
+    step_history_window: Annotated[
+        int,
+        PydanticField(
+            ge=1,
+            description=(
+                "Number of most recent steps, each with its reply, actions, results and "
+                "effects, replayed in the agent history of every step's message."
+            ),
+        ),
+    ] = 10
 
     # ── internal state populated by prepare() ──────────────────
     # ``task`` lives on every observation as ``obs.task.user_request``
@@ -429,28 +234,12 @@ class BrowserUseAgent(AgentBase):
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
-    _max_history_steps: int = field(default=10, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
     # descriptors at class creation; the Composer populates them via
     # setattr at wire time. Reading them before injection raises
     # ``AttributeError`` with a clear message.
-
-    def __post_init__(self) -> None:
-        # A cross-field check, so it fails while the Composer is building
-        # the object graph — earlier than negotiation, and long before the
-        # first LLM call. The three fine-tuned templates describe no
-        # surface at all because the checkpoint learned the DOM format;
-        # pointing one at a vision run would ship a prompt that never
-        # mentions how this run sees the page.
-        if self.observation_mode == "vision" and self.is_browser_use_model:
-            raise ValueError(
-                "browser_use: is_browser_use_model=true selects a prompt written "
-                "for a checkpoint fine-tuned on the DOM element tree, which "
-                "observation_mode='vision' never produces. Use 'dom' or "
-                "'dom_vision', or turn is_browser_use_model off."
-            )
 
     # ── BaseAgent properties ───────────────────────────────────
 
@@ -475,44 +264,11 @@ class BrowserUseAgent(AgentBase):
     # ── Negotiation ────────────────────────────────────────────
 
     def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
-        """This instance's demand, narrowed by ``observation_mode`` and ``show_capture_state``.
-
-        The mode promotes some of the class's optional keys and excludes
-        others; with ``show_capture_state`` off, the optional
-        ``capture_state`` is excluded too. ``bounded_demand`` then checks
-        the result never left the declared space. Negotiation itself is
-        untouched — it receives one ``(required, optional)`` pair and
-        cannot tell that a mode chose it.
-
-        Both checks run even though ``demand_of`` would run the second
-        one anyway. They answer different questions: ``_ModeDemand.apply``
-        blames the mode table, ``bounded_demand`` blames the instance.
-        """
+        """The class demand, without ``capture_state`` when ``show_capture_state`` is off."""
         required, optional = super().negotiation_demand(registry)
-        demand = _MODE_DEMAND[self.observation_mode].get(registry)
-        if demand is not None:
-            required, optional = demand.apply(
-                required,
-                optional,
-                where=f"_MODE_DEMAND[{self.observation_mode!r}][{registry!r}]",
-            )
-        narrowed = capture_state_demand(
+        return capture_state_demand(
             self, registry, required, optional, shown=self.show_capture_state
         )
-        return bounded_demand(self, registry, *narrowed)
-
-    def __repr__(self) -> str:
-        # This exact shape is what ``demand_label`` looks for: a repr that
-        # begins with the registry key is used whole in a negotiation
-        # diagnosis, so ``IncompatibleFragmentError`` says
-        # ``dom ← browser_use(observation_mode='dom')`` instead of leaving
-        # "required fragment 'dom' is missing" as a puzzle. A dataclass's
-        # generated repr would dump the LLM and the memory into the
-        # message; this says what chose the demand — the mode, and the
-        # capture-state switch only when it narrows.
-        if self.show_capture_state:
-            return f"browser_use(observation_mode={self.observation_mode!r})"
-        return f"browser_use(observation_mode={self.observation_mode!r}, show_capture_state=False)"
 
     # ── Lifecycle hook called by AgentRuntime ──────────────────
 
@@ -536,16 +292,16 @@ class BrowserUseAgent(AgentBase):
 
         *action_space* is the run's effective action space, the one the
         guard executes (``AgentRuntime.action_space``): its descriptors
-        arrive already narrowed by negotiation, which the mode steered — so
-        there is nothing to filter here — and its bindings say what a name
+        arrive already narrowed by negotiation against this member's wiring,
+        so there is nothing to filter here, and its bindings say what a name
         means in this run. What this does build is the per-run output model:
         a closed union over exactly these verbs, which is what makes "the
         prompt advertises what the run can execute" true of the *schema* as
         well as the prose.
 
         *fragment_formats* holds the run's description of the DOM text
-        (``"dom"``), written by its DOM serializer, in every DOM mode; the
-        surface quotes it in place of a format of its own.
+        (``"dom"``), written by its DOM serializer; the surface quotes it in
+        place of a format of its own.
 
         Raises:
             UnsupportedParamsSchema: an action's params are outside the
@@ -558,7 +314,6 @@ class BrowserUseAgent(AgentBase):
         variant = self.select_prompt_variant()
         self._per_run_output_model = self._build_per_run_output_model(variant)
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
-            task,
             variant,
             max_actions_per_step,
             fragment_formats,
@@ -584,33 +339,14 @@ class BrowserUseAgent(AgentBase):
         ``<agent_history>...</agent_history><agent_state>...</agent_state>
         <browser_state>...</browser_state>``. ``cache=True`` lets
         Anthropic prefix-cache the (mostly stable) task/state header.
-
-        The mode decides what goes in: a DOM mode renders the element
-        tree, a vision-capable mode attaches the image. ``vision`` renders
-        no ``dom`` fragment *even if the observation carries one* — a
-        fragment can reach the agent that negotiation did not activate (a
-        loop re-observing, a hand-built observation in a test), and
-        "vision only" has to mean it.
-
-        That gate is on the fragment, not on the whole message. What the
-        step's own history says about the actions it ran is rendered in
-        every mode (see :meth:`_render_history`); keeping DOM-derived text
-        out of *that* is negotiation's job, and in ``vision`` it does it by
-        never activating a verb that returns any.
+        Whether the screenshot goes with it is the member's
+        (:meth:`_step_messages`).
 
         It records no state. The pointer is written on this step's frame
         (``context.frame``); each history step's actions and effects on the
         frame that step's record keeps.
         """
-        screenshot = getattr(observation, "screenshot", None)
-        shows_screenshot = (
-            self.observation_mode in _MODES_WITH_IMAGE and read_model_image(screenshot) is not None
-        )
-        body = self._build_step_text(observation, context.frame, shows_screenshot=shows_screenshot)
-        if shows_screenshot:
-            messages: list[BaseMessage] = [self._build_vision_message(observation, body)]
-        else:
-            messages = [UserMessage(content=body, cache=True)]
+        messages = self._step_messages(observation, context.frame)
         return place_prompt_contributions(messages, context=context)
 
     async def build_restored_history(
@@ -653,7 +389,7 @@ class BrowserUseAgent(AgentBase):
         model = self._per_run_output_model
         if model is None:
             raise ParseError(
-                "browser_use.parse_react_output ran before prepare(), so there "
+                f"{self.agent_id}.parse_react_output ran before prepare(), so there "
                 "is no negotiated action set to validate against.",
                 raw_output=str(llm_output)[:500],
             )
@@ -695,7 +431,7 @@ class BrowserUseAgent(AgentBase):
         """
         if self._per_run_output_model is None:
             raise RuntimeError(
-                "browser_use.get_react_output_model() was called before "
+                f"{self.agent_id}.get_react_output_model() was called before "
                 "prepare(); the output schema is built from the negotiated "
                 "action set, which does not exist yet."
             )
@@ -732,11 +468,32 @@ class BrowserUseAgent(AgentBase):
                 return value.strip(), name
         return None
 
-    # ── private helpers ────────────────────────────────────────
+    # ── member hooks ───────────────────────────────────────────
 
-    def _teaches_a_grid(self) -> bool:
-        """Whether this run's model writes points: the framework framed its action space on a grid."""
-        return self._action_space.coordinate_space is not None
+    def _step_messages(self, observation: Any, frame: PointFrame | None) -> list[BaseMessage]:
+        """This step's user message: the page as text.
+
+        The screenshot is captured and recorded, never shown; a member
+        that shows it overrides this.
+        """
+        return [UserMessage(content=self._build_step_text(observation, frame), cache=True)]
+
+    def _render_surface(self, variant: str, fragment_formats: Mapping[str, str]) -> str:
+        """This member's description of how the run sees and reaches the page.
+
+        Loaded from ``prompts/agents/browser_use/_surface/`` — a
+        subdirectory, so ``agent_prompt_variants`` (which globs the top
+        level) cannot mistake a fragment for a template variant. The
+        fragment holds one slot, ``{dom_format}``: the run's DOM
+        serializer's own description of its text (*fragment_formats*
+        ``["dom"]``), quoted verbatim, so the surface never describes a
+        format the run does not write.
+        """
+        stem = f"{self._SURFACE}_terse" if variant in _TERSE_VARIANTS else self._SURFACE
+        text, _ref = load_prompt_fragment(self.__registry_key__, "_surface", stem)
+        return text.strip().format(dom_format=fragment_formats["dom"])
+
+    # ── private helpers ────────────────────────────────────────
 
     def _build_per_run_output_model(self, variant: str) -> type[BaseModel]:
         """Compose this run's output model: taught reasoning + closed action.
@@ -791,17 +548,17 @@ class BrowserUseAgent(AgentBase):
 
         Public because it is the only description of this agent's prompt
         surface: it has no ``prompt_template`` field, because its choice
-        is a *function* of the model and the mode, not a free one. Asking
-        YAML for both ``flash_mode: true`` and
-        ``prompt_template: system_prompt_flash`` would be two sources of
-        truth that can disagree. ``tests/test_agents/test_prompt_tree.py``
-        enumerates this over the whole config matrix to prove every file
-        in the directory is reachable and none is orphaned.
+        is a *function* of the model, not a free one. Asking YAML for both
+        ``flash_mode: true`` and ``prompt_template: system_prompt_flash``
+        would be two sources of truth that can disagree.
+        ``tests/test_agents/test_prompt_tree.py`` enumerates this over the
+        whole config matrix to prove every file in the directory is
+        reachable and none is orphaned.
 
-        ``observation_mode`` is deliberately *not* an axis here: the modes
-        share one prompt tree and differ only by the surface fragment
-        spliced into it, so a DOM/vision ablation cannot be confounded by
-        two separately worded templates.
+        The member is deliberately *not* an axis here: the members share one
+        prompt tree and differ only by the surface fragment spliced into it,
+        so a DOM / DOM-plus-screenshot ablation cannot be confounded by two
+        separately worded templates.
 
         Neither is the model *version*, and that is a deletion, not an
         omission. Upstream browser-use keys a separate, deliberately
@@ -819,7 +576,7 @@ class BrowserUseAgent(AgentBase):
         YAML run against two models silently rendered two different
         system prompts, with nothing in the config to show it. On an
         evaluation platform the prompt is an independent variable, so it
-        may vary with what the agent *is* (its mode, its verbs) but never
+        may vary with what the agent *is* (its member, its verbs) but never
         with which model happens to be behind it.
         """
         if self.is_browser_use_model:
@@ -836,39 +593,8 @@ class BrowserUseAgent(AgentBase):
         else:
             return "system_prompt_no_thinking"
 
-    def _render_surface(self, fragment_formats: Mapping[str, str]) -> str:
-        """The mode's description of how this run sees and reaches the page.
-
-        Loaded from ``prompts/agents/browser_use/_surface/`` — a
-        subdirectory, so ``agent_prompt_variants`` (which globs the top
-        level) cannot mistake a fragment for a template variant. A DOM
-        mode's fragment holds one slot, ``{dom_format}``: the run's DOM
-        serializer's own description of its text (*fragment_formats*
-        ``["dom"]``), quoted verbatim, so the surface never describes a
-        format the run does not write. The coordinate paragraph is appended
-        from code because it depends on ``coordinate_space``, and only when
-        this run actually negotiated an action that takes a point.
-
-        Raises:
-            ValueError: A DOM mode without the ``dom`` format description.
-        """
-        stem = self.observation_mode
-        if self.select_prompt_variant() in _TERSE_VARIANTS:
-            stem = f"{stem}_terse"
-        text, _ref = load_prompt_fragment(self.__registry_key__, "_surface", stem)
-        text = text.strip()
-        if self.observation_mode in _MODES_WITH_DOM:
-            dom_format = fragment_formats.get("dom")
-            if not dom_format:
-                raise ValueError("prepare requires the dom fragment's format description")
-            text = text.format(dom_format=dom_format)
-        if self._teaches_a_grid():
-            text = f"{text}\n{_COORDINATE_GUIDE[self.coordinate_space]}"
-        return text
-
     def _build_system_prompt(
         self,
-        task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
         variant: str,
         max_actions_per_step: int,
         fragment_formats: Mapping[str, str],
@@ -882,17 +608,14 @@ class BrowserUseAgent(AgentBase):
                 PromptRef(path=_OVERRIDE_REF_PATH, content_hash=hash_text(text)),
             )
         else:
-            params: dict[str, Any] = {
-                "max_actions": max_actions_per_step,
-                "action_list": _render_action_list(self._action_space.descriptors),
-            }
-            # The fine-tuned templates describe no surface, so handing
-            # them one would be a param nothing renders — which
-            # ``test_prompt_tree`` reads as "the agent computed something
-            # the model never sees", and rightly.
-            if variant not in _FINE_TUNED_VARIANTS:
-                params["surface"] = self._render_surface(fragment_formats)
-            text, snapshot = self.render(variant, params)
+            text, snapshot = self.render(
+                variant,
+                {
+                    "max_actions": max_actions_per_step,
+                    "action_list": _render_action_list(self._action_space.descriptors),
+                    "surface": self._render_surface(variant, fragment_formats),
+                },
+            )
 
         if self.extend_system_message:
             # The extension is appended *after* substitution, so the
@@ -902,38 +625,8 @@ class BrowserUseAgent(AgentBase):
             snapshot = text_snapshot(text, snapshot.ref)
         return text, snapshot
 
-    def _build_vision_message(self, observation: Any, body: str) -> UserMessage:
-        """Build a multi-modal user message with body + screenshot.
-
-        Caller already checked that the screenshot has bytes, and already
-        constructed the structured XML body.
-        """
-        import base64
-
-        from spectragent.core.llm.messages import (
-            ContentPartImageParam,
-            ContentPartTextParam,
-            ImageURL,
-        )
-
-        image_bytes = read_model_image(observation.screenshot)
-        assert image_bytes is not None  # noqa: S101 — caller's precondition
-        media_type = image_media_type(image_bytes) or "image/png"
-        b64 = base64.b64encode(image_bytes).decode()
-        content: list[Any] = [
-            ContentPartTextParam(text=body),
-            ContentPartImageParam(
-                image_url=ImageURL(
-                    url=f"data:{media_type};base64,{b64}",
-                    detail=self.vision_detail,
-                    media_type=media_type,
-                ),
-            ),
-        ]
-        return UserMessage(content=content, cache=True)
-
     def _build_step_text(
-        self, observation: Any, frame: PointFrame | None, *, shows_screenshot: bool
+        self, observation: Any, frame: PointFrame | None, *, screenshot_note: str = ""
     ) -> str:
         """Compose the per-step XML user-message body.
 
@@ -947,22 +640,16 @@ class BrowserUseAgent(AgentBase):
             </agent_state>
             <browser_state>URL/Title/Tabs/capture state/DOM</browser_state>
 
+        *screenshot_note* ends the browser state: what a member that shows
+        the screenshot says about it.
+
         Scratchpad blocks (file_system, todo, plan, sensitive_data,
         page_stats, recent_events, ...) are intentionally omitted —
         their data sources land with the future ScratchpadCapability.
         """
         history_xml = self._render_history(getattr(observation, "history", None))
         state_xml = self._render_agent_state(observation)
-        browser_xml = self._render_browser_state(observation, frame)
-        grid = frame.grid if frame is not None and shows_screenshot else None
-        # Only the pixel grid needs a size: a 0-1000 grid is defined over
-        # whatever size the image happens to have, so stating the pixels
-        # would invite the model to answer in them.
-        if grid is not None and grid.space == "screenshot_pixels":
-            browser_xml += (
-                f"\n\nScreenshot: {grid.width}x{grid.height} pixels, showing the "
-                f"whole visible viewport."
-            )
+        browser_xml = self._render_browser_state(observation, frame) + screenshot_note
         return (
             f"<agent_history>\n{history_xml}\n</agent_history>\n"
             f"{state_xml}\n"
@@ -986,18 +673,7 @@ class BrowserUseAgent(AgentBase):
         return f"<agent_state>\n{body}\n</agent_state>"
 
     def _render_history(self, history: Any) -> str:
-        """What this run already did, in every mode.
-
-        Deliberately not gated on the mode. These are the run's own past
-        actions and their results — the model needs them to avoid
-        repeating a step, and in ``vision`` they are the actions that mode
-        negotiated, whose results carry no element tree. The invariant
-        "``vision`` sees no DOM" is held where it is decidable: the ``dom``
-        fragment is never rendered (:meth:`_render_browser_state`), and
-        ``extract_content`` — DOM-derived text under another name — is
-        excluded from the mode's action demand, so no result can contain
-        any. Filtering the text here instead would be guessing at a
-        provenance the string does not carry.
+        """What this run already did: the last ``step_history_window`` steps.
 
         With ``show_action_effects`` on, a step whose results measured
         effects gets an ``<effects>`` element after ``<results>``: one line
@@ -1005,9 +681,7 @@ class BrowserUseAgent(AgentBase):
         named by it, holding the effect's ``describe()`` line. A step with
         no effect to show renders exactly as before. An effect line is a
         measured page fact and may name an element by its role and
-        accessible name (what a click hit, where focus went), in every mode:
-        a ``vision`` run that must read no page text at all turns
-        ``show_action_effects`` off.
+        accessible name (what a click hit, where focus went).
 
         In a run that teaches a grid, every point a step's actions and
         effects state is on the frame that step's record keeps
@@ -1017,10 +691,8 @@ class BrowserUseAgent(AgentBase):
         items = list(getattr(history, "items", []) or [])
         if not items:
             return "<step_1>\n(no prior steps)\n</step_1>"
-        if len(items) > self._max_history_steps:
-            items = items[-self._max_history_steps :]
         blocks: list[str] = []
-        for rec in items:
+        for rec in items[-self.step_history_window :]:
             actions_str = (
                 ", ".join(
                     f"{a.name}({fact_in_model_frame(a, rec.frame, self._action_space).params})"
@@ -1064,15 +736,10 @@ class BrowserUseAgent(AgentBase):
         """Page state (URL / Title / Tabs / capture state), then the DOM.
 
         The page state is the shared browser writing,
-        ``render_browser_state``. The DOM half is gated on the *mode*, not
-        on whether the observation happens to carry a ``dom`` fragment. In
-        ``vision`` the tree never reaches the model even if something put
-        one on the observation — which is what makes a vision ablation a
-        vision ablation.
-
-        The pointer is written on this step's *frame* when this run teaches a
-        grid (a point with no place there is said to be so), and in viewport
-        pixels when it writes no point (no frame).
+        ``render_browser_state``. The pointer is written on this step's
+        *frame* when this run teaches a grid (a point with no place there
+        is said to be so), and in viewport pixels when it writes no point
+        (no frame).
         """
         parts: list[str] = []
         write_point = point_writer(frame, viewport=write_viewport_pixels)
@@ -1082,13 +749,12 @@ class BrowserUseAgent(AgentBase):
         if page_state:
             parts.append(page_state)
 
-        if self.observation_mode in _MODES_WITH_DOM:
-            dom = getattr(observation, "dom", None)
-            element_tree = getattr(dom, "element_tree", None) if dom is not None else None
-            if element_tree is not None:
-                serialized = getattr(element_tree, "serialized_dom", None)
-                dom_str = serialized if isinstance(serialized, str) else str(element_tree)
-                parts.append(f"DOM:\n{dom_str}")
+        dom = getattr(observation, "dom", None)
+        element_tree = getattr(dom, "element_tree", None) if dom is not None else None
+        if element_tree is not None:
+            serialized = getattr(element_tree, "serialized_dom", None)
+            dom_str = serialized if isinstance(serialized, str) else str(element_tree)
+            parts.append(f"DOM:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"
 

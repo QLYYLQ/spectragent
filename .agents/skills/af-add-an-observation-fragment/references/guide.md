@@ -300,13 +300,14 @@ This is why a desktop capability that wants a screenshot registers
 `browser.screenshot` (`observations.py:534`) — and why stub fragments in tests
 must be named distinctly.
 
-The declaration form for an agent (`spectragent/agents/browser_use/agent.py:285`):
+The declaration form for an agent (`spectragent/agents/browser_use/dom.py`, written
+there in its dict form with `declare_only: True`):
 
 ```python
 "observation": (
     "observation",
-    ["screenshot", "task"],                              # required
-    ["dom", "browser_meta", "step_info", "history"],     # optional
+    ["dom", "screenshot", "platform", "task", "browser_meta"],  # required
+    ["step_info", "history", "capture_state"],                  # optional
 ),
 ```
 

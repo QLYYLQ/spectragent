@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
@@ -29,12 +29,12 @@ from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 
-AGENT_CLASSES = (BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent, UITarsAgent)
+AGENT_CLASSES = (BrowserUseDomAgent, SkyvernDomAgent, SkyvernDomVisionAgent, UITarsAgent)
 
 # Captured from the original builders before adding the explicit prompt context.
 # The complete serialized messages include image bytes, roles and cache markers.
 ORIGINAL_PROMPT_DIGESTS = {
-    BrowserUseAgent: "d89b121aa6319adcc31f2032e14b19a73d0a021459d3ea8248820d06d12a8451",
+    BrowserUseDomAgent: "d89b121aa6319adcc31f2032e14b19a73d0a021459d3ea8248820d06d12a8451",
     # Skyvern split into its two members (2026-10-23): ``dom`` writes the same
     # message as before; ``dom_vision`` attaches the screenshot and states its size.
     SkyvernDomAgent: "bf357a0c812a20adaef9d691207e1a2720d6df5310bfbd7b1df7e26c1a577eb1",

@@ -1,7 +1,7 @@
-"""Tests for the M14 BrowserUseAgent ReactLoop slot adaptation.
+"""Tests for the BrowserUse family's ReactLoop slots.
 
 These tests verify:
-- BrowserUseAgent has the required ReactLoop slots
+- the BrowserUse members have the required ReactLoop slots
 - ``__wiring__`` declares the correct cross-registry constraints
 - ``prepare()`` builds the system prompt and seeds memory
 - ``build_react_prompt(observation)`` formats fragment-based observations
@@ -21,7 +21,11 @@ from typing import Any
 import pytest
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import (
+    BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+)
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.dom.models import DOMState
@@ -103,7 +107,7 @@ class _FakeHistory:
 class _FakeObservation:
     """Light fragment-shaped observation used by tests.
 
-    ``task`` defaults to a non-empty TaskObs-shape because BrowserUseAgent
+    ``task`` defaults to a non-empty TaskObs-shape because BrowserUse
     requires it (loop-source fragment in __wiring__). Tests opt out of
     step_info / history / browser_meta / etc by passing None.
     """
@@ -143,19 +147,19 @@ def _descriptors(*keys: str) -> list[ActionDescriptor]:
     return [ActionRegistrar.get(key)().descriptor() for key in (keys or _DEFAULT_ACTIONS)]
 
 
-def _make_agent(**overrides: Any) -> BrowserUseAgent:
+def _make_agent(
+    member: type[BrowserUseAgent] = BrowserUseDomAgent, **overrides: Any
+) -> BrowserUseAgent:
     from tests._helpers.assembly import make_agent
 
-    return make_agent(
-        BrowserUseAgent,
-        memory=SimpleMemory(max_messages=100),
-        **overrides,
-    )
+    return make_agent(member, memory=SimpleMemory(max_messages=100), **overrides)
 
 
-def _prepared(**overrides: Any) -> BrowserUseAgent:
+def _prepared(
+    member: type[BrowserUseAgent] = BrowserUseDomAgent, **overrides: Any
+) -> BrowserUseAgent:
     """An agent that has been through ``prepare()`` with a real action set."""
-    agent = _make_agent(**overrides)
+    agent = _make_agent(member, **overrides)
     agent.prepare(
         task="t",
         action_space=space_of(_descriptors()),
@@ -182,7 +186,7 @@ class TestSlotConformance:
 
     def test_legacy_execution_methods_removed(self) -> None:
         agent = _make_agent()
-        # M14: BrowserUseAgent no longer inherits from BaseReactAgent
+        # BrowserUse does not inherit from BaseReactAgent
         # so it must not expose run/step/build_messages.
         assert not hasattr(agent, "run")
         assert not hasattr(agent, "step")
@@ -190,44 +194,46 @@ class TestSlotConformance:
 
     def test_agent_id_and_domain(self) -> None:
         agent = _make_agent()
-        assert agent.agent_id == "browser_use"
+        assert agent.agent_id == "browser_use.dom"
         assert agent.domain == "web_navigation"
 
 
 # ── Wiring ────────────────────────────────────────────────────────────
 
 
+_MEMBERS = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
+
+
 class TestWiring:
-    def test_agent_loop_wiring(self) -> None:
+    def test_agent_loop_wiring_is_the_family_roots(self) -> None:
         wiring = BrowserUseAgent.__wiring__
         assert wiring["agent_loop"] == ("agent_loop", ["react", "branch"])
+        assert "observation" not in wiring and "action" not in wiring
 
-    def test_no_capability_entry(self) -> None:
+    @pytest.mark.parametrize("member", _MEMBERS)
+    def test_no_capability_entry(self, member: type[BrowserUseAgent]) -> None:
         """Naming a capability constrained codegen and nothing else."""
-        assert "capability" not in BrowserUseAgent.__wiring__
+        assert "capability" not in member.__wiring__
 
-    def test_observation_wiring(self) -> None:
-        wiring = BrowserUseAgent.__wiring__
-        # Required: screenshot + browser page state (``browser_meta``: a
-        # browser agent always reads which page it is on) + the loop-source
-        # task. Optional: dom, the platform-neutral ``capture_state`` and
-        # loop-source step_info/history (docs/architecture_design.md §4.4,
-        # "观测增强按消费方分层"; ``browser_meta`` was optional before that
-        # ruling). All capability-relative — which capability's ``dom`` this
-        # is gets decided at negotiation.
-        # The class declaration is the *superset across modes*: what every
-        # mode needs is required, what a mode promotes or excludes is
-        # optional. ``dom`` is optional here and promoted to required by
-        # both DOM modes — see ``_MODE_DEMAND``.
-        assert wiring["observation"] == {
+    @pytest.mark.parametrize("member", _MEMBERS)
+    def test_observation_wiring(self, member: type[BrowserUseAgent]) -> None:
+        # Required: the DOM, the screenshot (evaluators score from it), the
+        # browser page state (``browser_meta``: a browser agent always reads
+        # which page it is on), the platform and the loop-source task.
+        # Optional: the platform-neutral ``capture_state`` and loop-source
+        # step_info/history (docs/architecture_design.md §4.4,
+        # "观测增强按消费方分层"). All capability-relative — which
+        # capability's ``dom`` this is gets decided at negotiation.
+        assert member.__wiring__["observation"] == {
             "registry": "observation",
-            "keys": ["screenshot", "platform", "task", "browser_meta"],
-            "optional_keys": ["dom", "step_info", "history", "capture_state"],
+            "keys": ["dom", "screenshot", "platform", "task", "browser_meta"],
+            "optional_keys": ["step_info", "history", "capture_state"],
             "declare_only": True,
         }
 
-    def test_no_wiring_key_names_a_capability(self) -> None:
-        for entry in BrowserUseAgent.__wiring__.values():
+    @pytest.mark.parametrize("member", _MEMBERS)
+    def test_no_wiring_key_names_a_capability(self, member: type[BrowserUseAgent]) -> None:
+        for entry in member.__wiring__.values():
             if isinstance(entry, str):
                 continue
             for key_list in (
@@ -432,8 +438,8 @@ class TestBuildReactPrompt:
         assert "hello" in content
         assert "(empty browser state)" in content
 
-    async def test_a_vision_mode_attaches_the_screenshot_when_present(self) -> None:
-        agent = _make_agent(observation_mode="dom_vision")
+    async def test_dom_vision_attaches_the_screenshot_when_present(self) -> None:
+        agent = _make_agent(BrowserUseDomVisionAgent)
         agent.prepare(
             task="t",
             action_space=space_of(_descriptors()),
@@ -453,8 +459,8 @@ class TestBuildReactPrompt:
         assert isinstance(content, list)
         assert len(content) == 2
 
-    async def test_a_vision_mode_with_no_screenshot_falls_back_to_text(self) -> None:
-        agent = _make_agent(observation_mode="dom_vision")
+    async def test_dom_vision_with_no_screenshot_falls_back_to_text(self) -> None:
+        agent = _make_agent(BrowserUseDomVisionAgent)
         agent.prepare(
             task="t",
             action_space=space_of(_descriptors()),

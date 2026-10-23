@@ -1,18 +1,18 @@
-"""``observation_mode``: three surfaces, one agent, one prompt tree.
+"""The ``browser_use`` family: two members, each a complete ``__wiring__``.
 
-The mode is a configured enum, never inferred from the environment. That
-choice is the whole design: deriving it ("there is no ``dom`` fragment, so
-this must be a vision run") would let a mistyped capability profile
-silently downgrade a DOM experiment into a vision one, and an ablation you
-cannot tell apart from a typo is not an ablation.
+``BrowserUseAgent`` is an abstract family root (``docs/architecture_design.md``
+§4.1 "Agent 家族", "BrowserUse 家族"). ``browser_use.dom`` reads the cleaned
+DOM; ``browser_use.dom_vision`` reads it and is shown the screenshot. Both
+require the DOM: a model that reads only the screenshot is a computer-use
+agent (``ui_tars``).
 
 Everything here runs against the real ``BrowserCapability`` /
 ``BrowserEnvironment`` / ``ReactLoop`` through real negotiation — no CDP,
 no network. What is pinned:
 
-- each mode's active fragments and actions, item for item;
-- ``vision`` never renders a DOM, *even when the observation carries one*;
-- the configuration errors that must be loud, and where they surface;
+- each member's wiring and its negotiated fragments and actions, item for item;
+- ``browser_use.dom`` never shows the screenshot, ``browser_use.dom_vision`` does;
+- ``AgentRuntime.prepare()`` refusing a profile without a DOM, naming the member;
 - the §2.5 seam: what the agent emits is what ``descriptor().params``
   declares, all the way to the guard;
 - the provider transforms, offline: strict-compatible, ``$ref``-free,
@@ -23,18 +23,28 @@ no network. What is pinned:
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
-from spectragent.agents.browser_use.agent import _MODE_DEMAND, BrowserUseAgent, _ModeDemand
+from spectragent.agents import AgentRegistrar
+from spectragent.agents.browser_use import (
+    BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+)
 from spectragent.agents.memory.simple import SimpleMemory
+from spectragent.agents.prompts import AGENT_PROMPT_ROOT
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
@@ -42,9 +52,9 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.llm.messages import ContentPartImageParam, ContentPartTextParam
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
-from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import (
@@ -54,85 +64,87 @@ from spectragent.core.negotiation import (
     negotiate_action,
     negotiate_observation,
 )
+from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_params import minimal_params
-from tests._helpers.action_spaces import space_of
+from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 from tests._helpers.fragment_formats import dom_formats
 
-MODES = ("dom", "dom_vision", "vision")
+MEMBERS: tuple[type[BrowserUseAgent], ...] = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
 
-#: §4.1's table, written out. The point of writing it rather than deriving
-#: it is that a change to ``_MODE_DEMAND`` should have to be restated here
-#: by whoever makes it.
-_EXPECTED_ACTIONS: dict[str, set[str]] = {
-    "dom": {
-        "browser.click",
-        "browser.type",
-        "browser.navigate",
-        "browser.done",
-        "browser.scroll",
-        "browser.send_keys",
-        "browser.extract_content",
-        "browser.go_back",
-        "browser.go_forward",
-        "browser.switch_tab",
-        "browser.wait",
+#: Each member's declaration, written out. The point of writing it rather
+#: than reading it back is that a change to a member's ``__wiring__`` has to
+#: be restated here by whoever makes it.
+_OBSERVATION = (
+    {"dom", "screenshot", "platform", "task", "browser_meta"},
+    {"step_info", "history", "capture_state"},
+)
+_EXPECTED_WIRING: dict[type[BrowserUseAgent], dict[str, tuple[set[str], set[str]]]] = {
+    BrowserUseDomAgent: {
+        "observation": _OBSERVATION,
+        "action": (
+            {"navigate", "done", "click", "type"},
+            {
+                "scroll",
+                "send_keys",
+                "extract_content",
+                "go_back",
+                "go_forward",
+                "switch_tab",
+                "wait",
+            },
+        ),
     },
-    "dom_vision": {
-        "browser.click",
-        "browser.click_coordinate",
-        "browser.type",
-        "browser.navigate",
-        "browser.done",
-        "browser.scroll",
-        "browser.send_keys",
-        "browser.extract_content",
-        "browser.go_back",
-        "browser.go_forward",
-        "browser.switch_tab",
-        "browser.wait",
-    },
-    "vision": {
-        "browser.click_coordinate",
-        "browser.type_coordinate",
-        "browser.drag",
-        "browser.navigate",
-        "browser.done",
-        "browser.scroll",
-        "browser.send_keys",
-        "browser.go_back",
-        "browser.go_forward",
-        "browser.switch_tab",
-        "browser.wait",
+    BrowserUseDomVisionAgent: {
+        "observation": _OBSERVATION,
+        "action": (
+            {"navigate", "done", "click", "type"},
+            {
+                "click_coordinate",
+                "scroll",
+                "send_keys",
+                "extract_content",
+                "go_back",
+                "go_forward",
+                "switch_tab",
+                "wait",
+            },
+        ),
     },
 }
 
-#: Every mode also negotiates the optional ``capture_state`` the browser provides.
-_EXPECTED_FRAGMENTS: dict[str, set[str]] = {
-    "dom": {
-        "browser.dom",
-        "browser.screenshot",
-        "browser.browser_meta",
-        "browser.platform",
-        "browser.capture_state",
-    },
-    "dom_vision": {
-        "browser.dom",
-        "browser.screenshot",
-        "browser.browser_meta",
-        "browser.platform",
-        "browser.capture_state",
-    },
-    # No ``browser.dom``: the DOMWatchdog is never asked, so no DOM is
-    # extracted at all — not extracted and then hidden.
-    "vision": {
-        "browser.screenshot",
-        "browser.browser_meta",
-        "browser.platform",
-        "browser.capture_state",
-    },
+_DOM_ACTIONS = {
+    "browser.click",
+    "browser.type",
+    "browser.navigate",
+    "browser.done",
+    "browser.scroll",
+    "browser.send_keys",
+    "browser.extract_content",
+    "browser.go_back",
+    "browser.go_forward",
+    "browser.switch_tab",
+    "browser.wait",
 }
+_EXPECTED_ACTIONS: dict[type[BrowserUseAgent], set[str]] = {
+    BrowserUseDomAgent: _DOM_ACTIONS,
+    BrowserUseDomVisionAgent: _DOM_ACTIONS | {"browser.click_coordinate"},
+}
+
+#: Both members also negotiate the optional ``capture_state`` the browser provides.
+_EXPECTED_FRAGMENTS = {
+    "browser.dom",
+    "browser.screenshot",
+    "browser.browser_meta",
+    "browser.platform",
+    "browser.capture_state",
+}
+
+_SHIPPED = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:
@@ -146,41 +158,35 @@ def _png(width: int = 1280, height: int = 720) -> bytes:
     )
 
 
-def _observation(*, with_dom: bool = True) -> Any:
-    """An observation that carries *everything*, whatever the mode asked for.
-
-    Deliberately over-provisioned: ``vision`` mode has to refuse to render
-    a DOM it was handed, not merely fail to find one.
-    """
+def _observation(*, image: bytes | None = None) -> Any:
     return SimpleNamespace(
         platform=SimpleNamespace(operating_system="macos", fragment_id="browser.platform"),
         task=SimpleNamespace(user_request="tick the checkbox", follow_ups=[]),
         screenshot=ScreenshotObs(
-            image_bytes=_png(),
+            image_bytes=_png() if image is None else image,
             image_width=1280,
             image_height=720,
             viewport_width=1280,
             viewport_height=720,
         ),
-        dom=DOMObs(element_tree=SimpleNamespace(serialized_dom="[3]<button>Submit</button>"))
-        if with_dom
-        else None,
+        dom=DOMObs(element_tree=SimpleNamespace(serialized_dom="[3]<button>Submit</button>")),
         browser_meta=BrowserMetaObs(url="https://example.test", page_title="Example"),
     )
 
 
 class _Run:
-    """One assembled, negotiated, prepared run — no CDP, no network."""
+    """One assembled, negotiated, prepared run — no CDP, no network.
 
-    def __init__(self, mode: str, *, profile: str = "standard", **kwargs: Any) -> None:
+    The agent is prepared on the space framed on its declared grid, as
+    ``AgentRuntime.prepare`` frames it.
+    """
+
+    def __init__(
+        self, member: type[BrowserUseAgent], *, profile: str = "standard", **kwargs: Any
+    ) -> None:
         self.capability = BrowserCapability(profile=profile)
         self.env = make_env(BrowserEnvironment, {"browser": self.capability})
-        self.agent = make_agent(
-            BrowserUseAgent,
-            memory=SimpleMemory(max_messages=10),
-            observation_mode=mode,
-            **kwargs,
-        )
+        self.agent = make_agent(member, memory=SimpleMemory(max_messages=10), **kwargs)
         self.loop = ReactLoop(max_actions_per_step=1)
         self.obs = negotiate_observation(self.agent, self.loop, self.env)
         self.actions = negotiate_action(self.agent, self.env)
@@ -197,7 +203,7 @@ class _Run:
         self.descriptors = self.action_space.descriptors
         self.agent.prepare(
             task="t",
-            action_space=space_of(self.descriptors),
+            action_space=space_for(self.agent, self.descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )
@@ -219,23 +225,70 @@ class _Run:
         return json.dumps({"memory": "m", "action": list(items)})
 
 
-# ── The mode table ────────────────────────────────────────────────────
+# ── The family ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_active_fragments_match_the_table(mode: str) -> None:
-    run = _Run(mode)
+def test_the_family_is_two_members_and_an_unregistered_root() -> None:
+    assert AgentRegistrar.children("browser_use") == {
+        "browser_use.dom": BrowserUseDomAgent,
+        "browser_use.dom_vision": BrowserUseDomVisionAgent,
+    }
+    assert AgentRegistrar.get_or_none("browser_use") is None
+    assert BrowserUseAgent.__registry_key__ == "browser_use"
+    assert BrowserUseDomAgent().agent_id == "browser_use.dom"
+    assert BrowserUseDomVisionAgent().agent_id == "browser_use.dom_vision"
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("registry", ["observation", "action"])
+def test_each_member_writes_out_its_whole_demand(
+    member: type[BrowserUseAgent], registry: str
+) -> None:
+    assert extract_wiring(member, registry) == _EXPECTED_WIRING[member][registry]
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_loop_range_comes_from_the_root(member: type[BrowserUseAgent]) -> None:
+    assert extract_wiring(member, "agent_loop") == ({"react", "branch"}, set())
+
+
+def test_only_the_member_that_shows_the_screenshot_has_screenshot_knobs() -> None:
+    """``browser_use.dom`` writes no point and shows no image: no knob for either."""
+    dom = {f.name for f in dataclasses.fields(BrowserUseDomAgent)}
+    dom_vision = {f.name for f in dataclasses.fields(BrowserUseDomVisionAgent)}
+    assert dom_vision - dom == {"coordinate_space", "vision_detail"}
+
+
+def test_the_mode_switch_and_its_predecessor_are_gone_rather_than_aliased() -> None:
+    with pytest.raises(TypeError):
+        BrowserUseDomAgent(observation_mode="dom")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        BrowserUseDomVisionAgent(use_vision=True)  # type: ignore[call-arg]
+
+
+def test_there_is_no_vision_only_surface() -> None:
+    """Vision-only is a computer-use agent's job; its prompt fragments are deleted."""
+    surfaces = {p.stem for p in (AGENT_PROMPT_ROOT / "browser_use" / "_surface").glob("*.md")}
+    assert surfaces == {"dom", "dom_terse", "dom_vision", "dom_vision_terse"}
+
+
+# ── What each member negotiates ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_active_fragments_are_the_dom_and_the_screenshot(member: type[BrowserUseAgent]) -> None:
+    run = _Run(member)
     env_sourced = {k for k in run.obs.active_fragments if not k.startswith("loop.")}
-    assert env_sourced == _EXPECTED_FRAGMENTS[mode]
+    assert env_sourced == _EXPECTED_FRAGMENTS
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_active_actions_match_the_table(mode: str) -> None:
-    assert _Run(mode).names == _EXPECTED_ACTIONS[mode]
+@pytest.mark.parametrize("member", MEMBERS)
+def test_active_actions_are_the_members_own(member: type[BrowserUseAgent]) -> None:
+    assert _Run(member).names == _EXPECTED_ACTIONS[member]
 
 
 def test_dom_vision_has_two_independent_click_verbs() -> None:
-    run = _Run("dom_vision")
+    run = _Run(BrowserUseDomVisionAgent)
     click = next(d for d in run.descriptors if d.name == "browser.click")
     point = next(d for d in run.descriptors if d.name == "browser.click_coordinate")
     # Distinct contracts, not one overloaded verb with half-applicable params.
@@ -243,57 +296,57 @@ def test_dom_vision_has_two_independent_click_verbs() -> None:
     assert set(point.params) == {"coordinate_x", "coordinate_y"}
 
 
-def test_vision_has_exactly_one_click_verb() -> None:
-    run = _Run("vision")
-    assert "browser.click" not in run.names
-    assert "browser.click_coordinate" in run.names
+def test_dom_has_no_verb_that_takes_a_point() -> None:
+    run = _Run(BrowserUseDomAgent)
+    assert all(not d.point_params for d in run.descriptors)
+    assert run.action_space.coordinate_space is None
 
 
-def test_vision_drops_the_dom_dependent_param_from_scroll() -> None:
-    """The descriptor context §4.2 adds: a param, not the whole action."""
-    scroll = next(d for d in _Run("vision").descriptors if d.name == "browser.scroll")
-    assert scroll.params_schema is not None
-    assert "index" not in scroll.params
-    assert "index" not in scroll.params_schema["properties"]
-    assert "direction" in scroll.params
-
-
-def test_dom_keeps_it() -> None:
-    scroll = next(d for d in _Run("dom").descriptors if d.name == "browser.scroll")
+@pytest.mark.parametrize("member", MEMBERS)
+def test_scroll_keeps_its_index(member: type[BrowserUseAgent]) -> None:
+    scroll = next(d for d in _Run(member).descriptors if d.name == "browser.scroll")
     assert "index" in scroll.params
-
-
-def test_vision_excludes_the_dom_derived_text_channel() -> None:
-    """``extract_content`` returns innerText / outerHTML under another name.
-
-    Letting it in would make "vision only" mean "vision plus a text
-    channel", and every ablation drawn against it wrong.
-    """
-    assert "browser.extract_content" not in _Run("vision").names
 
 
 # ── What reaches the model ────────────────────────────────────────────
 
 
-async def test_dom_mode_renders_the_tree_and_shows_no_image() -> None:
-    run = _Run("dom")
-    messages = await run.agent.build_react_prompt(
+async def test_dom_renders_the_tree_and_never_shows_the_screenshot() -> None:
+    """The observation carries a screenshot with bytes; this member records it only."""
+    run = _Run(BrowserUseDomAgent)
+    (message,) = await run.agent.build_react_prompt(
         _observation(), context=ReactPromptContext(step=0, phase="policy")
     )
-    content = messages[0].content
-    assert isinstance(content, str), "dom mode must not attach an image"
-    assert "[3]<button>Submit</button>" in content
+    assert isinstance(message.content, str), "browser_use.dom must not attach an image"
+    assert "[3]<button>Submit</button>" in message.content
 
 
-async def test_dom_vision_renders_the_tree_and_shows_the_image() -> None:
-    run = _Run("dom_vision")
+async def test_dom_vision_renders_the_tree_and_shows_the_screenshot() -> None:
+    run = _Run(BrowserUseDomVisionAgent)
     (message,) = await run.agent.build_react_prompt(
         _observation(), context=ReactPromptContext(step=0, phase="policy")
     )
     content = message.content
     assert isinstance(content, list)
-    body = getattr(content[0], "text", "")
-    assert "[3]<button>Submit</button>" in body
+    text, image = content
+    assert isinstance(text, ContentPartTextParam) and isinstance(image, ContentPartImageParam)
+    assert "[3]<button>Submit</button>" in text.text
+    assert image.image_url.detail == "low"
+
+
+async def test_dom_vision_sends_text_alone_when_the_screenshot_has_no_bytes() -> None:
+    """The same message ``browser_use.dom`` sends, not an image part with nothing in it."""
+    observation = _observation()
+    observation.screenshot = ScreenshotObs(
+        image_bytes=None, image_width=1280, image_height=720, viewport_width=1280
+    )
+    context = ReactPromptContext(step=0, phase="policy")
+    (shown,) = await _Run(BrowserUseDomVisionAgent).agent.build_react_prompt(
+        observation, context=context
+    )
+    (dom,) = await _Run(BrowserUseDomAgent).agent.build_react_prompt(observation, context=context)
+    assert isinstance(shown.content, str)
+    assert shown.content == dom.content
 
 
 async def test_the_image_is_labelled_from_its_own_bytes() -> None:
@@ -305,7 +358,7 @@ async def test_the_image_is_labelled_from_its_own_bytes() -> None:
     """
     from PIL import Image
 
-    from spectragent.core.llm.messages import ContentPartImageParam
+    run = _Run(BrowserUseDomVisionAgent)
 
     async def image_of(observation: Any) -> ContentPartImageParam:
         (message,) = await run.agent.build_react_prompt(
@@ -315,19 +368,9 @@ async def test_the_image_is_labelled_from_its_own_bytes() -> None:
         assert isinstance(content, list)
         return next(p for p in content if isinstance(p, ContentPartImageParam))
 
-    run = _Run("dom_vision")
     buffer = io.BytesIO()
     Image.new("RGB", (1280, 720)).save(buffer, format="JPEG", quality=70)
-    obs = _observation()
-    obs.screenshot = ScreenshotObs(
-        image_bytes=buffer.getvalue(),
-        image_width=1280,
-        image_height=720,
-        viewport_width=1280,
-        viewport_height=720,
-    )
-
-    jpeg = await image_of(obs)
+    jpeg = await image_of(_observation(image=buffer.getvalue()))
     assert jpeg.image_url.url.startswith("data:image/jpeg;base64,")
     assert jpeg.image_url.media_type == "image/jpeg"
 
@@ -337,174 +380,154 @@ async def test_the_image_is_labelled_from_its_own_bytes() -> None:
     assert png.image_url.media_type == "image/png"
 
 
-async def test_vision_never_renders_the_dom_fragment_even_when_handed_one() -> None:
-    """The invariant the whole mode exists for, at the fragment.
+@pytest.mark.parametrize("member", MEMBERS)
+def test_each_member_quotes_its_own_surface(member: type[BrowserUseAgent]) -> None:
+    prompt = _Run(member, flash_mode=False).prompt()
+    assert dom_formats()["dom"] in prompt
+    assert ("<browser_vision>" in prompt) is (member is BrowserUseDomVisionAgent)
 
-    A fragment can reach the agent that negotiation did not activate — a
-    hand-built observation, a replay, a second capability. "Vision only"
-    has to mean it whatever arrives.
 
-    This is the half that is decidable by inspection. The other half —
-    DOM-derived *text* arriving through an action result — is held by
-    negotiation instead (next test), because a string in a result carries
-    no provenance the renderer could filter on.
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"flash_mode": True},
+        {"flash_mode": False, "use_thinking": True},
+        {"flash_mode": False, "use_thinking": False},
+    ],
+)
+def test_a_fine_tuned_template_quotes_the_runs_dom_format(
+    member: type[BrowserUseAgent], config: dict[str, Any]
+) -> None:
+    """The checkpoint learned one DOM format; this run's serializer may write another.
+
+    So the fine-tuned templates quote the run's surface like every other
+    template: the serializer's description, and the grid when the run has a
+    coordinate action.
     """
-    run = _Run("vision")
-    (message,) = await run.agent.build_react_prompt(
-        _observation(with_dom=True), context=ReactPromptContext(step=0, phase="policy")
-    )
-    content = message.content
-    assert isinstance(content, list)
-    body = getattr(content[0], "text", "")
-    assert "[3]" not in body
-    assert "DOM:" not in body
-    # The text channel it *does* keep: url, title, tabs.
-    assert "https://example.test" in body
+    run = _Run(member, is_browser_use_model=True, **config)
+    assert run.agent.select_prompt_variant().startswith("system_prompt_browser_use")
+    prompt = run.prompt()
+    assert dom_formats()["dom"] in prompt
+    assert ("<coordinates>" in prompt) is (member is BrowserUseDomVisionAgent)
 
 
-def test_vision_negotiates_no_verb_whose_result_carries_dom_text() -> None:
-    """The other half, and why it is negotiation's job rather than the renderer's.
-
-    ``_render_history`` prints each prior step's actions and results in
-    every mode — the model needs them to avoid repeating a step. A result
-    is a plain string, so nothing there says whether it came from the
-    element tree; filtering it would be guesswork. What is decidable is
-    which verbs can *produce* such a string, and ``vision`` simply does
-    not activate them: ``extract_content`` returns innerText/outerHTML —
-    DOM-derived text under another name — and every index-addressed verb
-    would have needed the selector map to run at all.
-    """
-    run = _Run("vision")
-    assert "browser.extract_content" not in run.actions.active_actions
-    # And what survives is advertised without its DOM-addressed params:
-    # ``browser.scroll`` keeps scrolling, its optional ``index`` is gone
-    # because ``RequiresFragment("browser.dom")`` is not satisfiable here.
-    for descriptor in run.descriptors:
-        assert "index" not in descriptor.params, (
-            f"{descriptor.name} advertises an index in a run with no selector map"
-        )
-
-
-def test_every_mode_still_captures_the_screenshot() -> None:
+def test_every_member_still_captures_the_screenshot() -> None:
     """Evaluators read screenshots out of the trace, not out of the prompt.
 
     ``online_mind2web`` and ``lexbench_browser`` score from them, so the
-    mode decides what the model sees, never what the run records.
+    member decides what the model sees, never what the run records.
     """
-    for mode in MODES:
-        assert "browser.screenshot" in _Run(mode).obs.active_fragments
+    for member in MEMBERS:
+        assert "browser.screenshot" in _Run(member).obs.active_fragments
+
+
+# ── The history window ────────────────────────────────────────────────
+
+
+def _history(steps: int) -> HistoryObs:
+    return HistoryObs(
+        items=[
+            StepRecord(
+                step=number,
+                llm_output=f"reply {number}",
+                actions=[Action(name="browser.scroll", params={"direction": "down"})],
+                action_results=[ActionResult(success=True)],
+            )
+            for number in range(steps)
+        ]
+    )
+
+
+async def _replayed_steps(agent: BrowserUseAgent, steps: int) -> list[str]:
+    observation = _observation()
+    observation.history = _history(steps)
+    (message,) = await agent.build_react_prompt(
+        observation, context=ReactPromptContext(step=steps, phase="policy")
+    )
+    return re.findall(r"<(step_\d+)>", message.text)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+async def test_the_history_replays_the_last_ten_steps_by_default(
+    member: type[BrowserUseAgent],
+) -> None:
+    replayed = await _replayed_steps(_Run(member).agent, 12)
+    assert replayed == [f"step_{n}" for n in range(3, 13)]
+
+
+async def test_the_history_window_is_a_config_field() -> None:
+    """An experiment variable a YAML can set, not a constant hidden in the class."""
+    raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
+    raw["agent"][0]["step_history_window"] = 2
+    raw.pop("hook", None)
+    agent = build_composer().compose(raw).single("agent")
+    assert agent.step_history_window == 2
+    assert await _replayed_steps(agent, 5) == ["step_4", "step_5"]
+
+
+def test_a_window_of_no_steps_is_refused_by_the_config() -> None:
+    from pydantic import ValidationError
+
+    raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
+    raw["agent"][0]["step_history_window"] = 0
+    with pytest.raises(ValidationError, match="step_history_window"):
+        build_composer().compose(raw)
 
 
 # ── Loud failures ─────────────────────────────────────────────────────
 
 
-def test_a_dom_mode_against_a_vision_only_profile_fails_negotiation() -> None:
-    with pytest.raises(IncompatibleFragmentError) as exc:
-        _Run("dom", profile="vision_only")
-    assert "dom" in str(exc.value)
+@pytest.mark.parametrize("member", MEMBERS)
+def test_prepare_refuses_a_profile_without_a_dom(member: type[BrowserUseAgent]) -> None:
+    """Through the real composer and ``AgentRuntime.prepare``, before any setup.
 
-
-def test_the_failure_names_the_mode_that_asked() -> None:
-    """``required fragment 'dom' is missing`` is a puzzle without it.
-
-    Two modes require ``dom`` and one excludes it, so the agent class no
-    longer answers "who wanted a DOM" — only the configuration does. The
-    message has to carry it, or the fix (``observation_mode`` or
-    ``profile``, and they point in opposite directions) is a guess.
+    ``vision_only`` installs no DOM resolver. Both members require ``dom``,
+    so the run fails here, naming the member, instead of quietly becoming
+    a vision run.
     """
-    capability = BrowserCapability(profile="vision_only")
-    env = make_env(BrowserEnvironment, {"browser": capability})
-    agent = make_agent(
-        BrowserUseAgent, memory=SimpleMemory(max_messages=10), observation_mode="dom"
-    )
-    assert repr(agent) == "browser_use(observation_mode='dom')"
+    raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
+    raw["agent"][0]["agent_id"] = member.__registry_key__
+    raw["environment"][0]["capabilities"][0]["profile"] = "vision_only"
+    raw.pop("hook", None)
+    run = build_composer().compose(raw)
+    runtime = AgentRuntime.for_agent(run, "main")
     with pytest.raises(IncompatibleFragmentError) as exc:
-        negotiate_observation(agent, ReactLoop(), env)
-
+        runtime.prepare()
     message = str(exc.value)
-    assert "dom ← browser_use(observation_mode='dom')" in message
-    assert exc.value.requested_by == {"dom": ("browser_use(observation_mode='dom')",)}
-    # What it is missing and what the environment has, both still there:
-    # the attribution is an addition, not a replacement.
+    assert f"dom ← {member.__registry_key__}" in message
+    assert exc.value.requested_by == {"dom": (member.__registry_key__,)}
     assert "Missing: ['dom']" in message
     assert "browser.screenshot" in message
 
 
-def test_the_action_failure_names_the_mode_too() -> None:
+def test_the_action_failure_names_the_member_too() -> None:
     """Symmetric with observation, per §2.5 — one rule, both axes."""
     # An ablated environment, reduced to the one attribute action
     # negotiation reads. The agent and the rules are the real ones.
     env = SimpleNamespace(provided_actions=frozenset({"browser.navigate", "browser.done"}))
-    agent = make_agent(
-        BrowserUseAgent, memory=SimpleMemory(max_messages=10), observation_mode="vision"
-    )
+    agent = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
     with pytest.raises(IncompatibleActionError) as exc:
         negotiate_action(agent, env)
-    message = str(exc.value)
-    assert "browser_use(observation_mode='vision')" in message
-    # ``click_coordinate`` is required *because of the mode*: it is an
-    # optional key in the class wiring that vision promotes.
-    assert "click_coordinate ← browser_use(observation_mode='vision')" in message
-
-
-def test_the_mode_table_may_only_name_optional_keys() -> None:
-    """A typo in ``_MODE_DEMAND`` has to be an error, not a shrug.
-
-    ``promote`` is self-policing — an undeclared promotion grows the
-    required set and leaves the declared space, which ``bounded_demand``
-    refuses. ``exclude`` is not: subtracting a key nothing has produces
-    sets that are perfectly legal and quietly wrong, and the mode table is
-    the single definition of the three surfaces.
-    """
-    for mode, registries in _MODE_DEMAND.items():
-        for registry, demand in registries.items():
-            _required, optional = extract_wiring(BrowserUseAgent, registry)
-            assert (demand.promote | demand.exclude) <= optional, (
-                f"_MODE_DEMAND[{mode!r}][{registry!r}] names a key that is not "
-                f"optional in BrowserUseAgent.__wiring__"
-            )
-
-
-@pytest.mark.parametrize("stray", ["screnshot", "screenshot"])
-def test_a_stray_exclude_is_refused_rather_than_ignored(stray: str) -> None:
-    """One misspelling, one class-*required* key — both used to subtract nothing."""
-    required, optional = extract_wiring(BrowserUseAgent, "observation")
-    with pytest.raises(ValueError, match="not an optional key"):
-        _ModeDemand(exclude=frozenset({stray})).apply(
-            required, optional, where="_MODE_DEMAND['dom']['observation']"
-        )
-
-
-def test_vision_runs_fine_against_the_standard_profile() -> None:
-    """Negotiation already skips DOM extraction; the profile is a guard rail."""
-    assert "browser.dom" not in _Run("vision").obs.active_fragments
-
-
-def test_a_fine_tuned_checkpoint_cannot_be_pointed_at_a_vision_run() -> None:
-    """At construction — earlier than negotiation, before anything is built."""
-    with pytest.raises(ValueError, match="fine-tuned"):
-        BrowserUseAgent(observation_mode="vision", is_browser_use_model=True)
-
-
-def test_use_vision_is_gone_rather_than_aliased() -> None:
-    with pytest.raises(TypeError):
-        BrowserUseAgent(use_vision=True)  # type: ignore[call-arg]
+    assert "click ← browser_use.dom" in str(exc.value)
 
 
 @pytest.mark.parametrize(
     "item",
     [
-        {"browser.click": {"index": 1}},
-        {"browser.scroll": {"direction": "down", "index": 2}},
+        {"browser.click_coordinate": {"coordinate_x": 1, "coordinate_y": 2}},
+        {"browser.drag": {"start_x": 1, "start_y": 2, "end_x": 3, "end_y": 4}},
     ],
 )
-def test_a_dom_action_is_refused_in_vision_mode(item: dict[str, Any]) -> None:
+def test_a_verb_the_member_lacks_is_refused(item: dict[str, Any]) -> None:
     """Structured and text paths alike — one per-run model validates both."""
-    run = _Run("vision")
-    with pytest.raises(ParseError):
-        run.agent.parse_react_output(run.reply(item))
     from pydantic import ValidationError
 
+    from spectragent.core.loops.errors import ParseError
+
+    run = _Run(BrowserUseDomAgent)
+    with pytest.raises(ParseError):
+        run.agent.parse_react_output(run.reply(item))
     with pytest.raises(ValidationError):
         run.model.model_validate({"memory": "", "action": [item]})
 
@@ -512,20 +535,19 @@ def test_a_dom_action_is_refused_in_vision_mode(item: dict[str, Any]) -> None:
 # ── The §2.5 seam ─────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("mode", MODES)
-async def test_what_the_agent_emits_is_what_the_action_declares(mode: str) -> None:
+@pytest.mark.parametrize("member", MEMBERS)
+async def test_what_the_agent_emits_is_what_the_action_declares(
+    member: type[BrowserUseAgent],
+) -> None:
     """Negotiation matches names, not parameter contracts — so test the seam.
 
     For every negotiated descriptor: synthesize the minimal payload its
     own ``params_schema`` declares, put it through the agent's parser and
     the guard, and validate what arrives against the action's ``Params``.
     """
-    run = _Run(mode)
-    (
-        await run.agent.build_react_prompt(
-            _observation(with_dom=(mode != "vision")),
-            context=ReactPromptContext(step=0, phase="policy"),
-        )
+    run = _Run(member)
+    await run.agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
     )
 
     routed: list[Any] = []
@@ -599,11 +621,11 @@ _REFUSED_BY_STRICT = frozenset(
 )
 
 
-@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("member", MEMBERS)
 @pytest.mark.parametrize("flash", [True, False])
-def test_the_strict_schema_is_clean(mode: str, flash: bool) -> None:
+def test_the_strict_schema_is_clean(member: type[BrowserUseAgent], flash: bool) -> None:
     schema = SchemaOptimizer.create_optimized_json_schema(
-        _Run(mode, flash_mode=flash).model, strict=True
+        _Run(member, flash_mode=flash).model, strict=True
     )
     assert SchemaOptimizer.is_strict_compatible(schema)
     for node in _walk(schema):
@@ -613,8 +635,8 @@ def test_the_strict_schema_is_clean(mode: str, flash: bool) -> None:
     assert "$defs" not in schema
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_the_strict_schema_carries_nothing_strict_refuses(mode: str) -> None:
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_strict_schema_carries_nothing_strict_refuses(member: type[BrowserUseAgent]) -> None:
     """The closed union is what first made GPT ask for strict at all.
 
     While ``action`` was an open map the request shipped ``strict: false``
@@ -625,7 +647,7 @@ def test_the_strict_schema_carries_nothing_strict_refuses(mode: str) -> None:
     on the schema. The Pydantic bound stays; ``minItems`` does not reach
     the wire.
     """
-    run = _Run(mode)
+    run = _Run(member)
     strict = SchemaOptimizer.create_optimized_json_schema(run.model, strict=True)
     offenders = {key for node in _walk(strict) for key in node if key in _REFUSED_BY_STRICT}
     assert offenders == set()
@@ -641,8 +663,10 @@ def test_the_strict_schema_carries_nothing_strict_refuses(mode: str) -> None:
     assert loose["properties"]["action"]["minItems"] == 1
 
 
-@pytest.mark.parametrize("mode", MODES)
-async def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str) -> None:
+@pytest.mark.parametrize("member", MEMBERS)
+async def test_the_per_run_schema_republishes_default_null_on_purpose(
+    member: type[BrowserUseAgent],
+) -> None:
     """The ``default``-free guarantee is descriptor-level, and stops there.
 
     ``params_view`` strips ``default`` so a descriptor never states a value
@@ -655,7 +679,7 @@ async def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str)
     so an omission and a written null reach the capability identically,
     which is what keeps a knob like ``clear_by_default`` in charge.
     """
-    run = _Run(mode)
+    run = _Run(member)
     for descriptor in run.descriptors:
         # The keyword, not the word: the knob's value is *stated* in the
         # description ("optional, default=true"), which is the point — it
@@ -675,11 +699,8 @@ async def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str)
     assert optional_nulls, "no optional param — this test would prove nothing"
     # ...and the null never reaches the capability. Rendering a step first
     # is what a real run does, and it is what gives a point verb its grid.
-    (
-        await run.agent.build_react_prompt(
-            _observation(with_dom=(mode != "vision")),
-            context=ReactPromptContext(step=0, phase="policy"),
-        )
+    await run.agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
     )
     verb, name = optional_nulls[0]
     descriptor = next(d for d in run.descriptors if d.name == verb)
@@ -689,42 +710,44 @@ async def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str)
     assert name not in run.agent._action_for(item).params
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_each_action_branch_names_exactly_one_verb(mode: str) -> None:
-    run = _Run(mode)
+@pytest.mark.parametrize("member", MEMBERS)
+def test_each_action_branch_names_exactly_one_verb(member: type[BrowserUseAgent]) -> None:
+    run = _Run(member)
     schema = SchemaOptimizer.create_optimized_json_schema(run.model, strict=True)
     branches = schema["properties"]["action"]["items"]["anyOf"]
     assert {next(iter(b["properties"])) for b in branches} == run.names
     assert all(len(b["required"]) == 1 for b in branches)
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_the_gemini_transform_keeps_the_union(mode: str) -> None:
-    schema = fix_gemini_schema(SchemaOptimizer.create_gemini_optimized_schema(_Run(mode).model))
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_gemini_transform_keeps_the_union(member: type[BrowserUseAgent]) -> None:
+    schema = fix_gemini_schema(SchemaOptimizer.create_gemini_optimized_schema(_Run(member).model))
     text = json.dumps(schema)
     assert "anyOf" in text
     assert "oneOf" not in text and "$ref" not in text
     assert "additionalProperties" not in text
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_a_gemini_placeholder_is_stripped_before_validation(mode: str) -> None:
+@pytest.mark.parametrize("member", MEMBERS)
+def test_a_gemini_placeholder_is_stripped_before_validation(
+    member: type[BrowserUseAgent],
+) -> None:
     """Gemini's own schema fix invents ``_placeholder`` for an empty object.
 
     A zero-parameter action is exactly that, so the model answers with the
     invented key and a closed params model refuses it. The provider that
     added it takes it away — the agent stays provider-agnostic.
     """
+    from pydantic import ValidationError
+
     from spectragent.core.llm.providers.google import _strip_placeholders
 
-    run = _Run(mode)
+    run = _Run(member)
     assert "browser.go_back" in run.names
     payload = {
         "memory": "m",
         "action": [{"browser.go_back": {"_placeholder": ""}}],
     }
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         run.model.model_validate(payload)
     run.model.model_validate(_strip_placeholders(payload))
@@ -733,7 +756,7 @@ def test_a_gemini_placeholder_is_stripped_before_validation(mode: str) -> None:
 def test_strict_is_decided_by_the_family_and_the_payload() -> None:
     from spectragent.core.llm.providers.openai import ChatOpenAI
 
-    model = _Run("vision").model
+    model = _Run(BrowserUseDomVisionAgent).model
     assert ChatOpenAI(model="gpt-4o", api_key="t").use_strict_schema(model) is True
     # A Gemini model behind an OpenAI-compatible gateway is not a strict
     # family, so the request stays non-strict whatever the schema can do.
@@ -746,7 +769,7 @@ _OUTPUT_BLOCK = re.compile(r"<output>(.*?)</output>", re.DOTALL)
 _TAUGHT_KEY = re.compile(r'"([a-z_]+)"\s*:')
 
 
-@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("member", MEMBERS)
 @pytest.mark.parametrize(
     "config",
     [
@@ -756,7 +779,7 @@ _TAUGHT_KEY = re.compile(r'"([a-z_]+)"\s*:')
     ],
 )
 def test_the_model_asks_for_exactly_what_the_template_teaches(
-    mode: str, config: dict[str, Any]
+    member: type[BrowserUseAgent], config: dict[str, Any]
 ) -> None:
     """Read back out of the rendered prompt, not out of a second table.
 
@@ -764,7 +787,7 @@ def test_the_model_asks_for_exactly_what_the_template_teaches(
     carrying the full reasoning set would be forced to emit a ``thinking``
     block its prompt never mentions.
     """
-    run = _Run(mode, **config)
+    run = _Run(member, **config)
     block = _OUTPUT_BLOCK.search(run.prompt())
     assert block is not None, run.agent.select_prompt_variant()
     taught = set(_TAUGHT_KEY.findall(block.group(1)))

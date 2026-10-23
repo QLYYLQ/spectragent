@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.benchmark_runner import build_composer
@@ -34,7 +34,13 @@ from spectragent.schemas.observation.dynamic_model import build_observation_mode
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.prompt import ReactPromptContext
 
-AGENTS = (BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent, UITarsAgent)
+AGENTS = (
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+    SkyvernDomAgent,
+    SkyvernDomVisionAgent,
+    UITarsAgent,
+)
 SOURCE_URL = "https://capture-source.test/must-not-enter-vision-prompt"
 
 
@@ -119,7 +125,10 @@ async def test_missing_platform_is_not_rendered_as_a_known_platform(agent_class)
         )
 
 
-@pytest.mark.parametrize("agent_class", [BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent])
+@pytest.mark.parametrize(
+    "agent_class",
+    [BrowserUseDomAgent, BrowserUseDomVisionAgent, SkyvernDomAgent, SkyvernDomVisionAgent],
+)
 async def test_platform_changes_with_the_observation_not_cached_agent_state(agent_class) -> None:
     agent = agent_class()
     assert "macOS (macos)" in _text(
@@ -135,19 +144,26 @@ async def test_platform_changes_with_the_observation_not_cached_agent_state(agen
     assert "Windows (windows)" in following and "macOS" not in following
 
 
-@pytest.mark.parametrize("agent", [UITarsAgent(), BrowserUseAgent(observation_mode="vision")])
-async def test_visual_page_input_does_not_gain_dom_or_screenshot_source_url(agent) -> None:
+async def test_visual_page_input_does_not_gain_dom_or_screenshot_source_url() -> None:
     text = _text(
-        await agent.build_react_prompt(
+        await UITarsAgent().build_react_prompt(
             _observation(), context=ReactPromptContext(step=0, phase="policy")
         )
     )
     assert SOURCE_URL not in text
     assert "<input value=" not in text
-    if isinstance(agent, UITarsAgent):
-        assert "Computer-use agent; environment: browser.\nActual input platform: macOS" in text
-    else:
-        assert "Actual browser input platform: macOS" in text
+    assert "Computer-use agent; environment: browser.\nActual input platform: macOS" in text
+
+
+async def test_a_shown_screenshot_does_not_bring_its_source_url_along() -> None:
+    """``browser_use.dom_vision`` shows the screenshot; the URL it was captured from stays out."""
+    text = _text(
+        await BrowserUseDomVisionAgent().build_react_prompt(
+            _observation(), context=ReactPromptContext(step=0, phase="policy")
+        )
+    )
+    assert SOURCE_URL not in text
+    assert "Actual browser input platform: macOS" in text
 
 
 @pytest.mark.parametrize("agent_class", AGENTS)
@@ -165,7 +181,7 @@ def test_relative_platform_is_required_at_negotiation(agent_class) -> None:
 
 
 @pytest.mark.parametrize(
-    "agent_id", ["browser_use", "skyvern.dom", "skyvern.dom_vision", "ui_tars"]
+    "agent_id", ["browser_use.dom", "skyvern.dom", "skyvern.dom_vision", "ui_tars"]
 )
 @pytest.mark.parametrize("operating_system", ["macos", "windows", "linux"])
 async def test_composed_runtime_delivers_platform_to_the_model(
@@ -187,11 +203,9 @@ async def test_composed_runtime_delivers_platform_to_the_model(
             "memory": {"memory_id": "simple", "max_messages": 20},
         }
     ]
-    if agent_id == "browser_use":
-        raw["agent"][0]["observation_mode"] = "vision"
     raw.pop("hook", None)
     skyvern = agent_id.startswith("skyvern.")
-    if not skyvern:
+    if agent_id == "ui_tars":
         raw["environment"][0]["capabilities"][0]["profile"] = "vision_only"
     run = build_composer().compose(raw)
     agent = run.instance("agent", "main")
@@ -228,7 +242,7 @@ async def test_composed_runtime_delivers_platform_to_the_model(
     negotiated = runtime.negotiated_observation
     assert negotiated is not None
     assert "browser.platform" in negotiated.required_fragments
-    if not skyvern:
+    if agent_id == "ui_tars":
         assert "browser.dom" not in negotiated.active_fragments
     fragments = {
         "browser.platform": BrowserPlatformObs(operating_system=operating_system),
