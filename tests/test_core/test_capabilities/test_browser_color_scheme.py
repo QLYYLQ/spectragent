@@ -62,12 +62,54 @@ async def test_startup_measurement_uses_an_isolated_world_and_detaches(scheme: s
     client = browser.client("ws://fake")
     await client.start()
     try:
-        assert await measure_color_scheme(client, timeout=1) == scheme
+        assert await measure_color_scheme(client, timeout=1, attempt_timeout=1) == scheme
         worlds = [s for s in client.sent if s.method == "Page.createIsolatedWorld"]
         assert worlds[0].params["worldName"] == COLOR_SCHEME_WORLD
         read = next(s for s in client.sent if s.method == "Runtime.evaluate")
         assert read.params["contextId"] in browser.color_scheme_contexts
         assert client.sent[-1].method == "Target.detachFromTarget"
+    finally:
+        await client.stop()
+
+
+async def test_a_read_answered_late_is_made_again() -> None:
+    """A renderer slow under load: the first attempt times out, the next is answered."""
+    browser = FakeBrowser()
+    browser.color_scheme = "dark"
+    browser.delay("Runtime.evaluate", 0.5)
+    client = browser.client("ws://fake")
+    await client.start()
+    try:
+        assert await measure_color_scheme(client, timeout=5, attempt_timeout=0.1) == "dark"
+        assert client.methods().count("Target.attachToTarget") == 2
+        assert client.methods().count("Target.detachFromTarget") == 2
+    finally:
+        await client.stop()
+
+
+async def test_a_page_that_never_answers_fails_naming_its_budget() -> None:
+    browser = FakeBrowser()
+    never = browser.hold("Runtime.evaluate")
+    client = browser.client("ws://fake")
+    await client.start()
+    try:
+        with pytest.raises(TimeoutError, match=r"no answer within 0\.3s \(\d+ attempts"):
+            await measure_color_scheme(client, timeout=0.3, attempt_timeout=0.1)
+        assert client.methods().count("Target.attachToTarget") >= 2
+    finally:
+        never.set()
+        await client.stop()
+
+
+async def test_an_ambiguous_answer_is_not_asked_again() -> None:
+    browser = FakeBrowser()
+    browser.color_scheme = None
+    client = browser.client("ws://fake")
+    await client.start()
+    try:
+        with pytest.raises(RuntimeError, match="no valid prefers-color-scheme"):
+            await measure_color_scheme(client, timeout=5, attempt_timeout=1)
+        assert client.methods().count("Runtime.evaluate") == 1
     finally:
         await client.stop()
 

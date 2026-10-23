@@ -576,7 +576,7 @@ async def test_the_os_facts_are_what_chrome_falls_back_to() -> None:
                 client = CDPClient(launched.cdp_url, proxy=None, compression=None)
                 await client.start()
                 try:
-                    measured = await measure_browser_defaults(client, timeout=5)
+                    measured = await measure_browser_defaults(client, timeout=5, attempt_timeout=5)
                 finally:
                     await client.stop()
             finally:

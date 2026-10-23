@@ -201,7 +201,7 @@ class TestTheRead:
         browser = FakeBrowser()
         client = browser.client("ws://fake", proxy=None)
         await client.start()
-        hints = await measure_client_hints(client, timeout=1.0)
+        hints = await measure_client_hints(client, timeout=1.0, attempt_timeout=1.0)
         assert hints == OWN
         created = [s for s in client.sent if s.method == "Target.createTarget"]
         assert [s.params for s in created] == [{"url": CLIENT_HINTS_URL, "background": True}]
@@ -213,8 +213,38 @@ class TestTheRead:
         client = browser.client("ws://fake", proxy=None)
         await client.start()
         with pytest.raises(TimeoutError, match="no client hints"):
-            await measure_client_hints(client, timeout=0.2)
+            await measure_client_hints(client, timeout=0.2, attempt_timeout=0.2)
         assert list(browser.targets) == ["page-1"]
+
+    async def test_a_read_answered_late_is_made_again(self) -> None:
+        """A renderer slow under load: the first read outlives its attempt, the next is answered."""
+        browser = FakeBrowser()
+        browser.delay("Runtime.evaluate", 0.5)
+        client = browser.client("ws://fake", proxy=None)
+        await client.start()
+        try:
+            hints = await measure_client_hints(client, timeout=5.0, attempt_timeout=0.1)
+            assert hints == OWN
+            assert client.methods().count("Runtime.evaluate") >= 2
+            assert list(browser.targets) == ["page-1"], "the temporary tab is gone"
+        finally:
+            await client.stop()
+
+    async def test_a_page_that_never_answers_fails_naming_its_budget(self) -> None:
+        browser = FakeBrowser()
+        never = browser.hold("Runtime.evaluate")
+        client = browser.client("ws://fake", proxy=None)
+        await client.start()
+        try:
+            with pytest.raises(
+                TimeoutError, match=r"within 0\.3s \(\d+ reads, each allowed 0\.1s\)"
+            ):
+                await measure_client_hints(client, timeout=0.3, attempt_timeout=0.1)
+            assert client.methods().count("Runtime.evaluate") >= 2
+            assert list(browser.targets) == ["page-1"]
+        finally:
+            never.set()
+            await client.stop()
 
 
 # ── setup on the fake browser ─────────────────────────────────────────
@@ -261,13 +291,27 @@ class TestSetup:
         assert "Target.setAutoAttach" not in browser.recorder.methods()
 
     async def test_a_read_that_fails_refuses_the_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(capability_module, "_CLIENT_HINTS_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(capability_module, "_STARTUP_READ_TIMEOUT_S", 0.2)
         browser = FakeBrowser()
         browser.client_hints = None
         cap, _ = await _setup(PinnedReplayability(user_agent=MAC_155), browser)
         with pytest.raises(BrowserCooperationError, match="could not be read after launch"):
             await cap.setup()
         await cap.teardown()
+
+    async def test_one_slow_answer_at_start_up_does_not_fail_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each start-up read is made again when Chrome is slow to answer it."""
+        monkeypatch.setattr(capability_module, "_STARTUP_READ_ATTEMPT_TIMEOUT_S", 0.1)
+        browser = FakeBrowser()
+        browser.delay("Runtime.evaluate", 0.5)  # whichever start-up read asks first
+        cap, _ = await _setup(PinnedReplayability(user_agent=MAC_155), browser)
+        await cap.setup()
+        try:
+            assert cap._replay_plan is not None and cap._replay_plan.client_hints == OWN
+        finally:
+            await cap.teardown()
 
     async def test_the_none_tier_reads_no_client_hints(self) -> None:
         cap, browser = await _setup(NoneReplayability())

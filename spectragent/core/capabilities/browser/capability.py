@@ -302,16 +302,20 @@ _NAVIGATION_SETTLE_TIMEOUT_S = 10.0
 #: capability refuses it (``test_browser_observation_bounds.py`` derives it).
 CAPTURE_PROBE_ROOM_S = 4.0
 
-# How long each command measuring the browser's defaults right after launch
-# may take (§4.14): the first tab's renderer may still be starting.
-_BROWSER_DEFAULTS_TIMEOUT_S = 5.0
-
-# How long reading the browser's own client hints right after launch may take
-# (§4.14, ``client_hints.py``): a temporary tab, its renderer started for it.
-_CLIENT_HINTS_TIMEOUT_S = 5.0
-
-# The initial page's media theme, before any target receives an override.
-_COLOR_SCHEME_TIMEOUT_S = 5.0
+# The four measurements right after launch — the input platform, the browser's
+# defaults, its own client hints and its color scheme (§4.14 "setup 与
+# teardown") — each have this whole budget, opening a temporary tab included.
+# On a quiet machine each takes 2–300 ms (measured 2026-10-23, Chrome 155,
+# headless). Under heavy load (load average 95–195, the same day) a fresh tab's
+# renderer gave no client hints within the 5 s each read used to have, and the
+# pinned recording failed at start-up. The budget is the patience setup already
+# has for Chrome's endpoint at launch (``local_chrome``'s ``cdp_wait_timeout``).
+_STARTUP_READ_TIMEOUT_S = 30.0
+# How long one read of such a measurement may wait for Chrome before it is
+# abandoned and made again, within the budget above: over ten times the
+# slowest whole measurement on a quiet machine, so one stuck reply costs this
+# much, not all of the budget.
+_STARTUP_READ_ATTEMPT_TIMEOUT_S = 5.0
 
 # How long ``create_tab`` waits for the recorder connection to prepare the
 # tab it created before navigating it (§4.14). An ``about:blank`` tab is
@@ -2004,7 +2008,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # controller is prepared. This uses the control connection even without
         # an archive or a recorder, so it applies to plain and cloud CDP too.
         try:
-            self._input_platform = await measure_input_platform(self._cdp)
+            self._input_platform = await measure_input_platform(
+                self._cdp,
+                timeout=_STARTUP_READ_TIMEOUT_S,
+                attempt_timeout=_STARTUP_READ_ATTEMPT_TIMEOUT_S,
+            )
         except Exception as exc:
             raise BrowserCooperationError(
                 [
@@ -2252,7 +2260,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     ) -> ColorScheme:
         """The live recording's theme, measured once before any target is prepared."""
         try:
-            return await measure_color_scheme(recorder, timeout=_COLOR_SCHEME_TIMEOUT_S)
+            return await measure_color_scheme(
+                recorder,
+                timeout=_STARTUP_READ_TIMEOUT_S,
+                attempt_timeout=_STARTUP_READ_ATTEMPT_TIMEOUT_S,
+            )
         except Exception as exc:
             tier = getattr(
                 self.replayability, "replayability_id", type(self.replayability).__name__
@@ -2275,7 +2287,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         no ``Sec-CH-UA``, which no real Chrome does.
         """
         try:
-            return await measure_client_hints(recorder, timeout=_CLIENT_HINTS_TIMEOUT_S)
+            return await measure_client_hints(
+                recorder,
+                timeout=_STARTUP_READ_TIMEOUT_S,
+                attempt_timeout=_STARTUP_READ_ATTEMPT_TIMEOUT_S,
+            )
         except Exception as exc:
             tier = getattr(
                 self.replayability, "replayability_id", type(self.replayability).__name__
@@ -2309,7 +2325,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         replay of this run.
         """
         try:
-            measured = await measure_browser_defaults(recorder, timeout=_BROWSER_DEFAULTS_TIMEOUT_S)
+            measured = await measure_browser_defaults(
+                recorder,
+                timeout=_STARTUP_READ_TIMEOUT_S,
+                attempt_timeout=_STARTUP_READ_ATTEMPT_TIMEOUT_S,
+            )
         except Exception as exc:
             if recorded is not None:
                 raise BrowserCooperationError(

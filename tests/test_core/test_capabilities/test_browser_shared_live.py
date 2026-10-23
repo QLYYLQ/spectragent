@@ -185,7 +185,7 @@ async def test_failed_or_cancelled_setup_releases_only_its_lease(monkeypatch, ca
             assert a._context_lease is not None
             entered = asyncio.Event()
 
-            async def fail_measurement(_client):
+            async def fail_measurement(_client, **_budget):
                 entered.set()
                 if cancel:
                     await asyncio.Event().wait()

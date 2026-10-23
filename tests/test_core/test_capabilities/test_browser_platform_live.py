@@ -71,7 +71,10 @@ async def test_mac_os_fact_survives_both_launch_and_renderer_windows_identities(
                     seen.append(read["result"]["value"])
                 return result
 
-        assert await measure_input_platform(OverriddenRenderer()) == "macos"
+        assert (
+            await measure_input_platform(OverriddenRenderer(), timeout=5, attempt_timeout=5)
+            == "macos"
+        )
         assert seen == ["Win32"]
         targets = await client.send("Target.getTargets", {}, timeout=5)
         assert all(
