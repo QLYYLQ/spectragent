@@ -32,7 +32,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.model_families import GeminiFamily, GPTFamily
@@ -57,7 +57,7 @@ def _agent_output_model() -> type[BaseModel]:
     """
     keys = sorted(ActionRegistrar.get_all())
     descriptors = [ActionRegistrar.get(key)().descriptor() for key in keys]
-    agent = BrowserUseAgent()
+    agent = BrowserUseDomAgent()
     agent.prepare(
         task="t",
         execution_limits=ReactLoop().execution_limits(),

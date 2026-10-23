@@ -30,7 +30,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.observations import BrowserPlatformObs
 from spectragent.core.llm.messages import UserMessage
@@ -53,8 +53,8 @@ def _descriptors(*keys: str) -> list[ActionDescriptor]:
     return [ActionRegistrar.get(key)().descriptor() for key in keys]
 
 
-def _prepared_agent() -> BrowserUseAgent:
-    agent = BrowserUseAgent()
+def _prepared_agent() -> BrowserUseDomAgent:
+    agent = BrowserUseDomAgent()
     agent.prepare(
         task="t",
         execution_limits=ReactLoop().execution_limits(),
@@ -174,7 +174,7 @@ class TestHallucinatedVerbRejection:
 
     def test_negotiated_out_verb_is_rejected(self) -> None:
         """A real action the capability did not offer this run."""
-        agent = BrowserUseAgent()
+        agent = BrowserUseDomAgent()
         agent.prepare(
             task="t",
             execution_limits=ReactLoop().execution_limits(),
@@ -192,7 +192,7 @@ class TestHallucinatedVerbRejection:
         The loose fallback that used to stand in here is how an open
         ``list[dict[str, Any]]`` schema kept reaching providers unnoticed.
         """
-        agent = BrowserUseAgent()
+        agent = BrowserUseDomAgent()
         with pytest.raises(ParseError, match="before prepare"):
             agent.parse_react_output(json.dumps(_PAYLOAD))
 

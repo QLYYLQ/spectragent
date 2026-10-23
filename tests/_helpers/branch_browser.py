@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomVisionAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.memory.sliding_window import SlidingWindowMemory
 from spectragent.agents.skyvern import SkyvernAgent
@@ -263,7 +263,7 @@ AgentKind = Literal["browser_use", "skyvern", "ui_tars"]
 
 def make_agent(kind: AgentKind) -> Any:
     if kind == "browser_use":
-        return BrowserUseAgent(observation_mode="dom_vision")
+        return BrowserUseDomVisionAgent()
     if kind == "skyvern":
         return SkyvernAgent()
     return UITarsAgent()
@@ -282,11 +282,6 @@ class _MemoryEntry(BaseModel):
 def _config(agent: Any, memory: str) -> Any:
     """The resolved config a Composer would record: the agent's closed-set knobs."""
     fields: dict[str, Any] = {"agent_id": (Literal[agent.agent_id], agent.agent_id)}  # type: ignore[valid-type]
-    if isinstance(agent, BrowserUseAgent):
-        fields["observation_mode"] = (
-            Literal["dom", "dom_vision", "vision"],
-            agent.observation_mode,
-        )
     from pydantic import create_model
 
     entry = create_model("AgentEntry", memory=(_MemoryEntry, ...), **fields)

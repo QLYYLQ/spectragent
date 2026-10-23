@@ -1,9 +1,8 @@
 # The bench command owns one experiment scope; every task gets a fresh context.
 # Concurrent Python runs use the same explicit ExperimentScope (see the runbook).
 agent:
-  - agent_id: browser_use
+  - agent_id: browser_use.dom
     id: main
-    observation_mode: dom
     agent_loop:
       loop_id: react
       max_steps: 30

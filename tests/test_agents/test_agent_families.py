@@ -134,8 +134,8 @@ def test_members_merge_the_roots_wiring_and_keep_their_own():
 
 
 def test_keys_without_a_separator_are_unchanged():
-    """The shipped agents keep their keys, and a new undotted agent stays undotted."""
-    for key in ("browser_use", "skyvern", "ui_tars"):
+    """The undotted shipped agents keep their keys, and a new undotted agent stays undotted."""
+    for key in ("skyvern", "ui_tars"):
         assert AgentRegistrar.get(key).__registry_key__ == key
 
     @dataclass

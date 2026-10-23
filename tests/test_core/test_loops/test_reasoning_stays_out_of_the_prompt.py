@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 import pytest
 
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
@@ -303,7 +303,7 @@ def _ui_tars_replies(_descriptors: list[ActionDescriptor]) -> list[str]:
 
 
 _AGENTS = {
-    "browser_use": (BrowserUseAgent, _browser_use_replies),
+    "browser_use": (BrowserUseDomAgent, _browser_use_replies),
     "skyvern": (SkyvernAgent, _skyvern_replies),
     "ui_tars": (UITarsAgent, _ui_tars_replies),
 }

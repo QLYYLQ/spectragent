@@ -35,7 +35,7 @@ from agent_cdp import ConnectionType, EventScope, ScopeGroup, WatchdogRegistrar
 # composer's recursive ``discover()``; these tests build watchdogs directly.
 import spectragent.core.capabilities.browser.dom.cleaning.browser_use  # noqa: F401
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES
@@ -272,7 +272,7 @@ class TestNegotiationDrivenCost:
 
     async def test_dom_agent_still_extracts_dom(self) -> None:
         cap = BrowserCapability()
-        _negotiate(BrowserUseAgent(), cap)
+        _negotiate(BrowserUseDomAgent(), cap)
         cdp = _RecordingCDP()
 
         fragment, group = await _observe_once(cap, cdp, "browser.dom")

@@ -2,7 +2,11 @@
 
 from spectragent.agents._registrar import AgentBase, AgentRegistrar
 from spectragent.agents.base import BaseAgent
-from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.agents.browser_use import (
+    BrowserUseAgent,
+    BrowserUseDomAgent,
+    BrowserUseDomVisionAgent,
+)
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
 
@@ -12,8 +16,10 @@ __all__ = [
     # Registry
     "AgentRegistrar",
     "AgentBase",
-    # Concrete agents
+    # Agent families and concrete agents
     "BrowserUseAgent",
+    "BrowserUseDomAgent",
+    "BrowserUseDomVisionAgent",
     "UITarsAgent",
     "SkyvernAgent",
 ]

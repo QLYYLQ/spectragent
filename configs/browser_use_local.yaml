@@ -1,4 +1,4 @@
-# BrowserUseAgent + ReactLoop running against a local Chrome backend.
+# BrowserUse (``browser_use.dom``) + ReactLoop running against a local Chrome backend.
 #
 # Switching backend = editing only ``environment[0].capabilities[0].backend``.
 # Schema lives in spectragent/generated/_composed.py — regenerate with
@@ -20,10 +20,9 @@
 #    capability the environment below actually holds.
 
 agent:
-  - agent_id: browser_use
+  - agent_id: browser_use.dom    # browser_use.dom | browser_use.dom_vision
     id: main
     flash_mode: false
-    observation_mode: dom          # dom | dom_vision | vision
     use_thinking: true
 
     # Wired children (Composer instantiates and injects these).

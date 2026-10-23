@@ -89,7 +89,7 @@ def _recorded(root: Path) -> Path:
         root,
         "teacher",
         [ExportStep(actions=[click], fragments=fragments, extra_files=extra)],
-        agent_id="browser_use",
+        agent_id="browser_use.dom",
         benchmark="export_test",
         negotiation=BROWSER_USE_NEGOTIATION,
         task_setup=TaskSetupRecord(

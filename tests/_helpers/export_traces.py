@@ -123,7 +123,7 @@ def write_run(
     run_id: str,
     steps: Sequence[ExportStep],
     *,
-    agent_id: str = "browser_use",
+    agent_id: str = "browser_use.dom",
     llm_model: str = "gpt-4o",
     benchmark: str = "online_mind2web",
     subset: str = "test",
@@ -281,7 +281,7 @@ UI_TARS_NEGOTIATION = TraceNegotiation(
         "browser.wait",
     ],
 )
-#: What a DOM teacher (``browser_use`` in dom_vision mode) negotiates: the DOM,
+#: What a DOM teacher (``browser_use.dom_vision``) negotiates: the DOM,
 #: the screenshot, the page meta, and index actions besides the coordinate ones.
 BROWSER_USE_NEGOTIATION = TraceNegotiation(
     active_fragments=[

@@ -127,44 +127,39 @@ def test_required_and_optional_may_not_overlap() -> None:
     assert "both required and optional" in str(exc.value)
 
 
-def test_the_error_names_the_instance_not_just_the_class() -> None:
-    """``browser_use(observation_mode='vision')`` beats ``BrowserUseAgent``."""
+def test_the_error_names_the_owner_by_its_registry_key() -> None:
+    """The string the YAML named it by: ``browser_use.dom``, not ``BrowserUseDomAgent``."""
     with pytest.raises(DemandOutsideWiringError) as exc:
         bounded_demand(_Declared(), "action", set(), set())
     assert exc.value.owner == "declared"
     assert exc.value.registry == "action"
 
 
-def test_an_instance_that_describes_itself_is_named_by_that_description() -> None:
-    """A ``repr`` starting with the registry key is used whole."""
+@pytest.mark.parametrize("described", [False, True])
+def test_a_repr_never_names_the_owner(described: bool) -> None:
+    """Neither a generated repr nor one that starts with the key.
 
-    class _Configured(_Declared):
-        __registry_key__ = "declared"
-
-        def __repr__(self) -> str:
-            return "declared(mode='vision')"
-
-    with pytest.raises(DemandOutsideWiringError) as exc:
-        bounded_demand(_Configured(), "action", {"terminal"}, set())
-    assert exc.value.owner == "declared(mode='vision')"
-
-
-def test_a_generated_repr_is_not_mistaken_for_a_description() -> None:
-    """A dataclass repr names the *class* and dumps every field.
-
-    Neither half helps: the reader cannot act on ``BrowserUseAgent(``, and
-    the fields would put an LLM client into an error message.
+    A dataclass repr names the *class* and dumps every field: the reader
+    cannot act on ``BrowserUseDomAgent(``, and the fields would put an LLM
+    client into an error message. A hand-written repr is not consulted
+    either: the key is the whole name.
     """
 
-    @dataclass
+    @dataclass(repr=not described)
     class _Dumped(_Declared):
         __registry_key__ = "declared"
         secret: str = "an-api-key"
+
+        if described:
+
+            def __repr__(self) -> str:
+                return "declared(mode='vision')"
 
     with pytest.raises(DemandOutsideWiringError) as exc:
         bounded_demand(_Dumped(), "action", {"terminal"}, set())
     assert exc.value.owner == "declared"
     assert "an-api-key" not in str(exc.value)
+    assert "mode=" not in str(exc.value)
 
 
 # ── The boundary is enforced, not merely documented ───────────────────

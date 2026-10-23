@@ -39,7 +39,7 @@ Two things make a field safe:
    cannot carry a credential; it is what makes every conscribe
    discriminator (``agent_id``, ``loop_id``, ``env_type``,
    ``provider_id``, ``trajectory_type``) and every mode switch
-   (``observation_mode``, ``screenshot_format``, ``coordinate_space``)
+   (``screenshot_format``, ``coordinate_space``, ``prompt_template``)
    readable in a trace without anybody having to remember to mark them.
    A number is a count, a limit, a size or a sampling knob
    (``max_steps``, ``max_actions_per_step``, ``temperature``,

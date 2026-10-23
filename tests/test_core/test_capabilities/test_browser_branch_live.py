@@ -1,7 +1,7 @@
 """State branching in a real Chrome, end to end (M31 acceptance; fixture only, no LLM spend).
 
-``tests/_helpers/branch_driver.py`` records one run of ``browser_use``
-(``dom_vision``) on the fixture site's ``branch`` pages — every step an index
+``tests/_helpers/branch_driver.py`` records one run of ``browser_use.dom_vision``
+on the fixture site's ``branch`` pages — every step an index
 action: a link, a text input, a radio button, a link, a link — with
 ``replayability: pinned`` and the browser archive, then branches it at the cart
 page (step 4) three times through the real ``trace_branches`` loader and
@@ -195,7 +195,7 @@ def test_restoration_rate_is_reported(sweep: Sweep, capsys: pytest.CaptureFixtur
     assert (rate.ok, dict(rate.by_reason)) == (rate.total, {})
     ran = metrics.components(sweep.traces["b0"])
     assert {key: ran[key] for key in ran if key != "route"} == {
-        "agent": "browser_use",
+        "agent": "browser_use.dom_vision",
         "loop": "branch",
         "restorer": "prefix_replay",
         "cleaner": "browser_use",

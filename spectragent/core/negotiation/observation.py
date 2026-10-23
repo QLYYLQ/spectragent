@@ -44,13 +44,9 @@ class IncompatibleFragmentError(Exception):
     line the user has to edit.
 
     Each missing fragment is also attributed to the party that required
-    it. Since an instance may narrow what it demands, "``dom`` is
-    required" is no longer a property of the agent *class*: the same
-    ``browser_use`` requires it in two modes and excludes it in the third,
-    so the message names the configuration —
-    ``dom ← browser_use(observation_mode='dom')`` — and a mistyped
+    it, by registry key — ``dom ← browser_use.dom`` — so a mistyped
     capability profile reads as the mistake it is instead of as a puzzle
-    about who wanted a DOM.
+    about whether the agent or the Loop wanted a DOM.
     """
 
     def __init__(

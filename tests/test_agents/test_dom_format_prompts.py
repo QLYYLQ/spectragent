@@ -45,9 +45,10 @@ _CONFIG = {"browser_use": "browser_use_local.yaml", "skyvern": "skyvern_agent_lo
 
 #: Each agent configuration whose prompt describes the DOM.
 _CASES: list[tuple[str, dict[str, Any]]] = [
-    ("browser_use", {"observation_mode": "dom"}),
-    ("browser_use", {"observation_mode": "dom_vision"}),
-    ("browser_use", {"observation_mode": "dom", "flash_mode": True}),
+    ("browser_use", {"agent_id": "browser_use.dom"}),
+    ("browser_use", {"agent_id": "browser_use.dom_vision"}),
+    ("browser_use", {"agent_id": "browser_use.dom", "flash_mode": True}),
+    ("browser_use", {"agent_id": "browser_use.dom", "is_browser_use_model": True}),
     ("skyvern", {}),
 ]
 _IDS = [f"{agent}-{sorted(overrides.items())}" for agent, overrides in _CASES]

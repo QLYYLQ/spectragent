@@ -658,8 +658,8 @@ class TraceConfig(BaseModel):
 
     **Configuration** (:attr:`resolved`, :attr:`negotiation`) is what the
     run was actually *set up as*. Identity alone cannot compare two runs:
-    it says both used ``browser_use`` on ``react``, not that one ran in
-    ``observation_mode: vision`` with a ``learned`` mouse trajectory
+    it says both used ``browser_use.dom_vision`` on ``react``, not that one
+    ran with ``coordinate_space: normalized_1000`` and a ``learned`` mouse trajectory
     against a JPEG screenshot budget and the other did not. Every
     cross-run comparison used to depend on an external harness keeping
     its own notes.

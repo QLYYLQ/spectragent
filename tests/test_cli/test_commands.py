@@ -111,10 +111,10 @@ def test_config_explain_uses_prepare_without_launching_or_exposing_secrets(
     inputs = {entry["path"]: entry["source"] for entry in provenance["inputs"]}
     assert inputs["agent[0].llm.api_key"] == "explicit"
     assert "secret-config-inspection-sentinel" not in json.dumps(provenance)
-    agent_declaration = provenance["declarations"]["agent/browser_use"]
+    agent_declaration = provenance["declarations"]["agent/browser_use.dom"]
     assert agent_declaration["fields"]["id"]["declared_on"].endswith("AgentBase")
     assert agent_declaration["fields"]["use_thinking"]["declared_on"].endswith("BrowserUseAgent")
-    assert agent_declaration["mro"][0].endswith("BrowserUseAgent")
+    assert agent_declaration["mro"][0].endswith("BrowserUseDomAgent")
     loop_wiring = agent_declaration["wiring"]["agent_loop"]
     assert loop_wiring["winner"]["declared_on"].endswith("BrowserUseAgent")
     assert any(d["disposition"] == "overridden" for d in loop_wiring["declarations"])
@@ -214,7 +214,8 @@ def test_missing_input_is_a_clean_json_usage_error(capsys):
 
 def test_components_are_read_from_the_live_registries(capsys):
     assert main(["components", "list", "--layer", "agent", "--json"]) == 0
-    assert "browser_use" in json.loads(capsys.readouterr().out)["components"]["agent"]
+    agents = json.loads(capsys.readouterr().out)["components"]["agent"]
+    assert {"browser_use.dom", "browser_use.dom_vision"} <= set(agents)
 
 
 def test_tui_and_json_are_refused_before_execution(monkeypatch, capsys):

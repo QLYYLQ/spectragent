@@ -262,7 +262,7 @@ them. There are two ways to fall through, and af has a test for one of them.
 
 ### (a) Agent → action: does the agent emit what the descriptor declares?
 
-Tested. `tests/test_agents/test_browser_use/test_browser_use_modes.py:483-515` walks every negotiated
+Tested. `tests/test_agents/test_browser_use/test_browser_use_family.py::test_what_the_agent_emits_is_what_the_action_declares` walks every negotiated
 descriptor, synthesizes the minimal legal payload from its own `params_schema`
 (`tests/_helpers/action_params.py:44`), pushes it through the agent's parser and the
 guard, and validates what arrives against the action's real `Params`:
@@ -334,7 +334,7 @@ routes, each for a different reason, which is why no single provider fix recover
 
 Pinned by `test_schema_dialects.py:400` (no `discriminator`/`const`/`oneOf`, strict and
 non-strict), `:409` (every branch has exactly one property and one `required`), and
-`test_browser_use_modes.py:566,652`. Do not "tidy" it into a discriminated union; it
+`test_browser_use_family.py` (`test_each_action_branch_names_exactly_one_verb`, `test_the_strict_schema_is_clean`). Do not "tidy" it into a discriminated union; it
 reads better and does not work.
 
 Two more constraints your params can trip:
@@ -348,11 +348,11 @@ Two more constraints your params can trip:
   opposite, so this is family-shaped, not a universal strip.
 - **`min_length=1` on a list compiles to `minItems`, which OpenAI's strict dialect
   refuses — defect F12, and the symptom is the first GPT call of every run 400ing on the
-  schema.** The Pydantic bound stays (`agents/browser_use/agent.py:682`); the keyword is
+  schema.** The Pydantic bound stays (`agents/browser_use/family.py::_build_per_run_output_model`); the keyword is
   stripped at compile (`optimizer.py:386-398`, implied by `strict=True` at `:112`).
-  Tests: `test_schema_dialects.py:215-238`, and `test_browser_use_modes.py:579`, which
+  Tests: `test_schema_dialects.py:215-238`, and `test_browser_use_family.py::test_the_strict_schema_carries_nothing_strict_refuses`, which
   scans the strict payload against a frozenset of every keyword strict refuses
-  (`:537-561`) while asserting the bound still raises locally and the *non-strict*
+  (`_REFUSED_BY_STRICT`) while asserting the bound still raises locally and the *non-strict*
   compile still states `minItems: 1`.
 
 Practically: keep `Params` a **flat object of scalars, string enums, and nullable
