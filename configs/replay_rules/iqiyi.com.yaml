@@ -427,3 +427,80 @@ rules:
   - normalized
   ignore_query:
   - t
+
+# Player stream addresses (GET cache.video.iqiyi.com/dash?tvid=&bid=&...). Evidence: the offline
+# branch replays of 108_aa3a5b75 and 208_a35d7d11 in lookahead_15task_freeze_20261023 (123 near
+# misses in their replay logs) and the dumped live requests of 208_a35d7d11-s9-b0.
+# tm is the client time in milliseconds; authKey is md5(md5("") + tm + tvid), recomputed on
+# the 5 recorded requests, so it carries nothing but tm and tvid; vf is the player's signature
+# over the request and changes with tm. In 208 89 near misses differed only in these three and
+# 4 also in k_uid, the random visitor device id (see "Visitor device id" above). In 108 all 28
+# also differed in dfp, the device fingerprint the page gets from
+# cook.iqiyi.com/security/dfp_pcw/sign (that request misses in replay, so dfp is empty), and 17
+# in k_uid. dfp is sent both as a query field and inside bop, a JSON document in a query field,
+# so the rule parses bop and ignores only bop.dfp. The answer copies vf into data.ctl.vf; a rule
+# cannot write a query value into the answer, so that copy stays the recorded one. tvid and bid
+# select the video and its bitrate and stay, with bop.version, bop.b_ft1 and every other field:
+# the 2 near misses for another video (tvid, bid) still miss. Without this rule every replayed
+# request missed: at 5 of the 8 checkpoints of 208 the play page's video had no data
+# (readyState 0), the restorer's seek to the recorded time failed and the media check failed.
+- id: iqiyi-player-streams
+  scope:
+    host: cache.video.iqiyi.com
+    path: /dash
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  parse_query:
+  - field: bop
+    format: json
+  ignore_query:
+  - tm
+  - authKey
+  - vf
+  - k_uid
+  - dfp
+  - bop.dfp
+# Video segments from the CDN (GET <host>.71edge.com/videos/vts/<path>.ts). The segment scheduler
+# (pcw-data.video.iqiyi.com/videos/vts/..., matched exactly) answers with the CDN address; the
+# player adds start, end, sd and contentlength, which choose the bytes, and random, the client time
+# in milliseconds as a cache buster. Evidence: the dumped live requests of the offline branch
+# replays 208_a35d7d11-s17/s21/s25-b0 in lookahead_15task_freeze_20261023, made with the stream
+# address rule above: 18 replayed requests to bj3cnc.71edge.com differed from a recorded one only
+# in random, the player then tried other CDN hosts the recording never used, and the video still
+# had no data. Everything else in the address stays, so another segment or byte range still misses.
+- id: iqiyi-video-segments
+  scope:
+    host: '*.71edge.com'
+    path: /videos/vts/*
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - random
+# The player's bandwidth probe (GET data.video.iqiyi.com/v.f4v?random=): random is the client time
+# in milliseconds. 3 near misses in the same replays differed only in it.
+- id: iqiyi-bandwidth-probe
+  scope:
+    host: data.video.iqiyi.com
+    path: /v.f4v
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - random

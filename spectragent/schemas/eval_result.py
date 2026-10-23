@@ -91,7 +91,7 @@ class EvalResult(BaseModel):
     """Standardized evaluation result — the framework's only verdict.
 
     ``AgentResult.agent_reported_success`` is the agent's *self-report*
-    and some agents hardcode it to ``True``. The verdict lives here, is
+    about the task, ``None`` when it made no claim. The verdict lives here, is
     produced by a registered Evaluator from a recorded ``RunTrace``, and
     carries enough identity — which benchmark, which subset, which run,
     which evaluator — to survive being one file among thousands.

@@ -421,6 +421,7 @@ task_loader:
     require_archive: null              # null: [browser.network]; []: none
     on_unbranchable: raise             # skip
     task_variants: null                # a task-variants-1 file: another task per checkpoint
+    exclude_runs: null                 # a run-exclusions-1 file: recorded run ids not to branch
 ```
 
 ```bash
@@ -437,7 +438,9 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   recorded and that the source's trace is complete through (`complete_through`). The trace's
   own ledger is a hard condition, not a filter: a trace never closed (`writing`) has no
   candidate; an `incomplete` one still gives every checkpoint before its hole. How the agent
-  ended is the filter, `agent_outcome` (`any` by default; it reads `result.json`). A source
+  ended is the filter, `agent_outcome` (`any` by default; it reads `result.json`);
+  `exclude_runs` filters out the run ids a `run-exclusions-1` file lists (`lookahead health`
+  writes one for recordings that are not usable as data), with the file's reason. A source
   that cannot be branched (it does not read back — an older trace format included — is
   itself a branch or replay run, lacks a `require_archive` archiver or its fingerprint, has
   no recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
@@ -681,7 +684,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-10` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-12` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
   browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit

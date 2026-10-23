@@ -975,3 +975,171 @@ class TestTaskVariants:
         )
         assert isinstance(built, TraceBranchesTaskLoader)
         assert built.task_ids() == ["run-a/s0/vv1/b0"]
+
+
+# ── excluded runs: recordings not to be branched ─────────────────────
+
+
+def exclusions_file(root: Path, *entries: dict[str, Any], **document: Any) -> Path:
+    """A ``run-exclusions-1`` file listing *entries* (``document`` overrides its top level)."""
+    path = root / "exclusions.json"
+    path.write_text(
+        json.dumps({"format": "run-exclusions-1", "runs": list(entries), **document}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def excluded(run_id: str, reason: str = "its page never rendered", **extra: Any) -> dict[str, Any]:
+    return {"run_id": run_id, "reason": reason, **extra}
+
+
+class TestExcludeRuns:
+    def test_a_listed_source_is_filtered_out_with_its_reason(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2)
+        write_source(tmp_path / "src", "run-b", steps=2)
+        path = exclusions_file(tmp_path, excluded("run-a", note="written by a health check"))
+        tasks = loader(tmp_path / "src", exclude_runs=str(path))
+        assert tasks.task_ids() == ["run-b/s0/b0", "run-b/s1/b0"]
+        assert tasks.skipped["run-a"] == (
+            "filtered: the exclude_runs file lists its run id: its page never rendered"
+        )
+
+    def test_every_reason_of_a_run_listed_twice(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=1)
+        path = exclusions_file(
+            tmp_path, excluded("run-a"), excluded("run-a", "requests failed"), excluded("run-a")
+        )
+        tasks = loader(tmp_path / "src", exclude_runs=str(path))
+        assert tasks.task_ids() == []
+        assert tasks.skipped["run-a"].endswith("its page never rendered; requests failed")
+
+    def test_an_excluded_source_never_raises(self, tmp_path: Path) -> None:
+        """Like every filter: an excluded source is left out even when it could not be branched."""
+        write_source(tmp_path / "src", "run-a", steps=1, archivers=())
+        path = exclusions_file(tmp_path, excluded("run-a"))
+        assert loader(tmp_path / "src", exclude_runs=str(path)).task_ids() == []
+
+    def test_a_listed_run_id_no_source_has_changes_nothing(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=1)
+        path = exclusions_file(tmp_path, excluded("run-z"))
+        tasks = loader(tmp_path / "src", exclude_runs=str(path))
+        assert tasks.task_ids() == ["run-a/s0/b0"] and dict(tasks.skipped) == {}
+
+    def test_the_variants_of_an_excluded_source_are_left_out(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=2)
+        tasks = loader(
+            tmp_path / "src",
+            task_variants=str(variants_file(tmp_path, variant())),
+            exclude_runs=str(exclusions_file(tmp_path, excluded("run-a"))),
+        )
+        assert tasks.task_ids() == []
+        assert tasks.skipped["run-a/s1/vv1"] == (
+            "its source run 'run-a' is left out (run-a: filtered: the exclude_runs file lists "
+            "its run id: its page never rendered)"
+        )
+
+    @pytest.mark.parametrize(
+        ("content", "problem"),
+        [
+            ("not json", "is not JSON"),
+            ("[]", "must be a JSON object"),
+            (json.dumps({"runs": []}), "has format None"),
+            (json.dumps({"format": "run-exclusions-2", "runs": []}), "'run-exclusions-2'"),
+            (json.dumps({"format": "run-exclusions-1"}), "runs: Field required"),
+            (
+                json.dumps({"format": "run-exclusions-1", "runs": [], "by": "me"}),
+                "by: Extra inputs are not permitted",
+            ),
+            (
+                json.dumps({"format": "run-exclusions-1", "runs": [excluded("run-a", why="x")]}),
+                "runs.0.why: Extra inputs are not permitted",
+            ),
+            (
+                json.dumps({"format": "run-exclusions-1", "runs": [{"run_id": "run-a"}]}),
+                "runs.0.reason: Field required",
+            ),
+            (
+                json.dumps({"format": "run-exclusions-1", "runs": [excluded("")]}),
+                "runs.0.run_id",
+            ),
+            (
+                json.dumps({"format": "run-exclusions-1", "runs": [excluded("run-a", "")]}),
+                "runs.0.reason",
+            ),
+            (
+                json.dumps({"format": "run-exclusions-1", "runs": [{"run_id": 7, "reason": "x"}]}),
+                "runs.0.run_id",
+            ),
+        ],
+        ids=[
+            "not_json",
+            "not_an_object",
+            "no_format",
+            "unknown_format",
+            "no_runs",
+            "unknown_top_level_field",
+            "unknown_entry_field",
+            "no_reason",
+            "empty_run_id",
+            "empty_reason",
+            "run_id_not_a_string",
+        ],
+    )
+    def test_a_malformed_file_fails_the_scan_naming_the_problem(
+        self, tmp_path: Path, content: str, problem: str
+    ) -> None:
+        write_source(tmp_path / "src", "run-a", steps=1)
+        path = tmp_path / "exclusions.json"
+        path.write_text(content, encoding="utf-8")
+        tasks = loader(tmp_path / "src", exclude_runs=str(path))
+        with pytest.raises(BenchmarkDataError) as info:
+            tasks.task_ids()
+        assert problem in str(info.value)
+        assert "exclude_runs file" in str(info.value) and str(path) in str(info.value)
+
+    def test_a_missing_file_fails_the_scan(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=1)
+        tasks = loader(tmp_path / "src", exclude_runs=str(tmp_path / "nope.json"))
+        with pytest.raises(BenchmarkDataError, match="cannot be read"):
+            tasks.task_ids()
+
+    def test_constructing_reads_no_exclusions_file(self, tmp_path: Path) -> None:
+        built = TraceBranchesTaskLoader(exclude_runs=str(tmp_path / "not-yet.json"))
+        assert built.exclude_runs_path() == (tmp_path / "not-yet.json").resolve()
+        assert TraceBranchesTaskLoader().exclude_runs_path() is None
+
+    def test_a_relative_path_is_relative_to_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write_source(tmp_path / "src", "run-a", steps=1)
+        write_source(tmp_path / "src", "run-b", steps=1)
+        exclusions_file(tmp_path, excluded("run-a"))
+        monkeypatch.chdir(tmp_path)
+        tasks = TraceBranchesTaskLoader(data_dir="src", exclude_runs="exclusions.json")
+        assert tasks.task_ids() == ["run-b/s0/b0"]
+
+    def test_the_yaml_surface(self, tmp_path: Path) -> None:
+        from spectragent.core.benchmark_runner import build_composer
+
+        write_source(tmp_path / "src", "run-a", steps=1)
+        write_source(tmp_path / "src", "run-b", steps=1)
+        path = exclusions_file(tmp_path, excluded("run-b"))
+        built = (
+            build_composer()
+            .compose(
+                {
+                    "task_loader": [
+                        {
+                            "benchmark_name": "trace_branches",
+                            "data_dir": str(tmp_path / "src"),
+                            "step_selector": {"selector_id": "all"},
+                            "exclude_runs": str(path),
+                        }
+                    ]
+                }
+            )
+            .optional_single("task_loader")
+        )
+        assert isinstance(built, TraceBranchesTaskLoader)
+        assert built.task_ids() == ["run-a/s0/b0"]

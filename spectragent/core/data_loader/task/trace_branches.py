@@ -24,8 +24,11 @@ so an incomplete run still contributes every checkpoint before its hole. How
 the agent ended is a filter, ``agent_outcome``, ``any`` by default: a run cut
 off by a rate limit at step 25 still gives its first 25 checkpoints.
 
-**Filters and preconditions.** ``agent_outcome`` and ``require_eval`` are
-filters: a source that does not match is left out (logged at INFO). A source
+**Filters and preconditions.** ``exclude_runs``, ``agent_outcome`` and
+``require_eval`` are filters: a source that does not match is left out
+(logged at INFO). ``exclude_runs`` names a ``run-exclusions-1`` file
+(:mod:`~spectragent.core.data_loader.task.run_exclusions`): a source whose
+run id it lists is left out with the file's reason. A source
 that matches but cannot be branched — an unreadable trace (one of an older
 format among them), a branch or replay run, a missing required archive or
 environment fingerprint, no environment setup context, a run id another
@@ -50,10 +53,11 @@ cannot be used (listed twice, an empty task text, a run id no kept source
 has, a step that is not a chosen candidate) is left out, in ``skipped`` under
 its key ``<source_run_id>/s<t>/v<variant_id>``.
 
-**Lazy.** The constructor touches no file: the CLI composes the whole YAML
-once per task, and a sweep over a thousand sources must not rescan them a
-thousand times. The sources are scanned on first use (``task_ids``,
-``__getitem__``, ``get``, ``len``, ``get_task_context``, ``skipped``).
+**Lazy.** The constructor touches no file, the ``task_variants`` and
+``exclude_runs`` files included: the CLI composes the whole YAML once per
+task, and a sweep over a thousand sources must not rescan them a thousand
+times. The sources are scanned on first use (``task_ids``, ``__getitem__``,
+``get``, ``len``, ``get_task_context``, ``skipped``).
 
 **Not a dataclass.** ``TaskLoaderBase`` loads in ``__post_init__``, before
 the Composer injects receptors, so this loader uses a hand-written ``__init__``:
@@ -77,6 +81,7 @@ from pydantic import Field, TypeAdapter
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase, TaskLoaderRegistrar
 from spectragent.core.data_loader.task.require_eval import RequireEval
+from spectragent.core.data_loader.task.run_exclusions import read_run_exclusions
 from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — registration
     AllSteps,
     EveryKSteps,
@@ -137,6 +142,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
     require_archive: tuple[str, ...]
     on_unbranchable: Literal["raise", "skip"]
     task_variants: str | None
+    exclude_runs: str | None
     _contexts: dict[str, TaskContext]
     _skipped: dict[str, str]
     _scanned: bool
@@ -229,6 +235,17 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
                 ),
             ),
         ] = None,
+        exclude_runs: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "A run-exclusions file (JSON, format 'run-exclusions-1'; '~' expanded, "
+                    "relative to the working directory): each entry names a recorded run id "
+                    "and why it is not to be branched. Filter: a source whose run id the file "
+                    "lists is left out with that reason. None: no source is excluded."
+                ),
+            ),
+        ] = None,
     ) -> None:
         # The receptor's in-Python default; the Composer injects the configured one.
         self.step_selector = default_step_selector()
@@ -263,6 +280,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         self.require_archive = tuple(require_archive)
         self.on_unbranchable = on_unbranchable
         self.task_variants = task_variants
+        self.exclude_runs = exclude_runs
         self._tasks = {}
         self._contexts = {}
         self._skipped = {}
@@ -320,6 +338,12 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             return None
         return Path(self.task_variants).expanduser().resolve()
 
+    def exclude_runs_path(self) -> Path | None:
+        """The ``exclude_runs`` file, absolute, or ``None`` when no source is excluded."""
+        if self.exclude_runs is None:
+            return None
+        return Path(self.exclude_runs).expanduser().resolve()
+
     def _scan_once(self) -> None:
         if self._scanned:
             return
@@ -360,6 +384,8 @@ class _Scan:
         #: Every readable matched source's run id → its paths, to say why a
         #: variant whose source was left out was left out.
         self._sources_by_run_id: dict[str, list[str]] = {}
+        #: Why each run id the ``exclude_runs`` file lists is excluded.
+        self._excluded: dict[str, str] = {}
 
     def run(self) -> None:
         loader = self.loader
@@ -367,6 +393,9 @@ class _Scan:
         variants_path = loader.task_variants_path()
         if variants_path is not None:
             self._variants = self._usable_variants(read_task_variants(variants_path))
+        exclusions_path = loader.exclude_runs_path()
+        if exclusions_path is not None:
+            self._excluded = read_run_exclusions(exclusions_path)
         matched = match_runs(root, loader.sources)
         if not matched:
             logger.warning(
@@ -478,6 +507,9 @@ class _Scan:
     def _filtered_out(self, trace: RunTrace) -> str | None:
         """Why a filter leaves *trace* out, or ``None`` when it is kept."""
         loader = self.loader
+        excluded = self._excluded.get(trace.run_id)
+        if excluded is not None:
+            return f"the exclude_runs file lists its run id: {excluded}"
         try:
             outcome = agent_outcome_filtered_out(trace, loader.agent_outcome)
         except TraceSchemaError as exc:

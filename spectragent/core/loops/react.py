@@ -615,7 +615,7 @@ class ReactLoop(AgentLoopBase):
                     agent_done="done",
                     env_status="success",
                     answer=last_done_result.extracted_content or "",
-                    agent_reported_success=last_done_result.success,
+                    agent_reported_success=last_done_result.reported_success,
                 )
                 return await self.with_terminal(run, ending)
             await self.surrender(run.recorder, record, observation)

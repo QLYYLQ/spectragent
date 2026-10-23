@@ -145,7 +145,8 @@ def click(x: int, y: int) -> Action:
 
 
 def done(text: str = "done") -> Action:
-    return Action(name="browser.done", params={"extracted_content": text, "success": True})
+    """A recorded UI-TARS ``finished``: an answer and no claim about the task."""
+    return Action(name="browser.done", params={"extracted_content": text})
 
 
 def check(

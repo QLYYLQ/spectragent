@@ -33,6 +33,17 @@ What a run is comes from what it recorded, never from its path:
 A branch run is paired with its source by the source's recorded run id (and,
 when several runs share it, by the recorded source path).
 
+`--exclude-runs FILE` (every command but `health`) leaves out the runs a
+run-exclusions file lists: every run whose run id it names, and every branch
+run whose recorded source run id it names. The file is the `trace_branches`
+loader's own `run-exclusions-1` format, the one `health` writes (below). Runs
+are matched by recorded run id, never by path, so one file serves any
+`--root`. An excluded run is left out when the runs are opened, like an
+unreadable one: no command works on it, each names it on standard error
+(`excluded <run key>: <reason>`) and lists it in its output (`excluded_runs`
+in `stability.json`, `sampling.json` and the `variants` summary; a section of
+`stability` and `judge-forks`' `report.md`).
+
 Every run named in an output is a **run key**: the run directory relative to
 `--viewer-root` (default: `--root`), the root `spectragent view` will be
 started with. A root outside the viewer root is refused.
@@ -100,6 +111,100 @@ geometry. Which actions an image draws:
 `observation_image(...)` and `frame_image(...)` in `lookahead/queues.py` take
 `marks_from=` and leave it `None` by default.
 
+## `health --root DIR --out DIR2`
+
+Is each recording usable as data? A recording whose page never rendered, or
+whose content requests failed while it was recorded, still yields steps,
+forks and queue items, and its forks even restore well because nothing on
+the screen changes; it has to be recorded again instead. Every `record` run
+gets a verdict, `usable` or `unusable`, and every signal that fired is a named
+reason with its evidence. A run is `unusable` when a reason measured on the
+recording fired; an answer-only reason is a flag. Branch and replay runs are not judged (listed in
+`not_assessed`): a branch follows its source recording's verdict.
+
+| reason | basis | fires when |
+|---|---|---|
+| `never_rendered` | recording | at least 5 consecutive policy screens are blank and each unchanged from the one before, and the agent waited or reloaded in at least half of them |
+| `degraded_at_load` | recording | in step 0 or 1, at least 5 % and at least 5 of the content requests failed live; or the start page's document failed |
+| `answer_states_failure` | answer | the final answer says the task was not done; reported only: on its own the run stays `usable` (the task failed, the recording did not) |
+
+- **Blank**: the capture's settle wait did not see content in the viewport
+  (`capped` with `content` among `waiting_for`, or no settle record) and the
+  image agrees: under 0.1 % of its pixels differ from its most common colour
+  by more than 48 levels (skeleton placeholders are painted a few levels off
+  the background; text, icons and pictures are not). **Unchanged**: no changed
+  region of 0.5 % of the image on `stability`'s grid. **Waited or
+  reloaded**: a `wait`, a reload key (`F5`, `Ctrl/Meta+R`, with or without
+  `Shift`), or a navigation to the URL shown. A page that is still loading is
+  blank in one observation; five are at least 25 s of capped settle waits.
+- **Content requests** are `Document`, `Fetch` and `XHR` exchanges of
+  `browser.network`'s index, counted under the step whose commit took the
+  line. One **failed live** when the replay loader's own reading of how it
+  ended (`source_outcome`) is `network_failed`: Chrome reported a network
+  failure. The page cancelling a request (`net::ERR_ABORTED`) is counted
+  apart and decides nothing: navigating away cancels requests in healthy
+  recordings too. The **start document** failed when the first early
+  `Document` request for the task's start URL failed live or answered 400 or
+  more, or when an early observation shows Chrome's error page
+  (`chrome-error://`).
+- **The answer** is `result.json`'s `answer`, matched against named rules for
+  task-level failure statements in Chinese and English (`无法完成` / `未能完成`,
+  `任务失败`, `unable to complete`, `the task cannot be completed`, `not
+  achievable`); "未能读取播放量" (one field missing) is a partial answer and
+  matches none. It is the agent's own statement, not a measurement of the
+  recording, and labelled so (`basis: answer`). The agent's
+  `done(success=...)` flag (`agent_reported_success`) is never read: UI-TARS's
+  `finished` verb always reports success.
+
+Every threshold is a named constant in `lookahead/health.py`, with the
+2026-10-23 measurements behind it; `health.json` repeats them.
+
+Outputs:
+
+- `health.json` (`"format": "lookahead-run-health-1"`): the thresholds, the
+  counts, and per recording its verdict, reasons (`code`, `basis`,
+  `summary`), policy and blank screen counts, every blank stretch (first and
+  last step, length, steps that waited or reloaded, steps the settle wait
+  capped waiting for content, URLs), the content requests of steps 0 and 1
+  (counted, failed live, cancelled by the page, share, error texts and hosts
+  of the failures), the start document, and the answer with the rule it
+  matched; the runs not judged and the runs not read;
+- `report.md`: the signals, a verdict table, why each unusable run is
+  unusable (with its final answer), and the usable runs whose answer says the
+  task was not done;
+- `exclusions.json`: the unusable recordings as a `run-exclusions-1` file,
+  built with the loader's own model (`RunExclusionsFile`): `run_id`, `reason`
+  (the reasons' summaries) and `note` (the run key).
+
+**One exclusions file, read everywhere.** `health` runs once, right after
+recording; the file it writes is then the input of every later stage: the
+`trace_branches` loader's `exclude_runs` (so the branch task list leaves those
+sources out) and `--exclude-runs` of `variants`, `extract`, `stability`,
+`judge-forks` and `gold-queue`. A file rather than each command judging the
+runs itself, because the decision is made once from the recordings alone and
+before the expensive stages (`variants` asks a model; a branch sweep runs for
+hours); every stage then leaves out the same runs, whatever thresholds a later
+version applies; the loader, which cannot import this package, reads it in its
+own format, as it reads `variants`' file; and a person can read the reasons
+and edit the file (delete an entry to keep a run, add one by hand).
+
+```bash
+uv run python -m lookahead health --root $E/record --viewer-root $E --out $E/out/health
+uv run python -m lookahead variants --root $E/record --viewer-root $E \
+  --exclude-runs $E/out/health/exclusions.json ...
+# branch configs: task_loader[trace_branches].exclude_runs: $E/out/health/exclusions.json
+uv run python -m lookahead judge-forks --root $E --viewer-root $E \
+  --exclude-runs $E/out/health/exclusions.json ...
+```
+
+What the framework does not state, and is derived here: how many of a step's
+requests failed (counted from the index lines through `iter_index_lines` and
+`source_outcome`; a per-step tally in the browser's offline statistics,
+`archive_stats.py`, would give the count one meaning for the flywheel metrics
+too), and which `Document` request was the main frame's (the index line
+records no frame, so the start document is found by the task's start URL,
+and an error page by the observation's URL).
+
 ## `extract --root DIR --out FILE.jsonl`
 
 One JSON object per line (`"format": "lookahead-step-1"`) for every policy or
@@ -164,11 +269,12 @@ think time is the first action span's start minus the observation's capture.
 
 Outputs:
 
-- `stability.json` (`"format": "lookahead-stability-2"`): the method, the
-  minimum area, the origins, the counts, and per observation the settle facts,
-  the previous step's last action, the think time, both comparisons (frame,
-  outcome, seconds after the observation, changed fraction, regions, dHash
-  distance), the verdict and the media flags;
+- `stability.json` (`"format": "lookahead-stability-3"`): the method, the
+  minimum area, the origins, the counts, the runs not read and the runs
+  excluded, and per observation the settle facts, the previous step's last
+  action, the think time, both comparisons (frame, outcome, seconds after the
+  observation, changed fraction, regions, dHash distance), the verdict and the
+  media flags;
 - `report.md`: verdict counts, settle outcome × verdict, the previous step's
   last action × verdict, origin × verdict (when restored steps are included),
   changes over playing media, and how often the grid and the dHash disagree;

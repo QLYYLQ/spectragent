@@ -439,19 +439,18 @@ class SkyvernAgent(AgentBase):
     # ── private helpers ────────────────────────────────────────
 
     @staticmethod
-    def _done_action(extracted_content: str | None, success: bool) -> Action:
+    def _done_action(extracted_content: str | None, success: bool | None) -> Action:
         """The one place a terminal ``done`` Action is built.
 
         Capability-relative, like everything else this agent emits: the
-        guard binds it to whichever capability provides ``done``.
+        guard binds it to whichever capability provides ``done``. *success*
+        is the model's claim about the goal; ``None`` (it wrote none) leaves
+        the param unset, so the done result carries no claim.
         """
-        return Action(
-            name="done",
-            params={
-                "extracted_content": extracted_content or "",
-                "success": success,
-            },
-        )
+        params: dict[str, Any] = {"extracted_content": extracted_content or ""}
+        if success is not None:
+            params["success"] = success
+        return Action(name="done", params=params)
 
     def _build_system_prompt(
         self,

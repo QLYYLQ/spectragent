@@ -315,8 +315,8 @@ def click_at(x: int, y: int) -> Action:
 
 
 def finished(text: str = "done") -> Action:
-    """A recorded ``browser.done`` (UI-TARS ``finished``)."""
-    return Action(name="browser.done", params={"extracted_content": text, "success": True})
+    """A recorded ``browser.done`` (UI-TARS ``finished``, which makes no claim about the task)."""
+    return Action(name="browser.done", params={"extracted_content": text})
 
 
 def ui_tars_step(

@@ -15,9 +15,9 @@ reads them.
 import fnmatch
 import hashlib
 import json
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import parse_qsl, urlsplit
 
 import yaml
@@ -47,6 +47,29 @@ ExhaustionPolicy = Literal["repeat_last", "miss"]
 #: by the miss policy, or by an available record of the same sequence when
 #: every available record there has the same status and body (§4.14 "匹配").
 UnavailablePolicy = Literal["miss", "serve_identical"]
+#: How ``parse_query`` / ``parse_body_paths`` read a field's value: a URL-encoded
+#: query string (``a=1&b=2``) or a JSON object or array (§4.14 "请求规则").
+FieldFormat = Literal["urlencoded", "json"]
+
+
+class ParsedField(BaseModel):
+    """A field whose value is read as *format* and keyed by its sub-fields.
+
+    A sub-field is named ``<field>.<name>``: ``vinfoparam.cKey`` for the
+    ``cKey`` parameter of a URL-encoded ``vinfoparam``, or, for a JSON value,
+    the full path below the field, as if the JSON were written inline
+    (``sspAdParam.video.flow_id``). The rule's ``ignore_*`` / ``keep_*`` globs
+    then address sub-fields by those names. A value that does not parse as
+    *format* stays one field under its own name.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str = Field(
+        min_length=1,
+        description="The exact query parameter name or flattened body path; not a glob.",
+    )
+    format: FieldFormat
 
 
 class RequestScope(BaseModel):
@@ -114,8 +137,10 @@ class SiteRule(BaseModel):
     exhaustion: ExhaustionPolicy
     unavailable: UnavailablePolicy
     levels: tuple[MatchLevel, ...] | None = Field(default=None, min_length=1)
+    parse_query: tuple[ParsedField, ...] = ()
     ignore_query: tuple[str, ...] = ()
     keep_query: tuple[str, ...] = ()
+    parse_body_paths: tuple[ParsedField, ...] = ()
     ignore_body_paths: tuple[str, ...] = ()
     keep_body_paths: tuple[str, ...] = ()
     ignore_headers: tuple[str, ...] = ()
@@ -130,6 +155,40 @@ class SiteRule(BaseModel):
         if levels is not None and len(levels) != len(set(levels)):
             raise ValueError("each matching level must appear once")
         return levels
+
+    @model_validator(mode="after")
+    def parsed_fields_take_effect(self) -> Self:
+        """Refuse a parse declaration that is repeated, nested in another, or ignored whole."""
+        declared: tuple[tuple[str, tuple[ParsedField, ...], Callable[[str], bool]], ...] = (
+            ("parse_query", self.parse_query, self.ignores_query),
+            ("parse_body_paths", self.parse_body_paths, self.ignores_body_path),
+        )
+        for key, parsed, ignores in declared:
+            names = [entry.field for entry in parsed]
+            repeated = sorted({name for name in names if names.count(name) > 1})
+            if repeated:
+                raise ValueError(f"rule {self.id!r}: {key} declares {repeated} more than once")
+            for name in names:
+                outer = sorted(other for other in names if name.startswith(other + "."))
+                if outer:
+                    raise ValueError(
+                        f"rule {self.id!r}: {key} field {name!r} is a sub-field of "
+                        f"{outer[0]!r}, which is parsed already; sub-fields are not parsed again"
+                    )
+                if ignores(name):
+                    raise ValueError(
+                        f"rule {self.id!r}: {key} field {name!r} is ignored whole by this "
+                        f"rule, so parsing it has no effect"
+                    )
+        return self
+
+    def query_format(self, name: str) -> FieldFormat | None:
+        """The format ``parse_query`` declares for the query parameter *name*."""
+        return next((entry.format for entry in self.parse_query if entry.field == name), None)
+
+    def body_path_format(self, path: str) -> FieldFormat | None:
+        """The format ``parse_body_paths`` declares for the flattened body path *path*."""
+        return next((entry.format for entry in self.parse_body_paths if entry.field == path), None)
 
     def ignores_query(self, name: str) -> bool:
         return not any(fnmatch.fnmatchcase(name, p) for p in self.keep_query) and any(

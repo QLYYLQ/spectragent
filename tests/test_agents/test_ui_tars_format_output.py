@@ -140,9 +140,10 @@ class TestEveryVerb:
             (Action(name="browser.scroll", params={"direction": "down"}), {"direction": "down"}),
             (Action(name="browser.send_keys", params={"keys": "ctrl+a"}), {"keys": "ctrl+a"}),
             (Action(name="browser.wait", params={}), {}),
+            # No claim about the task: ``finished`` cannot state one, and reads back with none.
             (
-                Action(name="browser.done", params={"extracted_content": "42", "success": True}),
-                {"extracted_content": "42", "success": True},
+                Action(name="browser.done", params={"extracted_content": "42"}),
+                {"extracted_content": "42"},
             ),
         ]
         for action, params in cases:
@@ -277,7 +278,10 @@ class TestUnrepresentable:
             ("browser.scroll", {"direction": "down", "amount": 300}, ("amount",)),
             ("browser.scroll", {"direction": "down", "index": 7}, ("index",)),
             ("browser.wait", {"seconds": 2.0}, ("seconds",)),
+            # Either claim about the task: ``finished()`` reads back with none, so
+            # writing it as ``finished`` would train a reply that claims something else.
             ("browser.done", {"extracted_content": "x", "success": False}, ("success",)),
+            ("browser.done", {"extracted_content": "x", "success": True}, ("success",)),
             ("browser.send_keys", {"keys": "ctrl c"}, ("keys",)),
             ("browser.send_keys", {"keys": ""}, ("keys",)),
             (

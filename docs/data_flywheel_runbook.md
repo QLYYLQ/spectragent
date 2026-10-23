@@ -220,7 +220,7 @@ task_loader:
 | `explicit`（`steps: [2, 5]`） | 写了的步；某个源里不是候选的步跳过并记原因 |
 | `last` | 每个源最后一个候选步 |
 
-`agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
+`agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。`exclude_runs` 也是筛选：它指向一个 `run-exclusions-1` 文件（`{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`~` 展开、相对启动目录），它列出的 run id 不当源，加载器的跳过记录里写着文件给的原因（以 `filtered:` 开头）。这份文件通常由 `python -m lookahead health` 写出（页面一直没渲染、录制时内容请求就失败了、最终回答说任务失败的录制），见 `lookahead/README.md`。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
 
 Loop 一侧：
 
@@ -368,7 +368,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 - `length: { max_tokens: 65536 }`：学生每轮都保留截图，30 步的整段在 1280×720 上光图像约 36k token。有记录超出预算时，导出失败并点名这条记录，从不截断；训练器的上下文更短时，换一个 `max_steps` 更小的学生。
 - `output_dir`：发布值 `datasets/sft_v1`，相对工作目录；已存在就拒绝。
 
-学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。
+学生对录制有要求。学生协商出的观测 fragment 必须是源 run 录下的子集，例如学生要 DOM 而录制是纯视觉时报 `IncompatibleFragmentError`；截图管线（viewport、格式、DPR）也要与录制一致，否则报 `StudentCaptureMismatchError`。用纯视觉 agent、`max_actions_per_step: 4` 录制不会丢样本；一步的动作数超过学生的 `max_actions_per_step` 时，这一步的不可译原因是 `exceeds_action_budget`。结束步也要看 agent 有没有说任务完成了没有：BrowserUse、Skyvern 录下的 `done` 通常带着这个结论（`success: true` 或 `false`），UI-TARS 学生的 `finished()` 写不出任何结论，所以这样的结束步不可译，原因是 `unrepresentable`；UI-TARS 自己录下的结束步没有结论，照常导出（[architecture_design.md](architecture_design.md) §4.1 "agent 的任务结论"、§4.15 "round-trip"）。
 
 样本是至少执行了一个动作、没有出错的策略步。动作失败的步照样导出，标 `labels.step_status: action_failed`。分叉 run 导出它的策略步，上下文是源 run 的前缀；同一组里检查点步动作相同的样本标 `duplicate_of`，不删。产物先写进 `<output_dir>.partial/`，图片数、坐标范围、参考答案泄漏、凭证形状和长度的检查全部通过才改名：
 

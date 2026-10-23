@@ -162,6 +162,57 @@ screenshot checks: the video does not play (see 2026-10-22). Replaying the secon
 rules (video page overlays, poster badges) changed no verdict on 8 of those forks; they
 are request-equivalence changes, each checked by matching and counterexample tests.
 
+Also on 2026-10-23, rules could first parse a field's value (see "Fields that hold fields"),
+and two player requests got rules, from the offline branch replays of
+`lookahead_15task_freeze_20261023` and the live requests of three of them, dumped and compared
+with the recorded ones:
+
+- `qq.com.yaml`: the player's video info request (`POST vd6.l.qq.com/proxyhttp`) parses
+  `vinfoparam` and `adparam` and ignores the encrypted key, the client time and the random
+  player and play ids inside them. The video, definition, encryption version, page and player
+  fields stay. It also ignores `adparam.sspKey` and the ad context `sspAdParam`: the answer puts
+  its ad part under the request's random `sspKey`, so a replayed page never reads a recorded ad
+  answer, and what the ad context selects cannot reach it.
+- `iqiyi.com.yaml`: the player's stream address request (`GET cache.video.iqiyi.com/dash`)
+  ignores `tm`, `authKey` (md5 over `tm` and `tvid`, recomputed), the signature `vf`, the device
+  id `k_uid` and the device fingerprint `dfp`, also inside the JSON field `bop` (`bop.dfp`).
+  `tvid`, `bid` and the other fields stay. Video segments on `*.71edge.com/videos/vts/*` and the
+  bandwidth probe `data.video.iqiyi.com/v.f4v` ignore only `random`, the client time the player
+  adds as a cache buster; the byte range fields stay.
+
+Across the 15 recordings of that root (35,943 recorded requests), these rules change the keys of
+39 player info and 5 stream address requests and nothing else. Every group of records they join
+has one HTTP status, the same video and definition; the joined video info answers differ only in
+the server time, signature, test bucket and CDN tokens, and the joined ad answers sit under
+different `sspKey` names. The segment and probe rules join no recorded requests.
+
+Restoration was compared on the same recordings with the same branch configuration, only
+`site_rules` changed, one fork per checkpoint: Tencent Video 23 forks, iQIYI 6 forks whose
+checkpoints had failed the media check. Restorer `ok` verdicts did not change: Tencent Video 0 of
+23 before and after, iQIYI 0 of 6, and every fork still fails the media check. What changed:
+
+- Tencent Video: no player info request was served before; after, they were on all 23 forks. On
+  8 forks (5 play page checkpoints of 28 and 3 home page checkpoints of 128 and 263) the restored
+  page now builds the player as the recording did, and one of them (28, step 5) is now within the
+  screenshot threshold (distance 10 → 3). On the search page of 28
+  (step 25) the two recorded preview videos were missing before; after, both correspond and one
+  plays, but the seek to the recorded time stops at 25.2 s of 42.4 s: the segments after that come
+  from a CDN host the recording never contacted.
+- The Tencent Video media check cannot pass on 22 of these 23 checkpoints whatever the requests:
+  every page but the search page renders the player inside an iframe in a shadow root
+  (`<fake-iframe-video>`), which the media reader lists as unreachable (`main/unplaced-0`), so the
+  recorded step is not restorable (`docs/architecture_design.md` §4.4, accepted 2026-10-21 until a
+  real site needed it).
+- The play pages of 128 and 263 got their video info from `vinfo_proxy`, whose answer is
+  encrypted; the replayed player then asks `proxyhttp` again with encryption version 9.2, which
+  the recording never did, so no rule can serve it. A scratch run that also served the protobuf
+  variant of `GetTabRemoteConfig` (keyed without its visitor id) changed nothing there, so that
+  request is not the cause.
+- iQIYI: every stream address request and every recorded segment request was served after, none
+  before; the restored play page video still had no data, because the recording kept no body for
+  its first segment (the page cancelled it while the body arrived), and the player then asked a
+  host the recording never contacted.
+
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another
 endpoint. A change must check incorrect matches as well as newly matched
@@ -198,8 +249,10 @@ failed requests, candidates and the selected rule when investigating a change.
 | `unavailable` | `miss` or `serve_identical` | Required. Answer a consumed record without a body through the miss policy, or with an available record of the same sequence when every available record there has the same status and body and the consumed record's recorded status, if any, is that status (never for a source network failure). |
 | `levels` | list of `exact`, `normalized`, `fuzzy`, or null | Restrict the run's allowed matching levels; null uses the run's set. A rule cannot enable a level forbidden by `matcher.levels`. |
 | `fuzzy` | boolean | Permit fuzzy matching for documents and non-GET requests, only when the run and rule allow `fuzzy`. Use `true` or `false`. |
+| `parse_query` | list of `{field, format}` | Query parameters whose value holds more fields; see "Fields that hold fields". |
 | `ignore_query` | list of name globs | Query fields omitted from the normalized key and fuzzy score. |
 | `keep_query` | list of name globs | Fields retained even when an ignore pattern matches. |
+| `parse_body_paths` | list of `{field, format}` | Body fields (form names, flattened JSON paths, GraphQL variable paths) whose value holds more fields. |
 | `ignore_body_paths` | list of path globs | Body fields omitted from the normalized key: form names, flattened JSON paths, or GraphQL variable paths within an operation. |
 | `keep_body_paths` | list of path globs | Body fields retained even when an ignore pattern matches. |
 | `ignore_headers` | list of name globs | Request headers omitted from the header tie-break; case-insensitive. |
@@ -231,6 +284,49 @@ Range requests respect the same boundary. Once the strongest permitted level
 finds a sequence, exhaustion is handled there; it does not fall through to a
 weaker match for another resource. `repeat_last` is logged as reuse, and
 `miss` reports exhaustion separately from a request never recorded.
+
+## Fields that hold fields
+
+Some requests pack several fields into one field's value. Tencent Video's player sends
+`proxyhttp` a JSON body whose `vinfoparam` is a URL-encoded query string holding the video id,
+the definition, an encrypted key, the client time and random ids; iQIYI's `dash` request has a
+query field `bop` holding a JSON document. Ignoring the whole field would drop the video id
+too. A rule can declare such a field and the format of its value:
+
+```yaml
+    parse_body_paths:
+    - field: vinfoparam      # an exact body path, not a glob
+      format: urlencoded     # or json
+    ignore_body_paths:
+    - vinfoparam.cKey
+    - vinfoparam.tm
+    parse_query:
+    - field: bop
+      format: json
+    ignore_query:
+    - bop.dfp
+```
+
+The field is then keyed by its sub-fields, named `<field>.<name>`: `vinfoparam.vid`,
+`vinfoparam.cKey`. A JSON value is flattened by full path below the field, as if it were
+written inline (`bop.dfp`, `ssp.pre_ad_params.video.flow_id`). The `ignore_*` and `keep_*`
+globs address sub-fields by these names, and every sub-field they do not ignore stays in the
+key. The near-miss report lists differing sub-fields under the same names once a replay used
+a rule that parses the field.
+
+- `urlencoded` reads `name=value` parts joined by `&`, decoded like a query string (`+` and
+  `%20` are the same space). `json` reads an object or an array.
+- A value of another shape stays one field under its own name: an empty value, a plain token,
+  a part without `=` or with an empty name, a JSON string or number.
+- Parsing happens in the one canonicaliser, for recorded and live requests alike, and before
+  the body's 4096-character cap and its digest. The exact level still compares the original
+  bytes; the normalized level no longer distinguishes sub-field order or encoding.
+- One level only: a sub-field of a parsed field is not parsed again.
+- Refused when the rules load, naming the file and the rule: an unknown format or key, an
+  empty field name, the same field declared twice, a field inside another parsed field, and a
+  field the same rule ignores whole (parsing it would have no effect).
+- Protobuf is not parsed: without a schema a length-delimited field may be a string, bytes or
+  a nested message, and protobuf is usually the whole body rather than one field.
 
 ## Example
 

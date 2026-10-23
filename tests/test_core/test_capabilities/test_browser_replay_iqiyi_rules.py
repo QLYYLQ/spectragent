@@ -406,3 +406,100 @@ def test_other_requests_keep_the_device_id_and_cache_buster(address: str) -> Non
     policy = rules().require_for_request("GET", address)
     for field in ("device", "deviceId", "device_id", "deviceID", "qyid", "u", "t"):
         assert not policy.ignores_query(field), (address, field)
+
+
+# ── player stream addresses ─────────────────────────────────────────────
+
+DASH = "https://cache.video.iqiyi.com/dash"
+STREAMS = {
+    "tvid": "1000000000000000",
+    "bid": "600",
+    "src": "01080031010000000000",
+    "k_uid": RECORDED_DEVICE,
+    "authKey": "0" * 32,
+    "dfp": "a0" * 30,
+    "tm": "1700000000111",
+    "bop": json.dumps({"version": "10.0", "dfp": "a0" * 30, "b_ft1": 60}, separators=(",", ":")),
+    "ut": "0",
+    "vf": "1" * 32,
+}
+#: The replayed player: a new time and signature, a new device id, and no fingerprint yet.
+RESTREAMS = {
+    **STREAMS,
+    "k_uid": LIVE_DEVICE,
+    "authKey": "f" * 32,
+    "dfp": "",
+    "tm": "1700000009999",
+    "bop": json.dumps({"version": "10.0", "dfp": "", "b_ft1": 60}, separators=(",", ":")),
+    "vf": "e" * 32,
+}
+
+
+def test_stream_addresses_match_across_a_new_time_signature_device_and_fingerprint() -> None:
+    result = match_one(DASH, STREAMS, RESTREAMS)
+    assert (result.reason, result.rule_id) == (None, "iqiyi-player-streams")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tvid": "2000000000000000"},
+        {"bid": "500"},
+        {"src": "01010031010000000000"},
+        {"ut": "1"},
+        {"bop": json.dumps({"version": "11.0", "dfp": "", "b_ft1": 60}, separators=(",", ":"))},
+        {"bop": json.dumps({"version": "10.0", "dfp": "", "b_ft1": 30}, separators=(",", ":"))},
+    ],
+)
+def test_stream_addresses_still_select_the_video_and_its_bitrate(change: dict[str, str]) -> None:
+    assert match_one(DASH, STREAMS, {**RESTREAMS, **change}).reason == "no_match"
+
+
+# ── video segments and the bandwidth probe ──────────────────────────────
+
+SEGMENT = "https://bj3cnc.71edge.com/videos/vts/20261016/52/cd/0000000000000000000000000000aaaa.ts"
+#: The CDN address the segment scheduler answered with, plus the byte range the player chose.
+SEGMENT_FIELDS = {
+    "key": "00976ee4c3686de999015b32f04e66bf2",
+    "dis_k": "82112f60c178dc40b35811347a191f22",
+    "qd_tvid": "1000000000000000",
+    "bid": "600",
+    "start": "2871136",
+    "end": "3697772",
+    "sd": "17160",
+    "contentlength": "826636",
+    "random": "1700000000698",
+}
+
+
+def test_a_segment_matches_across_a_new_cache_buster() -> None:
+    result = match_one(SEGMENT, SEGMENT_FIELDS, {**SEGMENT_FIELDS, "random": "1700000009999"})
+    assert (result.reason, result.rule_id) == (None, "iqiyi-video-segments")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"start": "3697772"}, {"end": "4000000"}, {"contentlength": "1"}, {"key": "1" * 33}],
+)
+def test_a_segment_still_selects_its_bytes(change: dict[str, str]) -> None:
+    live = {**SEGMENT_FIELDS, "random": "1700000009999", **change}
+    assert match_one(SEGMENT, SEGMENT_FIELDS, live).reason == "no_match"
+
+
+def test_another_segment_or_host_family_still_misses() -> None:
+    other = SEGMENT.replace("aaaa.ts", "bbbb.ts")
+    assert match_one(SEGMENT, SEGMENT_FIELDS, SEGMENT_FIELDS).reason is None
+    policies = rules()
+    assert policies.require_for_request("GET", other).id == "iqiyi-video-segments"
+    for address in (
+        "https://bj3cnc.71edge.com/videos/other/20260819/d8/f5/0.f4v",
+        "https://bj3cnc.71edge.com.example/videos/vts/x.ts",
+        "https://pcw-data.video.iqiyi.com/videos/vts/20261016/52/cd/0.ts",
+    ):
+        assert not policies.require_for_request("GET", address).ignores_query("random"), address
+
+
+def test_the_bandwidth_probe_matches_across_a_new_cache_buster() -> None:
+    probe = "https://data.video.iqiyi.com/v.f4v"
+    result = match_one(probe, {"random": "1700000000698"}, {"random": "1700000009999"})
+    assert (result.reason, result.rule_id) == (None, "iqiyi-bandwidth-probe")

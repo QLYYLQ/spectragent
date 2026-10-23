@@ -34,6 +34,24 @@ def decode(data: bytes) -> Image.Image | None:
         return None
 
 
+def ink_share(image: Image.Image, level: int) -> float:
+    """The share of *image*'s pixels that stand out from its most common colour.
+
+    A pixel stands out when its largest RGB channel differs from that colour
+    by more than *level*: text, icons and pictures do; a flat background, a
+    loading bar and skeleton placeholders painted a few levels off it do not.
+    """
+    pixels = image.width * image.height
+    colors = image.getcolors(pixels)
+    if not colors:
+        return 0.0
+    background = max(colors)[1]
+    difference = ImageChops.difference(image, Image.new("RGB", image.size, background))
+    red, green, blue = difference.split()
+    largest = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    return sum(largest.histogram()[level + 1 :]) / pixels
+
+
 def distance(left: bytes, right: bytes) -> int | None:
     """The Hamming distance of the two images' dHash, or ``None`` when one does not decode."""
     a, b = dhash(left), dhash(right)

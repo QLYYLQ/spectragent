@@ -176,3 +176,26 @@ def test_cli_prints_totals_and_closes_the_transport(
     printed = capsys.readouterr().out
     assert "4 variant(s) from 2 checkpoint(s)" in printed and "judge: 2 request(s)" in printed
     assert calls_path(out).is_file()
+
+
+def test_an_excluded_recording_gets_no_variants(world: World, tmp_path: Path) -> None:
+    exclusions = tmp_path / "exclusions.json"
+    exclusions.write_text(
+        json.dumps(
+            {
+                "format": "run-exclusions-1",
+                "runs": [{"run_id": "rec-1", "reason": "never rendered"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "variants.json"
+    transport = ScriptedTransport(_answer)
+    runs = open_runs(world.root, exclude_runs=exclusions)
+    summary = asyncio.run(generate(runs, Judge(transport), out, steps_per_run=2, per_step=3))
+    assert {item.source_run_id for item in read_task_variants(out)} == {"rec-2"}
+    assert (
+        summary["excluded_runs"]["record/rec-1"] == "the exclusions file lists it: never rendered"
+    )
+    assert "record/rec-1" not in summary["skipped_runs"]
+    assert all("rec-1" not in str(request) for request in transport.requests)

@@ -30,7 +30,8 @@
 # parsed without the `multipart` package; an unparsable body is its sha256
 # (upstream: its base64); the 4096-character cap replaces the body by its sha256
 # (upstream: truncates it, so long GraphQL requests collided); AMF dropped;
-# GraphQL operations keyed by operation; site rules' ignored paths removed.
+# GraphQL operations keyed by operation; site rules' ignored paths removed and
+# the fields they declare as holding fields parsed into sub-fields.
 """One canonicaliser for recorded and live requests (§4.14 "匹配").
 
 Replay keys a recorded request when it loads the archive and a live request
@@ -53,8 +54,10 @@ the rule.
   ``harBackend``'s exact match), since the boundary is random per request.
 - **normalized** (L1) — the canonical URL with every parameter, sorted:
   scheme and host lower-cased, default port and fragment dropped, the query
-  decoded and stripped only of the applicable rule's ``ignore_query``, plus ``__wb_method=<METHOD>`` and the
-  body's parameters (:func:`body_params`).
+  decoded, its ``parse_query`` fields replaced by their sub-fields
+  (:func:`parsed_subfields`) and stripped only of the applicable rule's
+  ``ignore_query``, plus ``__wb_method=<METHOD>`` and the body's parameters
+  (:func:`body_params`).
 - **body_key** — the body's parameters on their own (``None`` without a
   body), for the replay log.
 
@@ -70,7 +73,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
+from spectragent.core.capabilities.browser.replay.site_rules import FieldFormat, SiteRule
 
 #: Ports a canonical URL leaves out.
 DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
@@ -243,10 +246,12 @@ def media_type(content_type: str | None) -> tuple[str, dict[str, str]]:
 def canonical_query(query: str, rule: SiteRule | None = None) -> Params:
     """A query string's canonical parameters, sorted.
 
-    Decoded (``%20`` and ``+`` are the same space), with only the explicit
-    rule's ``ignore_query`` removed. A GraphQL
-    GET request's ``query`` / ``variables`` / ``operationName`` /
-    ``extensions`` become its operation's parameters (:func:`graphql_params`).
+    Decoded (``%20`` and ``+`` are the same space); a parameter the rule's
+    ``parse_query`` declares is replaced by its sub-fields
+    (:func:`parsed_subfields`); then only the explicit rule's
+    ``ignore_query`` is removed. A GraphQL GET request's ``query`` /
+    ``variables`` / ``operationName`` / ``extensions`` become its operation's
+    parameters (:func:`graphql_params`).
     """
     pairs = parse_qsl(query, keep_blank_values=True)
     operation = _graphql_get_operation(pairs)
@@ -254,9 +259,14 @@ def canonical_query(query: str, rule: SiteRule | None = None) -> Params:
     for name, value in pairs:
         if operation is not None and name in GRAPHQL_URL_PARAMS:
             continue
-        if rule is not None and rule.ignores_query(name):
+        if rule is None:
+            kept.append((name, value))
             continue
-        kept.append((name, value))
+        kept.extend(
+            (field, part)
+            for field, part in _parsed(name, value, rule.query_format(name))
+            if not rule.ignores_query(field)
+        )
     if operation is not None:
         kept.extend(graphql_params([operation], rule))
     return tuple(sorted(kept))
@@ -288,8 +298,10 @@ def body_params(body: bytes, content_type: str | None, rule: SiteRule | None = N
     JSON and ``*+json`` → flattened by full path (a GraphQL body → its
     operations' parameters); ``text/plain`` or no type → JSON if it parses,
     else urlencoded if it is form-shaped; anything else, or a body that does
-    not parse as its type → ``__wb_post_data=<sha256>``. The site rule's
-    ``ignore_body_paths`` are removed. When the encoded parameters exceed
+    not parse as its type → ``__wb_post_data=<sha256>``. A field the site
+    rule's ``parse_body_paths`` declares is replaced by its sub-fields
+    (:func:`parsed_subfields`), then the rule's ``ignore_body_paths`` are
+    removed; both happen before the cap. When the encoded parameters exceed
     :data:`MAX_BODY_KEY_CHARS`, the body is ``__wb_body_sha256=<sha256 of them>``.
     """
     media, options = media_type(content_type)
@@ -310,10 +322,10 @@ def _body_pairs(
 ) -> list[tuple[str, str]] | None:
     """The body's parameters by its media type; ``None`` when it does not parse as one."""
     if media == "application/x-www-form-urlencoded":
-        return _form_pairs(body)
+        return _parsed_body(_form_pairs(body), rule)
     if media.startswith("multipart/"):
         boundary = options.get("boundary")
-        return _multipart_pairs(body, boundary) if boundary else None
+        return _parsed_body(_multipart_pairs(body, boundary), rule) if boundary else None
     if media == "application/json" or media.endswith("+json"):
         return _json_pairs(body, rule)
     if media in ("", "text/plain"):
@@ -321,7 +333,7 @@ def _body_pairs(
         if found is not None:
             return found
         if _FORM_SHAPE.match(body):
-            return _form_pairs(body)
+            return _parsed_body(_form_pairs(body), rule)
     return None
 
 
@@ -381,7 +393,63 @@ def _json_pairs(body: bytes, rule: SiteRule | None) -> list[tuple[str, str]] | N
         return graphql_params(operations, rule)
     pairs: list[tuple[str, str]] = []
     _flatten_json(document, "", pairs)
-    return pairs
+    return _parsed_body(pairs, rule)
+
+
+def _parsed_body(
+    pairs: list[tuple[str, str]] | None, rule: SiteRule | None
+) -> list[tuple[str, str]] | None:
+    """*pairs* with each field the rule's ``parse_body_paths`` declares replaced by its sub-fields."""
+    if pairs is None or rule is None or not rule.parse_body_paths:
+        return pairs
+    parsed: list[tuple[str, str]] = []
+    for name, value in pairs:
+        parsed.extend(_parsed(name, value, rule.body_path_format(name)))
+    return parsed
+
+
+# ── fields whose value holds more fields ────────────────────────────────
+
+
+def parsed_subfields(field: str, value: str, format: FieldFormat) -> Params | None:
+    """*value* read as *format*, as sub-fields named below *field* — ``None`` when it does not parse.
+
+    - ``urlencoded``: every non-empty ``&``-separated part is ``name=value``
+      with a non-empty name; decoded as a query string is (``+`` and ``%20``
+      are the same space). Each parameter becomes ``<field>.<name>``, in order.
+    - ``json``: an object or an array, flattened by full path below the field
+      as if it were written inline (``<field>.a.0.b``; an empty object or
+      array is ``<field>={}`` / ``[]``).
+
+    Anything else does not parse — an empty value, a plain token, a JSON
+    string or number — and the caller keeps the field whole, so a value of
+    another shape never takes the parsed shape's key.
+    """
+    if format == "urlencoded":
+        parts = [part for part in value.split("&") if part]
+        if not parts or any(not part.partition("=")[0] or "=" not in part for part in parts):
+            return None
+        return tuple(
+            (f"{field}.{name}", item) for name, item in parse_qsl(value, keep_blank_values=True)
+        )
+    try:
+        document = json.loads(value)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(document, dict | list):
+        return None
+    flattened: list[tuple[str, str]] = []
+    _flatten_json(document, field, flattened)
+    return tuple(flattened)
+
+
+def _parsed(field: str, value: str, format: FieldFormat | None) -> Params:
+    """The field's sub-fields when it is declared with *format* and parses as it, else the field."""
+    if format is not None:
+        subfields = parsed_subfields(field, value, format)
+        if subfields is not None:
+            return subfields
+    return ((field, value),)
 
 
 def _flatten_json(value: Any, path: str, out: list[tuple[str, str]]) -> None:
@@ -438,8 +506,9 @@ def graphql_params(
     Per operation: ``operationName``; ``query_sha256`` — the sha256 of the
     query with whitespace runs collapsed — or, for a persisted query without
     its text, ``persisted_sha256``; and the variables flattened by full path
-    (``variables.input.id``) minus the site rule's ``ignore_body_paths``
-    (matched within the operation, so one glob covers a single request and a
+    (``variables.input.id``), its ``parse_body_paths`` fields replaced by
+    their sub-fields, minus the site rule's ``ignore_body_paths`` (both
+    matched within the operation, so one rule covers a single request and a
     batch). A batch's operations are numbered in order (``0.operationName``).
     """
     batch = len(operations) > 1
@@ -458,7 +527,7 @@ def graphql_params(
             _flatten_json(variables, "variables", flat)
             own.extend(
                 (name, value)
-                for name, value in flat
+                for name, value in _parsed_body(flat, rule) or ()
                 if rule is None or not rule.ignores_body_path(name)
             )
         pairs.extend((f"{index}.{name}" if batch else name, value) for name, value in own)

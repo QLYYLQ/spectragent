@@ -161,9 +161,15 @@ class SkyvernOutput(BaseModel):
         default=False,
         description="True to end the run — this is how browser.done is invoked",
     )
-    success: bool = Field(
-        default=True,
-        description="Whether the goal was reached; only meaningful when is_done is true",
+    #: The agent's claim, carried into ``browser.done``'s ``success``. No
+    #: default of ``true``: a reply that leaves it out claims nothing, and the
+    #: run's ``agent_reported_success`` is then ``None``.
+    success: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the goal was reached; only meaningful when is_done is true. "
+            "null if you cannot tell"
+        ),
     )
     extracted_content: str | None = Field(
         default=None,

@@ -45,7 +45,7 @@ from lookahead.extract import restoration_summary, step_rows
 from lookahead.judge import Judge, JudgeOutcome, JudgeRequest, image_part, text_part
 from lookahead.output import write_lines, write_text
 from lookahead.queues import item_title, observation_image
-from lookahead.report import crosstab, share, table
+from lookahead.report import crosstab, excluded_section, share, table
 from lookahead.rows import ActionRow, NextObservation, RestorationSummary, StepRow
 from lookahead.runs import READ_ERRORS, LookaheadInputError, Run, RunSet, unreadable
 from spectragent.annotation import (
@@ -1049,7 +1049,9 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
     )
 
 
-def render_report(records: list[dict[str, Any]], totals: str) -> str:
+def render_report(
+    records: list[dict[str, Any]], totals: str, excluded: dict[str, str] | None = None
+) -> str:
     counted = [record for record in records if record["status"] in COUNTED]
     same = [record for record in counted if record["fork_kind"] == "same_task"]
     variant = [record for record in counted if record["fork_kind"] == "task_variant"]
@@ -1151,6 +1153,7 @@ def render_report(records: list[dict[str, Any]], totals: str) -> str:
         reasons = Counter(record["status_reason"] for record in group)
         lines += [f"- {count} × {reason}" for reason, count in reasons.most_common()]
         lines.append("")
+    lines += excluded_section(excluded or {})
     lines += ["## Judge model usage", "", totals, ""]
     return "\n".join(lines)
 
@@ -1223,5 +1226,5 @@ async def judge_forks(
     write_lines(
         out / "judgments.jsonl", (json.dumps(record, ensure_ascii=False) for record in records)
     )
-    write_text(out / "report.md", render_report(records, totals))
+    write_text(out / "report.md", render_report(records, totals, dict(runs.excluded)))
     return records, write_queue(annotations, queue) if queue is not None else None

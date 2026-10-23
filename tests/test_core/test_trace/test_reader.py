@@ -811,15 +811,41 @@ class TestUnreadableTracesSayWhy:
             _ = trace.result
 
         message = str(exc_info.value)
-        assert "predates AgentResult schema 3.0" in message
+        assert "predates AgentResult schema 4.0" in message
         assert "'2.0'" in message
         assert "result.json" in message
         # The confusing field-level noise stays out of it.
         assert "agent_success" not in message
 
+    def test_a_result_from_before_the_done_claim_is_refused(self, tmp_path):
+        """A 3.0 result read its self-report off the done action's execution outcome.
+
+        Its fields still parse, so only the version tells it apart: UI-TARS's
+        ``True`` there was invented, and 4.0 does not read it as a claim.
+        """
+        trace = self._trace_with_result(
+            tmp_path,
+            {
+                "schema_version": "3.0",
+                "task_id": "t-1",
+                "timestamp": "2025-01-01T00:00:00+00:00",
+                "env_status": "success",
+                "agent_done": "done",
+                "agent_reported_success": True,
+                "answer": "无法完成",
+                "metrics": {"execution_ms": 1, "steps": 1},
+            },
+        )
+
+        with pytest.raises(TraceSchemaError) as exc_info:
+            _ = trace.result
+
+        assert "predates AgentResult schema 4.0" in str(exc_info.value)
+        assert "'3.0'" in str(exc_info.value)
+
     def test_a_malformed_current_result_keeps_the_field_errors(self, tmp_path):
         """When the versions agree, pydantic's detail is the only clue."""
-        trace = self._trace_with_result(tmp_path, {"schema_version": "3.0", "task_id": "t-1"})
+        trace = self._trace_with_result(tmp_path, {"schema_version": "4.0", "task_id": "t-1"})
 
         with pytest.raises(TraceSchemaError) as exc_info:
             _ = trace.result
