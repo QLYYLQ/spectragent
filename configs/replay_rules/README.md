@@ -299,6 +299,34 @@ fails is not a request a rule can join:
   version 9.2, see above) and plays no ad, so the click lands on the player's canvas and the tab
   stays on the play page.
 
+On 2026-10-24, `iqiyi.com.yaml` added play page and channel page rules from the 72 offline
+branch replays of the iQIYI recordings 18_b2fc886d, 108_113ae4b3 and 208_426ea862 in
+`lookahead_15task_20261024`. The play page's details (`base_info`) missed on `adn_token`, the
+ad-network bidding token: every recorded value is `{}`, and offline the page sends it empty
+because the ad server's answer that fills its cache is not replayed. The side panel then stayed a
+loading skeleton. The TV and membership channel pages missed on `adnToken` the same way and
+showed a network error. The other new rules cover play page APIs that differ only in the client
+time and its signature, the referring page `s2` on the player feature switches (three recorded
+values got the same answer), the play page module's cache buster, the interactive layer's client
+time and the follow state's empty device fingerprint; after replaying with those, the side
+panel's follow-up requests and the detail pages' header channel links. All 106 recorded
+signatures of these endpoints were recomputed (two keys, upper- and lower-case md5); one endpoint
+whose two signatures did not recompute, `ask_after_play`, has no rule. Across the 15
+recordings every group of records a new rule joins has one status, 200, and the joined answers
+differ only in server times.
+
+Restoration was compared on one fork per failed checkpoint (8 forks; the step-1 checkpoints of
+18 and 208 and the later off-site checkpoints left out), with the same branch configuration and
+only `site_rules` changed. Restorer `ok` checkpoint verdicts went from 0 to 1 of 8 (208, step
+13), and forks on the recorded URL from 4 to 5: the step-6 click on 速看 now opens the preview
+page. At steps 17, 21 and 22 of 208 the replay now diverges earlier, at step 14: clicking the
+title in the loaded panel opens the album page in a new tab, which the recording did not follow
+(its document took 12.4 s, longer than the 10 s the capability waits to adopt a tab) and the
+replay, answered at once, does. The other failures are pages that load faster offline (a search
+page still loading in the recording, a dialog shown earlier) and the home page's hero video,
+which covers 82% of the screenshot. Replaying three of the forks again with the second-round
+rules changed no verdict.
+
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another
 endpoint. A change must check incorrect matches as well as newly matched
