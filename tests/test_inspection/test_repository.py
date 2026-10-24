@@ -250,3 +250,50 @@ def test_disabled_statistics_are_not_shown_as_zero_calls(tmp_path: Path) -> None
     row = open_repository(tmp_path).list_runs()[0]
     assert row["llm_calls"] is None and row["tokens"] is None
     assert row["usage_measured"] is False
+
+
+def _branch_of(base: Path, run_id: str, source_run_id: str) -> Path:
+    from spectragent.schemas.restoration import BranchProvenance
+
+    writer = WALWriter(base, run_id)
+    writer.init_run(
+        TraceConfig(
+            branch=BranchProvenance(
+                source_run_id=source_run_id,
+                source_trace=source_run_id,
+                checkpoint_step=1,
+                branch_index=0,
+                branch_group_id=f"{source_run_id}/s1",
+            )
+        )
+    )
+    writer.commit_step(0, StepRecord(step=0, origin="restored"))
+    writer.write_result(agent_result())
+    writer.finalize(TraceStatus.COMPLETE)
+    return writer.run_dir
+
+
+def test_listed_branches_resolve_their_source_against_the_whole_root(tmp_path: Path) -> None:
+    build_reference_trace(tmp_path / "records", "source")
+    build_reference_trace(tmp_path / "x", "twin")
+    build_reference_trace(tmp_path / "y", "twin")
+    _branch_of(tmp_path / "forks", "found", "source")
+    _branch_of(tmp_path / "forks", "lost", "gone")
+    _branch_of(tmp_path / "forks", "unclear", "twin")
+    rows = {row["key"]: row for row in open_repository(tmp_path).list_runs()}
+    assert (rows["forks/found"]["source_key"], rows["forks/found"]["source_resolution"]) == (
+        "records/source",
+        "found",
+    )
+    assert (rows["forks/lost"]["source_key"], rows["forks/lost"]["source_resolution"]) == (
+        None,
+        "missing",
+    )
+    assert rows["forks/unclear"]["source_resolution"] == "ambiguous"
+    assert "source_resolution" not in rows["records/source"]
+    # A list filter narrows the rows, never the root the source is resolved in.
+    only = open_repository(tmp_path).list_runs(search="forks/found")
+    assert [row["key"] for row in only] == ["forks/found"]
+    assert only[0]["source_key"] == "records/source"
+    # The resolution is added after the search: it is not searchable text.
+    assert open_repository(tmp_path).list_runs(search="ambiguous") == []

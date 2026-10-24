@@ -353,12 +353,16 @@ class _FileRepository:
 
     def list_runs(self, search: str = "") -> list[dict[str, Any]]:
         rows = []
+        # Every readable run under the root, filtered or not: a branch's
+        # source is resolved against the root, never against the filter.
+        keys_by_run_id: dict[str, list[str]] = {}
         for directory, files in self._directories():
             if "manifest.json" not in files or self._kind(directory / "manifest.json") == "dataset":
                 continue
             key = directory.relative_to(self.root).as_posix()
             try:
                 trace = self._trace(key)
+                keys_by_run_id.setdefault(trace.run_id, []).append(key)
                 if self._matches(trace):
                     rows.append(_summary(trace, key))
             except (RepositoryError, TraceSchemaError, OSError) as exc:
@@ -379,6 +383,14 @@ class _FileRepository:
             rows = [
                 row for row in rows if needle in " ".join(str(v) for v in row.values()).casefold()
             ]
+        for row in rows:
+            if row.get("branch"):
+                # The same resolution ``run`` reports, from the same scan.
+                candidates = keys_by_run_id.get(row["branch"]["source_run_id"], [])
+                row["source_key"] = candidates[0] if len(candidates) == 1 else None
+                row["source_resolution"] = (
+                    "found" if len(candidates) == 1 else "ambiguous" if candidates else "missing"
+                )
         return sorted(rows, key=lambda row: (row.get("created_at", ""), row["key"]), reverse=True)
 
     def run(self, key: str) -> dict[str, Any]:
