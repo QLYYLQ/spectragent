@@ -32,7 +32,7 @@ def browse(
     repository = open_repository(root, config_source=config_source, config_hash=config_hash)
     if initial_run is not None and not repository.matches(initial_run):
         raise ValueError("The selected run does not match the configuration filters")
-    BrowserApp(repository, initial_run=initial_run).run()
+    BrowserApp(repository, initial_run=initial_run, root=Path(root).expanduser().resolve()).run()
 
 
 __all__ = ["browse", "run_operation"]

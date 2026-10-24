@@ -329,9 +329,10 @@ async def test_history_restoration_separates_source_success_from_actual_failure(
     async with app.run_test(size=(110, 40)) as pilot:
         await _until(lambda: app._run_detail is not None)
         steps = app.query_one("#steps", DataTable)
-        assert "source: browser.click; actual: browser.click (failed)" in str(
-            steps.get_row_at(0)[3]
-        )
+        titles = [str(column.label) for column in steps.ordered_columns]
+        actions = str(steps.get_row_at(0)[titles.index("Actions")])
+        assert "actual: browser.click (failed)" in actions
+        assert "source: browser.click" in actions
         steps.focus()
         await pilot.press("enter")
         await _until(lambda: '"actual_action_results"' in app.query_one("#content", TextArea).text)

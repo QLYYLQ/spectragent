@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 import pytest
-from textual.widgets import DataTable, Static, TabbedContent, TextArea
+from textual.widgets import DataTable, TextArea
 
 from spectragent.monitoring import ProgressState
 from spectragent.schemas.action import Action, ActionResult
@@ -12,6 +12,21 @@ from spectragent.schemas.prompt import RestoredHistory
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck, RestoredAction
 from spectragent.schemas.step_record import StepRecord
 from spectragent.tui.app import MonitorApp
+from spectragent.tui.widgets import FactSheet
+
+
+def _summary(app) -> str:
+    return app.query_one("#summary", FactSheet).plain_text
+
+
+def _summary_line(app, label: str) -> str:
+    return next(line for line in _summary(app).splitlines() if line.startswith(label))
+
+
+def _cell(table, row: int, title: str) -> str:
+    """A cell by column title: columns may drop or move with the width."""
+    titles = [str(column.label) for column in table.ordered_columns]
+    return str(table.get_row_at(row)[titles.index(title)])
 
 
 async def test_progress_is_rendered_and_return_value_survives_closure():
@@ -28,7 +43,7 @@ async def test_progress_is_rendered_and_return_value_survives_closure():
     async with app.run_test(size=(100, 35)) as pilot:
         await pilot.pause()
         assert app.query_one("#tasks", DataTable).row_count == 1
-        assert "FINISHED" in str(app.query_one("#summary", Static).render())
+        assert "FINISHED" in _summary(app)
         await pilot.press("q")
     assert app.operation_result() == 17
 
@@ -52,9 +67,10 @@ async def test_copy_does_not_cancel_live_run_and_log_selection_survives_refresh(
         assert app.operation is not None and not app.operation.done()
         state.log("first event")
         app.refresh_progress()
-        app.query_one("#views", TabbedContent).active = "log_view"
+        await pilot.press("4")
         await pilot.pause()
         log = app.query_one("#events", TextArea)
+        assert app.focused is log
         log.focus()
         await pilot.press("f7")
         state.log("next event")
@@ -138,18 +154,19 @@ async def test_selected_step_shows_action_result_and_log_handler_is_removed():
     app = MonitorApp(operation, state)
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
-        assert "policy steps 1 · configured ceiling 9" in str(
-            app.query_one("#summary", Static).render()
-        )
+        steps_line = _summary_line(app, "Steps")
+        assert "policy steps 1" in steps_line
+        assert "configured ceiling 9" in steps_line
         app.query_one("#steps", DataTable).focus()
         await pilot.press("enter")
         await pilot.pause()
-        assert app.query_one("#views", TabbedContent).active == "detail_view"
+        assert app.focused is app.query_one("#details", TextArea)
         text = app.query_one("#details", TextArea).text
         assert "element disappeared" in text
         assert '"index": 5' in text
-        # Activate the pane so TextArea has a width and flushes deferred lines.
-        await pilot.click(app.query_one("#views", TabbedContent).get_tab("log_view"))
+        facts = app.query_one("#facts", FactSheet).plain_text
+        assert "element disappeared" in facts
+        await pilot.press("4")
         await pilot.pause()
         text = app.query_one("#events", TextArea).text
         assert "direct logging is visible" in text
@@ -252,17 +269,27 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
     app = MonitorApp(operation, state)
     async with app.run_test(size=(125, 40)) as pilot:
         await pilot.pause()
-        text = str(app.query_one("#summary", Static).render())
-        assert "policy steps 1 · configured ceiling 30 · continue_steps 0" in text
+        text = _summary(app)
+        steps_line = _summary_line(app, "Steps")
+        for fact in ("policy steps 1", "configured ceiling 30", "continue_steps 0"):
+            assert fact in steps_line
         assert "1/30" not in text
-        assert "source-run · checkpoint 1" in text
-        assert "Agent history: source · verify: warn" in text
+        branch_line = _summary_line(app, "Branch")
+        for fact in (
+            "source source-run",
+            "checkpoint ◆ 1",
+            "Agent history: source",
+            "verify: warn",
+        ):
+            assert fact in branch_line
         table = app.query_one("#steps", DataTable)
-        assert "source: browser.click; actual: browser.click (failed)" in str(
-            table.get_row_at(0)[3]
-        )
+        actions = _cell(table, 0, "Actions")
+        assert "actual: browser.click (failed)" in actions
+        assert "source: browser.click" in actions
+        assert actions.index("actual:") < actions.index("source:")
         table.focus()
-        await pilot.press("enter")
+        # The cursor follows the newest step; open the restored one.
+        await pilot.press("g", "enter")
         await pilot.pause()
         text = app.query_one("#details", TextArea).text
         assert '"actual_action_results"' in text

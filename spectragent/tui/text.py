@@ -12,10 +12,18 @@ class EvidenceText(TextArea):
     """Read-only details: select with mouse/Shift-arrows, F7 selects all."""
 
     BINDINGS = [Binding("ctrl+c", "copy", "Copy"), Binding("f7", "select_all", "Select all")]
+    DEFAULT_CSS = """
+    EvidenceText, EvidenceText:focus { border: none; padding: 0 1; background: transparent; }
+    """
 
     def __init__(self, *, id: str) -> None:
         super().__init__(
-            id=id, read_only=True, soft_wrap=True, show_line_numbers=False, tab_behavior="focus"
+            id=id,
+            read_only=True,
+            soft_wrap=True,
+            show_line_numbers=False,
+            tab_behavior="focus",
+            highlight_cursor_line=False,
         )
 
     async def action_copy(self) -> None:
