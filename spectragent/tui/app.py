@@ -23,6 +23,7 @@ from spectragent.tui.presentation import (
     STEP_COLUMNS,
     TASK_COLUMNS,
     Sheet,
+    checked_steps,
     fact,
     message_sheet,
     run_facts,
@@ -32,9 +33,12 @@ from spectragent.tui.presentation import (
     task_facts,
     task_row,
     terminal_value,
+    uniform_unmeasured,
+    uniform_unmeasured_parts,
 )
+from spectragent.tui.style import styled, tone_styles
 from spectragent.tui.summary import summary_sheet
-from spectragent.tui.text import EvidenceText
+from spectragent.tui.text import EvidenceText, copy_text
 from spectragent.tui.widgets import Caption, Column, FactScroll, FactSheet, KeyTable, Panel
 
 T = TypeVar("T")
@@ -55,13 +59,20 @@ verified as committed: `o` reads the committed trace.
   `■ terminal` the final observation. `◆` marks the branch checkpoint.
 - *Check* is the restorer's tolerance verdict; *Measured* counts `≠` measured differences
   and `?` facts it did not measure. Nothing unmeasured is drawn as zero.
+- A fact unmeasured at every step observed so far is stated once above the table instead
+  of on every row; each step's details still list it.
 """
 
 DETAILS_HELP = """
 **Details** of the task or step under the cursor: a summary, then the full JSON.
 
-Select with the mouse or `Shift`+arrows, `F7` selects all, `Ctrl+C` copies here and never
-cancels. `z` gives the panel the whole screen; `Esc` returns.
+Select JSON with the mouse or `Shift`+arrows, `F7` selects all, `Ctrl+C` copies the
+selection (or all of the JSON) here and never cancels. `F8` copies the whole JSON and `F9`
+the summary as plain text, from any panel. `z` gives the panel the whole screen; `Esc`
+returns.
+
+Outside the text areas `Ctrl+C`, like `q` (Close TUI), cancels a run in progress and waits
+for its close-out before the terminal closes.
 """
 
 LOG_HELP = """
@@ -77,6 +88,8 @@ class TaskTable(KeyTable):
 class StepTable(KeyTable):
     BINDINGS = [Binding("enter", "select_cursor", "Details")]
 
+
+COPY_KEYS = Binding.Group("Copy JSON / summary")
 
 TASK_SPEC = [
     Column(TASK_COLUMNS[0], None, min_width=18, weight=1),
@@ -134,6 +147,7 @@ class MonitorApp(App[None], Generic[T]):
     #steps-panel { height: 1fr; min-height: 6; }
     #detail-panel { height: 1fr; min-height: 8; }
     #details { height: 1fr; }
+    #uniform { height: auto; max-height: 2; }
     #log-panel { height: 6; }
     #log-panel:focus-within { height: 1fr; }
     Screen.-short #summary { padding: 0 1; }
@@ -143,12 +157,13 @@ class MonitorApp(App[None], Generic[T]):
     """
     BINDINGS = [
         Binding("ctrl+c", "copy_or_cancel", "Copy / cancel", priority=True),
-        Binding("q", "cancel", "Close", priority=True),
+        Binding("q", "cancel", "Close TUI", priority=True),
         Binding("escape", "back", "Back"),
         Binding("o", "inspect_trace", "Inspect trace"),
         Binding("z", "zoom", "Zoom"),
         Binding("question_mark", "keys", "Keys"),
-        Binding("f8", "copy_details", "Copy details", priority=True, show=False),
+        Binding("f8", "copy_details", "Copy JSON", priority=True, group=COPY_KEYS),
+        Binding("f9", "copy_summary", "Copy summary", priority=True, group=COPY_KEYS),
         Binding("left_square_bracket", "step(-1)", "Previous step", show=False),
         Binding("right_square_bracket", "step(1)", "Next step", show=False),
         Binding("1", "focus_panel('tasks')", "Tasks", show=False),
@@ -172,6 +187,7 @@ class MonitorApp(App[None], Generic[T]):
         self._last_events: list[str] = []
         self._last_summary: Sheet = []
         self._following = True
+        self._uniform: tuple[str, ...] = ()
         self._log_handler = _ProgressLogHandler(state)
         self._suspended_handlers: list[logging.Handler] = []
 
@@ -182,12 +198,13 @@ class MonitorApp(App[None], Generic[T]):
             yield TaskTable(TASK_SPEC, id="tasks")
         with Panel("Observed steps", key="2", id="steps-panel", help=STEPS_HELP):
             yield Static("No step observed yet.", classes="empty")
+            yield Caption("", id="uniform")
             yield StepTable(STEP_SPEC, id="steps")
         with Panel("Details", key="3", id="detail-panel", help=DETAILS_HELP):
             with FactScroll():
                 yield FactSheet(id="facts")
-            yield Caption("Full record · F7 select all · Ctrl+C copy")
-            yield EvidenceText(id="details")
+            yield Caption("Full record · F7 select all · Ctrl+C copy · F8 all JSON · F9 summary")
+            yield EvidenceText(id="details", language="json")
         with Panel("Log", key="4", id="log-panel", help=LOG_HELP):
             yield EvidenceText(id="events")
         yield Footer()
@@ -302,9 +319,26 @@ class MonitorApp(App[None], Generic[T]):
     def _render_steps(self, snapshot: dict[str, Any]) -> None:
         table = self.query_one("#steps", KeyTable)
         checkpoint = self._checkpoint(snapshot)
+        records = [_observed(row) for row in snapshot["steps"]]
+        self._uniform = uniform_unmeasured(records)
+        uniform = self.query_one("#uniform", Caption)
+        uniform.display = bool(self._uniform)
+        uniform.update(
+            styled(
+                [
+                    ("Unmeasured ", "strong"),
+                    *uniform_unmeasured_parts(self._uniform, checked_steps(records)),
+                ],
+                tone_styles(self),
+                ellipsis=False,
+            )
+        )
         rows = [
-            (str(row["step"]), step_row(_observed(row), checkpoint=checkpoint))
-            for row in snapshot["steps"]
+            (
+                str(record["step"]),
+                step_row(record, checkpoint=checkpoint, uniform=self._uniform),
+            )
+            for record in records
         ]
         table.set_rows(rows)
         self.query_one("#steps-panel", Panel).query_one(".empty", Static).display = not rows
@@ -345,7 +379,9 @@ class MonitorApp(App[None], Generic[T]):
         row = next((row for row in snapshot["steps"] if str(row["step"]) == key), None)
         if row is None:
             return
-        sheet = step_facts(_observed(row), checkpoint=self._checkpoint(snapshot))
+        sheet = step_facts(
+            _observed(row), checkpoint=self._checkpoint(snapshot), uniform=self._uniform
+        )
         sheet.append(fact("Committed", ("not verified here; o reads the committed trace", "muted")))
         self._show_details(
             {
@@ -462,8 +498,13 @@ class MonitorApp(App[None], Generic[T]):
         self._request_close()
 
     async def action_copy_details(self) -> None:
-        target = "#events" if self._within(self.focused, "#log-panel") else "#details"
-        await self.query_one(target, EvidenceText).action_copy()
+        details = self.query_one("#details", EvidenceText)
+        await copy_text(self, details.text, copied="Copied the details JSON")
+
+    async def action_copy_summary(self) -> None:
+        await copy_text(
+            self, self.query_one("#facts", FactSheet).plain_text, copied="Copied the summary"
+        )
 
     async def action_copy_or_cancel(self) -> None:
         if isinstance(self.focused, EvidenceText):

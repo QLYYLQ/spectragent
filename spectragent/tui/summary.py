@@ -77,7 +77,12 @@ def summary_sheet(snapshot: dict[str, Any], *, complete: bool) -> Sheet:
     if snapshot["agent_done"]:
         head.extend([("  agent ended ", "muted"), (str(snapshot["agent_done"]), "strong")])
     if complete:
-        head.extend([("  Press q to return", "muted")])
+        head.extend([("  q closes the TUI", "muted")])
+    elif status == "cancelling":
+        head.extend([("  waiting for the run's close-out before the TUI closes", "warn")])
+    else:
+        # What Close TUI does while this process still owns the run.
+        head.extend([("  q Close TUI cancels this run and waits for its close-out", "muted")])
     sheet: Sheet = [Banner(tuple(head), badge=_STATUS_TONE.get(status, "warn"))]
     sheet.append(
         fact(

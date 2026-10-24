@@ -19,27 +19,40 @@ from spectragent.tui.presentation import (
     RUN_COLUMNS,
     STEP_COLUMNS,
     Sheet,
+    checked_steps,
     message_sheet,
     run_facts,
     run_row,
+    run_tree,
     step_facts,
     step_presentation,
     step_row,
     terminal_value,
+    tree_task_parts,
+    uniform_unmeasured,
+    uniform_unmeasured_parts,
 )
-from spectragent.tui.text import EvidenceText
+from spectragent.tui.style import styled, tone_styles
+from spectragent.tui.text import EvidenceText, copy_text
 from spectragent.tui.widgets import Caption, Column, FactScroll, FactSheet, KeyTable, Panel
 
 if TYPE_CHECKING:
     from spectragent.inspection.repository import RunRepository
 
 RUNS_HELP = """
-**Runs** under the selected root, newest first.
+**Runs** under the selected root, newest first, with branch runs folded under the run
+their recorded provenance names as source.
 
 - `Enter` opens a run: its steps fill the Steps panel and its overview the Details panel.
-- `/` filters by any recorded field; `Esc` returns to the list.
+- `Space` folds or unfolds the branches under a run; `→` unfolds, `←` folds or goes up to
+  the source.
+- A branch whose source is missing, ambiguous or not in the current list stays at the
+  top and says so.
+- `/` filters by any recorded field. While a filter is on, every group with a matching
+  run is unfolded; a matching branch whose source does not match stands on its own.
 - *Ending* is how the agent stopped (`done` is not a task verdict); *Trace* is whether
-  the recording is complete; *Known tokens* is `unknown` when no call reported usage.
+  the recording is complete; *Tokens* is `unknown` when no call reported usage and
+  `≥` when some did not.
 """
 
 STEPS_HELP = """
@@ -52,12 +65,16 @@ STEPS_HELP = """
 - *Check* is the restorer's tolerance verdict (`✓ ok`, `! warn`, `✗ diverged`).
   *Measured* counts what it compared: `≠` measured differences, `?` facts it did not
   measure. A pass with a difference shows both; nothing unmeasured is drawn as zero.
+- A fact unmeasured at every checked step is stated once above the table instead of on
+  every row; each step's details still list it.
 """
 
 DETAILS_HELP = """
 **Details** of the run or step under the cursor: a summary, then the full recorded JSON.
 
-- Select text with the mouse or `Shift`+arrows, `F7` selects all, `Ctrl+C` copies.
+- Select JSON with the mouse or `Shift`+arrows, `F7` selects all, `Ctrl+C` copies the
+  selection (or all of the JSON).
+- `F8` copies the whole JSON and `F9` the summary as plain text, from any panel.
 - `z` gives this panel the whole screen; `Esc` returns.
 - Source replies and actions of a restored step are source material from the
   recorded run, never this run's thinking.
@@ -65,7 +82,12 @@ DETAILS_HELP = """
 
 
 class RunTable(KeyTable):
-    BINDINGS = [Binding("enter", "select_cursor", "Open run")]
+    BINDINGS = [
+        Binding("enter", "select_cursor", "Open run"),
+        Binding("space", "app.fold('toggle')", "Fold"),
+        Binding("right", "app.fold('open')", "Unfold", show=False),
+        Binding("left", "app.fold('close')", "Fold or go to source", show=False),
+    ]
 
 
 class StepTable(KeyTable):
@@ -73,8 +95,10 @@ class StepTable(KeyTable):
 
 
 # Columns drop right to left as the terminal narrows; the details keep every value.
+COPY_KEYS = Binding.Group("Copy JSON / summary")
+
 RUN_SPEC = [
-    Column(RUN_COLUMNS[0], None, min_width=22, weight=2),
+    Column(RUN_COLUMNS[0], None, min_width=22, weight=3),
     Column(RUN_COLUMNS[1], 13, hide_below=96),
     Column(RUN_COLUMNS[2], 8),
     Column(RUN_COLUMNS[3], 9),
@@ -82,7 +106,7 @@ RUN_SPEC = [
     Column(RUN_COLUMNS[5], 10),
     Column(RUN_COLUMNS[6], 9, hide_below=110),
     Column(RUN_COLUMNS[7], 7, hide_below=120),
-    Column(RUN_COLUMNS[8], None, min_width=14, weight=2, hide_below=136),
+    Column(RUN_COLUMNS[8], None, min_width=14, weight=1, hide_below=160),
     Column(RUN_COLUMNS[9], None, min_width=14, weight=2, keep_end=True, hide_below=86),
 ]
 STEP_SPEC = [
@@ -110,6 +134,7 @@ class BrowserApp(App[None]):
     #steps-panel { height: auto; min-height: 3; }
     #detail-panel { height: 1fr; min-height: 6; }
     #content { height: 1fr; }
+    #uniform { height: auto; max-height: 2; }
     Screen.-run-open #runs-panel { height: 9; }
     Screen.-run-open #runs-panel:focus-within { height: 2fr; }
     Screen.-run-open #steps-panel { height: 1fr; min-height: 6; }
@@ -119,7 +144,7 @@ class BrowserApp(App[None]):
     Screen.-short.-run-open #steps-panel, Screen.-short.-run-open #detail-panel { min-height: 5; }
     """
     BINDINGS = [
-        Binding("q", "quit", "Close"),
+        Binding("q", "quit", "Close TUI"),
         Binding("ctrl+c", "copy_or_quit", "Copy / close", priority=True),
         Binding("slash", "search", "Filter"),
         Binding("escape", "back", "Back"),
@@ -129,7 +154,8 @@ class BrowserApp(App[None]):
         Binding("left_square_bracket", "step(-1)", "Previous step", show=False),
         Binding("right_square_bracket", "step(1)", "Next step", show=False),
         Binding("question_mark", "keys", "Keys"),
-        Binding("f8", "copy_details", "Copy details", priority=True, show=False),
+        Binding("f8", "copy_details", "Copy JSON", priority=True, group=COPY_KEYS),
+        Binding("f9", "copy_summary", "Copy summary", priority=True, group=COPY_KEYS),
         Binding("1", "focus_panel('runs')", "Runs", show=False),
         Binding("2", "focus_panel('steps')", "Steps", show=False),
         Binding("3", "focus_panel('content')", "Details", show=False),
@@ -158,6 +184,13 @@ class BrowserApp(App[None]):
         self._detail_generation = 0
         # An explicitly requested run opens with the focus on its steps.
         self._focus_steps_on_load = initial_run is not None
+        # The listed rows in list order, and which groups are unfolded: the
+        # user's own folds, and those folded again while a filter is on.
+        self._list: list[dict[str, Any]] = []
+        self._unfolded: set[str] = set()
+        self._folded_in_filter: set[str] = set()
+        # Unmeasured facts shared by every checked step of the open run.
+        self._uniform: tuple[str, ...] = ()
 
     def compose(self) -> ComposeResult:
         context = f"  {self.root}" if self.root is not None else ""
@@ -178,16 +211,18 @@ class BrowserApp(App[None]):
             )
         with Panel("Steps", key="2", id="steps-panel", help=STEPS_HELP):
             yield Static("Open a run with Enter to list its steps.", classes="empty")
+            yield Caption("", id="uniform")
             yield StepTable(STEP_SPEC, id="steps")
         with Panel("Details", key="3", id="detail-panel", help=DETAILS_HELP):
             with FactScroll():
                 yield FactSheet(id="facts")
-            yield Caption("Full record · F7 select all · Ctrl+C copy")
-            yield EvidenceText(id="content")
+            yield Caption("Full record · F7 select all · Ctrl+C copy · F8 all JSON · F9 summary")
+            yield EvidenceText(id="content", language="json")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#steps", KeyTable).display = False
+        self.query_one("#uniform", Caption).display = False
         self.action_refresh_runs()
         self.query_one("#runs", DataTable).focus()
         if self._initial_run is not None:
@@ -237,7 +272,13 @@ class BrowserApp(App[None]):
         self.query_one("#search", Input).focus()
 
     async def action_copy_details(self) -> None:
-        await self.query_one("#content", EvidenceText).action_copy()
+        content = self.query_one("#content", EvidenceText)
+        await copy_text(self, content.text, copied="Copied the details JSON")
+
+    async def action_copy_summary(self) -> None:
+        await copy_text(
+            self, self.query_one("#facts", FactSheet).plain_text, copied="Copied the summary"
+        )
 
     async def action_copy_or_quit(self) -> None:
         if isinstance(self.focused, EvidenceText):
@@ -272,16 +313,19 @@ class BrowserApp(App[None]):
             return
         if not self.is_mounted or generation != self._list_generation:
             return
-        table = self.query_one("#runs", KeyTable)
         self._rows = {row["key"]: row for row in rows}
-        table.set_rows(
-            [(row["key"], run_row(row, self.root)) for row in rows],
-            cursor=self._selected,
-        )
+        self._list = rows
+        self._folded_in_filter.clear()
+        if self._selected is not None:
+            self._reveal(self._selected)
+        self._render_runs(cursor=self._selected)
         unreadable = sum(bool(row.get("read_error")) for row in rows)
+        groups = sum(node.descendants > 0 for node in run_tree(rows, ()))
         count = f"{len(rows)} runs" + (f" match “{query}”" if query else "")
         self.query_one("#runs-panel", Panel).set_subtitle(
-            count + (f" · {unreadable} unreadable" if unreadable else "")
+            count
+            + (f" · {groups} with branches" if groups else "")
+            + (f" · {unreadable} unreadable" if unreadable else "")
         )
         if rows:
             self._set_status(
@@ -312,7 +356,75 @@ class BrowserApp(App[None]):
             self._clear_steps()
             self._show({}, [])
 
+    # --- lineage folding -----------------------------------------------
+
+    def _unfolded_now(self) -> set[str]:
+        """While a filter is on, every group with a match is open unless folded again."""
+        if not self._query:
+            return self._unfolded
+        return set(self._rows) - self._folded_in_filter
+
+    def _render_runs(self, cursor: str | None = None) -> None:
+        nodes = run_tree(self._list, self._unfolded_now())
+        rows = []
+        for node in nodes:
+            cells = run_row(self._rows[node.key], self.root)
+            if not self._rows[node.key].get("read_error"):
+                cells[0] = tree_task_parts(node, self._rows[node.key])
+            rows.append((node.key, cells))
+        self.query_one("#runs", KeyTable).set_rows(rows, cursor=cursor)
+
+    def _parents(self) -> dict[str, str]:
+        """Each listed branch run's listed source, as the tree placed it."""
+        parents: dict[str, str] = {}
+        stack: list[str] = []
+        for node in run_tree(self._list, set(self._rows)):
+            del stack[node.depth :]
+            if stack:
+                parents[node.key] = stack[-1]
+            stack.append(node.key)
+        return parents
+
+    def _set_unfolded(self, key: str, unfolded: bool) -> None:
+        if self._query:
+            (self._folded_in_filter.discard if unfolded else self._folded_in_filter.add)(key)
+        else:
+            (self._unfolded.add if unfolded else self._unfolded.discard)(key)
+
+    def _reveal(self, key: str) -> None:
+        """Unfold every source above ``key`` so its row is on screen."""
+        parents = self._parents()
+        while key in parents:
+            key = parents[key]
+            self._set_unfolded(key, True)
+
+    def action_fold(self, how: str) -> None:
+        """Fold or unfold the branches under the run at the cursor."""
+        table = self.query_one("#runs", KeyTable)
+        key = table.current_key
+        if key is None:
+            return
+        node = next(
+            (node for node in run_tree(self._list, self._unfolded_now()) if node.key == key), None
+        )
+        if node is None:
+            return
+        parent = self._parents().get(key)
+        if node.descendants and (how == "open" or (how == "toggle" and not node.expanded)):
+            self._set_unfolded(key, True)
+        elif node.descendants and node.expanded and how in ("toggle", "close"):
+            self._set_unfolded(key, False)
+        elif parent is not None and how in ("toggle", "close"):
+            # On a branch: fold its source and stand on it.
+            self._set_unfolded(parent, False)
+            key = parent
+        else:
+            return
+        self._render_runs(cursor=key)
+
     def _clear_steps(self) -> None:
+        self._uniform = ()
+        self.query_one("#uniform", Caption).display = False
         steps = self.query_one("#steps", KeyTable)
         steps.set_rows([])
         steps.display = False
@@ -339,6 +451,7 @@ class BrowserApp(App[None]):
         self._run_detail = None
         self._detail_generation += 1
         self.query_one("#steps", KeyTable).set_rows([])
+        self.query_one("#uniform", Caption).display = False
         self._show({"loading_run": key}, message_sheet(f"Loading run {key}…", []))
         self.run_worker(
             partial(self._load_run, key, self._detail_generation),
@@ -363,6 +476,9 @@ class BrowserApp(App[None]):
         self.screen.set_class(True, "-run-open")
         runs = self.query_one("#runs", KeyTable)
         runs.show_cursor = key in self._rows
+        if key in self._rows and key not in runs.keys:
+            self._reveal(key)
+            self._render_runs(cursor=key)
         runs.select_key(key)
         execution = detail.get("execution") or {}
         checkpoint = execution.get("checkpoint")
@@ -383,10 +499,29 @@ class BrowserApp(App[None]):
         panel.query_one(".empty", Static).display = not records
         if not records:
             panel.query_one(".empty", Static).update(Text("This run committed no steps."))
+        self._uniform = uniform_unmeasured(records)
+        uniform = self.query_one("#uniform", Caption)
+        uniform.display = bool(self._uniform)
+        uniform.update(
+            styled(
+                [
+                    ("Unmeasured ", "strong"),
+                    *uniform_unmeasured_parts(self._uniform, checked_steps(records)),
+                ],
+                tone_styles(self),
+                ellipsis=False,
+            )
+        )
         table = self.query_one("#steps", KeyTable)
         table.display = bool(records)
         table.set_rows(
-            [(str(record["step"]), step_row(record, checkpoint=checkpoint)) for record in records],
+            [
+                (
+                    str(record["step"]),
+                    step_row(record, checkpoint=checkpoint, uniform=self._uniform),
+                )
+                for record in records
+            ],
             cursor=str(self._selected_step) if self._selected_step is not None else "",
         )
         self._show_overview()
@@ -447,7 +582,7 @@ class BrowserApp(App[None]):
         self._selected_step = index
         record = next((item for item in self._records() if item.get("step") == index), None)
         sheet = (
-            step_facts(record, checkpoint=self._checkpoint())
+            step_facts(record, checkpoint=self._checkpoint(), uniform=self._uniform)
             if record is not None
             else message_sheet(f"Loading step {index}…", [])
         )
@@ -495,6 +630,7 @@ class BrowserApp(App[None]):
                         detail["record"],
                         checkpoint=self._checkpoint(),
                         comparison=detail.get("comparison"),
+                        uniform=self._uniform,
                     ),
                     subtitle=f"step {index}",
                 )
@@ -588,4 +724,7 @@ class BrowserApp(App[None]):
             self.query_one("#search", Input).value = ""
             self._request_runs("", debounce=False)
         self._source_of = (self._selected or "", checkpoint)
+        # Unfold the source so the branch it came from stays in view under it.
+        self._set_unfolded(source, True)
+        self._render_runs(cursor=self.query_one("#runs", KeyTable).current_key)
         self._select_run(source, step=checkpoint, source_navigation=True)

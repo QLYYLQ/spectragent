@@ -371,3 +371,33 @@ async def test_details_keys_copy_there_and_escape_returns_to_steps():
         release.set()
         await pilot.pause()
         await pilot.press("q")
+
+
+async def test_f8_and_f9_copy_details_json_and_summary_and_q_says_what_it_does():
+    state = ProgressState()
+    release = asyncio.Event()
+
+    async def operation():
+        state.recorded(StepRecord(step=0, llm_output="a thought"))
+        await release.wait()
+
+    app = MonitorApp(operation, state)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.refresh_progress()
+        await pilot.pause()
+        assert "q Close TUI cancels this run and waits for its close-out" in _summary(app)
+        details = app.query_one("#details", TextArea)
+        assert details.language == "json"
+        await pilot.press("f9")
+        assert app.clipboard == app.query_one("#facts", FactSheet).plain_text
+        assert "a thought" in app.clipboard
+        await pilot.press("f8")
+        assert app.clipboard == details.text
+        assert not app._cancel_requested
+        release.set()
+        await pilot.pause()
+        app.refresh_progress()
+        await pilot.pause()
+        assert "q closes the TUI" in _summary(app)
+        await pilot.press("q")

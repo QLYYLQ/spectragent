@@ -184,8 +184,8 @@ async def test_search_is_debounced_and_old_detail_cannot_replace_new_selection()
         repository.detail_released.set()
 
 
-def _branch_trace(root, restored=None):
-    writer = WALWriter(root, "branch")
+def _branch_trace(root, restored=None, run_id="branch"):
+    writer = WALWriter(root, run_id)
     writer.init_run(
         TraceConfig(
             branch=BranchProvenance(
@@ -252,7 +252,7 @@ async def test_source_unavailable_under_single_run_root_has_an_explicit_reason(t
     directory = _branch_trace(tmp_path)
     app = BrowserApp(open_repository(directory), initial_run=".")
     async with app.run_test(size=(110, 40)) as pilot:
-        await _until(lambda: app._run_detail is not None and app._selected == ".")
+        await _until(lambda: app._run_detail is not None and app._selected == "." and app._rows)
         await pilot.press("s")
         await pilot.pause()
         text = app.query_one("#content", TextArea).text
@@ -285,7 +285,7 @@ async def test_unresolved_source_navigation_explains_the_recorded_resolution(res
 
     app = BrowserApp(cast(RunRepository, Repository()), initial_run="initial")
     async with app.run_test(size=(110, 40)) as pilot:
-        await _until(lambda: app._run_detail is not None)
+        await _until(lambda: app._run_detail is not None and app._rows)
         await pilot.press("s")
         await pilot.pause()
         text = app.query_one("#content", TextArea).text
@@ -369,7 +369,8 @@ async def test_plain_replay_source_navigation_needs_no_branch_provenance(tmp_pat
     writer.finalize(TraceStatus.COMPLETE)
     app = BrowserApp(open_repository(tmp_path), initial_run="replay")
     async with app.run_test(size=(110, 40)) as pilot:
-        await _until(lambda: app._run_detail is not None)
+        # The first list load re-opens the run; wait for it before pressing s.
+        await _until(lambda: app._run_detail is not None and len(app._rows) == 2)
         assert app._run_detail is not None and app._run_detail["summary"]["branch"] is None
         await pilot.press("s")
         await _until(lambda: app._selected == "source" and app._run_detail is not None)
@@ -502,3 +503,115 @@ async def test_escape_to_the_overview_wins_over_a_pending_step_load(tmp_path):
         assert app._selected_step is None
         assert '"summary"' in app.query_one("#content", TextArea).text
         assert "run overview" in str(app.query_one("#detail-panel").border_subtitle)
+
+
+async def _folded_app(tmp_path, **kwargs):
+    build_reference_trace(tmp_path, "source")
+    _branch_trace(tmp_path, run_id="branch-a")
+    _branch_trace(tmp_path, run_id="branch-b")
+    return BrowserApp(open_repository(tmp_path), **kwargs)
+
+
+def _tasks(app):
+    runs = app.query_one("#runs", DataTable)
+    return [str(runs.get_row_at(index)[0]) for index in range(runs.row_count)]
+
+
+async def test_branches_fold_under_their_source_and_unfold_with_space(tmp_path):
+    app = await _folded_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: len(app._rows) == 3)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        assert runs.row_count == 1
+        assert _tasks(app)[0].startswith("▸ ") and "2 branches" in _tasks(app)[0]
+        await pilot.press("space")
+        await pilot.pause()
+        assert runs.row_count == 3
+        assert _tasks(app)[0].startswith("▾ ")
+        assert all("├ " in task or "└ " in task for task in _tasks(app)[1:])
+        await pilot.press("down", "left")
+        await pilot.pause()
+        # Left on a branch folds its source and stands on it.
+        assert runs.row_count == 1
+        assert runs.cursor_coordinate.row == 0
+        await pilot.press("right")
+        await pilot.pause()
+        assert runs.row_count == 3
+
+
+async def test_a_filter_unfolds_matches_and_a_lone_branch_says_where_its_source_is(tmp_path):
+    app = await _folded_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: len(app._rows) == 3)
+        app.query_one("#search", Input).value = "branch-a"
+        await _until(lambda: list(app._rows) == ["branch-a"])
+        await pilot.pause()
+        (task,) = _tasks(app)
+        assert "↳ source not listed" in task
+        # Every recorded field is searchable, so "source" matches all three runs
+        # (the branches record it as their source id): the group opens.
+        app.query_one("#search", Input).value = "source"
+        await _until(lambda: len(app._rows) == 3)
+        await pilot.pause()
+        assert app.query_one("#runs", DataTable).row_count == 3
+        app.query_one("#search", Input).value = ""
+        panel = app.query_one("#runs-panel")
+        await _until(lambda: "match" not in str(panel.border_subtitle))
+        await pilot.pause()
+        # Clearing the filter brings back the user's own folds.
+        assert app.query_one("#runs", DataTable).row_count == 1
+
+
+async def test_an_initial_branch_run_is_unfolded_into_view(tmp_path):
+    app = await _folded_app(tmp_path, initial_run="branch-b")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and len(app._rows) == 3)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        assert runs.row_count == 3
+        assert "branch-b" in _tasks(app)[runs.cursor_coordinate.row]
+
+
+async def test_a_fact_no_checked_step_measured_is_stated_once_above_the_steps(tmp_path):
+    record = StepRecord.model_validate(
+        {
+            "step": 0,
+            "origin": "restored",
+            "restoration": {"step": 0, "verdict": "ok", "reason": None, "reasons": []},
+        }
+    )
+    _branch_trace(tmp_path, restored=record)
+    app = BrowserApp(open_repository(tmp_path), initial_run="branch")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.pause()
+        line = str(app.query_one("#uniform").render())
+        assert "Unmeasured ? at the one checked step: Environment comparison not recorded" in line
+        steps = app.query_one("#steps", DataTable)
+        titles = [str(column.label) for column in steps.ordered_columns]
+        assert str(steps.get_row_at(0)[titles.index("Measured")]) == "no measured difference"
+        await pilot.press("2", "enter")
+        await _until(lambda: '"record"' in app.query_one("#content", TextArea).text)
+        assert "Environment comparison not recorded (at every checked step" in (
+            app.query_one("#facts", FactSheet).plain_text
+        )
+
+
+async def test_f8_copies_the_json_and_f9_the_summary_from_any_panel(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.pause()
+        content = app.query_one("#content", TextArea)
+        assert content.language == "json" and content.theme == "evidence"
+        await pilot.press("f9")
+        summary = app.query_one("#facts", FactSheet).plain_text
+        assert app.clipboard == summary and summary.startswith("Run run-test")
+        await pilot.press("f8")
+        assert app.clipboard == content.text
+        # The highlighted JSON still selects and copies as the recorded text.
+        await pilot.press("3", "f7", "ctrl+c")
+        assert app.clipboard == content.text
+        assert app.is_running
