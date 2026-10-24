@@ -161,6 +161,11 @@ def shipped() -> tuple[MediaAreaRule, ...]:
         ("https://www.iqiyi.com/search?q=%E5%90%91", "iqiyi-search-media"),
         ("https://www.ign.com/articles/elden-ring-review", "ign-review-media"),
         ("https://www.ign.com/search?q=Elden%20Ring", "ign-search-media"),
+        ("https://www.ign.com/", "ign-home-media"),
+        (
+            "https://www.ign.com/wikis/resident-evil-4-remake/Chapter_11_-_The_Mines",
+            "ign-wiki-media",
+        ),
         ("https://www.bilibili.com/video/BV18Z4y1C7kk/", "bilibili-video-media"),
         ("https://search.bilibili.com/all?keyword=x&vt=1", "bilibili-search-media"),
     ],
@@ -172,12 +177,13 @@ def test_the_published_rules_declare_the_video_and_search_pages(url: str, rule_i
 @pytest.mark.parametrize(
     "url",
     [
-        # Front pages, channels and the other pages of the same sites are not declared.
+        # Front pages, channels and the other pages of the same sites are not declared
+        # (IGN's front page is: its two empty <video> elements cannot be told apart).
         "https://v.qq.com/",
         "https://v.qq.com/channel/tv",
         "https://www.iqiyi.com/",
-        "https://www.ign.com/",
         "https://www.ign.com/games/resident-evil-4",
+        "https://www.ign.com/news",
         "https://www.ign.com/articles/best-games-2026",
         "https://www.bilibili.com/",
         "https://space.bilibili.com/927587",

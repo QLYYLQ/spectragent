@@ -13,7 +13,9 @@
 # autoplay previews that start at another moment, players that do not load offline, and
 # stacked <video> elements that trade places. "Passed a -> b" counts their restoration
 # checks on the page, re-verified from the saved observations with main's rules and then
-# with this file added; README.md has the replayed before/after sample.
+# with this file added; README.md has the replayed before/after sample. The IGN front page
+# and wiki entries come from the 210 same-task forks of lookahead_15task_20261024 instead,
+# re-verified the same way with and without those two entries.
 media_areas:
 # Tencent Video play pages (v.qq.com/x/cover/...), recordings 128_df683952, 263_0f164596 and
 # 28_c98c13b4. The player sits in a frame inside a shadow root that the media read cannot
@@ -67,6 +69,29 @@ media_areas:
   scope:
     host: www.ign.com
     path: /search
+# IGN front page (www.ign.com/), recordings 25_8ac9e6cf, 125_3ddc4459 and 155_e429ee91. The
+# page holds two zero-size <video> elements without a source at the same place, and its
+# video player (590x332) about 3,450 px down, outside the viewport at every check. The two
+# empty elements cannot be told apart, so each side's pair corresponds ambiguously: all 80
+# checks failed media_mismatch although both sides had the same playback state, at
+# screenshot distance 0. No media box lies in the viewport, so nothing is masked.
+# Passed 0 -> 80.
+- id: ign-home-media
+  scope:
+    host: www.ign.com
+    path: /
+# IGN wiki guides (www.ign.com/wikis/...), recording 155_e429ee91 (the Resident Evil 4
+# Remake walkthrough and four of its chapter pages). The guide embeds a video player
+# (817x459, up to 41% of the viewport), the chapter pages add a floating 300x168 corner
+# player with an ad video in the same box, and 32 zero-size ad frames the media read cannot
+# reach: all 36 checks failed media_mismatch (the unreachable frames on every one, players
+# missing offline on 29). The 20 screenshot failures lie outside the players and still
+# fail: the page embeds one of eight videos picked at random, the replay picked one the
+# recording never fetched, and the text below the player moved. Passed 0 -> 16.
+- id: ign-wiki-media
+  scope:
+    host: www.ign.com
+    path: /wikis/*
 # Bilibili video pages (www.bilibili.com/video/BV...), recordings 118_180a3f31, 158_f5a61bf9
 # and 6_18b718db. The player <video> is 732x412 (33% of the viewport) and is fed by
 # script (blob:) at another position offline: 10 of 46 checks failed on media, 22 on
