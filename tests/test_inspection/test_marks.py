@@ -16,6 +16,7 @@ from spectragent.core.capabilities.browser.effects import (
 from spectragent.core.trace.reader import RunTrace
 from spectragent.inspection.marks import (
     ACTION_VERBS,
+    Geometry,
     MarkRequest,
     action_lines,
     action_text,
@@ -23,9 +24,11 @@ from spectragent.inspection.marks import (
     default_requests,
     marks_on,
     observation_marks,
+    step_marks,
 )
 from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.step_record import ActionSpan
+from spectragent.schemas.observation.geometry import PointGrid
+from spectragent.schemas.step_record import ActionSpan, StepRecord
 from tests.test_lookahead.traces import (
     SIZE,
     StepSpec,
@@ -245,3 +248,26 @@ def test_an_action_without_a_verb_keeps_its_recorded_name() -> None:
     assert action_text(Action(name="desktop.click", params={"x": 1}), None) == (
         'desktop.click {"x": 1}'
     )
+
+
+def test_an_action_the_step_skipped_is_listed_but_not_drawn() -> None:
+    """The Loop stopped the step at the failed click; the second click never ran."""
+
+    def point(x: int, y: int) -> Action:
+        return Action(
+            name="browser.click_coordinate", params={"coordinate_x": x, "coordinate_y": y}
+        )
+
+    record = StepRecord(
+        step=0,
+        actions=[point(10, 12), point(30, 20)],
+        action_results=[ActionResult(success=False, error="covered")],
+        skipped_actions=1,
+    )
+    grid = PointGrid("screenshot_pixels", SIZE[0], SIZE[1], *VIEWPORT)
+    failed, skipped = step_marks(record, Geometry(grid, SIZE[0], SIZE[1]))
+    assert failed.kind == "click" and failed.x is not None and failed.succeeded is False
+    assert (skipped.kind, skipped.x, skipped.y, skipped.succeeded) == ("click", None, None, None)
+    assert skipped.text.endswith("（没有执行：第 1 个动作失败）")
+    assert skipped.unplaced == "没有执行，不画在图上"
+    assert action_lines(record).splitlines()[1].endswith("（没有执行：第 1 个动作失败）")

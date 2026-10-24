@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.geometry import PointFrame
@@ -104,6 +104,10 @@ class StepRecord(BaseModel):
     # Restored steps contain exact action/returned-result pairs here. Attempts
     # that raised without returning remain in restoration.actions, including
     # their original order and exception; never shift a later result backward.
+    # The one addition is a skipped tail (``skipped_actions``): when the source
+    # step skipped actions after a failed one and the restoration ran all the
+    # source ran and failed at the same action, those actions follow, as
+    # recorded.
     actions: list[Action] = Field(default_factory=list)
     action_results: list[ActionResult] = Field(default_factory=list)
     timestamp: float = 0.0
@@ -118,6 +122,16 @@ class StepRecord(BaseModel):
     # they exceeded ``max_actions_per_step``. Non-zero means the model
     # believes it executed steps that never ran.
     truncated_actions: int = 0
+    # How many of ``actions``, at its end, the Loop did not execute because
+    # the action before them failed: the last of ``action_results`` has
+    # ``success`` False, and the skipped actions after it never ran and have
+    # no result (``docs/architecture_design.md`` §4.1, the user's ruling of
+    # 2026-10-24). They stay in ``actions`` because they are part of the reply
+    # the step accepted: a branch replays that reply and the training export
+    # writes it. 0: nothing was skipped. A step recorded before that ruling
+    # always reads 0, truthfully: that Loop ran every action after a failed
+    # one, so ``action_results`` holds a result for each of them.
+    skipped_actions: int = Field(default=0, ge=0)
     # Which phase failed, when a step ended in an exception ("observe",
     # "llm", "act"). Empty on healthy steps.
     error_phase: str = ""
@@ -160,3 +174,27 @@ class StepRecord(BaseModel):
     # Neither field is rendered into a prompt: agents render a history
     # item's actions, results and reply only.
     restoration: RestorationCheck | None = None
+
+    @model_validator(mode="after")
+    def _skipped_actions_follow_a_failed_result(self) -> "StepRecord":
+        """Skipped actions are exactly the actions after the last result, and it failed."""
+        if self.skipped_actions == 0:
+            return self
+        if not self.action_results or self.action_results[-1].success:
+            raise ValueError(
+                f"step {self.step}: {self.skipped_actions} skipped action(s) need a failed "
+                "action before them, and the step's last result is not a failure"
+            )
+        if len(self.actions) != len(self.action_results) + self.skipped_actions:
+            raise ValueError(
+                f"step {self.step}: {len(self.actions)} action(s), "
+                f"{len(self.action_results)} result(s) and {self.skipped_actions} skipped "
+                "action(s): the skipped ones must be exactly the actions after the last result"
+            )
+        return self
+
+    def skipped(self) -> list[Action]:
+        """The actions the Loop did not execute because the action before them failed, in order."""
+        return (
+            self.actions[len(self.actions) - self.skipped_actions :] if self.skipped_actions else []
+        )

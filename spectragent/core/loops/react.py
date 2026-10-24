@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
-from spectragent.core.action_guard import params_refusal
+from spectragent.core.action_guard import executed_name, params_refusal, resolve_action_name
 from spectragent.core.llm.exceptions import (
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
@@ -179,7 +179,7 @@ class ReactLoop(AgentLoopBase):
                 "parse error), observe the environment once more and record "
                 "it as an origin='terminal' step: no LLM call, no action, "
                 "env-source fragments only. Never on an infrastructure "
-                "failure, a failed action or a veto. The run's result is "
+                "failure, an action that raised or a veto. The run's result is "
                 "decided before it and does not change (Runtime execution_ms "
                 "includes it)."
             ),
@@ -598,11 +598,19 @@ class ReactLoop(AgentLoopBase):
         #    the error that rejected it.
         self.remember_reply(memory, output_text, dropped)
 
-        # 8. Execute actions via guarded_act
+        # 8. Execute actions via guarded_act, in order, until one ends the
+        #    step: ``done`` ends the run, a raise ends it in failure, and a
+        #    failed result (``success`` False — the capability's or the
+        #    guard's refusal of a name outside the run's actions) stops the
+        #    step. The actions after a failed one were planned on the
+        #    assumption that it worked, so they are not executed; the step
+        #    records them as skipped and the model is told next step (the
+        #    user's ruling of 2026-10-24, arch §4.1).
         step_results: list[ActionResult] = []
         last_done_result: ActionResult | None = None
         act_error: Exception | None = None
-        for action in actions:
+        skipped = 0
+        for position, action in enumerate(actions, start=1):
             try:
                 result = await run.act_fn(action)
             except Exception as exc:  # noqa: PERF203 — per-action attribution
@@ -613,6 +621,25 @@ class ReactLoop(AgentLoopBase):
                 run.last_answer = result.extracted_content
             if result.is_done:
                 last_done_result = result
+                break
+            if not result.success:
+                skipped = len(actions) - position
+                # Never handed to the guard, they are named as it names what
+                # it runs — by its own rule (``executed_name``), in place as it
+                # does — so the record names every action one way and a branch
+                # replay compares them like the executed ones. A name the guard
+                # would refuse stays as the agent wrote it, as a refused one does.
+                for unrun in actions[position:]:
+                    unrun.name = executed_name(run.action_space, unrun.name) or unrun.name
+                if skipped:
+                    logger.info(
+                        "ReactLoop: step %d stopped at failed action %d (%s); %d skipped: %s",
+                        step_idx,
+                        position,
+                        action.name,
+                        skipped,
+                        [a.name for a in actions[position:]],
+                    )
                 break
 
         # Build step record
@@ -625,6 +652,7 @@ class ReactLoop(AgentLoopBase):
             action_results=step_results,
             timestamp=time.time(),
             truncated_actions=len(dropped),
+            skipped_actions=skipped,
             prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
             error_phase="act" if act_error is not None else "",
             error=str(act_error) if act_error is not None else None,
@@ -711,28 +739,47 @@ class ReactLoop(AgentLoopBase):
     def check_action_params(
         self, run: LoopRun, actions: Sequence[Action], *, raw_output: str = ""
     ) -> None:
-        """Refuse a reply whose actions do not fit their ``Params``, before any of them runs.
+        """Refuse a reply that names an action this run does not execute, or whose
+        actions do not fit their ``Params``, before any of them runs.
 
-        Each action is validated against the ``Params`` of the action the
-        run's guard executes it as (``core/action_guard.py::params_refusal``).
-        A misfit is a :class:`ParseError` naming every action that misfits and
-        why, so the reply goes back to the model through the parse retries
+        A name the run's guard would refuse (``resolve_action_name``) and an
+        action whose params break the ``Params`` of the action the guard
+        executes it as (``core/action_guard.py::params_refusal``) are both a
+        :class:`ParseError` naming every such action and why, so the reply
+        goes back to the model through the parse retries
         (``parse_retries_per_step``) and, when they are spent, is recorded as
         the step's parse failure — never executed, never a failed
-        ``ActionResult`` (the user's ruling of 2026-10-23). A name the guard
-        refuses is not judged here: the guard refuses it when it runs.
+        ``ActionResult`` (the user's ruling of 2026-10-23 for params, extended
+        to unknown names on 2026-10-24: a reply either runs as written or is
+        rewritten, so the actions after an unknown one never run on the
+        assumption that it happened). Names are judged only when the run
+        advertises actions; the guard still refuses an unknown name when a
+        caller that skips this check (restoration) or a run without actions
+        hands it one.
 
         Raises:
-            ParseError: An action's params do not fit.
+            ParseError: An action is not one this run executes, or its params do not fit.
         """
-        problems = [
-            f"action {position}, {refusal}"
-            for position, action in enumerate(actions, start=1)
-            if (refusal := params_refusal(run.action_space, action)) is not None
-        ]
+        space = run.action_space
+        # A run that advertises no actions (no environment) told the model no
+        # names to keep to; its guard refuses whatever it is handed.
+        judge_names = bool(space.descriptors)
+        offered = ", ".join(sorted(d.name for d in space.descriptors))
+        problems: list[str] = []
+        for position, action in enumerate(actions, start=1):
+            if judge_names and (
+                resolve_action_name(action.name, space.allowed_actions, space.action_bindings)
+                is None
+            ):
+                problems.append(
+                    f"action {position}, {action.name} is not an action this run executes "
+                    f"(its actions: {offered})"
+                )
+            elif (refusal := params_refusal(space, action)) is not None:
+                problems.append(f"action {position}, {refusal}")
         if problems:
             raise ParseError(
-                "the parameters of an action do not fit what it takes: " + "; ".join(problems),
+                "an action cannot run as written: " + "; ".join(problems),
                 raw_output=raw_output[:500],
             )
 

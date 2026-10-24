@@ -790,39 +790,31 @@ class TestRecordedReplies:
         )
         assert out.result is not None and out.result.agent_done.value == "done"
 
-    async def test_an_action_the_guard_refused_replays_as_recorded(self, tmp_path: Path) -> None:
-        """An ablation dropped ``click``: the guard refused it, and the record kept ``click``.
+    async def test_a_reply_naming_an_ablated_action_replays_as_its_parse_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """An ablation dropped ``click``: the source's replies naming it went back to the model.
 
-        The replay names each parsed action as ``guarded_act`` did
-        (``resolve_action_name``), so a refused action is compared as the
-        agent wrote it — not qualified through a binding whose target the
-        ablation removed.
+        ReAct refuses a name the run does not execute before anything runs, so
+        the source's step 0 is a parse failure with no actions, not a refused
+        action, and the branch replays it as recorded.
         """
         only_done = [DONE]
         source = await record_source(
             tmp_path, ["click 100", "click 101", "done ok"], action_filter=only_done
         )
-        refused = RunTrace(source).step(0)
-        assert refused is not None
-        assert [a.name for a in refused.actions] == ["click"]
-        assert [r.success for r in refused.action_results] == [False]
+        failed = RunTrace(source).step(0)
+        assert failed is not None
+        assert failed.error_phase == "parse" and failed.actions == []
+        assert "click is not an action this run executes" in (failed.error or "")
 
-        out = await run_branch(tmp_path, source, 2, ["done fine"], action_filter=only_done)
+        out = await run_branch(tmp_path, source, 1, ["done fine"], action_filter=only_done)
         assert out.result is not None and out.result.agent_done.value == "done"
-        assert _origins(out.run_dir) == [
-            (0, "restored"),
-            (1, "restored"),
-            (2, "policy"),
-            (3, "terminal"),
-        ]
-        # The restorer re-ran the recorded clicks through the guard, which
-        # refused them again — as recorded, so both steps verified.
+        assert _origins(out.run_dir) == [(0, "restored"), (1, "policy"), (2, "terminal")]
         assert out.cap.log == [f"{DONE}({{'answer': 'fine'}})"]
-        trace = RunTrace(out.run_dir)  # type: ignore[arg-type]
-        for step in (0, 1):
-            record = trace.step(step)
-            assert record is not None and record.restoration is not None
-            assert record.restoration.verdict == "ok"
+        record = RunTrace(out.run_dir).step(0)  # type: ignore[arg-type]
+        assert record is not None and record.restoration is not None
+        assert record.restoration.verdict == "ok"
 
     async def test_the_parse_error_streak_continues_from_the_replay(self, tmp_path: Path) -> None:
         """Step *t-1* was unparseable: one more unparseable policy step ends the branch.

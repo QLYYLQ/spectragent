@@ -609,12 +609,24 @@ def action_text(action: Action, result: ActionResult | None) -> str:
     return line + ("（没有成功）" if result is not None and not result.success else "")
 
 
+def _not_executed(record: StepRecord, index: int) -> str | None:
+    """``（没有执行：第 N 个动作失败）`` for an action *record* skipped after a failed one, else ``None``.
+
+    The Loop stops a step at its first failed action; the actions after it
+    are recorded but never ran (``StepRecord.skipped_actions``).
+    """
+    if index < len(record.actions) - record.skipped_actions:
+        return None
+    return f"（没有执行：第 {len(record.action_results)} 个动作失败）"
+
+
 def action_lines(record: StepRecord) -> str:
     """A step's actions, one numbered Chinese line each (``1. 点击 (223, 234) → 按钮“最多播放”``)."""
     lines = []
     for index, action in enumerate(record.actions):
         result = record.action_results[index] if index < len(record.action_results) else None
-        lines.append(f"{index + 1}. {action_text(action, result)}")
+        line = action_text(action, result) + (_not_executed(record, index) or "")
+        lines.append(f"{index + 1}. {line}")
     return "\n".join(lines) or "（没有动作）"
 
 
@@ -640,6 +652,20 @@ def step_marks(
         result = record.action_results[index] if index < len(record.action_results) else None
         css = _css(action, result, pointer)
         failed = result is not None and not result.success
+        not_executed = _not_executed(record, index)
+        if not_executed is not None:
+            # Never ran: listed, not drawn, and the pointer did not move.
+            if only is None or index in only:
+                marks.append(
+                    ActionMark(
+                        number=index + 1,
+                        name=action.name,
+                        text=css.text + not_executed,
+                        kind=css.kind,
+                        unplaced="没有执行，不画在图上" if css.kind is not None else None,
+                    )
+                )
+            continue
         if css.pointer_after is not ...:
             # A pointer action that failed before measuring anything may not
             # have moved the pointer at all.

@@ -8,6 +8,15 @@ with the recorded one. Then one more observe, and the checkpoint step's
 observation is verified the same way. Each step is handed back as it is
 restored.
 
+Only what the source executed runs: an action its Loop skipped after a failed
+one (``StepRecord.skipped_actions``), or one after a ``done`` or a raise, never
+ran there and does not run here. A step recorded before the Loop stopped at a
+failed action ran every action after one, and they all run again here. When a
+restoration reproduces a skipped tail (it ran all the source ran and the last
+one failed here too), the skipped actions are retargeted onto the restored page
+without running and handed back on the step (``RestoredStep.skipped``), so the
+restored record says they were not executed, as the source's does.
+
 Knobs:
 
 - ``verify`` — ``strict`` (default): the first failed check raises
@@ -56,12 +65,13 @@ from spectragent.core.loops.restore.context import (
     RestorationDivergedError,
     RestoredStep,
 )
-from spectragent.schemas.action import ActionResult
+from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.restoration import (
     RestorationCheck,
     RestorationEvidence,
     RestoredAction,
 )
+from spectragent.schemas.step_record import StepRecord
 
 
 @dataclass
@@ -250,7 +260,8 @@ class PrefixReplayRestorer(RestorerBase):
             check = self._judge(step, evidence, actions)
             if check.verdict == "diverged":
                 raise RestorationDivergedError(check, live_obs)
-            yield RestoredStep(step=step, check=check, observation=live_obs)
+            skipped = await self._skipped(ctx, record, actions, recorded_obs, live_obs)
+            yield RestoredStep(step=step, check=check, observation=live_obs, skipped=skipped)
 
         # The checkpoint: the observation the branch decides on.
         step = ctx.checkpoint_step
@@ -262,6 +273,41 @@ class PrefixReplayRestorer(RestorerBase):
         if check.verdict == "diverged":
             raise RestorationDivergedError(check, live_obs)
         yield RestoredStep(step=step, check=check, observation=live_obs)
+
+    async def _skipped(
+        self,
+        ctx: RestorationContext,
+        record: StepRecord,
+        actions: Sequence[RestoredAction],
+        recorded_obs: Any,
+        live_obs: Any,
+    ) -> tuple[Action, ...]:
+        """The source step's skipped actions on this page, when this restoration skipped them too.
+
+        The source's Loop stopped the step at a failed action and never ran
+        the rest (``StepRecord.skipped_actions``); a restoration runs only what
+        the source ran, so it never runs them either. When it ran every one of
+        those and the last failed here as well, the rest went unexecuted for
+        the same reason, and each is retargeted — never run — so the restored
+        record names it on this page as it names the executed ones. Otherwise
+        nothing: an outcome or an attempt that differed (``verify: warn``), or
+        a skipped action with no single target here.
+        """
+        skipped = record.skipped()
+        if not skipped or len(actions) != len(record.action_results):
+            return ()
+        if any(item.result is None for item in actions):
+            return ()
+        last = actions[-1].result
+        if last is None or last.success:
+            return ()
+        targets: list[Action] = []
+        for recorded in skipped:
+            retarget = await ctx.env.retarget(recorded, recorded_obs, live_obs)
+            if retarget.action is None:
+                return ()
+            targets.append(retarget.action)
+        return tuple(targets)
 
     async def _request_alignment(self, ctx: RestorationContext, recorded_obs: Any) -> None:
         """Under ``media: align``, have the next observation aligned to *recorded_obs*."""

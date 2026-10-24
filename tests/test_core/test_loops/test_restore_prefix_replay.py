@@ -207,6 +207,77 @@ class TestOrder:
         assert last.check.actions == []
 
 
+class TestSkippedActions:
+    """A step its Loop stopped at a failed action (the user's ruling of 2026-10-24).
+
+    The source never ran the actions after the failed one, so neither does
+    the restoration. When it reproduces the stop, it hands them back
+    retargeted onto the restored page, never run.
+    """
+
+    @staticmethod
+    def _stopped(step: int = 0) -> StepRecord:
+        """Three actions: the first ran, the second failed, the third was skipped."""
+        return StepRecord(
+            step=step,
+            actions=[Action(name="cap.click", params={"index": step * 10 + i}) for i in range(3)],
+            action_results=[ActionResult(success=True), ActionResult(success=False)],
+            skipped_actions=1,
+        )
+
+    async def test_a_skipped_action_is_retargeted_and_not_run(self) -> None:
+        log: list[tuple[Any, ...]] = []
+        act = _act(log, results={1001: ActionResult(success=False, error="covered")})
+        steps = await _collect(
+            PrefixReplayRestorer(), _ctx(_Env(log), act, _Source([self._stopped()]), 1)
+        )
+        assert [entry for entry in log if entry[0] == "act"] == [("act", 1000), ("act", 1001)]
+        assert [entry[1] for entry in log if entry[0] == "retarget"] == [0, 1, 2]
+        restored = steps[0]
+        assert restored.check.verdict == "ok"
+        assert [a.recorded.params["index"] for a in restored.check.actions] == [0, 1]
+        assert restored.skipped == (Action(name="cap.click", params={"index": 1002}),)
+
+    async def test_no_skipped_tail_when_the_last_action_succeeded_here(self) -> None:
+        """``warn``: the outcome differed, so the reason the source skipped is not this run's."""
+        log: list[tuple[Any, ...]] = []
+        steps = await _collect(
+            PrefixReplayRestorer(verify="warn"),
+            _ctx(_Env(log), _act(log), _Source([self._stopped()]), 1),
+        )
+        assert [entry for entry in log if entry[0] == "act"] == [("act", 1000), ("act", 1001)]
+        assert steps[0].check.reasons == ["action_failed"]
+        assert steps[0].skipped == ()
+
+    async def test_no_skipped_tail_when_a_skipped_action_has_no_target_here(self) -> None:
+        log: list[tuple[Any, ...]] = []
+        env = _Env(
+            log,
+            retargets={2: Retarget(action=None, method="geometry_signature", failure="not_found")},
+        )
+        act = _act(log, results={1001: ActionResult(success=False, error="covered")})
+        steps = await _collect(
+            PrefixReplayRestorer(), _ctx(env, act, _Source([self._stopped()]), 1)
+        )
+        # Never run, so never a divergence.
+        assert steps[0].check.verdict == "ok"
+        assert steps[0].skipped == ()
+
+    async def test_a_step_recorded_before_the_stop_reruns_every_action(self) -> None:
+        """The old Loop ran the actions after a failed one; the restoration runs them too."""
+        log: list[tuple[Any, ...]] = []
+        old = StepRecord(
+            step=0,
+            actions=[Action(name="cap.click", params={"index": i}) for i in range(2)],
+            action_results=[ActionResult(success=False), ActionResult(success=True)],
+        )
+        act = _act(log, results={1000: ActionResult(success=False, error="covered")})
+        steps = await _collect(PrefixReplayRestorer(), _ctx(_Env(log), act, _Source([old]), 1))
+        assert [entry for entry in log if entry[0] == "act"] == [("act", 1000), ("act", 1001)]
+        assert steps[0].check.verdict == "ok"
+        assert steps[0].skipped == ()
+
+
 _FRAG = "test_restore_frame"
 
 

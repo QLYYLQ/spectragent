@@ -17,7 +17,10 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator import EvaluationRunner, ExactMatchEvaluator
 from spectragent.evaluator.errors import TraceIncompleteError
 from spectragent.evaluator.trace_view import TraceView
+from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_reference import EvalReference
+from tests._helpers.export_traces import ExportStep
+from tests._helpers.export_traces import write_run as write_export_run
 from tests.test_evaluator.conftest import png_bytes, write_trace
 
 
@@ -199,3 +202,27 @@ class TestOrigins:
             "browser.click({'index': 1})",
         ]
         assert view.step_count == 2
+
+
+def test_an_action_the_step_skipped_is_not_in_the_action_history(tmp_path: Path) -> None:
+    """The Loop stopped the step at the failed click; the judge reads only what ran."""
+
+    def click(index: int) -> Action:
+        return Action(name="browser.click", params={"index": index})
+
+    run = write_export_run(
+        tmp_path,
+        "stopped",
+        [
+            ExportStep(
+                actions=[click(1), click(2)],
+                results=[ActionResult(success=False, error="covered")],
+                skipped_actions=1,
+            ),
+            ExportStep(actions=[click(3)]),
+        ],
+    )
+    assert TraceView(RunTrace(run)).action_history == [
+        "browser.click({'index': 1})",
+        "browser.click({'index': 3})",
+    ]

@@ -11,7 +11,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from enum import Enum
@@ -528,6 +528,12 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     run.action_space,
                     raw_output=output_text[:500],
                 )
+                # The same check the live step made before running anything:
+                # a reply it sent back (an unknown name, params that do not
+                # fit) is read back as the parse failure it was.
+                self.check_action_params(
+                    run, actions[: self.max_actions_per_step], raw_output=output_text
+                )
             except RunAbort as veto:
                 await self._note_replay_veto(run, step, veto, llm_output=output_text)
                 raise
@@ -740,7 +746,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             run.checkpoint_observation = restored.observation
             run.checkpoint_check = restored.check
             return None
-        record = self._restored_record(run, step, restored.check, restored.observation)
+        record = self._restored_record(
+            run, step, restored.check, restored.observation, restored.skipped
+        )
         if self.history_source == "restored":
             try:
                 await self._append_restored_history(run, record, restored.observation)
@@ -773,9 +781,21 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         return None
 
     def _restored_record(
-        self, run: BranchRun, step: int, check: RestorationCheck, observation: Any
+        self,
+        run: BranchRun,
+        step: int,
+        check: RestorationCheck,
+        observation: Any,
+        skipped: Sequence[Action] = (),
     ) -> StepRecord:
-        """Actual restored execution; the original reply is only source material."""
+        """Actual restored execution; the original reply is only source material.
+
+        *skipped* are the source step's actions its Loop skipped after a failed
+        one, which this restoration did not execute either, as the restorer
+        retargeted them onto this page (``RestoredStep.skipped``): they follow
+        the executed actions as the record's skipped tail, so a later prompt
+        says they were not executed just as the source's history says it.
+        """
         source_record = run.source.record(step)
         # These parallel lists contain only returned results and their exact
         # action. Attempts that raised remain in check.actions; compacting
@@ -802,8 +822,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             origin="restored",
             restoration=check,
             source_history=history,
-            actions=actions,
+            actions=[*actions, *skipped],
             action_results=results,
+            skipped_actions=len(skipped),
             observation_summary=summarize_observation(observation)
             if observation is not None
             else "",

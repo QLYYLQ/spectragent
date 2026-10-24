@@ -52,6 +52,7 @@ from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
+from spectragent.agents.rendering.skipped_actions import skip_reason
 from spectragent.agents.ui_tars.codec import UITarsCodec, read_thought
 from spectragent.core.llm.messages import (
     BaseMessage,
@@ -109,9 +110,12 @@ def _action_contract(max_actions_per_step: int, *, can_finish: bool) -> tuple[st
 
     The semantics are ``ReactLoop``'s, stated as the model experiences
     them: every ``Action:`` line is one action; they run in the order
-    written against the screenshot already shown; the Loop drops
-    everything past ``max_actions_per_step`` before it runs; nothing after
-    a finishing action runs.
+    written against the screenshot already shown, and an action that fails
+    stops the batch (the ones after it do not run, and the next
+    observation's feedback names them); the Loop drops everything past
+    ``max_actions_per_step`` before it runs; nothing after a finishing
+    action runs. With one action per reply there is nothing to stop, so its
+    wording does not mention failure.
     """
     if max_actions_per_step < 1:
         raise ValueError(
@@ -128,10 +132,12 @@ def _action_contract(max_actions_per_step: int, *, can_finish: bool) -> tuple[st
     budget = (
         f"Write one Action line per action, each on its own line. You may use a "
         f"maximum of {n} actions per reply. They run one after another in the "
-        f"order written, all aimed at the screenshot you are looking at now; you "
-        f"see the screen again only after the last one has run. Anything past the "
-        f"first {n} is dropped before it runs, so do not plan past it, and do not "
-        f"chain an action whose target only appears after an earlier one has run."
+        f"order written, all aimed at the screenshot you are looking at now, until "
+        f"one fails: the actions after a failed one do not run, and the next "
+        f"observation says which. You see the screen again only after the batch "
+        f"stops. Anything past the first {n} is dropped before it runs, so do not "
+        f"plan past it, and do not chain an action whose target only appears after "
+        f"an earlier one has run."
     )
     if can_finish:
         budget += " Nothing written after finished() runs."
@@ -427,6 +433,9 @@ class UITarsAgent(AgentBase):
         effect is shown only as its ``describe()`` line, and only with
         ``show_action_effects``. Each action is its call as the codec writes it,
         every point on the frame the batch was chosen on (``StepRecord.frame``).
+        Actions the Loop skipped because an earlier one failed are
+        ``not_executed``, with the reason (``action N failed``); they are not
+        among the actions without returned results, which may have run.
         """
         if not history.items:
             return "<action_results>\nNo previous action batch.\n</action_results>"
@@ -434,13 +443,14 @@ class UITarsAgent(AgentBase):
         if len(record.action_results) > len(record.actions):
             raise ValueError("UI-TARS action feedback has more results than actions")
         returned = len(record.action_results)
+        unreturned = len(record.actions) - record.skipped_actions
         write_point = point_writer(record.frame)
         codec = self._codec
 
         def fact(action: Action) -> str | dict[str, Any]:
             return codec.write_fact(fact_in_model_frame(action, record.frame, codec.space))
 
-        facts = {
+        facts: dict[str, Any] = {
             "step": record.step + 1,
             "returned_results": [
                 {
@@ -454,12 +464,20 @@ class UITarsAgent(AgentBase):
                 )
             ],
             "actions_without_returned_results": [
-                fact(action) for action in record.actions[returned:]
+                fact(action) for action in record.actions[returned:unreturned]
             ],
             "discarded_action_count": record.truncated_actions,
             "error_phase": record.error_phase or None,
             "error": record.error,
         }
+        if record.skipped_actions:
+            # The batch stopped at a failed action; the ones after it never
+            # ran. Only then is the key written, so a batch that skipped
+            # nothing reads as it always has.
+            facts["not_executed"] = {
+                "actions": [fact(action) for action in record.skipped()],
+                "because": skip_reason(record),
+            }
         return (
             "<action_results>\n"
             + json.dumps(facts, ensure_ascii=False, sort_keys=True)

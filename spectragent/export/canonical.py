@@ -40,6 +40,19 @@ def executed_actions(record: StepRecord) -> list[Action]:
     return [action for action, _result in zip(record.actions, record.action_results, strict=False)]
 
 
+def target_actions(record: StepRecord) -> list[Action]:
+    """The actions a sample of *record* teaches: the ones that ran, then the ones skipped.
+
+    A step the Loop stopped at a failed action (``StepRecord.skipped_actions``,
+    arch §4.1) keeps the actions after it in the reply it accepted; they are
+    the teacher's decision as much as the ones that ran, so the target writes
+    them too, rather than a shorter reply the teacher never gave. A student
+    serving that reply in that state would be stopped at the same action.
+    Actions after a ``done`` are not a decision anyone acts on and stay out.
+    """
+    return [*executed_actions(record), *record.skipped()]
+
+
 def is_exportable(record: StepRecord) -> bool:
     """A step a student can learn from: the run's own decision, healthy, that acted.
 
@@ -128,10 +141,11 @@ def canonicalise(
                 observations=observations,
                 image=image,
                 history_steps=history,
-                teacher_actions=executed,
+                teacher_actions=target_actions(record),
                 thought=read_thought(record.llm_output),
                 labels=SampleLabels(
                     step_status="ok" if all(r.success for r in results) else "action_failed",
+                    skipped_actions=record.skipped_actions,
                     verdicts=labels_verdicts,
                 ),
                 redactions=redactions,
@@ -244,4 +258,10 @@ def _branch_meta(trace: RunTrace, records: list[StepRecord]) -> BranchSampleMeta
     )
 
 
-__all__ = ["ThoughtSource", "canonicalise", "executed_actions", "is_exportable"]
+__all__ = [
+    "ThoughtSource",
+    "canonicalise",
+    "executed_actions",
+    "is_exportable",
+    "target_actions",
+]

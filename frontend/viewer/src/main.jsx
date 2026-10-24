@@ -1155,6 +1155,12 @@ function StepActions({ record }) {
           模型给出的 {record.truncated_actions} 个动作超出了动作数量上限，已被丢弃。
         </div>
       )}
+      {record.skipped_actions > 0 && (
+        <div className="notice">
+          第 {record.action_results.length} 个动作失败，这一步停在那里：最后{" "}
+          {record.skipped_actions} 个动作没有执行，也没有结果。
+        </div>
+      )}
       <JsonPanel
         title={restored ? "已执行的恢复动作" : "动作"}
         value={record.actions}

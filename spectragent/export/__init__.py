@@ -29,6 +29,7 @@ from spectragent.export.canonical import (
     canonicalise,
     executed_actions,
     is_exportable,
+    target_actions,
 )
 from spectragent.export.errors import (
     InvalidTranslationError,
@@ -73,4 +74,5 @@ __all__ = [
     "is_exportable",
     "missing_export_slots",
     "needed_for_export",
+    "target_actions",
 ]

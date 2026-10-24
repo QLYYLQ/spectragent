@@ -2,7 +2,8 @@
 
 The user's ruling of 2026-10-23: ReAct validates every action a reply would
 run against the ``Params`` of the action the guard executes it as
-(``core/action_guard.py::params_refusal``). A misfit is a parse error with a
+(``core/action_guard.py::params_refusal``); since 2026-10-24 a name the run
+does not execute is refused the same way. A misfit is a parse error with a
 reason the model can act on, so it takes the existing parse retries
 (``parse_retries_per_step``) and, when they are spent, is recorded as the
 step's parse failure. The action is not executed and is not turned into a
@@ -183,10 +184,21 @@ async def test_an_action_past_the_step_budget_is_not_judged() -> None:
     assert _feedback(memory) == []
 
 
-async def test_a_name_the_guard_refuses_is_left_to_the_guard() -> None:
-    _, ran, memory, _ = await _run(
-        [[{"name": "browser.fly", "params": {"high": True}}, _DONE]], retries=0
+async def test_a_name_this_run_does_not_execute_is_rewritten_by_the_model() -> None:
+    """Nothing in the reply runs: the done after the unknown name would assume it happened."""
+    result, ran, memory, _ = await _run(
+        [[{"name": "browser.fly", "params": {"high": True}}, _DONE], [_DONE]], retries=1
     )
-    assert _feedback(memory) == []
-    # The guard refused the unknown name when it ran; the done after it ran.
-    assert [a.name for a in ran] == ["browser.done"]
+    assert result.agent_done == "done"
+    assert ran == [Action(name="browser.done", params={"extracted_content": "42"})]
+    (said,) = _feedback(memory)
+    assert "action 1, browser.fly is not an action this run executes" in said
+    assert "browser.click, browser.done, browser.type" in said, "the reason lists the run's actions"
+
+
+async def test_an_unknown_name_with_spent_retries_runs_nothing() -> None:
+    result, ran, _, recorder = await _run([[_DONE, {"name": "fly", "params": {}}]], retries=0)
+    assert ran == []
+    (record,) = recorder.records
+    assert record.error_phase == "parse" and record.actions == [] and record.action_results == []
+    assert "action 2, fly is not an action this run executes" in (record.error or "")

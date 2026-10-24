@@ -92,7 +92,10 @@ def test_nine_actions_are_advertised_as_the_multi_action_contract(variant: str) 
     assert {int(n) for n in _DROPPED.findall(prompt)} == {9}
     assert "Write one Action line per action, each on its own line." in prompt
     assert "in the order written" in prompt
-    assert "you see the screen again only after the last one has run" in prompt
+    # A failed action stops the batch (the user's ruling of 2026-10-24).
+    assert "until one fails: the actions after a failed one do not run" in prompt
+    assert "You see the screen again only after the batch stops." in prompt
+    assert "after the last one has run" not in prompt
     assert "Nothing written after finished() runs." in prompt
     # The format block shows the repetition, not a singular slot.
     assert len(_ACTION_PLACEHOLDER.findall(prompt)) == 2
