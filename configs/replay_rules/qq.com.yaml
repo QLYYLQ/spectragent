@@ -169,6 +169,14 @@ rules:
 # playParams and vinfoParams select the video and stay. In a replay of run 263 with every
 # other rule here but not this one, this request missed, the cover page called
 # FillUnionInfo, which the recording never called, and its script opened /error.html.
+# Inside playParams, localHistoryPos and localHistoryVid (how far earlier visits played this
+# video, from the page's own watch history) select content: the answer echoes the position as
+# data.history.time and as playInfo.startTime with startTimeType "history" (recording
+# 28_bf81312c of lookahead_15task_20261024, steps 20 and 23: 333 and 392). Offline the
+# earlier visits do not play, so a replayed revisit sends an empty playParams and misses
+# (28_bf81312c at step 20). A scratch replay that ignored playParams served it and changed
+# nothing there: the player still asked proxyhttp for the video again (vinfoad and
+# onlyvinfo, encryptVer 9.2), which the recording did not do at that step, and those missed.
 - id: tencent-video-play-info
   scope:
     host: vd6.l.qq.com

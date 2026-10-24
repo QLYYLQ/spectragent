@@ -268,6 +268,37 @@ shows the results the recording showed one step later. The same holds at the new
 (distance 2 → 21). On the fifth (`44_275791e4` step 21) the suggestion chips under the question
 box scroll continuously, so the two pages caught them at other offsets.
 
+On 2026-10-24 the Tencent Video forks of `lookahead_15task_20261024` were reviewed (recordings
+28, 128 and 263; 30 of 70 checkpoints not restored). No rule or declaration was added; what
+fails is not a request a rule can join:
+
+- Play pages failing on screenshot distance alone (128 at steps 5 and 24, 28 at step 20): the
+  restored page, whose player does not play offline, went quiet and was captured after a
+  settle wait of 0.5 to 1.3 s, with the side panel and the header still placeholders. The
+  recorded one waited the 5 s settle cap, because the playing video kept changing the page. The forks' own later frames match it (128 at step 24: distance 0).
+  On play pages, 86 of the 108 checks taken right after a navigation fail on distance, against 44
+  of 516 on a page already open. At step 20 of 28 the recorded page also opened a login dialog the
+  replay never shows; the `vinfo_proxy` comment in `qq.com.yaml` says why its watch history fields
+  stay in the key.
+- Search pages (128 at step 13, 28 at step 1): the recorded observation shows the page still
+  searching; the live search answer arrived 3.6 s and 1.5 s after the capture, the replayed one at
+  once. Their document misses are a double navigation: pressing Enter in the search box navigated
+  twice, 10 to 20 ms apart (the recordings hold one document request per search). The first
+  request was gone when its answer was sent (`Invalid InterceptionId`), which counts as a
+  document miss, and it had consumed a recorded document, so the second navigation got the next
+  one. All 32 failed main-frame answers of that root are this case, on `/x/search/`.
+- The front page and `/channel/movie`: the focus-map preview is a frame inside a shadow root
+  covering the viewport (100% and 87% of it), so every check fails `media_mismatch`, and a
+  media-area rule would never apply its mask. Re-verified with `v.qq.com/` declared, 0 of 116
+  front-page checks pass before and 46 after (step 0 of 128 and 28, before the recorded preview
+  started), no checkpoint among them; declaring `/channel/*` changes no verdict. It is not
+  declared: the 2026-10-23 ruling covers video and search pages.
+- 263 from step 15 is on a Meituan page: at step 14 the teacher clicked "了解详情" on an ad the
+  recorded player showed (a 15 s `<video>` that started after its click on the player at step
+  13). Offline the player shows its network error (it asks `proxyhttp` again with encryption
+  version 9.2, see above) and plays no ad, so the click lands on the player's canvas and the tab
+  stays on the play page.
+
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another
 endpoint. A change must check incorrect matches as well as newly matched
