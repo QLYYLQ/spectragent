@@ -31,6 +31,7 @@ import pytest
 
 from spectragent.core.benchmark_runner import TaskOutcome
 from spectragent.core.capabilities.browser.effects import (
+    KeyPressEffect,
     PointerEffect,
     ScrollEffect,
     TextInputEffect,
@@ -64,7 +65,7 @@ CHECKPOINT = 6
 EFFECTS = [
     PointerEffect,
     TextInputEffect,
-    TextInputEffect,
+    KeyPressEffect,  # send_keys: a text-input effect that also names browser shortcuts
     ScrollEffect,
     PointerEffect,
     PointerEffect,

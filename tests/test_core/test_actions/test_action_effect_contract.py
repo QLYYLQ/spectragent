@@ -18,6 +18,7 @@ from conscribe import discover
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.effects import (
     ElementFacts,
+    KeyPressEffect,
     NavigationEffect,
     PointerEffect,
     ScrollEffect,
@@ -37,7 +38,7 @@ BROWSER_EFFECTS: dict[str, type[ActionEffect] | None] = {
     "browser.drag": PointerEffect,
     "browser.type": TextInputEffect,
     "browser.type_coordinate": TextInputEffect,
-    "browser.send_keys": TextInputEffect,
+    "browser.send_keys": KeyPressEffect,
     "browser.scroll": ScrollEffect,
     "browser.navigate": NavigationEffect,
     "browser.go_back": NavigationEffect,

@@ -8,15 +8,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.capabilities.browser.actions._common import (
-    effect_from,
-    focused_scope,
-    handler_field,
-)
+from spectragent.core.capabilities.browser.actions._browser_commands import history_step
+from spectragent.core.capabilities.browser.actions._common import effect_from
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import NavigationEffect
-from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
-from spectragent.core.capabilities.browser.watchdogs.events import GoBackEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -51,10 +46,7 @@ class GoBackAction(SettleableAction, ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         try:
-            scope = focused_scope(capability)
-            event = GoBackEvent()
-            await dispatch_request(scope, event)
-            facts = handler_field(event, "effect_facts")
+            facts = await history_step(capability, offset=-1)
             await self.settle()
             return ActionResult(success=True, effect=effect_from(self, facts))
         except Exception as exc:  # pragma: no cover

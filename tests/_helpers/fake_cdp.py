@@ -59,7 +59,8 @@ to that client before it replies, :meth:`FakeBrowser.open_target` reports a new
 one (``openerId`` from ``opener_id``) before it attaches it anywhere, and
 :meth:`FakeBrowser.close_target` — or ``Target.closeTarget`` — detaches every
 session of the target and reports it destroyed. ``Page.windowOpen`` is a test's
-to fire, on the opener's session (:meth:`FakeClient.fire`).
+to fire, on the opener's session (:meth:`FakeClient.fire`). ``Target.getTargetInfo``
+on a target's own session names that target, as the tab-effect probes read it.
 
 And the page lifecycle, as freezing the tabs the focus left reads it
 (``background_tabs: freeze``, §4.14 "离开焦点的 tab"): ``Page.setWebLifecycleState``
@@ -653,6 +654,9 @@ class FakeBrowser:
                 target_id = f"{target_id}x"
             self.open_target(target_id, "page", url=params.get("url", ""))
             return {"targetId": target_id}
+        if method == "Target.getTargetInfo" and session_id is not None and target is not None:
+            # On a target's own session: the target it is attached to (the effect probes).
+            return {"targetInfo": target.info()}
         if method == "Browser.getVersion":
             return {"product": "FakeChrome/1.0", "userAgent": self.user_agent}
         if method == "Page.getFrameTree":

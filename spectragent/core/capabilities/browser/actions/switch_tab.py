@@ -9,15 +9,11 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._browser_commands import switch_to_tab
 from spectragent.core.capabilities.browser.actions._common import effect_from
-from spectragent.core.capabilities.browser.effect_probes import (
-    UNKNOWN,
-    ProbeBudget,
-    document_loaded,
-    tab_facts,
-)
-from spectragent.core.capabilities.browser.effects import TabFacts, TabSwitchEffect
-from spectragent.schemas.action import ActionDescriptor, ActionResult, Unmeasured
+from spectragent.core.capabilities.browser.effect_probes import ProbeBudget
+from spectragent.core.capabilities.browser.effects import TabSwitchEffect
+from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
     from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -27,7 +23,9 @@ if TYPE_CHECKING:
 class SwitchTabAction(ActionBase):
     """Switch the active tab by target_id (``None`` = most recent).
 
-    Delegates to :meth:`BrowserCapability.switch_tab`, which owns the
+    Delegates to :meth:`BrowserCapability.switch_tab` (through
+    ``_browser_commands.switch_to_tab``, which the browser's tab-switching
+    shortcuts of ``browser.send_keys`` use too), which owns the
     ``_default_session_id`` that every later observe / act resolves
     against. This action deliberately does not go through the watchdog
     event bus: a watchdog is scoped to a single tab and cannot repoint
@@ -77,29 +75,15 @@ class SwitchTabAction(ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         budget = ProbeBudget(capability.action_effect_timeout_s)
-        before = await _focused_tab(capability, budget)
         try:
-            selected = await capability.switch_tab(params.get("target_id"))
+            selected, facts = await switch_to_tab(capability, params.get("target_id"), budget)
         except Exception as exc:
             # Unknown tab / single-tab browser / CDP refusal — the agent
             # must learn the switch did not happen, so it can pick another
             # tab rather than acting blind on the old one.
             return ActionResult(success=False, error=str(exc))
-
-        cdp = capability.cdp
-        after = await tab_facts(cdp, selected.session_id, budget, tab_id=selected.target_id)
-        loaded = await document_loaded(cdp, selected.session_id, budget)
         return ActionResult(
             success=True,
             extracted_content=f"Switched to tab {selected.target_id}",
-            effect=effect_from(self, {"before": before, "after": after, "document_loaded": loaded}),
+            effect=effect_from(self, facts),
         )
-
-
-async def _focused_tab(capability: BrowserCapability, budget: ProbeBudget) -> TabFacts | Unmeasured:
-    """The focused tab before the switch; ``"unknown"`` when there is none to read."""
-    try:
-        cdp, session_id = capability.cdp, capability.default_session_id
-    except RuntimeError:  # not set up: the switch itself fails and reports no effect
-        return UNKNOWN
-    return await tab_facts(cdp, session_id, budget)

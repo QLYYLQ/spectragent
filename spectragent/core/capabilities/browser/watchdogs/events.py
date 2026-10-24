@@ -249,9 +249,13 @@ class GoForwardEvent(BaseEvent[dict[str, Any]]):
     execution_timeout: float = 15.0
 
 
-class RefreshEvent(BaseEvent[None]):
-    """Refresh the current page."""
+class RefreshEvent(BaseEvent[dict[str, Any]]):
+    """Reload the current page; answered ``{"navigated": True, "effect_facts": ...}``.
 
+    ``ignore_cache``: reload ignoring cached content (the browser's Hard reload).
+    """
+
+    ignore_cache: bool = False
     event_timeout: float = 15.0
     execution_timeout: float = 15.0
 

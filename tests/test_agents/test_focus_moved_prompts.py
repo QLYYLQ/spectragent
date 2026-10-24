@@ -52,7 +52,10 @@ _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: (the only difference: the old digest comes back with the old sentence put back).
 #: Updated 2026-10-23: ``finished``'s ``executes:`` line no longer lists ``success``, which
 #: ``finished()`` cannot set (the only difference: ``, success: bool (optional)`` removed).
-UI_TARS_PROMPT_SHA256 = "8a843a077b3faeccdb70df6b0a4858ac97cb27690015672ab0b340f0f7891181"
+#: Updated 2026-10-24: ``hotkey``'s description (``browser.send_keys``'s descriptor) names
+#: the browser shortcuts that run and says there is no address bar or new-tab page (the
+#: only difference: the old digest comes back with the old description put back).
+UI_TARS_PROMPT_SHA256 = "021a49353af394bd2891a4bb84b4e4fe1740ddfe8d90e1d4f515789c54575133"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:
