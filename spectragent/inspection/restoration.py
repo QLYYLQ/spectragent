@@ -1,5 +1,6 @@
 """Presentation of recorded restoration facts, shared by terminal and web views."""
 
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -212,3 +213,20 @@ def restoration_overview(records: list[dict[str, Any]], checkpoint: int) -> dict
             row["step"] for row in checked if (restoration_gap(row) or {}).get("differences")
         ],
     }
+
+
+def unmeasured_everywhere(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Unmeasured facts shared by every checked step of a run, in recorded order.
+
+    A checked step is one with a restoration gap: a restored step, or one
+    carrying a restoration check. A fact no checked step measured is stated
+    once for the run (the user's ruling of 2026-10-24): it stays unknown and
+    is never drawn as zero, while step rows count only the unmeasured facts
+    that vary between steps. Each step's own gap is unchanged.
+    """
+    gaps = [gap for record in records if (gap := restoration_gap(record)) is not None]
+    shared = set(gaps[0]["unmeasured"]) if gaps else set()
+    for gap in gaps[1:]:
+        shared &= set(gap["unmeasured"])
+    facts = [line for line in gaps[0]["unmeasured"] if line in shared] if gaps else []
+    return {"facts": facts, "checked_steps": len(gaps)}

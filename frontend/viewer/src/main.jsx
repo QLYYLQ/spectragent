@@ -9,6 +9,7 @@ import {
   historyLabel,
   historyExplanation,
   cursorLabel,
+  everywhereLabel,
   gapLabel,
   modelCallTitle,
   decisionAnswerRows,
@@ -761,12 +762,12 @@ function ObservationImage({ runKey, step, fragments }) {
   );
 }
 
-function GapSummary({ gap }) {
+function GapSummary({ gap, everywhere = [] }) {
   if (!gap) return null;
   return (
     <div className={`gap-summary ${gap.differences.length ? "has-gap" : ""}`}>
       <div className="section-heading">
-        <strong>{gapLabel(gap)}</strong>
+        <strong>{gapLabel(gap, everywhere)}</strong>
         <span className="inline small">
           校验 <Badge value={gap.verdict} />
         </span>
@@ -783,7 +784,12 @@ function GapSummary({ gap }) {
           <summary>{gap.unmeasured.length} 项无法对比</summary>
           <ul>
             {gap.unmeasured.map((item) => (
-              <li key={item}>{item}</li>
+              <li key={item}>
+                {item}
+                {everywhere.includes(item) && (
+                  <span className="muted small">（每个已检查的步都未测）</span>
+                )}
+              </li>
             ))}
           </ul>
         </details>
@@ -795,7 +801,7 @@ function GapSummary({ gap }) {
   );
 }
 
-function RestorationComparison({ step, runKey, index }) {
+function RestorationComparison({ step, runKey, index, everywhere }) {
   const [view, setView] = useState("agent");
   const comparison = step.comparison;
   const source = comparison.source;
@@ -819,7 +825,7 @@ function RestorationComparison({ step, runKey, index }) {
           ? "这一恢复步没有做新的策略决策。"
           : "在检查点上，新策略总是使用实际恢复出的观测。"}
       </p>
-      <GapSummary gap={step.gap} />
+      <GapSummary gap={step.gap} everywhere={everywhere} />
       <ImageViewSwitch view={view} setView={setView} />
       <div className="restoration-columns">
         <article className="restoration-column source-column">
@@ -1185,7 +1191,7 @@ function StepActions({ record }) {
   );
 }
 
-function StepDetail({ runKey, index, revision }) {
+function StepDetail({ runKey, index, revision, everywhere = [] }) {
   const state = useRemote(query("step", { key: runKey, index }), revision);
   const [tab, setTab] = useState("observation");
   const annotations = useContext(AnnotationContext);
@@ -1263,6 +1269,7 @@ function StepDetail({ runKey, index, revision }) {
                   step={step}
                   runKey={runKey}
                   index={index}
+                  everywhere={everywhere}
                 />
               )}
               {!step.comparison && step.has_screenshot && (
@@ -1355,6 +1362,7 @@ function StepDetail({ runKey, index, revision }) {
 
 function Trajectory({ run, route, revision }) {
   const selected = Number(route.step ?? run.steps[0]?.step ?? 0);
+  const everywhere = run.unmeasured_everywhere?.facts || [];
   if (!run.steps.length)
     return (
       <Empty title="没有已提交的步">
@@ -1367,6 +1375,11 @@ function Trajectory({ run, route, revision }) {
         <div className="timeline-title">
           已提交的步 <span>{run.steps.length}</span>
         </div>
+        {everywhereLabel(run.unmeasured_everywhere) && (
+          <p className="everywhere-note muted small">
+            {everywhereLabel(run.unmeasured_everywhere)}
+          </p>
+        )}
         {run.steps.map((step) => (
           <button
             key={step.step}
@@ -1403,7 +1416,7 @@ function Trajectory({ run, route, revision }) {
                   step.gap.differences.length ? "gap-label" : "muted small"
                 }
               >
-                {gapLabel(step.gap)}
+                {gapLabel(step.gap, everywhere)}
               </span>
             )}
             <span className="muted small">
@@ -1413,7 +1426,12 @@ function Trajectory({ run, route, revision }) {
           </button>
         ))}
       </aside>
-      <StepDetail runKey={route.key} index={selected} revision={revision} />
+      <StepDetail
+        runKey={route.key}
+        index={selected}
+        revision={revision}
+        everywhere={everywhere}
+      />
     </div>
   );
 }
@@ -1562,6 +1580,11 @@ function ExecutionContext({ run }) {
                   {run.restoration_overview.different_steps.length}
                 </strong>
               </span>
+              {everywhereLabel(run.unmeasured_everywhere) && (
+                <span className="everywhere-note">
+                  {everywhereLabel(run.unmeasured_everywhere)}
+                </span>
+              )}
               {run.restoration_overview.different_steps.length > 0 && (
                 <button
                   className="text-button"

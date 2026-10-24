@@ -51,6 +51,9 @@ dependencies = [
     "typer>=0.16",
     "rich>=14",
     "textual>=6",
+    # JSON highlighting in the terminal views; Textual loads each grammar on its own.
+    "tree-sitter>=0.25",
+    "tree-sitter-json>=0.24",
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]

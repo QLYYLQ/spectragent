@@ -73,10 +73,24 @@ export function cursorLabel(fragments) {
   return `已画出光标 · 位置 (${fragment.cursor.position.join(", ")}) CSS 像素 · 大小 ${fragment.cursor.size_css_px} CSS 像素`;
 }
 
-export function gapLabel(gap) {
+// `everywhere` lists the facts no checked step of the run measured
+// (`run.unmeasured_everywhere.facts`): the run states them once, so a step
+// is incomplete only for the unmeasured facts that vary between steps.
+export function gapLabel(gap, everywhere = []) {
   if (!gap) return "无对比";
   if (gap.differences.length) return `测得 ${gap.differences.length} 处差异`;
-  return gap.unmeasured.length ? "对比不完整" : "未测得差异";
+  const varying = gap.unmeasured.filter((item) => !everywhere.includes(item));
+  return varying.length ? "对比不完整" : "未测得差异";
+}
+
+// The run-level statement of those facts: unknown, never a zero difference.
+export function everywhereLabel(everywhere) {
+  if (!everywhere?.facts?.length) return null;
+  const where =
+    everywhere.checked_steps === 1
+      ? "唯一一个已检查的步"
+      : `全部 ${everywhere.checked_steps} 个已检查的步`;
+  return `${where}都未测（结果未知）：${everywhere.facts.join("；")}`;
 }
 export function modelCallTitle(call) {
   if (call.purpose === "replay_review") return "回放审阅";

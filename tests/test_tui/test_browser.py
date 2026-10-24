@@ -16,6 +16,7 @@ from spectragent.schemas.step_record import StepRecord
 from spectragent.tui import browse
 from spectragent.tui.browser import BrowserApp
 from spectragent.tui.presentation import terminal_value
+from spectragent.tui.widgets import FactSheet
 from tests._helpers.trace_builder import agent_result, build_reference_trace
 
 
@@ -183,8 +184,8 @@ async def test_search_is_debounced_and_old_detail_cannot_replace_new_selection()
         repository.detail_released.set()
 
 
-def _branch_trace(root, restored=None):
-    writer = WALWriter(root, "branch")
+def _branch_trace(root, restored=None, run_id="branch"):
+    writer = WALWriter(root, run_id)
     writer.init_run(
         TraceConfig(
             branch=BranchProvenance(
@@ -251,7 +252,7 @@ async def test_source_unavailable_under_single_run_root_has_an_explicit_reason(t
     directory = _branch_trace(tmp_path)
     app = BrowserApp(open_repository(directory), initial_run=".")
     async with app.run_test(size=(110, 40)) as pilot:
-        await _until(lambda: app._run_detail is not None and app._selected == ".")
+        await _until(lambda: app._run_detail is not None and app._selected == "." and app._rows)
         await pilot.press("s")
         await pilot.pause()
         text = app.query_one("#content", TextArea).text
@@ -284,7 +285,7 @@ async def test_unresolved_source_navigation_explains_the_recorded_resolution(res
 
     app = BrowserApp(cast(RunRepository, Repository()), initial_run="initial")
     async with app.run_test(size=(110, 40)) as pilot:
-        await _until(lambda: app._run_detail is not None)
+        await _until(lambda: app._run_detail is not None and app._rows)
         await pilot.press("s")
         await pilot.pause()
         text = app.query_one("#content", TextArea).text
@@ -329,9 +330,10 @@ async def test_history_restoration_separates_source_success_from_actual_failure(
     async with app.run_test(size=(110, 40)) as pilot:
         await _until(lambda: app._run_detail is not None)
         steps = app.query_one("#steps", DataTable)
-        assert "source: browser.click; actual: browser.click (failed)" in str(
-            steps.get_row_at(0)[3]
-        )
+        titles = [str(column.label) for column in steps.ordered_columns]
+        actions = str(steps.get_row_at(0)[titles.index("Actions")])
+        assert "actual: browser.click (failed)" in actions
+        assert "source: browser.click" in actions
         steps.focus()
         await pilot.press("enter")
         await _until(lambda: '"actual_action_results"' in app.query_one("#content", TextArea).text)
@@ -367,7 +369,8 @@ async def test_plain_replay_source_navigation_needs_no_branch_provenance(tmp_pat
     writer.finalize(TraceStatus.COMPLETE)
     app = BrowserApp(open_repository(tmp_path), initial_run="replay")
     async with app.run_test(size=(110, 40)) as pilot:
-        await _until(lambda: app._run_detail is not None)
+        # The first list load re-opens the run; wait for it before pressing s.
+        await _until(lambda: app._run_detail is not None and len(app._rows) == 2)
         assert app._run_detail is not None and app._run_detail["summary"]["branch"] is None
         await pilot.press("s")
         await _until(lambda: app._selected == "source" and app._run_detail is not None)
@@ -383,3 +386,267 @@ def test_browse_initial_focus_must_match_config_filter(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="does not match"):
         browse(tmp_path, initial_run="source", config_hash=RunTrace(branch).manifest.config_hash)
+
+
+async def test_enter_opens_a_run_moves_into_steps_and_escape_walks_back(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("enter")
+        await _until(lambda: app._run_detail is not None)
+        await pilot.pause()
+        steps = app.query_one("#steps", DataTable)
+        content = app.query_one("#content", TextArea)
+        assert app.focused is steps
+        assert '"summary"' in content.text
+        # Moving the cursor shows the step; Enter is not needed.
+        await pilot.press("down")
+        await _until(lambda: '"record"' in content.text)
+        assert app._selected_step == 1
+        assert "Step 1" in app.query_one("#facts", FactSheet).plain_text
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.focused is content
+        await pilot.press("escape")
+        assert app.focused is steps
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.focused is app.query_one("#runs", DataTable)
+        assert '"summary"' in content.text
+
+
+async def test_bracket_keys_step_through_a_run_from_its_details(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.press("3")
+        await pilot.pause()
+        content = app.query_one("#content", TextArea)
+        assert app.focused is content
+        await pilot.press("right_square_bracket")
+        await _until(lambda: app._selected_step == 1 and '"record"' in content.text)
+        assert app.focused is content
+        await pilot.press("left_square_bracket")
+        await _until(lambda: app._selected_step == 0 and '"record"' in content.text)
+        assert app.query_one("#steps", DataTable).cursor_coordinate.row == 0
+
+
+async def test_number_keys_zoom_and_key_help(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.press("1")
+        await pilot.pause()
+        assert app.focused is app.query_one("#runs", DataTable)
+        await pilot.press("2", "z")
+        await pilot.pause()
+        assert app.screen.maximized is app.query_one("#steps-panel")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen.maximized is None
+        assert app.focused is app.query_one("#steps", DataTable)
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert app.screen.query("HelpPanel")
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert not app.screen.query("HelpPanel")
+
+
+async def test_unreadable_runs_stay_listed_with_their_reason(tmp_path):
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "manifest.json").write_text("not json")
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: len(app._rows) == 2)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        tasks = [str(runs.get_row_at(index)[0]) for index in range(runs.row_count)]
+        # The reason stays in the first column, which no width drops.
+        assert any("broken" in task and "does not parse" in task for task in tasks)
+        assert "1 unreadable" in str(app.query_one("#runs-panel").border_subtitle)
+
+
+async def test_source_navigation_marks_the_checkpoint_it_came_from(tmp_path):
+    build_reference_trace(tmp_path, "source")
+    _branch_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="branch")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(
+            lambda: (
+                app._run_detail is not None and app._selected == "branch" and len(app._rows) == 2
+            )
+        )
+        subtitle = str(app.query_one("#steps-panel").border_subtitle)
+        assert "Agent history: unknown" in subtitle and "checkpoint ◆ 1" in subtitle
+        await pilot.press("s")
+        await _until(lambda: app._selected == "source" and app._run_detail is not None)
+        await pilot.pause()
+        assert "source of branch" in str(app.query_one("#steps-panel").border_subtitle)
+        steps = app.query_one("#steps", DataTable)
+        assert "◆" in str(steps.get_row_at(1)[1])
+        assert "◆" not in str(steps.get_row_at(0)[1])
+
+
+async def test_escape_to_the_overview_wins_over_a_pending_step_load(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and app._rows)
+        await pilot.press("2", "down", "escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._selected_step is None
+        assert '"summary"' in app.query_one("#content", TextArea).text
+        assert "run overview" in str(app.query_one("#detail-panel").border_subtitle)
+
+
+async def _folded_app(tmp_path, **kwargs):
+    build_reference_trace(tmp_path, "source")
+    _branch_trace(tmp_path, run_id="branch-a")
+    _branch_trace(tmp_path, run_id="branch-b")
+    return BrowserApp(open_repository(tmp_path), **kwargs)
+
+
+def _tasks(app):
+    runs = app.query_one("#runs", DataTable)
+    return [str(runs.get_row_at(index)[0]) for index in range(runs.row_count)]
+
+
+async def test_branches_fold_under_their_source_and_unfold_with_space(tmp_path):
+    app = await _folded_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: len(app._rows) == 3)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        assert runs.row_count == 1
+        assert _tasks(app)[0].startswith("▸ ") and "2 branches" in _tasks(app)[0]
+        await pilot.press("space")
+        await pilot.pause()
+        assert runs.row_count == 3
+        assert _tasks(app)[0].startswith("▾ ")
+        assert all("├ " in task or "└ " in task for task in _tasks(app)[1:])
+        await pilot.press("down", "left")
+        await pilot.pause()
+        # Left on a branch folds its source and stands on it.
+        assert runs.row_count == 1
+        assert runs.cursor_coordinate.row == 0
+        await pilot.press("right")
+        await pilot.pause()
+        assert runs.row_count == 3
+
+
+async def test_a_filter_unfolds_matches_and_a_lone_branch_says_where_its_source_is(tmp_path):
+    app = await _folded_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: len(app._rows) == 3)
+        app.query_one("#search", Input).value = "branch-a"
+        await _until(lambda: list(app._rows) == ["branch-a"])
+        await pilot.pause()
+        (task,) = _tasks(app)
+        assert "↳ source not listed" in task
+        # Every recorded field is searchable, so "source" matches all three runs
+        # (the branches record it as their source id): the group opens.
+        app.query_one("#search", Input).value = "source"
+        await _until(lambda: len(app._rows) == 3)
+        await pilot.pause()
+        assert app.query_one("#runs", DataTable).row_count == 3
+        app.query_one("#search", Input).value = ""
+        panel = app.query_one("#runs-panel")
+        await _until(lambda: "match" not in str(panel.border_subtitle))
+        await pilot.pause()
+        # Clearing the filter brings back the user's own folds.
+        assert app.query_one("#runs", DataTable).row_count == 1
+
+
+async def test_an_initial_branch_run_is_unfolded_into_view(tmp_path):
+    app = await _folded_app(tmp_path, initial_run="branch-b")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and len(app._rows) == 3)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        assert runs.row_count == 3
+        assert "branch-b" in _tasks(app)[runs.cursor_coordinate.row]
+
+
+async def test_a_fact_no_checked_step_measured_is_stated_once_above_the_steps(tmp_path):
+    record = StepRecord.model_validate(
+        {
+            "step": 0,
+            "origin": "restored",
+            "restoration": {"step": 0, "verdict": "ok", "reason": None, "reasons": []},
+        }
+    )
+    _branch_trace(tmp_path, restored=record)
+    app = BrowserApp(open_repository(tmp_path), initial_run="branch")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.pause()
+        line = str(app.query_one("#uniform").render())
+        assert "Unmeasured ? at the one checked step: Environment comparison not recorded" in line
+        steps = app.query_one("#steps", DataTable)
+        titles = [str(column.label) for column in steps.ordered_columns]
+        assert str(steps.get_row_at(0)[titles.index("Measured")]) == "no measured difference"
+        await pilot.press("2", "enter")
+        await _until(lambda: '"record"' in app.query_one("#content", TextArea).text)
+        assert "Environment comparison not recorded (at every checked step" in (
+            app.query_one("#facts", FactSheet).plain_text
+        )
+
+
+async def test_f8_copies_the_json_and_f9_the_summary_from_any_panel(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.pause()
+        content = app.query_one("#content", TextArea)
+        assert content.language == "json" and content.theme == "evidence"
+        await pilot.press("f9")
+        summary = app.query_one("#facts", FactSheet).plain_text
+        assert app.clipboard == summary and summary.startswith("Run run-test")
+        await pilot.press("f8")
+        assert app.clipboard == content.text
+        # The highlighted JSON still selects and copies as the recorded text.
+        await pilot.press("3", "f7", "ctrl+c")
+        assert app.clipboard == content.text
+        assert app.is_running
+
+
+async def test_a_committed_step_lists_its_skipped_actions_as_not_executed(tmp_path):
+    writer = WALWriter(tmp_path, "stopped")
+    writer.init_run(TraceConfig())
+    writer.commit_step(
+        0,
+        StepRecord.model_validate(
+            {
+                "step": 0,
+                "actions": [
+                    {"name": "browser.click", "params": {"index": 5}},
+                    {"name": "browser.send_keys", "params": {"keys": "Enter"}},
+                ],
+                "action_results": [{"success": False, "error": "element disappeared"}],
+                "skipped_actions": 1,
+            }
+        ),
+    )
+    writer.write_result(agent_result())
+    writer.finalize(TraceStatus.COMPLETE)
+    app = BrowserApp(open_repository(tmp_path), initial_run="stopped")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and app._rows)
+        await pilot.pause()
+        steps = app.query_one("#steps", DataTable)
+        titles = [str(column.label) for column in steps.ordered_columns]
+        assert str(steps.get_row_at(0)[titles.index("Actions")]) == (
+            "browser.click (failed), browser.send_keys (not executed)"
+        )
+        await pilot.press("enter")
+        await _until(lambda: '"record"' in app.query_one("#content", TextArea).text)
+        facts = app.query_one("#facts", FactSheet).plain_text
+        assert "not executed: action 1 failed" in facts
+        assert "no result returned" not in facts
