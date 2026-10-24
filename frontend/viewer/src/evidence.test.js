@@ -7,6 +7,7 @@ import {
   verdictLabel,
   cursorLabel,
   historyExplanation,
+  everywhereLabel,
   gapLabel,
   modelCallTitle,
   decisionAnswerRows,
@@ -163,4 +164,23 @@ test("trailing call counts respect channel selection and preserve measured zero"
   run.config.recording.trajectory = true;
   run.trailing_calls = [{ call_id: "recorded-trajectory" }];
   assert.equal(trailingCallCount(run), 1);
+});
+
+test("a fact no checked step measured is stated once for the run, never as zero", () => {
+  const dom = "browser: DOM signature not measured";
+  const gap = { verdict: "ok", differences: [], unmeasured: [dom] };
+  // On its own the step is incomplete; with the run-level fact it is not.
+  assert.equal(gapLabel(gap), "对比不完整");
+  assert.equal(gapLabel(gap, [dom]), "未测得差异");
+  assert.equal(
+    gapLabel({ ...gap, unmeasured: [dom, "browser: document misses not measured"] }, [dom]),
+    "对比不完整",
+  );
+  assert.equal(
+    everywhereLabel({ facts: [dom], checked_steps: 6 }),
+    `全部 6 个已检查的步都未测（结果未知）：${dom}`,
+  );
+  assert.match(everywhereLabel({ facts: [dom], checked_steps: 1 }), /唯一一个已检查的步/);
+  assert.equal(everywhereLabel({ facts: [], checked_steps: 6 }), null);
+  assert.equal(everywhereLabel(undefined), null);
 });

@@ -31,6 +31,7 @@ from spectragent.inspection.restoration import (
     restoration_gap,
     restoration_overview,
     restoration_results,
+    unmeasured_everywhere,
 )
 from spectragent.schemas.observation.image import image_media_type, read_model_image
 
@@ -450,6 +451,8 @@ class _FileRepository:
                 )
                 if trace.config.branch
                 else None,
+                # Facts no checked step measured, stated once for the run.
+                "unmeasured_everywhere": unmeasured_everywhere(steps),
                 "replay_log": _replay_log(trace),
             }
         except (TraceSchemaError, KeyError) as exc:

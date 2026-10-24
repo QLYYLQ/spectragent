@@ -297,3 +297,25 @@ def test_listed_branches_resolve_their_source_against_the_whole_root(tmp_path: P
     assert only[0]["source_key"] == "records/source"
     # The resolution is added after the search: it is not searchable text.
     assert open_repository(tmp_path).list_runs(search="ambiguous") == []
+
+
+def test_a_run_states_once_the_facts_no_checked_step_measured(tmp_path: Path) -> None:
+    from spectragent.inspection.restoration import unmeasured_everywhere
+
+    build_reference_trace(tmp_path, "source")
+    _branch_of(tmp_path, "fork", "source")
+    repo = open_repository(tmp_path)
+    fork = repo.run("fork")
+    assert fork["unmeasured_everywhere"] == {
+        "facts": ["Restoration check not recorded"],
+        "checked_steps": 1,
+    }
+    # The step's own gap keeps the fact; only the run states it once.
+    assert fork["steps"][0]["gap"]["unmeasured"] == ["Restoration check not recorded"]
+    assert repo.run("source")["unmeasured_everywhere"] == {"facts": [], "checked_steps": 0}
+    varying = [
+        {"step": 0, "origin": "restored", "restoration": {"verdict": "ok", "evidence": []}},
+        {"step": 1, "origin": "restored"},
+    ]
+    # Facts that differ between checked steps are not stated for the run.
+    assert unmeasured_everywhere(varying) == {"facts": [], "checked_steps": 2}

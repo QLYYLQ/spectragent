@@ -877,6 +877,11 @@ pre {
   color: #7a8e98;
   border-bottom: 1px solid #e8edef;
 }
+.everywhere-note {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
 .timeline-title span {
   float: right;
   background: #edf3f3;
