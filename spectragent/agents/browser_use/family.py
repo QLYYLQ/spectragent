@@ -70,6 +70,7 @@ from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
+from spectragent.agents.rendering.skipped_actions import not_executed_lines
 from spectragent.core.actions.action_union import action_of, action_union
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
@@ -675,6 +676,12 @@ class BrowserUseAgent(AgentBase):
         measured page fact and may name an element by its role and
         accessible name (what a click hit, where focus went).
 
+        A step the Loop stopped at a failed action gets a ``<not_executed>``
+        element after ``<results>``, one sentence per action it skipped
+        (``Action 2 (browser.send_keys) was not executed: action 1 failed.``,
+        ``agents/rendering/skipped_actions.py``); a step that skipped nothing
+        renders as before.
+
         In a run that teaches a grid, every point a step's actions and
         effects state is on the frame that step's record keeps
         (``StepRecord.frame``), put there by the framework; the
@@ -713,12 +720,19 @@ class BrowserUseAgent(AgentBase):
                 is not None
             ]
             effects_xml = "<effects>\n" + "\n".join(effects) + "\n</effects>\n" if effects else ""
+            # The step stopped at a failed action: name the ones after it,
+            # whose params ``<actions>`` already shows.
+            not_executed = " ".join(not_executed_lines(rec, write=lambda action: action.name))
+            not_executed_xml = (
+                f"<not_executed>{not_executed}</not_executed>\n" if not_executed else ""
+            )
             tag = f"step_{rec.step + 1}"
             blocks.append(
                 f"<{tag}>\n"
                 f"<llm_output>{_truncate(rec.llm_output, 2000)}</llm_output>\n"
                 f"<actions>{actions_str}</actions>\n"
                 f"<results>{results_str}</results>\n"
+                f"{not_executed_xml}"
                 f"{effects_xml}"
                 f"</{tag}>"
             )

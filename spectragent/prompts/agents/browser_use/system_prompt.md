@@ -104,7 +104,7 @@ BEFORE calling `done` with `success=true`, you MUST perform this verification:
 <action_rules>
 - You are allowed to use a maximum of {max_actions} actions per step.
 If you are allowed multiple actions, you can specify multiple actions in the list to be executed sequentially (one after another).
-- Every action runs, even when the one before it failed or changed the page: the page is not read again between them, and you get the new state at your next step.
+- An action that fails stops the step: the actions after it are not executed, and <agent_history> says which. An action that changes the page does not stop the step: the actions after it still run, the page is not read again between them, and you get the new state at your next step.
 Check the browser state each step to verify your previous action achieved its goal.
 </action_rules>
 <actions_available>

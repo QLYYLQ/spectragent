@@ -104,6 +104,15 @@ malformed action is rewritten by the model, never executed and never a failed
 same check. A truncated provider response follows the existing truncation policy; do not
 reinterpret it as a successful parse or manufacture a partial action.
 
+A step stops at its first failed action (user ruling 2026-10-24): a result with `success`
+False, the guard's refusal of a name included, ends the step's execution, and the actions
+after it are not executed. The step is handed over normally (no `error_phase`; the run goes
+on). The record keeps the accepted reply whole in `actions`, real results only in
+`action_results`, and the count of unexecuted trailing actions in
+`StepRecord.skipped_actions` (named fully qualified by `executed_name`, never given a fake
+result). Agents tell the model next step through `agents/rendering/skipped_actions.py`. A
+raise still ends the run and `done` still ends it; neither is a skip.
+
 `ReactLoop.execute_step(run, step_idx, *, observation=None, restoration=None)` is the
 public reusable round. It returns an `AgentResult` when finished, otherwise `None`.
 Supplying an observation means the world has already been captured for that step and must

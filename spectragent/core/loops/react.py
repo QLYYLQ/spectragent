@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
-from spectragent.core.action_guard import params_refusal
+from spectragent.core.action_guard import executed_name, params_refusal
 from spectragent.core.llm.exceptions import (
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
@@ -179,7 +179,7 @@ class ReactLoop(AgentLoopBase):
                 "parse error), observe the environment once more and record "
                 "it as an origin='terminal' step: no LLM call, no action, "
                 "env-source fragments only. Never on an infrastructure "
-                "failure, a failed action or a veto. The run's result is "
+                "failure, an action that raised or a veto. The run's result is "
                 "decided before it and does not change (Runtime execution_ms "
                 "includes it)."
             ),
@@ -598,11 +598,19 @@ class ReactLoop(AgentLoopBase):
         #    the error that rejected it.
         self.remember_reply(memory, output_text, dropped)
 
-        # 8. Execute actions via guarded_act
+        # 8. Execute actions via guarded_act, in order, until one ends the
+        #    step: ``done`` ends the run, a raise ends it in failure, and a
+        #    failed result (``success`` False — the capability's or the
+        #    guard's refusal of a name outside the run's actions) stops the
+        #    step. The actions after a failed one were planned on the
+        #    assumption that it worked, so they are not executed; the step
+        #    records them as skipped and the model is told next step (the
+        #    user's ruling of 2026-10-24, arch §4.1).
         step_results: list[ActionResult] = []
         last_done_result: ActionResult | None = None
         act_error: Exception | None = None
-        for action in actions:
+        skipped = 0
+        for position, action in enumerate(actions, start=1):
             try:
                 result = await run.act_fn(action)
             except Exception as exc:  # noqa: PERF203 — per-action attribution
@@ -613,6 +621,25 @@ class ReactLoop(AgentLoopBase):
                 run.last_answer = result.extracted_content
             if result.is_done:
                 last_done_result = result
+                break
+            if not result.success:
+                skipped = len(actions) - position
+                # Never handed to the guard, they are named as it names what
+                # it runs — by its own rule (``executed_name``), in place as it
+                # does — so the record names every action one way and a branch
+                # replay compares them like the executed ones. A name the guard
+                # would refuse stays as the agent wrote it, as a refused one does.
+                for unrun in actions[position:]:
+                    unrun.name = executed_name(run.action_space, unrun.name) or unrun.name
+                if skipped:
+                    logger.info(
+                        "ReactLoop: step %d stopped at failed action %d (%s); %d skipped: %s",
+                        step_idx,
+                        position,
+                        action.name,
+                        skipped,
+                        [a.name for a in actions[position:]],
+                    )
                 break
 
         # Build step record
@@ -625,6 +652,7 @@ class ReactLoop(AgentLoopBase):
             action_results=step_results,
             timestamp=time.time(),
             truncated_actions=len(dropped),
+            skipped_actions=skipped,
             prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
             error_phase="act" if act_error is not None else "",
             error=str(act_error) if act_error is not None else None,

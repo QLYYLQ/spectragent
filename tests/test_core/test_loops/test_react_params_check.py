@@ -184,9 +184,14 @@ async def test_an_action_past_the_step_budget_is_not_judged() -> None:
 
 
 async def test_a_name_the_guard_refuses_is_left_to_the_guard() -> None:
-    _, ran, memory, _ = await _run(
+    _, ran, memory, recorder = await _run(
         [[{"name": "browser.fly", "params": {"high": True}}, _DONE]], retries=0
     )
     assert _feedback(memory) == []
-    # The guard refused the unknown name when it ran; the done after it ran.
-    assert [a.name for a in ran] == ["browser.done"]
+    # The guard refused the unknown name when it ran: a failed action, so the
+    # step stopped there and the done after it was not executed.
+    assert ran == []
+    first = recorder.records[0]
+    assert [r.success for r in first.action_results] == [False]
+    assert "not in the active action set" in (first.action_results[0].error or "")
+    assert first.skipped_actions == 1 and first.skipped()[0].name == "browser.done"

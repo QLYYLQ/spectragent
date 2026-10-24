@@ -63,12 +63,13 @@ async def test_runtime_feeds_all_four_results_to_the_next_decision(tmp_path, mon
     async def mixed_results(self: FakeBrowserCap, action: Action) -> ActionResult:
         result = await original(self, action)
         if action.name == "browser.click_coordinate":
-            if self.clicks == 2:
-                return ActionResult(success=False, error="second target rejected the click")
             if self.clicks == 3:
                 return ActionResult(
                     success=True, extracted_content="third result", typed_into_sensitive_field=True
                 )
+            if self.clicks == 4:
+                # The last one: a failure stops the batch, and nothing is after it.
+                return ActionResult(success=False, error="fourth target rejected the click")
         return result
 
     monkeypatch.setattr(FakeBrowserCap, "execute_action", mixed_results)
@@ -101,9 +102,10 @@ async def test_runtime_feeds_all_four_results_to_the_next_decision(tmp_path, mon
     actual = feedback(source.teacher.prompts[-1])
     returned = actual["returned_results"]
     assert len(returned) == 4
-    assert [entry["result"]["success"] for entry in returned] == [True, False, True, True]
-    assert returned[1]["result"]["error"] == "second target rejected the click"
+    assert [entry["result"]["success"] for entry in returned] == [True, True, True, False]
+    assert returned[3]["result"]["error"] == "fourth target rejected the click"
     assert returned[2]["result"]["extracted_content"] == "third result"
+    assert "not_executed" not in actual
     recorded = trace.step(0)
     assert recorded is not None
     # The trace keeps viewport units (the 64x36 screenshot depicts 1280x720);
@@ -118,6 +120,50 @@ async def test_runtime_feeds_all_four_results_to_the_next_decision(tmp_path, mon
         f"click(point='({x}, 20)')" for x in [10, 20, 30, 40]
     ]
     assert recorded.action_results[2].typed_into_sensitive_field is True
+
+
+async def test_a_failed_action_stops_the_batch_and_the_next_decision_is_told(
+    tmp_path, monkeypatch
+) -> None:
+    """The user's ruling of 2026-10-24: the actions after a failed one are not executed."""
+    original = FakeBrowserCap.execute_action
+
+    async def second_fails(self: FakeBrowserCap, action: Action) -> ActionResult:
+        result = await original(self, action)
+        if action.name == "browser.click_coordinate" and self.clicks == 2:
+            return ActionResult(success=False, error="second target rejected the click")
+        return result
+
+    monkeypatch.setattr(FakeBrowserCap, "execute_action", second_fails)
+    loop = source_loop()
+    loop.max_actions_per_step = 4
+    source = await drive(
+        tmp_path,
+        kind="ui_tars",
+        memory="simple",
+        loop=loop,
+        replies=[
+            "\n".join(f"Action: click(point='({x},20)')" for x in [10, 20, 30, 40]),
+            "Action: finished(content='done')",
+        ],
+        run_id="stopped",
+    )
+    assert source.result is not None and source.result.error is None
+    assert source.run_dir is not None
+    recorded = RunTrace(source.run_dir).step(0)
+    assert recorded is not None
+    assert len(recorded.actions) == 4, "the reply the step accepted stays whole"
+    assert [r.success for r in recorded.action_results] == [True, False]
+    assert recorded.skipped_actions == 2
+    assert recorded.error_phase == ""
+    actual = feedback(source.teacher.prompts[-1])
+    assert [entry["result"]["success"] for entry in actual["returned_results"]] == [True, False]
+    assert actual["actions_without_returned_results"] == []
+    # On the grid the model wrote them on, like every action in the feedback.
+    assert actual["not_executed"] == {
+        "actions": ["click(point='(30, 20)')", "click(point='(40, 20)')"],
+        "because": "action 2 failed",
+    }
 
 
 async def test_first_observation_declares_platform_even_at_nonzero_source_step() -> None:
