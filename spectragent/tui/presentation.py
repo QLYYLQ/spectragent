@@ -317,16 +317,15 @@ def config_label(source: dict[str, Any] | None, root: Path | None) -> str:
 def run_row(row: dict[str, Any], root: Path | None = None) -> list[list[Part]]:
     """Cells of one recorded run: task, kind, history, ending, trace, steps, tokens, time, model, config."""
     if row.get("read_error"):
+        # The reason sits in the one column that never drops.
         return [
-            [(str(row.get("run_id") or row["key"]), "plain")],
-            [("—", "muted")],
-            [("—", "muted")],
-            [("—", "muted")],
+            [
+                (str(row.get("run_id") or row["key"]), "plain"),
+                (f"  {GLYPH['bad']} {row['read_error']}", "bad"),
+            ],
+            *([("—", "muted")] for _ in range(3)),
             trace_parts("unreadable"),
-            [("—", "muted")],
-            [("—", "muted")],
-            [("—", "muted")],
-            [(f"{GLYPH['bad']} {row['read_error']}", "bad")],
+            *([("—", "muted")] for _ in range(4)),
             [(str(row["key"]), "muted")],
         ]
     strategy = row.get("strategy") or {}

@@ -298,3 +298,76 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
         assert '"live_success": null' in text
         assert "restored element disappeared" in text
         await pilot.press("q")
+
+
+async def test_steps_follow_the_newest_until_the_user_moves_away():
+    state = ProgressState()
+    release = asyncio.Event()
+
+    async def operation():
+        state.recorded(StepRecord(step=0, llm_output="first thought"))
+        state.recorded(StepRecord(step=1, llm_output="second thought"))
+        await release.wait()
+
+    app = MonitorApp(operation, state)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.refresh_progress()
+        steps = app.query_one("#steps", DataTable)
+        facts = app.query_one("#facts", FactSheet)
+        assert app.focused is steps
+        assert steps.cursor_coordinate.row == 1
+        assert "second thought" in facts.plain_text
+        await pilot.press("up")
+        await pilot.pause()
+        assert "first thought" in facts.plain_text
+        state.recorded(StepRecord(step=2, llm_output="third thought"))
+        app.refresh_progress()
+        await pilot.pause()
+        # The user moved away from the newest step: the cursor stays put.
+        assert steps.cursor_coordinate.row == 0
+        assert "first thought" in facts.plain_text
+        await pilot.press("G")
+        state.recorded(StepRecord(step=3, llm_output="fourth thought"))
+        app.refresh_progress()
+        await pilot.pause()
+        assert steps.cursor_coordinate.row == 3
+        assert "fourth thought" in facts.plain_text
+        release.set()
+        await pilot.pause()
+        await pilot.press("q")
+
+
+async def test_details_keys_copy_there_and_escape_returns_to_steps():
+    state = ProgressState()
+    release = asyncio.Event()
+
+    async def operation():
+        state.recorded(StepRecord(step=0, llm_output="a thought"))
+        await release.wait()
+
+    app = MonitorApp(operation, state)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.refresh_progress()
+        await pilot.press("enter")
+        await pilot.pause()
+        details = app.query_one("#details", TextArea)
+        assert app.focused is details
+        await pilot.press("ctrl+c")
+        assert app.clipboard == details.text
+        assert not app._cancel_requested
+        await pilot.press("right_square_bracket", "left_square_bracket")
+        assert app.focused is details
+        await pilot.press("escape")
+        assert app.focused is app.query_one("#steps", DataTable)
+        await pilot.press("z")
+        await pilot.pause()
+        assert app.screen.maximized is app.query_one("#steps-panel")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen.maximized is None
+        assert not app._cancel_requested
+        release.set()
+        await pilot.pause()
+        await pilot.press("q")

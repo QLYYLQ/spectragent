@@ -16,6 +16,7 @@ from spectragent.schemas.step_record import StepRecord
 from spectragent.tui import browse
 from spectragent.tui.browser import BrowserApp
 from spectragent.tui.presentation import terminal_value
+from spectragent.tui.widgets import FactSheet
 from tests._helpers.trace_builder import agent_result, build_reference_trace
 
 
@@ -384,3 +385,107 @@ def test_browse_initial_focus_must_match_config_filter(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="does not match"):
         browse(tmp_path, initial_run="source", config_hash=RunTrace(branch).manifest.config_hash)
+
+
+async def test_enter_opens_a_run_moves_into_steps_and_escape_walks_back(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("enter")
+        await _until(lambda: app._run_detail is not None)
+        await pilot.pause()
+        steps = app.query_one("#steps", DataTable)
+        content = app.query_one("#content", TextArea)
+        assert app.focused is steps
+        assert '"summary"' in content.text
+        # Moving the cursor shows the step; Enter is not needed.
+        await pilot.press("down")
+        await _until(lambda: '"record"' in content.text)
+        assert app._selected_step == 1
+        assert "Step 1" in app.query_one("#facts", FactSheet).plain_text
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.focused is content
+        await pilot.press("escape")
+        assert app.focused is steps
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.focused is app.query_one("#runs", DataTable)
+        assert '"summary"' in content.text
+
+
+async def test_bracket_keys_step_through_a_run_from_its_details(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.press("3")
+        await pilot.pause()
+        content = app.query_one("#content", TextArea)
+        assert app.focused is content
+        await pilot.press("right_square_bracket")
+        await _until(lambda: app._selected_step == 1 and '"record"' in content.text)
+        assert app.focused is content
+        await pilot.press("left_square_bracket")
+        await _until(lambda: app._selected_step == 0 and '"record"' in content.text)
+        assert app.query_one("#steps", DataTable).cursor_coordinate.row == 0
+
+
+async def test_number_keys_zoom_and_key_help(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.press("1")
+        await pilot.pause()
+        assert app.focused is app.query_one("#runs", DataTable)
+        await pilot.press("2", "z")
+        await pilot.pause()
+        assert app.screen.maximized is app.query_one("#steps-panel")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen.maximized is None
+        assert app.focused is app.query_one("#steps", DataTable)
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert app.screen.query("HelpPanel")
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert not app.screen.query("HelpPanel")
+
+
+async def test_unreadable_runs_stay_listed_with_their_reason(tmp_path):
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "manifest.json").write_text("not json")
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: len(app._rows) == 2)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        tasks = [str(runs.get_row_at(index)[0]) for index in range(runs.row_count)]
+        # The reason stays in the first column, which no width drops.
+        assert any("broken" in task and "does not parse" in task for task in tasks)
+        assert "1 unreadable" in str(app.query_one("#runs-panel").border_subtitle)
+
+
+async def test_source_navigation_marks_the_checkpoint_it_came_from(tmp_path):
+    build_reference_trace(tmp_path, "source")
+    _branch_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="branch")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(
+            lambda: (
+                app._run_detail is not None and app._selected == "branch" and len(app._rows) == 2
+            )
+        )
+        subtitle = str(app.query_one("#steps-panel").border_subtitle)
+        assert "Agent history: unknown" in subtitle and "checkpoint ◆ 1" in subtitle
+        await pilot.press("s")
+        await _until(lambda: app._selected == "source" and app._run_detail is not None)
+        await pilot.pause()
+        assert "source of branch" in str(app.query_one("#steps-panel").border_subtitle)
+        steps = app.query_one("#steps", DataTable)
+        assert "◆" in str(steps.get_row_at(1)[1])
+        assert "◆" not in str(steps.get_row_at(0)[1])
