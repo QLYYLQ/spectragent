@@ -2,9 +2,9 @@
 
 The user's ruling of 2026-10-24 (``docs/architecture_design.md`` §4.1): the
 later actions of a step were planned assuming the earlier ones worked, so
-when one fails (its ``ActionResult.success`` is False, the guard's refusal of
-a name outside the run's actions included) ``ReactLoop`` executes none of the
-rest. The step is handed over as an ordinary step — no error, the run goes on
+when one fails (its ``ActionResult.success`` is False) ``ReactLoop`` executes
+none of the rest. A name outside the run's actions never gets that far: the
+reply goes back to the model before anything runs (``test_react_params_check.py``). The step is handed over as an ordinary step — no error, the run goes on
 — and records the reply it accepted whole: ``actions`` keeps every action,
 ``action_results`` holds only those that returned, and ``skipped_actions``
 counts the rest. Raising still ends the run in failure, and ``done`` still
@@ -18,13 +18,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import browser_descriptors, space_of
 
 
 class _Completion:
@@ -203,25 +201,6 @@ async def test_an_action_that_raises_still_ends_the_run_in_failure() -> None:
     assert record.error_phase == "act"
     assert record.skipped_actions == 0
     assert result.agent_done.value == "error"
-
-
-async def test_a_name_the_guard_refuses_counts_as_a_failed_action() -> None:
-    """The guard answers a name outside the run's actions with a failed result."""
-    page = _Page()
-    descriptors = browser_descriptors("click", "done")
-
-    async def execute(action: Action, **_kw: Any) -> ActionResult:
-        return await page.act(action)
-
-    space, act_fn = build_guarded_act(
-        execute, descriptors, bindings=space_of(descriptors).action_bindings
-    )
-    fly = Action(name="browser.fly", params={})
-    _, recorder = await _run([[fly, _click(1)], [_DONE]], page, act_fn=act_fn, action_space=space)
-    first = recorder.records[0]
-    assert page.ran[0] == _DONE, "neither the refused name nor the click after it ran"
-    assert first.action_results[0].success is False
-    assert first.skipped() == [_click(1)]
 
 
 class TestTheRecordShape:

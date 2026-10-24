@@ -528,6 +528,12 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     run.action_space,
                     raw_output=output_text[:500],
                 )
+                # The same check the live step made before running anything:
+                # a reply it sent back (an unknown name, params that do not
+                # fit) is read back as the parse failure it was.
+                self.check_action_params(
+                    run, actions[: self.max_actions_per_step], raw_output=output_text
+                )
             except RunAbort as veto:
                 await self._note_replay_veto(run, step, veto, llm_output=output_text)
                 raise
