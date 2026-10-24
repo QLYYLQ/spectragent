@@ -704,6 +704,56 @@ async def history_entry_committed(
     return answer if isinstance(answer, Location) else UNKNOWN
 
 
+def _main_loader(tree: Any) -> str | None:
+    """The main frame's ``loaderId`` in a ``Page.getFrameTree`` reply: its committed document."""
+    frame = ((tree or {}).get("frameTree") or {}).get("frame") if isinstance(tree, dict) else None
+    loader = frame.get("loaderId") if isinstance(frame, dict) else None
+    return loader if isinstance(loader, str) and loader else None
+
+
+async def document_loader(
+    cdp: CDPCommandProtocol, session_id: str | None, budget: ProbeBudget
+) -> str | None:
+    """The loader of the document the tab's main frame shows now; ``None`` when it cannot be read."""
+
+    async def probe() -> str:
+        loader = _main_loader(await cdp.send("Page.getFrameTree", {}, session_id=session_id))
+        if loader is None:
+            raise RuntimeError("no main-frame loader")
+        return loader
+
+    answer = await budget.run(probe, "document loader")
+    return answer if isinstance(answer, str) else None
+
+
+async def reload_committed(
+    cdp: CDPCommandProtocol, session_id: str | None, loader_before: str | None, budget: ProbeBudget
+) -> Location | Literal["unknown"]:
+    """Wait within the budget until the main frame shows a document other than *loader_before*; its URL.
+
+    ``Page.reload`` answers before the new document commits, and a reload
+    keeps the history entry, so the commit is seen as the main frame's
+    ``loaderId`` changing. ``"unknown"`` when it has not by the end of the
+    budget, or when the loader before could not be read: the URL then is not
+    known to be the reloaded document's.
+    """
+    if loader_before is None:
+        return UNKNOWN
+
+    async def probe() -> Location:
+        while True:
+            loader = _main_loader(await cdp.send("Page.getFrameTree", {}, session_id=session_id))
+            if loader is not None and loader != loader_before:
+                location = history_location(await _history(cdp, session_id))
+                if location is None:
+                    raise RuntimeError("the reloaded document has no history entry")
+                return location
+            await asyncio.sleep(HISTORY_POLL_S)
+
+    answer = await budget.run(probe, "reload commit")
+    return answer if isinstance(answer, Location) else UNKNOWN
+
+
 async def document_loaded(
     cdp: CDPCommandProtocol, session_id: str | None, budget: ProbeBudget
 ) -> bool | Literal["unknown"]:
@@ -824,12 +874,14 @@ __all__ = [
     "TextEntry",
     "current_location",
     "document_loaded",
+    "document_loader",
     "element_at",
     "element_facts",
     "focused_element",
     "history_entry_committed",
     "history_location",
     "release_object",
+    "reload_committed",
     "resolve_object",
     "selection_facts",
     "tab_facts",

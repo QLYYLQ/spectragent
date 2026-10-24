@@ -340,6 +340,12 @@ _FOCUS_MOVES_PER_OBSERVATION = 3
 # take (``Target.getTargets``, answered by the browser itself).
 _TAB_LIST_TIMEOUT_S = 2.0
 
+# How long closing the focused tab (the browser's Close tab shortcut, §4.13)
+# waits for Chrome to stop listing it, polling every ``_TAB_CLOSE_POLL_S``. A
+# page whose ``beforeunload`` asks first stays open while its dialog is up.
+_TAB_CLOSE_TIMEOUT_S = 2.0
+_TAB_CLOSE_POLL_S = 0.02
+
 # How long freezing a tab the focus left, or setting it running again, may take
 # (``Page.setWebLifecycleState``, ``background_tabs: freeze``, §4.14 "离开焦点的
 # tab"). The browser process answers it, not the page: measured, Chrome 155,
@@ -1321,6 +1327,21 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if self._cdp is None:
             raise RuntimeError("BrowserCapability not set up — call setup() first")
         return self._cdp
+
+    @property
+    def input_platform(self) -> InputPlatform:
+        """The browser's measured desktop input platform (§4.13); measured in :meth:`setup`."""
+        if self._input_platform is None:
+            raise RuntimeError("BrowserCapability not set up — call setup() first")
+        return self._input_platform
+
+    @property
+    def focused_tab_id(self) -> str:
+        """The focused tab's CDP target id: the ``tab_id`` ``browser_meta`` lists."""
+        target = self._focused_target()
+        if target is None:
+            raise RuntimeError("BrowserCapability has no focused tab — call setup() first")
+        return target
 
     @property
     def browser_context_id(self) -> str | None:
@@ -3228,9 +3249,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             raise RuntimeError(f"create_tab: navigating the new tab to {url!r} failed: {error}")
         return sid
 
-    async def _page_target_ids(self) -> list[str]:
-        """Every open page target id, in the order the tabs opened (``Target.getTargets`` order
-        without the tab registry)."""
+    async def tab_ids(self) -> list[str]:
+        """Every open tab's target id, in the order the tabs opened (``Target.getTargets`` order
+        without the tab registry): the order ``browser_meta`` lists them in."""
         if self._cdp is None:
             raise RuntimeError("BrowserCapability not set up")
         result = await self._cdp.send("Target.getTargets", {})
@@ -3274,7 +3295,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             if self._default_session_id is not None
             else None
         )
-        page_targets = await self._page_target_ids()
+        page_targets = await self.tab_ids()
 
         if target_id is None:
             candidates = [t for t in page_targets if t != current_target]
@@ -3289,6 +3310,74 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._follow_window = FollowWindow(focused=target_id, mark=self._tabs.mark)
         logger.info("Agent focus switched to tab %s (session %s)", target_id, sid)
         return TabSelection(target_id=target_id, session_id=sid)
+
+    async def close_focused_tab(self) -> TabSelection:
+        """Close the focused tab, as the browser's Close tab does; return the tab focused now.
+
+        The browser's Close tab shortcut (§4.13) runs this. The focus goes where
+        it goes when a focused tab closes itself (§4.14 "页面新开的标签页",
+        :func:`~spectragent.core.capabilities.browser.tabs.tabs_after_close`):
+        the tab that opened it if it is still open, else the most recently
+        opened tab still open; without the tab registry (a browser that refused
+        discovery), the most recently opened other tab. The tab is closed with
+        ``Target.closeTarget`` and waited for until Chrome stops listing it
+        (at most ``_TAB_CLOSE_TIMEOUT_S``), then the focus moves through the
+        code :meth:`switch_tab` uses (:meth:`_move_focus`; the tab closed is
+        not frozen), an open follow window restarts at the new focus as after
+        a ``switch_tab``, and what the capability held for the closed tab is
+        released (:meth:`_release_tab`).
+
+        Raises:
+            ValueError: It is the only tab open. The run needs a page, so it
+                is not closed.
+            RuntimeError: Chrome still lists the tab after the wait (a
+                ``beforeunload`` dialog may hold it open); the focus stays.
+        """
+        if self._cdp is None:
+            raise RuntimeError("BrowserCapability not set up")
+        closing, sid = self.focused_tab_id, self.default_session_id
+        others = [t for t in await self.tab_ids() if t != closing]
+        if not others:
+            raise ValueError(
+                f"tab {closing} is the only tab open, and the run needs a page, so it was "
+                f"not closed"
+            )
+        successor = others[-1]
+        if self._tabs is not None:
+            for tab in tabs_after_close(self._tabs, closing):
+                if tab.target_id != closing and tab.target_id in others:
+                    successor = tab.target_id
+                    break
+        await self._cdp.send("Target.closeTarget", {"targetId": closing})
+        await self._wait_until_closed(closing)
+        new_sid = await self._move_focus(successor)
+        if self._follow_window is not None and self._tabs is not None:
+            self._follow_window = FollowWindow(focused=successor, mark=self._tabs.mark)
+        try:
+            await self._release_tab(sid)
+        except Exception as exc:
+            # The tab is closed and the focus moved; what is left is released
+            # after the next observation decides where the focus is.
+            logger.warning(
+                "BrowserCapability: what was held for the closed tab %s is not all released: %r",
+                closing,
+                exc,
+            )
+        logger.info("Agent closed tab %s; the focus moved to tab %s", closing, successor)
+        return TabSelection(target_id=successor, session_id=new_sid)
+
+    async def _wait_until_closed(self, target_id: str) -> None:
+        """Wait until Chrome no longer lists *target_id*; mark it closed in the tab registry."""
+        deadline = time.monotonic() + _TAB_CLOSE_TIMEOUT_S
+        while target_id in await self.tab_ids():
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Chrome still lists tab {target_id} {_TAB_CLOSE_TIMEOUT_S:g} s after "
+                    f"closing it (a dialog may hold it open); the focus stays on it"
+                )
+            await asyncio.sleep(_TAB_CLOSE_POLL_S)
+        if self._tabs is not None:
+            self._tabs.destroyed(target_id)
 
     async def _move_focus(
         self, target_id: str, *, url: str = "", adopt_timeout: float | None = None

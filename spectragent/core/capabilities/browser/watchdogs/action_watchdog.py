@@ -68,15 +68,22 @@ from spectragent.core.capabilities.browser.effect_probes import (
     ProbeBudget,
     current_location,
     document_loaded,
+    document_loader,
     element_at,
     focused_element,
     history_entry_committed,
     history_location,
     release_object,
+    reload_committed,
     resolve_object,
     selection_facts,
 )
-from spectragent.core.capabilities.browser.effects import ElementFacts, ViewportPoint
+from spectragent.core.capabilities.browser.effects import (
+    ElementFacts,
+    ShortcutOfAnotherPlatform,
+    ShortcutWithoutUi,
+    ViewportPoint,
+)
 from spectragent.core.capabilities.browser.geometry import (
     FrameGeometryError,
     FrameProjection,
@@ -89,8 +96,13 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
-from spectragent.core.capabilities.browser.input.chords import parse_key_chord
+from spectragent.core.capabilities.browser.input.chords import KeyChord, parse_key_chord
 from spectragent.core.capabilities.browser.input.mouse import PointerPosition
+from spectragent.core.capabilities.browser.input.shortcuts import (
+    OtherPlatform,
+    WithoutUi,
+    browser_shortcut,
+)
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.scroll_probe import ScrollProbe
 from spectragent.core.capabilities.browser.sessions import TabSessions
@@ -490,6 +502,8 @@ class ActionWatchdog(BrowserWatchdog):
         # rhythm (also the fallback when none is configured) is the legacy
         # single bulk ``Input.insertText``.
         self._keyboard = HumanKeyboard(cdp, input_platform=input_platform, rhythm=typing_rhythm)
+        # Which chords are the browser's own shortcuts (``input/shortcuts.py``).
+        self._input_platform: InputPlatform = input_platform
 
         # The window a dispatched point has to land in — the only thing
         # ``_aim_inside`` knows that the strategy deciding the offset does not.
@@ -526,7 +540,7 @@ class ActionWatchdog(BrowserWatchdog):
             (SendKeysEvent, self._on_send_keys, action_result(marker="pressed")),
             (GoBackEvent, self._on_go_back, action_result(marker="navigated")),
             (GoForwardEvent, self._on_go_forward, action_result(marker="navigated")),
-            (RefreshEvent, self._on_refresh, action_result()),
+            (RefreshEvent, self._on_refresh, action_result(marker="navigated")),
             (SelectDropdownEvent, self._on_select_dropdown, action_result(marker="selected")),
             (
                 ExtractContentEvent,
@@ -1472,12 +1486,33 @@ class ActionWatchdog(BrowserWatchdog):
             "effect_facts": {"before": before, "after": after, "document_loaded": loaded},
         }
 
-    async def _on_refresh(self, _event: RefreshEvent) -> None:
-        try:
-            await self._cdp.send("Page.reload", {}, session_id=self._session_id)
-        except Exception as e:
-            logger.error("Refresh failed: %s", e)
-            raise
+    async def _on_refresh(self, event: RefreshEvent) -> dict[str, Any]:
+        """Reload the tab's document; answer ``{"navigated": True, ...}``.
+
+        ``Page.reload`` (``ignoreCache`` for a hard reload) answers before the
+        new document commits; the effect's URL after is read once the main
+        frame shows another document, waited for within
+        ``action_effect_timeout_s``
+        (:func:`~spectragent.core.capabilities.browser.effect_probes.reload_committed`).
+        When it has not by then, the URL after and whether the document loaded
+        are unknown — never the document being left reported as the reloaded one.
+        """
+        budget = self._effect_budget()
+        before = await current_location(self._cdp, self._session_id, budget)
+        loader = await document_loader(self._cdp, self._session_id, budget)
+        await self._cdp.send(
+            "Page.reload", {"ignoreCache": event.ignore_cache}, session_id=self._session_id
+        )
+        after = await reload_committed(self._cdp, self._session_id, loader, budget)
+        loaded = (
+            await document_loaded(self._cdp, self._session_id, budget)
+            if after != UNKNOWN
+            else UNKNOWN
+        )
+        return {
+            "navigated": True,
+            "effect_facts": {"before": before, "after": after, "document_loaded": loaded},
+        }
 
     # -----------------------------------------------------------------------
     # Send keys
@@ -1508,6 +1543,13 @@ class ActionWatchdog(BrowserWatchdog):
         whose sensitivity could not be read — is not named: it is reported as
         entered text, so a secret's characters never reach the effect. An
         input refused by the parser measures nothing.
+
+        A chord that is a browser shortcut this browser does not run
+        (``input/shortcuts.py``) is pressed like any other, and the effect's
+        ``shortcut`` says what it is (:meth:`_shortcut_note`). The shortcuts it
+        runs never reach this handler: ``browser.send_keys`` runs them itself,
+        and sends one here only when a text field takes it (macOS's
+        Meta+ArrowLeft / Meta+ArrowRight).
         """
         try:
             chord = parse_key_chord(event.keys)
@@ -1537,17 +1579,42 @@ class ActionWatchdog(BrowserWatchdog):
             and set(chord.modifiers) <= {"Shift"}
         )
         withheld = types_a_character and field.sensitive is not False
-        return {
-            "pressed": True,
-            "effect_facts": {
-                "target": field.target,
-                "sensitive": field.sensitive,
-                "value_changed": value_changed,
-                "keys": () if withheld else (chord.text,),
-                "text_entered": withheld,
-                "focus_after": focus_after,
-            },
+        facts: dict[str, Any] = {
+            "target": field.target,
+            "sensitive": field.sensitive,
+            "value_changed": value_changed,
+            "keys": () if withheld else (chord.text,),
+            "text_entered": withheld,
+            "focus_after": focus_after,
         }
+        note = None if withheld else self._shortcut_note(chord, field)
+        if note is not None:
+            facts["shortcut"] = note
+        return {"pressed": True, "effect_facts": facts}
+
+    def _shortcut_note(
+        self, chord: KeyChord, field: FieldProbe
+    ) -> ShortcutWithoutUi | ShortcutOfAnotherPlatform | None:
+        """What a pressed chord is to the browser, when it is a shortcut it does not run.
+
+        The measured platform's shortcut for browser UI this browser does not
+        show, always; another platform's browser shortcut only when nothing
+        that takes text had focus (``entry`` measured ``"none"``), where it is
+        often the measured platform's editing key instead.
+        """
+        platform = self._input_platform
+        match = browser_shortcut(chord, platform)
+        if isinstance(match, WithoutUi):
+            return ShortcutWithoutUi(chord=chord.text, command=match.command)
+        if isinstance(match, OtherPlatform) and field.entry == "none":
+            return ShortcutOfAnotherPlatform(
+                chord=chord.text,
+                command=match.command,
+                tab=match.tab,
+                platform=platform,
+                binding=match.binding,
+            )
+        return None
 
     # -----------------------------------------------------------------------
     # Select dropdown — uses DOM.resolveNode + Runtime.callFunctionOn
