@@ -151,12 +151,14 @@ class TraceView:
         (:attr:`restored_action_history` lists them apart). Read from the
         WAL step records, which are written per step and survive a crash;
         there is no second, flattened copy (``AgentResult`` carries none).
+        The actions a step skipped after a failed one never ran, so they are
+        not listed.
         """
         return [
             written_action(action)
             for record in self._trace.step_records
             if record.origin == "policy"
-            for action in record.actions
+            for action in record.actions[: len(record.actions) - record.skipped_actions]
         ]
 
     @cached_property
