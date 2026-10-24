@@ -513,7 +513,13 @@ class BrowserApp(App[None]):
             self._focus_or_runs(steps)
         elif focused is steps:
             self.query_one("#runs", DataTable).focus()
-            self._show_overview()
+            if self._run_detail is not None:
+                # Leave the step: a pending step load must not replace the
+                # overview, and a refresh must not reopen the step.
+                self._detail_generation += 1
+                self.workers.cancel_group(self, "run-detail")
+                self._selected_step = None
+                self._show_overview()
 
     def _focus_or_runs(self, steps: KeyTable) -> None:
         (steps if steps.display else self.query_one("#runs", DataTable)).focus()

@@ -489,3 +489,16 @@ async def test_source_navigation_marks_the_checkpoint_it_came_from(tmp_path):
         steps = app.query_one("#steps", DataTable)
         assert "◆" in str(steps.get_row_at(1)[1])
         assert "◆" not in str(steps.get_row_at(0)[1])
+
+
+async def test_escape_to_the_overview_wins_over_a_pending_step_load(tmp_path):
+    build_reference_trace(tmp_path)
+    app = BrowserApp(open_repository(tmp_path), initial_run="run-test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and app._rows)
+        await pilot.press("2", "down", "escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._selected_step is None
+        assert '"summary"' in app.query_one("#content", TextArea).text
+        assert "run overview" in str(app.query_one("#detail-panel").border_subtitle)
