@@ -247,7 +247,7 @@ def _checked(step, unmeasured, differences=()):
 
 
 def test_a_fact_unmeasured_at_every_checked_step_is_stated_once_for_the_run():
-    from spectragent.tui.presentation import checked_steps, uniform_unmeasured
+    from spectragent.inspection.restoration import unmeasured_everywhere
 
     dom = "browser: DOM signature not measured"
     misses = "browser: document misses not measured"
@@ -256,8 +256,8 @@ def test_a_fact_unmeasured_at_every_checked_step_is_stated_once_for_the_run():
         _checked(1, [dom, misses]),
         {"step": 2, "origin": "policy"},
     ]
-    assert uniform_unmeasured(records) == (dom,)
-    assert checked_steps(records) == 2
+    everywhere = unmeasured_everywhere(records)
+    assert everywhere == {"facts": [dom], "checked_steps": 2}
     rows = [plain(step_row(record, uniform=(dom,))[3]) for record in records]
     # The uniform fact leaves the rows; the one that varies stays counted.
     assert rows == ["no measured difference", "? 1 unmeasured", "—"]
@@ -269,7 +269,7 @@ def test_a_fact_unmeasured_at_every_checked_step_is_stated_once_for_the_run():
             {
                 "summary": {},
                 "execution": {"relationship": "branch", "checkpoint": 2},
-                "steps": records,
+                "unmeasured_everywhere": everywhere,
             }
         )
     )
@@ -326,3 +326,40 @@ def test_a_provenance_cycle_never_hides_runs():
     ]
     keys = [node.key for node in run_tree(rows, {"a", "b"})]
     assert sorted(keys) == ["a", "b"]
+
+
+def test_skipped_actions_read_as_not_executed_never_as_failed():
+    from spectragent.schemas.step_record import StepRecord
+
+    record = StepRecord.model_validate(
+        {
+            "step": 3,
+            "actions": [
+                {"name": "browser.click", "params": {"index": 1}},
+                {"name": "browser.type", "params": {"text": "x"}},
+                {"name": "browser.send_keys", "params": {"keys": "Enter"}},
+            ],
+            "action_results": [{"success": True}, {"success": False, "error": "no field"}],
+            "skipped_actions": 1,
+        }
+    ).model_dump(mode="json")
+    cell = step_actions(record)
+    assert cell == "browser.click, browser.type (failed), browser.send_keys (not executed)"
+    facts = sheet_text(step_facts(record))
+    assert "3. browser.send_keys keys=Enter  not executed: action 2 failed" in facts
+    assert "no result returned" not in facts
+    assert "2. browser.type text=x  ✗ no field" in facts
+    skipped_line = next(line for line in facts.splitlines() if "send_keys" in line)
+    assert "✗" not in skipped_line  # not executed is not a failed result
+
+    restored = _restored(live_success=False)
+    restored.update(
+        actions=[{"name": "browser.click", "params": {"index": 9}}, {"name": "browser.wait"}],
+        action_results=[{"success": False}],
+        skipped_actions=1,
+    )
+    assert step_actions(restored).startswith(
+        "actual: browser.click (failed), browser.wait (not executed)"
+    )
+    sheet = sheet_text(step_facts(restored))
+    assert "Not run     browser.wait  not executed: action 1 failed" in sheet

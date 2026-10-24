@@ -19,7 +19,6 @@ from spectragent.tui.presentation import (
     RUN_COLUMNS,
     STEP_COLUMNS,
     Sheet,
-    checked_steps,
     message_sheet,
     run_facts,
     run_row,
@@ -29,7 +28,6 @@ from spectragent.tui.presentation import (
     step_row,
     terminal_value,
     tree_task_parts,
-    uniform_unmeasured,
     uniform_unmeasured_parts,
 )
 from spectragent.tui.style import styled, tone_styles
@@ -499,15 +497,13 @@ class BrowserApp(App[None]):
         panel.query_one(".empty", Static).display = not records
         if not records:
             panel.query_one(".empty", Static).update(Text("This run committed no steps."))
-        self._uniform = uniform_unmeasured(records)
+        everywhere = detail.get("unmeasured_everywhere")
+        self._uniform = tuple((everywhere or {}).get("facts") or [])
         uniform = self.query_one("#uniform", Caption)
         uniform.display = bool(self._uniform)
         uniform.update(
             styled(
-                [
-                    ("Unmeasured ", "strong"),
-                    *uniform_unmeasured_parts(self._uniform, checked_steps(records)),
-                ],
+                [("Unmeasured ", "strong"), *uniform_unmeasured_parts(everywhere)],
                 tone_styles(self),
                 ellipsis=False,
             )

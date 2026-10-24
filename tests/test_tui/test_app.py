@@ -401,3 +401,36 @@ async def test_f8_and_f9_copy_details_json_and_summary_and_q_says_what_it_does()
         await pilot.pause()
         assert "q closes the TUI" in _summary(app)
         await pilot.press("q")
+
+
+async def test_an_observed_step_lists_its_skipped_actions_as_not_executed():
+    state = ProgressState()
+    release = asyncio.Event()
+
+    async def operation():
+        state.recorded(
+            StepRecord(
+                step=0,
+                actions=[
+                    Action(name="browser.click", params={"index": 5}),
+                    Action(name="browser.send_keys", params={"keys": "Enter"}),
+                ],
+                action_results=[ActionResult(success=False, error="element disappeared")],
+                skipped_actions=1,
+            )
+        )
+        await release.wait()
+
+    app = MonitorApp(operation, state)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.refresh_progress()
+        await pilot.pause()
+        actions = _cell(app.query_one("#steps", DataTable), 0, "Actions")
+        assert actions == "browser.click (failed), browser.send_keys (not executed)"
+        facts = app.query_one("#facts", FactSheet).plain_text
+        assert "2. browser.send_keys keys=Enter  not executed: action 1 failed" in facts
+        assert "no result returned" not in facts
+        release.set()
+        await pilot.pause()
+        await pilot.press("q")

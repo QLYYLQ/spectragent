@@ -615,3 +615,38 @@ async def test_f8_copies_the_json_and_f9_the_summary_from_any_panel(tmp_path):
         await pilot.press("3", "f7", "ctrl+c")
         assert app.clipboard == content.text
         assert app.is_running
+
+
+async def test_a_committed_step_lists_its_skipped_actions_as_not_executed(tmp_path):
+    writer = WALWriter(tmp_path, "stopped")
+    writer.init_run(TraceConfig())
+    writer.commit_step(
+        0,
+        StepRecord.model_validate(
+            {
+                "step": 0,
+                "actions": [
+                    {"name": "browser.click", "params": {"index": 5}},
+                    {"name": "browser.send_keys", "params": {"keys": "Enter"}},
+                ],
+                "action_results": [{"success": False, "error": "element disappeared"}],
+                "skipped_actions": 1,
+            }
+        ),
+    )
+    writer.write_result(agent_result())
+    writer.finalize(TraceStatus.COMPLETE)
+    app = BrowserApp(open_repository(tmp_path), initial_run="stopped")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and app._rows)
+        await pilot.pause()
+        steps = app.query_one("#steps", DataTable)
+        titles = [str(column.label) for column in steps.ordered_columns]
+        assert str(steps.get_row_at(0)[titles.index("Actions")]) == (
+            "browser.click (failed), browser.send_keys (not executed)"
+        )
+        await pilot.press("enter")
+        await _until(lambda: '"record"' in app.query_one("#content", TextArea).text)
+        facts = app.query_one("#facts", FactSheet).plain_text
+        assert "not executed: action 1 failed" in facts
+        assert "no result returned" not in facts

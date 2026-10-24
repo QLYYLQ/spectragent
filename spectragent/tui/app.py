@@ -17,13 +17,13 @@ from textual.binding import Binding
 from textual.events import Print
 from textual.widgets import DataTable, Footer, Static
 
+from spectragent.inspection.restoration import unmeasured_everywhere
 from spectragent.monitoring.state import ProgressState
 from spectragent.tui.presentation import (
     GLYPH,
     STEP_COLUMNS,
     TASK_COLUMNS,
     Sheet,
-    checked_steps,
     fact,
     message_sheet,
     run_facts,
@@ -33,7 +33,6 @@ from spectragent.tui.presentation import (
     task_facts,
     task_row,
     terminal_value,
-    uniform_unmeasured,
     uniform_unmeasured_parts,
 )
 from spectragent.tui.style import styled, tone_styles
@@ -320,15 +319,13 @@ class MonitorApp(App[None], Generic[T]):
         table = self.query_one("#steps", KeyTable)
         checkpoint = self._checkpoint(snapshot)
         records = [_observed(row) for row in snapshot["steps"]]
-        self._uniform = uniform_unmeasured(records)
+        everywhere = unmeasured_everywhere(records)
+        self._uniform = tuple(everywhere["facts"])
         uniform = self.query_one("#uniform", Caption)
         uniform.display = bool(self._uniform)
         uniform.update(
             styled(
-                [
-                    ("Unmeasured ", "strong"),
-                    *uniform_unmeasured_parts(self._uniform, checked_steps(records)),
-                ],
+                [("Unmeasured ", "strong"), *uniform_unmeasured_parts(everywhere)],
                 tone_styles(self),
                 ellipsis=False,
             )

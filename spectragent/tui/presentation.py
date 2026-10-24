@@ -136,18 +136,56 @@ def _attempt_result(action: dict[str, Any]) -> Part:
     return ("unknown result", "muted")
 
 
+def skipped_actions(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """The step's last actions the Loop did not run because the one before failed.
+
+    They stay in ``actions`` (``StepRecord.skipped_actions`` counts them) and
+    have no result: they read as not executed, never as failed.
+    """
+    count = record.get("skipped_actions") or 0
+    actions = record.get("actions") or []
+    return actions[len(actions) - count :] if count else []
+
+
+def skip_reason(record: dict[str, Any]) -> str:
+    """Why the skipped actions did not run, numbered as the agents tell their models."""
+    return f"action {len(record.get('action_results') or [])} failed"
+
+
+def _skipped_parts(record: dict[str, Any], first: bool) -> list[Part]:
+    parts: list[Part] = []
+    for index, action in enumerate(skipped_actions(record)):
+        if index or not first:
+            parts.append((", ", "plain"))
+        parts.extend([(f"{action.get('name', '?')} ", "plain"), ("(not executed)", "muted")])
+    return parts
+
+
 def action_parts(record: dict[str, Any]) -> list[Part]:
     """Actual attempts, then source material, without inferring success.
 
     A restored step lists every restoration attempt with its own returned
     outcome (an attempt never executed says so), then names the source
     actions as source material. The attempts come first so that a narrow
-    cell keeps what this run did. Its plain text is :func:`step_actions`.
+    cell keeps what this run did. A policy step names its actions and marks
+    only the exceptions: a failed result, and the actions the Loop skipped
+    after it, which read as not executed. Its plain text is
+    :func:`step_actions`.
     """
     if record.get("origin") != "restored":
-        names = ", ".join(action.get("name", "?") for action in record.get("actions", []))
-        return [(names, "plain")] if names else []
-    parts: list[Part] = [("actual: ", "muted")]
+        actions = record.get("actions") or []
+        results = record.get("action_results") or []
+        ran = len(actions) - len(skipped_actions(record))
+        parts: list[Part] = []
+        for index, action in enumerate(actions[:ran]):
+            if index:
+                parts.append((", ", "plain"))
+            parts.append((action.get("name", "?"), "plain"))
+            result = results[index] if index < len(results) else None
+            if result is not None and result.get("success") is False:
+                parts.extend([(" (", "plain"), ("failed", "bad"), (")", "plain")])
+        return parts + _skipped_parts(record, first=not ran)
+    parts = [("actual: ", "muted")]
     attempts = (record.get("restoration") or {}).get("actions", [])
     if not attempts:
         parts.append(("no execution recorded", "warn"))
@@ -160,6 +198,7 @@ def action_parts(record: dict[str, Any]) -> list[Part]:
             continue
         text, tone = _attempt_result(action)
         parts.extend([(f"{executed.get('name', '?')} (", "plain"), (text, tone), (")", "plain")])
+    parts.extend(_skipped_parts(record, first=not attempts))
     source = record.get("source_history") or {}
     names = ", ".join(action.get("name", "?") for action in source.get("source_actions", []))
     parts.append((f"  source: {names or '—'}", "muted"))
@@ -194,32 +233,17 @@ def verdict_parts(gap: dict[str, Any] | None) -> list[Part]:
     return [(f"{GLYPH['unknown']} no verdict", "muted")]
 
 
-def uniform_unmeasured(records: Iterable[dict[str, Any]]) -> tuple[str, ...]:
-    """Unmeasured facts shared by every checked step of a run, in recorded order.
+def uniform_unmeasured_parts(everywhere: dict[str, Any] | None) -> list[Part]:
+    """The run-level statement of facts no checked step measured: unknown, never zero.
 
-    A checked step is one with restoration evidence or a restored origin.
-    Such a fact is stated once for the run (still unknown, never zero), and
-    step rows count only the unmeasured facts that vary between steps.
+    ``everywhere`` is the read side's ``unmeasured_everywhere``.
     """
-    gaps = [gap for record in records if (gap := restoration_gap(record)) is not None]
-    if not gaps:
-        return ()
-    shared = set(gaps[0]["unmeasured"])
-    for gap in gaps[1:]:
-        shared &= set(gap["unmeasured"])
-    return tuple(line for line in gaps[0]["unmeasured"] if line in shared)
-
-
-def checked_steps(records: Iterable[dict[str, Any]]) -> int:
-    return sum(restoration_gap(record) is not None for record in records)
-
-
-def uniform_unmeasured_parts(uniform: Sequence[str], checked: int) -> list[Part]:
-    """The run-level statement of facts no checked step measured: unknown, never zero."""
-    if not uniform:
+    facts = (everywhere or {}).get("facts") or []
+    if not facts:
         return []
+    checked = everywhere["checked_steps"] if everywhere else 0
     where = "the one checked step" if checked == 1 else f"all {checked} checked steps"
-    return [(f"{GLYPH['unknown']} at {where}: ", "muted"), ("; ".join(uniform), "plain")]
+    return [(f"{GLYPH['unknown']} at {where}: ", "muted"), ("; ".join(facts), "plain")]
 
 
 def measured_parts(gap: dict[str, Any] | None, uniform: Sequence[str] = ()) -> list[Part]:
@@ -594,6 +618,14 @@ def _attempt_facts(record: dict[str, Any], comparison: dict[str, Any] | None) ->
         )
         if attempt.get("live_error"):
             sheet.append(fact("", (f"   {attempt['live_error']}", "bad")))
+    for index, action in enumerate(skipped_actions(record), 1):
+        sheet.append(
+            fact(
+                "Not run" if index == 1 else "",
+                (f"{action.get('name', '?')}{_params(action.get('params'))}", "plain"),
+                (f"  not executed: {skip_reason(record)}", "muted"),
+            )
+        )
     for index, item in enumerate((comparison or {}).get("results") or [], 1):
         status = item.get("status")
         tone = "warn" if status == "changed" else "muted"
@@ -657,14 +689,21 @@ def step_facts(
             for index, line in enumerate(lines):
                 sheet.append(fact("Reply" if index == 0 else "", (line, "plain")))
         results = record.get("action_results", [])
-        for index, action in enumerate(record.get("actions", []), 1):
+        actions = record.get("actions", [])
+        ran = len(actions) - len(skipped_actions(record))
+        for index, action in enumerate(actions, 1):
             result = results[index - 1] if index - 1 < len(results) else None
+            outcome: list[Part] = (
+                _result_parts(result)
+                if index <= ran
+                else [(f"not executed: {skip_reason(record)}", "muted")]
+            )
             sheet.append(
                 fact(
                     "Actions" if index == 1 else "",
                     (f"{index}. {action.get('name', '?')}{_params(action.get('params'))}", "plain"),
                     ("  ", "plain"),
-                    *_result_parts(result),
+                    *outcome,
                 )
             )
         if record.get("truncated_actions"):
@@ -750,10 +789,8 @@ def run_facts(detail: dict[str, Any], root: Path | None = None) -> Sheet:
     relationship = execution.get("relationship")
     if relationship:
         sheet += lineage_facts(execution, summary.get("branch"), detail.get("restoration_overview"))
-    records = [item.get("record", item) for item in detail.get("steps") or []]
-    uniform = uniform_unmeasured(records)
-    if uniform:
-        sheet.append(fact("Unmeasured", *uniform_unmeasured_parts(uniform, checked_steps(records))))
+    if parts := uniform_unmeasured_parts(detail.get("unmeasured_everywhere")):
+        sheet.append(fact("Unmeasured", *parts))
     if execution.get("network_source") or relationship:
         sheet.append(
             fact(
