@@ -194,15 +194,46 @@ def verdict_parts(gap: dict[str, Any] | None) -> list[Part]:
     return [(f"{GLYPH['unknown']} no verdict", "muted")]
 
 
-def measured_parts(gap: dict[str, Any] | None) -> list[Part]:
+def uniform_unmeasured(records: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """Unmeasured facts shared by every checked step of a run, in recorded order.
+
+    A checked step is one with restoration evidence or a restored origin.
+    Such a fact is stated once for the run (still unknown, never zero), and
+    step rows count only the unmeasured facts that vary between steps.
+    """
+    gaps = [gap for record in records if (gap := restoration_gap(record)) is not None]
+    if not gaps:
+        return ()
+    shared = set(gaps[0]["unmeasured"])
+    for gap in gaps[1:]:
+        shared &= set(gap["unmeasured"])
+    return tuple(line for line in gaps[0]["unmeasured"] if line in shared)
+
+
+def checked_steps(records: Iterable[dict[str, Any]]) -> int:
+    return sum(restoration_gap(record) is not None for record in records)
+
+
+def uniform_unmeasured_parts(uniform: Sequence[str], checked: int) -> list[Part]:
+    """The run-level statement of facts no checked step measured: unknown, never zero."""
+    if not uniform:
+        return []
+    where = "the one checked step" if checked == 1 else f"all {checked} checked steps"
+    return [(f"{GLYPH['unknown']} at {where}: ", "muted"), ("; ".join(uniform), "plain")]
+
+
+def measured_parts(gap: dict[str, Any] | None, uniform: Sequence[str] = ()) -> list[Part]:
     """Measured differences and unmeasured facts, counted separately.
 
     "no measured difference" never claims identity, and an unmeasured fact
-    is a count of its own, never a zero difference.
+    is a count of its own, never a zero difference. Facts in ``uniform``
+    are unmeasured at every checked step of the run and are stated once
+    for the run instead of on every row.
     """
     if gap is None:
         return [("—", "muted")]
-    differences, unmeasured = len(gap["differences"]), len(gap["unmeasured"])
+    differences = len(gap["differences"])
+    unmeasured = sum(line not in uniform for line in gap["unmeasured"])
     parts: list[Part] = []
     if differences:
         parts.append((f"{GLYPH['differs']} {differences} different", "warn"))
@@ -236,7 +267,9 @@ def format_duration(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
-def step_row(record: dict[str, Any], *, checkpoint: int | None = None) -> list[list[Part]]:
+def step_row(
+    record: dict[str, Any], *, checkpoint: int | None = None, uniform: Sequence[str] = ()
+) -> list[list[Part]]:
     """Cells of one step row: step, origin, check, measured, actions, time, error."""
     gap = restoration_gap(record)
     step = record.get("step")
@@ -247,7 +280,7 @@ def step_row(record: dict[str, Any], *, checkpoint: int | None = None) -> list[l
             record.get("origin"), checkpoint=step == checkpoint and checkpoint is not None
         ),
         verdict_parts(gap),
-        measured_parts(gap),
+        measured_parts(gap, uniform),
         action_parts(record),
         duration_parts(record.get("duration_ms")),
         [(str(error), "bad")] if error else [],
@@ -354,6 +387,128 @@ def run_row(row: dict[str, Any], root: Path | None = None) -> list[list[Part]]:
     ]
 
 
+@dataclass(frozen=True)
+class RunNode:
+    """One visible row of the run list, placed by recorded branch provenance."""
+
+    key: str
+    depth: int
+    descendants: int
+    expanded: bool
+    last: bool
+    note: tuple[Part, ...] = ()
+
+
+def _source_note(row: dict[str, Any], keys: set[str]) -> tuple[Part, ...]:
+    """Why a branch run is not under its source: only from the recorded resolution."""
+    resolution = row.get("source_resolution")
+    source_id = (row.get("branch") or {}).get("source_run_id", "?")
+    if resolution == "found":
+        if row.get("source_key") in keys:
+            return ()
+        # The source key is in the run's overview; the row only says it is elsewhere.
+        return (("  ↳ source not listed", "muted"),)
+    if resolution == "missing":
+        return ((f"  {GLYPH['warn']} source run {source_id} missing under this root", "warn"),)
+    if resolution == "ambiguous":
+        return ((f"  {GLYPH['warn']} several runs here share source id {source_id}", "warn"),)
+    return ()
+
+
+def run_tree(rows: Sequence[dict[str, Any]], expanded: Iterable[str]) -> list[RunNode]:
+    """Branch runs nested under the run their provenance names, as far as it resolves.
+
+    A branch goes under its source only when the repository resolved the
+    recorded ``source_run_id`` to exactly one run under the root and that run
+    is in ``rows``; otherwise it stays at the top with the reason. Directory
+    names play no part. Top-level order is the list's own; branches of one
+    source are ordered by checkpoint, then task and run key.
+    """
+    keys = {row["key"] for row in rows}
+    open_keys = set(expanded)
+    children: dict[str, list[dict[str, Any]]] = {}
+    top: list[dict[str, Any]] = []
+    for row in rows:
+        parent = row.get("source_key") if row.get("source_resolution") == "found" else None
+        if (
+            row.get("branch")
+            and isinstance(parent, str)
+            and parent in keys
+            and parent != row["key"]
+        ):
+            children.setdefault(parent, []).append(row)
+        else:
+            top.append(row)
+    # A provenance cycle would leave runs reachable from no top row: lift
+    # the first of them to the top, which makes the rest of the cycle reachable.
+    reachable: set[str] = set()
+
+    def reach(key: str) -> None:
+        stack = [key]
+        while stack:
+            current = stack.pop()
+            if current not in reachable:
+                reachable.add(current)
+                stack.extend(child["key"] for child in children.get(current, []))
+
+    for row in top:
+        reach(row["key"])
+    for row in rows:
+        if row["key"] not in reachable:
+            for siblings in children.values():
+                if row in siblings:
+                    siblings.remove(row)
+            top.append(row)
+            reach(row["key"])
+    for siblings in children.values():
+        siblings.sort(
+            key=lambda row: (
+                (row.get("branch") or {}).get("checkpoint_step", 1 << 30),
+                str(row.get("task_id") or ""),
+                row["key"],
+            )
+        )
+
+    def count(key: str, seen: frozenset[str]) -> int:
+        return sum(
+            1 + count(child["key"], seen | {key})
+            for child in children.get(key, [])
+            if child["key"] not in seen
+        )
+
+    nodes: list[RunNode] = []
+
+    def visit(row: dict[str, Any], depth: int, last: bool, seen: frozenset[str]) -> None:
+        key = row["key"]
+        below = count(key, seen)
+        is_open = key in open_keys
+        note = _source_note(row, keys) if depth == 0 and row.get("branch") else ()
+        nodes.append(RunNode(key, depth, below, is_open, last, note))
+        if is_open:
+            kids = [child for child in children.get(key, []) if child["key"] not in seen]
+            for index, child in enumerate(kids):
+                visit(child, depth + 1, index == len(kids) - 1, seen | {key})
+
+    for row in top:
+        visit(row, 0, False, frozenset())
+    return nodes
+
+
+def tree_task_parts(node: RunNode, row: dict[str, Any]) -> list[Part]:
+    """The task cell with its place in the lineage: fold mark, branch line, count."""
+    # Top-level rows keep a fold column so their task ids align; branch rows
+    # without branches of their own need none.
+    fold = ("▾ " if node.expanded else "▸ ") if node.descendants else "  " if not node.depth else ""
+    branch = "" if node.depth == 0 else "  " * node.depth + ("└ " if node.last else "├ ")
+    parts: list[Part] = [(branch, "muted"), (fold, "accent")]
+    parts.append((str(row.get("task_id") or row.get("run_id") or row["key"]), "plain"))
+    if node.descendants:
+        noun = "branch" if node.descendants == 1 else "branches"
+        parts.append((f"  {node.descendants} {noun}", "muted"))
+    parts.extend(node.note)
+    return parts
+
+
 RUN_COLUMNS = (
     "Task",
     "Kind",
@@ -382,12 +537,16 @@ def _first_lines(text: str, limit: int = 6) -> list[str]:
     return lines[:limit] + (["…"] if len(lines) > limit else [])
 
 
-def _gap_facts(gap: dict[str, Any]) -> Sheet:
-    sheet: Sheet = [fact("Check", *verdict_parts(gap), ("  ", "plain"), *measured_parts(gap))]
+def _gap_facts(gap: dict[str, Any], uniform: Sequence[str] = ()) -> Sheet:
+    """The step's own verdict and every recorded measurement, uniform ones marked."""
+    sheet: Sheet = [
+        fact("Check", *verdict_parts(gap), ("  ", "plain"), *measured_parts(gap, uniform))
+    ]
     for line in gap["differences"]:
         sheet.append(fact("", (f"{GLYPH['differs']} {line}", "warn")))
     for line in gap["unmeasured"]:
-        sheet.append(fact("", (f"{GLYPH['unknown']} {line}", "muted")))
+        note = " (at every checked step of this run)" if line in uniform else ""
+        sheet.append(fact("", (f"{GLYPH['unknown']} {line}{note}", "muted")))
     return sheet
 
 
@@ -470,6 +629,7 @@ def step_facts(
     *,
     checkpoint: int | None = None,
     comparison: dict[str, Any] | None = None,
+    uniform: Sequence[str] = (),
 ) -> Sheet:
     """What one step did, in reading order; the JSON below it stays complete."""
     origin = record.get("origin") or "policy"
@@ -480,7 +640,7 @@ def step_facts(
     sheet: Sheet = [Heading(heading)]
     gap = restoration_gap(record)
     if gap is not None:
-        sheet += _gap_facts(gap)
+        sheet += _gap_facts(gap, uniform)
     if origin == "terminal":
         sheet.append(
             fact("Observed", ("final observation after the run ended; no decision", "muted"))
@@ -590,6 +750,10 @@ def run_facts(detail: dict[str, Any], root: Path | None = None) -> Sheet:
     relationship = execution.get("relationship")
     if relationship:
         sheet += lineage_facts(execution, summary.get("branch"), detail.get("restoration_overview"))
+    records = [item.get("record", item) for item in detail.get("steps") or []]
+    uniform = uniform_unmeasured(records)
+    if uniform:
+        sheet.append(fact("Unmeasured", *uniform_unmeasured_parts(uniform, checked_steps(records))))
     if execution.get("network_source") or relationship:
         sheet.append(
             fact(

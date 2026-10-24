@@ -226,3 +226,103 @@ def test_recorded_text_cannot_inject_terminal_control_or_markup():
     text = styled([("[red]reply\x1b[2J\x07 done", "plain")], {"plain": Style()})
     assert text.plain == "[red]reply[2J done"
     assert not text.spans
+
+
+def _checked(step, unmeasured, differences=()):
+    """A restored step whose check left ``unmeasured`` facts unmeasured."""
+    evidence = {
+        "capability_id": "browser",
+        "url_match": True,
+        "recorded_url": "u",
+        "restored_url": "u",
+        "signature_match": None if "browser: DOM signature not measured" in unmeasured else True,
+        "screenshot_distance": 0,
+        "document_misses": None if "browser: document misses not measured" in unmeasured else 0,
+    }
+    return {
+        "step": step,
+        "origin": "restored",
+        "restoration": {"step": step, "verdict": "ok", "evidence": [evidence], "actions": []},
+    }
+
+
+def test_a_fact_unmeasured_at_every_checked_step_is_stated_once_for_the_run():
+    from spectragent.tui.presentation import checked_steps, uniform_unmeasured
+
+    dom = "browser: DOM signature not measured"
+    misses = "browser: document misses not measured"
+    records = [
+        _checked(0, [dom]),
+        _checked(1, [dom, misses]),
+        {"step": 2, "origin": "policy"},
+    ]
+    assert uniform_unmeasured(records) == (dom,)
+    assert checked_steps(records) == 2
+    rows = [plain(step_row(record, uniform=(dom,))[3]) for record in records]
+    # The uniform fact leaves the rows; the one that varies stays counted.
+    assert rows == ["no measured difference", "? 1 unmeasured", "—"]
+    # Each step's own details still list it, marked as run level.
+    details = sheet_text(step_facts(records[0], uniform=(dom,)))
+    assert f"? {dom} (at every checked step of this run)" in details
+    overview = sheet_text(
+        run_facts(
+            {
+                "summary": {},
+                "execution": {"relationship": "branch", "checkpoint": 2},
+                "steps": records,
+            }
+        )
+    )
+    assert f"Unmeasured  ? at all 2 checked steps: {dom}" in overview
+    assert "0 unmeasured" not in overview
+
+
+def _run(key, *, source=None, resolution=None, checkpoint=1, created="2026-10-24"):
+    row = {"key": key, "task_id": key, "created_at": created}
+    if resolution is not None:
+        row.update(
+            branch={"source_run_id": "id-" + str(source), "checkpoint_step": checkpoint},
+            source_key=source,
+            source_resolution=resolution,
+        )
+    return row
+
+
+def test_branch_runs_fold_under_the_source_their_provenance_names():
+    from spectragent.tui.presentation import run_tree, tree_task_parts
+
+    rows = [
+        _run("forks/b", source="rec", resolution="found", checkpoint=5),
+        _run("forks/a", source="rec", resolution="found", checkpoint=1),
+        _run("forks/a2", source="forks/a", resolution="found"),
+        _run("forks/away", source="elsewhere", resolution="found"),
+        _run("forks/lost", resolution="missing"),
+        _run("forks/twin", resolution="ambiguous"),
+        _run("rec"),
+    ]
+    folded = run_tree(rows, ())
+    assert [node.key for node in folded] == ["forks/away", "forks/lost", "forks/twin", "rec"]
+    by_key = {node.key: node for node in folded}
+    assert by_key["rec"].descendants == 3
+    assert plain(tree_task_parts(by_key["rec"], rows[-1])) == "▸ rec  3 branches"
+    notes = {key: plain(by_key[key].note) for key in ("forks/away", "forks/lost", "forks/twin")}
+    assert "source not listed" in notes["forks/away"]
+    assert "missing under this root" in notes["forks/lost"]
+    assert "several runs here share source id" in notes["forks/twin"]
+    unfolded = run_tree(rows, {"rec", "forks/a"})
+    order = [(node.key, node.depth) for node in unfolded]
+    # Branches of one source come in checkpoint order, nested branches under theirs.
+    assert order[-4:] == [("rec", 0), ("forks/a", 1), ("forks/a2", 2), ("forks/b", 1)]
+    task = plain(tree_task_parts(unfolded[-1], rows[0]))
+    assert task.startswith("  └ ") and "forks/b" in task
+
+
+def test_a_provenance_cycle_never_hides_runs():
+    from spectragent.tui.presentation import run_tree
+
+    rows = [
+        _run("a", source="b", resolution="found"),
+        _run("b", source="a", resolution="found"),
+    ]
+    keys = [node.key for node in run_tree(rows, {"a", "b"})]
+    assert sorted(keys) == ["a", "b"]
