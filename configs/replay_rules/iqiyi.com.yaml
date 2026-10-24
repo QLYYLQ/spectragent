@@ -824,3 +824,83 @@ rules:
   - normalized
   ignore_query:
   - dfp
+
+# Found by replaying 8 forks of 208_426ea862, 18_b2fc886d and 108_113ae4b3 with the rules above
+# (tmp/replay_review_20261024/iqiyi): once base_info is served the side panel renders and asks
+# for more, which the 72 earlier forks never reached. Each near miss differed from its recorded
+# request only in the fields its rule ignores; the recorded answers with the same other fields
+# are byte-identical, or (rcd_videos) there is one per field set, so these rules join none.
+# Channel links in the header of play and preview pages (GET /portal/lw/v5/detail/navigateBar):
+# ignores device, the visitor device id (see "Visitor device id" above), like the channel bar.
+# uid, vip, auth and v stay. In the forks whose replayed page made another device id (2 of the 72,
+# 1 of the 8) it missed and the preview page's header had no channel links; all 6 recorded
+# answers are the same.
+- id: iqiyi-detail-channel-bar
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v5/detail/navigateBar
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - device
+# What to recommend after the episode (GET /tvg/lw/after_episode_feature): ignores timestamp and
+# sign (all 5 recorded signatures recomputed, the upper-case scheme). episodeId, channelId,
+# filterIds, src and the user fields stay. 11 near misses in 6 forks.
+- id: iqiyi-episode-recommendation
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/lw/after_episode_feature
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+# The side panel's recommended videos (GET /tvg/tvg_v2/rcd_videos): ignores timestamp and sign
+# (both recorded signatures recomputed). episodeId, albumId, offset, retNum, previousPageSize,
+# lastFeedAdIndex, adParam and templateId stay. 21 near misses in 6 forks; most are the play page
+# asking again on its second visit (step 11 of 208_426ea862) after the recorded request was
+# consumed. 4 more, for 18_b2fc886d's video, still miss: that recording never asked for it.
+- id: iqiyi-recommended-videos
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/tvg_v2/rcd_videos
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+# Comment counts for the 讨论 tab (GET sns-comment.iqiyi.com/v3/comment/get_bulk_count_data.action):
+# ignores timestamp, the client clock in milliseconds; content_ids and the agent and device fields
+# stay. 11 near misses in 6 forks.
+- id: iqiyi-comment-counts
+  scope:
+    host: sns-comment.iqiyi.com
+    path: /v3/comment/get_bulk_count_data.action
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
