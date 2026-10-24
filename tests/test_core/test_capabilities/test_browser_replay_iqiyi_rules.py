@@ -132,6 +132,13 @@ def test_video_details_match_across_a_new_device_id() -> None:
     assert match_one(BASE_INFO, DETAILS, live).rule_id == "iqiyi-video-base-info"
 
 
+def test_video_details_match_without_the_ad_network_token() -> None:
+    recorded = {**DETAILS, "adn_token": "{}"}
+    live = {**DETAILS, "adn_token": "", "timestamp": "1700000007777", "sign": "E" * 32}
+    result = match_one(BASE_INFO, recorded, live)
+    assert (result.reason, result.rule_id) == (None, "iqiyi-video-base-info")
+
+
 @pytest.mark.parametrize(
     ("field", "other"),
     [
@@ -152,8 +159,10 @@ def test_video_details_still_select_by_video_and_user(field: str, other: str) ->
         ("POST", REDIRECT),
         ("GET", "https://www.iqiyi.com:444/tvg/to_page_url"),
         ("GET", "https://www.iqiyi.com/prelw/tvg/v2/lw/base_info"),
-        ("GET", "https://mesh.if.iqiyi.com/tvg/my/lw/v2/play_history"),
-        ("GET", "https://mesh.if.iqiyi.com/tvg/lw/video_metadata"),
+        ("GET", "https://www.iqiyi.com/prelw/tvg/lw/video_metadata"),
+        ("GET", "https://mesh.if.iqiyi.com/tvg/lw/ask_after_play"),
+        ("GET", "https://mesh.if.iqiyi.com/tvg/ad/lw/feature_feed_ad"),
+        ("GET", "https://mesh.if.iqiyi.com/tvg/lw/after_episode_feature"),
         ("GET", "https://pcw-api.iqiyi.com/tvg/to_page_url"),
         ("GET", "https://cache.video.iqiyi.com/dash"),
     ],
@@ -405,6 +414,174 @@ def test_module_grading_still_selects_by_mode_and_projects(change: dict[str, Any
 def test_other_requests_keep_the_device_id_and_cache_buster(address: str) -> None:
     policy = rules().require_for_request("GET", address)
     for field in ("device", "deviceId", "device_id", "deviceID", "qyid", "u", "t"):
+        assert not policy.ignores_query(field), (address, field)
+
+
+# ── play page requests signed per page load, channel pages' ad-network token ──
+
+VIDEO = "1000000000000000"
+SIGNED = {"timestamp": "1700000000111", "sign": "0" * 32}
+RESIGNED = {"timestamp": "1700000009999", "sign": "F" * 32}
+
+#: Same shape as DEVICE_ENDPOINTS: endpoint, recorded fields, what a replay changes, and fields
+#: that select content (each changed alone must still miss).
+PLAY_PAGE_ENDPOINTS: dict[str, tuple[str, dict[str, str], dict[str, str], dict[str, str]]] = {
+    "iqiyi-tv-channel": (
+        f"{MESH}/portal/lw/v7/channel/tv",
+        {"uid": "0", "device": RECORDED_DEVICE, "page": "1", "adnToken": "{}"},
+        {"adnToken": ""},
+        {"page": "2", "uid": "12345", "device": LIVE_DEVICE},
+    ),
+    "iqiyi-vip-channel": (
+        f"{MESH}/portal/lw/v7/channel/vip",
+        {"uid": "0", "device": RECORDED_DEVICE, "page": "1", "adnToken": "{}"},
+        {"adnToken": ""},
+        {"page": "2", "uid": "12345"},
+    ),
+    "iqiyi-play-history": (
+        f"{MESH}/tvg/my/lw/v2/play_history",
+        {
+            "device_id": RECORDED_DEVICE,
+            "page_size": "100",
+            "page_num": "1",
+            "only_long": "1",
+            "user_id": "",
+            **SIGNED,
+        },
+        {"device_id": LIVE_DEVICE, **RESIGNED},
+        {"page_num": "2", "page_size": "10", "only_long": "2", "user_id": "12345"},
+    ),
+    "iqiyi-video-metadata": (
+        f"{MESH}/tvg/lw/video_metadata",
+        {"videoIds": VIDEO, "deviceId": RECORDED_DEVICE, "appVersion": "17.103.26647", **SIGNED},
+        {"deviceId": LIVE_DEVICE, **RESIGNED},
+        {"videoIds": "2000000000000000", "appVersion": "17.104.0"},
+    ),
+    "iqiyi-play-control": (
+        f"{MESH}/tvg/lw/async_pr_control",
+        {"device_id": RECORDED_DEVICE, "app_version": "17.103.26647", "src": "pca", **SIGNED},
+        {"device_id": LIVE_DEVICE, **RESIGNED},
+        {"app_version": "17.104.0", "src": "pcw"},
+    ),
+    "iqiyi-player-tips": (
+        f"{MESH}/player/lw/play/tips",
+        {"device_id": RECORDED_DEVICE, "app_version": "17.103.26647", **SIGNED},
+        {"device_id": LIVE_DEVICE, **RESIGNED},
+        {"app_version": "17.104.0"},
+    ),
+    "iqiyi-player-loading-image": (
+        f"{MESH}/player/lw/play/img/loading",
+        {"version": "17.103.26647", "timestamp": "1700000000", "sign": "0" * 32},
+        {"timestamp": "1700000009", "sign": "f" * 32},
+        {"version": "17.104.0"},
+    ),
+    "iqiyi-after-play-control": (
+        f"{MESH}/tvg/lw/after_play_control",
+        {"videoId": VIDEO, "deviceId": RECORDED_DEVICE, "appVersion": "17.103.26647", **SIGNED},
+        {"deviceId": LIVE_DEVICE, **RESIGNED},
+        {"videoId": "2000000000000000", "appVersion": "17.104.0"},
+    ),
+    "iqiyi-watch-report": (
+        f"{MESH}/tvg/realtime_action",
+        {"type": "2", "content": VIDEO, "rpage": "pcw_playpage", "play_time": "5000", **SIGNED},
+        RESIGNED,
+        {"content": "2000000000000000", "rpage": "sukan_ply", "play_time": "10000", "type": "1"},
+    ),
+    **{
+        rule_id: (
+            f"{MESH}/player/w/video/{path}",
+            {
+                "id": VIDEO,
+                "version": "17.103.26647",
+                "rpage": "pcw_playpage",
+                "block": "",
+                "s2": "3",
+            }
+            | {"timestamp": "1700000000111", "sign": "0" * 32},
+            {"s2": "", "timestamp": "1700000009999", "sign": "f" * 32},
+            {"id": "2000000000000000", "rpage": "sukan_ply", "block": "b1", "version": "17.104.0"},
+        )
+        for rule_id, path in (
+            ("iqiyi-video-like-switch", "like/control"),
+            ("iqiyi-video-heat-switch", "vv_heat/control"),
+            ("iqiyi-video-comment-switch", "comment/control"),
+            ("iqiyi-video-danmaku-switch", "danmu/info"),
+        )
+    },
+    "iqiyi-play-page-module-config": (
+        "https://static.iqiyi.com/ext/config/tvg/v1.json",
+        {"t": "wKtKOM2B"},
+        {"t": "F4QkQxsD"},
+        {},
+    ),
+    "iqiyi-interactive-layer": (
+        "https://iface2.iqiyi.com/ivos/interact/video/data",
+        {
+            "tv_id": VIDEO,
+            "play_mode": "1",
+            "platform_id": "1079",
+            "app_v": "17.103.26647",
+            "qyid": RECORDED_DEVICE,
+            "req_sn": "1700000000111",
+        },
+        {"qyid": LIVE_DEVICE, "req_sn": "1700000009999"},
+        {"tv_id": "2000000000000000", "play_mode": "2", "platform_id": "1075", "app_v": "17.104.0"},
+    ),
+    "iqiyi-follow-state": (
+        "https://subscription.iqiyi.com/services/subscribe/countAndState.htm",
+        {"subType": "2", "subKeys": "3000000000000000", "agentType": "1", "dfp": "a0" * 30},
+        {"dfp": ""},
+        {"subKeys": "4000000000000000", "subType": "1", "agentType": "2"},
+    ),
+}
+
+
+@pytest.mark.parametrize("rule_id", sorted(PLAY_PAGE_ENDPOINTS))
+def test_a_play_page_request_signed_again_finds_the_recorded_one(rule_id: str) -> None:
+    base, recorded, changed, _selectors = PLAY_PAGE_ENDPOINTS[rule_id]
+    result = match_get(base, recorded, {**recorded, **changed})
+    assert (result.reason, result.level, result.rule_id) == (None, "normalized", rule_id)
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "field"),
+    [
+        (rule_id, field)
+        for rule_id, spec in sorted(PLAY_PAGE_ENDPOINTS.items())
+        for field in spec[3]
+    ],
+)
+def test_play_page_content_fields_still_select(rule_id: str, field: str) -> None:
+    base, recorded, changed, selectors = PLAY_PAGE_ENDPOINTS[rule_id]
+    live = {**recorded, **changed, field: selectors[field]}
+    assert match_get(base, recorded, live).reason == "no_match", f"{rule_id} must keep {field}"
+
+
+@pytest.mark.parametrize("rule_id", ["iqiyi-tv-channel", "iqiyi-vip-channel"])
+def test_a_channel_page_without_the_token_finds_the_recorded_one(rule_id: str) -> None:
+    """Offline the page leaves adnToken out instead of sending it empty."""
+    base, recorded, _changed, _selectors = PLAY_PAGE_ENDPOINTS[rule_id]
+    live = {name: value for name, value in recorded.items() if name != "adnToken"}
+    assert match_get(base, recorded, live).rule_id == rule_id
+    assert match_get(base, recorded, live).reason is None
+
+
+@pytest.mark.parametrize(
+    ("address", "fields"),
+    [
+        (f"{MESH}/portal/lw/v7/channel/recommend", ("adnToken",)),
+        (f"{MESH}/portal/lw/v5/channel/recommend", ("adnToken", "ad", "page")),
+        (f"{MESH}/tvg/ad/lw/feature_feed_ad", ("adn_token", "timestamp", "sign")),
+        (f"{MESH}/tvg/lw/ask_after_play", ("timestamp", "sign")),
+        (f"{PROXY}/player/w/video/like/control", ("s2", "timestamp", "sign")),
+        (f"{MESH}/player/w/video/other/control", ("s2", "timestamp", "sign")),
+        ("https://iface2.iqiyi.com/ivos/interact/video/summary", ("req_sn",)),
+        ("https://subscription.iqiyi.com/services/subscribe/add.htm", ("dfp",)),
+    ],
+)
+def test_neighbouring_requests_keep_their_fields(address: str, fields: tuple[str, ...]) -> None:
+    policy = rules().require_for_request("GET", address)
+    for field in fields:
         assert not policy.ignores_query(field), (address, field)
 
 

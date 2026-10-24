@@ -31,6 +31,12 @@ rules:
 # loads; under the shared clock the device id changes too (see "Visitor device id" below).
 # The answer copies the device id only into URLs the page loads next (load_url,
 # load_all_url, label and ad URLs), so those carry the recorded id, as in the recording.
+# adn_token is the ad-network bidding token (see "Ad-network token" below): all 9 recorded
+# values are {} and the replayed page sends it empty. In the 72 forks of lookahead_15task_20261024
+# the 134 replayed requests of this endpoint all missed on it; without the answer the play page's
+# side panel (title, 速看/详情 tabs, episodes) stayed a loading skeleton, and in 208_426ea862's
+# forks the step-6 click on 速看 landed on the skeleton and the preview page v_2b7dt5tzbjo never
+# opened. The answer does not contain the token.
 - id: iqiyi-video-base-info
   scope:
     host: mesh.if.iqiyi.com
@@ -47,6 +53,7 @@ rules:
   - timestamp
   - sign
   - device_id
+  - adn_token
 
 # Visitor device id. Evidence: the offline branch replays of 18_cec36336, 108_4724bcba and
 # 208_c296fc2e in lookahead_15task_20261023, made under the shared clock (pinned recording
@@ -427,6 +434,24 @@ rules:
   - normalized
   ignore_query:
   - t
+# The play page module's config (GET static.iqiyi.com/ext/config/tvg/v1.json), loaded by the
+# same page function (getCloudConfig: <project>/<version>.json?t=<8 random letters>). Evidence:
+# lookahead_15task_20261024: 118 near misses in 44 forks of 18_b2fc886d, 108_113ae4b3 and
+# 208_426ea862 differed only in t; the two recorded answers are byte-identical.
+- id: iqiyi-play-page-module-config
+  scope:
+    host: static.iqiyi.com
+    path: /ext/config/tvg/v1.json
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - t
 
 # Player stream addresses (GET cache.video.iqiyi.com/dash?tvid=&bid=&...). Evidence: the offline
 # branch replays of 108_aa3a5b75 and 208_a35d7d11 in lookahead_15task_freeze_20261023 (123 near
@@ -504,3 +529,298 @@ rules:
   - normalized
   ignore_query:
   - random
+
+# Play page requests signed per page load, and the channel pages' ad-network token. Evidence:
+# the offline branch replays of 18_b2fc886d, 108_113ae4b3 and 208_426ea862 in
+# lookahead_15task_20261024 (72 forks, 37 of them restored their checkpoint). Each request below
+# missed in those replays, and its nearest recorded request was left unconsumed and differed
+# only in the fields its rule ignores. After a failed mesh.if.iqiyi.com request the page's request
+# library retries it through www.iqiyi.com/prelw (its requestRetryByCDN plugin rewrites the
+# address), which the recordings never requested, so the retries miss too.
+#
+# timestamp is the client clock in milliseconds (seconds on img/loading). sign is md5 over the
+# other fields, sorted by name and joined as name=value with '&', then '&<key name>=<key>' with a
+# fixed key from the page script. Two keys are in use: upper-case md5 with key name secret_key
+# (play_history, video_metadata, async_pr_control, play/tips, after_play_control,
+# realtime_action, as on base_info above), and lower-case md5 with key name key (img/loading and
+# the four player/w/video endpoints, as on the poster badges; there the page also signs its
+# undefined uid as 'uid=' but does not send it). All 99 recorded signatures of these endpoints
+# were recomputed that way, so sign carries nothing else. ask_after_play is not covered: its 2
+# recorded signatures did not recompute.
+#
+# Ad-network token. adn_token (base_info above) and adnToken (channel pages below) come from the
+# page's getAdToken, which builds them only from two ad caches in localStorage: the PC app
+# store SDK's visitor marks (CUPID_PCW_PCYYB) and the ad network ids from the ad server's
+# answer (CUPID_PLATFORM_ID, written from t7z.cupid.iqiyi.com/mixer), one entry per id under
+# data.zx.platformIds. Every recorded value is {}: the recording's archived localStorage held
+# CUPID_PLATFORM_ID with ids for another network (ylh) and an empty zx list, so the token names
+# no network. Offline the ad server request misses (it carries a random callback name cb and the
+# client time h), and the fork's archived localStorage has no CUPID_PLATFORM_ID
+# (208_426ea862-s21-b0, step 19), so the page sends adn_token empty and leaves adnToken out.
+# Both say the page has no ad-network token; the answers do not contain it.
+# TV channel page (GET /portal/lw/v7/channel/tv): ignores adnToken; uid, device, page and the
+# other fields stay. Recorded twice in 208_426ea862, both with adnToken={}; all 13 replayed
+# requests (8 forks) missed on it. The /tv/ page then showed 网络异常 … 重试 instead of its
+# cards, and the step-20 click on 隐秘的角落 did not open the play page: the step-21 and step-22
+# forks restored /tv/ instead.
+- id: iqiyi-tv-channel
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v7/channel/tv
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - adnToken
+# Membership channel page (GET /portal/lw/v7/channel/vip): the same, recorded once with {}; 12
+# replayed requests in 10 forks missed on it.
+- id: iqiyi-vip-channel
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /portal/lw/v7/channel/vip
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - adnToken
+# Watch history in the header (GET /tvg/my/lw/v2/play_history): ignores timestamp, sign and
+# device_id (see "Visitor device id" above; 2 near misses also differed in it). page_num,
+# page_size, only_long, user_id and auth_cookie stay. 256 near misses in 45 forks; for these
+# anonymous recordings all 19 recorded answers are the same error ("internal error").
+- id: iqiyi-play-history
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/my/lw/v2/play_history
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - device_id
+# Play counts and labels of a video (GET /tvg/lw/video_metadata): ignores timestamp, sign and
+# deviceId (6 near misses); videoIds stays. 162 near misses in 44 forks.
+- id: iqiyi-video-metadata
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/lw/video_metadata
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - deviceId
+# Player switches (GET /tvg/lw/async_pr_control, /player/lw/play/tips, /player/lw/play/img/loading,
+# /tvg/lw/after_play_control): ignore timestamp, sign and, where the page sends it, the device id
+# (2 near misses each). after_play_control's videoId and every version field stay. 54, 54, 54 and
+# 32 near misses in 44, 44, 44 and 31 forks.
+- id: iqiyi-play-control
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/lw/async_pr_control
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - device_id
+- id: iqiyi-player-tips
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/lw/play/tips
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - device_id
+- id: iqiyi-player-loading-image
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/lw/play/img/loading
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+- id: iqiyi-after-play-control
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/lw/after_play_control
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - deviceId
+# What the visitor watched (GET /tvg/realtime_action; play_time is 5000 in all 5 records):
+# ignores timestamp and sign; type, content (the video), rpage and play_time stay. 20 near
+# misses in 20 forks.
+- id: iqiyi-watch-report
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /tvg/realtime_action
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+# Which player features a video has (GET /player/w/video/like/control, vv_heat/control,
+# comment/control and danmu/info; the page's cloudControl): ignore timestamp, sign and s2. s2 is
+# the page the visitor came from in iQIYI's click attribution ('3' from search, 'pcw_dianshiju'
+# from the TV channel, empty), taken from the playing video's pingback fields; the replayed page
+# often sends it empty. In 208_426ea862 the same video was asked with all three values and every
+# answer was the same apart from cache_time and update_time. id (the video) and version, rpage
+# and block stay. 108 near misses per endpoint in 44 forks, 64 of them differing in s2.
+- id: iqiyi-video-like-switch
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/w/video/like/control
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - s2
+- id: iqiyi-video-heat-switch
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/w/video/vv_heat/control
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - s2
+- id: iqiyi-video-comment-switch
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/w/video/comment/control
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - s2
+- id: iqiyi-video-danmaku-switch
+  scope:
+    host: mesh.if.iqiyi.com
+    path: /player/w/video/danmu/info
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - timestamp
+  - sign
+  - s2
+# The player's interactive layer (GET iface2.iqiyi.com/ivos/interact/video/data): ignores req_sn,
+# which the page script sets to the client clock in milliseconds (Date.now()), and qyid, the
+# device id (2 near misses). tv_id, play_mode, platform_id and the version fields stay. 54 near
+# misses in 44 forks.
+- id: iqiyi-interactive-layer
+  scope:
+    host: iface2.iqiyi.com
+    path: /ivos/interact/video/data
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - req_sn
+  - qyid
+# Follow count and state of a show (GET subscription.iqiyi.com/services/subscribe/countAndState.htm):
+# ignores dfp, the device fingerprint the page gets from cook.iqiyi.com/security/dfp_pcw/sign,
+# which misses offline, so the replayed page sends it empty (as for the stream addresses above).
+# subKeys (the show), subType and the version fields stay. 53 near misses in 23 forks.
+- id: iqiyi-follow-state
+  scope:
+    host: subscription.iqiyi.com
+    path: /services/subscribe/countAndState.htm
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - dfp
