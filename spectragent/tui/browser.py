@@ -123,6 +123,8 @@ class BrowserApp(App[None]):
 
     TITLE = "All4One · Recorded experiments"
     ESCAPE_TO_MINIMIZE = False
+    #: How long typing must pause before the search reads the runs again.
+    SEARCH_DEBOUNCE_S = 0.2
     VERTICAL_BREAKPOINTS = [(0, "-short"), (34, "-tall")]
     CSS = """
     #topbar { height: 1; padding: 0 1; background: $panel; }
@@ -302,7 +304,7 @@ class BrowserApp(App[None]):
 
     async def _load_runs(self, query: str, generation: int, *, debounce: bool) -> None:
         if debounce:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(self.SEARCH_DEBOUNCE_S)
         try:
             rows = await asyncio.to_thread(self.repository.list_runs, search=query)
         except Exception as exc:

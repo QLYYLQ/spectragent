@@ -159,6 +159,9 @@ async def test_slow_search_leaves_keyboard_responsive_and_latest_query_wins():
 async def test_search_is_debounced_and_old_detail_cannot_replace_new_selection():
     repository = DelayedRepository()
     app = BrowserApp(cast(RunRepository, repository))
+    # Keystrokes 20 ms apart, a window fifty times longer: a loaded machine
+    # stalling the event loop must not let an intermediate query through.
+    app.SEARCH_DEBOUNCE_S = 1.0
     try:
         async with app.run_test(size=(110, 40)) as pilot:
             await app.workers.wait_for_complete()
