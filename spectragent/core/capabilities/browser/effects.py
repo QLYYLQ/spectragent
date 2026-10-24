@@ -14,7 +14,9 @@ sibling actions:
 Effect                      Actions
 ==========================  ====================================================
 :class:`PointerEffect`      ``click``, ``click_coordinate``, ``drag``
-:class:`TextInputEffect`    ``type``, ``type_coordinate``, ``send_keys``
+:class:`TextInputEffect`    ``type``, ``type_coordinate``
+:class:`KeyPressEffect`     ``send_keys`` (a text-input effect, plus the browser
+                            shortcut the chord is, ``input/shortcuts.py``)
 :class:`ScrollEffect`       ``scroll``
 :class:`NavigationEffect`   ``navigate``, ``go_back``, ``go_forward``
 :class:`TabSwitchEffect`    ``switch_tab``
@@ -44,10 +46,11 @@ model writes points on. Scroll offsets are distances, not points: they stay in p
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.schemas.action import (
     ActionEffect,
     PointWriter,
@@ -169,6 +172,33 @@ def _loaded(fact: bool | Unmeasured) -> str:
     if fact is False:
         return "the document was still loading when the action returned"
     return f"whether the document finished loading is {_gap(fact)}"
+
+
+def _capital(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _url_change(before: Location | Unmeasured, after: Location | Unmeasured) -> str:
+    """How the tab's URL went, in lower case: what a navigation's line starts with."""
+    if isinstance(before, Location) and isinstance(after, Location):
+        if before.url == after.url:
+            return f"the URL stayed {_clip(after.url)}"
+        return f"the URL changed from {_clip(before.url)} to {_clip(after.url)}"
+    if isinstance(after, Location):
+        assert not isinstance(before, Location)
+        return f"the URL is now {_clip(after.url)} (the URL before is {_gap(before)})"
+    return f"the URL after the action is {_gap(after)}"
+
+
+def _tab(fact: TabFacts | Unmeasured, *, with_url: bool) -> str:
+    if isinstance(fact, TabFacts):
+        return fact.text() if with_url else f"tab {fact.tab_id}"
+    return f"a tab that is {_gap(fact)}"
+
+
+def _tab_switch(before: TabFacts | Unmeasured, after: TabFacts | Unmeasured) -> str:
+    """Which tab the focus left and which it is on, in lower case: a tab switch's line."""
+    return f"switched from {_tab(before, with_url=False)} to {_tab(after, with_url=True)}"
 
 
 class PointerEffect(ActionEffect):
@@ -327,17 +357,7 @@ class NavigationEffect(ActionEffect):
     document_loaded: bool | Unmeasured
 
     def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
-        if isinstance(self.before, Location) and isinstance(self.after, Location):
-            if self.before.url == self.after.url:
-                line = f"The URL stayed {_clip(self.after.url)}"
-            else:
-                line = f"The URL changed from {_clip(self.before.url)} to {_clip(self.after.url)}"
-        elif isinstance(self.after, Location):
-            assert not isinstance(self.before, Location)
-            line = f"The URL is now {_clip(self.after.url)} (the URL before is {_gap(self.before)})"
-        else:
-            line = f"The URL after the action is {_gap(self.after)}"
-        return f"{line}; {_loaded(self.document_loaded)}."
+        return f"{_capital(_url_change(self.before, self.after))}; {_loaded(self.document_loaded)}."
 
 
 class TabSwitchEffect(ActionEffect):
@@ -348,16 +368,193 @@ class TabSwitchEffect(ActionEffect):
     document_loaded: bool | Unmeasured
 
     def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
-        before = (
-            f"tab {self.before.tab_id}"
-            if isinstance(self.before, TabFacts)
-            else f"a tab that is {_gap(self.before)}"
-        )
-        if isinstance(self.after, TabFacts):
-            after = self.after.text()
+        return f"{_capital(_tab_switch(self.before, self.after))}; {_loaded(self.document_loaded)}."
+
+
+#: A browser command a ``send_keys`` chord runs: the chord is the browser's own
+#: shortcut for it on the measured input platform (``input/shortcuts.py``, user
+#: ruling 2026-10-24). ``select_tab`` is a numbered tab (``ShortcutRan.tab``).
+BrowserCommand = Literal[
+    "back",
+    "forward",
+    "reload",
+    "hard_reload",
+    "close_tab",
+    "next_tab",
+    "previous_tab",
+    "select_tab",
+    "last_tab",
+]
+#: A browser command whose shortcut needs browser UI this browser does not
+#: show. Never run: the key goes to the page, and the effect says so.
+BrowserUiCommand = Literal[
+    "address_bar",
+    "new_tab",
+    "reopen_closed_tab",
+    "new_window",
+    "history",
+    "downloads",
+    "bookmarks",
+    "find",
+]
+#: The commands whose facts are a tab's URL; the others' are tabs.
+NAVIGATION_COMMANDS: frozenset[str] = frozenset({"back", "forward", "reload", "hard_reload"})
+
+_COMMAND_NAMES: dict[str, str] = {
+    "back": "Back",
+    "forward": "Forward",
+    "reload": "Reload",
+    "hard_reload": "Hard reload",
+    "close_tab": "Close tab",
+    "next_tab": "Next tab",
+    "previous_tab": "Previous tab",
+    "last_tab": "Select last tab",
+    "address_bar": "address bar",
+    "new_tab": "New tab",
+    "reopen_closed_tab": "Reopen closed tab",
+    "new_window": "New window",
+    "history": "History",
+    "downloads": "Downloads",
+    "bookmarks": "Bookmarks",
+    "find": "Find",
+}
+#: What the browser would show for a :data:`BrowserUiCommand`, and this one does not.
+_MISSING_UI: dict[str, str] = {
+    "address_bar": "address bar",
+    "new_tab": "new-tab page",
+    "reopen_closed_tab": "tab strip",
+    "new_window": "window",
+    "history": "history page",
+    "downloads": "downloads page",
+    "bookmarks": "bookmarks manager",
+    "find": "find bar",
+}
+_PLATFORM_NAMES: dict[str, str] = {"macos": "macOS", "windows": "Windows", "linux": "Linux"}
+
+
+def command_name(command: str, tab: int | None = None) -> str:
+    """A browser command as the effect line names it: ``Back``, ``Select tab 2``."""
+    if command == "select_tab":
+        return f"Select tab {tab}"
+    return _COMMAND_NAMES[command]
+
+
+class ShortcutRan(_Fact):
+    """The chord is the browser's shortcut for *command* on the measured platform, and it ran.
+
+    The key did not reach the page (``docs/architecture_design.md`` §4.13):
+    the command ran through the code the matching action uses. ``before`` /
+    ``after``: the tab's URL (:class:`Location`) for the navigation commands,
+    the focused tab (:class:`TabFacts`) for the tab commands — for
+    ``close_tab`` the tab closed and the tab the focus moved to.
+    ``document_loaded``: whether the document shown afterwards had finished
+    loading. ``tab``: the 1-based position a ``select_tab`` named.
+    """
+
+    outcome: Literal["ran"] = "ran"
+    chord: str
+    command: BrowserCommand
+    tab: int | None = Field(default=None, ge=1)
+    before: Location | TabFacts | Unmeasured
+    after: Location | TabFacts | Unmeasured
+    document_loaded: bool | Unmeasured
+
+    @model_validator(mode="after")
+    def _facts_fit_the_command(self) -> ShortcutRan:
+        wrong = TabFacts if self.command in NAVIGATION_COMMANDS else Location
+        if isinstance(self.before, wrong) or isinstance(self.after, wrong):
+            raise ValueError(f"{self.command} reports no {wrong.__name__}")
+        if (self.tab is not None) != (self.command == "select_tab"):
+            raise ValueError("a tab position belongs to select_tab, and only to it")
+        return self
+
+    def line(self) -> str:
+        head = f"{self.chord} ran the browser's {command_name(self.command, self.tab)}"
+        before, after = self.before, self.after
+        if self.command in NAVIGATION_COMMANDS:
+            assert not isinstance(before, TabFacts) and not isinstance(after, TabFacts)
+            facts = _url_change(before, after)
         else:
-            after = f"a tab that is {_gap(self.after)}"
-        return f"Switched from {before} to {after}; {_loaded(self.document_loaded)}."
+            assert not isinstance(before, Location) and not isinstance(after, Location)
+            if self.command == "close_tab":
+                facts = (
+                    f"closed {_tab(before, with_url=True)}, and the focus moved to "
+                    f"{_tab(after, with_url=True)}"
+                )
+            else:
+                facts = _tab_switch(before, after)
+        return f"{head}; {facts}; {_loaded(self.document_loaded)}."
+
+
+class ShortcutWithoutUi(_Fact):
+    """The chord is the measured platform's shortcut for browser UI this browser does not show.
+
+    Nothing ran in the browser; the key went to the page as any other key.
+    """
+
+    outcome: Literal["no_browser_ui"] = "no_browser_ui"
+    chord: str
+    command: BrowserUiCommand
+
+    def line(self) -> str:
+        return (
+            f"{self.chord} is the browser's {command_name(self.command)} shortcut; this browser "
+            f"shows no {_MISSING_UI[self.command]}, so nothing in the browser happened."
+        )
+
+
+class ShortcutOfAnotherPlatform(_Fact):
+    """The chord is a browser shortcut on another platform only; *binding* is the measured one's.
+
+    Reported only when nothing editable had focus: in a field such a chord is
+    often an editing key of the measured platform (Alt+ArrowLeft on macOS moves
+    the caret a word). ``platform``: the measured input platform.
+    """
+
+    outcome: Literal["other_platform"] = "other_platform"
+    chord: str
+    command: BrowserCommand | BrowserUiCommand
+    tab: int | None = Field(default=None, ge=1)
+    platform: InputPlatform
+    binding: str
+
+    def line(self) -> str:
+        name = command_name(self.command, self.tab)
+        platform = _PLATFORM_NAMES[self.platform]
+        missing = _MISSING_UI.get(self.command)
+        if missing is not None:
+            return (
+                f"On {platform} the browser's {name} shortcut is {self.binding}; this browser "
+                f"shows no {missing}."
+            )
+        return f"On {platform} the browser's {name} is {self.binding}."
+
+
+BrowserShortcut = Annotated[
+    ShortcutRan | ShortcutWithoutUi | ShortcutOfAnotherPlatform, Field(discriminator="outcome")
+]
+
+
+class KeyPressEffect(TextInputEffect):
+    """``send_keys``: a text-input effect, plus the browser shortcut the chord is.
+
+    ``shortcut`` is ``None`` for a chord that is no browser shortcut the
+    capability knows (``input/shortcuts.py``). :class:`ShortcutRan`: the
+    browser ran the command, and no key reached the page — ``keys`` is empty,
+    ``text_entered`` false and ``value_changed`` ``"unavailable"``; ``target``
+    is the focus when the chord was pressed and ``focus_after`` the focus on
+    the tab shown afterwards. :class:`ShortcutWithoutUi` and
+    :class:`ShortcutOfAnotherPlatform`: the key went to the page as any key
+    does, measured as such, and the line adds one sentence about the browser.
+    """
+
+    shortcut: BrowserShortcut | None = None
+
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
+        if isinstance(self.shortcut, ShortcutRan):
+            return self.shortcut.line()
+        line = super().describe(write_point=write_point)
+        return line if self.shortcut is None else f"{line} {self.shortcut.line()}"
 
 
 class SelectionEffect(ActionEffect):
@@ -395,8 +592,13 @@ class WaitEffect(ActionEffect):
 
 
 __all__ = [
+    "NAVIGATION_COMMANDS",
+    "BrowserCommand",
+    "BrowserShortcut",
+    "BrowserUiCommand",
     "ElementFact",
     "ElementFacts",
+    "KeyPressEffect",
     "Location",
     "NavigationEffect",
     "Nothing",
@@ -405,9 +607,13 @@ __all__ = [
     "ScrollEffect",
     "ScrollOffset",
     "SelectionEffect",
+    "ShortcutOfAnotherPlatform",
+    "ShortcutRan",
+    "ShortcutWithoutUi",
     "TabFacts",
     "TabSwitchEffect",
     "TextInputEffect",
     "ViewportPoint",
     "WaitEffect",
+    "command_name",
 ]

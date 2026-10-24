@@ -27,7 +27,11 @@ from spectragent.core.capabilities.browser.actions.send_keys import SendKeysActi
 from spectragent.core.capabilities.browser.actions.type_action import TypeAction
 from spectragent.core.capabilities.browser.actions.type_coordinate import TypeCoordinateAction
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
-from spectragent.core.capabilities.browser.effects import ElementFacts, TextInputEffect
+from spectragent.core.capabilities.browser.effects import (
+    ElementFacts,
+    KeyPressEffect,
+    TextInputEffect,
+)
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.schemas.action import ActionResult
 from tests.test_core.test_capabilities.test_browser_actions._effect_tab import (
@@ -92,9 +96,16 @@ def text_input(result: ActionResult) -> TextInputEffect:
 
 
 class TestDeclared:
-    @pytest.mark.parametrize("action", [TypeAction, TypeCoordinateAction, SendKeysAction])
-    def test_the_text_input_actions_share_the_text_input_effect(self, action: type) -> None:
+    @pytest.mark.parametrize("action", [TypeAction, TypeCoordinateAction])
+    def test_the_typing_actions_share_the_text_input_effect(self, action: type) -> None:
         assert action.Effect is TextInputEffect
+
+    def test_send_keys_reports_a_text_input_effect_that_also_names_browser_shortcuts(
+        self,
+    ) -> None:
+        """``KeyPressEffect`` (test_browser_shortcuts.py) is a ``TextInputEffect``: readers of one read both."""
+        assert SendKeysAction.Effect is KeyPressEffect
+        assert issubclass(KeyPressEffect, TextInputEffect)
 
 
 class TestType:

@@ -449,10 +449,11 @@ def test_the_prompt_says_how_actions_run_and_how_indexes_hold(
 ) -> None:
     """What the prompt says about execution is what the Loop and the capability do.
 
-    ``ReactLoop`` runs every action of a step, through a failed one or a page
-    change, and stops only at ``done`` or an action that raises. An index is
-    the element's backend-node handle (``dom/models.py::element_handle``), the
-    same from one observation to the next.
+    ``ReactLoop`` stops a step at its first failed action (the user's ruling
+    of 2026-10-24) and at ``done`` or an action that raises; a page change
+    does not stop it. An index is the element's backend-node handle
+    (``dom/models.py::element_handle``), the same from one observation to the
+    next.
     """
     run = _Run(member, **config)
     prompt = run.prompt()
@@ -462,13 +463,16 @@ def test_the_prompt_says_how_actions_run_and_how_indexes_hold(
         "renumbered every step",
         "rebuilt every step",
         "may now name something else",
+        "even when the one before it failed",
     ):
         assert claim not in prompt, (run.agent.select_prompt_variant(), claim)
     assert "not renumbered between steps" in prompt
     if run.agent.select_prompt_variant() in {"system_prompt", "system_prompt_no_thinking"}:
-        assert "Every action runs, even when the one before it failed or changed the page" in (
-            prompt
-        )
+        assert (
+            "An action that fails stops the step: the actions after it are not executed, "
+            "and <agent_history> says which."
+        ) in prompt
+        assert "An action that changes the page does not stop the step" in prompt
 
 
 def test_every_member_still_captures_the_screenshot() -> None:

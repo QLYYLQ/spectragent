@@ -60,11 +60,19 @@ class RestoredStep:
         check: How that step's restoration verified.
         observation: The live observation the step started from (env-source
             fragments only) — what the Loop surrenders with the step's record.
+        skipped: The source step's actions its Loop did not execute because an
+            earlier one failed (``StepRecord.skipped_actions``), when this
+            restoration ran every action the source ran and the last one
+            failed here too: retargeted onto this page, never run. Empty
+            otherwise — nothing was skipped, an outcome or an attempt differed
+            (``verify: warn``), or a skipped action has no single target here —
+            and then the restored record holds only what ran.
     """
 
     step: int
     check: RestorationCheck
     observation: Any
+    skipped: tuple[Action, ...] = ()
 
 
 class RestorationDivergedError(Exception):

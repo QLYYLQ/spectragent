@@ -56,10 +56,11 @@ rejected before it reaches the page.
 You may emit a maximum of {{ max_actions_per_step }} actions per step.
 Anything past that is dropped before it runs, so do not plan past it.
 
-Actions run in order, and each one runs even when the one before it failed or
-changed the page: the page is not read again between them. So put an action
-that may change the page (a click that opens or loads something, a submit)
-last in its step.
+Actions run in order, and the page is not read again between them. An action
+that fails stops the step: the actions after it are not executed, and the
+action history says which. An action that changes the page does not stop it,
+so put an action that may change the page (a click that opens or loads
+something, a submit) last in its step.
 </available_actions>
 
 <output_format>
@@ -126,7 +127,8 @@ authenticator app — you have no way to obtain one. Finish with
   `extracted_content` (the text it returned, cut to {{ max_result_chars }}
   characters with a note when it is longer) and, when measured, `effect` (what
   it did to the page). An action that raised an error carries `raised`
-  instead of a result.
+  instead of a result, and an action that was not executed because an earlier
+  action of its step failed carries `not_executed`.
 - Read the action history against the current element tree. If the last
   step's actions did not move the page the way you expected, do not repeat
   them — pick a different element or a different action.

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from agent_cdp import ConnectionType, EventScope, ResultContract
 
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ExtractContentEvent,
     ScreenshotRequestEvent,
@@ -85,6 +86,9 @@ class FakeCapability:
     _selector_maps: dict[str, dict[int, FakeElementNode]] = field(default_factory=dict)
     _cdp: Any = None
     _default_session_id: str | None = None
+    #: The measured input platform ``browser.send_keys`` reads its browser
+    #: shortcuts for (``input/shortcuts.py``).
+    input_platform: InputPlatform = "linux"
 
     @property
     def action_scope(self) -> FakeScope:

@@ -239,14 +239,17 @@ class TestPrepare:
     def test_states_how_actions_run(self, member: type[SkyvernAgent]) -> None:
         """What the prompt says about execution is what the Loop and the capability do.
 
-        The Loop runs every action of a batch, a failed one included, and
-        stops only at a ``done`` or an action that raises; indices are
-        backend-node handles, stable across observations.
+        The Loop stops a batch at its first failed action (the user's ruling
+        of 2026-10-24) and at a ``done`` or an action that raises; a page
+        change does not stop it. Indices are backend-node handles, stable
+        across observations.
         """
         text = _system(member)
-        assert "stop at the first" not in text
         assert "re-assigned every step" not in text
-        assert "each one runs even when the one before it failed" in text
+        assert "even when the one before it failed" not in text
+        assert "An action\nthat fails stops the step: the actions after it are not executed" in text
+        assert "An action that changes the page does not stop it" in text
+        assert "carries `not_executed`" in text
         assert "indices are not renumbered between steps" in text
 
     @member_param

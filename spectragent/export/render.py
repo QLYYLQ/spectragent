@@ -791,7 +791,11 @@ def _as_student_saw(
 
     The frame is the student's for that step (``step_frame`` over the recorded
     screenshot), so the student's next prompt writes the step's points on the
-    grid it was shown, read off the record like a live run's.
+    grid it was shown, read off the record like a live run's. *actions* are
+    the target's — the skipped ones last, one for one with the teacher's
+    (``target_actions``) — and the record keeps its results and
+    ``skipped_actions``, so the student's next prompt says, as a live run's
+    does, which of them were not executed.
     """
     return record.model_copy(update={"actions": list(actions), "frame": frame}, deep=True)
 

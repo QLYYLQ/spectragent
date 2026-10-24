@@ -143,11 +143,15 @@ class SampleLabels(_Record):
 
     Attributes:
         step_status: Whether the step's executed actions all succeeded.
+        skipped_actions: How many of the target's last actions the teacher's
+            Loop did not execute, because the action before them failed (so
+            ``step_status`` is ``action_failed``). 0: every target action ran.
         loss_weight: The target turn's weight (earlier turns weigh 0).
         verdicts: Every graded verdict, in slug order.
     """
 
     step_status: StepStatus
+    skipped_actions: int = Field(default=0, ge=0)
     loss_weight: float = 1.0
     verdicts: list[VerdictLabel] = Field(default_factory=list)
 
@@ -206,9 +210,11 @@ class CanonicalStepSample(_Record):
     ``branch.checkpoint_step`` names the source run's step).
 
     ``teacher_actions`` are the step's *executed* actions, fully qualified,
-    as recorded: their params were validated against each action's
-    ``Params`` before they ran (``ReactLoop.check_action_params``), so they
-    are what the action reads and nothing else. ``actions`` is their
+    as recorded, followed by the ones its Loop skipped because the last
+    executed one failed (``labels.skipped_actions`` counts them): the reply
+    the teacher gave. Their params were validated against each action's
+    ``Params`` before any of them ran (``ReactLoop.check_action_params``), so
+    they are what the action reads and nothing else. ``actions`` is their
     translation into the student's action space, or ``None`` with
     ``untranslatable`` saying why.
     """

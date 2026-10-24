@@ -74,6 +74,7 @@ from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
 )
+from spectragent.agents.rendering.skipped_actions import skip_reason
 from spectragent.agents.skyvern.reply import ACTIONS_FIELD, REASONING_FIELD, reply_model
 from spectragent.core.action_guard import executed_name
 from spectragent.core.actions.action_union import action_of
@@ -124,15 +125,17 @@ class SkyvernAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
-    # ``action_history_window`` counts *executed actions*, not steps, and
-    # it is spent in the per-step user message — not the system prompt,
-    # which ``prepare()`` builds once.
+    # ``action_history_window`` counts *actions*, not steps — each one that
+    # ran, and each one its step skipped after a failed one — and it is spent
+    # in the per-step user message, not the system prompt, which
+    # ``prepare()`` builds once.
     action_history_window: Annotated[
         int,
         PydanticField(
             description=(
-                "Number of most recent executed actions, with what each returned, "
-                "replayed in each step's user message"
+                "Number of most recent actions replayed in each step's user message: "
+                "each one that ran, with what it returned, and each one its step did not "
+                "execute because an earlier action failed"
             )
         ),
     ] = 5
@@ -500,16 +503,19 @@ class SkyvernAgent(AgentBase):
         return "\n".join(parts) + "\n\n" + browser_state
 
     def _render_action_history(self, history: Any) -> str:
-        """The last ``action_history_window`` executed actions, oldest first, one per line.
+        """The last ``action_history_window`` actions, oldest first, one per line.
 
         Read from the Loop's ``history`` records, across steps, one JSON
         object per action that ran: ``{"action": ..., "result": ...}``, the
         result as ``result_facts`` writes it (returned content bounded by
         ``max_result_chars``, the effect line when effects are shown), or
         ``{"action": ..., "raised": ...}`` for the action that raised and so
-        ended its step's batch. Actions the Loop never ran — cut by
-        ``max_actions_per_step``, or after a ``done`` or a raise — are not
-        history.
+        ended its step's batch. An action the Loop skipped because an
+        earlier one of its step failed is
+        ``{"action": ..., "not_executed": "action N failed"}``: it was the
+        model's plan, and the model has to know it did not run. Actions the
+        Loop never ran otherwise — cut by ``max_actions_per_step``, or after
+        a ``done`` or a raise — are not history.
 
         The ``<= 0`` branch is not padding: ``lst[-0:]`` is ``lst[0:]``, so a
         window of 0 would otherwise render the entire run.
@@ -522,7 +528,7 @@ class SkyvernAgent(AgentBase):
         return "\n".join(window) if window else "(no actions yet)"
 
     def _executed_lines(self, record: StepRecord) -> list[str]:
-        """One history line per action *record* actually ran, its points on the record's frame."""
+        """One history line per action *record* ran or skipped, its points on the record's frame."""
         write_point = point_writer(record.frame)
 
         def written(action: Action) -> Any:
@@ -543,6 +549,10 @@ class SkyvernAgent(AgentBase):
         raised = len(record.action_results)
         if record.error_phase == "act" and raised < len(record.actions):
             entries.append({"action": written(record.actions[raised]), "raised": record.error})
+        reason = skip_reason(record)
+        entries.extend(
+            {"action": written(action), "not_executed": reason} for action in record.skipped()
+        )
         return [json.dumps(entry, ensure_ascii=False, sort_keys=True) for entry in entries]
 
     def _render_browser_state(

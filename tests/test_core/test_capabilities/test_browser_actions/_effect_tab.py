@@ -258,9 +258,19 @@ class EffectTab:
     action reads it to address the element, the watchdog to measure it.
     """
 
-    def __init__(self, cdp: ProbeCDP, scope: EventScope, nodes: dict[int, DOMElementNode]) -> None:
+    def __init__(
+        self,
+        cdp: ProbeCDP,
+        scope: EventScope,
+        nodes: dict[int, DOMElementNode],
+        platform: InputPlatform = "linux",
+        action_effect_timeout_s: float = 1.0,
+    ) -> None:
         self.cdp = cdp
         self.default_session_id = "tab"
+        self.input_platform = platform
+        #: The budget of probes an action runs itself, as the watchdog's.
+        self.action_effect_timeout_s = action_effect_timeout_s
         self._scope = scope
         self._nodes = nodes
 
@@ -296,6 +306,12 @@ async def effect_tab(
     )
     watchdog.attach(scope, "tab")
     try:
-        yield EffectTab(cdp, scope, selector_map)
+        yield EffectTab(
+            cdp,
+            scope,
+            selector_map,
+            platform,
+            watchdog_kwargs.get("action_effect_timeout_s", 1.0),
+        )
     finally:
         await group.close_all()

@@ -71,13 +71,15 @@ def last_action_result_obs(prev_step: StepRecord | None) -> ActionResultObs:
 
     On step 0 (no prior step) returns a sentinel with ``last_action=""``
     and ``success=True``. When multiple actions ran in the previous
-    step, picks the last one — that's the action whose result the LLM
-    perceives as "what happened just now".
+    step, picks the last one that returned — that's the action whose result
+    the LLM perceives as "what happened just now". It is paired with its own
+    action, not the step's last: the actions after it (skipped after a
+    failure, after ``done``, or after one that raised) have no result.
     """
     if prev_step is None or not prev_step.actions or not prev_step.action_results:
         return ActionResultObs(last_action="", success=True, error=None)
-    last_action = prev_step.actions[-1]
     last_result = prev_step.action_results[-1]
+    last_action = prev_step.actions[len(prev_step.action_results) - 1]
     return ActionResultObs(
         last_action=last_action.name,
         success=bool(last_result.success),
