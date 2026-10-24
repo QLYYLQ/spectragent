@@ -4071,6 +4071,8 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 **历史与环境的差异视图（2026-10-16）。** 分叉页面与 TUI 显式展示已记录的 `history_source`、恢复器 `verify`、checkpoint 和 continuation 预算。源历史与实际恢复观测并列，动作重定位、返回结果、异常、URL、DOM signature、截图 dHash 和 document misses 使用既有恢复证据；容差内通过与存在可测差异同时显示，零 dHash 不宣称像素相同，未测不补零。只在恢复步与显式 checkpoint 校验处建立源步骤对应，后续 policy 步不凭相同步号伪造配对。源不可读不遮蔽本次可读证据。截图可切换 Browser state 原图与 Agent observation：后者经 fragment 的公开 `ModelImage` 合同按已记录元数据重建 cursor，默认显示模型视图，标明光标关闭或位置未知；精确提交的模型输入仍看 recorded calls，不把重建视图宣称为已提交输入。TUI 详情与日志支持选择和复制；在文本区 Ctrl-C 复制，活动区 Ctrl-C 与 q 保留取消并等待收尾；日志选择期间冻结文本，防止刷新破坏选区。
 
+**终端界面的读法（2026-10-24）。** 两个 Textual 界面都由纵向排列、占满宽度的面板组成；面板标题带跳转键（历史查看：1 runs、2 steps、3 details；实时监控：1 tasks、2 observed steps、3 details、4 log），只有拥有焦点的面板边框高亮。详情先列已记录事实的摘要，下方保留完整 JSON 供选择和复制；摘要只是同一份记录的读法，不另造事实，也不替代 JSON。步骤表把恢复器的容差判定（Check）与测得差异和未测项（Measured）分列，各自计数；恢复步先列本次实际尝试及其返回结果，再以 `source:` 列出来源动作，窄单元格截断时保住本次所做的事。终止观测、checkpoint（◆）与 policy 步各有标记。历史查看在步骤表中移动光标即显示该步，Enter 进入详情，Esc 逐级返回（放大、详情、步骤、列表），`[`/`]` 在任一面板前后逐步，z 放大当前面板，? 显示当前面板的按键与图例；从分叉按 s 打开源 run 时，源 run 的 checkpoint 步同样标出，并注明来自哪个分叉。实时监控的步骤表在光标位于最后一行时跟随最新观测步，详情随之更新；用户上移后停在原处，回到最后一行再恢复跟随。颜色取自当前主题并总与文字或符号同时出现，浅色主题、ANSI 主题与 `NO_COLOR` 下含义不变；终端变窄时表格先隐藏次要列（不可读 run 的原因留在不会隐藏的首列），隐藏的值仍在详情中。以上布局与按键不改变上文的复制、取消、收尾与日志冻结规则。
+
 ### 4.18 独立 replay 审查
 
 `ReplayReviewerRegistrar`（`reviewer_id`，配置层 `replay_reviewer`）属于独立
