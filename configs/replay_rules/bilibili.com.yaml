@@ -297,8 +297,7 @@ rules:
   - w_rid
   - dm_img_inter
 # The space page's follow state for the profile (GET /x/space/wbi/acc/relation). Ignores wts,
-# w_rid; mid stays. The profile's video list (/x/space/wbi/arc/search) is still not covered:
-# its recorded answer was an empty list (see README).
+# w_rid; mid stays.
 - id: bilibili-space-relation
   scope:
     host: api.bilibili.com
@@ -314,6 +313,32 @@ rules:
   ignore_query:
   - wts
   - w_rid
+# The space page's video list (GET /x/space/wbi/arc/search), behind its upload tab. Evidence:
+# recording 6_c9e4b6a7 in lookahead_15task_20261024 and its forks. That profile's list was
+# answered three times: -403 (no access) on the first visit, 412 (the risk-control page) and,
+# on the last visit, 40 videos, which the recorded step 9 shows. Every fork's replayed requests
+# missed, differing from the recorded one only in wts, w_rid and dm_img_inter, so the replayed
+# page said the profile had no videos (screenshot distance 24 at that step). 2 of the 3 recorded
+# signatures recompute from the other fields; the first was sent before the page had the
+# signing keys. Ignores wts, w_rid, dm_img_inter; mid, pn, ps, order, tid, keyword, index,
+# special_type and every other dm_* field stay, so the three recorded answers keep their own
+# keys (they differ in ps and index, or in dm_img_list).
+- id: bilibili-space-video-list
+  scope:
+    host: api.bilibili.com
+    path: /x/space/wbi/arc/search
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - wts
+  - w_rid
+  - dm_img_inter
 # The anonymous visitor ticket (POST /bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket). Its
 # answer also carries the WBI signing keys (nav.img / nav.sub) every signed request above
 # uses. context[ts] is the client clock in seconds and hexsign is HMAC-SHA256 over

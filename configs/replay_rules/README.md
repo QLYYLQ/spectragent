@@ -86,7 +86,8 @@ missed until 2026-10-23, when the shared replay clock made `wts` differ on every
 see below.) The
 profile's video-list request (`/x/space/wbi/arc/search`) changes the same two fields,
 but its recorded answer was an empty list: serving it changed no restoration check or
-page text, so a higher hit count alone did not justify a rule and it is not covered.
+page text, so a higher hit count alone did not justify a rule and it was not covered then
+(it is since 2026-10-24, on a recording whose answer lists videos; see below).
 
 On 2026-10-22, `qq.com.yaml` (Tencent Video), the new `iqiyi.com.yaml` and the new
 `10jqka.com.cn.yaml` (Tonghuashun) added endpoint rules. The evidence is the offline
@@ -212,6 +213,60 @@ checkpoints had failed the media check. Restorer `ok` verdicts did not change: T
   before; the restored play page video still had no data, because the recording kept no body for
   its first segment (the page cancelled it while the body arrived), and the player then asked a
   host the recording never contacted.
+
+On 2026-10-24, five rules came from the Tonghuashun and Bilibili forks of
+`lookahead_15task_20261024` whose checkpoint was on the recorded URL, with media in order, and
+failed on the screenshot distance alone (7 checkpoints, 14 forks):
+
+- `bilibili.com.yaml`: the space page's video list (`GET api.bilibili.com/x/space/wbi/arc/search`)
+  ignores `wts`, `w_rid` and `dm_img_inter`, like the profile request beside it. Recording
+  `6_c9e4b6a7` has an answer with 40 videos (the 2026-10-20 recording had only an empty list);
+  every fork's request missed on those three fields alone, and the restored page said the profile
+  had no videos. Two of the three recorded signatures recompute from the other fields; the third
+  was sent before the page had the signing keys.
+- `eastmoney.com.yaml`: recording `233_0766b180` went on to East Money, whose home page showed a
+  slider captcha. Its challenge (`GET smartvcode2.eastmoney.com/Titan/api/captcha/get`) ignores
+  `_`, the counter jQuery's `cache: false` starts at the page clock, and `request`, which the
+  captcha script encrypts with a key it carries: decrypted, every recorded and replayed value
+  holds the same app id, the `ctxid` that is also its own query field, a fixed account and
+  `Math.random()`, drawn at another position when the page's random draws come out in another
+  order (4 of 22 replays). In all 14 forks the challenge missed and the captcha stayed blank. The
+  home page's quote widgets (`/api/qt/ulist/get`, `/api/qt/kamt/get`, `/api/qt/clist/get` on
+  `push2.eastmoney.com`) ignore jQuery's JSONP callback name `cb` and `_`, both counting from the
+  page clock; the replay rewrites the answer's callback. Without them the Stock Connect row stayed
+  empty.
+
+Across the 111 recordings of the eight lookahead roots on disk (2026-10-21 to 2026-10-24), the
+video-list rule joins no recorded requests (13 recorded; the three of `6_c9e4b6a7` still differ
+in `ps`, `index` or `dm_img_list`). The challenge rule joins the two challenges of `233_0766b180`,
+both status 200 with the same bytes. The quote rules join the six page loads of that recording
+into one sequence per widget, served in recorded order: status 200, or no response where the live
+request failed (`ERR_EMPTY_RESPONSE`, which is never answered from another record); the answers
+differ in the global index quotes and otherwise only in the server's id `svr`. East Money appears
+in no other recording.
+
+Replayed again with the same branch configuration and only `site_rules` changed, one fork per
+checkpoint (restorer verdict and screenshot distance at the checkpoint, before → after):
+`6_c9e4b6a7` step 9 restored its checkpoint (24 → 1); `233_0766b180` step 13 restored it in two
+replays (9 → 5 and 5), and step 9, which passed at 5, went to 3. Intermediate rule sets on step 13
+show what each part did: the challenge rule without `request` gave 6, and 12 in a replay whose
+`request` differed (the captcha blank again); adding the quote rules gave 5 and 11. What still
+differs on step 13 is mostly the page's scrollbar strip (4 of the 5 bits): dark in the recording
+(made at night) and in the night-time forks, light in every daytime replay with the same Chrome
+build, though every replay emulates the recorded dark color scheme. The captcha's answer to a
+drag (`Validate`) has no rule: its encrypted `request` holds the slider position, which selects
+the verdict, together with the drag's millisecond timings and a random number, so the replayed
+drag misses and the restored slider stays where the drag left it instead of springing back after
+the recorded "verification failed".
+
+The other five of those checkpoints are not request problems. On four (`44_275791e4` step 1,
+`134_3e578d00` step 13, `233_0766b180` step 5, `118_f738a647` step 17) the recording captured a
+page still loading: the requests that fill it took 1.4 s to 6.2 s on the live network, the
+observation was taken before they returned, and the replay answers at once, so the restored page
+shows the results the recording showed one step later. The same holds at the newly passing
+`6_c9e4b6a7` step 9: its restored step 8 now shows the videos the recording was still loading
+(distance 2 → 21). On the fifth (`44_275791e4` step 21) the suggestion chips under the question
+box scroll continuously, so the two pages caught them at other offsets.
 
 These rules are experimental content assumptions. A visitor id on one
 statistics endpoint does not authorize ignoring the same parameter on another
