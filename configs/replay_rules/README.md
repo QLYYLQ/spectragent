@@ -453,8 +453,9 @@ concentrated in player areas; never a site that is not a video site. Each rule c
 comment naming the site, why and the evidence run.
 
 `media_areas.yaml` holds the published rules: Tencent Video's play and search pages,
-iQIYI's play and search pages, IGN's review articles and search page, Bilibili's video
-pages and search host. They were written on 2026-10-23 from the forks of
+iQIYI's play and search pages, IGN's review articles, search page, front page and wiki
+guides, Bilibili's video pages and search host. All but IGN's front page and wiki guides
+(see below) were written on 2026-10-23 from the forks of
 `lookahead_15task_freeze_20261023`. Re-verifying the saved observations of all 334 forks
 with this file added (same observations, new measurement and verdict), the checkpoint
 checks that passed went, before → after: Tencent Video 0 → 52 of 70, IGN 22 → 40 of 70,
@@ -468,6 +469,30 @@ masked share was at most 37% on Tencent Video, 61% on IGN, 67% on iQIYI and 33% 
 Bilibili; every mask was applied. The checks that still fail differ outside the media
 boxes (pages still loading, scrolled apart, other result lists) or on undeclared pages
 (front pages, other sites).
+
+On 2026-10-24 IGN's front page and wiki guides were added, from the 330 forks of
+`lookahead_15task_20261024`. The front page holds two zero-size `<video>` elements without
+a source at the same place, which cannot be told apart, so every check there failed
+`media_mismatch` although both sides had the same playback state; the wiki guides embed a
+player and a floating corner player that do not load offline, beside 32 zero-size ad
+frames the media read cannot reach. Re-verifying the saved observations of all 330 forks
+with the two entries added, IGN's checkpoint checks that passed went from 42 to 53 of 64,
+and all its checks from 568 to 726 of 884; no check of any site that passed before failed
+after. One fork (`b0`) per failed IGN checkpoint was replayed again with the same branch
+configuration and only `site_rules` changed, 9 same-task and 3 task-variant forks: 6 of 12
+restored their checkpoint (0 before) and `media_mismatch` went from 8 to 1. That one is a
+replay in which a click the recording spent on the closing consent overlay reached the
+search button, so it restored the search page; replayed once more, it restored. The IGN
+checkpoints that still fail differ outside the media boxes. The Elden Ring review is
+scrolled to another place after a burst of four PageDown presses, in some replays and not
+others. The Baldur's Gate 3 review replays identically every time (three replays, distance
+0 between them) but the recording shows a 320 to 370 px blank band beside a pull quote
+that the replays do not, at the same scroll offset. The wiki walkthrough embeds one of
+eight videos picked with lodash `shuffle` over `Math.random`; a replay that picks another
+one asks for a video the recording never fetched, the player is not built, the text below
+it moves, and a recorded click on the chapter table then misses its link. No request rule
+applies: in the review replays only ad auctions, identity syncs and telemetry missed, and
+the walkthrough's missed video query asks for another video than any recorded one.
 
 ## Frozen versions and offline evidence
 
