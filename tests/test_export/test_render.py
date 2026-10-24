@@ -36,7 +36,7 @@ from spectragent.export.errors import (
 )
 from spectragent.export.render import StudentRenderer, TrajectoryStep
 from spectragent.export.translate.identity import IdentityTranslator
-from spectragent.schemas.action import Action
+from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.observation.geometry import PointFrame, PointGrid
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
@@ -731,6 +731,47 @@ class TestTheStudentsFrames:
         (executed,) = first.target_actions
         assert executed.params == {"coordinate_x": 640, "coordinate_y": 360}
         assert first.quantization == (0,)
+
+
+class TestSkippedActions:
+    """A step its Loop stopped at a failed action (the user's ruling of 2026-10-24)."""
+
+    async def test_the_target_is_the_whole_reply_and_the_next_step_says_what_did_not_run(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        trace = RunTrace(
+            write_ui_tars_run(
+                tmp_path,
+                "run-1",
+                [
+                    ExportStep(
+                        actions=[click_at(640, 360), click_at(100, 200)],
+                        results=[ActionResult(success=False, error="the point is covered")],
+                        skipped_actions=1,
+                        llm_output="Thought: open the menu\nAction: (recorded reply)",
+                        fragments=[screenshot(color=10)],
+                    ),
+                    ui_tars_step(finished("added"), thought="done", color=30),
+                ],
+            )
+        )
+        first, second = await _renderer(composer).render(_trajectory(trace))
+        assert first.sample.labels.skipped_actions == 1
+        assert first.sample.labels.step_status == "action_failed"
+        # The teacher's reply, both actions, round-tripped like any target.
+        assert first.target.count("Action: click(") == 2
+        assert [a.name for a in first.target_actions] == ["browser.click_coordinate"] * 2
+        # The student's next observation says the second did not run, its point
+        # on the student's own grid (0-1000 over the 1280x720 viewport).
+        observed = second.context[-1]
+        assert isinstance(observed, UserMessage)
+        text = observed.text
+        facts = json.loads(text.split("<action_results>\n")[1].split("\n</action_results>")[0])
+        assert [entry["result"]["success"] for entry in facts["returned_results"]] == [False]
+        assert facts["not_executed"] == {
+            "actions": ["click(point='(78, 278)')"],
+            "because": "action 1 failed",
+        }
 
 
 class TestRoundTrip:

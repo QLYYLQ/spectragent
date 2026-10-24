@@ -94,6 +94,31 @@ class TestExportableSteps:
         assert sample.labels.step_status == "action_failed"
         assert sample.actions is None and sample.untranslatable is None
 
+    def test_a_step_stopped_at_a_failed_action_teaches_its_whole_reply(
+        self, tmp_path: Path
+    ) -> None:
+        """The skipped actions were the teacher's decision; the target is not cut short."""
+        run = write_run(
+            tmp_path,
+            "stopped",
+            [
+                ExportStep(
+                    actions=[_click(1), _click(2), _click(3)],
+                    results=[ActionResult(success=True), ActionResult(success=False)],
+                    skipped_actions=1,
+                )
+            ],
+        )
+        (sample,) = _samples(run)
+        assert [a.params["index"] for a in sample.teacher_actions] == [1, 2, 3]
+        assert sample.labels.step_status == "action_failed"
+        assert sample.labels.skipped_actions == 1
+
+    def test_a_step_that_skipped_nothing_labels_none(self, tmp_path: Path) -> None:
+        run = write_run(tmp_path, "whole", [ExportStep(actions=[_click(1)])])
+        (sample,) = _samples(run)
+        assert sample.labels.skipped_actions == 0
+
 
 class TestTeacherActions:
     def test_the_executed_actions_are_the_targets_as_recorded(self, tmp_path: Path) -> None:

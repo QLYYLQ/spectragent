@@ -91,6 +91,8 @@ class ExportStep:
     encodes them; a loop ``task`` / ``step_info`` pair is added unless
     ``loop_fragments`` is false. ``failed`` names fragments whose capture
     failed. ``frame`` is the teacher's recorded coordinate frame.
+    ``skipped_actions`` is how many of the last actions the Loop skipped
+    after a failed one (``StepRecord.skipped_actions``).
     """
 
     actions: list[Action] = field(default_factory=list)
@@ -104,6 +106,7 @@ class ExportStep:
     loop_fragments: bool = True
     restoration: RestorationCheck | None = None
     frame: PointFrame | None = None
+    skipped_actions: int = 0
 
 
 def setup_record(*, redacted: bool = False) -> TaskSetupRecord:
@@ -233,6 +236,7 @@ def write_run(
                 origin=spec.origin,  # type: ignore[arg-type]
                 error_phase=spec.error_phase,
                 restoration=spec.restoration,
+                skipped_actions=spec.skipped_actions,
             ),
             fragments=[item for item in encoded if item is not None],
             extra_files=list(spec.extra_files),
