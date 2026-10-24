@@ -21,6 +21,14 @@ from textual.color import Color, ColorParseError
 
 from spectragent.tui.presentation import Banner, Fact, Heading, Part, Sheet, Tone
 
+# C0 and C1 control characters except tab and newline: ESC, BEL, CR …
+_CONTROL = dict.fromkeys([*range(0, 9), *range(11, 32), 127, *range(128, 160)])
+
+
+def strip_control_codes(value: str) -> str:
+    return value.translate(_CONTROL)
+
+
 _TOKENS: dict[Tone, str] = {
     "ok": "text-success",
     "warn": "text-warning",
@@ -68,11 +76,15 @@ def styled(
 ) -> Text:
     """One line of parts; user data is never parsed as markup.
 
-    A ``badge`` part takes the colour of the ``badge`` tone in reverse video,
-    so the status word stands out in any theme, colour or not.
+    Recorded text (model replies, errors, page titles) is data: terminal
+    control characters in it are dropped so it cannot move the cursor or
+    restyle the screen. A ``badge`` part takes the colour of the ``badge``
+    tone in reverse video, so the status word stands out in any theme,
+    colour or not.
     """
     text = Text(no_wrap=ellipsis, overflow="ellipsis" if ellipsis else "fold", end="")
-    for value, tone in parts:
+    for raw, tone in parts:
+        value = strip_control_codes(raw)
         if tone == "badge":
             color = styles.get(badge, Style()).color
             text.append(value, Style(color=color, reverse=True, bold=True))
@@ -97,7 +109,9 @@ def sheet_renderable(sheet: Sheet, styles: dict[Tone, Style]) -> Group:
         elif isinstance(item, Heading):
             if blocks:
                 blocks.append(Text(""))
-            blocks.append(Text(item.title, style=styles["strong"], overflow="fold"))
+            blocks.append(
+                Text(strip_control_codes(item.title), style=styles["strong"], overflow="fold")
+            )
             grid = None
         elif isinstance(item, Fact):
             if grid is None:

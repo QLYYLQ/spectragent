@@ -19,7 +19,7 @@ from spectragent.tui.presentation import (
 from spectragent.tui.summary import summary_sheet
 
 
-def _gap(differences=(), unmeasured=(), verdict="ok"):
+def _gap(differences=(), unmeasured=(), verdict: str | None = "ok"):
     return {
         "status": "changed"
         if differences
@@ -216,3 +216,13 @@ def test_fork_overview_shows_strategy_checkpoint_and_checks():
     assert "configured ceiling 32  continue_steps 0" in text
     assert "6 of 6 checked" in text and "! 1 warn" in text
     assert "measured differences at steps 1, 2" in text
+
+
+def test_recorded_text_cannot_inject_terminal_control_or_markup():
+    from rich.style import Style
+
+    from spectragent.tui.style import styled
+
+    text = styled([("[red]reply\x1b[2J\x07 done", "plain")], {"plain": Style()})
+    assert text.plain == "[red]reply[2J done"
+    assert not text.spans

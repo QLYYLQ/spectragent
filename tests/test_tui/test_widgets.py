@@ -2,6 +2,7 @@
 
 from textual.app import App, ComposeResult
 
+from spectragent.tui.presentation import Part
 from spectragent.tui.widgets import Column, KeyTable
 
 
@@ -20,7 +21,7 @@ class _TableApp(App[None]):
         self.moves.append(event.key)
 
 
-def _rows(*keys: str):
+def _rows(*keys: str) -> list[tuple[str, list[list[Part]]]]:
     return [(key, [[(key, "plain")], [(f"{key}!", "muted")]]) for key in keys]
 
 
