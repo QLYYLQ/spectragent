@@ -1,7 +1,8 @@
 # GetPic.aspx timespan is a random cache buster (367959); nid selects the chart.
 # Web_JS/Web_Event parameters are timings and session ids (272 vs 1801, random suffixes).
 # version.jsonp always calls the fixed function callback; its callback query is unused
-# (all six recorded response bodies were identical). Other callback parameters remain.
+# (all six recorded response bodies were identical). Other callback parameters remain,
+# except on the home page quote widgets below, whose answers the replay rewrites.
 rules:
 - id: eastmoney-chart-image
   scope:
@@ -61,3 +62,93 @@ rules:
   unavailable: serve_identical
   synthesize_204:
   - https://huaxiang.eastmoney.com/CommonRecommend.png*
+# The slider captcha's challenge (GET smartvcode2.eastmoney.com/Titan/api/captcha/get, JSONP
+# with the fixed callback cb). Evidence: recording 233_0766b180 in lookahead_15task_20261024,
+# whose teacher met this captcha on www.eastmoney.com, its 14 forks and 8 more replays of them.
+# The captcha script (cfgpassport2.eastmoney.com/captcha/scripts/main.js) sends ctxid and
+# request with jQuery's cache: false, which adds _, a counter started at the page clock in
+# milliseconds (1792774278788, 130 ms before the recorded request went out). request is
+# base64 of the script's XXTEA encryption (its key is in the script) of
+# "appid=..|ctxid=..|a=quoteapi|p=|r=" + Math.random(). Decrypted, every recorded and replayed
+# request holds the same appid, the same ctxid as the query field, account quoteapi, an empty
+# password and r: the replays drew 0.9769... (the recorded first value) or 0.5214..., as the
+# order of the page's random draws came out. Every replayed challenge request differed from
+# the recorded one in _ (in 4 of 22 replays also in request); missing, it left the captcha
+# blank. The two recorded answers for this ctxid are the same bytes. Ignores _ and request;
+# ctxid and callback stay. The answer to a drag (/Titan/api/captcha/Validate) has no rule: its
+# request holds the slider position, the drag's timings in milliseconds and a random number in
+# one encrypted field, and the position selects the verdict.
+- id: eastmoney-captcha-challenge
+  scope:
+    host: smartvcode2.eastmoney.com
+    path: /Titan/api/captcha/get
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - _
+  - request
+# Quote widgets of the www.eastmoney.com home page (GET push2.eastmoney.com /api/qt/ulist/get:
+# the index rows and the global market ticker; /api/qt/kamt/get: the Stock Connect row;
+# /api/qt/clist/get: a board list), JSONP through the page's jQuery 3.7.1. Evidence: the same
+# recording and forks. cb is jQuery's callback name, its random-digit prefix (the same in
+# recording and replay under the pinned seed) and a counter started at the page clock in
+# milliseconds (jQuery3710011704753153026104_1792774276830); _ is the same counter (cache:
+# false). Every replayed request of the three missed on cb and _ alone, and the Stock Connect
+# row stayed empty. On a hit the replay rewrites the answer's leading call to the requested
+# name ("JSONP callbacks" in the README). The recording loaded the page six times; each
+# endpoint's six requests per widget join into one sequence, served in recorded order. Their
+# answers have status 200 or none (ERR_EMPTY_RESPONSE on the live network, never answered from
+# another record); the global index answers differ in the quotes (price and change), the
+# others only in svr (the server's id). secids, fields, fs, fid, ut, fltt, invt, po, pn, pz,
+# np, dect and wbp2u stay. stock/get, slist/get and trends2/get keep cb and _.
+- id: eastmoney-home-quote-list
+  scope:
+    host: push2.eastmoney.com
+    path: /api/qt/ulist/get
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - cb
+  - _
+- id: eastmoney-home-stock-connect
+  scope:
+    host: push2.eastmoney.com
+    path: /api/qt/kamt/get
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - cb
+  - _
+- id: eastmoney-home-board-list
+  scope:
+    host: push2.eastmoney.com
+    path: /api/qt/clist/get
+    method: GET
+    port: 443
+  priority: 0
+  exhaustion: repeat_last
+  unavailable: serve_identical
+  levels:
+  - exact
+  - normalized
+  ignore_query:
+  - cb
+  - _
