@@ -50,7 +50,7 @@ dependencies = [
     "Pillow",
     "typer>=0.16",
     "rich>=14",
-    "textual>=6",
+    "textual[syntax]>=6",
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
