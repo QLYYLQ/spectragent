@@ -39,7 +39,11 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_result import EvalResult
-from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
+from spectragent.schemas.observation.capture_state import (
+    FailedVisibleResources,
+    PointerState,
+    SettleOutcome,
+)
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs, TaskObs
 from spectragent.schemas.observation.geometry import PointFrame
@@ -58,13 +62,22 @@ def png(width: int, height: int, color: tuple[int, int, int] = (230, 230, 230)) 
     return buffer.getvalue()
 
 
-def capture_state() -> BrowserCaptureStateObs:
-    """What a recorded browser run's ``capture_state`` says: settled, pointer and images known."""
+def capture_state(outcome: SettleOutcome = "settled") -> BrowserCaptureStateObs:
+    """What a recorded browser run's ``capture_state`` says: pointer and images known.
+
+    *outcome* is how the settle wait before the capture ended: ``settled``
+    (the default), or ``capped`` — the cap ended it while the page was still
+    loading (``waiting_for: [load]``).
+    """
     state = BrowserCaptureStateObs(
         pointer=PointerState(status="known", x=640, y=360),
         failed_visible_resources=FailedVisibleResources(status="measured", count=0),
     )
-    state.settle = PageSettle(waited_ms=520, outcome="settled")
+    state.settle = (
+        PageSettle(waited_ms=5000, outcome="capped", waiting_for=["load"])
+        if outcome == "capped"
+        else PageSettle(waited_ms=520, outcome=outcome)
+    )
     return state
 
 

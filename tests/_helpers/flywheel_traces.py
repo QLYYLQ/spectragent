@@ -89,6 +89,7 @@ from spectragent.schemas.dataset import (
     StepLedger,
     StudentSummary,
     ThoughtLedger,
+    WaitLedger,
 )
 from spectragent.schemas.restoration import (
     BranchProvenance,
@@ -451,6 +452,14 @@ def dataset_manifest(
         ),
         leak_scan=LeakScanLedger(compared=0, no_eval_loader={}, no_reference_answer={}),
         duplicates=duplicates,
+        wait_actions=WaitLedger(
+            policy="keep",
+            removed_steps=[],
+            removed_actions=[],
+            rewritten=0,
+            reviewed_unchanged=0,
+            rewriter=None,
+        ),
     )
 
 

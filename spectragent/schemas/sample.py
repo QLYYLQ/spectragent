@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spectragent.schemas.action import Action
 
@@ -195,6 +195,88 @@ class BranchSampleMeta(_Record):
     duplicate_of: str | None = None
 
 
+class RemovedAction(_Record):
+    """One recorded action the export left out of a sample (``wait_actions: drop_when_capped``).
+
+    Attributes:
+        run_id: The run that recorded it (a branch's prefix step: its source run).
+        step: The step it was recorded at.
+        action_index: Its position in that step's recorded actions.
+        action: The action, as recorded.
+    """
+
+    run_id: str
+    step: int
+    action_index: int
+    action: Action
+
+
+class RewriteModel(_Record):
+    """The model that rewrote a thought, by its identity."""
+
+    model_type: str
+    provider: str
+    model: str
+
+
+ThoughtRewriteOutcome = Literal["rewritten", "reviewed_unchanged"]
+"""``rewritten``: the model changed the thought (synthetic text);
+``reviewed_unchanged``: it returned the thought as it was."""
+
+
+class ThoughtRewrite(_Record):
+    """How a thought affected by removed waits was rewritten (arch §4.15 "等待动作").
+
+    Attributes:
+        original: The teacher's thought, as its agent read it.
+        rewritten: The thought the sample carries; equal to ``original`` when
+            the model reviewed it and changed nothing, empty when it removed
+            all of it (the sample then carries no thought).
+        outcome: Whether the model changed it.
+        synthetic: ``True`` exactly when ``outcome`` is ``rewritten``: the
+            text is the model's, not the teacher's.
+        model: The model's identity.
+        prompt_version / prompt_digest: The versioned rewrite prompt and the
+            digest of its text.
+        cache_key: The rewrite cache's key for this rewrite.
+    """
+
+    original: str
+    rewritten: str
+    outcome: ThoughtRewriteOutcome
+    synthetic: bool
+    model: RewriteModel
+    prompt_version: str
+    prompt_digest: str
+    cache_key: str
+
+    @model_validator(mode="after")
+    def _synthetic_iff_rewritten(self) -> ThoughtRewrite:
+        if self.synthetic != (self.outcome == "rewritten"):
+            raise ValueError("a thought rewrite is synthetic exactly when it was rewritten")
+        if self.outcome == "reviewed_unchanged" and self.rewritten != self.original:
+            raise ValueError("a thought reviewed unchanged carries its original text")
+        return self
+
+
+class WaitRemoval(_Record):
+    """What ``wait_actions: drop_when_capped`` did to one sample (arch §4.15 "等待动作").
+
+    Attributes:
+        removed_actions: The waits removed from this step's own actions.
+        removed_steps_before: The actions of the wait-only steps removed
+            right before this step in its trajectory (they left the
+            trajectory, so their observation and reply are not in this
+            sample's context).
+        thought: How the sample's thought was rewritten, or ``None`` when the
+            step carries no teacher thought.
+    """
+
+    removed_actions: list[RemovedAction] = Field(default_factory=list)
+    removed_steps_before: list[RemovedAction] = Field(default_factory=list)
+    thought: ThoughtRewrite | None = None
+
+
 class CanonicalStepSample(_Record):
     """One exportable step of one recorded run.
 
@@ -217,6 +299,12 @@ class CanonicalStepSample(_Record):
     they are what the action reads and nothing else. ``actions`` is their
     translation into the student's action space, or ``None`` with
     ``untranslatable`` saying why.
+
+    ``wait_removal``: set only on a sample ``wait_actions: drop_when_capped``
+    changed — waits removed from its step, wait-only steps removed right
+    before it, its thought rewritten (arch §4.15 "等待动作"). ``teacher_actions``
+    are then the reply without the removed waits, ``thought`` is the
+    rewritten one and ``history_steps`` leaves the removed steps out.
     """
 
     sample_id: str
@@ -242,6 +330,7 @@ class CanonicalStepSample(_Record):
     labels: SampleLabels
     redactions: list[SampleRedaction] = Field(default_factory=list)
     branch: BranchSampleMeta | None = None
+    wait_removal: WaitRemoval | None = None
 
     def canonical_json(self) -> str:
         """The sample as JSON with sorted keys and fixed separators — byte-stable.
@@ -262,12 +351,17 @@ __all__ = [
     "CanonicalStepSample",
     "FragmentRef",
     "ImageRef",
+    "RemovedAction",
+    "RewriteModel",
     "SampleLabels",
     "SampleRedaction",
     "StepStatus",
     "ThoughtRecord",
+    "ThoughtRewrite",
+    "ThoughtRewriteOutcome",
     "TranslationRecord",
     "Untranslatable",
     "UntranslatableReason",
     "VerdictLabel",
+    "WaitRemoval",
 ]

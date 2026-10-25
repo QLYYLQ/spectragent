@@ -133,6 +133,18 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
     ``docs/architecture_design.md`` §4.5, "动作效果").
     """
 
+    only_waits: ClassVar[bool] = False
+    """Whether this action only lets time pass before the next observation.
+
+    ``True`` for an action that touches nothing in the environment and
+    whose whole effect is the time it waits (``browser.wait``). Declared on
+    the action once, like what its params mean, so a reader of recorded
+    actions asks :func:`is_wait_action` instead of matching a name: the
+    training export's ``wait_actions: drop_when_capped`` removes the waits
+    a teacher took on a capture whose settle wait was capped
+    (``docs/architecture_design.md`` §4.15, "等待动作").
+    """
+
     @property
     def action_id(self) -> str:
         """Fully-qualified registry key (e.g. ``"browser.click"``)."""
@@ -213,3 +225,13 @@ def registered_params(name: str) -> type[BaseModel] | None:
     """
     params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
     return params if isinstance(params, type) and issubclass(params, BaseModel) else None
+
+
+def is_wait_action(name: str) -> bool:
+    """Whether the action registered under the fully-qualified *name* only waits.
+
+    Read off the registered class's :attr:`ActionBase.only_waits`; ``False``
+    for a name no action is registered under. *name* is the key the guard
+    qualified the action with, as a trace records it.
+    """
+    return bool(getattr(ActionRegistrar.get_or_none(name), "only_waits", False))

@@ -47,6 +47,9 @@ class WaitAction(ActionBase):
 
     __registry_key__ = "browser.wait"
     Effect = WaitEffect
+    # It only sleeps: the training export recognises it as a wait by this,
+    # never by its name (``ActionBase.only_waits``).
+    only_waits = True
 
     # ⭐ capability-side configurable side-effects
     default_seconds: Annotated[

@@ -21,7 +21,10 @@ history — then ``build_react_prompt`` writes into memory, the context at that
 moment is the sample's, and the reply ``format_react_output`` writes for the
 step's translated actions goes into memory through the Loop's own
 ``remember_reply``. A step that is not exportable, or that the
-``untranslatable`` policy drops, ends the segment.
+``untranslatable`` policy drops, ends the segment. A step that left the
+trajectory (``wait_actions: drop_when_capped`` removed all of its actions,
+arch §4.15 "等待动作") is skipped without ending it, and the steps after it
+are numbered for the student as if it had never happened.
 
 **Coordinates.** Each step is rendered on the student's own frame: its
 declared grid over the recorded screenshot, built by the framework as a live
@@ -91,7 +94,12 @@ from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation._registrar import FragmentBase, fragment_field_name
 from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame
 from spectragent.schemas.prompt import ReactPromptContext
-from spectragent.schemas.sample import CanonicalStepSample, ThoughtRecord, UntranslatableReason
+from spectragent.schemas.sample import (
+    CanonicalStepSample,
+    RemovedAction,
+    ThoughtRecord,
+    UntranslatableReason,
+)
 from spectragent.schemas.step_record import StepRecord
 
 StepInfoSource = Literal["recorded", "fallback"]
@@ -165,6 +173,10 @@ class TrajectoryStep:
             step is not exportable — it then ends the current segment.
         emit: Whether a rendered step is a sample of this export; a branch's
             source prefix is context only.
+        removed: The recorded actions of a step that left the trajectory —
+            every one a wait on a capped capture (``wait_actions:
+            drop_when_capped``). Non-empty: the step is not rendered and does
+            not end the segment; the student's step numbers after it move up.
     """
 
     trace: RunTrace
@@ -172,6 +184,7 @@ class TrajectoryStep:
     record: StepRecord
     sample: CanonicalStepSample | None
     emit: bool = True
+    removed: tuple[RemovedAction, ...] = ()
 
 
 @dataclass
@@ -365,7 +378,13 @@ class StudentRenderer:
         rendered: list[RenderedSample] = []
         segment: _Segment | None = None
         segments = 0
+        # Steps that left the trajectory so far: in all, and per run.
+        removed: Counter[str] = Counter()
         for position, item in enumerate(steps):
+            if item.removed:
+                removed[""] += 1
+                removed[item.trace.run_id] += 1
+                continue
             sample = item.sample
             if sample is None:
                 if item.emit:
@@ -373,7 +392,14 @@ class StudentRenderer:
                 segment = None
                 continue
             try:
-                outcome = await self._render_step(item, sample, segment, segments)
+                outcome = await self._render_step(
+                    item,
+                    sample,
+                    segment,
+                    segments,
+                    shown_step=item.record.step - removed[""],
+                    removed_in_run=removed[item.trace.run_id],
+                )
             except _Truncated:
                 self.stats.skipped["truncated"] += sum(
                     1 for later in steps[position + 1 :] if later.emit and later.sample is not None
@@ -394,8 +420,18 @@ class StudentRenderer:
         sample: CanonicalStepSample,
         segment: _Segment | None,
         segments: int,
+        *,
+        shown_step: int,
+        removed_in_run: int,
     ) -> tuple[_Segment, RenderedSample | None] | None:
-        """Render one exportable step; ``None`` when it ends the current segment."""
+        """Render one exportable step; ``None`` when it ends the current segment.
+
+        *shown_step* is the step's number as the student is shown it: its
+        recorded number less the steps of the trajectory before it that left
+        it; *removed_in_run* counts those that were steps of the same run (they
+        were policy steps too). Reading the recording always uses the
+        recorded number.
+        """
         refusal = self._refusal(sample)
         if refusal is not None and self.untranslatable != "keep_as_text":
             self._refuse(item, sample, *refusal)
@@ -412,19 +448,20 @@ class StudentRenderer:
         self._check_capture(item, observation)
         if segment is None:
             segment = self._open(item, segments)
-        observation, step_info = self._with_loop_fragments(item, observation, segment)
+        observation, step_info = self._with_loop_fragments(item, observation, segment, shown_step)
         # The student's frame for this step: its own declared grid over the
         # recorded screenshot, built as a live run builds it. The teacher's
         # recorded frame is the teacher's grid, not the student's.
         frame = step_frame(self.space, observation)
         prompt_context = ReactPromptContext(
-            step=item.record.step,
+            step=shown_step,
             phase="history",
             policy_step=sum(
                 record.origin == "policy"
                 for record in item.trace.step_records
                 if record.step < item.record.step
-            ),
+            )
+            - removed_in_run,
             is_branch=item.trace.config.branch is not None,
             contributions=list(item.record.prompt_contributions),
             source_run_id=item.trace.run_id,
@@ -437,7 +474,7 @@ class StudentRenderer:
         actions = sample.actions or []
         if refusal is not None:
             self._refuse(item, sample, *refusal)  # keep_as_text: counted, then the text turn
-            self._keep_as_text(segment, item, sample, refusal[0], frame)
+            self._keep_as_text(segment, item, sample, refusal[0], frame, shown_step)
             return segment, None
 
         context = tuple(m.model_copy(deep=True) for m in self.memory.get_context_messages())
@@ -447,14 +484,14 @@ class StudentRenderer:
             self._refuse(item, sample, "unrepresentable", str(written))
             if self.untranslatable != "keep_as_text":
                 return None
-            self._keep_as_text(segment, item, sample, "unrepresentable", frame)
+            self._keep_as_text(segment, item, sample, "unrepresentable", frame, shown_step)
             return segment, None
         text, actions, claim_not_written = written
         executed, errors = self._round_trip(sample, actions, text, thought, frame)
         self.loop.remember_reply(self.memory, text, [])
         context_steps = tuple(segment.steps)
         segment.steps.append(item.record.step)
-        segment.history.append(_as_student_saw(item.record, actions, frame))
+        segment.history.append(_as_student_saw(item.record, actions, frame, shown_step))
         if not item.emit:
             return segment, None
         self.stats.step_info[step_info] += 1
@@ -566,6 +603,7 @@ class StudentRenderer:
         sample: CanonicalStepSample,
         reason: UntranslatableReason,
         frame: PointFrame | None,
+        shown_step: int,
     ) -> None:
         """``keep_as_text``: the step stays in the context, its reply written as text.
 
@@ -590,7 +628,7 @@ class StudentRenderer:
         )
         self.loop.remember_reply(self.memory, f"[not expressible: {reason}] {written}", [])
         segment.steps.append(item.record.step)
-        segment.history.append(_as_student_saw(item.record, list(actions), frame))
+        segment.history.append(_as_student_saw(item.record, list(actions), frame, shown_step))
 
     def _open(self, item: TrajectoryStep, index: int) -> _Segment:
         """A new segment: the student's memory cleared and seeded for the task."""
@@ -599,9 +637,13 @@ class StudentRenderer:
         return _Segment(index=index)
 
     def _with_loop_fragments(
-        self, item: TrajectoryStep, observation: Any, segment: _Segment
+        self, item: TrajectoryStep, observation: Any, segment: _Segment, shown_step: int
     ) -> tuple[Any, StepInfoSource]:
-        """*observation* with the loop-source fragments step *k* was shown, and their source."""
+        """*observation* with the loop-source fragments step *k* was shown, and their source.
+
+        ``max_steps`` and ``today`` are the recorded step's; the step number
+        is *shown_step*, the one the student is shown.
+        """
         step = item.record.step
         recorded = recorded_step_info(item.trace, step)
         if recorded is not None:
@@ -616,7 +658,7 @@ class StudentRenderer:
             loop_sourced=frozenset(self.negotiated.loop_sourced),
             builders=loop_fragment_builders(
                 task=item.trace.config.task,
-                step=step,
+                step=shown_step,
                 max_steps=max_steps,
                 today=today,
                 history=list(segment.history),
@@ -785,7 +827,7 @@ def _without_true_claim(
 
 
 def _as_student_saw(
-    record: StepRecord, actions: Sequence[Action], frame: PointFrame | None
+    record: StepRecord, actions: Sequence[Action], frame: PointFrame | None, shown_step: int
 ) -> StepRecord:
     """A copy of *record* as the student's history holds it: its actions, on the student's frame.
 
@@ -795,9 +837,13 @@ def _as_student_saw(
     the target's — the skipped ones last, one for one with the teacher's
     (``target_actions``) — and the record keeps its results and
     ``skipped_actions``, so the student's next prompt says, as a live run's
-    does, which of them were not executed.
+    does, which of them were not executed. Its ``step`` is *shown_step*, the
+    number the student was shown for it (the recorded one, less the steps
+    removed before it).
     """
-    return record.model_copy(update={"actions": list(actions), "frame": frame}, deep=True)
+    return record.model_copy(
+        update={"actions": list(actions), "frame": frame, "step": shown_step}, deep=True
+    )
 
 
 __all__ = [

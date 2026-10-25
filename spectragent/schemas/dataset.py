@@ -28,8 +28,9 @@ from spectragent.schemas.observation.geometry import CoordinateSpace
 #: samples it compared (``leak_scan.compared``). 3: a sample's
 #: ``teacher_actions`` are the executed actions as recorded, and it carries no
 #: ``dropped_params``: an action's params are validated against its ``Params``
-#: before it runs, so there is nothing undeclared to drop.
-DATASET_FORMAT: Final = "af-sft-3"
+#: before it runs, so there is nothing undeclared to drop. 4: the
+#: ``wait_actions`` ledger, and a sample may carry ``wait_removal``.
+DATASET_FORMAT: Final = "af-sft-4"
 
 
 class _Part(BaseModel):
@@ -142,6 +143,63 @@ class LeakScanLedger(_Part):
     no_reference_answer: dict[str, int]
 
 
+class RemovedStepEntry(_Part):
+    """A wait-only step that left its trajectory (``wait_actions: drop_when_capped``)."""
+
+    source: str  # the run directory relative to the sources root, POSIX
+    run_id: str
+    step: int
+    action_indices: list[int]  # every action of the step, all of them waits
+
+
+class RemovedActionEntry(_Part):
+    """A wait removed from a step that stayed (``wait_actions: drop_when_capped``)."""
+
+    source: str
+    run_id: str
+    step: int
+    action_index: int
+
+
+class RewriterEntry(_Part):
+    """The model and prompt that rewrote the affected thoughts."""
+
+    model_type: str
+    provider: str
+    model: str
+    prompt_version: str
+    prompt_digest: str
+
+
+class WaitLedger(_Part):
+    """What ``wait_actions`` did (arch §4.15 "等待动作").
+
+    Attributes:
+        policy: The exporter's ``wait_actions`` (``keep`` | ``drop_when_capped``).
+        removed_steps: Wait-only steps on a capped capture, removed from their
+            trajectory — once per run, however many trajectories share it.
+        removed_actions: Waits on a capped capture removed from a step that
+            kept other actions.
+        rewritten: Exported samples whose thought the model changed
+            (synthetic text) — samples, not rewrites: a step the student
+            could not take, or a branch's source prefix, is not counted.
+        reviewed_unchanged: Exported samples whose thought the model
+            reviewed and returned unchanged.
+        rewriter: The rewriting model and prompt; ``None`` when no thought
+            was sent to it.
+
+    Whether a rewrite came from the cache or from a call is not recorded:
+    that is a fact of one export run, and the dataset must not depend on it.
+    """
+
+    policy: str
+    removed_steps: list[RemovedStepEntry]
+    removed_actions: list[RemovedActionEntry]
+    rewritten: int
+    reviewed_unchanged: int
+    rewriter: RewriterEntry | None
+
+
 class DatasetManifest(_Part):
     """``<dataset>/manifest.json`` (module docstring; the keys are arch §4.15's)."""
 
@@ -160,6 +218,7 @@ class DatasetManifest(_Part):
     decontamination: DecontaminationLedger
     leak_scan: LeakScanLedger
     duplicates: int  # branch samples flagged duplicate_of
+    wait_actions: WaitLedger
 
     @field_validator("format")
     @classmethod
@@ -180,9 +239,13 @@ __all__ = [
     "DecontaminationLedger",
     "ExportedSource",
     "LeakScanLedger",
+    "RemovedActionEntry",
+    "RemovedStepEntry",
+    "RewriterEntry",
     "SourceLedger",
     "SplitLedger",
     "StepLedger",
     "StudentSummary",
     "ThoughtLedger",
+    "WaitLedger",
 ]

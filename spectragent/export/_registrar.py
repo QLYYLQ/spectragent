@@ -15,10 +15,19 @@ pipeline around it (``runner.py``) is the same for every format.
 in-Python default (:func:`default_translator`, ``identity``) — the
 ``trace_branches`` shape (af-add-a-receptor §6). An exporter with no knob of
 its own writes no ``__init__``; conscribe then reads this one.
+
+**A second receptor**, ``thought_rewrite_llms`` (``llm``), is a constructor
+parameter: the helper chat model that rewrites the thoughts
+``wait_actions: drop_when_capped`` affects (arch §4.15 "等待动作"), at most
+one, the ``prompt_contribution`` hook's ``helper_llms`` shape. Whether it and
+``thought_rewrite_cache`` must be given or must not is one rule
+(``settings.thought_rewrite_problem``), checked here so a configuration that
+breaks it fails to compose.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Protocol, runtime_checkable
@@ -26,6 +35,7 @@ from typing import Annotated, Any, ClassVar, Literal, Protocol, runtime_checkabl
 from conscribe import create_registrar
 from pydantic import Field, TypeAdapter
 
+from spectragent.core.llm.base import BaseChatModel, require_inference_protocol
 from spectragent.core.trace.sources import source_pattern_problem
 from spectragent.export.canonical import ThoughtSource
 from spectragent.export.render import RenderedSample
@@ -38,6 +48,8 @@ from spectragent.export.settings import (
     LengthBudget,
     SplitSettings,
     ThoughtIndexRefs,
+    WaitActions,
+    thought_rewrite_problem,
 )
 from spectragent.export.translate._registrar import ActionTranslator, default_translator
 
@@ -92,6 +104,11 @@ class Exporter(Protocol):
         """The configured translator (the ``translator`` receptor)."""
         ...
 
+    @property
+    def thought_rewrite_llms(self) -> Sequence[BaseChatModel]:
+        """The helper chat model that rewrites affected thoughts, or none (a receptor)."""
+        ...
+
     sample: Literal["per_step"]
     image_store: Literal["files"]
     sources_root: str | None
@@ -102,6 +119,8 @@ class Exporter(Protocol):
     student_run_config: str
     thought_source: ThoughtSource
     thought_index_refs: ThoughtIndexRefs
+    wait_actions: WaitActions
+    thought_rewrite_cache: str | None
     length: LengthBudget | None
     output_dir: str
 
@@ -126,7 +145,10 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
 
     __abstract__ = True
     __registry_key__: str
-    __wiring__: ClassVar[dict[str, Any]] = {"translator": "action_translator"}
+    __wiring__: ClassVar[dict[str, Any]] = {
+        "translator": "action_translator",
+        "thought_rewrite_llms": "llm",
+    }
 
     # Annotation only: conscribe installs a ``WiredField`` and the Composer
     # injects the configured translator; ``__init__`` shadows it with the default.
@@ -143,6 +165,9 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
     student_run_config: str
     thought_source: Literal["teacher", "none"]
     thought_index_refs: Literal["drop", "keep"]
+    wait_actions: Literal["keep", "drop_when_capped"]
+    thought_rewrite_llms: list[BaseChatModel]
+    thought_rewrite_cache: str | None
     length: LengthBudget | None
     output_dir: str
 
@@ -253,6 +278,42 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
                 ),
             ),
         ] = "drop",
+        wait_actions: Annotated[
+            Literal["keep", "drop_when_capped"],
+            Field(
+                description=(
+                    "keep: every recorded wait stays. drop_when_capped: on a policy step "
+                    "whose capture state says the settle wait before the capture was "
+                    "capped, the waits that ran and succeeded are removed (a step with "
+                    "nothing else leaves the trajectory and later samples' history) and "
+                    "the affected teacher thoughts are rewritten by thought_rewrite_llms, "
+                    "marked synthetic. Recorded traces are never changed."
+                ),
+            ),
+        ] = "keep",
+        thought_rewrite_llms: Annotated[
+            list[BaseChatModel] | None,
+            Field(
+                max_length=1,
+                description=(
+                    "The helper chat model that rewrites the thoughts wait_actions: "
+                    "drop_when_capped affects (at most one). Required with "
+                    "drop_when_capped and thought_source: teacher, refused otherwise."
+                ),
+            ),
+        ] = None,
+        thought_rewrite_cache: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The directory rewritten thoughts are cached in, keyed by content "
+                    "(relative to the working directory, '~' expanded): a re-export "
+                    "reuses them and calls no model, so it writes the same bytes. "
+                    "Required with drop_when_capped and thought_source: teacher, "
+                    "refused otherwise."
+                ),
+            ),
+        ] = None,
         length: Annotated[
             LengthBudget | None,
             Field(
@@ -304,6 +365,21 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
         )
         self.thought_source = thought_source
         self.thought_index_refs = thought_index_refs
+        self.wait_actions = wait_actions
+        self.thought_rewrite_llms = list(thought_rewrite_llms or [])
+        self.thought_rewrite_cache = thought_rewrite_cache
+        problem = thought_rewrite_problem(
+            wait_actions=wait_actions,
+            thought_source=thought_source,
+            models=len(self.thought_rewrite_llms),
+            cache=thought_rewrite_cache,
+        )
+        if problem is not None:
+            raise ValueError(f"{self.exporter_id}: {problem}")
+        for model in self.thought_rewrite_llms:
+            require_inference_protocol(
+                model, "chat", consumer=f"{self.exporter_id}.thought_rewrite_llms"
+            )
         self.length = (
             length
             if length is None or isinstance(length, LengthBudget)

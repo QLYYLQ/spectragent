@@ -1,9 +1,11 @@
 """``ExportRunner``: recorded runs in, a validated dataset directory out (arch §4.15 "流水线").
 
-Not registered — the counterpart of ``EvaluationRunner``. Synchronous: there
-is no model to wait for and no environment to drive. It reaches the export's
-strategies only through the configured :class:`~spectragent.export._registrar.Exporter`
-and its ``translator`` receptor, never a concrete class:
+Not registered — the counterpart of ``EvaluationRunner``. Synchronous (the
+rendering stage runs in one ``asyncio.run``), with no environment to drive and
+no model to call except the exporter's thought rewriter under
+``wait_actions: drop_when_capped``. It reaches the export's strategies only
+through the configured :class:`~spectragent.export._registrar.Exporter` and
+its receptors, never a concrete class:
 
 1. **sources** — the runs ``sources`` matches under ``sources_root``, by
    relative path, read through ``RunTrace`` (``filters.open_sources``), then
@@ -11,9 +13,13 @@ and its ``translator`` receptor, never a concrete class:
    benchmark data read through the document's loaders, ``benchmarks.py``) and
    the split key (``filters``, ``split``);
 2. **canonical samples** — ``canonical.canonicalise`` per kept run (a branch
-   run labelled by its source run's verdicts);
+   run labelled by its source run's verdicts); under ``wait_actions:
+   drop_when_capped`` the waits on capped captures leave them
+   (``waits.capped_waits``, ``waits.without_waits``);
 3. **translation** — ``exporter.translator.translate`` per sample;
-4. **student rendering** — ``render.StudentRenderer`` per trajectory;
+4. **student rendering** — ``render.StudentRenderer`` per trajectory, after
+   ``waits.WaitShaper`` (``drop_when_capped``) took the removed steps out of
+   its history and rewrote the affected thoughts;
 5. **format** — ``exporter.format`` per rendered sample, images stored once;
 6. **validation** — ``validate``: images, coordinates, reference leaks,
    length, then credentials over every text byte about to be written;
@@ -52,6 +58,7 @@ from spectragent.export.canonical import canonicalise
 from spectragent.export.errors import ExportConfigError, ExportEmptyError
 from spectragent.export.filters import Source, filtered_out, open_sources
 from spectragent.export.render import RenderedSample, StudentRenderer, TrajectoryStep
+from spectragent.export.settings import thought_rewrite_problem
 from spectragent.export.split import Decontaminator, Split, split_key, split_of
 from spectragent.export.validate import (
     ApproxTokenEstimator,
@@ -61,6 +68,15 @@ from spectragent.export.validate import (
     check_images,
     check_length,
 )
+from spectragent.export.waits import (
+    REWRITE_PROMPT_DIGEST,
+    REWRITE_PROMPT_VERSION,
+    StepWaits,
+    ThoughtRewriter,
+    WaitShaper,
+    capped_waits,
+    without_waits,
+)
 from spectragent.schemas.dataset import (
     DATASET_FORMAT,
     BenchmarkEntry,
@@ -69,14 +85,19 @@ from spectragent.schemas.dataset import (
     DecontaminationLedger,
     ExportedSource,
     LeakScanLedger,
+    RemovedActionEntry,
+    RemovedStepEntry,
+    RewriterEntry,
     SourceLedger,
     SplitLedger,
     StepLedger,
     StudentSummary,
     ThoughtLedger,
+    WaitLedger,
 )
 from spectragent.schemas.observation.image import image_suffix
 from spectragent.schemas.sample import CanonicalStepSample
+from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
 
@@ -124,12 +145,19 @@ class ExportReport:
         samples: Split → number of samples.
         drops: Untranslatable reason → emitted steps not exported as samples.
         manifest: The dataset manifest, as written.
+        thought_rewrites: Under ``wait_actions: drop_when_capped``, how this
+            run got its rewritten thoughts: ``cache_hits`` (distinct rewrites
+            read back from ``thought_rewrite_cache``) and ``model_calls``.
+            Empty when the export has no rewriter (``wait_actions: keep``, or
+            ``thought_source: none``). A fact of this run, not of the dataset,
+            so it is not in the manifest (arch §4.15 "等待动作").
     """
 
     output_dir: Path
     samples: Mapping[str, int]
     drops: Mapping[str, int]
     manifest: DatasetManifest
+    thought_rewrites: Mapping[str, int] = dataclasses.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -149,6 +177,39 @@ class _Selection:
     skipped: dict[str, str]
     filtered: dict[str, str]
     decontaminator: Decontaminator
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    """One run's samples, translated, and the waits removed from its steps."""
+
+    source: Source
+    samples: dict[int, CanonicalStepSample]
+    waits: dict[int, StepWaits]
+
+    def step(self, record: StepRecord, *, emit: bool = True) -> TrajectoryStep:
+        """*record* as a step of a trajectory: without its removed waits, or removed."""
+        waits = self.waits.get(record.step)
+        if waits is not None and waits.removes_step:
+            return TrajectoryStep(
+                self.source.trace, self.source.rel, waits.record, None, emit, waits.removed
+            )
+        return TrajectoryStep(
+            self.source.trace,
+            self.source.rel,
+            waits.record if waits is not None else record,
+            self.samples.get(record.step),
+            emit,
+        )
+
+
+@dataclass
+class _Rendering:
+    """What the rendering stage leaves for the manifest besides the samples."""
+
+    prepared: dict[str, _Prepared] = dataclasses.field(default_factory=dict)
+    shaper: WaitShaper | None = None
+    rewriter: ThoughtRewriter | None = None
 
 
 class ExportRunner:
@@ -202,6 +263,7 @@ class ExportRunner:
                 f"dataset — remove it or choose another"
             )
         partial = output.with_name(output.name + PARTIAL_SUFFIX)
+        rewriter = self._rewriter()
         renderer = StudentRenderer.from_config(
             Path(exporter.student_run_config).expanduser(),
             composer=self.composer,
@@ -210,16 +272,20 @@ class ExportRunner:
             thought_index_refs=exporter.thought_index_refs,
         )
         selection = self._select()
-        rendered = asyncio.run(self._render(selection, renderer))
+        rendering = _Rendering(
+            shaper=WaitShaper(rewriter) if exporter.wait_actions == "drop_when_capped" else None,
+            rewriter=rewriter,
+        )
+        rendered = asyncio.run(self._render(selection, renderer, rendering))
         if not rendered:
-            raise ExportEmptyError(_empty_counts(selection, renderer))
+            raise ExportEmptyError(_empty_counts(selection, renderer, rendering))
         rendered = _mark_duplicates(rendered)
         if partial.exists():
             logger.info("removing %s, left by an earlier export that did not finish", partial)
             shutil.rmtree(partial)
         try:
             partial.mkdir(parents=True)
-            manifest, samples = self._write(partial, selection, renderer, rendered)
+            manifest, samples = self._write(partial, selection, renderer, rendered, rendering)
             partial.rename(output)
         except BaseException:
             shutil.rmtree(partial, ignore_errors=True)
@@ -229,7 +295,36 @@ class ExportRunner:
             samples=samples,
             drops=dict(sorted(renderer.stats.untranslatable.items())),
             manifest=manifest,
+            thought_rewrites=(
+                {"cache_hits": rewriter.cache_hits, "model_calls": rewriter.model_calls}
+                if rewriter is not None
+                else {}
+            ),
         )
+
+    def _rewriter(self) -> ThoughtRewriter | None:
+        """The thought rewriter ``wait_actions: drop_when_capped`` needs, or ``None``.
+
+        The exporter checked the rule when it was built; the receptor may have
+        been filled after that, so it is checked again on what arrived.
+
+        Raises:
+            ExportConfigError: ``thought_rewrite_llms`` / ``thought_rewrite_cache``
+                disagree with ``wait_actions`` and ``thought_source``.
+        """
+        exporter = self.exporter
+        models = list(exporter.thought_rewrite_llms)
+        problem = thought_rewrite_problem(
+            wait_actions=exporter.wait_actions,
+            thought_source=exporter.thought_source,
+            models=len(models),
+            cache=exporter.thought_rewrite_cache,
+        )
+        if problem is not None:
+            raise ExportConfigError(f"{exporter.exporter_id}: {problem}")
+        if not models or exporter.thought_rewrite_cache is None:
+            return None
+        return ThoughtRewriter(models[0], Path(exporter.thought_rewrite_cache).expanduser())
 
     # ── 1. sources ───────────────────────────────────────────
 
@@ -276,13 +371,22 @@ class ExportRunner:
     # ── 2-4. canonical samples, translation, rendering ───────
 
     async def _render(
-        self, selection: _Selection, renderer: StudentRenderer
+        self, selection: _Selection, renderer: StudentRenderer, rendering: _Rendering
+    ) -> list[RenderedSample]:
+        try:
+            return await self._render_trajectories(selection, renderer, rendering)
+        finally:
+            if rendering.rewriter is not None:
+                await rendering.rewriter.aclose()
+
+    async def _render_trajectories(
+        self, selection: _Selection, renderer: StudentRenderer, rendering: _Rendering
     ) -> list[RenderedSample]:
         exporter = self.exporter
-        translated: dict[str, dict[int, CanonicalStepSample]] = {}
+        drop_waits = exporter.wait_actions == "drop_when_capped"
 
-        def samples_of(source: Source, verdicts_from: Source | None = None) -> dict[int, Any]:
-            if source.run_id not in translated:
+        def prepared(source: Source, verdicts_from: Source | None = None) -> _Prepared:
+            if source.run_id not in rendering.prepared:
                 teacher = AgentRegistrar.get_or_none(source.config.agent_id)
                 samples = canonicalise(
                     source.trace,
@@ -291,12 +395,20 @@ class ExportRunner:
                     teacher_cls=teacher,
                     verdicts_from=verdicts_from.trace if verdicts_from is not None else None,
                 )
+                waits = capped_waits(source.trace) if drop_waits else {}
                 translator = exporter.translator
-                translated[source.run_id] = {
-                    sample.step: translator.translate(sample, source.trace).applied(sample)
-                    for sample in samples
-                }
-            return translated[source.run_id]
+                translated: dict[int, CanonicalStepSample] = {}
+                for sample in samples:
+                    step_waits = waits.get(sample.step)
+                    if step_waits is not None:
+                        if step_waits.removes_step:
+                            continue
+                        sample = without_waits(sample, step_waits)
+                    translated[sample.step] = translator.translate(sample, source.trace).applied(
+                        sample
+                    )
+                rendering.prepared[source.run_id] = _Prepared(source, translated, waits)
+            return rendering.prepared[source.run_id]
 
         rendered: list[RenderedSample] = []
         for kept in selection.kept:
@@ -307,28 +419,30 @@ class ExportRunner:
             if branch is not None:
                 origin = selection.readable[branch.source_run_id]
                 renderer.check_source(origin.trace, origin.rel)
-                prefix = samples_of(origin)
+                prefix = prepared(origin)
                 steps += [
-                    TrajectoryStep(origin.trace, origin.rel, record, prefix.get(record.step), False)
+                    prefix.step(record, emit=False)
                     for record in origin.trace.step_records
                     if record.step < branch.checkpoint_step
                     and record.step <= origin.trace.manifest.complete_through
                 ]
-                own = samples_of(source, verdicts_from=origin)
+                own = prepared(source, verdicts_from=origin)
                 steps += [
-                    TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
+                    own.step(record)
                     for record in source.trace.step_records
                     if record.origin == "policy"
                     and record.step >= branch.checkpoint_step
                     and record.step <= source.trace.manifest.complete_through
                 ]
             else:
-                own = samples_of(source)
+                own = prepared(source)
                 steps += [
-                    TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
+                    own.step(record)
                     for record in source.trace.step_records
                     if record.step <= source.trace.manifest.complete_through
                 ]
+            if rendering.shaper is not None:
+                steps = await rendering.shaper.shape(steps)
             rendered.extend(await renderer.render(steps))
         return rendered
 
@@ -340,6 +454,7 @@ class ExportRunner:
         selection: _Selection,
         renderer: StudentRenderer,
         rendered: Sequence[RenderedSample],
+        rendering: _Rendering,
     ) -> tuple[DatasetManifest, dict[str, int]]:
         exporter = self.exporter
         kept_by_rel = {kept.source.rel: kept for kept in selection.kept}
@@ -375,9 +490,9 @@ class ExportRunner:
 
         samples = {split: len(lines) for split, lines in sorted(records.items())}
         written = canonical_json(
-            self._manifest(selection, renderer, rendered, samples, per_source, scanner).model_dump(
-                mode="json"
-            ),
+            self._manifest(
+                selection, renderer, rendered, samples, per_source, scanner, rendering
+            ).model_dump(mode="json"),
             indent=2,
         )
         # Read back from the bytes written, so the report's manifest is exactly the
@@ -403,6 +518,7 @@ class ExportRunner:
         samples: Mapping[str, int],
         per_source: Mapping[str, int],
         scanner: ReferenceScanner,
+        rendering: _Rendering,
     ) -> DatasetManifest:
         exporter = self.exporter
         stats = renderer.stats
@@ -471,6 +587,7 @@ class ExportRunner:
             duplicates=sum(
                 1 for item in rendered if item.sample.branch and item.sample.branch.duplicate_of
             ),
+            wait_actions=_wait_ledger(exporter.wait_actions, rendering, rendered),
         )
 
 
@@ -486,6 +603,7 @@ def exporter_settings(exporter: Exporter) -> dict[str, Any]:
         "decontamination": dataclasses.asdict(exporter.decontamination),
         "thought_source": exporter.thought_source,
         "thought_index_refs": exporter.thought_index_refs,
+        "wait_actions": exporter.wait_actions,
         "length": dataclasses.asdict(exporter.length) if exporter.length is not None else None,
     }
 
@@ -548,7 +666,58 @@ def _mark_duplicates(rendered: Sequence[RenderedSample]) -> list[RenderedSample]
     return marked
 
 
-def _empty_counts(selection: _Selection, renderer: StudentRenderer) -> dict[str, int]:
+def _wait_ledger(
+    policy: str, rendering: _Rendering, rendered: Sequence[RenderedSample]
+) -> WaitLedger:
+    """The manifest's ``wait_actions``: every removal once per run; the exported samples' rewrites."""
+    removed_steps: list[RemovedStepEntry] = []
+    removed_actions: list[RemovedActionEntry] = []
+    for prepared in sorted(rendering.prepared.values(), key=lambda p: p.source.rel):
+        source = prepared.source
+        for step in sorted(prepared.waits):
+            waits = prepared.waits[step]
+            indices = [removed.action_index for removed in waits.removed]
+            if waits.removes_step:
+                removed_steps.append(
+                    RemovedStepEntry(
+                        source=source.rel, run_id=source.run_id, step=step, action_indices=indices
+                    )
+                )
+                continue
+            removed_actions += [
+                RemovedActionEntry(
+                    source=source.rel, run_id=source.run_id, step=step, action_index=index
+                )
+                for index in indices
+            ]
+    outcomes = Counter(
+        removal.thought.outcome
+        for item in rendered
+        if (removal := item.sample.wait_removal) is not None and removal.thought is not None
+    )
+    rewriter = rendering.rewriter
+    asked = rewriter is not None and (rewriter.cache_hits or rewriter.model_calls)
+    return WaitLedger(
+        policy=policy,
+        removed_steps=removed_steps,
+        removed_actions=removed_actions,
+        rewritten=outcomes["rewritten"],
+        reviewed_unchanged=outcomes["reviewed_unchanged"],
+        rewriter=(
+            RewriterEntry(
+                **rewriter.identity.model_dump(),
+                prompt_version=REWRITE_PROMPT_VERSION,
+                prompt_digest=REWRITE_PROMPT_DIGEST,
+            )
+            if rewriter is not None and asked
+            else None
+        ),
+    )
+
+
+def _empty_counts(
+    selection: _Selection, renderer: StudentRenderer, rendering: _Rendering
+) -> dict[str, int]:
     counts: Counter[str] = Counter()
     counts["sources skipped"] = len(selection.skipped)
     for reason in selection.filtered.values():
@@ -559,6 +728,10 @@ def _empty_counts(selection: _Selection, renderer: StudentRenderer) -> dict[str,
         counts[f"steps untranslatable ({reason})"] += n
     for reason, n in renderer.stats.skipped.items():
         counts[f"steps {reason.replace('_', ' ')}"] += n
+    for prepared in rendering.prepared.values():
+        counts["steps that only waited on a capped capture"] += sum(
+            1 for waits in prepared.waits.values() if waits.removes_step
+        )
     return {reason: n for reason, n in counts.items() if n}
 
 
