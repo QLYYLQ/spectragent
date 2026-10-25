@@ -11,8 +11,9 @@ response availability (`c7a4e97`), Bilibili account request matching (`3893b39`)
 questions and information triage (`f5cd0df`), and the integration review's fixes (up to
 `201e136`). Implemented on `enhance/media-playback-restoration`, not merged yet: media
 playback restoration, with the 2026-10-21 final review's fixes
-(`tmp/final_pass_20261021/review.json`). Still pending: the Bilibili search `vt` parameter,
-`/nav` answers in recorded order, and source captures of half-loaded pages. Decided with no
+(`tmp/final_pass_20261021/review.json`). Still pending: `/nav` answers in recorded order,
+and source captures of half-loaded pages (direction accepted 2026-10-25, design open). The
+Bilibili search `vt` parameter was fixed on 2026-10-23 (see its entry). Decided with no
 framework change: host appearance (documented in `docs/browser_agent_runbook.md`). Current
 docs and skills were synchronised with all of this on 2026-10-21.
 
@@ -407,13 +408,21 @@ accepted, implemented on the branch):**
 4. Iframes inside shadow roots stay unreachable (their steps are not restorable); recorded as
    a known limit. Reading them would mean naming frames by their CDP frame owner instead.
 
-## Pending — Bilibili search `vt` parameter
+## Fixed — Bilibili search `vt` parameter
 
 Found 2026-10-21 (`tmp/media_restoration_20261021/delivery.json`, recording attempt 2): the
 Bilibili search page puts a client-generated `vt` parameter in its URL that differs every
 run (`vt=58530967` recorded, `vt=58531417` replayed), so a same-path replay of the task-118
 recording diverges at step 2 (`url_mismatch`, then screenshot distance 20+ from step 3) and
 never restores the video page it opened at steps 24-26. Replay-rule work, not media.
+
+Fixed 2026-10-23 by `9cff65c` (restoration's URL check leaves out page-written URL
+parameters): `vt` is the last eight digits of the page clock in milliseconds, written by the
+page into its own address after load and never requested, so request matching is untouched
+and only restoration's URL comparison drops it (`configs/replay_rules/page_urls.yaml`,
+rule `bilibili-search-vt`, with its evidence). Forks restored 0 → 4 of 5 checkpoints; the
+fifth now fails on media alone. This entry stayed marked pending by mistake until
+2026-10-25.
 
 ## Pending — source captures of half-loaded pages
 
@@ -436,6 +445,17 @@ decision is now unblocked and still the user's):
 Boundaries to keep when designing it: recorded traces stay immutable; filtering and
 rewriting happen in derived data (step selection, export) with provenance of every removed
 step and rewritten thought; rewritten thoughts are marked synthetic.
+
+**User ruling, 2026-10-25:** the three directions above are accepted. Design detail is not
+written into `docs/architecture_design.md` yet. Measurement the same day, on the 15
+recordings of `lookahead_15task_20261024` (UI-TARS teacher, 409 policy steps with
+`browser.capture_state`): settled 259 (63%); capped with only `dom` pending 138 (34%);
+capped with `load` pending (the main document's load event never came, so `dom` and
+`content` are pending too) 12 (3%), spread over 9 of the 15 recordings. The model chose
+`wait` on 3 of those 12 steps (and on 45 of the 138 DOM-only steps). A DOM-only cap is
+mostly a page that keeps mutating (carousels, players), not an incomplete load, so
+"definite evidence" should not be `capped` alone. Those recordings were deleted
+afterwards (disk cleanup); re-measure on the next collection round.
 
 ## Fix — native scrollbar follows the host appearance
 
