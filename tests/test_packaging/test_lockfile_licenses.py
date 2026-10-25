@@ -54,4 +54,4 @@ def test_every_ported_source_is_noticed() -> None:
     for ported in ("archive/network_model.py", "replay/canonical.py"):
         header = (ROOT / "spectragent/core/capabilities/browser" / ported).read_text("utf-8")
         assert "Licensed under the Apache License, Version 2.0" in header, ported
-        assert "Modified by af" in header, ported
+        assert "Modified by Spectragent" in header, ported

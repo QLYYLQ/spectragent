@@ -18,7 +18,7 @@ references only and contribute no code.
   read the pinned clock, every other form is native); WPR's per-page clock (a fixed time
   advancing 50 ms every 25 constructions, never frozen), selectable as `per_document`;
   a guard against injecting twice.
-- **Modified by af:** a second clock, the default, shared by the whole run — T0 at the
+- **Modified by Spectragent:** a second clock, the default, shared by the whole run — T0 at the
   run's start, then real time read from `performance.timeOrigin + performance.now()` —
   so every tab and worker of a run reads the same time; `Math.random` and `crypto.getRandomValues` draw from seeded
   mulberry32 streams instead of WPR's fixed 0.13297 step or constant value;
@@ -75,7 +75,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   paired with responses per request id, responses served from cache treated as having
   none (crbug 1340398); `data:` URLs skipped; the WebSocket event set and its
   wall-clock baseline.
-- **Modified by af:** re-implemented in Python as a passive accumulator for an archive
+- **Modified by Spectragent:** re-implemented in Python as a passive accumulator for an archive
   instead of a live request router — no routing, interception overrides,
   authentication, CORS preflight synthesis or frame manager. Added: deduplication
   across two recorder sessions of one target; settle / pending bookkeeping (an
@@ -121,7 +121,7 @@ Playwright's `LICENSE` at the revision above).
   parameters; multipart bodies read as their parts' names and values, never the
   boundary; JSON flattened into parameters, newline-delimited JSON line by line;
   `text/plain` tried as JSON first; anything unparsable as one `__wb_post_data` value.
-- **Modified by af:** a pure key function instead of a CDX index writer; every method
+- **Modified by Spectragent:** a pure key function instead of a CDX index writer; every method
   with a body is keyed (upstream: POST and PUT); the parameters are sorted and merged
   with the query here (upstream leaves that to SURT); JSON keys are full paths
   (`a.b.0.c`; upstream: the leaf name with `.N_` suffixes); `+json` media types and
@@ -159,7 +159,7 @@ Playwright's `LICENSE` at the revision above).
   that breaks a tie).
 - **Kept:** the exact match on method, URL and body bytes with each side's multipart
   boundary removed; ranking tied candidates by matching `name:value` request headers.
-- **Modified by af:** bodies compared for every method (upstream: POST only), as a
+- **Modified by Spectragent:** bodies compared for every method (upstream: POST only), as a
   sha256 of the redacted body; headers rank only otherwise-equal candidates, after the
   recording order; redirect chains are **not** followed inside the lookup — replay serves
   the recorded 3xx and lets Chrome follow it.
@@ -176,7 +176,7 @@ Playwright's `LICENSE` at the revision above).
   between equally scored URLs goes to the lexicographically smaller URL; serving the
   responses of one request in recording order
   (`serve-response-in-chronological-sequence`).
-- **Modified by af:** `M` counts from 0 (upstream: 1) and the canonical parameters are
+- **Modified by Spectragent:** `M` counts from 0 (upstream: 1) and the canonical parameters are
   compared; a threshold (`fuzzy_threshold`) below which nothing matches, off for
   documents and non-GET requests unless a site rule turns it on (upstream: no threshold,
   never off); a request's canonical body parameters count too (upstream never reads the
@@ -193,7 +193,7 @@ Playwright's `LICENSE` at the revision above).
   (`dated_headers`: the dates of a served response moved together).
 - **Kept:** `Last-Modified` and `Expires` keep their distance from the recorded `Date`
   when `Date` becomes now; a value that does not parse is left as it is.
-- **Modified by af:** re-implemented, not copied; one switch for everything
+- **Modified by Spectragent:** re-implemented, not copied; one switch for everything
   (`shift_dates: none | all` — upstream always shifts); the cookie `Expires` attribute
   moves with the headers (upstream leaves cookies alone; see mitmproxy below); without a
   recorded `Date` the request's start time anchors the shift, and a `Date` is
@@ -210,7 +210,7 @@ Playwright's `LICENSE` at the revision above).
   (`dated_headers`, `shifted_cookie_expiry`).
 - **Kept:** one delta, now − the recorded time, applied to `Date`, `Expires`,
   `Last-Modified` and every `Set-Cookie` `Expires=` attribute.
-- **Modified by af:** re-implemented, not copied; the delta is measured from the
+- **Modified by Spectragent:** re-implemented, not copied; the delta is measured from the
   recorded `Date` when there is one (upstream: the response's recorded timestamp);
   shifting is off unless `shift_dates: all`; an unparsable cookie expiry is kept as
   recorded (upstream drops the attribute).
@@ -225,7 +225,7 @@ Playwright's `LICENSE` at the revision above).
   recorded response served once, in recording order, per key) and
   `spectragent/core/capabilities/browser/replay/site_rules.py` (`ignore_query` /
   `ignore_body_paths` leave named parameters out of the key).
-- **Modified by af:** the used set is shared across the three matching levels; a key
+- **Modified by Spectragent:** the used set is shared across the three matching levels; a key
   whose records are all used repeats its last record and says `exhausted` (upstream
   deletes the key, so the next identical request misses); a miss is never forwarded to
   the network (upstream's default `server_replay_extra=forward`).

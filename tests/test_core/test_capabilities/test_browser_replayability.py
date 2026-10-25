@@ -400,7 +400,7 @@ class TestShim:
         assert "Copyright 2017 The Chromium Authors" in SHIM_TEMPLATE
         assert "BSD-style license" in SHIM_TEMPLATE
         assert "6a31bb0937dccd01bedae8bd6cdeb8c113937cfb" in SHIM_TEMPLATE
-        assert "Modified by af" in SHIM_TEMPLATE
+        assert "Modified by Spectragent" in SHIM_TEMPLATE
 
     def test_the_shim_is_guarded_for_workers_and_reinjection(self) -> None:
         assert "Symbol.for('af.replayability.pinned')" in SHIM_TEMPLATE

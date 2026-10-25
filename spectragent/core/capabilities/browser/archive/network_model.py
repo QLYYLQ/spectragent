@@ -17,7 +17,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 #
-# Modified by af (2026-10-10): re-implemented in Python as a passive
+# Modified by Spectragent (2026-10-10): re-implemented in Python as a passive
 # accumulator for an archive rather than a live request router. Kept from the
 # original: pairing Fetch.requestPaused with Network.requestWillBeSent by the
 # network request id in either arrival order; one record per redirect hop,

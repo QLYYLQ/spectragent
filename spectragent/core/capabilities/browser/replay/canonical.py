@@ -16,7 +16,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 #
-# Modified by af (2026-10-11): re-implemented as a pure key function. Kept: the
+# Modified by Spectragent (2026-10-11): re-implemented as a pure key function. Kept: the
 # `__wb_method=<METHOD>` parameter; urlencoded bodies read as their decoded
 # parameters; multipart bodies read as their parts' names and values, never the
 # boundary; JSON flattened into parameters, newline-delimited JSON line by line;
