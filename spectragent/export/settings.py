@@ -75,8 +75,9 @@ class ExportFilters:
         default=True,
         description=(
             "A step whose recorded observation was captured before it finished its initial "
-            "load (its capture_state settle says loaded: false: the wait ended at its limit "
-            "first; in a browser, before the main document's load event) produces no sample; "
+            "load (its capture_state settle says loaded: false; in a browser, the main "
+            "document had not reached its load event, however the wait ended) produces no "
+            "sample; "
             "it stays in later samples' context as it happened. A page whose DOM never went "
             "quiet does not count, and a step with no capture_state recorded is exported. "
             "Each one left out is listed in the manifest's steps.filtered with the reason. "

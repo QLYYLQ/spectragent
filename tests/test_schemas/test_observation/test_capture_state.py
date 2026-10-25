@@ -151,28 +151,11 @@ class TestLoaded:
         with pytest.raises(ValidationError, match="loaded"):
             SettleState(outcome="capped", waited_ms=5000)  # type: ignore[call-arg]
 
-    @pytest.mark.parametrize(
-        ("outcome", "loaded"),
-        [
-            ("settled", True),
-            ("capped", False),
-            ("capped", True),
-            ("capped", None),
-            ("unknown", True),
-            ("unknown", None),
-        ],
-    )
-    def test_the_states_that_agree_with_the_outcome(self, outcome: Any, loaded: Any) -> None:
+    @pytest.mark.parametrize("outcome", ["settled", "capped", "unknown"])
+    @pytest.mark.parametrize("loaded", [True, False, None])
+    def test_a_fact_about_the_surface_not_the_wait(self, outcome: Any, loaded: Any) -> None:
+        """No outcome implies a value: a wait may stop waiting on a load that never completes."""
         assert SettleState(outcome=outcome, waited_ms=1, loaded=loaded).loaded is loaded
-
-    @pytest.mark.parametrize("loaded", [False, None])
-    def test_a_settled_wait_saw_the_load_complete(self, loaded: Any) -> None:
-        with pytest.raises(ValidationError, match="settled wait saw the initial load"):
-            SettleState(outcome="settled", waited_ms=1, loaded=loaded)
-
-    def test_only_the_cap_ends_a_wait_before_the_load(self) -> None:
-        with pytest.raises(ValidationError, match="only a capped wait"):
-            SettleState(outcome="unknown", waited_ms=1, loaded=False)
 
 
 # ── the abstract base ─────────────────────────────────────────────────

@@ -69,18 +69,21 @@ class SettleState(BaseModel):
     """How the wait before one capture ended.
 
     ``loaded`` is whether the captured surface had finished its initial load
-    (``docs/architecture_design.md`` §4.4, "初次加载是否完成"), the one fact
-    consumers act on without reading the capability's ``pending`` labels:
+    when it was captured (``docs/architecture_design.md`` §4.4, "初次加载是否完成"),
+    the one fact consumers act on without reading the capability's ``pending``
+    labels:
 
-    - ``False``: the wait ended at its limit while the surface's initial load
-      was still in progress, so the capture shows a surface still loading for
-      the first time — the definite evidence of an incomplete load;
-    - ``True``: no initial load the wait was still waiting for when it ended;
-    - ``None``: not known (the wait could not read the state).
+    - ``False``: the initial load was still in progress, so the capture shows
+      a surface still loading for the first time — the definite evidence of
+      an incomplete load;
+    - ``True``: the initial load had completed;
+    - ``None``: not known (the capability could not tell).
 
-    Two implications hold: a ``settled`` wait saw the initial load complete
-    (``True``), and only the cap ends a wait before that load completes
-    (``False`` is ``capped``). Required, so every capability says it.
+    It is a fact about the surface, recorded at the capture, not a reading of
+    how the wait ended: no ``outcome`` implies a value (a capability may stop
+    waiting on a load that never completes, and then even a ``settled`` wait
+    can precede a capture of a surface still loading). Required, so every
+    capability says it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -93,14 +96,6 @@ class SettleState(BaseModel):
     pending: tuple[str, ...] = ()
     #: Why the state could not be read, for an ``unknown`` outcome, when known.
     detail: str | None = None
-
-    @model_validator(mode="after")
-    def _loaded_agrees_with_outcome(self) -> Self:
-        if self.outcome == "settled" and self.loaded is not True:
-            raise ValueError("a settled wait saw the initial load complete (loaded: true)")
-        if self.loaded is False and self.outcome != "capped":
-            raise ValueError("only a capped wait ends before the initial load completes")
-        return self
 
 
 class ForegroundChange(BaseModel):

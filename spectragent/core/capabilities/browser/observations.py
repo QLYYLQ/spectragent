@@ -779,14 +779,10 @@ class BrowserCaptureStateObs(BrowserCaptureFragment, CaptureStateFragment):
     def settle_state(self) -> SettleState | None:
         """The capture's settle wait; ``None`` when the wait is off (``settle_max_wait_s: 0``).
 
-        ``loaded`` (§4.4, "初次加载是否完成") is read off the record: ``False``
-        when the wait ended with ``load`` still pending — the main frame's
-        current document never reached its ``load`` event within the cap;
-        ``True`` for any other ``settled`` or ``capped`` wait; ``None`` for
-        ``unknown``. A document whose load never finishes is waited on for
-        one cap in total (``navigation.MainFrameLoad``), so only the capture
-        that spent that cap reads ``False``; later captures of the same
-        document no longer wait on its load and read ``True``.
+        ``loaded`` (§4.4, "初次加载是否完成") is the record's
+        ``main_document_loaded``: whether the main frame's current document
+        had reached its ``load`` event when the capture began, as recorded at
+        the capture, whatever the wait's outcome; ``None`` when not known.
         """
         settle = self.settle
         if settle is None:

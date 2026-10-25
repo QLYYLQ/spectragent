@@ -10,7 +10,8 @@ finishes, so its ``load`` never fires, the way those sites behaved:
 
 - setup opens it after the lifecycle bound, logging a warning, and the
   observations that follow are captured; the first pays the settle wait's
-  ``load`` budget once, the second does not wait for that ``load`` again;
+  ``load`` budget once, the second does not wait for that ``load`` again,
+  and both record that the main document had not loaded;
 - a server that never answers is a navigation that never commits, and it
   still fails — setup with it as the start page fails, naming it;
 - a 204 commits nothing: Chrome answers with ``errorText`` and the navigation
@@ -144,6 +145,7 @@ async def test_a_page_whose_load_never_fires_opens_with_a_warning(
             "capped",
             ["load", "dom", "content"],
         )
+        assert first.settle.main_document_loaded is False
 
         second = await _meta(cap, 2)
         assert second.url == url
@@ -151,6 +153,9 @@ async def test_a_page_whose_load_never_fires_opens_with_a_warning(
             "the document's load is waited for at most one settle cap, across observations"
         )
         assert second.settle.waited_ms < SETTLE_CAP_S * 1000
+        assert second.settle.main_document_loaded is False, (
+            "not waited for again, and still not loaded (§4.4 '初次加载是否完成')"
+        )
     finally:
         await cap.teardown()
 
@@ -185,6 +190,8 @@ async def test_a_navigation_chrome_reports_failed_fails_at_once(origin: str) -> 
         assert result.success is False
         assert result.error == f"navigation to '{origin}/no-content' failed: net::ERR_ABORTED"
         assert took < 5.0
-        assert (await _meta(cap, 1)).url == start
+        meta = await _meta(cap, 1)
+        assert meta.url == start
+        assert meta.settle is not None and meta.settle.main_document_loaded is True
     finally:
         await cap.teardown()

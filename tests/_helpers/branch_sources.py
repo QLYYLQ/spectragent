@@ -50,9 +50,16 @@ TASK_TEXT = "put the blue kettle in the cart"
 
 #: A capture taken before the page finished loading: the main document's ``load``
 #: never came within the settle cap (§4.4 "初次加载是否完成").
-NOT_LOADED = PageSettle(waited_ms=5002, outcome="capped", waiting_for=["load", "dom", "content"])
+NOT_LOADED = PageSettle(
+    waited_ms=5002,
+    outcome="capped",
+    waiting_for=["load", "dom", "content"],
+    main_document_loaded=False,
+)
 #: A page whose DOM never went quiet: capped, but its document had loaded.
-NEVER_QUIET = PageSettle(waited_ms=5001, outcome="capped", waiting_for=["dom"])
+NEVER_QUIET = PageSettle(
+    waited_ms=5001, outcome="capped", waiting_for=["dom"], main_document_loaded=True
+)
 #: A capture state whose capture failed (recorded as a ``FragmentFailure``).
 CAPTURE_FAILED = "failed"
 

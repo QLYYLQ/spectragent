@@ -155,6 +155,18 @@ class TestMainFrameLoad:
         load.gone()
         assert not load.loading
 
+    async def test_loaded_is_the_fact_loading_is_whether_to_wait(self) -> None:
+        load = MainFrameLoad(MAIN)
+        assert load.loaded is None, "nothing heard of"
+        load.lifecycle(MAIN, "L1", "init")
+        assert load.loaded is False
+        assert await load.wait_loaded(1.0, budget_s=0.02) is False
+        # Its budget is spent: not waited on again, and still not loaded.
+        assert _finished_without_suspending(load.wait_loaded(1.0, budget_s=0.02)) is True
+        assert load.loaded is False
+        load.lifecycle(MAIN, "L1", "load")
+        assert load.loaded is True
+
 
 class TestFeedFollowsTheLoad:
     def test_its_sessions_lifecycle_events_drive_the_load(self) -> None:
@@ -286,7 +298,7 @@ class TestWaitForSettle:
         started = time.monotonic()
         settle = await _settle(tab, max_wait_s=5.0)
         assert (settle.outcome, settle.waiting_for, settle.detail) == ("settled", [], None)
-        assert not settle.capped and settle.main_document_loaded is True
+        assert not settle.capped
         assert time.monotonic() - started < 1.0
         world, probe = tab.sent
         assert world == (
@@ -307,7 +319,6 @@ class TestWaitForSettle:
         elapsed = time.monotonic() - started
         assert (settle.outcome, settle.waiting_for) == ("capped", ["dom"])
         assert settle.capped
-        assert settle.main_document_loaded is True, "a DOM that never went quiet is no evidence"
         assert 0.15 <= elapsed < 1.0
         assert 150 <= settle.waited_ms < 1000
 
@@ -357,14 +368,10 @@ class TestWaitForSettle:
         tab = _Tab(lambda _budget: _quiet())
         first = await _settle(tab, load=load, max_wait_s=0.1)
         assert (first.outcome, first.waiting_for) == ("capped", ["load", "dom", "content"])
-        assert first.main_document_loaded is False, "the definite evidence of an unloaded page"
         assert tab.probes() == 0
         # The same document is not waited on for its load again: the page is probed.
         second = await _settle(tab, load=load, max_wait_s=0.1)
         assert second.outcome == "settled" and tab.probes() == 1
-        # The known gap (§4.4 "初次加载是否完成"): the record no longer says
-        # the load is outstanding, so the later capture reads as loaded.
-        assert second.main_document_loaded is True
 
     async def test_a_document_replaced_during_the_probe_is_waited_for(self) -> None:
         answers: list[Any] = [
@@ -419,7 +426,6 @@ class TestWaitForSettle:
         settle = await _settle(tab, frame_id=None)
         assert settle.outcome == "unknown"
         assert settle.detail == "the tab's main frame is not known"
-        assert settle.main_document_loaded is None
         assert tab.sent == []
 
     async def test_the_probe_reads_its_budget_from_what_is_left(self) -> None:
@@ -499,6 +505,74 @@ def _settle_methods(browser: FakeBrowser, sid: str) -> list[str]:
         for sent in browser.control.sent
         if sent.session_id == sid and sent.method in wanted
     ]
+
+
+class TestMainDocumentLoaded:
+    """Each record says whether the main document had loaded at capture (§4.4 "初次加载是否完成").
+
+    A fact about the page, read from the tab's load tracker when the wait
+    ends, not a reading of how the wait went.
+    """
+
+    async def test_a_loaded_page_says_so(self) -> None:
+        load = MainFrameLoad(MAIN)
+        for name in ("commit", "DOMContentLoaded", "load"):
+            load.lifecycle(MAIN, "L1", name)
+        settle = await _settle(_Tab(lambda _budget: _quiet()), load=load)
+        assert (settle.outcome, settle.main_document_loaded) == ("settled", True)
+        busy = await _settle(_Tab(_busy), load=load, max_wait_s=0.1)
+        assert (busy.outcome, busy.waiting_for, busy.main_document_loaded) == (
+            "capped",
+            ["dom"],
+            True,
+        ), "a DOM that never went quiet is no evidence of an unloaded page"
+
+    async def test_a_load_that_never_comes_is_false_on_every_capture(self) -> None:
+        """The first capture spends the document's load budget; the later ones still say so."""
+        load = MainFrameLoad(MAIN)
+        load.lifecycle(MAIN, "L1", "init")
+        tab = _Tab(lambda _budget: _quiet())
+        first = await _settle(tab, load=load, max_wait_s=0.1)
+        assert (first.outcome, first.main_document_loaded) == ("capped", False)
+        second = await _settle(tab, load=load, max_wait_s=0.1)
+        assert second.outcome == "settled", "the load is not waited on again"
+        assert second.main_document_loaded is False, "but it has still not come"
+        third = await _settle(_Tab(_busy), load=load, max_wait_s=0.1)
+        assert (third.waiting_for, third.main_document_loaded) == (["dom"], False)
+
+    async def test_a_document_that_loads_between_captures_turns_true(self) -> None:
+        load = MainFrameLoad(MAIN)
+        load.lifecycle(MAIN, "L1", "init")
+        tab = _Tab(lambda _budget: _quiet())
+        first = await _settle(tab, load=load, max_wait_s=0.1)
+        assert first.main_document_loaded is False
+        load.lifecycle(MAIN, "L1", "load")
+        second = await _settle(tab, load=load, max_wait_s=0.1)
+        assert (second.outcome, second.main_document_loaded) == ("settled", True)
+        load.lifecycle(MAIN, "L2", "init")  # the next document
+        third = await _settle(tab, load=load, max_wait_s=0.1)
+        assert third.main_document_loaded is False
+
+    async def test_what_cannot_be_read_is_none_never_true(self) -> None:
+        tab = _Tab(lambda _budget: _quiet())
+        no_tracker = await _settle(tab)
+        assert (no_tracker.outcome, no_tracker.main_document_loaded) == ("settled", None)
+        unheard = await _settle(tab, load=MainFrameLoad(MAIN))
+        assert unheard.main_document_loaded is None, "no lifecycle event of the main frame heard"
+        gone = MainFrameLoad(MAIN)
+        gone.lifecycle(MAIN, "L1", "load")
+        gone.gone()
+        assert (await _settle(tab, load=gone)).main_document_loaded is None
+        unknown = await _settle(tab, load=MainFrameLoad(None), frame_id=None)
+        assert (unknown.outcome, unknown.main_document_loaded) == ("unknown", None)
+
+    async def test_an_unreadable_page_still_records_the_load(self) -> None:
+        """The probe's failure is about the wait; the document's load is known apart from it."""
+        load = MainFrameLoad(MAIN)
+        load.lifecycle(MAIN, "L1", "load")
+        tab = _Tab(lambda _budget: {})
+        settle = await _settle(tab, load=load)
+        assert (settle.outcome, settle.main_document_loaded) == ("unknown", True)
 
 
 class TestCapabilitySettles:
@@ -685,7 +759,9 @@ class TestTraceRecord:
         ids=["dom", "screenshot", "browser_meta"],
     )
     def test_a_record_round_trips(self, fragment: Any) -> None:
-        record = PageSettle(waited_ms=5003, outcome="capped", waiting_for=["dom"])
+        record = PageSettle(
+            waited_ms=5003, outcome="capped", waiting_for=["dom"], main_document_loaded=True
+        )
         fragment.settle = record
         encoded = encode_fragment(3, fragment)
         assert encoded is not None
@@ -695,6 +771,7 @@ class TestTraceRecord:
             "outcome": "capped",
             "waiting_for": ["dom"],
             "detail": None,
+            "main_document_loaded": True,
         }
         artifact = encoded.artifact.data if encoded.artifact is not None else None
         back = decode_fragment(encoded.key, type(fragment), payload, artifact)

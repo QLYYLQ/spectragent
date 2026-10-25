@@ -1185,6 +1185,21 @@ class TestUnloadedCheckpoints:
         assert dict(tasks.skipped) == {"run-a#s1": _UNLOADED_AT_1}
         assert "run-a#s1 left out" in caplog.text
 
+    def test_a_later_capture_of_a_document_that_never_loaded_is_left_out_too(
+        self, tmp_path: Path
+    ) -> None:
+        """Its wait settled (the load is not waited on twice), but the load still had not come."""
+        later = PageSettle(waited_ms=520, outcome="settled", main_document_loaded=False)
+        write_source(
+            tmp_path, "run-a", steps=[Step(), Step(capture=NOT_LOADED), Step(capture=later)]
+        )
+        tasks = loader(tmp_path)
+        assert tasks.task_ids() == ["run-a/s0/b0"]
+        assert tasks.skipped["run-a#s2"] == (
+            "step 2 was captured before its initial load finished (browser.capture_state: the "
+            "wait ended settled after 520 ms) (exclude_unloaded_checkpoints)"
+        )
+
     def test_off_every_candidate_is_a_checkpoint(self, tmp_path: Path) -> None:
         write_source(tmp_path, "run-a", steps=self._three())
         tasks = loader(tmp_path, exclude_unloaded_checkpoints=False)

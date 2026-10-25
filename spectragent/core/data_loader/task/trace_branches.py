@@ -57,7 +57,7 @@ its key ``<source_run_id>/s<t>/v<variant_id>``.
 default), a chosen candidate whose recorded observation was captured before
 the captured surface finished its initial load — its capture state's
 ``settle_state.loaded`` is ``False`` (arch §4.4 "初次加载是否完成"; on the
-browser, the main document's ``load`` never came within the settle cap) — is
+browser, the main document had not reached its ``load`` event at capture) — is
 not a checkpoint: it is left out after the ``step_selector`` chose it, in
 ``skipped`` under ``<path>#s<t>`` (a task variant at it, under the variant's
 key) with the reason, and logged at INFO. A source with no capture-state
@@ -265,8 +265,8 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
                 description=(
                     "Leave out, after step_selector chose it, a checkpoint whose recorded "
                     "observation was captured before it finished its initial load: its "
-                    "capture_state settle says loaded: false (the wait ended at its limit "
-                    "first; in a browser, before the main document's load event). A page "
+                    "capture_state settle says loaded: false (in a browser, the main document "
+                    "had not reached its load event, however the wait ended). A page "
                     "whose DOM never went quiet does not count. Each one left out is in the "
                     "loader's 'skipped' with the reason; a step with no capture_state "
                     "recorded is kept. false: no check."

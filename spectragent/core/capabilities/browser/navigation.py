@@ -165,6 +165,20 @@ class MainFrameLoad:
         """The current document is known and has not reached ``load``."""
         return self._loader_id is not None and not self._loaded
 
+    @property
+    def loaded(self) -> bool | None:
+        """Whether the current document has reached its ``load`` event; ``None`` when unknown.
+
+        The fact a capture records (``PageSettle.main_document_loaded``),
+        unlike :attr:`loading` and :meth:`wait_loaded`, which say whether to
+        wait: a document whose load budget is spent is not waited on again,
+        yet it is still not loaded. ``None`` when no document of the main
+        frame has been heard of (or the tab is gone).
+        """
+        if self._loader_id is None:
+            return None
+        return self._loaded
+
     def lifecycle(self, frame_id: str | None, loader_id: str | None, name: str | None) -> None:
         """``Page.lifecycleEvent``: *name* reached by the document of *loader_id*."""
         if frame_id is None or frame_id != self.main_frame_id or not loader_id or not name:

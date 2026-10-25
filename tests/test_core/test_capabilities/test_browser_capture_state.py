@@ -92,12 +92,15 @@ class TestTheFragment:
         [
             (None, None),
             (
-                PageSettle(waited_ms=640, outcome="settled"),
+                PageSettle(waited_ms=640, outcome="settled", main_document_loaded=True),
                 SettleState(outcome="settled", waited_ms=640, loaded=True),
             ),
             (
                 PageSettle(
-                    waited_ms=5000, outcome="capped", waiting_for=["load", "dom", "content"]
+                    waited_ms=5000,
+                    outcome="capped",
+                    waiting_for=["load", "dom", "content"],
+                    main_document_loaded=False,
                 ),
                 SettleState(
                     outcome="capped",
@@ -107,39 +110,45 @@ class TestTheFragment:
                 ),
             ),
             (
-                PageSettle(waited_ms=5000, outcome="capped", waiting_for=["dom"]),
-                SettleState(outcome="capped", waited_ms=5000, loaded=True, pending=("dom",)),
-            ),
-            (
-                PageSettle(waited_ms=5000, outcome="capped", waiting_for=["dom", "content"]),
-                SettleState(
-                    outcome="capped", waited_ms=5000, loaded=True, pending=("dom", "content")
-                ),
-            ),
-            (
-                PageSettle(waited_ms=5000, outcome="capped", waiting_for=["content"]),
-                SettleState(outcome="capped", waited_ms=5000, loaded=True, pending=("content",)),
+                PageSettle(waited_ms=40, outcome="settled", main_document_loaded=False),
+                SettleState(outcome="settled", waited_ms=40, loaded=False),
             ),
             (
                 PageSettle(
-                    waited_ms=3, outcome="unknown", detail="the tab's main frame is not known"
+                    waited_ms=5000,
+                    outcome="capped",
+                    waiting_for=["dom"],
+                    main_document_loaded=True,
+                ),
+                SettleState(outcome="capped", waited_ms=5000, loaded=True, pending=("dom",)),
+            ),
+            (
+                PageSettle(waited_ms=5000, outcome="capped", waiting_for=["content"]),
+                SettleState(outcome="capped", waited_ms=5000, loaded=None, pending=("content",)),
+            ),
+            (
+                PageSettle(
+                    waited_ms=3,
+                    outcome="unknown",
+                    detail="the tab's main frame is not known",
+                    main_document_loaded=True,
                 ),
                 SettleState(
                     outcome="unknown",
                     waited_ms=3,
-                    loaded=None,
+                    loaded=True,
                     detail="the tab's main frame is not known",
                 ),
             ),
         ],
         ids=[
             "off",
-            "settled",
+            "settled on a loaded page",
             "capped before the load",
+            "settled on a page whose load never came",
             "capped on a DOM that never went quiet",
-            "capped with an unanswered probe",
-            "capped on an empty viewport",
-            "unknown",
+            "load not known",
+            "unknown wait on a loaded page",
         ],
     )
     def test_settle_is_the_captures_settle_record(
@@ -171,7 +180,7 @@ class TestTheFragment:
         """The capability assigns ``settle`` / ``focus_moved`` after the watchdogs answered."""
         fragment = _state()
         assert fragment.settle_state is None and fragment.foreground_change is None
-        fragment.settle = PageSettle(waited_ms=120, outcome="settled")
+        fragment.settle = PageSettle(waited_ms=120, outcome="settled", main_document_loaded=True)
         fragment.focus_moved = FocusMove(reason="new_tab", from_tab="A", to_tab="B")
         assert fragment.settle_state == SettleState(outcome="settled", waited_ms=120, loaded=True)
         assert fragment.foreground_change == ForegroundChange(
@@ -493,7 +502,9 @@ class TestTheCapture:
             settle = shot.settle
             assert settle is not None and state.settle == settle
             assert state.settle_state == SettleState(
-                outcome=settle.outcome, waited_ms=settle.waited_ms, loaded=True
+                outcome=settle.outcome,
+                waited_ms=settle.waited_ms,
+                loaded=settle.main_document_loaded,
             )
             assert state.foreground_change is None and state.focus_moved is None
             assert state.pointer == UNKNOWN_POINTER

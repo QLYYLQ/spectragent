@@ -239,8 +239,8 @@ def unloaded_capture_reason(trace: RunTrace, step: int) -> str | None:
     :class:`CaptureStateFragment`, never a capability's own labels: the
     run's negotiated env-source fragment whose local name is
     ``capture_state``. A reason only when its ``settle_state.loaded`` is
-    ``False`` — the wait ended at its limit with the initial load still in
-    progress (arch §4.4 "初次加载是否完成"). ``None`` is no evidence: the run
+    ``False`` — the initial load was still in progress when the step was
+    captured (arch §4.4 "初次加载是否完成"). ``None`` is no evidence: the run
     negotiated no capture state, the step recorded none, its capture failed,
     there was no wait, or the load was not known to be incomplete.
 

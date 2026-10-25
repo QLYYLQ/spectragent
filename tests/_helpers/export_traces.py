@@ -60,10 +60,17 @@ def png(width: int, height: int, color: tuple[int, int, int] = (230, 230, 230)) 
 
 #: A capture taken before the page finished loading: the main document's ``load``
 #: never came within the settle cap (§4.4 "初次加载是否完成").
-NOT_LOADED = PageSettle(waited_ms=5002, outcome="capped", waiting_for=["load", "dom", "content"])
+NOT_LOADED = PageSettle(
+    waited_ms=5002,
+    outcome="capped",
+    waiting_for=["load", "dom", "content"],
+    main_document_loaded=False,
+)
 #: A page whose DOM never went quiet: capped, but its document had loaded.
-NEVER_QUIET = PageSettle(waited_ms=5001, outcome="capped", waiting_for=["dom"])
-_SETTLED = PageSettle(waited_ms=520, outcome="settled")
+NEVER_QUIET = PageSettle(
+    waited_ms=5001, outcome="capped", waiting_for=["dom"], main_document_loaded=True
+)
+_SETTLED = PageSettle(waited_ms=520, outcome="settled", main_document_loaded=True)
 
 
 def capture_state(settle: PageSettle | None = _SETTLED) -> BrowserCaptureStateObs:

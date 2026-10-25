@@ -248,6 +248,7 @@ async def test_the_screenshot_holds_what_the_page_renders_after_its_load(origin:
     assert isinstance(shot, ScreenshotObs)
     assert _box_colour(shot) == GREEN, "the late content is missing from the screenshot"
     assert shot.settle is not None and shot.settle.outcome == "settled"
+    assert shot.settle.main_document_loaded is True
     # Three requests of 300 ms each, then the quiet window: the wait saw them through.
     assert shot.settle.waited_ms >= 3 * PART_DELAY_S * 1000
     assert took < 5.0
@@ -282,6 +283,7 @@ async def test_a_page_that_never_goes_quiet_is_captured_at_the_cap(origin: str) 
     assert isinstance(shot, ScreenshotObs) and shot.image_bytes
     assert shot.settle is not None
     assert (shot.settle.outcome, shot.settle.waiting_for) == ("capped", ["dom"])
+    assert shot.settle.main_document_loaded is True, "loaded, only never quiet"
     assert 1400 <= shot.settle.waited_ms < 2500
     assert took < 4.0
 

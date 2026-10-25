@@ -307,6 +307,16 @@ class PageSettle(BaseModel):
     wait never got past — ``["content"]`` alone is a quiet page whose
     viewport stayed empty) or ``unknown`` (the page's state could not be
     read — ``detail`` says why — and the capture went ahead at once).
+
+    ``main_document_loaded`` is a fact about the page, not about the wait
+    (§4.4, "初次加载是否完成"): whether the main frame's current document had
+    reached its ``load`` lifecycle event when the wait ended, immediately
+    before the capture — read from the tab's :class:`MainFrameLoad`, the
+    tracker the wait itself uses. ``None`` when that is not known: no tracker,
+    or no lifecycle event of the main frame heard. It does not follow from
+    ``outcome``: a document whose load never finishes is waited on for one
+    cap in total, so a later capture of it can be ``settled`` and still say
+    ``False``. ``None`` is also what a record without the field reads as.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -315,29 +325,13 @@ class PageSettle(BaseModel):
     outcome: SettleOutcome
     waiting_for: list[SettlePending] = Field(default_factory=list)
     detail: str | None = None
+    #: Whether the main document had reached its ``load`` event at capture (class docstring).
+    main_document_loaded: bool | None = None
 
     @property
     def capped(self) -> bool:
         """Whether the cap ended the wait."""
         return self.outcome == "capped"
-
-    @property
-    def main_document_loaded(self) -> bool | None:
-        """Whether the main document had loaded as far as this wait saw (§4.4, "初次加载是否完成").
-
-        ``False`` when the wait ended with ``load`` pending: the main frame's
-        current document never reached its ``load`` event within the cap (or
-        a document that replaced it was never waited for). ``True`` for any
-        other ``settled`` or ``capped`` wait. ``None`` for ``unknown``: the
-        page's state could not be read. A document whose load never finishes
-        is waited on for one cap in total (:meth:`MainFrameLoad.wait_loaded`),
-        so only the wait that spent that cap says ``False``; later waits on
-        the same document no longer wait for its load, list no ``load`` and
-        say ``True``.
-        """
-        if self.outcome == "unknown":
-            return None
-        return "load" not in self.waiting_for
 
 
 class _PageWatch(BaseModel):
@@ -484,7 +478,10 @@ async def wait_for_settle(
     """Wait for the tab's page to settle (module docstring), at most *max_wait_s*.
 
     Never raises for the page's sake: whatever cannot be read ends the wait
-    as ``unknown`` and the capture goes ahead.
+    as ``unknown`` and the capture goes ahead. Whichever way it ends, the
+    record says whether the main document had loaded by then
+    (``PageSettle.main_document_loaded``, read from *load*; ``None`` without
+    one).
     """
     started = clock()
     deadline = started + max_wait_s
@@ -499,6 +496,7 @@ async def wait_for_settle(
             outcome=outcome,
             waiting_for=list(waiting_for),
             detail=detail,
+            main_document_loaded=load.loaded if load is not None else None,
         )
 
     for document in range(_MAX_DOCUMENTS):
