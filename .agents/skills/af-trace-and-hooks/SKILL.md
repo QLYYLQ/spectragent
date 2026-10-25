@@ -1,6 +1,6 @@
 ---
 name: af-trace-and-hooks
-description: Design or change All4One AOP hooks, RunTrace persistence, redaction, timing, or trace-based evaluation. Use when recording a new fact, intercepting success or failure, changing WAL semantics, deciding whether data belongs in a trace, or implementing an evaluator.
+description: Design or change Spectragent AOP hooks, RunTrace persistence, redaction, timing, or trace-based evaluation. Use when recording a new fact, intercepting success or failure, changing WAL semantics, deciding whether data belongs in a trace, or implementing an evaluator.
 ---
 
 # Hooks and RunTrace

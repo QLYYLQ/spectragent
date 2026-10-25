@@ -134,7 +134,7 @@ class MonitorApp(App[None], Generic[T]):
     A completed operation stays visible until the user closes the terminal.
     """
 
-    TITLE = "All4One · Running experiment"
+    TITLE = "Spectragent · Running experiment"
     ESCAPE_TO_MINIMIZE = False
     VERTICAL_BREAKPOINTS = [(0, "-short"), (34, "-tall")]
     CSS = """
@@ -191,7 +191,7 @@ class MonitorApp(App[None], Generic[T]):
         self._suspended_handlers: list[logging.Handler] = []
 
     def compose(self) -> ComposeResult:
-        yield Static(Text.assemble(("All4One", "bold"), "  Running experiment"), id="topbar")
+        yield Static(Text.assemble(("Spectragent", "bold"), "  Running experiment"), id="topbar")
         yield FactSheet(id="summary")
         with Panel("Tasks", key="1", id="tasks-panel", help=TASKS_HELP):
             yield TaskTable(TASK_SPEC, id="tasks")

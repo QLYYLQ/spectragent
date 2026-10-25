@@ -224,7 +224,7 @@ def test_experiment_comparison_exposes_matched_verdicts(tmp_path: Path):
 def test_static_app_is_packaged_and_uses_only_local_scripts(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "All4One" in response.text
+    assert "Spectragent" in response.text
     scripts = re.findall(r'<script[^>]+src="([^"]+)"', response.text)
     assert scripts and all(script.startswith("/assets/") for script in scripts)
     for script in scripts:

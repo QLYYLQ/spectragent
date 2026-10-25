@@ -1,6 +1,6 @@
 ---
 name: af-improve-replay-rules
-description: Diagnose All4One browser recording and replay differences, assess whether URL/API matching or restoration criteria may change, and validate scoped YAML rule proposals against recorded evidence. Use for replay misses, restoration warnings, and evidence-driven rule improvement.
+description: Diagnose Spectragent browser recording and replay differences, assess whether URL/API matching or restoration criteria may change, and validate scoped YAML rule proposals against recorded evidence. Use for replay misses, restoration warnings, and evidence-driven rule improvement.
 ---
 
 # Improve replay rules from evidence

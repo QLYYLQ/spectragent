@@ -1,6 +1,6 @@
 ---
 name: af-regenerate-and-verify
-description: Regenerate and verify All4One's conscribe-composed configuration after changing `__wiring__`, `Annotated` config fields, or registrars. Use when YAML rejects a valid-looking key, a configured knob has no effect, or generated artifacts may be stale.
+description: Regenerate and verify Spectragent's conscribe-composed configuration after changing `__wiring__`, `Annotated` config fields, or registrars. Use when YAML rejects a valid-looking key, a configured knob has no effect, or generated artifacts may be stale.
 ---
 
 # Regenerate and Verify Configuration

@@ -1,6 +1,6 @@
 ---
 name: af-add-an-observation-fragment
-description: Add or change an All4One observation fragment and the resolver that produces it. Use for new environment state, fragment negotiation and qualification, optional fragment failure, batched capture cycles, capture timestamps, or observation cost budgets.
+description: Add or change a Spectragent observation fragment and the resolver that produces it. Use for new environment state, fragment negotiation and qualification, optional fragment failure, batched capture cycles, capture timestamps, or observation cost budgets.
 ---
 
 # Add an Observation Fragment

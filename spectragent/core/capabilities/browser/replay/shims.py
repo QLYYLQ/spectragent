@@ -42,7 +42,7 @@ SHIM_TEMPLATE = r"""// Copyright 2017 The Chromium Authors. All rights reserved.
 //
 // Ported from Web Page Replay deterministic.js
 // (chromium.googlesource.com/webpagereplay @ 6a31bb0937dccd01bedae8bd6cdeb8c113937cfb).
-// Modified by af (All4One) for replayability: pinned. Kept: the Date
+// Modified by Spectragent for replayability: pinned. Kept: the Date
 // replacement's shape (no-argument Date and Date.now read the pinned clock,
 // every other form is native), the per-document clock (T0, then 50 ms every 25
 // constructions; never frozen, so a busy-wait on Date.now ends) and a

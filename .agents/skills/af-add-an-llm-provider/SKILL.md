@@ -1,6 +1,6 @@
 ---
 name: af-add-an-llm-provider
-description: Add or debug an All4One LLM provider, gateway route, schema dialect, or structured-output failure path. Use for `ChatModelBase` providers, `model_type` and `base_url` routing, schema-related 400s, ignored schemas, fenced output, truncation, and provider-specific validation errors.
+description: Add or debug a Spectragent LLM provider, gateway route, schema dialect, or structured-output failure path. Use for `ChatModelBase` providers, `model_type` and `base_url` routing, schema-related 400s, ignored schemas, fenced output, truncation, and provider-specific validation errors.
 ---
 
 # Add or Debug an LLM Route

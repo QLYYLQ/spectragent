@@ -1,6 +1,6 @@
 ---
 name: af-data-flywheel
-description: Configure or extend the All4One data flywheel, which records browser environment evidence, replays it offline, branches recorded runs, exports SFT samples and measures the data line. Use for record, replay, branch, export or metrics YAML, and when adding or changing an archiver, network source, miss policy, replayability tier, restorer, step selector, action translator, exporter, or a student agent's `format_react_output`.
+description: Configure or extend the Spectragent data flywheel, which records browser environment evidence, replays it offline, branches recorded runs, exports SFT samples and measures the data line. Use for record, replay, branch, export or metrics YAML, and when adding or changing an archiver, network source, miss policy, replayability tier, restorer, step selector, action translator, exporter, or a student agent's `format_react_output`.
 ---
 
 # Configure and Extend the Data Flywheel

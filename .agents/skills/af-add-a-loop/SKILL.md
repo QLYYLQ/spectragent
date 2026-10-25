@@ -1,6 +1,6 @@
 ---
 name: af-add-a-loop
-description: Add or change an All4One AgentLoop execution strategy, including phases, retries, failures, abort propagation, observation cycles, and loop configuration. Use for code under `spectragent/core/loops/` or when deciding whether behavior belongs to a Loop or Agent.
+description: Add or change a Spectragent AgentLoop execution strategy, including phases, retries, failures, abort propagation, observation cycles, and loop configuration. Use for code under `spectragent/core/loops/` or when deciding whether behavior belongs to a Loop or Agent.
 ---
 
 # Add an AgentLoop

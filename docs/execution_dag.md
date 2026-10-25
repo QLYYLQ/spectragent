@@ -1,4 +1,4 @@
-# All4One Agent Framework — 开发执行依赖图
+# Spectragent — 开发执行依赖图
 
 > 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 34 个开发模块（M01–M34）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 >

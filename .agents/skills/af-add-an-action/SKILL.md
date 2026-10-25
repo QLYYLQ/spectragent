@@ -1,6 +1,6 @@
 ---
 name: af-add-an-action
-description: Add or change an All4One action and its model-facing parameter contract. Use for new verbs, capability action wiring, action negotiation or qualification errors, prompt descriptor changes, and parameters that are advertised but not consumed.
+description: Add or change a Spectragent action and its model-facing parameter contract. Use for new verbs, capability action wiring, action negotiation or qualification errors, prompt descriptor changes, and parameters that are advertised but not consumed.
 ---
 
 # Add an Action

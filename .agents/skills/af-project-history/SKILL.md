@@ -1,6 +1,6 @@
 ---
 name: af-project-history
-description: Resume AF/All4One work from its current implementation handoff, remaining-work ledger, durable user decisions, and historical evidence. Use when continuing earlier work or revisiting browser-input, anti-bot, LLM-routing, data-flywheel, decision-model, operations, or visual-system context. Never substitute memory for current architecture or code inspection.
+description: Resume AF/Spectragent work from its current implementation handoff, remaining-work ledger, durable user decisions, and historical evidence. Use when continuing earlier work or revisiting browser-input, anti-bot, LLM-routing, data-flywheel, decision-model, operations, or visual-system context. Never substitute memory for current architecture or code inspection.
 ---
 
 # AF project history

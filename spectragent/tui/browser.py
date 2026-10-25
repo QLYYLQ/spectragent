@@ -121,7 +121,7 @@ STEP_SPEC = [
 class BrowserApp(App[None]):
     """A keyboard-friendly experiment index and step inspector; never executes a trace."""
 
-    TITLE = "All4One · Recorded experiments"
+    TITLE = "Spectragent · Recorded experiments"
     ESCAPE_TO_MINIMIZE = False
     #: How long typing must pause before the search reads the runs again.
     SEARCH_DEBOUNCE_S = 0.2
@@ -195,7 +195,7 @@ class BrowserApp(App[None]):
     def compose(self) -> ComposeResult:
         context = f"  {self.root}" if self.root is not None else ""
         yield Static(
-            Text.assemble(("All4One", "bold"), "  Recorded experiments", (context, "dim")),
+            Text.assemble(("Spectragent", "bold"), "  Recorded experiments", (context, "dim")),
             id="topbar",
         )
         with Panel("Runs", key="1", id="runs-panel", help=RUNS_HELP):

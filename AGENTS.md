@@ -56,7 +56,7 @@ uv run pyright spectragent tests
 
 ## 2. Architecture — the big picture
 
-The framework is an **agent evaluation platform** targeting researchers. Design name: "All4One" (package rename `spectragent` → `all4one` is P3, not yet done). Target scope goes well beyond browser agents: SWE agents (SWE-bench), tool-use (τ-bench, ToolBench), multi-tool reasoning (GAIA), desktop (OSWorld), mobile, GPU profiling (KernelBench).
+The framework is an **agent evaluation platform** targeting researchers. The project and its package are both named **Spectragent** (`spectragent`). "All4One" was an earlier internal codename that is retired: never use it in code, docs, UI text or skills, and do not plan a rename to it. Target scope goes well beyond browser agents: SWE agents (SWE-bench), tool-use (τ-bench, ToolBench), multi-tool reasoning (GAIA), desktop (OSWorld), mobile, GPU profiling (KernelBench).
 
 ### 2.1 Seven non-negotiable principles
 

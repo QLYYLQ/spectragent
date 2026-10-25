@@ -2812,12 +2812,12 @@ function App() {
           <img
             className="brand-mark"
             src="/brand/mark.svg"
-            alt="All4One 棱镜标志"
+            alt="Spectragent 棱镜标志"
             width="42"
             height="42"
           />
           <span>
-            All4One<small>实验查看器</small>
+            Spectragent<small>实验查看器</small>
           </span>
         </a>
         <div className="nav-label">工作区</div>

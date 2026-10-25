@@ -1,9 +1,9 @@
 ---
 name: af-add-a-capability
-description: Add a new All4One environment capability or backend, especially when it must compose with existing capabilities. Use for new Capability classes, backend registrars, lifecycle, observation-cycle contracts, or multi-capability routing; not for adding only one action or fragment to an existing capability.
+description: Add a new Spectragent environment capability or backend, especially when it must compose with existing capabilities. Use for new Capability classes, backend registrars, lifecycle, observation-cycle contracts, or multi-capability routing; not for adding only one action or fragment to an existing capability.
 ---
 
-# Add an All4One Capability
+# Add a Spectragent Capability
 
 Treat `docs/architecture_design.md` §4.9 and `docs/execution_dag.md` M06 as authoritative. If they conflict with the implementation or this skill, stop and surface the conflict before coding.
 

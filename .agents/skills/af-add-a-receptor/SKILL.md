@@ -1,6 +1,6 @@
 ---
 name: af-add-a-receptor
-description: Add or repair a configurable wired strategy receptor in an All4One capability, agent, loop, or action. Use when a swappable implementation has its own knobs, YAML cannot reach those knobs, or code resolves a strategy name and default-constructs a second instance.
+description: Add or repair a configurable wired strategy receptor in a Spectragent capability, agent, loop, or action. Use when a swappable implementation has its own knobs, YAML cannot reach those knobs, or code resolves a strategy name and default-constructs a second instance.
 ---
 
 # Add a Wired Receptor

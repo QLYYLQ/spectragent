@@ -81,7 +81,7 @@ def create_app(
                 f"Initial run {initial_run!r} does not match the selected configuration filters"
             )
     app = FastAPI(
-        title="All4One experiment viewer", docs_url=None, redoc_url=None, openapi_url=None
+        title="Spectragent experiment viewer", docs_url=None, redoc_url=None, openapi_url=None
     )
 
     @app.middleware("http")
@@ -282,7 +282,7 @@ def serve(
         app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=2
     )
     with config.bind_socket() as listener:
-        print(f"All4One viewer: http://{url_host}:{listener.getsockname()[1]}/", flush=True)
+        print(f"Spectragent viewer: http://{url_host}:{listener.getsockname()[1]}/", flush=True)
         store = app.state.annotations
         if store is None:
             print("Read-only local evidence.", flush=True)

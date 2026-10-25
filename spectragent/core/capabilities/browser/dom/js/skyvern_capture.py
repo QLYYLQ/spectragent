@@ -147,7 +147,7 @@ async def _capture_frame_entry(
 
     reply = await source.run_js(
         "Page.createIsolatedWorld",
-        {"frameId": frame_id, "worldName": "all4one-dom-extraction"},
+        {"frameId": frame_id, "worldName": "spectragent-dom-extraction"},
         session_id,
     )
     context_id = (reply or {}).get("executionContextId")
@@ -228,7 +228,7 @@ async def _capture_document(
     frame_id: str | None,
     hit_test: bool = False,
 ) -> TargetCapture:
-    group = f"all4one-dom-{uuid4().hex}"
+    group = f"spectragent-dom-{uuid4().hex}"
     params: dict[str, Any] = {
         "expression": EXTRACTION_SCRIPT,
         "returnByValue": False,

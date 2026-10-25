@@ -138,4 +138,4 @@ def test_busy_port_never_opens_an_unrelated_existing_viewer(tmp_path, monkeypatc
         with pytest.raises(SystemExit):
             server.serve(tmp_path, port=occupied.getsockname()[1], open_browser=True)
         assert occupied.fileno() != -1
-    assert "All4One viewer:" not in capsys.readouterr().out
+    assert "Spectragent viewer:" not in capsys.readouterr().out

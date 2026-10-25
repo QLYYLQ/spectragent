@@ -1,7 +1,7 @@
-# All4One Agent Framework — Architecture Design Document
+# Spectragent — Architecture Design Document
 
-> **Current package name**: `browseruse_bench` (v0.2.0)
-> **Target vision**: All4One Agent Framework — 通过统一的抽象和 config-driven 机制，支持所有场景的 benchmark 与 agent 评测（browser-use、tool-use、SWE agent 等）。
+> **Package**: `spectragent` (v0.3.0)
+> **Target vision**: Spectragent — 通过统一的抽象和 config-driven 机制，支持所有场景的 benchmark 与 agent 评测（browser-use、tool-use、SWE agent 等）。
 
 ---
 
@@ -25,7 +25,7 @@
 
 框架的组件发现和组装机制与 Spring 类似：
 
-| Spring 概念 | All4One 对应 |
+| Spring 概念 | Spectragent 对应 |
 |------------|-------------|
 | `@Component` / `@Service` | `metaclass=XRegistrar.Meta` + `__registry_key__` |
 | Component Scanning | `discover("module.path")` 导入所有子模块触发注册 |
@@ -5437,7 +5437,6 @@ scope（§4.14）。
 | **P3** | PlanExecuteLoop |
 | **P3** | GPUProfilingCapability（Docker + bare-metal harness split 架构） |
 | **P3** | DesktopVMCapability / AndroidCapability |
-| **P3** | 包重命名 `browseruse_bench` → `all4one` |
 
 ---
 
