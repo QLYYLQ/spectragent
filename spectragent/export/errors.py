@@ -139,6 +139,27 @@ class RoundTripError(ExportError):
         super().__init__(f"{sample_id}: the student's reply does not round-trip: {detail}")
 
 
+class ThoughtRewriteCacheError(ExportError):
+    """An entry of the thought-rewrite cache does not read back as the rewrite asked for.
+
+    The cache is content addressed (arch §4.15 "等待动作"): an entry that
+    does not parse, or whose recorded inputs differ from the request its
+    name stands for, is damaged or was written by something else. It is
+    never used as if it fitted; delete it and export again.
+
+    Attributes:
+        path: The entry's file name inside the cache directory.
+        detail: What does not fit.
+    """
+
+    def __init__(self, path: str, detail: str) -> None:
+        self.path = path
+        self.detail = detail
+        super().__init__(
+            f"thought-rewrite cache entry {path}: {detail} — delete it and export again"
+        )
+
+
 class ExportEmptyError(ExportError):
     """The export produced no sample; the counts say where every source and step went.
 

@@ -21,6 +21,65 @@ ImageTokens = Literal["qwen_vl", "fixed"]
 #: ``thought_index_refs``: drop a teacher thought naming element indices the
 #: student does not see, or keep it as written.
 ThoughtIndexRefs = Literal["drop", "keep"]
+#: ``wait_actions``: keep every recorded wait, or remove the waits a teacher
+#: took on a capture whose settle wait was capped (arch §4.15 "等待动作").
+WaitActions = Literal["keep", "drop_when_capped"]
+
+
+def thought_rewrite_problem(
+    *,
+    wait_actions: WaitActions,
+    thought_source: Literal["teacher", "none"],
+    models: int,
+    cache: str | None,
+) -> str | None:
+    """Why the thought-rewrite fields disagree with ``wait_actions``, or ``None``.
+
+    The one statement of the rule: ``thought_rewrite_llms`` (exactly one
+    model) and ``thought_rewrite_cache`` are needed exactly when waits are
+    dropped and there are teacher thoughts to rewrite
+    (``wait_actions: drop_when_capped`` with ``thought_source: teacher``);
+    anywhere else they would be configured and never used, so they are
+    refused. *models* is how many models ``thought_rewrite_llms`` holds.
+    """
+    needed = wait_actions == "drop_when_capped" and thought_source == "teacher"
+    if needed:
+        if models > 1:
+            return f"thought_rewrite_llms holds at most one model, it holds {models}"
+        missing = [
+            what
+            for what, given in (
+                ("thought_rewrite_llms (the helper chat model that rewrites them)", models == 1),
+                ("thought_rewrite_cache (the directory its rewrites are cached in)", bool(cache)),
+            )
+            if not given
+        ]
+        if missing:
+            return (
+                f"wait_actions: drop_when_capped with thought_source: teacher rewrites the "
+                f"affected thoughts, so it needs {' and '.join(missing)}"
+            )
+        return None
+    configured = [
+        name
+        for name, given in (
+            ("thought_rewrite_llms", models > 0),
+            ("thought_rewrite_cache", cache is not None),
+        )
+        if given
+    ]
+    if configured:
+        reason = (
+            "wait_actions is keep"
+            if wait_actions == "keep"
+            else "thought_source is none, so there is no thought to rewrite"
+        )
+        return (
+            f"{' and '.join(configured)} would never be used: {reason}. Remove "
+            f"{'them' if len(configured) > 1 else 'it'}, or set wait_actions: "
+            f"drop_when_capped with thought_source: teacher"
+        )
+    return None
 
 
 @pydantic_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
@@ -199,4 +258,6 @@ __all__ = [
     "SplitBy",
     "SplitSettings",
     "ThoughtIndexRefs",
+    "WaitActions",
+    "thought_rewrite_problem",
 ]

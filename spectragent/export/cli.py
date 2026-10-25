@@ -6,8 +6,10 @@ The YAML is an ordinary run-root document holding one ``exporter:`` block
 through (``benchmarks.py``), composed by the same
 ``ConfigComposer(registrars=collect_registrars())`` as every other entry
 point; it must yield exactly one exporter. Prints, per split, how many samples
-were written and, per reason, how many steps were not; exits non-zero on any
-failure — in which case nothing was written.
+were written and, per reason, how many steps were not, and — under
+``wait_actions: drop_when_capped`` — how many thought rewrites came from the
+cache and how many from a model call; exits non-zero on any failure — in
+which case nothing was written.
 """
 
 from __future__ import annotations
@@ -72,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     filtered = report.manifest.steps.filtered
     if filtered:
         print(f"  filtered out (each in manifest.json steps.filtered): {len(filtered)} step(s)")
+    if report.thought_rewrites:
+        print(
+            f"  thought rewrites: {report.thought_rewrites['cache_hits']} from the cache, "
+            f"{report.thought_rewrites['model_calls']} model call(s)"
+        )
     return 0
 
 

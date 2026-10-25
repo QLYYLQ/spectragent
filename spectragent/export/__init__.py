@@ -1,11 +1,15 @@
 """Training export: recorded runs in, a student model's dataset out (arch §4.15).
 
 An offline consumer of ``RunTrace``, like an evaluator: it sets up no
-environment, calls no LLM and never writes a source trace. The pipeline
+environment, calls no student or teacher model (only, under
+``wait_actions: drop_when_capped``, its own thought rewriter) and never writes
+a source trace. The pipeline
 (``runner.py``, driven by ``spectragent export`` in ``cli.py``) — sources and
 filters (``filters.py``), canonical samples (``canonical.py``), translation
 into the student's action space (``translate/``), student rendering
-(``render.py``), an exporter's record format (``_registrar.py``,
+(``render.py``), the optional removal of waits taken on capped captures and
+the rewriting of the thoughts it affects (``waits.py``), an exporter's record
+format (``_registrar.py``,
 ``openai_messages.py``), validation (``validate.py``), split and
 decontamination (``split.py``), and the benchmark loaders both
 decontamination and the leak scan read through (``benchmarks.py``) — is
@@ -34,6 +38,7 @@ from spectragent.export.canonical import (
 from spectragent.export.errors import (
     InvalidTranslationError,
     OcclusionEvidenceMissingError,
+    ThoughtRewriteCacheError,
     missing_export_slots,
     needed_for_export,
 )
@@ -65,6 +70,7 @@ __all__ = [
     "InvalidTranslationError",
     "OcclusionEvidenceMissingError",
     "OpenAIMessagesExporter",
+    "ThoughtRewriteCacheError",
     "ThoughtSource",
     "Translation",
     "UntranslatablePolicy",

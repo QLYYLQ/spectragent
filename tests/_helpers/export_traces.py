@@ -39,7 +39,10 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_result import EvalResult
-from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
+from spectragent.schemas.observation.capture_state import (
+    FailedVisibleResources,
+    PointerState,
+)
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs, TaskObs
 from spectragent.schemas.observation.geometry import PointFrame

@@ -62,6 +62,7 @@ ENTRY: dict[str, Any] = {
     "student_run_config": "configs/flywheel/ui_tars_student.yaml",
     "thought_source": "teacher",
     "thought_index_refs": "drop",
+    "wait_actions": "keep",
     "length": {"max_tokens": 32768, "image_tokens": "qwen_vl"},
     "output_dir": "datasets/sft_v1",
 }
@@ -77,9 +78,14 @@ JOB_FIELDS = {
     "student_run_config",
     "thought_source",
     "thought_index_refs",
+    "wait_actions",
+    "thought_rewrite_cache",
     "length",
     "output_dir",
 }
+#: The exporter's receptors: the translator, and the helper model that
+#: rewrites thoughts under wait_actions: drop_when_capped.
+RECEPTORS = {"translator", "thought_rewrite_llms"}
 
 
 def _compose(composer: ConfigComposer, entry: dict[str, Any]) -> Any:
@@ -101,13 +107,16 @@ def test_the_generated_config_carries_the_job_and_the_translator_union() -> None
     (layer,) = get_args(field.annotation)
     config_cls = layer if isinstance(layer, type) else get_args(layer)[0]
     fields = config_cls.model_fields
-    assert JOB_FIELDS | {"translator", "exporter_id"} == set(fields)
+    assert JOB_FIELDS | RECEPTORS | {"exporter_id"} == set(fields)
     translators = {
         get_args(member.model_fields["translator_id"].annotation)[0]
         for member in get_args(fields["translator"].annotation)
     }
     assert translators == {"identity", "index_to_coordinate"}
     assert fields["student_run_config"].is_required() and fields["output_dir"].is_required()
+    assert not fields["thought_rewrite_llms"].is_required()
+    assert get_args(fields["wait_actions"].annotation) == ("keep", "drop_when_capped")
+    assert fields["wait_actions"].default == "keep"
 
 
 def test_an_exporter_only_yaml_composes_and_every_knob_arrives(composer: ConfigComposer) -> None:
@@ -159,6 +168,8 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
     assert exporter.split == SplitSettings(by="site", validation_fraction=0.1, salt="af-split-1")
     assert exporter.decontamination.against == ()
     assert (exporter.thought_source, exporter.thought_index_refs) == ("teacher", "drop")
+    assert exporter.wait_actions == "keep"
+    assert (exporter.thought_rewrite_llms, exporter.thought_rewrite_cache) == ([], None)
     assert exporter.length is None
 
 
@@ -176,6 +187,7 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
         (("filters", "max_document_misses"), None),  # no limit is written unlimited
         (("filters", "exclude_unloaded_steps"), "sometimes"),
         (("split", "validation_fraction"), 1.5),
+        (("wait_actions",), "drop"),
     ],
 )
 def test_a_wrong_knob_is_refused(
@@ -218,4 +230,6 @@ def test_built_by_hand_the_translator_is_identity() -> None:
 def test_an_exporter_without_knobs_writes_no_init() -> None:
     """conscribe reads the base signature: one place declares the job fields."""
     assert "__init__" not in vars(OpenAIMessagesExporter)
-    assert set(inspect.signature(ExporterBase.__init__).parameters) - {"self"} == JOB_FIELDS
+    assert set(inspect.signature(ExporterBase.__init__).parameters) - {"self"} == JOB_FIELDS | {
+        "thought_rewrite_llms"
+    }

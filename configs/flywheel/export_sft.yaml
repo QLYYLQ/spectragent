@@ -48,6 +48,11 @@ exporter:
     student_run_config: configs/flywheel/ui_tars_student.yaml
     thought_source: teacher          # none
     thought_index_refs: drop         # keep
+    # keep: every recorded wait is exported. drop_when_capped removes the waits the
+    # teacher took on a capture whose settle wait was capped and rewrites the
+    # thoughts that affects; it needs thought_rewrite_llms (one helper chat model)
+    # and thought_rewrite_cache (see configs/README.md "Exporting training data").
+    wait_actions: keep
     # The student keeps every turn's screenshot (memory: simple), so a sample's
     # length grows with its segment: the last step of a full 30-step segment at
     # 1280x720 carries ~36k image tokens (qwen_vl) before any text. The budget

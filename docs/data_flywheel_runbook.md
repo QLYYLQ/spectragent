@@ -354,9 +354,9 @@ uv run spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yam
 
 ## 导出 SFT 数据
 
-这一期交付的是 teacher 轨迹（录制、回放、分叉）。学生一侧是暂定的，挪到下一期再定；导出代码冻结，不加功能，下面写的是它冻结时的用法（[architecture_design.md](architecture_design.md) §4.15）。
+这一期交付的是 teacher 轨迹（录制、回放、分叉）。学生一侧是暂定的，挪到下一期再定；导出代码冻结，不加功能，下面写的是它冻结时的用法（[architecture_design.md](architecture_design.md) §4.15）。唯一的例外是用户 2026-10-25 裁决的等待动作后处理（`wait_actions`，见下面"去掉截断采集上的等待"）。
 
-`spectragent export` 只读已提交的 trace，不起浏览器，也不调模型。学生是一个普通的 af agent：`configs/flywheel/ui_tars_student.yaml`（UITarsAgent，`coordinate_space: normalized_1000`）只被组装，从不运行；每个样本由它自己的 prompt 构建与 memory 渲染，目标轮由它的 `format_react_output` 写出，所以训练格式就是它服务时的格式（设计见 [architecture_design.md](architecture_design.md) §4.15）。
+`spectragent export` 只读已提交的 trace，不起浏览器，也不调学生或 teacher 的模型（`wait_actions: drop_when_capped` 时调一个改写 thought 的辅助模型，见下）。学生是一个普通的 af agent：`configs/flywheel/ui_tars_student.yaml`（UITarsAgent，`coordinate_space: normalized_1000`）只被组装，从不运行；每个样本由它自己的 prompt 构建与 memory 渲染，目标轮由它的 `format_react_output` 写出，所以训练格式就是它服务时的格式（设计见 [architecture_design.md](architecture_design.md) §4.15）。
 
 ```bash
 uv run spectragent export --config configs/flywheel/export_sft.yaml
@@ -370,6 +370,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 - `split`：`by: site`（源任务 `start_url` 的主机）或 `by: task`，从不按步切，同一组分叉总在同一个切分里。
 - `translator`：`identity` 原样使用 teacher 执行过的动作，UI-TARS 录下的本来就是坐标动作。`index_to_coordinate` 把带元素 index 的 `browser.click`、`browser.type` 换成元素可见部分上的坐标动作，其余带 index 的动作不可译（`no_counterpart`），不带 index 的原样保留。它的 `occlusion: check` 要确认换算出的点没有被别的元素盖住，证据按优先级是 cleaner `skyvern_hit_test` 录下的命中测试、`browser.dom_raw` 的原始 DOM、BrowserUse cleaner 录下的 paint order（只认得出部分遮挡）。三样都没有时抛 `OcclusionEvidenceMissingError`；写 `occlusion_unknown: untranslatable` 则把这一步当作不可译。`occlusion: none` 不查遮挡（原来写作 `"off"`）。`untranslatable` 决定不可译的步怎么处理：`drop_step`（结束当前段）、`truncate`（结束这条轨迹）、`keep_as_text`、`fail`。
 - `thought_source: teacher | none` 与 `thought_index_refs: drop | keep` 决定 thought 从哪来、提到元素 index 的 thought 是否丢掉。
+- `wait_actions: keep | drop_when_capped`：发布值与默认值都是 `keep`，录下的等待动作原样导出。`drop_when_capped` 去掉 teacher 在被上限截断的采集上做的等待，见下面"去掉截断采集上的等待"。
 - `length: { max_tokens: 65536 }`：学生每轮都保留截图，30 步的整段在 1280×720 上光图像约 36k token。有记录超出预算时，导出失败并点名这条记录，从不截断；训练器的上下文更短时，换一个 `max_steps` 更小的学生。
 - `output_dir`：发布值 `datasets/sft_v1`，相对工作目录；已存在就拒绝。
 
@@ -382,9 +383,33 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 | `train.jsonl`、`validation.jsonl` | 每行 `{"id", "messages"}`，assistant 轮带 `weight`（目标轮 1，较早的轮 0）；只写有样本的切分 |
 | `train.samples.jsonl` 等 | 同序的 canonical 样本和渲染元数据（来源、翻译记录、量化误差） |
 | `images/<sha256><后缀>` | 截图，每张只存一份 |
-| `manifest.json` | 格式 `af-sft-4`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，被筛掉的每一步与原因（`steps.filtered`），切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
+| `manifest.json` | 格式 `af-sft-4`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，被筛掉的每一步与原因（`steps.filtered`），切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）、等待动作的台账（`wait_actions`）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
 
 同样的输入导出两次，输出逐字节相同。CLI 打印每个切分的样本数和按原因丢弃的步数；失败时退出码非 0，什么也不写。要评测训练出来的学生，复制一份学生配置，把 `llm` 指向训练好的模型，再加上 `trace_writer` hook；导出拒绝带 hook 的学生配置，所以评测用的那份单独放。
+
+### 去掉截断采集上的等待
+
+在慢网络上录制时，每次采集之前的落定等待（最多 `settle_max_wait_s`，5 秒）常被上限截断，teacher 看到还没加载完的页面就先 `wait`。学生在正常网络上服务，不该学这种等待。导出器的 `wait_actions: drop_when_capped` 只在导出的数据里去掉它们，录下的 trace 不变（[architecture_design.md](architecture_design.md) §4.15 "等待动作"）：
+
+```yaml
+exporter:
+  - exporter_id: openai_messages
+    # ……其余字段同上……
+    thought_source: teacher
+    wait_actions: drop_when_capped
+    thought_rewrite_llms:                    # 改写受影响 thought 的辅助 chat 模型，只能有一个
+      - { model_type: openai, model: gpt-4.1-mini, provider: { name: direct } }
+    thought_rewrite_cache: datasets/thought_rewrites   # 改写缓存，相对工作目录
+```
+
+- **哪一步算截断**：策略步的观测里有 `capture_state`，它的落定结果是 `capped`。没录 `capture_state` 的步原样保留（没有证据就不改）。
+- **去掉什么**：这一步里执行了而且成功的等待动作（`browser.wait`；动作类声明 `only_waits`，导出不按名字认）。失败的等待留下，它说明了后面的动作为什么被跳过；跳过的尾部里的等待也留下，它没执行。
+- **只剩等待的步**整步消失：不产生样本，也不出现在之后样本的上下文里（观测轮和回复轮都没有，`history_steps` 里也没有），段不因它断开；学生看到的步号随之前移（`Step: N/M` 与反馈里的步号），样本的 `sample_id` 和 `step` 仍是源步号。还有别的动作的步留下，只少了等待。
+- **改写 thought**：去掉了等待、留下了别的动作的步的 thought，以及紧接在消失的步之后那一步的 thought，交给 `thought_rewrite_llms` 的模型：只删掉说等待、说页面还在加载的话，其余逐字保留。改动了的标 `synthetic: true`（`outcome: rewritten`），模型原样交回的记 `reviewed_unchanged`。`thought_source: none` 时没有 thought 可改，不配模型也不配缓存。
+- **必填与拒绝**：`drop_when_capped` 加 `thought_source: teacher` 时，`thought_rewrite_llms` 与 `thought_rewrite_cache` 必填，缺了组装时就报错；`keep` 或 `thought_source: none` 时写了这两项也报错，配置里不留一个从不调用的模型。
+- **来源**：每个受影响的样本在 `samples.jsonl` 里带 `sample.wait_removal`：去掉的动作（run、步、动作序号、动作）、前面消失的步的动作、thought 的原文与改写、模型身份、提示版本与摘要、缓存键。`manifest.json` 的 `wait_actions` 汇总消失的步、去掉的动作、改写与原样交回的样本数和改写用的模型与提示。
+- **缓存与确定性**：改写按内容存进 `thought_rewrite_cache`（每条一个 `<键>.json`）。同样的输入、配置和缓存导出两次逐字节相同；第一次导出填满缓存之后再导出，一次模型也不调。命中与调用次数只在 CLI 输出里（`thought rewrites: N from the cache, M model call(s)`），不进数据集，否则第一次和第二次导出的数据集就不同了。缓存里的条目读不回来或与它的名字对不上时，导出报 `ThoughtRewriteCacheError` 并点名文件，删掉它再导出。度量链两次导出用同一份 YAML，所以共用一个缓存，第二次全部命中。
+- **观测不改**：学生协商了 `capture_state` 时，那一步的观测轮照样写着截断（`Settle: capped ...`）；不想让学生看到就用 `show_capture_state: false` 的学生。
 
 ## 度量报告
 

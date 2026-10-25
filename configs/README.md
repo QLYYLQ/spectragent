@@ -572,6 +572,7 @@ exporter:
     student_run_config: configs/flywheel/ui_tars_student.yaml
     thought_source: teacher          # none
     thought_index_refs: drop         # keep
+    wait_actions: keep               # drop_when_capped: see "Waits on capped captures" below
     length: { max_tokens: 65536 }    # image_tokens: qwen_vl (default) | fixed + fixed_image_tokens
     output_dir: datasets/sft_v1      # refused if it exists
 # optional: where decontamination and the leak scan read benchmark data (knobs and all)
@@ -630,6 +631,40 @@ task_loader:
   the last step of a full 30-step segment at 1280x720 is ~36k image tokens before text.
   `max_tokens: 65536` holds that; for a shorter trainer context use a student with fewer
   `max_steps` — a longer record fails the export by name, it is never truncated.
+- **Waits on capped captures.** On a slow network the settle wait before a capture is
+  often ended by its 5 s cap, and the teacher, shown a page still loading, waits.
+  `wait_actions: drop_when_capped` removes those waits from the exported data — never from
+  the recorded traces (`docs/architecture_design.md` §4.15, "等待动作"). The shipped
+  `export_sft.yaml` keeps `keep`, which changes nothing and calls no model:
+
+  ```yaml
+  #   thought_source: teacher
+  #   wait_actions: drop_when_capped
+  #   # The helper chat model that rewrites the affected thoughts (exactly one), and the
+  #   # directory its rewrites are cached in (relative to the working directory). Both are
+  #   # required with drop_when_capped and thought_source: teacher, and refused otherwise.
+  #   thought_rewrite_llms:
+  #     - { model_type: openai, model: gpt-4.1-mini, provider: { name: direct } }
+  #   thought_rewrite_cache: datasets/thought_rewrites
+  ```
+
+  On a policy step whose `capture_state` says the settle wait was `capped`, every wait
+  that ran and succeeded is removed (an action is a wait when its class declares
+  `only_waits`, as `browser.wait` does); a failed wait stays, it is why the actions after it
+  were skipped, and so does a wait in the skipped tail. A step without `capture_state` is
+  left as it is. A step that only waited leaves the trajectory: no sample, no turn in later
+  samples' context, no entry in their `history_steps`, and the step numbers the student is
+  shown move up. The thought of a step that lost waits and kept other actions, and of the
+  first step kept after removed ones, is rewritten by the model to drop only what speaks of
+  waiting or loading; a changed thought is marked `synthetic`, one returned as it was is
+  `reviewed_unchanged`. Each affected sample's `wait_removal` in `*.samples.jsonl` records
+  the removed actions (run, step, action index), the original and rewritten thought, the
+  model, the prompt version and digest; the manifest's `wait_actions` sums it up. Rewrites
+  are cached by content, so a re-export reads them back, calls no model and writes the
+  same bytes; the CLI prints how many came from the cache and how many from a call (not
+  the manifest: the dataset must not depend on it). The student's observation turn still
+  shows the recorded `capture_state` (`Settle: capped ...`) unless its agent sets
+  `show_capture_state: false`.
 
 ## Measuring the flywheel
 
