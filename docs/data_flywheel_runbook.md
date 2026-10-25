@@ -598,7 +598,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ## 独立 Jev replay 审查
 
 运行示例统一使用 `max_actions_per_step: 4`；record、same-path replay、branch 和学生配置保持相同预算。
-当前 trace 为 v6，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
+当前 trace 为 v7，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
 新 reader 不自动补 `kind` 或转换旧格式。独立审查只读 source/replay，不改变恢复校验、源 token 计数或任务正确性评分。
 设计见 [architecture_design.md](architecture_design.md) §4.18。
 
