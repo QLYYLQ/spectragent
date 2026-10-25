@@ -53,14 +53,17 @@ trajectories: record, replay, branch. The student side (how its messages are ass
 export package is frozen: `spectragent/export/`, `spectragent export`,
 `configs/flywheel/export_sft.yaml` and `configs/flywheel/ui_tars_student.yaml` get no new
 features and no new design decisions, only the adaptations a cross-cutting change needs to
-keep their tests green (architecture §4.15). Independent task judging was re-enabled by the user on
-2026-10-14 as a separate stage (`spectragent eval`, architecture §4.11). It reads committed
-traces and explicit references, reports valid-verdict coverage separately from task
-correctness, and never changes restoration checks. No flywheel stage requires a verdict:
-filters remain optional and off by default, and decontamination checks only an explicit
-benchmark list, empty by default. Judge errors and missing evidence are unevaluable,
-not graded task failures. Time-sensitive tasks are judged against their recorded date
-and evidence, never today's website or the model's current knowledge.
+keep their tests green (architecture §4.15). The one exception, the user's ruling of
+2026-10-25: the export may remove the waits a teacher took on a capped capture and rewrite
+the thoughts that affects (`wait_actions: drop_when_capped`, §2.4). Independent task
+judging was re-enabled by the user on 2026-10-14 as a separate stage (`spectragent eval`,
+architecture §4.11). It reads committed traces and explicit references, reports
+valid-verdict coverage separately from task correctness, and never changes restoration
+checks. No flywheel stage requires a verdict: filters remain optional and off by default,
+and decontamination checks only an explicit benchmark list, empty by default. Judge
+errors and missing evidence are unevaluable, not graded task failures. Time-sensitive tasks
+are judged against their recorded date and evidence, never today's website or the model's
+current knowledge.
 
 ### The layering rule
 
@@ -572,6 +575,7 @@ exporter:
     student_run_config: configs/flywheel/ui_tars_student.yaml
     thought_source: teacher            # none
     thought_index_refs: drop           # keep
+    wait_actions: keep                 # drop_when_capped (+ thought_rewrite_llms, thought_rewrite_cache)
     length: { max_tokens: 65536 }      # image_tokens: qwen_vl (default) | fixed + fixed_image_tokens
     output_dir: datasets/sft_v1
 # optional, read by decontamination and the reference-leak scan:
@@ -616,6 +620,24 @@ split and the drops by reason, and exits non-zero on any failure.
   is truncated.
 - An existing `output_dir` is refused. Output goes to `<output_dir>.partial/` and is renamed
   only after every check passes. The same inputs export to the same bytes.
+- `wait_actions: drop_when_capped` (architecture §4.15 "等待动作", `export/waits.py`) removes,
+  on a policy step whose `capture_state` (any `CaptureStateFragment`) says the settle wait
+  was `capped`, every wait of that capability that ran and succeeded. A wait is an action
+  whose class sets `ActionBase.only_waits` (`core/actions/_registrar.py::is_wait_action`,
+  read by the recorded qualified name): never match `browser.wait` by string. A failed
+  wait and a wait in the skipped tail stay, so `skipped_actions` and `step_status` never
+  change. A step left with no action leaves the trajectory: `TrajectoryStep.removed` is
+  set, the renderer skips it without ending the segment and moves the student's step
+  numbers up; `WaitShaper` drops it from later `history_steps` and rewrites the thought of
+  a step that lost waits and of the first step kept after removed ones, through the
+  exporter's `thought_rewrite_llms` receptor (`llm`, at most one) and its content-addressed
+  `thought_rewrite_cache`. Both are required with `drop_when_capped` and
+  `thought_source: teacher` and refused otherwise (`settings.py::thought_rewrite_problem`,
+  checked at construction and again by the runner). Provenance is the sample's
+  `wait_removal` and the manifest's `wait_actions` (format `af-sft-4`). Cache hits and model
+  calls are in `ExportReport.thought_rewrites` and the CLI output, never in the dataset:
+  the chain compares two exports' tree digests, and the first misses what the second hits.
+  The shipped export stays `keep`, so the scripted rehearsal needs no API key.
 
 ### 2.5 Measure: the chain and the report
 
@@ -1037,7 +1059,7 @@ any of them with the user before starting.
 |---|---|
 | Registrar | `ExporterRegistrar` (`exporter_id`), `spectragent/export/_registrar.py`; collected as `exporter`, an optional top-level layer of the run root |
 | Design section | Architecture §4.15 ("配置：运行根的两个可选层", "格式化：`openai_messages`") |
-| Protocol, base | `Exporter`: `exporter_id`, a read-only `translator`, the job fields, `root()`, `format(rendered, images) -> ExportRecord`. `ExporterBase` hand-writes a keyword `__init__` with every job field; `translator` is annotation-only with a Python default |
+| Protocol, base | `Exporter`: `exporter_id`, a read-only `translator` and `thought_rewrite_llms` (the second receptor, `llm`, a constructor parameter), the job fields, `root()`, `format(rendered, images) -> ExportRecord`. `ExporterBase` hand-writes a keyword `__init__` with every job field; `translator` is annotation-only with a Python default |
 | Owner | none; the exporter is the export document's top-level block, and `ExportRunner.from_run` takes exactly one |
 | Tests to copy | `tests/test_export/test_registrar.py`, `test_openai_messages.py`, `test_runner.py`, `test_validate.py`, `test_export_boundaries.py` |
 
@@ -1331,6 +1353,8 @@ value on an existing one.
 | `RoundTripError` | The student's formatter breaks the round-trip definition; fix the formatter |
 | `SampleTooLongError` | `length.max_tokens` against the student's `max_steps` and its screenshot in every turn |
 | `CredentialLeakError`, `ReferenceLeakError` | A credential-shaped string in the output, or the reference answer in seed or task text |
+| `InstantiationError ... needs thought_rewrite_llms` / `... would never be used` | `wait_actions: drop_when_capped` with `thought_source: teacher` needs both `thought_rewrite_llms` (one model) and `thought_rewrite_cache`; any other combination must write neither (§2.4) |
+| `ThoughtRewriteCacheError` | A file in `thought_rewrite_cache` does not read back or records other inputs than its key; delete the named file and export again |
 | `ChainConfigError`, `ChainStageError` | A bad spec (exit 2) or a failed stage (exit 1), named in `<root>/chain.json` |
 | The pre-flight refuses `--token-limit`: `this configuration writes no trace` | No hook exposes a run directory, so no token can be counted: add a `trace_writer` hook or drop the limit |
 | A metric is `null` | Its denominator was zero; the `reason` says why. No data gives `insufficient`, never a default verdict |
