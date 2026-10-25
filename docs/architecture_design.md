@@ -562,7 +562,7 @@ BrowserUse 不实现 `format_action_fact`：这个 slot 只有训练导出读，
 
 `BranchLoop` 本轮限定 ReAct：恢复 `0..t-1`，在本次 live 检查点观测上执行策略步，再执行 `continue_steps` 个 ReAct 步。`history_source: source | restored` 默认 `source`，与恢复器的 `verify: strict | warn` 独立；前者选择 Agent 历史的事实来源，后者判断环境发散是否允许继续。
 
-**组装检查**：检查源 trace 已闭合、所需前缀和轨迹/观测证据完整、检查点是 policy 步、源是普通 ReAct run、Agent 与 memory 配置、动作与观测协商和有效动作约束一致。改变观测协商的 Agent 开关（例如 `show_capture_state`，§4.4）因此也是分叉身份：取值与源录制不同就不能分叉。`restored` 还要求 Agent 公开的异步 `build_restored_history(observation, *, history, context)` 槽；不能以 `warn` 放过合同缺失。模型与采样可改变。**任务变体**（§4.10 `trace_branches` 的 `task_variants`：同一个检查点、另一份任务）的检查点输入带 `task_variant`（变体 id）；这时 `history_source: source` 在组装期被拒，`IncompatibleCheckpointError` 的消息点名 `task_variants` 与 `history_source` 两个设置：source 历史逐次精确重放源 prompt，而源 prompt 带着源任务，种子检查只会在开跑之后才失败。拒绝发生在 `weave`，所以 `spectragent bench` 的 pre-flight（第一个任务的 `prepare()`）就停下，不建环境、不开 trace；变体必须用 `restored`。变体文本经 run 的 `task` 送到 Agent，与任何任务一样；Loop 只读变体 id。源来源、检查点、分支序号及任务变体是任务 provenance；历史来源、恢复策略、提示贡献配置、helper 模型和有效动作约束是实验身份。
+**组装检查**：检查源 trace 已闭合、所需前缀和轨迹/观测证据完整、检查点是 policy 步、源是普通 ReAct run、Agent 与 memory 配置、动作与观测协商和有效动作约束一致，以及恢复器自己对源的要求（`Restorer.source_problems`，例如 `pace: recorded_timeline` 要每个要执行动作的恢复步都量过动作起点）。改变观测协商的 Agent 开关（例如 `show_capture_state`，§4.4）因此也是分叉身份：取值与源录制不同就不能分叉。`restored` 还要求 Agent 公开的异步 `build_restored_history(observation, *, history, context)` 槽；不能以 `warn` 放过合同缺失。模型与采样可改变。**任务变体**（§4.10 `trace_branches` 的 `task_variants`：同一个检查点、另一份任务）的检查点输入带 `task_variant`（变体 id）；这时 `history_source: source` 在组装期被拒，`IncompatibleCheckpointError` 的消息点名 `task_variants` 与 `history_source` 两个设置：source 历史逐次精确重放源 prompt，而源 prompt 带着源任务，种子检查只会在开跑之后才失败。拒绝发生在 `weave`，所以 `spectragent bench` 的 pre-flight（第一个任务的 `prepare()`）就停下，不建环境、不开 trace；变体必须用 `restored`。变体文本经 run 的 `task` 送到 Agent，与任何任务一样；Loop 只读变体 id。源来源、检查点、分支序号及任务变体是任务 provenance；历史来源、恢复策略、提示贡献配置、helper 模型和有效动作约束是实验身份。
 
 **source 历史**：先验证 prepare 种子，按源观测、原始提示贡献及其位置重建每步 prompt。只重放 `purpose=agent_decision` 的主决策及解析重试；每次主调用前精确比较 prompt，调用后校验解析动作、截断及回复。helper 的回复不进入 Agent parser。恢复历史不执行贡献函数、不调用 helper；源贡献证据缺失时明确拒绝。种子和重建不符不受环境 `warn` 影响。然后恢复环境，第一策略步始终使用恢复器已经校验的 live 观测，不额外重拍。
 
@@ -583,6 +583,7 @@ BrowserUse 不实现 `format_action_fact`：这个 slot 只有训练导出读，
 ```python
 class Restorer(Protocol):
     restorer_id: str
+    def source_problems(self, source: SourceRun) -> list[str]: ...   # 组装期：本恢复器要源 trace 有、而它没有的事实，一句一个；[] 是能恢复
     def restore(self, ctx: RestorationContext) -> AsyncGenerator[RestoredStep, None]: ...   # 异步生成器：Loop 拿到第 t 步（或交出恢复步失败）时要能关掉它
 
 @dataclass(frozen=True)
@@ -596,7 +597,22 @@ class RestorationContext:            # 窄的：没有 LLM、没有 memory、没
 
 恢复器只恢复**环境**，从不碰 memory，所以以后的 `capability_checkpoint`（Docker 的 snapshot/restore、Android 模拟器快照，经新增的 `RestorableCapability` 协议接入）是同一个接口下的另一个策略。逐条交回而不是最后一次性返回，是为了每恢复一步就提交一步：恢复到一半超时或崩溃，trace 里也已经有前面的步。
 
-`prefix_replay`（v1）对每个 k < t：（`media: align` 时先 `env.align_next_observation(recorded_obs_k, media_seek_timeout_s=…, media_end_lead_s=…)`，为下一次观测预约媒体对齐，§4.3 / §4.14）→ `env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（`zip(actions, action_results)`：源 Loop 跳过的、`done` 之后的与抛异常之后的都不执行；这次改动之前录下的步在失败之后照样执行过后面的动作，恢复也照样执行它们；名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency`（后者在执行第 k 步动作之前等待第 k 步录下的模型等待时间，让异步加载有与源 run 相同的时间落定；默认 `none`。它只能近似媒体的播放位置——起播延迟与落定抖动消不掉，源视频自己停住也复现不了——不是媒体恢复的手段）、`media: none | align`（默认 `align`：每一个被恢复的观测，含检查点 t 的那一个，在采集里落定之后、截图之前把对应上的媒体元素对齐到录下的状态；`none` 不对齐，留作对照；发布的原路径与分叉配置显式写 `align`）、`media_time_tolerance_s`（媒体位置差的容差，默认 1 s）、`media_seek_timeout_s`（一次对齐跳转必须完成的上限，默认 2 s）、`media_end_lead_s`（录下时已经播完的元素，从结尾前这么多秒开始播到自然结束，默认 0.5 s，必须短于 `media_seek_timeout_s`，否则构造时报错并点名两个旋钮）。对齐只在恢复前缀里发生：恢复器在第 t 步交回之后不再预约，Loop 从不碰页面上的媒体，检查点之后的策略步与终止观测都是真实时间。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
+`prefix_replay`（v1）对每个 k < t：（`media: align` 时先 `env.align_next_observation(recorded_obs_k, media_seek_timeout_s=…, media_end_lead_s=…)`，为下一次观测预约媒体对齐，§4.3 / §4.14）→ `env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（`zip(actions, action_results)`：源 Loop 跳过的、`done` 之后的与抛异常之后的都不执行；这次改动之前录下的步在失败之后照样执行过后面的动作，恢复也照样执行它们；名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency | recorded_timeline`（恢复步之间等多久，默认 `none`，见下文"恢复节奏"）、`media: none | align`（默认 `align`：每一个被恢复的观测，含检查点 t 的那一个，在采集里落定之后、截图之前把对应上的媒体元素对齐到录下的状态；`none` 不对齐，留作对照；发布的原路径与分叉配置显式写 `align`）、`media_time_tolerance_s`（媒体位置差的容差，默认 1 s）、`media_seek_timeout_s`（一次对齐跳转必须完成的上限，默认 2 s）、`media_end_lead_s`（录下时已经播完的元素，从结尾前这么多秒开始播到自然结束，默认 0.5 s，必须短于 `media_seek_timeout_s`，否则构造时报错并点名两个旋钮）。对齐只在恢复前缀里发生：恢复器在第 t 步交回之后不再预约，Loop 从不碰页面上的媒体，检查点之后的策略步与终止观测都是真实时间。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
+
+**恢复节奏 `pace`**。源 run 的步与步之间隔着模型思考的时间（实测 3 到 35 s），恢复步却一个接一个执行，所以页面自己的计时器（轮播、自动播放、倒计时、懒加载、延时弹窗）在采集恢复观测时落后于录制，恢复校验因此不通过。三个取值：
+
+- `none`（默认）：不等。
+- `recorded_llm_latency`：执行第 k 步动作之前等待第 k 步录下的模型等待时间（`StepRecord.llm_latency_ms`），让异步加载有与源 run 相同的时间落定。观测、动作与记录本身的耗时不在其中，所以恢复的时间线仍与源 run 漂开。
+- `recorded_timeline`：从第 0 步的观测起复现源 run 的时间线，只用源 trace 已提交、与平台无关的事实，经 `SourceRun`（`observation(k)`、`record(k)`）读取：
+  - **采集时刻**：一次观测的采集时刻是这一步 env 来源 fragment 里最早的 `captured_at`（`FragmentBase.captured_at`，墙钟；采集失败留下的 `FragmentFailure` 不是采集，不算）。源与本次恢复用同一个定义。
+  - **锚点**：源锚点是源第 0 步观测的采集时刻，live 锚点是本次恢复第 0 步观测的采集时刻。第一次采集之前的时间（起始页加载了多久）是网速，这个旋钮故意不复现。
+  - **观测**：第 k 步（1 ≤ k < t）与检查点 t 的观测之前，目标 = live 锚点 +（源第 k 步的采集时刻 − 源锚点）。观测在"目标 − lead"开始，lead 是本次恢复上一次 `env.observe` 调用的耗时（恢复器在调用前后用单调时钟量）。
+  - **动作**：第 k 步第一个动作执行之前（它的重定位之后、`act_fn` 之前），目标 = live 锚点 +（源第 k 步第一个 `ActionSpan.started_at` − 源锚点；`StepRecord.action_spans`）。只对齐一步的第一个动作，同一步后面的动作照旧紧接着执行。`action_spans` 为 `[]` 的步（源这一步没有调用过 `env.act`，例如动作都被 `guarded_act` 拒绝）没有可对齐的时刻，不等。
+  - **从不加速**：开始时刻还没到才等；已经落后就立刻做，不追。
+  - **缺事实就拒绝，不猜，也不退回别的 pace**：要执行动作的恢复步 `action_spans` 为 `null`（没量，例如源的记录计划没选 `metrics`）时，`prefix_replay` 的 `source_problems` 点名这些步，`BranchLoop` 在组装期把它并进 `IncompatibleCheckpointError`，任何 setup 之前就停下（`restore()` 开始时用同一句话再查一次，手工调用的恢复器也不会走到一半才发现）。观测不在源的记录范围里时，`SourceRun.open` 已经拒绝。一步的 env 来源 fragment 全部采集失败（只有协商的 env fragment 全是可选时才可能）就没有采集时刻：源的那一步在恢复读到它、观测之前以 `IncompatibleCheckpointError` 点名；本次恢复第 0 步的观测如此则没有 live 锚点，恢复以错误结束。
+  - 等待是执行的节奏，不是记录：不往 trace 写任何东西。
+
+两种等待都只能近似媒体的播放位置——起播延迟与落定抖动消不掉，源视频自己停住也复现不了——不是媒体恢复的手段。`pace` 与 `verify`、`media` 互相独立；它是恢复器的字段，随 `resolved` 进入分叉 run 的配置身份（`config_hash`）。
 
 ### 4.2 AgentRuntime（通用编排）
 

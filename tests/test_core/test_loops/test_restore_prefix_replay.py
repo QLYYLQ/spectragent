@@ -7,13 +7,17 @@ more observe for the checkpoint step *t*, verified the same way. Each step is
 handed back as it is restored. Under ``strict`` the first failed check raises
 before any further action; under ``warn`` it is recorded and restoration goes
 on. Each ``RestorationCheck.reason`` comes from its own case here, and the
-precedence when several fire.
+precedence when several fire. ``pace: recorded_timeline`` is driven on a
+fake clock: its observation and action waits from recorded timestamps, the
+lead taken from the previous observe, no wait when behind, and its refusal of
+a source whose action starts were not measured.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+from types import SimpleNamespace
 from typing import Any, ClassVar, Literal
 
 import pytest
@@ -26,16 +30,19 @@ from spectragent.core.loops.restore import (
     RestorationContext,
     RestorationDivergedError,
     RestoredStep,
+    prefix_replay,
 )
+from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.negotiation import ObservationNegotiationResult
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.restoration import (
     REASON_ORDER,
     RestorationEvidence,
     Retarget,
 )
-from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.step_record import ActionSpan, StepRecord
 from tests._helpers.assembly import make_env
 
 
@@ -57,6 +64,8 @@ def _record(
 
 class _Source:
     """Recorded steps and observations, by step — what ``SourceRun`` serves."""
+
+    name = "run 'src' (fake)"
 
     def __init__(self, records: list[StepRecord]) -> None:
         self.records = records
@@ -770,3 +779,306 @@ class TestMediaAlignment:
 
         assert await verdict(1.0) == ["media_mismatch"]
         assert await verdict(60.0) == []
+
+
+# ── pace: recorded_timeline ──────────────────────────────────────────
+
+
+class _Clock:
+    """One fake timebase for the wall clock, the monotonic clock and sleep: sleeping moves it."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+        self.slept: list[float] = []
+
+    def time(self) -> float:
+        return self.now
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    clock = _Clock()
+    monkeypatch.setattr(prefix_replay, "time", clock)
+    monkeypatch.setattr("spectragent.core.loops.restore.prefix_replay.asyncio.sleep", clock.sleep)
+    return clock
+
+
+#: One env-source fragment, so an observation's capture time is its ``captured_at``.
+_TIMED = ObservationNegotiationResult(
+    active_fragments=frozenset({_FRAG}),
+    required_fragments=frozenset({_FRAG}),
+    env_sourced=frozenset({_FRAG}),
+    loop_sourced=frozenset(),
+)
+
+
+def _observation(fragment: Any) -> SimpleNamespace:
+    return SimpleNamespace(**{_FRAG: fragment})
+
+
+def _captured(cycle: int, at: float) -> SimpleNamespace:
+    return _observation(_Frame(cycle=cycle, captured_at=at))
+
+
+class _TimedSource(_Source):
+    """Recorded observations captured at the given wall-clock times, one per step."""
+
+    def __init__(self, records: list[StepRecord], captures: list[float]) -> None:
+        super().__init__(records)
+        self.captures = captures
+
+    def observation(self, step: int, negotiated: Any) -> Any:
+        return _captured(step, self.captures[step])
+
+
+class _TimedEnv(_Env):
+    """Each observe takes its scripted time on the clock and captures *capture_after_s* in."""
+
+    def __init__(
+        self,
+        log: list[tuple[Any, ...]],
+        clock: _Clock,
+        *,
+        observe_s: list[float],
+        capture_after_s: float,
+    ) -> None:
+        super().__init__(log)
+        self.clock = clock
+        self.observe_s = observe_s
+        self.capture_after_s = capture_after_s
+
+    async def observe(self, negotiated: Any) -> Any:
+        cycle = self.observed
+        self.observed += 1
+        self.log.append(("observe", cycle, self.clock.now))
+        captured = self.clock.now + self.capture_after_s
+        self.clock.now += self.observe_s[cycle]
+        return _captured(cycle, captured)
+
+    async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
+        return []
+
+
+def _timed_act(log: list[tuple[Any, ...]], clock: _Clock, *, act_s: float = 1.0):
+    async def act(action: Action) -> ActionResult:
+        log.append(("act", action.params["index"], clock.now))
+        clock.now += act_s
+        return ActionResult(success=True)
+
+    return act
+
+
+def _spanned(step: int, starts: list[float] | None, *, actions: int | None = None) -> StepRecord:
+    """A recorded step whose ``env.act`` calls started at *starts* (``None``: not measured)."""
+    record = _record(step, actions=len(starts or []) if actions is None else actions)
+    record.action_spans = (
+        None
+        if starts is None
+        else [
+            ActionSpan(action="cap.click", started_at=at, ended_at=at + 0.5, outcome="returned")
+            for at in starts
+        ]
+    )
+    return record
+
+
+def _timed_ctx(env: Any, act_fn: Any, source: Any, t: int) -> RestorationContext:
+    return RestorationContext(
+        env=env, act_fn=act_fn, negotiated_obs=_TIMED, source=source, checkpoint_step=t
+    )
+
+
+def _timeline() -> PrefixReplayRestorer:
+    return PrefixReplayRestorer(pace="recorded_timeline", media="none")
+
+
+def _starts(log: list[tuple[Any, ...]], kind: str) -> list[float]:
+    return [entry[2] for entry in log if entry[0] == kind]
+
+
+class TestRecordedTimeline:
+    """Anchored on the two step-0 captures; observations lead by the last observe; never hurried."""
+
+    async def test_observations_and_first_actions_land_on_the_source_timeline(
+        self, clock: _Clock
+    ) -> None:
+        # Source: captures at 100 / 120 / 150 (the checkpoint), first actions at 105 / 130.
+        source = _TimedSource([_spanned(0, [105.0]), _spanned(1, [130.0])], [100.0, 120.0, 150.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[2.0, 3.0, 1.0], capture_after_s=1.5)
+        steps = await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 2))
+
+        # Live anchor 1001.5 (observe 0 started at 1000, captured 1.5 s in).
+        assert _starts(log, "act") == pytest.approx([1001.5 + 5, 1001.5 + 30])
+        # Observation k starts at its target less the previous observe's duration.
+        assert _starts(log, "observe") == pytest.approx(
+            [1000.0, 1001.5 + 20 - 2.0, 1001.5 + 50 - 3.0]
+        )
+        assert clock.slept == pytest.approx([4.5, 12.0, 9.0, 16.0])
+        assert [(s.step, s.check.verdict) for s in steps] == [(0, "ok"), (1, "ok"), (2, "ok")]
+
+    async def test_each_observation_leads_by_how_long_the_previous_observe_took(
+        self, clock: _Clock
+    ) -> None:
+        source = _TimedSource([_spanned(0, []), _spanned(1, [])], [100.0, 110.0, 130.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[4.0, 7.0, 1.0], capture_after_s=1.0)
+        await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 2))
+
+        # Anchor 1001; targets 1011 and 1031; leads 4 s (observe 0) and 7 s (observe 1).
+        assert _starts(log, "observe") == pytest.approx([1000.0, 1011 - 4.0, 1031 - 7.0])
+        assert clock.slept == pytest.approx([3.0, 10.0])
+
+    async def test_a_restoration_behind_the_source_never_sleeps(self, clock: _Clock) -> None:
+        source = _TimedSource([_spanned(0, [100.2]), _spanned(1, [100.7])], [100.0, 100.5, 101.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[2.0, 2.0, 2.0], capture_after_s=0.5)
+        await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 2))
+
+        assert clock.slept == []
+        # Back to back: observe 2 s, act 1 s, with no catching up and no pause.
+        assert _starts(log, "observe") == [1000.0, 1003.0, 1006.0]
+        assert _starts(log, "act") == [1002.0, 1005.0]
+
+    async def test_a_late_restoration_waits_only_for_what_is_left_of_the_absolute_target(
+        self, clock: _Clock
+    ) -> None:
+        """Targets are anchored, not step to step: being late shortens a later wait, never lengthens it."""
+        source = _TimedSource([_spanned(0, [100.2]), _spanned(1, [100.7])], [100.0, 100.5, 108.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[2.0, 2.0, 2.0], capture_after_s=0.5)
+        await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 2))
+
+        # Observe 2: target 1000.5 + 8 = 1008.5, less the 2 s lead, while the clock reads 1006.
+        assert clock.slept == pytest.approx([0.5])
+        assert _starts(log, "observe")[-1] == pytest.approx(1006.5)
+
+    async def test_only_a_steps_first_action_is_aligned(self, clock: _Clock) -> None:
+        source = _TimedSource([_spanned(0, [105.0, 109.0])], [100.0, 120.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[1.0, 1.0], capture_after_s=0.0)
+        await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock, act_s=0.1), source, 1))
+
+        # The first at anchor + 5; the second right after it, not at anchor + 9.
+        assert _starts(log, "act") == pytest.approx([1005.0, 1005.1])
+
+    async def test_a_step_that_made_no_env_call_has_no_action_to_align(self, clock: _Clock) -> None:
+        """``action_spans == []``: every action was refused before ``env.act``; nothing is missing."""
+        source = _TimedSource([_spanned(0, [], actions=1)], [100.0, 120.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[1.0, 1.0], capture_after_s=0.0)
+        await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 1))
+
+        assert _starts(log, "act") == [1001.0]
+        # The checkpoint's observation still waits for its place: 1000 + 20 - 1.
+        assert clock.slept == pytest.approx([17.0])
+
+    async def test_a_checkpoint_at_step_zero_waits_for_nothing(self, clock: _Clock) -> None:
+        source = _TimedSource([], [100.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[1.0], capture_after_s=0.5)
+        await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 0))
+        assert clock.slept == []
+
+    async def test_the_capture_time_is_the_earliest_captured_environment_fragment(self) -> None:
+        negotiated = ObservationNegotiationResult(
+            active_fragments=frozenset({"a.one", "b.two", "c.three", "loop.step_info"}),
+            env_sourced=frozenset({"a.one", "b.two", "c.three"}),
+            loop_sourced=frozenset({"loop.step_info"}),
+        )
+        observation = SimpleNamespace(
+            one=_Frame(cycle=0, captured_at=12.0),
+            two=_Frame(cycle=0, captured_at=11.0),
+            # A failed capture is no capture, however early it was recorded.
+            three=FragmentFailure(fragment_id="c.three", error="TimeoutError", captured_at=5.0),
+            step_info=_Frame(cycle=0, captured_at=1.0),
+        )
+        assert prefix_replay._capture_time(observation, negotiated) == 11.0
+        assert prefix_replay._capture_time(SimpleNamespace(), negotiated) is None
+
+
+class TestRecordedTimelineRefusals:
+    """What the mode needs and the source lacks is refused, never guessed or swapped for another pace."""
+
+    @pytest.mark.parametrize(
+        ("records", "named"),
+        [
+            pytest.param([_spanned(0, [105.0]), _spanned(1, None, actions=1)], "step 1 ", id="one"),
+            pytest.param(
+                [_spanned(0, None, actions=2), _spanned(1, None, actions=1)],
+                "steps 0, 1 ",
+                id="several",
+            ),
+        ],
+    )
+    async def test_unmeasured_action_starts_are_refused_before_anything_runs(
+        self, clock: _Clock, records: list[StepRecord], named: str
+    ) -> None:
+        source = _TimedSource(records, [100.0, 110.0, 120.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[1.0, 1.0, 1.0], capture_after_s=0.0)
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 2))
+        assert caught.value.problems == [
+            f"{named}recorded no action start times (StepRecord.action_spans was not "
+            "measured), which pace: recorded_timeline needs to start each restored step's "
+            "first action when the source's started"
+        ]
+        assert caught.value.source == _Source.name
+        assert log == [] and clock.slept == []
+
+    def test_source_problems_names_the_same_steps_before_the_run(self) -> None:
+        source = _Source([_spanned(0, [105.0]), _spanned(1, None, actions=1), _spanned(2, None)])
+        source.checkpoint = SimpleNamespace(step=3)  # type: ignore[attr-defined]
+        (problem,) = _timeline().source_problems(source)  # type: ignore[arg-type]
+        # Step 2 executes nothing, so its unmeasured spans are not missing anything.
+        assert problem.startswith("step 1 recorded no action start times")
+
+    @pytest.mark.parametrize("pace", ["none", "recorded_llm_latency"])
+    async def test_the_other_paces_need_no_action_spans(self, pace: str) -> None:
+        source = _Source([_spanned(0, None, actions=1)])
+        source.checkpoint = SimpleNamespace(step=1)  # type: ignore[attr-defined]
+        restorer = PrefixReplayRestorer(pace=pace)  # type: ignore[arg-type]
+        assert restorer.source_problems(source) == []  # type: ignore[arg-type]
+        log: list[tuple[Any, ...]] = []
+        steps = await _collect(restorer, _ctx(_Env(log), _act(log), source, 1))
+        assert [s.step for s in steps] == [0, 1]
+
+    async def test_a_source_observation_with_no_captured_fragment_is_refused(
+        self, clock: _Clock
+    ) -> None:
+        class _FailedAtOne(_TimedSource):
+            def observation(self, step: int, negotiated: Any) -> Any:
+                if step == 1:
+                    return _observation(FragmentFailure(fragment_id=_FRAG, error="TimeoutError"))
+                return super().observation(step, negotiated)
+
+        source = _FailedAtOne([_spanned(0, [105.0])], [100.0, 120.0])
+        log: list[tuple[Any, ...]] = []
+        env = _TimedEnv(log, clock, observe_s=[1.0, 1.0], capture_after_s=0.0)
+        with pytest.raises(IncompatibleCheckpointError, match="step 1 captured no environment"):
+            await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 1))
+        # Refused before observing step 1.
+        assert [entry[1] for entry in log if entry[0] == "observe"] == [0]
+
+    async def test_a_live_step_zero_with_no_captured_fragment_has_no_anchor(
+        self, clock: _Clock
+    ) -> None:
+        class _FailingEnv(_TimedEnv):
+            async def observe(self, negotiated: Any) -> Any:
+                await super().observe(negotiated)
+                return _observation(FragmentFailure(fragment_id=_FRAG, error="TimeoutError"))
+
+        source = _TimedSource([_spanned(0, [105.0])], [100.0, 120.0])
+        log: list[tuple[Any, ...]] = []
+        env = _FailingEnv(log, clock, observe_s=[1.0, 1.0], capture_after_s=0.0)
+        with pytest.raises(RuntimeError, match="no live anchor"):
+            await _collect(_timeline(), _timed_ctx(env, _timed_act(log, clock), source, 1))
+        assert _starts(log, "act") == []

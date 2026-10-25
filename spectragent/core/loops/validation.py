@@ -121,9 +121,13 @@ class IncompatibleCheckpointError(Exception):
     Raised by ``BranchLoop`` while it is being woven — inside ``prepare()``,
     before ``on_run_start`` and before any environment setup — when the source
     trace cannot be resumed (a step not committed, a run that was itself a
-    branch …) or was recorded by a different agent configuration; and at run
-    time, before any action, when the seeded system prompt or the replayed
-    context differs from the source's. Every problem found is reported at once.
+    branch …), was recorded by a different agent configuration, or lacks a
+    fact the configured restorer needs (``Restorer.source_problems``); and at
+    run time, before any action, when the seeded system prompt or the replayed
+    context differs from the source's. A restorer raises it too, during the
+    restoration, for a missing fact it can only see as it reads the step
+    (``prefix_replay``'s ``recorded_timeline`` pace on a source observation
+    with no captured fragment). Every problem found is reported at once.
 
     Attributes:
         source: The source run (its run id, or its directory).

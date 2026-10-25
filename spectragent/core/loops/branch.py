@@ -253,7 +253,10 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 if record.error_phase == "observe":
                     problems.append(f"step {t} recorded no observation (its observe failed)")
         config = source.config
-        if self.history_source == "restored" and not problems:
+        # The prefix's records read back only when every step up to t is
+        # committed and complete; otherwise the problems above already say so.
+        prefix_readable = not problems
+        if self.history_source == "restored" and prefix_readable:
             for step in range(t):
                 record = source.record(step)
                 if len(record.action_results) > len(record.actions) or (
@@ -263,6 +266,10 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     )
                 ):
                     problems.append(f"step {step} lacks necessary executed action results")
+        if prefix_readable:
+            # What the configured restorer needs from the source (a pace that
+            # reads recorded timings, say), refused here with the rest.
+            problems.extend(self.restorer.source_problems(source))
         if config.loop_id != "react":
             problems.append(
                 f"the source ran loop {config.loop_id!r}; a branch replays ReAct's memory protocol"

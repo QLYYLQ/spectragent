@@ -235,16 +235,18 @@ agent_loop:
     restorer_id: prefix_replay
     verify: strict                 # warn：记下不通过的检查，继续
     screenshot_max_distance: 5     # 两张截图 64 位 dHash 的汉明距离上限
-    pace: none                     # recorded_llm_latency：执行动作前等源 run 当时等模型的时长
+    pace: none                     # recorded_llm_latency：执行动作前等源 run 当时等模型的时长；recorded_timeline：按源 run 的时间线走
     media: align                   # none：不对齐媒体（对照组），媒体状态照样比较
     media_time_tolerance_s: 1.0    # 媒体播放位置与录下的差多少秒以内算通过
     media_seek_timeout_s: 2.0      # 一次对齐跳转（及随后的播放）必须完成的上限
     media_end_lead_s: 0.5          # 录下时已播完的视频从结尾前这么多秒播到结束；必须短于上一项
 ```
 
+`pace` 决定恢复步之间等多久。源 run 每一步都等过模型（几秒到几十秒），页面自己的计时器（轮播、自动播放、倒计时、懒加载、延时弹窗）在这段时间里接着走；恢复步一个接一个执行，采集恢复观测时页面就落后于录制。`none` 不等；`recorded_llm_latency` 在执行第 k 步动作之前等源 run 第 k 步等模型的时长，观测、动作与记录本身的耗时不补，越往后漂得越远；`recorded_timeline` 从第 0 步的观测起复现源 run 的时间线：以两边第 0 步观测的采集时刻（这一步 env fragment 里最早的 `captured_at`）为锚点，每个恢复观测（含检查点）提前"本次恢复上一次观测的耗时"开始，好让它在源的采集时刻采集，每一步的第一个动作在源这一步第一个动作开始的时刻执行（`StepRecord.action_spans`），同一步后面的动作紧接着执行。已经落后就立刻做，从不追。起始页加载多久是网速，不复现。源 run 要执行动作的步没量过动作起点（`action_spans` 为 `null`，例如录制时 `recording.metrics` 关着）时，分叉在任何 setup 之前以 `IncompatibleCheckpointError` 点名这些步，不会悄悄换成别的 pace。等待不写进 trace。
+
 `branch` loop 默认 `terminal_observation: true`。capability 的 `retarget_tolerance_px`（默认 2.0 CSS px）决定录下的元素在恢复出的页面里偏移多少还能被认出。
 
-每张观测截图都带 `media` 元数据：截图前后各读一次页面上每个 `<video>` / `<audio>` 的精确播放位置、是否暂停、总时长、所在 frame、文档顺序与位置（读数上限是 capability 的 `media_state_timeout_s`，默认 1 s；读不到记为 unknown，从不让截图失败，录制时不改动页面）。视频在源 run 里按真实时间播放，模型思考时也在播；原路径回放不等模型，同一步的画面会停在别的位置，截图距离却可能在阈值之内。所以恢复校验比较媒体状态，`media: align`（默认，发布的两份分叉配置显式写出）在每一个被恢复的观测（含检查点）的采集里、页面落定之后、截图之前，把对应上的元素对齐到录下的状态：录下暂停的暂停并跳到精确位置；录下在播的跳转、播放，随即截图（这次采集的截图排在 DOM 之前，否则视频在 DOM 采集的几秒里接着播）；录下已播完的跳到结尾前 `media_end_lead_s` 再播到自然结束。跳转要在 `media_seek_timeout_s` 之内完成（`seeked`、不再 seeking、有可显示的帧）并停在目标上，否则跳回对齐之前的位置与播放状态、判这一步 `media_mismatch`。检查点之后的策略步和终止观测不对齐。`pace: recorded_llm_latency` 只能近似播放位置，不是媒体恢复的手段。
+每张观测截图都带 `media` 元数据：截图前后各读一次页面上每个 `<video>` / `<audio>` 的精确播放位置、是否暂停、总时长、所在 frame、文档顺序与位置（读数上限是 capability 的 `media_state_timeout_s`，默认 1 s；读不到记为 unknown，从不让截图失败，录制时不改动页面）。视频在源 run 里按真实时间播放，模型思考时也在播；原路径回放不等模型，同一步的画面会停在别的位置，截图距离却可能在阈值之内。所以恢复校验比较媒体状态，`media: align`（默认，发布的两份分叉配置显式写出）在每一个被恢复的观测（含检查点）的采集里、页面落定之后、截图之前，把对应上的元素对齐到录下的状态：录下暂停的暂停并跳到精确位置；录下在播的跳转、播放，随即截图（这次采集的截图排在 DOM 之前，否则视频在 DOM 采集的几秒里接着播）；录下已播完的跳到结尾前 `media_end_lead_s` 再播到自然结束。跳转要在 `media_seek_timeout_s` 之内完成（`seeked`、不再 seeking、有可显示的帧）并停在目标上，否则跳回对齐之前的位置与播放状态、判这一步 `media_mismatch`。检查点之后的策略步和终止观测不对齐。`pace` 的两种等待都只能近似播放位置，不是媒体恢复的手段。
 
 一个分叉 run 按这个顺序执行：
 
@@ -553,10 +555,10 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
   - `action_failed`：动作的成败与录制不同，或者执行时抛错。
   - `signature_mismatch`：两边可交互元素的签名多重集不同。
   - `media_mismatch`：媒体状态对不上，看 `restoration.evidence[*].media`。`comparisons` 是逐元素的对应（`matched` / `missing` / `extra` / `ambiguous`，元素记作 `<frame>#<顺序> <标签>`）和比较用的那次读数里两边的位置与暂停状态；位置差超过 `media_time_tolerance_s`、暂停状态不同、元素缺失或多出（隐藏的、视口外的也算）、对应有歧义、直播，都不通过。`recorded_unreachable_frames` / `restored_unreachable_frames` 是两次读数都没有应答的子 frame（其中有没有媒体不知道），比较成立时有一个就不通过。`alignment` 是这次观测之前做的每一个对齐动作：`aligned`、`already_aligned`、`failed`（跳转或播放没在上限内完成，或停在了目标之外；`rolled_back` 说回滚是否完成）、`not_restorable`（直播、对应有歧义或缺失）、`unknown`（录下的位置不知道，不参与判定）；`media: none` 时为 `null`。`comparisons` 为 `null`（`detail` 说为什么）是没比成：在截图带媒体元数据之前录的源永远不做媒体校验，只靠截图距离。对齐 `failed` 而回放日志里同一个媒体 URL 有 `range_uncovered`，是跳到了录下字节之外，录制时视频没播到那里，回放救不回来。视频站的播放状态往往做不到一致（流的密钥加密、自动播放的预览、离线加载不出来的播放器、叠放的 `<video>`）：回放规则集的媒体区域规则（`media_areas` 一节，发布的在 `configs/replay_rules/media_areas.yaml`）声明的页面上不判媒体，截图比较遮掉两边媒体事实测到的框（媒体元素与读不到的 frame），证据里多一个 `restoration.evidence[*].media_areas`（规则、遮掉的框、遮掉的占比、整图与遮掉之后的距离、`mask_applied`）。遮掉的超过 75% 时不遮，用整图距离。给一个页面写声明之前，先确认它的检查失败在媒体状态、或截图差别集中在播放器的框里（遮掉之后距离回到阈值之内）；非视频站从不声明。
-  - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`；媒体区域规则声明的页面上是遮掉媒体框之后的距离，整图距离在 `media_areas.unmasked_distance`）。常见于动画和依赖时钟的内容。观测之前的落定等待（见"前提与限制"）在录制和回放里都等异步加载，比较的就是两边 agent 看到的观测；仍然不同时，看这一步观测 fragment 的 `settle` 记录：有一边 `capped`，说明那边的页面一直没静下来，被上限截断时还在变。还可以试 `pace: recorded_llm_latency`。
+  - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`；媒体区域规则声明的页面上是遮掉媒体框之后的距离，整图距离在 `media_areas.unmasked_distance`）。常见于动画和依赖时钟的内容。观测之前的落定等待（见"前提与限制"）在录制和回放里都等异步加载，比较的就是两边 agent 看到的观测；仍然不同时，看这一步观测 fragment 的 `settle` 记录：有一边 `capped`，说明那边的页面一直没静下来，被上限截断时还在变。还可以试 `pace: recorded_timeline`（按源 run 的时间线恢复，页面的计时器走到与录制相同的位置）或 `pace: recorded_llm_latency`。
 
   每一步的 `restoration.evidence` 记着各项的测量值，`restoration.actions` 记着每个录下动作的重定位方式和结果。值为 `null` 的项不参与判定，所以 UI-TARS 这类纯视觉 run 主要靠截图距离、文档 miss 和动作成败来判。
-- `IncompatibleCheckpointError`：分叉配置与源 run 不匹配，在任何 setup 之前报，点名两边：源 trace 从没关闭，或检查点超出它完整到的那一步（`past the step its trace is complete through`），另一个 agent，不同的 `prompt_template`、`coordinate_space` 等旋钮或数字旋钮（如 memory 的 `max_messages`），不同的 memory 或协商结果，不同的 `max_actions_per_step`（`agent_loop.max_actions_per_step`），源 loop 不是 `react`，源 run 本身是分叉 run；开跑之后、任何动作之前还会查种子 prompt 与源 run 是否相同、录下的回复在这个 agent 上能否复现。分叉配置的 agent 块照抄录制配置（llm 一块可以不同）。
+- `IncompatibleCheckpointError`：分叉配置与源 run 不匹配，在任何 setup 之前报，点名两边：源 trace 从没关闭，或检查点超出它完整到的那一步（`past the step its trace is complete through`），另一个 agent，不同的 `prompt_template`、`coordinate_space` 等旋钮或数字旋钮（如 memory 的 `max_messages`），不同的 memory 或协商结果，不同的 `max_actions_per_step`（`agent_loop.max_actions_per_step`），源 loop 不是 `react`，源 run 本身是分叉 run，`pace: recorded_timeline` 而源 run 有要执行动作的步没量过动作起点（`action_spans`，消息点名这些步）；开跑之后、任何动作之前还会查种子 prompt 与源 run 是否相同、录下的回复在这个 agent 上能否复现。分叉配置的 agent 块照抄录制配置（llm 一块可以不同）。
 - `IncompatibleLoopInputError: Loop 'branch' loop inputs: requires checkpoint`：用 `spectragent run` 跑了分叉或原路径回放的配置。它们只能经 `spectragent bench` 的 `trace_branches` 任务运行，检查配置用 `--list`。
 - 录制中途失败：录制按 fail closed 处理，两本账分开记。recorder 连接意外断开时，capability 立刻标记自己不存活，观测、动作和收集都抛 `RecorderLostError`；一次收集失败（例如 archive scope 丢过事件）同样让 run 在这一步停下。录制从不在缺少记录的情况下继续：这一步不提交，它的模型调用作为收尾调用落盘，manifest 记 `"status": "incomplete"`，`incomplete_reason` 以 `recording failed at step t:` 开头，`complete_through` 是 t-1；`result.json` 是 `agent_done: error`、`error: "recording failed at step t: ..."`。agent 恰好在那一步说了 done 时，`result.json` 保留 done 和答案，trace 照样是 `incomplete`。之前提交的步完好，可以拿来分叉、导出；要补全就重跑这个任务。
 - run 成功、trace 却是 `incomplete`：尾部没记下来（收尾那次收集、收尾补写的欠账、终止观测那一步，或 `result.json` 写不进去），原因在 manifest 的 `incomplete_reason`。不抛错，run 的结局不变；收尾写不进去的东西丢掉，不重试。磁盘一直满着时连终态都写不进去，manifest 停在 `writing`（日志里有一条 ERROR）。

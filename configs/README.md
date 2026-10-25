@@ -425,7 +425,8 @@ agent_loop:
     restorer_id: prefix_replay
     verify: strict                  # warn: record a failed check and go on
     screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
-    pace: none                      # recorded_llm_latency: wait as long as the source waited
+    pace: none                      # recorded_llm_latency: wait as long as the source waited;
+                                    # recorded_timeline: keep to the source's timeline (below)
     media: align                    # none: leave media where the replay put it (control arm)
     media_time_tolerance_s: 1.0     # seconds a media position may differ and still pass
     media_seek_timeout_s: 2.0       # seconds an alignment seek (and play) may take
@@ -463,7 +464,9 @@ task_loader:
   a different closed-set or numeric agent knob (`prompt_template`,
   `coordinate_space` …), a different memory strategy or memory knob (`max_messages` …), a
   different `max_actions_per_step`, a different observation or action negotiation, a source
-  loop other than `react`, a source that is itself a branch. The teacher's model and
+  loop other than `react`, a source that is itself a branch, and, under
+  `pace: recorded_timeline`, source steps that execute actions but measured no action
+  start times (`action_spans`, named step by step). The teacher's model and
   sampling may differ from the source's, and so may the loop's `max_steps`.
 - **The run.** The context up to step *t* is rebuilt from the source trace — the teacher
   sees exactly what the source agent saw — and every recorded model call is replayed through
@@ -488,6 +491,22 @@ task_loader:
   teacher's (`origin: policy`); the terminal observation is `origin: terminal`. A branch
   run is a replay, so its trace hook binds `browser.replay_log` in `browser.network`'s
   place, as in the replay config.
+- **Pace.** The source run waited for its model between steps (seconds to tens of
+  seconds) while the page's own timers (carousels, autoplay, countdowns, lazy loading,
+  delayed popups) kept running; restored steps run back to back, so a restored page is
+  behind the recording. `pace: none` does not wait. `recorded_llm_latency` waits, before a
+  restored step's actions, as long as the source waited for its model at that step;
+  observation, action and recording time are not made up, so the restoration drifts.
+  `recorded_timeline` keeps to the source's timeline from its step-0 observation on. An
+  observation's capture time is the earliest `captured_at` of its environment fragments,
+  on both sides, and the two step-0 captures are the anchors. Each later restored
+  observation, the checkpoint's included, starts early by as long as this restoration's
+  previous observation took, so that it captures when the source's did. Each restored
+  step's first action starts when the source step's first action did
+  (`StepRecord.action_spans`), and the rest of the step follows at once. A restoration
+  already behind goes on at once and never hurries to catch up. How long the start page
+  took to load is network speed and is not reproduced. The waits write nothing to the
+  trace.
 - **Teacher sampling.** The branches of one checkpoint get identical inputs, so only the
   teacher's sampling makes them differ: the shipped file sets the teacher's
   `temperature: 0.8` (the recording ran at the openai default, 0.2) and
