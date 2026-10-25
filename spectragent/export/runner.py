@@ -9,7 +9,10 @@ and its ``translator`` receptor, never a concrete class:
    relative path, read through ``RunTrace`` (``filters.open_sources``), then
    the filters, then decontamination (the benchmarks ``against`` lists;
    benchmark data read through the document's loaders, ``benchmarks.py``) and
-   the split key (``filters``, ``split``);
+   the split key (``filters``, ``split``), and each kept source's policy
+   steps captured before their initial load finished
+   (``filters.exclude_unloaded_steps``: rendered as context, never a sample,
+   each listed in the manifest's ``steps.filtered``);
 2. **canonical samples** — ``canonical.canonicalise`` per kept run (a branch
    run labelled by its source run's verdicts);
 3. **translation** — ``exporter.translator.translate`` per sample;
@@ -45,7 +48,12 @@ from typing import Any
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.sources import TaskIdentity, task_identity, unreadable_reason
+from spectragent.core.trace.sources import (
+    TaskIdentity,
+    task_identity,
+    unloaded_capture_reason,
+    unreadable_reason,
+)
 from spectragent.export._registrar import Exporter, ExportRecord
 from spectragent.export.benchmarks import BenchmarkLoaders
 from spectragent.export.canonical import canonicalise
@@ -77,6 +85,7 @@ from spectragent.schemas.dataset import (
 )
 from spectragent.schemas.observation.image import image_suffix
 from spectragent.schemas.sample import CanonicalStepSample
+from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
 
@@ -134,12 +143,17 @@ class ExportReport:
 
 @dataclass(frozen=True)
 class _Kept:
-    """A source the filters kept, with its task and split."""
+    """A source the filters kept, with its task and split.
+
+    ``unloaded``: its policy steps ``filters.exclude_unloaded_steps`` leaves
+    out of the samples, each with the reason.
+    """
 
     source: Source
     identity: TaskIdentity
     key: str
     split: Split
+    unloaded: Mapping[int, str]
 
 
 @dataclass
@@ -149,6 +163,9 @@ class _Selection:
     skipped: dict[str, str]
     filtered: dict[str, str]
     decontaminator: Decontaminator
+    #: ``<source path>#s<step>`` → why the step's sample was left out; filled
+    #: while rendering, where it is known which steps have a sample.
+    filtered_steps: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 class ExportRunner:
@@ -270,8 +287,37 @@ class ExportRunner:
                     f"{'start_url' if exporter.split.by == 'site' else 'task id'})"
                 )
                 continue
-            kept.append(_Kept(source, identity, key, split_of(key, exporter.split)))
+            try:
+                unloaded = self._unloaded(source)
+            except TraceSchemaError as exc:
+                logger.warning("export: skipping %s, it does not read back: %s", source.rel, exc)
+                skipped[source.rel] = unreadable_reason(source.trace.trace_dir, exc)
+                continue
+            kept.append(_Kept(source, identity, key, split_of(key, exporter.split), unloaded))
         return _Selection(kept, readable, skipped, filtered, decontaminator)
+
+    def _unloaded(self, source: Source) -> dict[int, str]:
+        """*source*'s policy steps captured before their initial load finished, with the reason.
+
+        Empty when ``filters.exclude_unloaded_steps`` is off. Only a step whose
+        recorded capture state says ``loaded: false`` is in it
+        (``core/trace/sources.py::unloaded_capture_reason``); one with no such
+        evidence is exported.
+
+        Raises:
+            TraceSchemaError: A recorded capture state does not read back.
+        """
+        if not self.exporter.filters.exclude_unloaded_steps:
+            return {}
+        trace = source.trace
+        unloaded: dict[int, str] = {}
+        for record in trace.step_records:
+            if record.origin != "policy" or record.step > trace.manifest.complete_through:
+                continue
+            reason = unloaded_capture_reason(trace, record.step)
+            if reason is not None:
+                unloaded[record.step] = f"{reason} (exclude_unloaded_steps)"
+        return unloaded
 
     # ── 2-4. canonical samples, translation, rendering ───────
 
@@ -298,6 +344,17 @@ class ExportRunner:
                 }
             return translated[source.run_id]
 
+        def own_step(
+            kept: _Kept, record: StepRecord, sample: CanonicalStepSample | None
+        ) -> TrajectoryStep:
+            """One of *kept*'s own steps: a sample unless a step filter leaves it out."""
+            source = kept.source
+            why = kept.unloaded.get(record.step) if sample is not None else None
+            if why is not None:
+                # Rendered into the context as it happened; never a sample.
+                selection.filtered_steps[f"{source.rel}#s{record.step}"] = why
+            return TrajectoryStep(source.trace, source.rel, record, sample, why is None)
+
         rendered: list[RenderedSample] = []
         for kept in selection.kept:
             source = kept.source
@@ -316,7 +373,7 @@ class ExportRunner:
                 ]
                 own = samples_of(source, verdicts_from=origin)
                 steps += [
-                    TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
+                    own_step(kept, record, own.get(record.step))
                     for record in source.trace.step_records
                     if record.origin == "policy"
                     and record.step >= branch.checkpoint_step
@@ -325,7 +382,7 @@ class ExportRunner:
             else:
                 own = samples_of(source)
                 steps += [
-                    TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
+                    own_step(kept, record, own.get(record.step))
                     for record in source.trace.step_records
                     if record.step <= source.trace.manifest.complete_through
                 ]
@@ -433,6 +490,7 @@ class ExportRunner:
             steps=StepLedger(
                 untranslatable=dict(sorted(stats.untranslatable.items())),
                 skipped=dict(sorted(stats.skipped.items())),
+                filtered=dict(sorted(selection.filtered_steps.items())),
             ),
             samples=sum(samples.values()),
             quantization_px={str(error): n for error, n in sorted(stats.quantization.items())},
@@ -559,6 +617,7 @@ def _empty_counts(selection: _Selection, renderer: StudentRenderer) -> dict[str,
         counts[f"steps untranslatable ({reason})"] += n
     for reason, n in renderer.stats.skipped.items():
         counts[f"steps {reason.replace('_', ' ')}"] += n
+    counts["steps filtered"] = len(selection.filtered_steps)
     return {reason: n for reason, n in counts.items() if n}
 
 

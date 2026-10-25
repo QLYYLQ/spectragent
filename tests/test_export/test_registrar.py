@@ -49,6 +49,7 @@ ENTRY: dict[str, Any] = {
         "exclude_restoration_diverged": True,
         "max_document_misses": 0,
         "exclude_sites": [],
+        "exclude_unloaded_steps": True,
     },
     "split": {"by": "site", "validation_fraction": 0.1, "salt": "af-split-1"},
     "decontamination": {"against": [], "match": "either"},
@@ -136,6 +137,13 @@ def test_a_verdict_filter_still_arrives_when_written(composer: ConfigComposer) -
     assert exporter.filters.require_eval == RequireEval(evaluator_id="online_mind2web", label=1)
 
 
+def test_the_unloaded_step_filter_can_be_turned_off(composer: ConfigComposer) -> None:
+    entry = copy.deepcopy(ENTRY)
+    entry["filters"]["exclude_unloaded_steps"] = False
+    exporter = _compose(composer, entry).single("exporter")
+    assert exporter.filters.exclude_unloaded_steps is False
+
+
 def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
     entry = {
         "exporter_id": "openai_messages",
@@ -147,6 +155,7 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
     assert exporter.sources == ("*",) and exporter.sources_root is None
     assert exporter.root() == (Path.cwd() / "traces").resolve()
     assert exporter.filters == ExportFilters() and exporter.filters.max_document_misses == 0
+    assert exporter.filters.exclude_unloaded_steps is True
     assert exporter.split == SplitSettings(by="site", validation_fraction=0.1, salt="af-split-1")
     assert exporter.decontamination.against == ()
     assert (exporter.thought_source, exporter.thought_index_refs) == ("teacher", "drop")
@@ -165,6 +174,7 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
         (("length", "image_tokens"), "fixed"),  # fixed needs fixed_image_tokens
         (("filters", "max_document_misses"), -1),
         (("filters", "max_document_misses"), None),  # no limit is written unlimited
+        (("filters", "exclude_unloaded_steps"), "sometimes"),
         (("split", "validation_fraction"), 1.5),
     ],
 )

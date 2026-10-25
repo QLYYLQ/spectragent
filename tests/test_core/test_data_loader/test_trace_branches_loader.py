@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.data_loader._common import BENCHMARK_DATA_ENV, BenchmarkDataError
 from spectragent.core.data_loader.task import TaskLoaderRegistrar, TraceBranchesTaskLoader
 from spectragent.core.data_loader.task.require_eval import RequireEval
@@ -21,6 +22,9 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.task import BrowserSetup, TaskContext
 from tests._helpers.branch_sources import (
+    CAPTURE_FAILED,
+    NEVER_QUIET,
+    NOT_LOADED,
     START_URL,
     TASK_TEXT,
     Step,
@@ -635,6 +639,7 @@ class TestKnobs:
             "raise",
         )
         assert built.require_eval is None and built.step_selector.selector_id == "all"
+        assert built.exclude_unloaded_checkpoints is True
         assert built.benchmark_name == "trace_branches"
 
     @pytest.mark.parametrize(
@@ -656,16 +661,25 @@ class TestKnobs:
                 "sources": ["2026-*"],
                 "require_eval": {"evaluator_id": "online_mind2web", "slug": "online_mind2web-ab"},
                 "step_selector": {"selector_id": "every_k", "k": 2},
+                "exclude_unloaded_checkpoints": False,
             }
         )
         assert config.require_eval == RequireEval(
             evaluator_id="online_mind2web", label=1, slug="online_mind2web-ab"
+        )
+        assert config.exclude_unloaded_checkpoints is False
+        assert (
+            TraceBranchesTask_LoaderConfig.model_validate(
+                {"step_selector": {"selector_id": "all"}}
+            ).exclude_unloaded_checkpoints
+            is True
         )
         for bad in (
             {"step_selector": {"selector_id": "every"}},
             {"step_selector": {"selector_id": "all"}, "branches_per_step": 0},
             {"step_selector": {"selector_id": "all"}, "require_eval": {"evaluator": "x"}},
             {"step_selector": {"selector_id": "all"}, "on_unbranchable": "ignore"},
+            {"step_selector": {"selector_id": "all"}, "exclude_unloaded_checkpoints": "maybe"},
             {},
         ):
             with pytest.raises(ValidationError):
@@ -1143,3 +1157,89 @@ class TestExcludeRuns:
         )
         assert isinstance(built, TraceBranchesTaskLoader)
         assert built.task_ids() == ["run-a/s0/b0"]
+
+
+# ── checkpoints captured before the page finished loading ────────────
+
+#: Why step 1 of a source recorded with :data:`NOT_LOADED` is left out.
+_UNLOADED_AT_1 = (
+    "step 1 was captured before its initial load finished (browser.capture_state: the wait "
+    "ended capped after 5002 ms) (exclude_unloaded_checkpoints)"
+)
+
+
+class TestUnloadedCheckpoints:
+    """``exclude_unloaded_checkpoints`` (§4.10, §4.4 "初次加载是否完成")."""
+
+    def _three(self, middle: Any = NOT_LOADED) -> list[Step]:
+        settled = Step(capture=None)
+        return [settled, Step(capture=middle), settled]
+
+    def test_an_unloaded_checkpoint_is_left_out_with_its_reason(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        write_source(tmp_path, "run-a", steps=self._three())
+        with caplog.at_level("INFO"):
+            tasks = loader(tmp_path)
+            assert tasks.task_ids() == ["run-a/s0/b0", "run-a/s2/b0"]
+        assert dict(tasks.skipped) == {"run-a#s1": _UNLOADED_AT_1}
+        assert "run-a#s1 left out" in caplog.text
+
+    def test_off_every_candidate_is_a_checkpoint(self, tmp_path: Path) -> None:
+        write_source(tmp_path, "run-a", steps=self._three())
+        tasks = loader(tmp_path, exclude_unloaded_checkpoints=False)
+        assert tasks.task_ids() == ["run-a/s0/b0", "run-a/s1/b0", "run-a/s2/b0"]
+        assert dict(tasks.skipped) == {}
+
+    @pytest.mark.parametrize(
+        "middle",
+        [NEVER_QUIET, CAPTURE_FAILED, PageSettle(waited_ms=0, outcome="unknown", detail="x")],
+        ids=["a DOM that never went quiet", "capture failed", "unknown"],
+    )
+    def test_no_evidence_of_an_unloaded_page_keeps_the_checkpoint(
+        self, tmp_path: Path, middle: Any
+    ) -> None:
+        write_source(tmp_path, "run-a", steps=self._three(middle))
+        tasks = loader(tmp_path)
+        assert tasks.task_ids() == ["run-a/s0/b0", "run-a/s1/b0", "run-a/s2/b0"]
+        assert dict(tasks.skipped) == {}
+
+    def test_a_step_without_a_recorded_capture_state_is_kept(self, tmp_path: Path) -> None:
+        """Negotiated by the run, but not recorded at this step: no evidence, no refusal."""
+        write_source(tmp_path, "run-a", steps=[Step(), Step(capture=NOT_LOADED), Step()])
+        tasks = loader(tmp_path, step_selector=ExplicitSteps(steps=[0, 2]))
+        assert tasks.task_ids() == ["run-a/s0/b0", "run-a/s2/b0"]
+        assert dict(tasks.skipped) == {}
+
+    def test_a_run_that_never_negotiated_the_capture_state_is_kept(self, tmp_path: Path) -> None:
+        write_source(tmp_path, "run-a", steps=3)
+        assert loader(tmp_path).task_ids() == ["run-a/s0/b0", "run-a/s1/b0", "run-a/s2/b0"]
+
+    def test_it_applies_after_the_selector(self, tmp_path: Path) -> None:
+        """``last`` chose the unloaded step: the source gives no checkpoint, not an earlier one."""
+        write_source(tmp_path, "run-a", steps=[Step(), Step(), Step(capture=NOT_LOADED)])
+        tasks = loader(tmp_path, step_selector=LastStep())
+        assert tasks.task_ids() == []
+        assert set(tasks.skipped) == {"run-a#s2"}
+        assert "exclude_unloaded_checkpoints" in tasks.skipped["run-a#s2"]
+
+    def test_a_variant_at_an_unloaded_checkpoint_is_left_out(self, tmp_path: Path) -> None:
+        write_source(tmp_path / "src", "run-a", steps=self._three())
+        path = variants_file(
+            tmp_path, variant(step=1, variant_id="v1"), variant(step=2, variant_id="v2")
+        )
+        tasks = loader(tmp_path / "src", task_variants=str(path))
+        assert tasks.task_ids() == ["run-a/s2/vv2/b0"]
+        assert dict(tasks.skipped) == {"run-a/s1/vv1": f"run-a: {_UNLOADED_AT_1}"}
+
+    def test_a_capture_state_that_does_not_read_back_makes_the_source_unbranchable(
+        self, tmp_path: Path
+    ) -> None:
+        source = write_source(tmp_path, "run-a", steps=self._three())
+        (recorded,) = source.rglob("*browser.capture_state.json")
+        recorded.write_text('{"settle": "not a record"}')
+        with pytest.raises(BenchmarkDataError, match="step 1's capture state does not read back"):
+            loader(tmp_path).task_ids()
+        skipping = loader(tmp_path, on_unbranchable="skip")
+        assert skipping.task_ids() == []
+        assert "capture state does not read back" in skipping.skipped["run-a"]

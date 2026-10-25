@@ -71,6 +71,7 @@ from spectragent.agents.rendering.prompt_context import (
     restored_history_message,
 )
 from spectragent.agents.rendering.skipped_actions import not_executed_lines
+from spectragent.core.action_guard import executed_name
 from spectragent.core.actions.action_union import action_of, action_union
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
@@ -745,12 +746,16 @@ class BrowserUseAgent(AgentBase):
         ``render_browser_state``. The pointer is written on this step's
         *frame* when this run teaches a grid (a point with no place there
         is said to be so), and in viewport pixels when it writes no point
-        (no frame).
+        (no frame). A capture taken before the page finished loading offers
+        the wait action when this run's action space executes ``wait``.
         """
         parts: list[str] = []
         write_point = point_writer(frame, viewport=write_viewport_pixels)
         page_state = render_browser_state(
-            observation, show_media_state=self.show_media_state, write_point=write_point
+            observation,
+            show_media_state=self.show_media_state,
+            can_wait=executed_name(self._action_space, "wait") is not None,
+            write_point=write_point,
         )
         if page_state:
             parts.append(page_state)

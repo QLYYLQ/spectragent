@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,7 +24,10 @@ from spectragent.schemas.action import Action
 from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest, StepLedger
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export
 from tests._helpers.export_traces import (
+    NEVER_QUIET,
+    NOT_LOADED,
     ExportStep,
+    capture_state,
     click_at,
     finished,
     screenshot,
@@ -49,6 +53,122 @@ def _write_sources(root: Path, order: list[str]) -> None:
     }
     for run_id in order:
         write_ui_tars_run(root, run_id, plans[run_id], task_id=run_id)
+
+
+def _captured(action: Action, settle: Any, *, color: int) -> ExportStep:
+    """A UI-TARS step whose capture recorded *settle* (``ui_tars_step`` records a settled one)."""
+    return ExportStep(
+        actions=[action],
+        llm_output="Thought: look\nAction: (recorded reply)",
+        fragments=[screenshot(color=color), capture_state(settle)],
+    )
+
+
+class TestUnloadedSteps:
+    """``filters.exclude_unloaded_steps`` (arch §4.15, §4.4 "初次加载是否完成")."""
+
+    def _source(self, root: Path, middle: ExportStep) -> None:
+        write_ui_tars_run(
+            root,
+            "run-a",
+            [ui_tars_step(click_at(100, 100), color=11), middle, ui_tars_step(click_at(300, 300))],
+            task_id="run-a",
+        )
+
+    def _export(self, composer: ConfigComposer, root: Path, out: Path, **filters: Any) -> Any:
+        entry = exporter_entry(
+            root,
+            out,
+            split={"validation_fraction": 0.0},
+            filters={"max_document_misses": "unlimited", **filters},
+        )
+        return run_export(composer, entry)
+
+    def test_an_unloaded_step_is_no_sample_but_stays_in_later_context(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        self._source(tmp_path / "src", _captured(click_at(200, 200), NOT_LOADED, color=12))
+        out = tmp_path / "out"
+        report = self._export(composer, tmp_path / "src", out)
+        lines = read_jsonl(out / "train.samples.jsonl")
+        assert [line["sample"]["sample_id"] for line in lines] == ["run-a/s0", "run-a/s2"]
+        last = lines[-1]["render"]
+        assert last["segment"] == 0 and last["context_steps"] == [0, 1], (
+            "the left-out step is in the context as it happened; the segment goes on"
+        )
+        assert report.manifest.steps.filtered == {
+            "run-a#s1": (
+                "step 1 was captured before its initial load finished (browser.capture_state: "
+                "the wait ended capped after 5002 ms) (exclude_unloaded_steps)"
+            )
+        }
+        assert report.manifest.steps.skipped == {} and report.manifest.steps.untranslatable == {}
+        assert report.manifest.exporter["filters"]["exclude_unloaded_steps"] is True
+
+    def test_the_context_turn_says_the_page_had_not_loaded(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """Rendered by the student as the step was: its capture state opens with the fact."""
+        self._source(tmp_path / "src", _captured(click_at(200, 200), NOT_LOADED, color=12))
+        out = tmp_path / "out"
+        self._export(composer, tmp_path / "src", out)
+        (_first, last) = read_jsonl(out / "train.jsonl")
+        texts = [
+            part["text"]
+            for message in last["messages"]
+            if message["role"] == "user"
+            for part in (
+                message["content"]
+                if isinstance(message["content"], list)
+                else [{"type": "text", "text": message["content"]}]
+            )
+            if part.get("type") == "text"
+        ]
+        assert sum("had not finished loading" in text for text in texts) == 1
+
+    def test_off_every_step_is_a_sample(self, composer: ConfigComposer, tmp_path: Path) -> None:
+        self._source(tmp_path / "src", _captured(click_at(200, 200), NOT_LOADED, color=12))
+        out = tmp_path / "out"
+        report = self._export(composer, tmp_path / "src", out, exclude_unloaded_steps=False)
+        ids = [line["id"] for line in read_jsonl(out / "train.jsonl")]
+        assert ids == ["run-a/s0", "run-a/s1", "run-a/s2"]
+        assert report.manifest.steps.filtered == {}
+
+    @pytest.mark.parametrize(
+        "middle",
+        [
+            _captured(click_at(200, 200), NEVER_QUIET, color=12),
+            _captured(click_at(200, 200), None, color=12),
+            ExportStep(
+                actions=[click_at(200, 200)],
+                llm_output="Thought: look\nAction: (recorded reply)",
+                fragments=[screenshot(color=12)],
+                failed=["browser.capture_state"],
+            ),
+        ],
+        ids=["a DOM that never went quiet", "no wait", "capture state failed"],
+    )
+    def test_no_evidence_of_an_unloaded_page_is_exported(
+        self, composer: ConfigComposer, tmp_path: Path, middle: ExportStep
+    ) -> None:
+        self._source(tmp_path / "src", middle)
+        out = tmp_path / "out"
+        report = self._export(composer, tmp_path / "src", out)
+        ids = [line["id"] for line in read_jsonl(out / "train.jsonl")]
+        assert ids == ["run-a/s0", "run-a/s1", "run-a/s2"]
+        assert report.manifest.steps.filtered == {}
+
+    def test_an_export_of_only_unloaded_steps_is_empty_and_says_why(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        write_ui_tars_run(
+            tmp_path / "src",
+            "run-a",
+            [_captured(click_at(200, 200), NOT_LOADED, color=12)],
+            task_id="run-a",
+        )
+        with pytest.raises(ExportEmptyError, match="steps filtered"):
+            self._export(composer, tmp_path / "src", tmp_path / "out")
 
 
 class TestDeterminism:
@@ -94,7 +214,9 @@ class TestDeterminism:
         assert manifest.student.agent_id == "ui_tars"
         assert manifest.student.coordinate_space == "normalized_1000"
         assert manifest.quantization_px == {"0": 3, "1": 1}
-        assert manifest.steps == StepLedger(skipped={"not_exportable": 1}, untranslatable={})
+        assert manifest.steps == StepLedger(
+            skipped={"not_exportable": 1}, untranslatable={}, filtered={}
+        )
         assert manifest.step_info == {"recorded": 5}
         assert manifest.thoughts.fields == {"Thought": 5}
         assert [(s.path, s.samples) for s in manifest.sources.exported] == [

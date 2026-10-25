@@ -28,6 +28,8 @@ exporter:
       exclude_restoration_diverged: true
       max_document_misses: 0         # unlimited: no replay-log filter
       exclude_sites: []              # host names, suffix-matched
+      exclude_unloaded_steps: true   # a step captured before its page finished loading is no sample
+                                     # (it stays in later context); listed in the manifest's steps.filtered
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # by: site | task
     # against lists the benchmarks the student will be evaluated on; a source
     # whose task is one of theirs is left out. [] (the default) checks nothing,

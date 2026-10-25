@@ -23,6 +23,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
 from spectragent.agents.memory.simple import SimpleMemory
+from spectragent.agents.rendering.capture_state import CAN_WAIT, NOT_LOADED
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
@@ -128,9 +129,15 @@ def _history(*, effects: bool = True) -> list[StepRecord]:
     ]
 
 
-def _capture_state() -> SimpleNamespace:
+#: A capture taken before the page finished loading (§4.4 "初次加载是否完成").
+_NOT_LOADED = SettleState(
+    outcome="capped", waited_ms=5002, loaded=False, pending=("load", "dom", "content")
+)
+
+
+def _capture_state(settle: SettleState | None = None) -> SimpleNamespace:
     return SimpleNamespace(
-        settle_state=SettleState(outcome="settled", waited_ms=40),
+        settle_state=settle or SettleState(outcome="settled", waited_ms=40, loaded=True),
         foreground_change=None,
         pointer=PointerState(status="known", x=1, y=2),
         failed_visible_resources=FailedVisibleResources(status="measured", count=0),
@@ -162,12 +169,15 @@ def _observation(*, effects: bool = True, capture_state: bool = True) -> SimpleN
     return observation
 
 
-def _prepared(agent_class: type[Any], **switches: Any) -> tuple[Any, ActionSpace]:
+def _prepared(
+    agent_class: type[Any], *, without: frozenset[str] = frozenset(), **switches: Any
+) -> tuple[Any, ActionSpace]:
     """*agent_class* prepared with the actions of a browser it would negotiate them from.
 
     Only the ones its own demand admits: ``browser_use.dom`` never holds a
     coordinate action, so it teaches no grid and writes its feedback in
-    viewport pixels. The space is framed as a run frames it.
+    viewport pixels. The space is framed as a run frames it. *without* names
+    actions the run does not offer (an ablation of an optional one).
     """
     agent = make_agent(agent_class, memory=SimpleMemory(max_messages=20), **switches)
     required, optional = agent.negotiation_demand("action")
@@ -177,7 +187,7 @@ def _prepared(agent_class: type[Any], **switches: Any) -> tuple[Any, ActionSpace
         "browser.scroll",
         "browser.wait",
         "browser.done",
-    }
+    } - without
     descriptors = [
         action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
         for action in BrowserCapability().actions
@@ -208,8 +218,14 @@ def _text(messages: list[BaseMessage]) -> str:
     return "\n".join(texts)
 
 
-async def _prompt(agent_class: type[Any], observation: Any = None, **switches: Any) -> str:
-    agent, space = _prepared(agent_class, **switches)
+async def _prompt(
+    agent_class: type[Any],
+    observation: Any = None,
+    *,
+    without: frozenset[str] = frozenset(),
+    **switches: Any,
+) -> str:
+    agent, space = _prepared(agent_class, without=without, **switches)
     observation = observation if observation is not None else _observation()
     messages = await agent.build_react_prompt(
         observation, context=step_context(space, observation, step=1)
@@ -263,6 +279,42 @@ async def test_ui_tars_step_text() -> None:
         + _UI_TARS_CAPTURE_STATE
         + "\nScreenshot: 2000x1000 pixels."
     )
+
+
+@pytest.mark.parametrize(
+    ("agent_class", "can_wait"),
+    [
+        (UITarsAgent, True),
+        (SkyvernDomAgent, False),
+        (SkyvernDomVisionAgent, False),
+        (BrowserUseDomAgent, True),
+    ],
+    ids=["ui_tars", "skyvern.dom", "skyvern.dom_vision", "browser_use.dom"],
+)
+async def test_a_capture_before_the_load_says_so_first(
+    agent_class: type[Any], can_wait: bool
+) -> None:
+    """The plain sentence opens the block; the wait action only where the run executes one.
+
+    Skyvern declares no ``wait``, so its model reads the fact alone.
+    """
+    observation = _observation()
+    observation.capture_state = _capture_state(_NOT_LOADED)
+    text = await _prompt(agent_class, observation)
+    sentence = f"{NOT_LOADED} {CAN_WAIT}" if can_wait else NOT_LOADED
+    assert (
+        f"<capture_state>\n{sentence}\nSettle: capped: the wait ended at its limit after "
+        "5002 ms; still pending: load, dom, content.\n"
+    ) in text
+
+
+@pytest.mark.parametrize("agent_class", [UITarsAgent, BrowserUseDomAgent])
+async def test_a_run_without_the_wait_action_is_not_offered_it(agent_class: type[Any]) -> None:
+    observation = _observation()
+    observation.capture_state = _capture_state(_NOT_LOADED)
+    text = await _prompt(agent_class, observation, without=frozenset({"browser.wait"}))
+    assert f"<capture_state>\n{NOT_LOADED}\nSettle: " in text
+    assert CAN_WAIT not in text
 
 
 #: Skyvern's window for :func:`_history`: one JSON object per action that ran,

@@ -75,3 +75,5 @@ task_loader:
     branches_per_step: 2                 # the same input twice: replay determinism
     agent_outcome: any                   # a run whose agent ended in error is measured too
     on_unbranchable: skip                # an unbranchable source is left out, with its reason
+    exclude_unloaded_checkpoints: true   # a last step captured before its page finished loading is not
+                                         # replayed (no earlier step instead), listed in the loader's skipped

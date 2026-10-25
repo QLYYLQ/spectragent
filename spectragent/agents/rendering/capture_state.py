@@ -21,6 +21,14 @@ the action effects' ``describe``): the framework's writer for this step's
 frame (``core/loops/coordinate_frames.py::point_writer``), so its model reads
 the pointer on the grid it writes points on (§4.1, "坐标系归框架"). The
 default writes viewport pixels, as before.
+
+A capture taken before the captured surface finished its initial load
+(``settle_state.loaded is False``, §4.4 "初次加载是否完成") opens the block
+with one plain sentence saying so, ahead of the technical detail, and — when
+the Agent says its run can wait (``can_wait``) — that the model can use the
+wait action. The renderer never reads the action space: the Agent asks its own
+effective one (``core/action_guard.py::executed_name(space, "wait")``) and
+passes the answer.
 """
 
 from __future__ import annotations
@@ -34,6 +42,15 @@ from spectragent.schemas.observation.failure import FragmentFailure
 
 #: The relative observation key every Agent declares optional.
 CAPTURE_STATE_KEY = "capture_state"
+
+#: The plain sentence opening the block when the capture was taken before the
+#: captured surface finished its initial load (``settle_state.loaded is False``).
+NOT_LOADED = (
+    "The content had not finished loading when this was captured "
+    "(its initial load was still in progress)."
+)
+#: Said after :data:`NOT_LOADED` when the run's action space can wait.
+CAN_WAIT = "You can use the wait action."
 
 #: What the model reads when the optional fragment's capture failed this step.
 _NOT_MEASURED = (
@@ -50,7 +67,7 @@ def write_viewport_pixels(x: int, y: int) -> str:
 
 
 def render_capture_state(
-    observation: Any, *, write_point: PointWriter = write_viewport_pixels
+    observation: Any, *, can_wait: bool, write_point: PointWriter = write_viewport_pixels
 ) -> str:
     """The ``<capture_state>`` block of *observation*, or ``""`` when it has none.
 
@@ -58,14 +75,23 @@ def render_capture_state(
     or the Agent excluded it). A :class:`FragmentFailure` in the slot is said
     as one explicit sentence: the facts are unknown this step, not absent from
     the platform. A known pointer is written by *write_point*.
+
+    A capture taken before the surface finished its initial load opens with
+    :data:`NOT_LOADED`, followed by :data:`CAN_WAIT` when *can_wait* — the
+    Agent's answer to whether its run's effective action space holds a wait
+    action.
     """
     fragment = getattr(observation, "capture_state", None)
     if fragment is None:
         return ""
     if isinstance(fragment, FragmentFailure):
         return _NOT_MEASURED
-    lines = [
-        f"Settle: {_settle(fragment.settle_state)}",
+    settle = fragment.settle_state
+    lines: list[str] = []
+    if settle is not None and settle.loaded is False:
+        lines.append(f"{NOT_LOADED} {CAN_WAIT}" if can_wait else NOT_LOADED)
+    lines += [
+        f"Settle: {_settle(settle)}",
         f"Foreground change: {_foreground(fragment.foreground_change)}",
         f"Pointer: {_pointer(fragment.pointer, write_point)}",
         f"Failed visible resources: {_failed_resources(fragment.failed_visible_resources)}",
@@ -144,7 +170,9 @@ def _failed_resources(failed: Any) -> str:
 
 
 __all__ = [
+    "CAN_WAIT",
     "CAPTURE_STATE_KEY",
+    "NOT_LOADED",
     "capture_state_demand",
     "render_capture_state",
     "write_viewport_pixels",

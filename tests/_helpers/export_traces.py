@@ -58,13 +58,22 @@ def png(width: int, height: int, color: tuple[int, int, int] = (230, 230, 230)) 
     return buffer.getvalue()
 
 
-def capture_state() -> BrowserCaptureStateObs:
-    """What a recorded browser run's ``capture_state`` says: settled, pointer and images known."""
+#: A capture taken before the page finished loading: the main document's ``load``
+#: never came within the settle cap (§4.4 "初次加载是否完成").
+NOT_LOADED = PageSettle(waited_ms=5002, outcome="capped", waiting_for=["load", "dom", "content"])
+#: A page whose DOM never went quiet: capped, but its document had loaded.
+NEVER_QUIET = PageSettle(waited_ms=5001, outcome="capped", waiting_for=["dom"])
+_SETTLED = PageSettle(waited_ms=520, outcome="settled")
+
+
+def capture_state(settle: PageSettle | None = _SETTLED) -> BrowserCaptureStateObs:
+    """What a recorded browser run's ``capture_state`` says: by default settled, pointer and
+    images known. *settle* is the capture's settle record (``None``: the wait was off)."""
     state = BrowserCaptureStateObs(
         pointer=PointerState(status="known", x=640, y=360),
         failed_visible_resources=FailedVisibleResources(status="measured", count=0),
     )
-    state.settle = PageSettle(waited_ms=520, outcome="settled")
+    state.settle = settle
     return state
 
 

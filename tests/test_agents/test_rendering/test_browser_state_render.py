@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from spectragent.agents.rendering.browser_state import render_browser_state
+from spectragent.agents.rendering.capture_state import CAN_WAIT, NOT_LOADED
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.schemas.observation.capture_state import (
     FailedVisibleResources,
@@ -31,7 +32,9 @@ def _meta() -> BrowserMetaObs:
 
 def _capture_state() -> SimpleNamespace:
     return SimpleNamespace(
-        settle_state=SettleState(outcome="capped", waited_ms=3000, pending=("network",)),
+        settle_state=SettleState(
+            outcome="capped", waited_ms=3000, loaded=True, pending=("network",)
+        ),
         foreground_change=None,
         pointer=PointerState(status="unknown"),
         failed_visible_resources=FailedVisibleResources(
@@ -41,7 +44,9 @@ def _capture_state() -> SimpleNamespace:
 
 
 def test_url_title_and_tabs_in_the_one_format() -> None:
-    assert render_browser_state(SimpleNamespace(browser_meta=_meta()), show_media_state=False) == (
+    assert render_browser_state(
+        SimpleNamespace(browser_meta=_meta()), show_media_state=False, can_wait=False
+    ) == (
         "URL: https://news.test/a/1\n\n"
         "Title: Article\n\n"
         "Tabs: [T1] News (https://news.test/), [T2] Article (https://news.test/a/1)"
@@ -50,7 +55,7 @@ def test_url_title_and_tabs_in_the_one_format() -> None:
 
 def test_the_capture_state_follows_the_page_state() -> None:
     observation = SimpleNamespace(browser_meta=_meta(), capture_state=_capture_state())
-    assert render_browser_state(observation, show_media_state=False) == (
+    assert render_browser_state(observation, show_media_state=False, can_wait=False) == (
         "URL: https://news.test/a/1\n\n"
         "Title: Article\n\n"
         "Tabs: [T1] News (https://news.test/), [T2] Article (https://news.test/a/1)\n\n"
@@ -65,18 +70,25 @@ def test_the_capture_state_follows_the_page_state() -> None:
 
 def test_parts_with_nothing_to_say_are_left_out() -> None:
     assert (
-        render_browser_state(SimpleNamespace(browser_meta=BrowserMetaObs()), show_media_state=False)
+        render_browser_state(
+            SimpleNamespace(browser_meta=BrowserMetaObs()), show_media_state=False, can_wait=False
+        )
         == ""
     )
-    assert render_browser_state(SimpleNamespace(), show_media_state=False) == ""
+    assert render_browser_state(SimpleNamespace(), show_media_state=False, can_wait=False) == ""
     only_url = SimpleNamespace(browser_meta=BrowserMetaObs(url="https://x.test/"))
-    assert render_browser_state(only_url, show_media_state=False) == "URL: https://x.test/"
+    assert (
+        render_browser_state(only_url, show_media_state=False, can_wait=False)
+        == "URL: https://x.test/"
+    )
 
 
 def test_a_failed_capture_state_still_follows_the_page_state() -> None:
     failure = FragmentFailure(fragment_id="browser.capture_state", error="RuntimeError")
     text = render_browser_state(
-        SimpleNamespace(browser_meta=_meta(), capture_state=failure), show_media_state=False
+        SimpleNamespace(browser_meta=_meta(), capture_state=failure),
+        show_media_state=False,
+        can_wait=False,
     )
     assert text.startswith("URL: https://news.test/a/1\n\n")
     assert text.endswith(
@@ -85,3 +97,16 @@ def test_a_failed_capture_state_still_follows_the_page_state() -> None:
         "pointer and failed visible resources are all unknown.\n"
         "</capture_state>"
     )
+
+
+def test_the_wait_answer_reaches_the_capture_state() -> None:
+    """``can_wait`` is handed to ``render_capture_state`` unchanged."""
+    capture_state = _capture_state()
+    capture_state.settle_state = SettleState(
+        outcome="capped", waited_ms=5002, loaded=False, pending=("load", "dom", "content")
+    )
+    observation = SimpleNamespace(browser_meta=_meta(), capture_state=capture_state)
+    for can_wait in (False, True):
+        text = render_browser_state(observation, show_media_state=False, can_wait=can_wait)
+        sentence = f"{NOT_LOADED} {CAN_WAIT}" if can_wait else NOT_LOADED
+        assert f"<capture_state>\n{sentence}\nSettle: capped" in text

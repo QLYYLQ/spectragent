@@ -25,12 +25,13 @@ ThoughtIndexRefs = Literal["drop", "keep"]
 
 @pydantic_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
 class ExportFilters:
-    """Which matched sources become samples (``filters``).
+    """Which matched sources, and which of their steps, become samples (``filters``).
 
     A source a filter leaves out is listed in the dataset manifest's
-    ``sources.filtered`` with the reason; it is not an error. Whether a
-    source's trace is closed and complete through a step is not a filter but
-    a hard condition the export always applies (arch §4.15).
+    ``sources.filtered`` with the reason, a step one leaves out in its
+    ``steps.filtered``; neither is an error. Whether a source's trace is
+    closed and complete through a step is not a filter but a hard condition
+    the export always applies (arch §4.15).
     """
 
     agent_outcome: AgentOutcomeFilter = Field(
@@ -68,6 +69,18 @@ class ExportFilters:
         description=(
             "Host names whose runs are left out: a source's site key equal to an entry or "
             "ending in '.' + entry."
+        ),
+    )
+    exclude_unloaded_steps: bool = Field(
+        default=True,
+        description=(
+            "A step whose recorded observation was captured before it finished its initial "
+            "load (its capture_state settle says loaded: false: the wait ended at its limit "
+            "first; in a browser, before the main document's load event) produces no sample; "
+            "it stays in later samples' context as it happened. A page whose DOM never went "
+            "quiet does not count, and a step with no capture_state recorded is exported. "
+            "Each one left out is listed in the manifest's steps.filtered with the reason. "
+            "false: no check."
         ),
     )
 

@@ -10,7 +10,9 @@ nothing here spells a path or a JSON shape).
 trace's ledger (the manifest status and how far it is complete), the agent's
 (``result.json``), the configuration (task, identity, the setup context, the
 negotiation with its archive binding, a branch provenance), the step records
-(origin, error phase), the environment fingerprint, and verdicts in ``evals/``.
+(origin, error phase), a step's recorded ``browser.capture_state`` (how its
+capture's settle wait ended), the environment fingerprint, and verdicts in
+``evals/``.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ from pathlib import Path
 from typing import Any
 
 from spectragent.core.archive.privacy import RedactionEntry, RedactionLedger
+from spectragent.core.capabilities.browser.observations import BrowserCaptureStateObs
+from spectragent.core.capabilities.browser.settle import PageSettle
+from spectragent.core.trace.encoding import EncodedFragment, encode_fragment
 from spectragent.core.trace.models import (
     TaskSetupRecord,
     TraceConfig,
@@ -32,6 +37,8 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_result import EvalResult
+from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
+from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.trace_builder import agent_result, archive_file, write_verdict
@@ -41,12 +48,44 @@ START_URL = "https://shop.test/"
 TASK_TEXT = "put the blue kettle in the cart"
 
 
+#: A capture taken before the page finished loading: the main document's ``load``
+#: never came within the settle cap (§4.4 "初次加载是否完成").
+NOT_LOADED = PageSettle(waited_ms=5002, outcome="capped", waiting_for=["load", "dom", "content"])
+#: A page whose DOM never went quiet: capped, but its document had loaded.
+NEVER_QUIET = PageSettle(waited_ms=5001, outcome="capped", waiting_for=["dom"])
+#: A capture state whose capture failed (recorded as a ``FragmentFailure``).
+CAPTURE_FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class Step:
-    """One committed step's record, as far as the loader reads it."""
+    """One committed step's record, as far as the loader reads it.
+
+    ``capture``: the settle record of the step's ``browser.capture_state``
+    (recorded only when some step of the run has one, which also puts the
+    fragment in the run's negotiation); :data:`CAPTURE_FAILED` records its
+    capture as failed; ``None`` records no capture state at this step.
+    """
 
     origin: str = "policy"
     error_phase: str = ""
+    capture: PageSettle | str | None = None
+
+
+def _capture_fragment(step: int, capture: PageSettle | str) -> EncodedFragment:
+    if capture == CAPTURE_FAILED:
+        value: Any = FragmentFailure(
+            fragment_id="browser.capture_state", capability="browser", error="TimeoutError"
+        )
+    else:
+        value = BrowserCaptureStateObs(
+            pointer=PointerState(status="unknown"),
+            failed_visible_resources=FailedVisibleResources(status="measured", count=0),
+        )
+        value.settle = capture
+    encoded = encode_fragment(step, value)
+    assert encoded is not None
+    return encoded
 
 
 def setup_record(
@@ -104,6 +143,8 @@ def write_source(
     ``result.json`` (``None``: no result.json).
     """
     specs = [Step() for _ in range(steps)] if isinstance(steps, int) else list(steps)
+    captured = any(spec.capture is not None for spec in specs)
+    fragments = ["browser.capture_state", "browser.screenshot"] if captured else []
     wal = WALWriter(root, run_id)
     wal.init_run(
         TraceConfig(
@@ -117,7 +158,8 @@ def write_source(
             task_id=task_id,
             extra=extra if extra is not None else {"difficulty": "hard", "tags": ["cart"]},
             negotiation=TraceNegotiation(
-                active_fragments=["browser.screenshot"],
+                active_fragments=fragments or ["browser.screenshot"],
+                env_sourced_fragments=fragments,
                 active_actions=["browser.click"],
                 active_archivers=sorted(archivers),
                 archive_bindings={key: key.partition(".")[0] for key in archivers},
@@ -145,6 +187,9 @@ def write_source(
                 action_results=[ActionResult(success=True)],
                 origin=spec.origin,  # type: ignore[arg-type]
                 error_phase=spec.error_phase,
+            ),
+            fragments=(
+                [_capture_fragment(index, spec.capture)] if spec.capture is not None else []
             ),
             extra_files=extras,
         )

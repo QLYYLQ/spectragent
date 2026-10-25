@@ -34,7 +34,11 @@ _MEDIA_NOT_MEASURED = (
 
 
 def render_browser_state(
-    observation: Any, *, show_media_state: bool, write_point: PointWriter = write_viewport_pixels
+    observation: Any,
+    *,
+    show_media_state: bool,
+    can_wait: bool,
+    write_point: PointWriter = write_viewport_pixels,
 ) -> str:
     """``URL``, ``Title`` and ``Tabs`` lines, the ``<capture_state>`` block, then ``<media_state>``.
 
@@ -42,7 +46,7 @@ def render_browser_state(
     out, and ``""`` means there was nothing at all. The caller decides what
     an empty page state reads as and where the element tree goes. The media
     block is written only with *show_media_state*. A known pointer is written
-    by *write_point*.
+    by *write_point*; *can_wait* is handed to ``render_capture_state``.
     """
     parts: list[str] = []
     meta = getattr(observation, "browser_meta", None)
@@ -59,7 +63,7 @@ def render_browser_state(
                 f"[{t.get('tab_id', '?')}] {t.get('title', '')} ({t.get('url', '')})" for t in tabs
             )
             parts.append(f"Tabs: {tab_info}")
-    capture_state = render_capture_state(observation, write_point=write_point)
+    capture_state = render_capture_state(observation, can_wait=can_wait, write_point=write_point)
     if capture_state:
         parts.append(capture_state)
     if show_media_state:

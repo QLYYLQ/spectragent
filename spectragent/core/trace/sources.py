@@ -18,6 +18,12 @@ two ledgers (arch §4.10, §4.15): a hard condition on the trace's own ledger �
 closed, and complete through the step used (:func:`not_closed_reason`,
 :func:`past_complete_reason`) — and a filter on the agent's, how the run
 ended (:data:`AgentOutcomeFilter`, :func:`agent_outcome_filtered_out`).
+
+And which recorded steps they leave out because the step's observation was
+captured before the captured surface finished its initial load
+(:func:`unloaded_capture_reason`, arch §4.4 "初次加载是否完成"): the branch
+loader's ``exclude_unloaded_checkpoints`` and the export's
+``filters.exclude_unloaded_steps`` read the same fact the same way.
 """
 
 from __future__ import annotations
@@ -32,6 +38,9 @@ from urllib.parse import urlsplit
 from spectragent.core.trace.encoding import MANIFEST_FILE
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import TraceConfig, TraceManifest, TraceStatus
+from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.observation.capture_state import CaptureStateFragment
+from spectragent.schemas.observation.failure import FragmentFailure
 
 if TYPE_CHECKING:
     from spectragent.core.trace.reader import RunTrace
@@ -45,6 +54,10 @@ logger = logging.getLogger(__name__)
 AgentOutcomeFilter = Literal["any", "done", "max_steps", "error", "timeout", "vetoed"]
 #: :data:`AgentOutcomeFilter`'s values, for a check outside pydantic.
 AGENT_OUTCOMES: tuple[str, ...] = get_args(AgentOutcomeFilter)
+#: The local name every capability's capture state carries
+#: (``browser.capture_state``, ``desktop.capture_state``); negotiation lets at
+#: most one fragment take a local name per run.
+_CAPTURE_STATE = "capture_state"
 
 
 def source_pattern_problem(pattern: str) -> str | None:
@@ -219,6 +232,46 @@ def agent_outcome_filtered_out(trace: RunTrace, wanted: AgentOutcomeFilter) -> s
     return None
 
 
+def unloaded_capture_reason(trace: RunTrace, step: int) -> str | None:
+    """Why *step*'s observation was captured before its initial load finished; else ``None``.
+
+    Reads the step's recorded capture state through the platform-neutral
+    :class:`CaptureStateFragment`, never a capability's own labels: the
+    run's negotiated env-source fragment whose local name is
+    ``capture_state``. A reason only when its ``settle_state.loaded`` is
+    ``False`` — the wait ended at its limit with the initial load still in
+    progress (arch §4.4 "初次加载是否完成"). ``None`` is no evidence: the run
+    negotiated no capture state, the step recorded none, its capture failed,
+    there was no wait, or the load was not known to be incomplete.
+
+    Raises:
+        RecordingScopeError: The run recorded no observations.
+        TraceSchemaError: The recorded fragment does not read back, or is not
+            a capture state.
+    """
+    negotiation = trace.config.negotiation
+    keys = (
+        [k for k in negotiation.env_sourced_fragments if fragment_field_name(k) == _CAPTURE_STATE]
+        if negotiation is not None
+        else []
+    )
+    for key in keys:
+        fragment = trace.observation_fragment(step, key)
+        if fragment is None or isinstance(fragment, FragmentFailure):
+            continue
+        if not isinstance(fragment, CaptureStateFragment):
+            raise TraceSchemaError(
+                f"step {step} records {key!r} as a {type(fragment).__name__}, not a capture state"
+            )
+        settle = fragment.settle_state
+        if settle is not None and settle.loaded is False:
+            return (
+                f"step {step} was captured before its initial load finished ({key}: the wait "
+                f"ended {settle.outcome} after {settle.waited_ms} ms)"
+            )
+    return None
+
+
 __all__ = [
     "AGENT_OUTCOMES",
     "AgentOutcomeFilter",
@@ -229,5 +282,6 @@ __all__ = [
     "past_complete_reason",
     "source_pattern_problem",
     "task_identity",
+    "unloaded_capture_reason",
     "unreadable_reason",
 ]

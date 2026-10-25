@@ -53,6 +53,17 @@ cannot be used (listed twice, an empty task text, a run id no kept source
 has, a step that is not a chosen candidate) is left out, in ``skipped`` under
 its key ``<source_run_id>/s<t>/v<variant_id>``.
 
+**Unloaded checkpoints.** With ``exclude_unloaded_checkpoints`` (the
+default), a chosen candidate whose recorded observation was captured before
+the captured surface finished its initial load — its capture state's
+``settle_state.loaded`` is ``False`` (arch §4.4 "初次加载是否完成"; on the
+browser, the main document's ``load`` never came within the settle cap) — is
+not a checkpoint: it is left out after the ``step_selector`` chose it, in
+``skipped`` under ``<path>#s<t>`` (a task variant at it, under the variant's
+key) with the reason, and logged at INFO. A source with no capture-state
+evidence at that step keeps the checkpoint
+(:func:`~spectragent.core.trace.sources.unloaded_capture_reason`).
+
 **Lazy.** The constructor touches no file, the ``task_variants`` and
 ``exclude_runs`` files included: the CLI composes the whole YAML once per
 task, and a sweep over a thousand sources must not rescan them a thousand
@@ -102,6 +113,7 @@ from spectragent.core.trace.sources import (
     not_closed_reason,
     past_complete_reason,
     source_pattern_problem,
+    unloaded_capture_reason,
 )
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.step_record import StepRecord
@@ -143,6 +155,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
     on_unbranchable: Literal["raise", "skip"]
     task_variants: str | None
     exclude_runs: str | None
+    exclude_unloaded_checkpoints: bool
     _contexts: dict[str, TaskContext]
     _skipped: dict[str, str]
     _scanned: bool
@@ -246,6 +259,20 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
                 ),
             ),
         ] = None,
+        exclude_unloaded_checkpoints: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Leave out, after step_selector chose it, a checkpoint whose recorded "
+                    "observation was captured before it finished its initial load: its "
+                    "capture_state settle says loaded: false (the wait ended at its limit "
+                    "first; in a browser, before the main document's load event). A page "
+                    "whose DOM never went quiet does not count. Each one left out is in the "
+                    "loader's 'skipped' with the reason; a step with no capture_state "
+                    "recorded is kept. false: no check."
+                ),
+            ),
+        ] = True,
     ) -> None:
         # The receptor's in-Python default; the Composer injects the configured one.
         self.step_selector = default_step_selector()
@@ -281,6 +308,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         self.on_unbranchable = on_unbranchable
         self.task_variants = task_variants
         self.exclude_runs = exclude_runs
+        self.exclude_unloaded_checkpoints = exclude_unloaded_checkpoints
         self._tasks = {}
         self._contexts = {}
         self._skipped = {}
@@ -319,9 +347,9 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
 
         Keyed by the source's path relative to the sources root (POSIX); a
         single selected step a source cannot branch at is keyed
-        ``<path>#s<t>``; a task variant left out, by its
-        ``<source_run_id>/s<t>/v<variant_id>``. Filtered sources are here too
-        (``filtered: …``).
+        ``<path>#s<t>`` (an unloaded checkpoint too); a task variant left out,
+        by its ``<source_run_id>/s<t>/v<variant_id>``. Filtered sources are
+        here too (``filtered: …``).
         """
         self._scan_once()
         return MappingProxyType(self._skipped)
@@ -565,15 +593,43 @@ class _Scan:
             return
         source = _Placement(rel, directory, trace.run_id, config, env)
         selected = self.loader.step_selector.select(candidates)
+        unloaded = self._unloaded(trace, [step for step in selected if step in candidates])
         if self._variants is not None:
-            self._expand_variants(source, by_step, manifest, candidates, selected)
+            self._expand_variants(source, by_step, manifest, candidates, selected, unloaded)
             return
         for step in selected:
             if step not in candidates:
                 self.skipped[f"{rel}#s{step}"] = _why_not_a_candidate(by_step, step, manifest)
                 continue
+            if step in unloaded:
+                logger.info("trace_branches: %s#s%d left out: %s", rel, step, unloaded[step])
+                self.skipped[f"{rel}#s{step}"] = unloaded[step]
+                continue
             for index in range(self.loader.branches_per_step):
                 self._add_task(source, step, index)
+
+    def _unloaded(self, trace: RunTrace, steps: list[int]) -> dict[int, str]:
+        """Each of *steps* captured before its initial load finished, with why it is left out.
+
+        Empty when ``exclude_unloaded_checkpoints`` is off. A step with no
+        capture-state evidence is not in it.
+
+        Raises:
+            _Unbranchable: A recorded capture state does not read back.
+        """
+        if not self.loader.exclude_unloaded_checkpoints:
+            return {}
+        unloaded: dict[int, str] = {}
+        for step in steps:
+            try:
+                reason = unloaded_capture_reason(trace, step)
+            except TraceSchemaError as exc:
+                raise _Unbranchable(
+                    f"step {step}'s capture state does not read back: {exc}"
+                ) from exc
+            if reason is not None:
+                unloaded[step] = f"{reason} (exclude_unloaded_checkpoints)"
+        return unloaded
 
     def _expand_variants(
         self,
@@ -582,11 +638,13 @@ class _Scan:
         manifest: TraceManifest,
         candidates: list[int],
         selected: list[int],
+        unloaded: Mapping[int, str],
     ) -> None:
         """The source's branch tasks under its task variants: the file names the steps.
 
-        A variant's step must be a candidate the selector chose; otherwise
-        the variant is left out with the reason, keyed by the variant.
+        A variant's step must be a candidate the selector chose and not an
+        unloaded checkpoint (*unloaded*); otherwise the variant is left out
+        with the reason, keyed by the variant.
         """
         assert self._variants is not None
         chosen = set(selected)
@@ -597,7 +655,7 @@ class _Scan:
             elif step not in chosen:
                 reason = f"step {step} is a candidate step_selector {selector!r} did not choose"
             else:
-                reason = None
+                reason = unloaded.get(step)
             for entry in entries:
                 if reason is not None:
                     self.skipped[entry.key] = f"{source.rel}: {reason}"

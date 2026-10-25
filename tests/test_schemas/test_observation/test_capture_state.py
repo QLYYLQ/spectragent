@@ -131,17 +131,48 @@ class TestFailedVisibleResources:
 
 class TestSettleAndForeground:
     def test_settle_defaults_to_nothing_pending(self) -> None:
-        assert SettleState(outcome="settled", waited_ms=640).pending == ()
+        assert SettleState(outcome="settled", waited_ms=640, loaded=True).pending == ()
 
     def test_a_negative_wait_is_refused(self) -> None:
         with pytest.raises(ValidationError):
-            SettleState(outcome="settled", waited_ms=-1)
+            SettleState(outcome="settled", waited_ms=-1, loaded=True)
 
     def test_closed_values(self) -> None:
         with pytest.raises(ValidationError):
-            SettleState(outcome="quiet", waited_ms=0)  # type: ignore[arg-type]
+            SettleState(outcome="quiet", waited_ms=0, loaded=None)  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             ForegroundChange(reason="switched", from_surface="a", to_surface="b")  # type: ignore[arg-type]
+
+
+class TestLoaded:
+    """Whether the captured surface had finished its initial load (§4.4, "初次加载是否完成")."""
+
+    def test_every_capability_says_it(self) -> None:
+        with pytest.raises(ValidationError, match="loaded"):
+            SettleState(outcome="capped", waited_ms=5000)  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize(
+        ("outcome", "loaded"),
+        [
+            ("settled", True),
+            ("capped", False),
+            ("capped", True),
+            ("capped", None),
+            ("unknown", True),
+            ("unknown", None),
+        ],
+    )
+    def test_the_states_that_agree_with_the_outcome(self, outcome: Any, loaded: Any) -> None:
+        assert SettleState(outcome=outcome, waited_ms=1, loaded=loaded).loaded is loaded
+
+    @pytest.mark.parametrize("loaded", [False, None])
+    def test_a_settled_wait_saw_the_load_complete(self, loaded: Any) -> None:
+        with pytest.raises(ValidationError, match="settled wait saw the initial load"):
+            SettleState(outcome="settled", waited_ms=1, loaded=loaded)
+
+    def test_only_the_cap_ends_a_wait_before_the_load(self) -> None:
+        with pytest.raises(ValidationError, match="only a capped wait"):
+            SettleState(outcome="unknown", waited_ms=1, loaded=False)
 
 
 # ── the abstract base ─────────────────────────────────────────────────
@@ -183,7 +214,7 @@ class TestTheBase:
 class TestSummary:
     def test_every_fact(self, stub: type[CaptureStateFragment]) -> None:
         fragment = stub(
-            settled=SettleState(outcome="settled", waited_ms=640),
+            settled=SettleState(outcome="settled", waited_ms=640, loaded=True),
             pointer=PointerState(status="known", x=12, y=40),
             failed_visible_resources=FailedVisibleResources(
                 status="measured", count=1, identifiers=("missing.png",)
@@ -193,7 +224,7 @@ class TestSummary:
 
     def test_a_capped_wait_and_a_followed_surface(self, stub: type[CaptureStateFragment]) -> None:
         fragment = stub(
-            settled=SettleState(outcome="capped", waited_ms=5000, pending=("dom",)),
+            settled=SettleState(outcome="capped", waited_ms=5000, loaded=True, pending=("dom",)),
             change=ForegroundChange(reason="opened", from_surface="T1", to_surface="T2"),
             pointer=PointerState(status="unknown"),
             failed_visible_resources=FailedVisibleResources(status="measured", count=2),

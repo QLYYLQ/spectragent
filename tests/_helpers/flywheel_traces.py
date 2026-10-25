@@ -433,7 +433,7 @@ def dataset_manifest(
             skipped={},
             filtered=dict(filtered or {}),
         ),
-        steps=StepLedger(untranslatable=dict(untranslatable or {}), skipped={}),
+        steps=StepLedger(untranslatable=dict(untranslatable or {}), skipped={}, filtered={}),
         samples=samples,
         quantization_px={},
         thoughts=ThoughtLedger(source="teacher", fields={}, dropped_index_refs=0),

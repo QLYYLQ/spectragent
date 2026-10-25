@@ -321,6 +321,24 @@ class PageSettle(BaseModel):
         """Whether the cap ended the wait."""
         return self.outcome == "capped"
 
+    @property
+    def main_document_loaded(self) -> bool | None:
+        """Whether the main document had loaded as far as this wait saw (§4.4, "初次加载是否完成").
+
+        ``False`` when the wait ended with ``load`` pending: the main frame's
+        current document never reached its ``load`` event within the cap (or
+        a document that replaced it was never waited for). ``True`` for any
+        other ``settled`` or ``capped`` wait. ``None`` for ``unknown``: the
+        page's state could not be read. A document whose load never finishes
+        is waited on for one cap in total (:meth:`MainFrameLoad.wait_loaded`),
+        so only the wait that spent that cap says ``False``; later waits on
+        the same document no longer wait for its load, list no ``load`` and
+        say ``True``.
+        """
+        if self.outcome == "unknown":
+            return None
+        return "load" not in self.waiting_for
+
 
 class _PageWatch(BaseModel):
     """What one in-page probe reported, or why there is no report."""

@@ -97,4 +97,6 @@ task_loader:
     agent_outcome: any                   # done | max_steps | error | timeout | vetoed: how the source's agent ended
                                          # (a checkpoint is always a step the source's trace is closed and complete through)
     on_unbranchable: raise               # skip: leave an unbranchable source out, with its reason
+    exclude_unloaded_checkpoints: true   # leave out a checkpoint captured before its page finished loading
+                                         # (capture_state settle loaded: false), listed in the loader's skipped
     # require_eval: { evaluator_id: online_mind2web, label: 1 }   # only runs a judge passed

@@ -387,7 +387,11 @@ class UITarsAgent(AgentBase):
         screenshot = getattr(observation, "screenshot", None)
         image_bytes = read_model_image(screenshot)
         text = step_label + "\n" + self._render_action_results(observation.history)
-        capture_state = render_capture_state(observation, write_point=point_writer(context.frame))
+        capture_state = render_capture_state(
+            observation,
+            can_wait="wait" in self._codec.verbs,
+            write_point=point_writer(context.frame),
+        )
         if capture_state:
             text += "\n" + capture_state
 

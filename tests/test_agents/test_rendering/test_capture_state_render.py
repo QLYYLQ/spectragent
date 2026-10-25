@@ -3,7 +3,10 @@
 ``docs/architecture_design.md`` §4.4, "跨平台采集状态 ``capture_state``". Four
 facts — settle, foreground change, pointer, failed visible resources — each in
 every state its schema allows, in words that name no platform. "Unknown" and
-"unavailable" are said as such; a measured zero says none.
+"unavailable" are said as such; a measured zero says none. A capture taken
+before the surface finished its initial load opens with one plain sentence,
+and offers the wait action only when the Agent says its run can wait
+(§4.4, "初次加载是否完成").
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from typing import Any, ClassVar, Literal
 
 import pytest
 
-from spectragent.agents.rendering.capture_state import render_capture_state
+from spectragent.agents.rendering.capture_state import CAN_WAIT, NOT_LOADED, render_capture_state
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
     FailedVisibleResources,
@@ -23,7 +26,10 @@ from spectragent.schemas.observation.capture_state import (
 )
 from spectragent.schemas.observation.failure import FragmentFailure
 
-_SETTLED = SettleState(outcome="settled", waited_ms=640)
+_SETTLED = SettleState(outcome="settled", waited_ms=640, loaded=True)
+_NOT_LOADED = SettleState(
+    outcome="capped", waited_ms=5002, loaded=False, pending=("load", "dom", "content")
+)
 _KNOWN = PointerState(status="known", x=412, y=230)
 _NONE_FAILED = FailedVisibleResources(status="measured", count=0)
 
@@ -44,8 +50,8 @@ def _state(
     )
 
 
-def _render(**facts: Any) -> str:
-    return render_capture_state(SimpleNamespace(capture_state=_state(**facts)))
+def _render(*, can_wait: bool = False, **facts: Any) -> str:
+    return render_capture_state(SimpleNamespace(capture_state=_state(**facts)), can_wait=can_wait)
 
 
 def _line(text: str, label: str) -> str:
@@ -54,15 +60,15 @@ def _line(text: str, label: str) -> str:
 
 
 def test_no_fragment_renders_nothing() -> None:
-    assert render_capture_state(SimpleNamespace()) == ""
-    assert render_capture_state(SimpleNamespace(capture_state=None)) == ""
+    assert render_capture_state(SimpleNamespace(), can_wait=True) == ""
+    assert render_capture_state(SimpleNamespace(capture_state=None), can_wait=True) == ""
 
 
 def test_a_failed_capture_says_the_state_could_not_be_measured() -> None:
     failure = FragmentFailure(
         fragment_id="browser.capture_state", capability="browser", error="TimeoutError"
     )
-    assert render_capture_state(SimpleNamespace(capture_state=failure)) == (
+    assert render_capture_state(SimpleNamespace(capture_state=failure), can_wait=True) == (
         "<capture_state>\n"
         "The capture state could not be measured this step: settle, foreground change, "
         "pointer and failed visible resources are all unknown.\n"
@@ -86,24 +92,74 @@ def test_the_whole_block() -> None:
     ("settle", "expected"),
     [
         (None, "no wait before this capture."),
-        (SettleState(outcome="settled", waited_ms=0), "settled after waiting 0 ms."),
+        (SettleState(outcome="settled", waited_ms=0, loaded=True), "settled after waiting 0 ms."),
         (
-            SettleState(outcome="capped", waited_ms=3000, pending=("network", "layout")),
+            SettleState(
+                outcome="capped", waited_ms=3000, loaded=True, pending=("network", "layout")
+            ),
             "capped: the wait ended at its limit after 3000 ms; still pending: network, layout.",
         ),
         (
-            SettleState(outcome="capped", waited_ms=3000),
+            SettleState(outcome="capped", waited_ms=3000, loaded=True),
             "capped: the wait ended at its limit after 3000 ms.",
         ),
-        (SettleState(outcome="unknown", waited_ms=120), "unknown after waiting 120 ms."),
         (
-            SettleState(outcome="unknown", waited_ms=0, detail="the page state could not be read"),
+            SettleState(outcome="unknown", waited_ms=120, loaded=None),
+            "unknown after waiting 120 ms.",
+        ),
+        (
+            SettleState(
+                outcome="unknown",
+                waited_ms=0,
+                loaded=None,
+                detail="the page state could not be read",
+            ),
             "unknown after waiting 0 ms (the page state could not be read).",
         ),
     ],
 )
 def test_settle(settle: SettleState | None, expected: str) -> None:
     assert _line(_render(settle=settle), "Settle") == expected
+
+
+class TestNotLoaded:
+    """A capture taken before the surface finished its initial load says so first."""
+
+    def test_the_sentence_opens_the_block_and_the_detail_follows(self) -> None:
+        assert _render(settle=_NOT_LOADED) == (
+            "<capture_state>\n"
+            "The content had not finished loading when this was captured "
+            "(its initial load was still in progress).\n"
+            "Settle: capped: the wait ended at its limit after 5002 ms; still pending: "
+            "load, dom, content.\n"
+            "Foreground change: none.\n"
+            "Pointer: (412, 230) in viewport pixels.\n"
+            "Failed visible resources: none failed.\n"
+            "</capture_state>"
+        )
+
+    def test_the_wait_action_is_offered_only_when_the_run_can_wait(self) -> None:
+        with_wait = _render(settle=_NOT_LOADED, can_wait=True)
+        assert with_wait.splitlines()[1] == f"{NOT_LOADED} {CAN_WAIT}"
+        assert CAN_WAIT not in _render(settle=_NOT_LOADED, can_wait=False)
+
+    @pytest.mark.parametrize(
+        "settle",
+        [
+            _SETTLED,
+            SettleState(outcome="capped", waited_ms=5000, loaded=True, pending=("dom",)),
+            SettleState(outcome="unknown", waited_ms=0, loaded=None),
+            None,
+        ],
+        ids=["settled", "dom-only cap", "unknown", "no wait"],
+    )
+    @pytest.mark.parametrize("can_wait", [False, True])
+    def test_loaded_or_unknown_adds_nothing(
+        self, settle: SettleState | None, can_wait: bool
+    ) -> None:
+        text = _render(settle=settle, can_wait=can_wait)
+        assert NOT_LOADED not in text and CAN_WAIT not in text
+        assert text.splitlines()[1].startswith("Settle: ")
 
 
 @pytest.mark.parametrize(
@@ -181,8 +237,14 @@ def test_the_wording_names_no_platform() -> None:
             foreground=foreground,
             pointer=pointer,
             failed=failed,
+            can_wait=can_wait,
         )
-        for settle in (None, _SETTLED, SettleState(outcome="capped", waited_ms=1))
+        for settle in (
+            None,
+            _SETTLED,
+            SettleState(outcome="capped", waited_ms=1, loaded=True),
+            _NOT_LOADED,
+        )
         for foreground in (
             None,
             ForegroundChange(reason="opened", from_surface="x", to_surface="y"),
@@ -190,6 +252,7 @@ def test_the_wording_names_no_platform() -> None:
         )
         for pointer in (_KNOWN, PointerState(status="unavailable"))
         for failed in (_NONE_FAILED, FailedVisibleResources(status="unavailable"))
+        for can_wait in (False, True)
     ]
     for text in renders:
         lowered = text.lower()
@@ -208,13 +271,13 @@ def test_a_concrete_capability_fragment_renders_through_the_base_class() -> None
 
         @property
         def settle_state(self) -> SettleState | None:
-            return SettleState(outcome="settled", waited_ms=self.waited)
+            return SettleState(outcome="settled", waited_ms=self.waited, loaded=True)
 
         @property
         def foreground_change(self) -> ForegroundChange | None:
             return ForegroundChange(reason="opened", from_surface="1", to_surface="2")
 
     fragment = ProbeCaptureState(waited=90, pointer=_KNOWN, failed_visible_resources=_NONE_FAILED)
-    text = render_capture_state(SimpleNamespace(capture_state=fragment))
+    text = render_capture_state(SimpleNamespace(capture_state=fragment), can_wait=False)
     assert "Settle: settled after waiting 90 ms." in text
     assert "the environment opened a new surface" in text

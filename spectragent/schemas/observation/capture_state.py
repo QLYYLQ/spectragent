@@ -13,9 +13,11 @@ The four facts and what "missing" means for each:
 - **settle** (:attr:`CaptureStateFragment.settle_state`): how the wait before
   the capture ended — ``settled``, ``capped`` (the cap ended it; ``pending``
   names what had not settled yet, in the capability's own labels) or
-  ``unknown``, with a short ``detail`` saying why when that is known — and how
-  long it took. ``None`` when the capability did not wait (its wait is turned
-  off).
+  ``unknown``, with a short ``detail`` saying why when that is known — how
+  long it took, and whether the captured surface had finished its initial
+  load (:attr:`SettleState.loaded`: ``False`` is the definite evidence of a
+  capture taken while the surface was still loading for the first time).
+  ``None`` when the capability did not wait (its wait is turned off).
 - **foreground change** (:attr:`CaptureStateFragment.foreground_change`): the
   capability moved its focus before this capture because of the
   environment's own behaviour — a newly opened surface it followed, or the
@@ -64,16 +66,41 @@ MAX_RESOURCE_IDENTIFIERS = 8
 
 
 class SettleState(BaseModel):
-    """How the wait before one capture ended."""
+    """How the wait before one capture ended.
+
+    ``loaded`` is whether the captured surface had finished its initial load
+    (``docs/architecture_design.md`` §4.4, "初次加载是否完成"), the one fact
+    consumers act on without reading the capability's ``pending`` labels:
+
+    - ``False``: the wait ended at its limit while the surface's initial load
+      was still in progress, so the capture shows a surface still loading for
+      the first time — the definite evidence of an incomplete load;
+    - ``True``: no initial load the wait was still waiting for when it ended;
+    - ``None``: not known (the wait could not read the state).
+
+    Two implications hold: a ``settled`` wait saw the initial load complete
+    (``True``), and only the cap ends a wait before that load completes
+    (``False`` is ``capped``). Required, so every capability says it.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     outcome: SettleOutcome
     waited_ms: int = Field(ge=0)
+    #: Whether the captured surface had finished its initial load (class docstring).
+    loaded: bool | None
     #: What had not settled when a capped wait ended, in the capability's labels.
     pending: tuple[str, ...] = ()
     #: Why the state could not be read, for an ``unknown`` outcome, when known.
     detail: str | None = None
+
+    @model_validator(mode="after")
+    def _loaded_agrees_with_outcome(self) -> Self:
+        if self.outcome == "settled" and self.loaded is not True:
+            raise ValueError("a settled wait saw the initial load complete (loaded: true)")
+        if self.loaded is False and self.outcome != "capped":
+            raise ValueError("only a capped wait ends before the initial load completes")
+        return self
 
 
 class ForegroundChange(BaseModel):

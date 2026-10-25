@@ -28,8 +28,9 @@ from spectragent.schemas.observation.geometry import CoordinateSpace
 #: samples it compared (``leak_scan.compared``). 3: a sample's
 #: ``teacher_actions`` are the executed actions as recorded, and it carries no
 #: ``dropped_params``: an action's params are validated against its ``Params``
-#: before it runs, so there is nothing undeclared to drop.
-DATASET_FORMAT: Final = "af-sft-3"
+#: before it runs, so there is nothing undeclared to drop. 4: the steps a filter
+#: left out are listed one by one with their reasons (``steps.filtered``).
+DATASET_FORMAT: Final = "af-sft-4"
 
 
 class _Part(BaseModel):
@@ -71,10 +72,13 @@ class SourceLedger(_Part):
 
 
 class StepLedger(_Part):
-    """Emitted steps that did not become samples, by reason."""
+    """Emitted steps that did not become samples: counts by reason, and each filtered one."""
 
     untranslatable: dict[str, int]
     skipped: dict[str, int]
+    #: ``<source path>#s<step>`` → why a filter left that step's sample out
+    #: (``filters.exclude_unloaded_steps``); the step stays in later context.
+    filtered: dict[str, str]
 
 
 class ThoughtLedger(_Part):

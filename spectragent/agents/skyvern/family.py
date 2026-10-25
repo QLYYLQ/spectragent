@@ -570,6 +570,7 @@ class SkyvernAgent(AgentBase):
         page_state = render_browser_state(
             observation,
             show_media_state=self.show_media_state,
+            can_wait=executed_name(self._action_space, "wait") is not None,
             write_point=point_writer(frame, viewport=write_viewport_pixels),
         )
         if page_state:

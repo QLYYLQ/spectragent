@@ -854,8 +854,10 @@ async def test_old_evidence_aligns_nothing_and_says_so() -> None:
 
 def test_the_media_block_is_written_only_when_asked() -> None:
     observed = observation(state(element(time=79.5, paused=False)))
-    assert "<media_state>" not in render_browser_state(observed, show_media_state=False)
-    assert render_browser_state(observed, show_media_state=True) == (
+    assert "<media_state>" not in render_browser_state(
+        observed, show_media_state=False, can_wait=False
+    )
+    assert render_browser_state(observed, show_media_state=True, can_wait=False) == (
         "<media_state>\nvideo 1 in frame main: at 01:19.5 of 03:30.8, playing.\n</media_state>"
     )
 

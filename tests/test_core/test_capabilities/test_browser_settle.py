@@ -286,7 +286,7 @@ class TestWaitForSettle:
         started = time.monotonic()
         settle = await _settle(tab, max_wait_s=5.0)
         assert (settle.outcome, settle.waiting_for, settle.detail) == ("settled", [], None)
-        assert not settle.capped
+        assert not settle.capped and settle.main_document_loaded is True
         assert time.monotonic() - started < 1.0
         world, probe = tab.sent
         assert world == (
@@ -307,6 +307,7 @@ class TestWaitForSettle:
         elapsed = time.monotonic() - started
         assert (settle.outcome, settle.waiting_for) == ("capped", ["dom"])
         assert settle.capped
+        assert settle.main_document_loaded is True, "a DOM that never went quiet is no evidence"
         assert 0.15 <= elapsed < 1.0
         assert 150 <= settle.waited_ms < 1000
 
@@ -356,10 +357,14 @@ class TestWaitForSettle:
         tab = _Tab(lambda _budget: _quiet())
         first = await _settle(tab, load=load, max_wait_s=0.1)
         assert (first.outcome, first.waiting_for) == ("capped", ["load", "dom", "content"])
+        assert first.main_document_loaded is False, "the definite evidence of an unloaded page"
         assert tab.probes() == 0
         # The same document is not waited on for its load again: the page is probed.
         second = await _settle(tab, load=load, max_wait_s=0.1)
         assert second.outcome == "settled" and tab.probes() == 1
+        # The known gap (§4.4 "初次加载是否完成"): the record no longer says
+        # the load is outstanding, so the later capture reads as loaded.
+        assert second.main_document_loaded is True
 
     async def test_a_document_replaced_during_the_probe_is_waited_for(self) -> None:
         answers: list[Any] = [
@@ -414,6 +419,7 @@ class TestWaitForSettle:
         settle = await _settle(tab, frame_id=None)
         assert settle.outcome == "unknown"
         assert settle.detail == "the tab's main frame is not known"
+        assert settle.main_document_loaded is None
         assert tab.sent == []
 
     async def test_the_probe_reads_its_budget_from_what_is_left(self) -> None:

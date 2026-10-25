@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {split}: {count} sample(s)")
     for reason, count in report.drops.items():
         print(f"  not exported ({reason}): {count} step(s)")
+    filtered = report.manifest.steps.filtered
+    if filtered:
+        print(f"  filtered out (each in manifest.json steps.filtered): {len(filtered)} step(s)")
     return 0
 
 

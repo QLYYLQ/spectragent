@@ -23,7 +23,7 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
 
     browser_use = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
     rendered_browser_use = browser_use._render_browser_state(observation, None)
-    skyvern = SkyvernDomAgent.__new__(SkyvernDomAgent)
+    skyvern = make_agent(SkyvernDomAgent, memory=SimpleMemory(max_messages=10))
     rendered_skyvern = skyvern._render_browser_state(observation, None, screenshot_note=None)
 
     assert "DOMState(" not in rendered_browser_use + rendered_skyvern
