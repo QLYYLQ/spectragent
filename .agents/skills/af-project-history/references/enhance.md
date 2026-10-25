@@ -12,9 +12,8 @@ questions and information triage (`f5cd0df`), and the integration review's fixes
 `201e136`). Implemented on `enhance/media-playback-restoration`, not merged yet: media
 playback restoration, with the 2026-10-21 final review's fixes
 (`tmp/final_pass_20261021/review.json`). Still pending: `/nav` answers in recorded order,
-and source captures of half-loaded pages (direction accepted 2026-10-25; leaving them out
-of branching and export and saying so in the prompt implemented on its own branch, the
-export's `wait`-step removal on another). The
+and the Jev labelling convention for half-loaded pairs. Source captures of half-loaded pages
+were settled and merged on 2026-10-25 (`e3e2c9e`; see their entry). The
 Bilibili search `vt` parameter was fixed on 2026-10-23 (see its entry). Decided with no
 framework change: host appearance (documented in `docs/browser_agent_runbook.md`). Current
 docs and skills were synchronised with all of this on 2026-10-21.
@@ -426,7 +425,7 @@ rule `bilibili-search-vt`, with its evidence). Forks restored 0 → 4 of 5 check
 fifth now fails on media alone. This entry stayed marked pending by mistake until
 2026-10-25.
 
-## Pending — source captures of half-loaded pages
+## Fixed — source captures of half-loaded pages
 
 Found 2026-10-20 (`tmp/jev_new_setup_eval_20261020/brief.md`): when the live source capture
 hits the settle cap, the source screenshot shows a half-loaded page (e.g. Bilibili coin
@@ -459,8 +458,8 @@ mostly a page that keeps mutating (carousels, players), not an incomplete load, 
 "definite evidence" should not be `capped` alone. Those recordings were deleted
 afterwards (disk cleanup); re-measure on the next collection round.
 
-**Implemented 2026-10-25 on `enhance/skip-unloaded-pages-in-branching-and-export`, not
-merged yet** (design in `docs/architecture_design.md` §4.4 "初次加载是否完成", §4.10
+**Implemented 2026-10-25 on `enhance/skip-unloaded-pages-in-branching-and-export`, merged
+into `main` the same day** (design in `docs/architecture_design.md` §4.4 "初次加载是否完成", §4.10
 "没加载完的检查点", §4.15 "筛掉的步"). It covers rulings 1–3 of that day:
 - (1) Only "the main document had not finished loading" is definite evidence. The
   platform-neutral `SettleState.loaded: bool | None` carries it: whether the captured
@@ -482,8 +481,14 @@ merged yet** (design in `docs/architecture_design.md` §4.4 "初次加载是否�
 - (3) `render_capture_state` opens the block with a plain sentence when `loaded is False`,
   and offers the wait action when the run's effective action space executes `wait` (the
   Agent passes `can_wait`; Skyvern declares no `wait`).
-Still separate: dropping explicit `wait` steps from exported trajectories and rewriting the
-preceding thought (its own branch), and the Jev calibration labelling convention.
+The user chose option ③ for waits the same day: the export's `wait_actions:
+drop_when_capped` (default `keep`) removes every wait the teacher took on a capped capture
+(`load` or `dom` pending; 48 of the 409 steps above), drops wait-only steps from samples and
+from later samples' history, and rewrites the affected thoughts with the exporter's
+`thought_rewrite_llms` helper, marked synthetic, with a content-addressed
+`thought_rewrite_cache` so a re-export is identical (design §4.15 "等待动作"; branch
+`feature/drop-waits-after-capped-captures-in-export`, merged with the above as `e3e2c9e`).
+Still pending: the Jev calibration labelling convention for half-loaded pairs.
 
 ## Fix — native scrollbar follows the host appearance
 
