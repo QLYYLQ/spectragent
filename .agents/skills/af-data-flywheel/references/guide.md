@@ -402,7 +402,8 @@ agent:
         restorer_id: prefix_replay
         verify: strict                 # warn: record failed checks and go on
         screenshot_max_distance: 5     # 0-64, Hamming distance of 64-bit dHashes
-        pace: none                     # recorded_llm_latency: wait as the source waited
+        pace: none                     # recorded_llm_latency: wait as the source waited;
+                                       # recorded_timeline: keep to the source's timeline
         media: align                   # none: compare media state, align nothing (control arm)
         media_time_tolerance_s: 1.0    # seconds a media position may differ and still pass
         media_seek_timeout_s: 2.0      # each alignment seek, and the play after it
@@ -522,6 +523,19 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   not complete within `media_seek_timeout_s`, or lands off target, is rolled back and fails
   the step. `media_end_lead_s` not shorter than `media_seek_timeout_s` is refused at
   construction. Nothing is aligned after the checkpoint; `pace` only approximates a position.
+- `pace` (architecture §4.1 "恢复节奏"). `recorded_llm_latency` sleeps a step's recorded
+  `llm_latency_ms` before its actions, so observation, action and recording time still drift.
+  `recorded_timeline` keeps to the source's timeline from its step-0 observation on, read
+  through `SourceRun` only: an observation's capture time is the earliest `captured_at` of its
+  env-source fragments (a `FragmentFailure` is not a capture), on both sides; the anchors are
+  the two step-0 captures. Each later observation (the checkpoint's included) starts at
+  live anchor + (source capture k - source anchor) - lead, lead being how long this
+  restoration's previous `env.observe` took (monotonic clock); each restored step's first
+  `act_fn` (after its retarget) at live anchor + (source step k's first
+  `ActionSpan.started_at` - source anchor); later actions of the step follow at once. It
+  only waits, never hurries. A step that executes actions with `action_spans: null` is
+  refused at assembly by `source_problems`; `[]` (no `env.act` call) has nothing to align.
+  The waits write nothing to the trace.
   Sources recorded before the field are never media-checked.
 - Media areas (architecture §4.14 "页面上的媒体区域"). On a page a `media_areas` rule of the
   replay's rule set declares (`configs/replay_rules/media_areas.yaml`; the scope must match
@@ -952,7 +966,7 @@ already collected; regenerate all the same.
 |---|---|
 | Registrar | `RestorerRegistrar` (`restorer_id`), `core/loops/restore/_registrar.py`; collected as `restorer` |
 | Design section | Architecture §4.1 ("`BranchLoop`：从检查点分叉", the restorer), §5.3 (`RestorationCheck`); the browser side is §4.14, "恢复：重定位与校验" |
-| Protocol, base | `Restorer.restore(ctx) -> AsyncGenerator[RestoredStep, None]`. `RestorerBase` is a dataclass with `Annotated` fields that keeps nothing per run; `default_restorer()` is `prefix_replay` |
+| Protocol, base | `Restorer.restore(ctx) -> AsyncGenerator[RestoredStep, None]`; `Restorer.source_problems(source) -> list[str]`, what the restorer needs from the source and does not find, which `BranchLoop` folds into its assembly-time `IncompatibleCheckpointError` (`RestorerBase` returns `[]`). `RestorerBase` is a dataclass with `Annotated` fields that keeps nothing per run; `default_restorer()` is `prefix_replay` |
 | Owner | `BranchLoop.__wiring__["restorer"]`, annotated only on the plain mixin `_BranchLoopReceptors` |
 | Tests to copy | `test_restore_prefix_replay.py`, `test_branch_loop.py`, `test_branch_context_identity.py`, `test_composer/test_branch_yaml_surface.py`, live `test_browser_branch_live.py` |
 
