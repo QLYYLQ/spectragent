@@ -462,8 +462,8 @@ task_loader:
   when `agent_outcome` asks how the agent ended.
 - **Pages captured before they loaded.** With `exclude_unloaded_checkpoints: true` (the
   default; the shipped branch and same-path configs write it), a chosen step whose recorded
-  `capture_state` says the settle wait hit its cap before the main document's `load` event
-  (`settle.loaded: false`) is not a checkpoint: it is listed in the loader's skipped steps
+  `capture_state` says the main document had not reached its `load` event when the step
+  was captured (`settle.loaded: false`, however the settle wait ended) is not a checkpoint: it is listed in the loader's skipped steps
   (`<source>#s<t>`) with the reason. A page whose DOM never went quiet does not count, a
   step with no `capture_state` recorded is kept, and it applies after the `step_selector`
   (`last` on such a step gives that source no task, not an earlier step).

@@ -463,14 +463,16 @@ afterwards (disk cleanup); re-measure on the next collection round.
 merged yet** (design in `docs/architecture_design.md` §4.4 "初次加载是否完成", §4.10
 "没加载完的检查点", §4.15 "筛掉的步"). It covers rulings 1–3 of that day:
 - (1) Only "the main document had not finished loading" is definite evidence. The
-  platform-neutral `SettleState.loaded: bool | None` carries it (`False`: the wait hit its
-  cap before the surface's initial load completed; `True`: no initial load still waited
-  for; `None`: unknown; `settled` implies `True`, `False` implies `capped`). The browser
-  projects it from the recorded `PageSettle` (`load` pending → `False`), so existing
-  recordings carry it and the trace format is unchanged. Known gap: a document whose load
-  never finishes is waited on for one cap in total, so only the capture that spent the cap
-  reads `False`; recording the document's load state on every capture would need a new
-  `PageSettle` field.
+  platform-neutral `SettleState.loaded: bool | None` carries it: whether the captured
+  surface's initial load had completed at capture (`None`: not known), a fact about the
+  surface that no settle outcome implies. The browser records it on every capture as
+  `PageSettle.main_document_loaded`: whether the main frame's current document had reached
+  its `load` lifecycle event when the settle wait ended, read from the tab's
+  `MainFrameLoad` (`None` with no tracker or no lifecycle event heard, never `True`). A
+  document whose load never finishes is `False` on every capture, though only the first
+  waits its cap; one that loads between captures turns `True`. The field defaults to
+  `None`, so by the evolution rule (a fragment field with a default) the trace format stays
+  7; the recordings made before were deleted.
 - (2) `trace_branches.exclude_unloaded_checkpoints` and the export's
   `filters.exclude_unloaded_steps` (both default `true`, written in the shipped flywheel
   configs) leave such steps out through one rule, `core/trace/sources.py::

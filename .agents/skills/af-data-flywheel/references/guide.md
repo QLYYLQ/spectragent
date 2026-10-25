@@ -449,15 +449,18 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   once, or is left out under `on_unbranchable: skip`.
 - Unloaded checkpoints (architecture §4.4 "初次加载是否完成", §4.10). With
   `exclude_unloaded_checkpoints: true` (default; both shipped branch configs write it), a
-  chosen step whose recorded capture state says `settle_state.loaded is False` (the settle
-  wait hit its cap before the main document's `load` event) is not a checkpoint; it goes to
+  chosen step whose recorded capture state says `settle_state.loaded is False` (the main
+  document had not reached its `load` event at capture, however the wait ended) is not a
+  checkpoint; it goes to
   `loader.skipped` under `<path>#s<t>` (a variant at it under the variant's key) with the
   reason. A DOM-only cap is not evidence; a step with no capture state recorded is kept. It
   applies after the selector, so `last` on such a step gives that source no task. The rule
   is `core/trace/sources.py::unloaded_capture_reason`, shared with the export, and reads the
-  platform-neutral `SettleState.loaded`, never the browser's `pending` labels. Known gap: a
-  document whose load never finishes reads `False` only on the capture that spent its one
-  cap; later captures of it no longer wait on the load and read `True`.
+  platform-neutral `SettleState.loaded`, never the browser's `pending` labels. The browser
+  records it on every capture as `PageSettle.main_document_loaded`, read from the tab's
+  `MainFrameLoad` when the settle wait ends (`None` when no lifecycle event was heard): a
+  document whose load never finishes is `False` on every capture, though only the first
+  waits its cap; one that loads between captures turns `True`.
 - Before any setup, `BranchLoop.weave` raises `IncompatibleCheckpointError`, naming both
   values, for a source trace never closed or not complete through the checkpoint, another agent, a different closed-set or numeric agent knob, a different
   memory strategy or memory knob (`max_messages`, `window_size`), a different
