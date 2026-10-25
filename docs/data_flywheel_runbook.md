@@ -207,6 +207,7 @@ task_loader:
     branches_per_step: 3               # 每个选中的步分 b0、b1、b2，各自采样
     agent_outcome: any                 # done | max_steps | error | timeout | vetoed：源 run 的 agent 怎么结束
     on_unbranchable: raise             # skip：跳过并记下原因
+    exclude_unloaded_checkpoints: true # 页面还没加载完就采集的检查点不分叉，记下原因
 ```
 
 源 run 由 `sources` 选出。它是相对 `data_dir` 的 glob 列表，默认 `["*"]`，即 `data_dir` 的直接子目录；匹配到的目录里没有 `manifest.json` 就不算 run，直接忽略。一个都匹配不到时（`data_dir` 不存在也一样），加载器只记一条 warning（`trace_branches: no recorded run under ... matches ...; no branch tasks`），展开出 0 个任务，不报错，所以开跑前先用 `--list` 确认任务 id。`data_dir` 不要指向 `traces/`：发布的回放配置也写到那里，不能分叉的回放 run 会混进源里；`traces/recorded` 这样的子目录本身没有 `manifest.json`，默认的 `*` 匹配到它也只会忽略，它下面的录制一个都找不到。只分叉一个 run 时，把 `sources` 写成 `["<那个 run 的目录名>"]`，或者给 `spectragent bench` 传 `--task-id <source_run_id>/s<t>/b<i>`。
@@ -221,6 +222,8 @@ task_loader:
 | `last` | 每个源最后一个候选步 |
 
 `agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。`exclude_runs` 也是筛选：它指向一个 `run-exclusions-1` 文件（`{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`~` 展开、相对启动目录），它列出的 run id 不当源，加载器的跳过记录里写着文件给的原因（以 `filtered:` 开头）。这份文件通常由 `python -m lookahead health` 写出（页面一直没渲染、录制时内容请求就失败了、最终回答说任务失败的录制），见 `lookahead/README.md`。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
+
+`exclude_unloaded_checkpoints`（默认 `true`，发布的两份分叉配置都写出来）在选步之后再排一遍：录制网络慢时，teacher 有时在主文档还没加载完的页面上做决定，而离线回放里同一步早已加载完，这样的步不当检查点。判断只读录下的 `capture_state`：它的落定等待在上限（`settle_max_wait_s`，5 秒）处结束、主文档的 `load` 还没来，就算没加载完（`settle.loaded: false`）；只是 DOM 一直在变（播放器、轮播、行情）不算。被排除的步记在加载器的跳过记录里，键 `<源路径>#s<t>`，原因写着 `captured before its initial load finished` 和等了多久；`--list` 列出的任务里没有它们。它在选步之后起作用：`last` 选中的最后一步没加载完，这个源就不分叉，不会往前补一步；任务变体落在这样的步上也跳过并记原因。没录 `capture_state` 的源（没协商它，或 agent 写了 `show_capture_state: false`）没有证据，检查点照常保留。写 `false` 不查。一个从没加载完的文档只在第一次花掉 5 秒上限的那一步记作没加载完，之后同一文档的步不再等它的加载，读作已加载（[architecture_design.md](architecture_design.md) §4.4 “初次加载是否完成”）。
 
 Loop 一侧：
 
@@ -343,7 +346,7 @@ uv run spectragent bench --config my_variant_branch.yaml --list
 
 ### 原路径回放
 
-`configs/flywheel/same_path_ui_tars_archive.yaml` 是同一个分叉 sweep 的一种设置：`step_selector: last`、`continue_steps: 0`、`verify: warn`、`branches_per_step: 2`、`agent_outcome: any`、`on_unbranchable: skip`。每个任务把一个录制恢复到它最后一个候选步，之前每一步都重放并校验；teacher 只在最后一步决定一次，每个任务一次模型调用；同一个源跑两遍，用来量回放确定性。度量报告的"原路径回放保真"就来自它。发布配置的 `data_dir` 已经是 `traces/recorded`，run 写到 `traces/same_path`：
+`configs/flywheel/same_path_ui_tars_archive.yaml` 是同一个分叉 sweep 的一种设置：`step_selector: last`、`continue_steps: 0`、`verify: warn`、`branches_per_step: 2`、`agent_outcome: any`、`on_unbranchable: skip`、`exclude_unloaded_checkpoints: true`（最后一步没加载完的源不回放，跳过记录里写着原因）。每个任务把一个录制恢复到它最后一个候选步，之前每一步都重放并校验；teacher 只在最后一步决定一次，每个任务一次模型调用；同一个源跑两遍，用来量回放确定性。度量报告的"原路径回放保真"就来自它。发布配置的 `data_dir` 已经是 `traces/recorded`，run 写到 `traces/same_path`：
 
 ```bash
 uv run spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
@@ -362,7 +365,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 导出 YAML 有一个 `exporter:` 块，可以再加 `eval_loader:` / `task_loader:` 块（见下面的去污染），没有 agent 和 environment。v1 唯一的导出器是 `exporter_id: openai_messages`，`sample: per_step` 与 `image_store: files` 也只有这一个取值。发布的 `export_sft.yaml` 不按评测结果筛（`filters.require_eval: null`），也不去污染（`decontamination.against: []`），所以直接用在 online_mind2web 的录制上就能导出；teacher 失败的轨迹也会进数据集，每个样本带着 `labels.step_status` 和判定标签，训练时可以再筛。开跑前按自己的数据改这几处：
 
 - `sources_root` 和 `sources`：发布值是 `sources_root: traces`、`sources: ["recorded/*"]`。`sources` 是相对 `sources_root` 的 glob，按路径排序；`sources_root` 写相对路径时按工作目录解析。要导出分叉 run 就加上它们的目录，例如 `["recorded/*", "branches/*"]`，原路径回放的 run 在 `same_path/*`。分叉 run（含原路径回放的 run）的源 run 也必须在本次读到的源里，否则被筛掉，原因记为 `branch source '<id>' not among the sources`。列进来的录制 run 自己也会产出样本，没有只导出分叉的开关。
-- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。
+- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。`exclude_unloaded_steps: true`（默认，发布值也写出来）按步筛：录下的 `capture_state` 说这一步是在主文档加载完之前采集的（`settle.loaded: false`，与分叉的 `exclude_unloaded_checkpoints` 同一条规则），这一步不产生样本，但照样留在之后样本的上下文里，段不断；每个被筛掉的步记在 manifest 的 `steps.filtered`（`<源路径>#s<t>` → 原因）。没录 `capture_state` 的步照常导出。
 - `decontamination`：`against` 列出学生将来评测用的 benchmark（`[{benchmark: <名字>, subset: <子集>}]`），只查列出来的这些，从不从评测器或判定推断。默认 `[]`：不去污染，manifest 记 `decontaminated: false`；`null` 不是列表，组装时报错。把录制所用的 benchmark 自己列进去会把这些录制全部排除（`ExportEmptyError`）。`match` 取 `task_id`、`site_instruction` 或 `either`。去污染和参考答案泄漏扫描经导出 YAML 自己的 `eval_loader:` / `task_loader:` 块读基准数据，没配的 benchmark 用注册加载器的默认值。
 - `split`：`by: site`（源任务 `start_url` 的主机）或 `by: task`，从不按步切，同一组分叉总在同一个切分里。
 - `translator`：`identity` 原样使用 teacher 执行过的动作，UI-TARS 录下的本来就是坐标动作。`index_to_coordinate` 把带元素 index 的 `browser.click`、`browser.type` 换成元素可见部分上的坐标动作，其余带 index 的动作不可译（`no_counterpart`），不带 index 的原样保留。它的 `occlusion: check` 要确认换算出的点没有被别的元素盖住，证据按优先级是 cleaner `skyvern_hit_test` 录下的命中测试、`browser.dom_raw` 的原始 DOM、BrowserUse cleaner 录下的 paint order（只认得出部分遮挡）。三样都没有时抛 `OcclusionEvidenceMissingError`；写 `occlusion_unknown: untranslatable` 则把这一步当作不可译。`occlusion: none` 不查遮挡（原来写作 `"off"`）。`untranslatable` 决定不可译的步怎么处理：`drop_step`（结束当前段）、`truncate`（结束这条轨迹）、`keep_as_text`、`fail`。
@@ -379,7 +382,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 | `train.jsonl`、`validation.jsonl` | 每行 `{"id", "messages"}`，assistant 轮带 `weight`（目标轮 1，较早的轮 0）；只写有样本的切分 |
 | `train.samples.jsonl` 等 | 同序的 canonical 样本和渲染元数据（来源、翻译记录、量化误差） |
 | `images/<sha256><后缀>` | 截图，每张只存一份 |
-| `manifest.json` | 格式 `af-sft-3`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
+| `manifest.json` | 格式 `af-sft-4`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，被筛掉的每一步与原因（`steps.filtered`），切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
 
 同样的输入导出两次，输出逐字节相同。CLI 打印每个切分的样本数和按原因丢弃的步数；失败时退出码非 0，什么也不写。要评测训练出来的学生，复制一份学生配置，把 `llm` 指向训练好的模型，再加上 `trace_writer` hook；导出拒绝带 hook 的学生配置，所以评测用的那份单独放。
 

@@ -442,6 +442,7 @@ task_loader:
     # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
     # require_archive: [browser.network]   (default; [] requires none)
     on_unbranchable: raise          # skip: leave such a source out, with its reason
+    exclude_unloaded_checkpoints: true   # false: branch from pages captured before they loaded too
     # task_variants: variants.json  # another task per checkpoint (needs history_source: restored)
 ```
 
@@ -459,6 +460,13 @@ task_loader:
   before anything runs, or is left out with `on_unbranchable: skip`. The sources are read
   through the trace reader only — what their manifests committed — and `result.json` only
   when `agent_outcome` asks how the agent ended.
+- **Pages captured before they loaded.** With `exclude_unloaded_checkpoints: true` (the
+  default; the shipped branch and same-path configs write it), a chosen step whose recorded
+  `capture_state` says the settle wait hit its cap before the main document's `load` event
+  (`settle.loaded: false`) is not a checkpoint: it is listed in the loader's skipped steps
+  (`<source>#s<t>`) with the reason. A page whose DOM never went quiet does not count, a
+  step with no `capture_state` recorded is kept, and it applies after the `step_selector`
+  (`last` on such a step gives that source no task, not an earlier step).
 - **Before any setup**, the branch loop opens the source and refuses a mismatch naming both
   sides: a source trace never closed or not complete through the checkpoint, another agent,
   a different closed-set or numeric agent knob (`prompt_template`,
@@ -553,6 +561,7 @@ exporter:
       exclude_restoration_diverged: true
       max_document_misses: 0         # replay-log main-frame document misses; unlimited: no limit
       exclude_sites: []              # host names, suffix-matched
+      exclude_unloaded_steps: true   # a step captured before its page loaded is no sample
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # site | task, never step
     decontamination: { against: [], match: either }   # the benchmarks you evaluate on; []: none
     translator:
@@ -579,7 +588,10 @@ task_loader:
   failed is exported too and labelled `labels.step_status`. A branch run contributes its
   policy steps, with its source run's prefix as context and its source run's verdicts (if
   any) as labels; branches of one checkpoint whose targets are identical are
-  flagged `duplicate_of`, not removed.
+  flagged `duplicate_of`, not removed. With `exclude_unloaded_steps: true` (the default) a
+  step whose recorded `capture_state` says it was captured before the main document loaded
+  (`settle.loaded: false`) is no sample but stays in later samples' context as it
+  happened; each one is listed in the manifest's `steps.filtered` with the reason.
 - **Translation.** `index_to_coordinate` turns a click or type on an element index into the
   coordinate action at a visible point of the element on the recorded screenshot; with
   `occlusion: check` it needs evidence that the point is not covered — record with the

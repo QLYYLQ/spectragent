@@ -423,6 +423,7 @@ task_loader:
     on_unbranchable: raise             # skip
     task_variants: null                # a task-variants-1 file: another task per checkpoint
     exclude_runs: null                 # a run-exclusions-1 file: recorded run ids not to branch
+    exclude_unloaded_checkpoints: true # leave out checkpoints captured before the page loaded
 ```
 
 ```bash
@@ -446,6 +447,17 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   itself a branch or replay run, lacks a `require_archive` archiver or its fingerprint, has
   no recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
   once, or is left out under `on_unbranchable: skip`.
+- Unloaded checkpoints (architecture §4.4 "初次加载是否完成", §4.10). With
+  `exclude_unloaded_checkpoints: true` (default; both shipped branch configs write it), a
+  chosen step whose recorded capture state says `settle_state.loaded is False` (the settle
+  wait hit its cap before the main document's `load` event) is not a checkpoint; it goes to
+  `loader.skipped` under `<path>#s<t>` (a variant at it under the variant's key) with the
+  reason. A DOM-only cap is not evidence; a step with no capture state recorded is kept. It
+  applies after the selector, so `last` on such a step gives that source no task. The rule
+  is `core/trace/sources.py::unloaded_capture_reason`, shared with the export, and reads the
+  platform-neutral `SettleState.loaded`, never the browser's `pending` labels. Known gap: a
+  document whose load never finishes reads `False` only on the capture that spent its one
+  cap; later captures of it no longer wait on the load and read `True`.
 - Before any setup, `BranchLoop.weave` raises `IncompatibleCheckpointError`, naming both
   values, for a source trace never closed or not complete through the checkpoint, another agent, a different closed-set or numeric agent knob, a different
   memory strategy or memory knob (`max_messages`, `window_size`), a different
@@ -547,7 +559,8 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 - Same-path replay is a branch sweep (`configs/flywheel/same_path_ui_tars_archive.yaml`):
   `step_selector: last`, `continue_steps: 0`, `verify: warn` so every step gets a check,
   `branches_per_step: 2` for replay determinism, `agent_outcome: any`,
-  `on_unbranchable: skip`. It costs one teacher call per task, for the last step.
+  `on_unbranchable: skip`, `exclude_unloaded_checkpoints: true`. It costs one teacher call
+  per task, for the last step.
 
 ### 2.4 Export
 
@@ -562,6 +575,7 @@ exporter:
       exclude_restoration_diverged: true
       max_document_misses: 0           # unlimited: no replay-log filter
       exclude_sites: []
+      exclude_unloaded_steps: true     # a step captured before its page loaded is no sample
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }
     decontamination: { against: [], match: either }     # against: [{benchmark, subset}, ...]
     translator:
@@ -591,6 +605,12 @@ split and the drops by reason, and exits non-zero on any failure.
 - A branch run takes its source run's verdicts and context prefix, so the source run must be
   among the matched sources, or the branch is filtered out. Branches of one checkpoint with
   identical targets are flagged `duplicate_of`, not removed.
+- `filters.exclude_unloaded_steps: true` (default; the shipped export writes it): an emitted
+  step whose recorded capture state says `loaded: false` produces no sample, but is rendered
+  into the student's context like a branch's source prefix (the segment goes on, history is
+  not rewritten). Each one is listed in the dataset manifest's `steps.filtered`
+  (`<source path>#s<t>` → reason; dataset format `af-sft-4`) and counted in an
+  `ExportEmptyError`. Same rule as `exclude_unloaded_checkpoints`.
 - Independent evaluation is optional and the export does not need it: `filters.require_eval`
   defaults to `null` (the shipped export too), so a run the teacher failed is exported as
   well, labelled by `labels.step_status` and any verdicts.
