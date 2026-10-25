@@ -192,6 +192,18 @@ class ScrollAction(SettleableAction, ActionBase):
   `tests/test_core/test_actions/test_action_effect_contract.py`), and a live probe case
   where the fact comes from a real page (`test_browser_effects_*_live.py`).
 
+### 1.5a `only_waits` — declare an action that only lets time pass
+
+An action whose whole effect is the time it waits, touching nothing in the environment
+(`browser.wait`), sets the class declaration `only_waits = True` (`ActionBase.only_waits`,
+default `False`, `core/actions/_registrar.py`). Readers of recorded actions ask
+`is_wait_action(name)` instead of matching a name; today the training export's
+`wait_actions: drop_when_capped` uses it to remove the waits a teacher took on a capped
+capture (`docs/architecture_design.md` §4.15 "等待动作"). A new platform's wait (desktop,
+Android) that forgets the declaration is silently kept in exported trajectories, so give it
+a test that asserts `is_wait_action` on its fully qualified key. Never set it on an action
+with any other effect (a scroll that also waits is not a wait).
+
 ### 1.6 Register it, then wire it
 
 Two edits, both mandatory:

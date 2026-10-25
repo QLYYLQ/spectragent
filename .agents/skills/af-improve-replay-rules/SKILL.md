@@ -94,7 +94,7 @@ suggested name is a real parameter.
 | `too_large` | Distinguish a missing recorded body from a serving-size limit. |
 | `sequence_exhausted` | Inspect polling/state progression and whether last-response reuse is justified. |
 | `match_level_disallowed` | Inspect both permissions and semantic correctness before enabling a weaker match. |
-| URL/signature/action/retarget/screenshot mismatch without a causal miss | Inspect active tab, focus, geometry, DOM, action outcome, settle evidence and timing. |
+| URL/signature/action/retarget/screenshot mismatch without a causal miss | Inspect active tab, focus, geometry, DOM, action outcome, settle evidence and timing. When the page's own timers explain the difference (carousels, autoplay, countdowns, delayed popups; restored steps act seconds ahead of the recording), compare a `pace: recorded_timeline` replay with `pace: none` before proposing any rule: a rule cannot make time pass. A source capture with `capture_state.settle.loaded: false` was taken before its main document loaded on the live network; the replay cannot be made less loaded, and `trace_branches` already skips such checkpoints (`exclude_unloaded_checkpoints`, listed in `loader.skipped`). |
 | `media_mismatch` | Read `restoration.evidence[*].media` (comparisons, alignment outcomes, unreachable frames). A failed alignment beside `range_uncovered` for the media URL is missing recorded bytes, not a rule problem; compare `media: none` and `media: align` replays before blaming the matcher. |
 | Challenge/login, lost session, unsupported worker/WebSocket behavior | Diagnose that boundary; synthetic success does not fix it. |
 

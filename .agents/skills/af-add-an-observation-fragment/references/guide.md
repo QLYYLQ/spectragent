@@ -108,6 +108,22 @@ browser types. An Agent switch that drops the fragment narrows the Agent's *dema
 (`capture_state_demand`, through `bounded_demand`) rather than hiding it after capture —
 and because that changes negotiation, the switch is part of branch and export identity.
 
+The settle fact carries `SettleState.loaded: bool | None` (§4.4 "初次加载是否完成"): whether
+the captured surface had finished its initial load at capture time, a measured fact no
+settle outcome implies (a document whose load never finishes is `False` even on a capture
+whose wait ended `settled`). A capability measures it on every capture, not only on the
+capture whose wait was still waiting for that load: the browser records
+`PageSettle.main_document_loaded` from the tab's main-frame load tracker. When it cannot
+tell, it writes `None`, never `True`. Consumers read only this neutral field, never a
+capability's own pending labels: the shared rule
+`core/trace/sources.py::unloaded_capture_reason` leaves such steps out of branch checkpoints
+(`trace_branches.exclude_unloaded_checkpoints`) and export samples
+(`filters.exclude_unloaded_steps`), and `render_capture_state` opens with a plain sentence
+when `loaded is False`. Its required `can_wait` argument is the Agent's own answer to
+whether this run executes a wait action (BrowserUse and Skyvern ask their action space,
+UI-TARS its codec's verbs), so the renderer offers waiting only when it exists. A desktop or
+Android capture state implements the same contract.
+
 **Sidecar metadata on an existing fragment** is the other shape, for facts that must come
 from the same instant as the pixels. `ScreenshotObs` carries three: `source_url` (the
 document read in the same cycle), `cursor` (`None` = off; a cursor without a position =
