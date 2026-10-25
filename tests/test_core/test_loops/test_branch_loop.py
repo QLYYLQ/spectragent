@@ -306,6 +306,9 @@ async def test_restored_history_refuses_missing_actual_results_even_under_warn(
     class MissingResultRestorer:
         restorer_id = "missing_result"
 
+        def source_problems(self, source):
+            return []
+
         async def restore(self, ctx):
             async for item in PrefixReplayRestorer(verify="warn").restore(ctx):
                 if item.step == 0:
@@ -914,3 +917,71 @@ async def test_warn_restoration_does_not_pair_a_later_result_with_a_failed_attem
     assert len(history) == 2
     assert "index': 100" in history[0] and "raised: RuntimeError" in history[0]
     assert "index': 101" in history[1]
+
+
+def _timeline_loop() -> BranchLoop:
+    loop = BranchLoop()
+    loop.restorer = PrefixReplayRestorer(pace="recorded_timeline")
+    return loop
+
+
+class TestRecordedTimelinePace:
+    """``pace: recorded_timeline`` on a real source trace, read through ``SourceRun``."""
+
+    async def test_unmeasured_action_starts_are_refused_before_setup(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        for step in (0, 1):
+            path = source / f"steps/{step:03d}.json"
+            document = json.loads(path.read_text())
+            document["action_spans"] = None
+            path.write_text(json.dumps(document))
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(tmp_path, source, 2, ["click 102"], cap=cap, loop=_timeline_loop())
+        assert caught.value.problems == [
+            "steps 0, 1 recorded no action start times (StepRecord.action_spans was not "
+            "measured), which pace: recorded_timeline needs to start each restored step's "
+            "first action when the source's started"
+        ]
+        assert cap.setups == 0
+
+    async def test_the_other_paces_branch_from_the_same_source(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        path = source / "steps/000.json"
+        document = json.loads(path.read_text())
+        document["action_spans"] = None
+        path.write_text(json.dumps(document))
+        loop = BranchLoop()
+        loop.restorer = PrefixReplayRestorer(pace="recorded_llm_latency")
+        out = await run_branch(tmp_path, source, 2, ["click 102"], loop=loop)
+        assert out.result is not None and out.result.error is None
+
+    async def test_a_measured_source_restores_on_its_timeline(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        out = await run_branch(tmp_path, source, 2, ["click 102"], loop=_timeline_loop())
+        assert out.result is not None and out.result.error is None
+        assert _origins(out.run_dir)[:3] == [(0, "restored"), (1, "restored"), (2, "policy")]
+        trace = RunTrace(out.run_dir)  # type: ignore[arg-type]
+        restored = [record for record in trace.step_records if record.origin == "restored"]
+        assert all(r.restoration is not None and r.restoration.verdict == "ok" for r in restored)
+        # Each restored first action started no earlier after the restoration's
+        # step-0 capture than the source's did after its own (an event loop may
+        # wake a timer a clock tick early, hence the small allowance).
+        source_trace = RunTrace(source)
+
+        def capture(trace: RunTrace, step: int) -> float:
+            fragment = trace.observation_fragment(step, PAGE_KEY)
+            assert fragment is not None
+            return fragment.captured_at
+
+        for step in (0, 1):
+            source_record = source_trace.step(step)
+            live_record = trace.step(step)
+            assert source_record is not None and source_record.action_spans
+            assert live_record is not None and live_record.action_spans
+            source_offset = source_record.action_spans[0].started_at - capture(source_trace, 0)
+            live_offset = live_record.action_spans[0].started_at - capture(trace, 0)
+            assert live_offset >= source_offset - 0.05

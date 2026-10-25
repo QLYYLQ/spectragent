@@ -12,18 +12,24 @@ A restorer restores the **environment** only, and is handed no model, no
 memory and no recorder (:class:`~.context.RestorationContext`). It yields one
 :class:`~.context.RestoredStep` per restored step and finally the checkpoint
 step's, raising :class:`~.context.RestorationDivergedError` under ``strict``
-when the restored world left the recording.
+when the restored world left the recording. What it needs from the source run
+beyond what every branch needs it names before the run
+(:meth:`Restorer.source_problems`), so ``BranchLoop`` refuses such a source at
+assembly with its own problems.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 from conscribe import create_registrar
 
 from spectragent.core.loops.restore.context import RestorationContext, RestoredStep
+
+if TYPE_CHECKING:
+    from spectragent.core.loops.restore.source import SourceRun
 
 
 @runtime_checkable
@@ -32,6 +38,17 @@ class Restorer(Protocol):
 
     @property
     def restorer_id(self) -> str: ...
+
+    def source_problems(self, source: SourceRun) -> list[str]:
+        """What this restorer needs from *source* and does not find, one sentence each.
+
+        ``BranchLoop`` calls it while it is woven — inside ``prepare()``,
+        before any setup — once the prefix up to the checkpoint is known to
+        be committed, and reports these problems with its own in one
+        ``IncompatibleCheckpointError``. Reads committed data only; ``[]``
+        means this restorer can restore from *source*.
+        """
+        ...
 
     def restore(self, ctx: RestorationContext) -> AsyncGenerator[RestoredStep, None]:
         """Restore the environment to the checkpoint, one step at a time.
@@ -78,6 +95,10 @@ class RestorerBase(metaclass=RestorerRegistrar.Meta):
     @property
     def restorer_id(self) -> str:
         return self.__registry_key__
+
+    def source_problems(self, source: SourceRun) -> list[str]:
+        """Nothing beyond what every branch needs, unless a restorer says otherwise."""
+        return []
 
     def restore(self, ctx: RestorationContext) -> AsyncGenerator[RestoredStep, None]:
         raise NotImplementedError(f"restorer {self.restorer_id!r} must implement restore()")

@@ -8,7 +8,8 @@ the real registrars:
 - the generated union nests agent → ``agent_loop`` → ``restorer``, every knob
   typed, and the restorer is required in a ``branch`` block;
 - the configured restorer and its knobs reach the instance, replacing the
-  default a hand-built loop gets;
+  default a hand-built loop gets; each ``pace`` is recorded and moves the
+  configuration digest;
 - ``history_source`` reaches the loop independently of environment verification;
 - prompt contributions configure an existing Hook and an independent wired helper;
 - a mistyped ``restorer_id`` / ``loop_id``, an unknown knob and a value outside
@@ -29,6 +30,7 @@ from spectragent.core.hooks.prompt_contribution import PromptContributionHook
 from spectragent.core.loops import BranchLoop
 from spectragent.core.loops.restore import PrefixReplayRestorer
 from spectragent.core.registries import collect_registrars
+from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.prompt import PromptContribution, PromptRequest
 
@@ -80,6 +82,25 @@ class TestNestedUnions:
             loop.restorer.screenshot_max_distance,
             loop.restorer.pace,
         ) == ("warn", 12, "recorded_llm_latency")
+
+    @pytest.mark.parametrize("pace", ["none", "recorded_llm_latency", "recorded_timeline"])
+    def test_every_pace_reaches_the_restorer_and_is_recorded(
+        self, composer: ConfigComposer, pace: str
+    ) -> None:
+        run = composer.compose(_branch(restorer={"restorer_id": "prefix_replay", "pace": pace}))
+        assert run.single("agent").agent_loop.restorer.pace == pace
+        recorded = redact_config(run.top_level_cfg)["agent"][0]["agent_loop"]["restorer"]
+        assert recorded["pace"] == pace
+
+    def test_the_pace_is_part_of_the_configuration_identity(self, composer: ConfigComposer) -> None:
+        """A restorer field, so it moves ``config_hash`` through ``resolved`` with no special case."""
+        digests = set()
+        for pace in ("none", "recorded_llm_latency", "recorded_timeline"):
+            run = composer.compose(_branch(restorer={"restorer_id": "prefix_replay", "pace": pace}))
+            resolved = redact_config(run.top_level_cfg, record_secrets=True)
+            config = TraceConfig(agent_id="a", loop_id="branch", resolved=resolved)
+            digests.add(config.configuration_digest(resolved=resolved))
+        assert len(digests) == 3
 
     def test_the_media_knobs_reach_the_restorer(self, composer: ConfigComposer) -> None:
         loop = _loop(
@@ -247,6 +268,10 @@ class TestTyposRejected:
             pytest.param(
                 {"restorer": {"restorer_id": "prefix_replay", "screenshot_max_distance": 65}},
                 id="distance-range",
+            ),
+            pytest.param(
+                {"restorer": {"restorer_id": "prefix_replay", "pace": "recorded_timelines"}},
+                id="pace-value",
             ),
             pytest.param(
                 {"restorer": {"restorer_id": "prefix_replay"}, "continue_steps": -1},

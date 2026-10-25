@@ -29,10 +29,19 @@ Knobs:
 - ``screenshot_max_distance`` — the largest Hamming distance between the
   recorded and restored screenshots' 64-bit perceptual hashes that still
   passes (default 5);
-- ``pace`` — ``none`` (default) or ``recorded_llm_latency``: wait, before
-  executing step ``k``'s actions, as long as the source run waited for its
-  model at step ``k``, so asynchronous loading settles as it did then. It
-  only approximates media playback position; it does not restore it;
+- ``pace`` — how long to wait between restored steps (``docs/architecture_design.md``
+  §4.1 "恢复节奏"). ``none`` (default): no wait. ``recorded_llm_latency``:
+  wait, before executing step ``k``'s actions, as long as the source run
+  waited for its model at step ``k``, so asynchronous loading settles as it
+  did then. ``recorded_timeline``: keep to the source run's timeline from its
+  step-0 observation on (see :class:`_RecordedTimeline`): every later
+  observation, the checkpoint's included, is started so that it captures
+  when the source's did, and every restored step's first action starts when
+  the source step's first action started; a restoration already behind
+  goes on at once, never hurrying. A source step that executes actions but
+  measured no action spans is refused (:meth:`PrefixReplayRestorer.source_problems`).
+  Either wait only approximates media playback position; neither restores
+  it;
 - ``media`` — ``align`` (default): before every restored observation,
   the checkpoint's included, ``env.align_next_observation`` asks the
   environment to move matched media elements to the recorded position and
@@ -51,6 +60,7 @@ Knobs:
 """
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -65,13 +75,142 @@ from spectragent.core.loops.restore.context import (
     RestorationDivergedError,
     RestoredStep,
 )
+from spectragent.core.loops.restore.source import SourceRun
+from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation._registrar import FragmentBase, fragment_field_name
 from spectragent.schemas.restoration import (
     RestorationCheck,
     RestorationEvidence,
     RestoredAction,
 )
 from spectragent.schemas.step_record import StepRecord
+
+
+def _unmeasured_action_starts(source: SourceRun, checkpoint_step: int) -> list[str]:
+    """The problem ``pace: recorded_timeline`` has with *source*: restored steps with unknown action starts.
+
+    A restored step that executes actions (``zip(actions, action_results)``
+    is not empty) needs the time its first ``env.act`` call started in the
+    source run. ``StepRecord.action_spans`` is ``None`` when that was not
+    measured — such a step is named; ``[]`` says the source step made no
+    ``env.act`` call (every action refused by ``guarded_act``), so there is
+    nothing to align and nothing missing.
+    """
+    unmeasured = [
+        step
+        for step in range(checkpoint_step)
+        if (record := source.record(step)).action_spans is None
+        and min(len(record.actions), len(record.action_results)) > 0
+    ]
+    if not unmeasured:
+        return []
+    named = (
+        f"step {unmeasured[0]}"
+        if len(unmeasured) == 1
+        else "steps " + ", ".join(str(step) for step in unmeasured)
+    )
+    return [
+        f"{named} recorded no action start times (StepRecord.action_spans was not "
+        "measured), which pace: recorded_timeline needs to start each restored step's "
+        "first action when the source's started"
+    ]
+
+
+def _capture_time(observation: Any, negotiated: Any) -> float | None:
+    """When *observation* was captured: the earliest ``captured_at`` of its env-source fragments.
+
+    The same rule for a recorded and a live observation. A slot whose capture
+    failed (``FragmentFailure``) or is empty was not captured, so it has no
+    say; ``None`` when no env-source fragment was captured at all.
+    """
+    times = [
+        fragment.captured_at
+        for key in negotiated.env_sourced
+        if isinstance(
+            fragment := getattr(observation, fragment_field_name(key), None), FragmentBase
+        )
+    ]
+    return min(times, default=None)
+
+
+async def _wait_until(moment: float) -> None:
+    """Sleep until the wall-clock *moment*; return at once when it has passed — never hurry."""
+    delay = moment - time.time()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
+@dataclass
+class _RecordedTimeline:
+    """``pace: recorded_timeline``'s state for one restoration — never kept on the restorer.
+
+    Reproduces the source run's timeline from its step-0 observation on, from
+    facts its trace committed (``docs/architecture_design.md`` §4.1 "恢复节奏"):
+
+    - the anchors are the capture times (:func:`_capture_time`) of the
+      source's and of this restoration's step-0 observations — how long the
+      start page took to load is network speed, not reproduced;
+    - observation *k* >= 1 (the checkpoint's included) is aimed at
+      ``live_anchor + (source capture k - source_anchor)`` and started
+      earlier by *lead*, how long this restoration's previous ``env.observe``
+      call took (a monotonic clock around the call);
+    - step *k*'s first action is aimed at
+      ``live_anchor + (source step k's first ActionSpan.started_at - source_anchor)``.
+
+    Every wait only waits: a moment already past is not caught up on. The
+    waits write nothing anywhere.
+    """
+
+    source_name: str
+    source_anchor: float = 0.0
+    live_anchor: float = 0.0
+    #: How long this restoration's previous ``env.observe`` call took.
+    lead: float = 0.0
+
+    async def observe(self, ctx: RestorationContext, step: int, recorded_obs: Any) -> Any:
+        """Wait for step *step*'s place on the timeline, then take its one live observation.
+
+        Raises:
+            IncompatibleCheckpointError: The source step's observation has no
+                capture time (every env-source fragment failed).
+            RuntimeError: This restoration's step-0 observation has none, so
+                there is no live anchor.
+        """
+        source_capture = _capture_time(recorded_obs, ctx.negotiated_obs)
+        if source_capture is None:
+            raise IncompatibleCheckpointError(
+                self.source_name,
+                [
+                    f"step {step} captured no environment fragment (every one failed), so "
+                    "pace: recorded_timeline has no capture time to place its observation on"
+                ],
+            )
+        if step == 0:
+            self.source_anchor = source_capture
+        else:
+            target = self.live_anchor + (source_capture - self.source_anchor)
+            await _wait_until(target - self.lead)
+        started = time.monotonic()
+        live_obs = await ctx.env.observe(ctx.negotiated_obs)
+        self.lead = time.monotonic() - started
+        if step == 0:
+            live_capture = _capture_time(live_obs, ctx.negotiated_obs)
+            if live_capture is None:
+                raise RuntimeError(
+                    "the restored step 0 observation captured no environment fragment (every "
+                    "one failed), so pace: recorded_timeline has no live anchor"
+                )
+            self.live_anchor = live_capture
+        return live_obs
+
+    async def before_first_action(self, record: StepRecord) -> None:
+        """Wait until the moment the source step's first action started, on this timeline."""
+        spans = record.action_spans
+        # ``None`` (not measured) was refused before the restoration began;
+        # ``[]``: the source step never called ``env.act`` — nothing to align.
+        if spans:
+            await _wait_until(self.live_anchor + (spans[0].started_at - self.source_anchor))
 
 
 @dataclass
@@ -105,14 +244,24 @@ class PrefixReplayRestorer(RestorerBase):
         ),
     ] = 5
     pace: Annotated[
-        Literal["none", "recorded_llm_latency"],
+        Literal["none", "recorded_llm_latency", "recorded_timeline"],
         Field(
             default="none",
             description=(
                 "'recorded_llm_latency': before executing a restored step's "
                 "actions, wait as long as the source run waited for its model at "
                 "that step, so asynchronous loading settles as it did then. "
-                "'none': no wait."
+                "'recorded_timeline': keep to the source run's timeline from its "
+                "step-0 observation on. An observation's capture time is the "
+                "earliest captured_at of its environment fragments, and the two "
+                "step-0 captures are the anchors. Every later restored observation, "
+                "the checkpoint's included, starts early by as long as this "
+                "restoration's previous observation took, so that it captures when "
+                "the source's did; every restored step's first action starts when "
+                "the source step's first action started (StepRecord.action_spans). "
+                "It only waits: a restoration already behind goes on at once. A "
+                "source step that executes actions but measured no action spans is "
+                "refused before the run. 'none': no wait."
             ),
         ),
     ] = "none"
@@ -188,13 +337,28 @@ class PrefixReplayRestorer(RestorerBase):
                 "Shorten the lead or raise the timeout."
             )
 
+    def source_problems(self, source: SourceRun) -> list[str]:
+        """Under ``pace: recorded_timeline``, the restored steps whose action start times are unknown."""
+        if self.pace != "recorded_timeline":
+            return []
+        return _unmeasured_action_starts(source, source.checkpoint.step)
+
     async def restore(self, ctx: RestorationContext) -> AsyncGenerator[RestoredStep, None]:
         """Restore steps ``0 .. t-1``, then hand back step *t*'s verified observation."""
+        timeline: _RecordedTimeline | None = None
+        if self.pace == "recorded_timeline":
+            # ``BranchLoop`` refused such a source at assembly already; the
+            # same check here keeps a restorer driven by hand from finding out
+            # half way, after it has acted.
+            problems = _unmeasured_action_starts(ctx.source, ctx.checkpoint_step)
+            if problems:
+                raise IncompatibleCheckpointError(ctx.source.name, problems)
+            timeline = _RecordedTimeline(source_name=ctx.source.name)
         for step in range(ctx.checkpoint_step):
             recorded_obs = ctx.source.observation(step, ctx.negotiated_obs)
             record = ctx.source.record(step)
             await self._request_alignment(ctx, recorded_obs)
-            live_obs = await ctx.env.observe(ctx.negotiated_obs)
+            live_obs = await self._observe(ctx, step, recorded_obs, timeline)
             evidence = await ctx.env.verify_restoration(recorded_obs, live_obs)
             # A world that already left the recording is not acted on.
             self._raise_if_diverged(step, evidence, [], live_obs)
@@ -205,8 +369,8 @@ class PrefixReplayRestorer(RestorerBase):
             actions: list[RestoredAction] = []
             # Only what the source executed: an action after a failed or a
             # final one never ran there, so it does not run here either.
-            for recorded, recorded_result in zip(
-                record.actions, record.action_results, strict=False
+            for index, (recorded, recorded_result) in enumerate(
+                zip(record.actions, record.action_results, strict=False)
             ):
                 retarget = await ctx.env.retarget(recorded, recorded_obs, live_obs)
                 if retarget.failure is not None and self.verify == "strict":
@@ -228,6 +392,9 @@ class PrefixReplayRestorer(RestorerBase):
                     if retarget.action is not None
                     else recorded.model_copy(deep=True)
                 )
+                if timeline is not None and index == 0:
+                    # The step's first action only: the rest follow it at once.
+                    await timeline.before_first_action(record)
                 act_error: Exception | None = None
                 result: ActionResult | None = None
                 try:
@@ -267,7 +434,7 @@ class PrefixReplayRestorer(RestorerBase):
         step = ctx.checkpoint_step
         recorded_obs = ctx.source.observation(step, ctx.negotiated_obs)
         await self._request_alignment(ctx, recorded_obs)
-        live_obs = await ctx.env.observe(ctx.negotiated_obs)
+        live_obs = await self._observe(ctx, step, recorded_obs, timeline)
         evidence = await ctx.env.verify_restoration(recorded_obs, live_obs)
         check = self._judge(step, evidence, [])
         if check.verdict == "diverged":
@@ -308,6 +475,18 @@ class PrefixReplayRestorer(RestorerBase):
                 return ()
             targets.append(retarget.action)
         return tuple(targets)
+
+    @staticmethod
+    async def _observe(
+        ctx: RestorationContext,
+        step: int,
+        recorded_obs: Any,
+        timeline: _RecordedTimeline | None,
+    ) -> Any:
+        """Step *step*'s one live observation — on the source's timeline when there is one."""
+        if timeline is None:
+            return await ctx.env.observe(ctx.negotiated_obs)
+        return await timeline.observe(ctx, step, recorded_obs)
 
     async def _request_alignment(self, ctx: RestorationContext, recorded_obs: Any) -> None:
         """Under ``media: align``, have the next observation aligned to *recorded_obs*."""
