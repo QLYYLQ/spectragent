@@ -239,7 +239,7 @@ observation's capture and the next one's. Frames are matched to O_t by that
 cycle wherever they were committed (a delayed frame still in flight lands in
 a later step's batch).
 
-## `stability --root DIR --out DIR2`
+## `stability --root DIR --out DIR2 [--media-areas DIR3]`
 
 Did the screen the agent saw stay the same while it thought? Each observation
 with a screenshot — of a policy step by default, since a restored step has no
@@ -269,17 +269,52 @@ changed region overlapping a media element that was playing around the
 screenshot is flagged separately (`media_change`), whatever the verdict. The
 think time is the first action span's start minus the observation's capture.
 
+**Media areas** (`--media-areas DIR3`, a replay rule set directory, normally
+`configs/replay_rules`). In the 2026-10-24 round 99 of the 100 observations
+with playing media changed on the media, so a video page almost never counts
+as stable. The rule set is loaded as a replay loads it (`SiteRules.load`: the
+same validation and digest; a set without `media_areas` rules is refused),
+and its media-area rules — the declarations restoration verification applies
+(`configs/replay_rules/README.md`, "Media areas in restoration") — are matched
+against the observation's page URL, its screenshot's `source_url`. Frames
+record no page URL, so a frame is taken to show the observation's page; a
+frame taken on another tab than the observation's delayed frame is listed.
+On a declared page the boxes measured on the observation's screenshot (every
+`<video>` / `<audio>` element and every embedded frame the media read could
+not reach) are painted black on the observation and on each frame before the
+grid and the dHash compare them, by the browser's own masking
+(`spectragent/core/capabilities/browser/media_mask.py`). Past 75 % of the
+image masked nothing is masked and the whole images are compared. The
+unmasked comparisons are kept as they are; when the mask was applied the
+masked ones decide the verdict, the suggestion and the queue item. A
+screenshot without `source_url` or without measured media facts cannot be
+matched: nothing is masked, and it is counted as such. Without the option
+nothing is masked.
+
 Outputs:
 
-- `stability.json` (`"format": "lookahead-stability-3"`): the method, the
+- `stability.json` (`"format": "lookahead-stability-4"`): the method, the
   minimum area, the origins, the counts, the runs not read and the runs
-  excluded, and per observation the settle facts, the previous step's last
-  action, the think time, both comparisons (frame, outcome, seconds after the
-  observation, changed fraction, regions, dHash distance), the verdict and the
-  media flags;
+  excluded, the media-area rule set (`media_areas`: its directory, digest and
+  rules; `null` without the option), and per observation the settle facts,
+  the previous step's last action, the think time, both comparisons of the
+  whole images (frame, outcome, seconds after the observation, changed
+  fraction, regions, dHash distance), the verdict and the verdict of the whole
+  images (`unmasked_verdict`; the same unless a mask was applied), the media
+  flags, and with the option `media_areas`: `status` (`masked`,
+  `mask_too_large`, `no_page_url`, `no_media_facts`, `undeclared`,
+  `no_image`), the matching `rule_ids`, `mask_applied`, `masked_share`, the
+  painted `boxes` (kind, element, image pixels), `detail`,
+  `frames_on_other_tab`, and when the mask was applied both masked
+  comparisons, their verdict and their own `media_change`;
 - `report.md`: verdict counts, settle outcome × verdict, the previous step's
   last action × verdict, origin × verdict (when restored steps are included),
-  changes over playing media, and how often the grid and the dHash disagree;
+  changes over playing media, how often the grid and the dHash disagree, and
+  with the option a media-area section: the rule set and its digest, the
+  observations per status, how many masked observations changed only in the
+  masked media areas and how many still change (also per rule), and the
+  observations whose playing media changed on pages no rule declares, by host
+  and path;
 - a review queue of up to `--queue-size` (60) observations with a comparable
   frame, taken in turn from each (settle outcome × verdict) group (`--seed`).
   Images: `observation`, `delayed`, `before_action` (trailing frames
@@ -297,7 +332,11 @@ Outputs:
   overlay, a suggestions dropdown, an injected ad) and 看不出 `cannot_tell`,
   all optional but the first; the region kind is 变化区域 `change`. The
   observation draws its step's actions, the before-action frame the first
-  action.
+  action. When a media-area mask was applied, the suggestion, its boxes and
+  the comparison texts are the masked ones, and a 媒体区域 field says that the
+  media areas were masked, under which rule, how much of the image they
+  cover and what the whole images gave; on a declared page left unmasked it
+  says why.
 
 ## `variants --root DIR --steps-per-run N --per-step K --judge-config FILE.yaml --out FILE.json`
 

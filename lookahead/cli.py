@@ -13,7 +13,8 @@ from typing import Any
 from lookahead.judge import Judge, JudgeModel, JudgeRouteError, load_judge_model
 from lookahead.queues import default_queue_id
 from lookahead.runs import LookaheadInputError, RunSet, open_runs
-from lookahead.stability import DEFAULT_MIN_CHANGE_AREA
+from lookahead.stability import DEFAULT_MIN_CHANGE_AREA, load_media_areas
+from spectragent.core.capabilities.browser.replay.site_rules import SiteRules
 from spectragent.core.llm.lifecycle import model_session
 
 JudgeLoader = Callable[[Path], JudgeModel]
@@ -102,6 +103,16 @@ def build_parser() -> argparse.ArgumentParser:
         "a restored step has no think time).",
     )
     stability.add_argument(
+        "--media-areas",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="A replay rule set directory (normally configs/replay_rules). On a page one of its "
+        "media_areas rules declares, the media boxes the observation's screenshot measured are "
+        "masked out of the observation and of each frame before comparing, as restoration "
+        "verification does (default: nothing is masked).",
+    )
+    stability.add_argument(
         "--queue-size", type=int, default=60, help="Items in the review queue (default 60)."
     )
     stability.add_argument("--seed", type=int, default=0, help="Sampling seed (default 0).")
@@ -179,17 +190,19 @@ def run(argv: Sequence[str] | None = None, *, load_judge: JudgeLoader = load_jud
     """Run one command; the exit status. *load_judge* replaces the model's composition (tests)."""
     args = build_parser().parse_args(argv)
     judge_config: Path | None = getattr(args, "judge_config", None)
+    media_areas_dir: Path | None = getattr(args, "media_areas", None)
     try:
         # Before the runs are read, so a bad file fails at once. Composing opens
         # no connection; the client opens at the first request, inside the
         # model session that releases it.
         judge_model = load_judge(judge_config) if judge_config is not None else None
+        media_areas = load_media_areas(media_areas_dir) if media_areas_dir is not None else None
         runs = open_runs(args.root, args.viewer_root, getattr(args, "exclude_runs", None))
     except LookaheadInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        code = _dispatch(args, runs, judge_model)
+        code = _dispatch(args, runs, judge_model, media_areas)
     except (LookaheadInputError, JudgeRouteError, ValueError) as exc:
         _print_skipped(runs)
         print(f"error: {exc}", file=sys.stderr)
@@ -198,7 +211,12 @@ def run(argv: Sequence[str] | None = None, *, load_judge: JudgeLoader = load_jud
     return code
 
 
-def _dispatch(args: argparse.Namespace, runs: RunSet, judge_model: JudgeModel | None) -> int:
+def _dispatch(
+    args: argparse.Namespace,
+    runs: RunSet,
+    judge_model: JudgeModel | None,
+    media_areas: SiteRules | None,
+) -> int:
     if args.command == "health":
         from lookahead.health import EXCLUSIONS_NAME, run_health
 
@@ -233,6 +251,7 @@ def _dispatch(args: argparse.Namespace, runs: RunSet, judge_model: JudgeModel | 
             origins=frozenset(
                 origin.strip() for origin in args.origins.split(",") if origin.strip()
             ),
+            media_areas=media_areas,
         )
         print(f"{len(report.observations)} observation(s): {json.dumps(report.summary)}")
         print(f"report: {args.out / 'report.md'}; queue: {queue}")

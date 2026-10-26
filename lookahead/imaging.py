@@ -1,7 +1,9 @@
 """Comparing two screenshots: the restorer's 64-bit dHash and a 32-px grid of changed regions.
 
 The dHash and its Hamming distance are spectragent's own, public in the
-browser restoration module (the restorer's screenshot distance). The grid
+browser restoration module (the restorer's screenshot distance); both
+comparisons also take images already decoded, for a reader that changes
+them first (the stability review masks media areas out of both). The grid
 difference is the method ``spectragent flywheel diagnose`` states in its
 public ``DifferenceMethod`` (a pixel changed when its largest RGB channel
 difference exceeds ``pixel_threshold``; a grid cell is active when at least
@@ -18,7 +20,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageChops, ImageDraw, UnidentifiedImageError
 
-from spectragent.core.capabilities.browser.restoration import dhash, hamming
+from spectragent.core.capabilities.browser.restoration import dhash, hamming, image_dhash
 from spectragent.flywheel.diagnostics import DifferenceMethod
 
 #: ``[x0, y0, x1, y1]`` in pixels of the image, right and bottom exclusive.
@@ -58,6 +60,11 @@ def distance(left: bytes, right: bytes) -> int | None:
     if a is None or b is None:
         return None
     return hamming(a, b)
+
+
+def image_distance(left: Image.Image, right: Image.Image) -> int:
+    """:func:`distance` of two images already decoded."""
+    return hamming(image_dhash(left), image_dhash(right))
 
 
 @dataclass(frozen=True)
@@ -162,10 +169,17 @@ def cell_boxes(cells: set[tuple[int, int]], size: tuple[int, int], grid: int) ->
 
 def difference(left: bytes, right: bytes, method: DifferenceMethod | None = None) -> Difference:
     """The changed regions between two images of the same size."""
-    method = method or DifferenceMethod()
     a, b = decode(left), decode(right)
     if a is None or b is None:
         return Difference(compared=False, reason="an image does not decode")
+    return image_difference(a, b, method)
+
+
+def image_difference(
+    a: Image.Image, b: Image.Image, method: DifferenceMethod | None = None
+) -> Difference:
+    """:func:`difference` of two RGB images already decoded."""
+    method = method or DifferenceMethod()
     if a.size != b.size:
         return Difference(
             compared=False, reason=f"image sizes differ: {a.size} vs {b.size}; not resized"
