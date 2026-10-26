@@ -71,6 +71,7 @@ from spectragent.schemas.observation.fragments import (
 from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame, PointGrid
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import variant_params
+from tests._helpers.replies import read_reply
 
 _TASK = "Put a kettle in the cart"
 _VIEWPORT = (1280, 720)
@@ -231,7 +232,7 @@ def _check(
         unset = [name for name in exc.params if action.params.get(name) is None]
         assert not unset, f"{action}: refusal names {unset}, which the action does not set"
         return False
-    parsed_all = actions_in_capability_units(agent.parse_react_output(text), frame, space)
+    parsed_all = actions_in_capability_units(read_reply(agent, text, space), frame, space)
     assert len(parsed_all) == 1, (action, text)
     parsed = parsed_all[0]
     # 1. name, after the run's binding

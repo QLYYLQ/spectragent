@@ -6,7 +6,8 @@ the run's (framed) action space, hands it to the Agent in
 capability's units with it and records it on the step
 (``spectragent/core/loops/coordinate_frames.py``). A test that calls an
 Agent's slots directly does the same here, so the Agent sees what a run shows
-it and the actions come out as a run executes them.
+it and the actions come out as a run executes them. A reply written as text
+is read as a run reads it (``tests/_helpers/replies.py``).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from spectragent.core.loops.coordinate_frames import actions_in_capability_units
 from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.replies import read_reply
 
 __all__ = ["decided", "step_context"]
 
@@ -38,5 +40,5 @@ def step_context(
 def decided(
     agent: Any, space: ActionSpace, reply: Any, context: ReactPromptContext
 ) -> list[Action]:
-    """*reply* parsed by *agent* and moved off the step's frame, as the Loop executes it."""
-    return actions_in_capability_units(agent.parse_react_output(reply), context.frame, space)
+    """*reply* read by *agent* and moved off the step's frame, as the Loop executes it."""
+    return actions_in_capability_units(read_reply(agent, reply, space), context.frame, space)

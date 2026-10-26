@@ -46,6 +46,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.action_spaces import space_of
 from tests._helpers.assembly import make_agent, make_env
 from tests._helpers.fragment_formats import dom_formats
+from tests._helpers.replies import read_reply
 
 #: Anything that looks like an action name where the prompt could be
 #: teaching one: the rendered descriptor list (``- `browser.click(...)```),
@@ -163,9 +164,10 @@ class TestPromptVocabulary:
         agent, prompt, _descriptors, guarded_act = prepared
         assert "`browser.done`" in prompt and "extracted_content" in prompt
 
-        (action,) = agent.parse_react_output(
+        (action,) = read_reply(
+            agent,
             '{"actions": [{"reasoning": "found it", "action": '
-            '{"browser.done": {"extracted_content": "42", "success": false}}}]}'
+            '{"browser.done": {"extracted_content": "42", "success": false}}}]}',
         )
         assert action == Action(
             name="browser.done", params={"extracted_content": "42", "success": False}

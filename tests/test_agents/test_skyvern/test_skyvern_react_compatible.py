@@ -40,6 +40,7 @@ from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_spaces import browser_space, wired_space
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import dom_formats
+from tests._helpers.replies import read_reply
 
 MEMBERS = [SkyvernDomAgent, SkyvernDomVisionAgent]
 member_param = pytest.mark.parametrize("member", MEMBERS, ids=lambda cls: cls.__registry_key__)
@@ -369,7 +370,7 @@ class TestBuildReactPrompt:
     async def test_a_parsed_reply_never_enters_the_window(self, member: type[SkyvernAgent]) -> None:
         """The window is the Loop's record of what ran, not what was proposed."""
         agent = _make_agent(member)
-        agent.parse_react_output(_reply({"browser.click": {"index": 7}}))
+        read_reply(agent, _reply({"browser.click": {"index": 7}}))
         content = await _text(agent, _FakeObservation())
         assert "<action_history>\n(no actions yet)\n</action_history>" in content
 
@@ -501,12 +502,13 @@ class TestParseReactOutput:
     @member_param
     def test_parses_the_closed_reply(self, member: type[SkyvernAgent]) -> None:
         agent = _make_agent(member)
-        actions = agent.parse_react_output(
+        actions = read_reply(
+            agent,
             _reply(
                 {"browser.click": {"index": 7}},
                 {"browser.scroll": {"direction": "up", "amount": None, "index": None}},
                 {"browser.type": {"index": 3, "text": "hello", "clear": None}},
-            )
+            ),
         )
         # The reasoning stays in the reply (``parse_react_thought`` reads it);
         # a declined optional param is left out, so the capability's knob decides.
@@ -521,9 +523,11 @@ class TestParseReactOutput:
         self, member: type[SkyvernAgent]
     ) -> None:
         """The flat item let a click carry ``text``; the params check then refused the whole reply."""
-        with pytest.raises(ParseError, match="browser.click: text"):
-            _make_agent(member).parse_react_output(
-                _reply({"browser.click": {"index": 7, "text": "Search"}})
+        with pytest.raises(
+            ParseError, match="action 1, browser.click: text: Extra inputs are not permitted"
+        ):
+            read_reply(
+                _make_agent(member), _reply({"browser.click": {"index": 7, "text": "Search"}})
             )
 
     @member_param
@@ -533,40 +537,46 @@ class TestParseReactOutput:
         """The schema permits only the run's fully-qualified names."""
         agent = _make_agent(member)
         for verb in ("browser.CLICK", "click", "browser.navigate"):
-            with pytest.raises(ParseError, match="unknown action"):
-                agent.parse_react_output(_reply({verb: {"index": 1}}))
+            with pytest.raises(ParseError, match=f"action 1, {verb} is not an action this run"):
+                read_reply(agent, _reply({verb: {"index": 1}}))
 
     @member_param
     def test_done_keeps_its_required_null_answer(self, member: type[SkyvernAgent]) -> None:
         """``extracted_content`` is required and nullable; a written null is the answer."""
-        (action,) = _make_agent(member).parse_react_output(
-            _reply({"browser.done": {"extracted_content": None, "success": None}})
+        (action,) = read_reply(
+            _make_agent(member),
+            _reply({"browser.done": {"extracted_content": None, "success": None}}),
         )
         assert action == Action(name="browser.done", params={"extracted_content": None})
 
     @member_param
     def test_done_carries_the_claim(self, member: type[SkyvernAgent]) -> None:
-        (action,) = _make_agent(member).parse_react_output(
-            _reply({"browser.done": {"extracted_content": "hit a paywall", "success": False}})
+        (action,) = read_reply(
+            _make_agent(member),
+            _reply({"browser.done": {"extracted_content": "hit a paywall", "success": False}}),
         )
         assert action.params == {"extracted_content": "hit a paywall", "success": False}
 
     @member_param
     def test_an_empty_action_list_goes_back_to_the_model(self, member: type[SkyvernAgent]) -> None:
-        with pytest.raises(ParseError):
-            _make_agent(member).parse_react_output('{"actions": []}')
+        with pytest.raises(ParseError, match="actions: List should have at least 1 item"):
+            read_reply(_make_agent(member), '{"actions": []}')
 
     @member_param
     def test_text_that_is_not_json_goes_back_to_the_model(self, member: type[SkyvernAgent]) -> None:
-        with pytest.raises(ParseError, match="not valid JSON"):
-            _make_agent(member).parse_react_output("click 7")
+        with pytest.raises(ParseError, match="^the reply is not valid JSON: "):
+            read_reply(_make_agent(member), "click 7")
+
+    @member_param
+    def test_the_parser_reads_only_a_validated_reply(self, member: type[SkyvernAgent]) -> None:
+        """Text is the framework's to validate and, not fitting, to refuse in its words."""
+        with pytest.raises(TypeError, match="validated_reply"):
+            _make_agent(member).parse_react_output(_reply({"browser.click": {"index": 1}}))  # type: ignore[arg-type]
 
     @member_param
     def test_before_prepare_there_is_nothing_to_validate_against(
         self, member: type[SkyvernAgent]
     ) -> None:
-        with pytest.raises(ParseError, match="before prepare"):
-            member().parse_react_output(_reply({"browser.click": {"index": 1}}))
         with pytest.raises(RuntimeError, match="before prepare"):
             member().get_react_output_model()
 
@@ -683,9 +693,7 @@ class TestFrameElementIndices:
         )
 
         key = 3 * 2**31 + 7
-        (action,) = _make_agent(member).parse_react_output(
-            _reply({"browser.click": {"index": key}})
-        )
+        (action,) = read_reply(_make_agent(member), _reply({"browser.click": {"index": key}}))
         assert action.params["index"] == key
 
         capability = FakeCapability()

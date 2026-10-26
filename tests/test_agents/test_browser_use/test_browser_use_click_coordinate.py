@@ -44,6 +44,7 @@ from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.frames import decided, step_context
+from tests._helpers.replies import read_reply
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
     FakeScope,
@@ -276,9 +277,13 @@ class TestRefusals:
         prompt = _prompt(agent, prepared["descriptors"])
         assert "click_coordinate" not in prompt
         assert "`browser.click(index:" in prompt
-        with pytest.raises(ParseError, match="unknown action"):
-            agent.parse_react_output(
-                _reply({"browser.click_coordinate": {"coordinate_x": 1, "coordinate_y": 2}})
+        with pytest.raises(
+            ParseError, match="action 1, browser.click_coordinate is not an action this run"
+        ):
+            read_reply(
+                agent,
+                _reply({"browser.click_coordinate": {"coordinate_x": 1, "coordinate_y": 2}}),
+                prepared["space"],
             )
 
 

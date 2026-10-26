@@ -40,6 +40,7 @@ from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_of
 from tests._helpers.fragment_formats import dom_formats
+from tests._helpers.replies import read_reply
 
 # ── Test fixtures ─────────────────────────────────────────────────────
 
@@ -505,12 +506,13 @@ class TestParseReactOutput:
 
     def test_multi_action_output(self) -> None:
         agent = _prepared()
-        actions = agent.parse_react_output(
+        actions = read_reply(
+            agent,
             _reply(
                 {"browser.click": {"index": 1}},
                 {"browser.type": {"index": 2, "text": "hello"}},
                 {"browser.navigate": {"url": "https://x.example"}},
-            )
+            ),
         )
         assert [a.name for a in actions] == [
             "browser.click",
@@ -527,8 +529,8 @@ class TestParseReactOutput:
         that writes ``null`` is saying exactly that.
         """
         agent = _prepared()
-        (action,) = agent.parse_react_output(
-            _reply({"browser.type": {"index": 2, "text": "x", "clear": None}})
+        (action,) = read_reply(
+            agent, _reply({"browser.type": {"index": 2, "text": "x", "clear": None}})
         )
         assert "clear" not in action.params
 
@@ -545,7 +547,7 @@ class TestParseReactOutput:
                 "action": [{"browser.navigate": {"url": "https://www.example.com"}}],
             }
         )
-        actions = agent.parse_react_output(payload)
+        actions = read_reply(agent, payload)
         assert len(actions) == 1
         assert actions[0].name == "browser.navigate"
         assert actions[0].params == {"url": "https://www.example.com"}
@@ -554,8 +556,8 @@ class TestParseReactOutput:
         from spectragent.core.loops.errors import ParseError
 
         agent = _prepared()
-        with pytest.raises(ParseError):
-            agent.parse_react_output(_reply())
+        with pytest.raises(ParseError, match="action: List should have at least 1 item"):
+            read_reply(agent, _reply())
 
     def test_unparseable_text_raises_parse_error(self) -> None:
         # Regression: parse failures used to return a "done" action
@@ -564,8 +566,16 @@ class TestParseReactOutput:
         from spectragent.core.loops.errors import ParseError
 
         agent = _prepared()
-        with pytest.raises(ParseError, match="not valid JSON"):
-            agent.parse_react_output("not valid json at all")
+        with pytest.raises(
+            ParseError, match="^the reply is not valid JSON: expected ident at line 1 column 2$"
+        ):
+            read_reply(agent, "not valid json at all")
+
+    def test_the_parser_reads_only_a_validated_reply(self) -> None:
+        """Text is the framework's to validate and, not fitting, to refuse in its words."""
+        agent = _prepared()
+        with pytest.raises(TypeError, match="validated_reply"):
+            agent.parse_react_output(_reply({"browser.click": {"index": 1}}))  # type: ignore[arg-type]
 
     def test_done_uses_extracted_content_key(self) -> None:
         """No rename on the way through: the action names its own field.
@@ -575,8 +585,9 @@ class TestParseReactOutput:
         executor read another.
         """
         agent = _prepared()
-        (action,) = agent.parse_react_output(
-            _reply({"browser.done": {"extracted_content": "the final answer", "success": True}})
+        (action,) = read_reply(
+            agent,
+            _reply({"browser.done": {"extracted_content": "the final answer", "success": True}}),
         )
         assert action.name == "browser.done"
         assert action.params.get("extracted_content") == "the final answer"
@@ -586,8 +597,11 @@ class TestParseReactOutput:
         from spectragent.core.loops.errors import ParseError
 
         agent = _prepared()
-        with pytest.raises(ParseError):
-            agent.parse_react_output(_reply({"browser.done": {"text": "answer"}}))
+        with pytest.raises(
+            ParseError,
+            match="action 1, browser.done: extracted_content: Field required; text: Extra inputs",
+        ):
+            read_reply(agent, _reply({"browser.done": {"text": "answer"}}))
 
 
 class TestOutputModel:
@@ -638,7 +652,7 @@ class TestFrameElementIndices:
 
     async def test_through_the_text_path(self) -> None:
         agent = _prepared()
-        (action,) = agent.parse_react_output(_reply({"browser.click": {"index": self.KEY}}))
+        (action,) = read_reply(agent, _reply({"browser.click": {"index": self.KEY}}))
         assert action.params == {"index": self.KEY}
         assert type(action.params["index"]) is int
 

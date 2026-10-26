@@ -42,6 +42,7 @@ from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_of
 from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.llm_clients import FakeClient
+from tests._helpers.replies import read_reply
 from tests._helpers.trace_builder import as_chat
 
 # ── Shared fixtures ───────────────────────────────────────────────
@@ -150,16 +151,20 @@ class TestPerRunModelRoundTrip:
 
 
 class TestHallucinatedVerbRejection:
-    """§6.1.1 — the per-run verb set must bite on the text path too."""
+    """§6.1.1 — the per-run verb set must bite on the text path too.
+
+    The text path is a reply the provider refused, which the framework
+    validates against the same per-run model (``validated_reply``).
+    """
 
     def test_text_path_rejects_hallucinated_verb(self) -> None:
         agent = _prepared_agent()
         raw = json.dumps({"memory": "m", "action": [{"totally_hallucinated_verb": {}}]})
         with pytest.raises(ParseError) as exc:
-            agent.parse_react_output(raw)
+            read_reply(agent, raw)
 
         detail = exc.value.detail
-        assert "totally_hallucinated_verb" in detail
+        assert "action 1, totally_hallucinated_verb is not an action this run executes" in detail
         # The allowed set rides along so the LLM can self-correct next turn.
         assert "browser.click" in detail
 
@@ -181,9 +186,9 @@ class TestHallucinatedVerbRejection:
             fragment_formats=dom_formats(),
             action_space=space_of(_descriptors("browser.click")),
         )
-        with pytest.raises(ParseError):
-            agent.parse_react_output(
-                json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
+        with pytest.raises(ParseError, match="action 1, browser.navigate is not an action"):
+            read_reply(
+                agent, json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
             )
 
     def test_before_prepare_there_is_nothing_to_validate_against(self) -> None:
@@ -193,8 +198,8 @@ class TestHallucinatedVerbRejection:
         ``list[dict[str, Any]]`` schema kept reaching providers unnoticed.
         """
         agent = BrowserUseDomAgent()
-        with pytest.raises(ParseError, match="before prepare"):
-            agent.parse_react_output(json.dumps(_PAYLOAD))
+        with pytest.raises(RuntimeError, match="before prepare"):
+            agent.parse_react_output(_PAYLOAD)  # type: ignore[arg-type]
 
 
 # ── 3. ReactLoop actually routes output_format ────────────────────

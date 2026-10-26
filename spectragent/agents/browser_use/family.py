@@ -75,7 +75,6 @@ from spectragent.core.action_guard import executed_name
 from spectragent.core.actions.action_union import action_of, action_union
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
-from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.prompts import hash_text, text_snapshot
 from spectragent.schemas.action import Action, ActionDescriptor
@@ -106,6 +105,9 @@ _TERSE_VARIANTS: frozenset[str] = frozenset(
         "system_prompt_browser_use_no_thinking",
     }
 )
+
+#: The reply's list of actions, each one member of the run's closed union.
+_ACTION_FIELD = "action"
 
 #: The reasoning fields a reply's thought is read from, in precedence order
 #: (``BrowserUseAgent.parse_react_thought``): the model's own reasoning block
@@ -375,52 +377,34 @@ class BrowserUseAgent(AgentBase):
         )
         return [*messages, restored]
 
-    def parse_react_output(self, llm_output: Any) -> list[Action]:
-        """Validate a reply against this run's closed schema, as Actions.
+    def parse_react_output(self, llm_output: BaseModel) -> list[Action]:
+        """The Actions of a reply validated against this run's closed schema.
 
-        Both paths — a provider-validated instance and free-form JSON text
-        — go through the *same* per-run model, so a run that falls back to
-        text is held to the same verb set and the same parameter types as
-        one with constrained decoding.
+        The reply is an instance of :meth:`get_react_output_model`: the
+        provider validated it, or the framework did (a reply that arrived as
+        text, ``core/loops/react.py::validated_reply``). A reply that does not
+        fit never gets here; the framework refuses it, in the words of its
+        params check (``core/action_guard.py::reply_refusal``). So reading one
+        is mapping its items to Actions.
 
         Raises:
-            ParseError: anything the model can fix by writing a different
-                reply. The Loop feeds the detail back verbatim, so each
-                one names a single problem.
+            TypeError: *llm_output* is not this run's reply model: a caller
+                skipped the framework's validation.
+            RuntimeError: Called before ``prepare()`` built the model.
         """
-        model = self._per_run_output_model
-        if model is None:
-            raise ParseError(
-                f"{self.agent_id}.parse_react_output ran before prepare(), so there "
-                "is no negotiated action set to validate against.",
-                raw_output=str(llm_output)[:500],
-            )
-
-        parsed: Any = llm_output
+        model = self.get_react_output_model()
         if not isinstance(llm_output, model):
-            text = llm_output if isinstance(llm_output, str) else str(llm_output)
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ParseError(
-                    f"LLM output is not valid JSON: {exc}",
-                    raw_output=text[:500],
-                ) from exc
-            try:
-                parsed = model.model_validate(data)
-            except Exception as exc:
-                raise ParseError(
-                    f"LLM JSON does not match this run's output schema: "
-                    f"{type(exc).__name__}: {exc}",
-                    raw_output=text[:500],
-                ) from exc
-
+            raise TypeError(
+                f"{self.agent_id}.parse_react_output reads a reply validated as "
+                f"{model.__name__}, not a {type(llm_output).__name__}; validate text "
+                "with core/loops/react.py::validated_reply first"
+            )
         # ``action_of`` drops a null only where it declines an optional param
         # (``clear: null`` must not override ``clear_by_default``) and keeps a
         # required one (``done``'s ``extracted_content: null`` is the answer).
         # Points stay as the model wrote them; the framework moves them into
         # the capability's units with this step's frame.
-        return [action_of(item) for item in parsed.action]
+        return [action_of(item) for item in getattr(llm_output, _ACTION_FIELD)]
 
     def get_react_output_model(self) -> type[BaseModel]:
         """The closed per-run model, once ``prepare()`` has built it.
