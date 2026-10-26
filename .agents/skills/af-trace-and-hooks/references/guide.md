@@ -47,6 +47,11 @@ Failure usage counts; missing usage stays missing. `TokenUsage.from_llm_usage/co
 the shared step/online/offline counting rule. Preserve cache read/write/image counts and
 explicit zero. No recording means None; measured no calls means zero. Known subtotals
 must travel with `UsageCoverage`, including every missing call. Never estimate prices.
+`ModelInvokeUsage.completion_reasoning_tokens` (the share of `completion_tokens` the
+response said was reasoning, `None` when it said nothing) lives only in the call records,
+full and lightweight. The step and run totals do not sum it: their breakdowns count an
+unreported value as zero, and a provider that bills reasoning without a split
+(Anthropic) would then read as "no reasoning".
 
 Step execution time excludes extra recording snapshot work. Capture, encoding and WAL
 work is associated with the original step; `recording_timing(step)` reads a later committed

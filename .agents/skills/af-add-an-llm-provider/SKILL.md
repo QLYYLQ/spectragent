@@ -15,6 +15,7 @@ Read [references/guide.md](references/guide.md) by symptom:
 - Structured validation, traces, or metrics: §5–§6.
 - Removed workaround knobs: §7.
 - The model's reasoning (`thinking`): §9.
+- DeepSeek's official API (`openai.deepseek`): §11.
 
 Validate the actual response against the real closed action union; an HTTP 200 does not prove that a gateway preserved the schema.
 
