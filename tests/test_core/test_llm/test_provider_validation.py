@@ -376,6 +376,16 @@ def _openai_direct() -> Any:
     return chat
 
 
+def _openai_direct_prompt_schema() -> Any:
+    """A family without ``json_schema`` behind the base: the schema goes in the prompt."""
+    from spectragent.core.llm.providers.openai import ChatOpenAI
+
+    chat = ChatOpenAI(model="claude-sonnet-4-5", api_key="stub")
+    chat.get_client = lambda: _openai_client()  # type: ignore[method-assign]
+    assert chat.takes_schema_in_prompt(), "this case no longer exercises the prompt path"
+    return chat
+
+
 def _openrouter() -> Any:
     from spectragent.core.llm.providers.openai_openrouter import ChatOpenRouter
 
@@ -453,7 +463,7 @@ def _vercel_prompt_json() -> Any:
 
     chat = ChatVercel(model="anthropic/claude-sonnet-4-5", api_key="stub")
     chat.get_client = lambda: _openai_client()  # type: ignore[method-assign]
-    assert chat._vercel_needs_prompt_json(), "this case no longer exercises the prompt path"
+    assert chat.takes_schema_in_prompt(), "this case no longer exercises the prompt path"
     return chat
 
 
@@ -471,7 +481,8 @@ _CASES: list[_Case] = [
     _Case("mistral.default", "mistral.default", _mistral),
     _Case("oci.default", "oci.default", _oci),
     _Case("ollama.default", "ollama.default", _ollama),
-    _Case("openai.direct", "openai.direct", _openai_direct),
+    _Case("openai.direct[json_schema]", "openai.direct", _openai_direct),
+    _Case("openai.direct[prompt]", "openai.direct", _openai_direct_prompt_schema),
     _Case("openai.openrouter", "openai.openrouter", _openrouter),
     _Case("openai.azure[chat]", "openai.azure", _azure_chat),
     _Case("openai.azure[responses]", "openai.azure", _azure_responses),

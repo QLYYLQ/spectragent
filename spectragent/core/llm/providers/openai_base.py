@@ -1,9 +1,11 @@
 """Shared base for all OpenAI-compatible providers.
 
 Provides common fields, client creation, usage extraction, and a standard
-ainvoke path (text + response_format structured output).
+ainvoke path: text, and structured output either through
+``response_format: json_schema`` or with the schema written into the prompt.
 """
 
+import json
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -12,9 +14,11 @@ from typing import Annotated, Any, Literal, TypeVar, overload
 
 import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
-from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.responses import Response
 from openai.types.shared.chat_model import ChatModel
+from openai.types.shared_params.response_format_json_object import ResponseFormatJSONObject
 from openai.types.shared_params.response_format_json_schema import (
     JSONSchema,
     ResponseFormatJSONSchema,
@@ -28,7 +32,7 @@ from spectragent.core.llm.exceptions import (
     ModelRateLimitError,
 )
 from spectragent.core.llm.fences import strip_code_fence
-from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, SystemMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -58,6 +62,30 @@ def resolve_http_transport(
     if http_client is not None and extra_client is not None and extra_client is not http_client:
         raise ValueError("http_client and client_params['http_client'] name different transports")
     return http_client if http_client is not None else extra_client
+
+
+def with_schema_instruction(
+    messages: Sequence[BaseMessage], output_format: type[BaseModel]
+) -> list[BaseMessage]:
+    """*messages* with *output_format*'s schema written in as an instruction.
+
+    The instruction goes at the end of a leading system message, or into a
+    new one when there is none; the caller's messages are not modified.
+    """
+    schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+    instruction = (
+        "\n\nIMPORTANT: Respond with ONLY a valid JSON object matching this schema:\n"
+        + json.dumps(schema, indent=2)
+    )
+    first = messages[0] if messages else None
+    if not isinstance(first, SystemMessage):
+        return [SystemMessage(content=instruction.lstrip()), *messages]
+    content = (
+        first.content + instruction
+        if isinstance(first.content, str)
+        else [*first.content, ContentPartTextParam(text=instruction)]
+    )
+    return [first.model_copy(update={"content": content}), *messages[1:]]
 
 
 def message_reasoning(message: object) -> str | None:
@@ -157,6 +185,11 @@ class OpenAICompatBase(ChatModelBase):
     # Nothing in the repo ever set any of the four. If you are about to add
     # the fifth, read ``how_to_extend`` in the dialect-transforms section of
     # ``core/llm/schema/optimizer.py`` first.
+    #
+    # Writing the schema into the prompt does exist, as a rule rather than a
+    # knob: ``takes_schema_in_prompt`` answers from the model family
+    # (``ModelFamily.supports_json_schema``), and an endpoint states its own
+    # rule by overriding it or ``prompt_schema_response_format``.
 
     # --- Client params ---
     api_key: Annotated[
@@ -235,6 +268,30 @@ class OpenAICompatBase(ChatModelBase):
             "tools": OpenAIMessageSerializer.serialize_tools(tools),
             "tool_choice": tool_choice,
         }
+
+    def wire_messages(self, messages: Sequence[BaseMessage]) -> list[ChatCompletionMessageParam]:
+        """The request's ``messages``. Override to add an endpoint's own message fields."""
+        return OpenAIMessageSerializer.serialize_messages(messages)
+
+    # ------------------------------------------------------------------
+    # Structured output: which path, and what it sends
+    # ------------------------------------------------------------------
+    def takes_schema_in_prompt(self) -> bool:
+        """Whether structured output writes the schema into the prompt.
+
+        ``False``: the schema goes out as ``response_format: json_schema``.
+        ``True``: it is written into the system message as an instruction
+        (:func:`with_schema_instruction`), the request carries
+        :meth:`prompt_schema_response_format` instead, and the reply is
+        validated exactly as on the other path. The default reads the model
+        family (``ModelFamily.supports_json_schema``); an endpoint whose own
+        rule differs overrides this. Never a per-config switch.
+        """
+        return not self.model_family.supports_json_schema
+
+    def prompt_schema_response_format(self) -> ResponseFormatJSONObject | None:
+        """The ``response_format`` the prompt-schema path sends; ``None`` sends none."""
+        return None
 
     # ------------------------------------------------------------------
     # Client creation — default AsyncOpenAI, override for custom clients
@@ -374,7 +431,7 @@ class OpenAICompatBase(ChatModelBase):
         return None
 
     # ------------------------------------------------------------------
-    # Standard ainvoke — text + response_format structured output
+    # Standard ainvoke — text, and structured output on either path
     # ------------------------------------------------------------------
     async def standard_ainvoke(
         self,
@@ -385,8 +442,15 @@ class OpenAICompatBase(ChatModelBase):
         tools: Sequence[ToolDefinition] | None = None,
         tool_choice: ToolChoice = "auto",
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
-        """Standard OpenAI-compatible ainvoke with error handling."""
+        """Standard OpenAI-compatible ainvoke with error handling.
+
+        Structured output goes out as ``response_format: json_schema`` or,
+        where :meth:`takes_schema_in_prompt` says so, written into the system
+        message; the reply is validated the same way on both paths.
+        """
+        schema_in_prompt = False
         if output_format is not None:
+            schema_in_prompt = self.takes_schema_in_prompt()
             # OpenAI accepts `tools` alongside `response_format` on the wire, but
             # the two outcomes it then permits — structured JSON, or a tool call
             # with `content: null` — cannot both be returned from here:
@@ -398,57 +462,42 @@ class OpenAICompatBase(ChatModelBase):
             self.reject_unsupported_tools(
                 tools,
                 reason=(
-                    "structured output and tools cannot be combined: a tool-call "
+                    "its structured output writes the schema into the prompt with an "
+                    "instruction to reply with JSON only, which cannot also offer "
+                    "callable tools. Pass tools without output_format."
+                    if schema_in_prompt
+                    else "structured output and tools cannot be combined: a tool-call "
                     "reply carries no content, and ChatInvokeCompletion.completion "
                     "has no value that can represent it. Pass tools without "
                     "output_format."
                 ),
             )
-        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+            if schema_in_prompt:
+                messages = with_schema_instruction(messages, output_format)
+        openai_messages = self.wire_messages(messages)
         try:
             model_params = self.common_model_params()
             extra = {**(extra_kwargs or {}), **self.tool_kwargs(tools, tool_choice)}
+            response_format: ResponseFormatJSONSchema | ResponseFormatJSONObject | None = None
+            if output_format is not None:
+                response_format = (
+                    self.prompt_schema_response_format()
+                    if schema_in_prompt
+                    else self._json_schema_response_format(output_format)
+                )
+            if response_format is not None:
+                extra["response_format"] = response_format
 
+            async with self.request_client() as client:
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=openai_messages,
+                    **model_params,
+                    **extra,
+                )
             if output_format is None:
-                async with self.request_client() as client:
-                    response = await client.chat.completions.create(
-                        model=self.model,
-                        messages=openai_messages,
-                        **model_params,
-                        **extra,
-                    )
-                choice = response.choices[0] if response.choices else None
-                if choice is None:
-                    raise ModelProviderError(
-                        message="Invalid response: missing or empty `choices`.",
-                        status_code=502,
-                        model=self.name,
-                    )
-                if choice.finish_reason == "length":
-                    raise ModelOutputTruncatedError(
-                        model=self.name,
-                        stop_reason=choice.finish_reason,
-                        ceiling_field="max_completion_tokens",
-                        ceiling=self.max_completion_tokens,
-                        usage=self.get_usage(response),
-                        partial_output=choice.message.content,
-                    )
-                return ChatInvokeCompletion(
-                    completion=choice.message.content or "",
-                    thinking=message_reasoning(choice.message),
-                    usage=self.get_usage(response),
-                    stop_reason=choice.finish_reason,
-                    tool_calls=OpenAIMessageSerializer.parse_tool_calls(
-                        getattr(choice.message, "tool_calls", None)
-                    ),
-                )
-            else:
-                return await self._structured_response_format(
-                    openai_messages,
-                    output_format,
-                    model_params,
-                    extra,
-                )
+                return self._text_completion(response)
+            return self._structured_completion(response, output_format)
 
         except ModelProviderError:
             raise
@@ -463,16 +512,9 @@ class OpenAICompatBase(ChatModelBase):
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
 
-    # ------------------------------------------------------------------
-    # Structured output: response_format (shared by multiple providers)
-    # ------------------------------------------------------------------
-    async def _structured_response_format(
-        self,
-        openai_messages,
-        output_format: type[T],
-        model_params: dict,
-        extra_kwargs: dict,
-    ) -> ChatInvokeCompletion[T]:
+    def _json_schema_response_format(
+        self, output_format: type[BaseModel]
+    ) -> ResponseFormatJSONSchema:
         # Strict is only requested when the *compiled schema* can satisfy the
         # strict dialect. An open map (``dict[str, Any]``) compiles to an object
         # node with no ``properties``; asking for strict alongside it ships a
@@ -486,56 +528,79 @@ class OpenAICompatBase(ChatModelBase):
         # strict mode wants the opposite, so this is not unconditional.
         if self.model_family.schema_rejects_closed_union_branches:
             SchemaOptimizer.open_union_branches(schema)
-        response_format: JSONSchema = {
+        json_schema: JSONSchema = {
             "name": "agent_output",
             "strict": strict,
             "schema": schema,
         }
+        return ResponseFormatJSONSchema(json_schema=json_schema, type="json_schema")
 
-        async with self.request_client() as client:
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                response_format=ResponseFormatJSONSchema(
-                    json_schema=response_format, type="json_schema"
-                ),
-                **model_params,
-                **extra_kwargs,
-            )
+    def _refuse_unfinished(self, choice: Choice, usage: ModelInvokeUsage | None) -> None:
+        """Raise when the reply stopped before the model finished it.
 
-        choice = response.choices[0] if response.choices else None
-        if choice is None or choice.message.content is None:
-            raise ModelProviderError(
-                message="Failed to parse structured output", status_code=500, model=self.name
-            )
-
-        # Before the parse, not after: half-written JSON fails validation, and
-        # the resulting report would name the model's compliance instead of the
-        # budget. See ModelOutputTruncatedError for why this is its own type.
+        Before any parse, not after: half-written JSON fails validation, and
+        the resulting report would name the model's compliance instead of the
+        budget. See ``ModelOutputTruncatedError`` for why this is its own type.
+        """
         if choice.finish_reason == "length":
             raise ModelOutputTruncatedError(
                 model=self.name,
                 stop_reason=choice.finish_reason,
                 ceiling_field="max_completion_tokens",
                 ceiling=self.max_completion_tokens,
-                usage=self.get_usage(response),
+                usage=usage,
                 partial_output=choice.message.content,
+            )
+
+    def _text_completion(self, response: ChatCompletion) -> ChatInvokeCompletion[str]:
+        choice = response.choices[0] if response.choices else None
+        if choice is None:
+            raise ModelProviderError(
+                message="Invalid response: missing or empty `choices`.",
+                status_code=502,
+                model=self.name,
+            )
+        usage = self.get_usage(response)
+        self._refuse_unfinished(choice, usage)
+        return ChatInvokeCompletion(
+            completion=choice.message.content or "",
+            thinking=message_reasoning(choice.message),
+            usage=usage,
+            stop_reason=choice.finish_reason,
+            tool_calls=OpenAIMessageSerializer.parse_tool_calls(
+                getattr(choice.message, "tool_calls", None)
+            ),
+        )
+
+    def _structured_completion(
+        self, response: ChatCompletion, output_format: type[T]
+    ) -> ChatInvokeCompletion[T]:
+        choice = response.choices[0] if response.choices else None
+        if choice is None:
+            raise ModelProviderError(
+                message="Failed to parse structured output", status_code=500, model=self.name
+            )
+        usage = self.get_usage(response)
+        self._refuse_unfinished(choice, usage)
+        content = choice.message.content
+        if content is None:
+            raise ModelProviderError(
+                message="Failed to parse structured output", status_code=500, model=self.name
             )
 
         # No `tool_calls=` here: `standard_ainvoke` refuses tools on the
         # structured path, so a compliant provider cannot return any.
-        usage = self.get_usage(response)
         return ChatInvokeCompletion(
             # This base is what every OpenAI-compatible *gateway* goes
             # through, and a gateway is where a reply arrives fenced despite
             # `response_format` — the translation to some vendor's native API
-            # dropped it. Five other providers each unwrapped fences on their
-            # own and this one, the widest path, did not.
+            # dropped it. A schema written into the prompt has nothing on the
+            # wire to stop a fence either.
             completion=self.validate_structured(
                 output_format,
-                strip_code_fence(choice.message.content),
+                strip_code_fence(content),
                 usage=usage,
-                wire_text=choice.message.content,
+                wire_text=content,
             ),
             thinking=message_reasoning(choice.message),
             usage=usage,

@@ -1,20 +1,14 @@
 """ChatVercel — Vercel AI Gateway provider via OpenAI-compatible base."""
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
-from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
-from spectragent.core.llm.fences import strip_code_fence
-from spectragent.core.llm.messages import BaseMessage, SystemMessage
-from spectragent.core.llm.messages import ContentPartTextParam as MsgTextParam
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
-from spectragent.core.llm.schema.optimizer import SchemaOptimizer
-from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
@@ -23,7 +17,7 @@ T = TypeVar("T", bound=BaseModel)
 
 @dataclass
 class ChatVercel(OpenAICompatBase):
-    """Vercel AI Gateway provider — prompt-based JSON for some models."""
+    """Vercel AI Gateway provider — the schema goes in the prompt for some models."""
 
     __registry_key__ = "openai.vercel"
 
@@ -50,23 +44,19 @@ class ChatVercel(OpenAICompatBase):
             params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
 
-    def _vercel_needs_prompt_json(self) -> bool:
-        """Check if this Vercel model needs prompt-based JSON extraction.
+    def takes_schema_in_prompt(self) -> bool:
+        """The family's answer, plus two Vercel triggers of its own.
 
-        Answered by the declarative capability table (``detect_model_family``
-        already understands Vercel's ``vendor/model`` naming) instead of by
-        hand-rolled ``startswith("google/")`` / ``startswith("anthropic/")``
-        substring tests.
+        A Gemini model (its JSON-Schema dialect differs) and a model on the
+        provider's built-in reasoning list also take the schema in the prompt
+        behind this gateway. Both are this provider's long-standing routing,
+        kept as they were; neither was measured.
         """
-        family = self.model_family
-        needs_family_workaround = (
-            # Claude behind the OpenAI-compatible Vercel gateway has no
-            # native json_schema response_format.
-            not family.supports_json_schema
-            # Gemini speaks a different JSON-Schema dialect.
-            or family.schema_requires_gemini_fix
+        return (
+            super().takes_schema_in_prompt()
+            or self.model_family.schema_requires_gemini_fix
+            or self.is_listed_reasoning_model()
         )
-        return needs_family_workaround or self.is_listed_reasoning_model()
 
     @overload
     async def ainvoke(
@@ -102,95 +92,6 @@ class ChatVercel(OpenAICompatBase):
         extra_kwargs: dict[str, Any] = {}
         if self.provider_options:
             extra_kwargs["extra_body"] = {"providerOptions": self.provider_options}
-
-        try:
-            if output_format is None:
-                return await self.standard_ainvoke(
-                    messages, None, extra_kwargs, tools=tools, tool_choice=tool_choice
-                )
-
-            # Structured output: prompt-based for Google/Anthropic/reasoning models
-            if self._vercel_needs_prompt_json():
-                # This path tells the model to emit "ONLY a valid JSON object",
-                # which cannot coexist with offering it callable tools.
-                self.reject_unsupported_tools(
-                    tools,
-                    reason=(
-                        f"model={self.model!r} needs the prompt-JSON fallback behind "
-                        f"the Vercel gateway, which instructs the model to reply with "
-                        f"JSON only and so cannot also offer tools. Pass tools without "
-                        f"output_format, or pick a gateway model with native "
-                        f"json_schema support."
-                    ),
-                )
-                return await self._structured_vercel_prompt(messages, output_format, extra_kwargs)
-
-            # Default: response_format
-            return await self.standard_ainvoke(
-                messages, output_format, extra_kwargs, tools=tools, tool_choice=tool_choice
-            )
-
-        except ModelProviderError:
-            raise
-        except RateLimitError as e:
-            raise ModelRateLimitError(message=e.message, model=self.name) from e
-        except APIConnectionError as e:
-            raise ModelProviderError(message=str(e), model=self.name) from e
-        except APIStatusError as e:
-            raise ModelProviderError(
-                message=e.message, status_code=e.status_code, model=self.name
-            ) from e
-        except Exception as e:
-            raise ModelProviderError(message=str(e), model=self.name) from e
-
-    async def _structured_vercel_prompt(
-        self,
-        messages: Sequence[BaseMessage],
-        output_format: type[T],
-        extra_kwargs: dict[str, Any],
-    ) -> ChatInvokeCompletion[T]:
-
-        modified = [m.model_copy(deep=True) for m in messages]
-        schema = SchemaOptimizer.create_gemini_optimized_schema(output_format)
-        instruction = f"\n\nIMPORTANT: Respond with ONLY a valid JSON object matching this schema:\n{json.dumps(schema, indent=2)}"
-
-        added = False
-        if modified and modified[0].role == "system":
-            if isinstance(modified[0].content, str):
-                modified[0].content += instruction
-                added = True
-            elif isinstance(modified[0].content, list):
-                modified[0].content.append(MsgTextParam(text=instruction))
-                added = True
-        elif modified and modified[-1].role == "user" and isinstance(modified[-1].content, str):
-            modified[-1].content += instruction
-            added = True
-        if not added:
-            modified.insert(0, SystemMessage(content=instruction))
-
-        vercel_messages = OpenAIMessageSerializer.serialize_messages(modified)
-        model_params = self.common_model_params()
-        async with self.request_client() as client:
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=vercel_messages,
-                **model_params,
-                **extra_kwargs,
-            )
-        content = response.choices[0].message.content if response.choices else None
-        if not content:
-            raise ModelProviderError(
-                message="No response from model", status_code=500, model=self.name
-            )
-
-        text = strip_code_fence(content)
-
-        usage = self.get_usage(response)
-        return ChatInvokeCompletion(
-            completion=self.validate_structured(
-                output_format, text, usage=usage, wire_text=content
-            ),
-            thinking=message_reasoning(response.choices[0].message),
-            usage=usage,
-            stop_reason=response.choices[0].finish_reason if response.choices else None,
+        return await self.standard_ainvoke(
+            messages, output_format, extra_kwargs, tools=tools, tool_choice=tool_choice
         )

@@ -944,11 +944,11 @@ class TestStructuredOutputAndToolsConflict:
         with pytest.raises(ToolsUnsupportedError, match="json_schema response_format"):
             await chat.ainvoke([UserMessage(content="hi")], self._Out, tools=[_tool()])
 
-    async def test_vercel_prompt_json_path(self) -> None:
+    async def test_vercel_prompt_schema_path(self) -> None:
         from spectragent.core.llm.providers.openai_vercel import ChatVercel
 
         chat = ChatVercel(model="google/gemini-2.5-pro", api_key="test")
-        with pytest.raises(ToolsUnsupportedError, match="prompt-JSON fallback"):
+        with pytest.raises(ToolsUnsupportedError, match="schema into the prompt"):
             await chat.ainvoke([UserMessage(content="hi")], self._Out, tools=[_tool()])
 
     async def test_openai(self) -> None:
@@ -1003,7 +1003,7 @@ class TestStructuredOutputAndToolsConflict:
         from spectragent.core.llm.providers.openai_vercel import ChatVercel
 
         chat = ChatVercel(model="openai/gpt-4o", api_key="test")
-        assert chat._vercel_needs_prompt_json() is False
+        assert chat.takes_schema_in_prompt() is False
         with pytest.raises(ToolsUnsupportedError, match="no value that can represent it"):
             await chat.ainvoke([UserMessage(content="hi")], self._Out, tools=[_tool()])
 
