@@ -57,6 +57,9 @@ compromise or silently refresh the historical claim.
 - Earlier flywheel discussion, dated live experiments and heavy-handoff provenance,
   only when that history is needed: [flywheel-history.md](references/flywheel-history.md).
   Its old pending labels and temporary freezes are superseded, not active instructions.
+- What the lookahead collection rounds of 2026-10-21 to 2026-10-24 measured (fork
+  restoration by round and site, tokens, stability, open failures) and why the shipped
+  `configs/lookahead/` settings are what they are: [lookahead-rounds.md](references/lookahead-rounds.md)
 - The dated Jev/System One feasibility study and its historical registrar/attribution questions:
   [jev-system-one-study.md](references/jev-system-one-study.md)
 - Human–code-agent development rationale and implemented config explanation/template tooling:

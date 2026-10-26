@@ -1,0 +1,90 @@
+# Lookahead collection, step 1: record teacher runs together with their environment.
+# This is what the 2026-10-24 round ran (15 LexBench L1 tasks, 5 Chinese sites x 3).
+#
+# - Teacher: ui_tars (computer-use prompt) with deepseek-v4.1-flash-1017, reasoning high,
+#   through the DMX gateway. The lookahead judge has since moved to DeepSeek's official
+#   endpoint (judge_deepseek.yaml); the teacher's route for the next round is not decided.
+#   coordinate_space: screenshot_pixels, because this model mixed the 0-1000 grid with pixels.
+# - terminal_observation: true observes once more after the run, so the last action has a
+#   resulting screen.
+# - replayability: pinned fixes seed, clock (base_time: run_start), time zone, locale and
+#   device scale, so the run can be replayed offline; network_source: live records from the
+#   real network. Record on a fast network: a capture whose page had not loaded is left out
+#   of branching and export later.
+# - background_tabs: freeze freezes a tab the agent left (no timers, scripts or network
+#   callbacks until it comes back), which keeps sites with many tabs replayable;
+#   new_tabs: follow brings a tab the page opens to the front; screenshot_cursor draws the
+#   pointer on the model's image only.
+# - Archive: browser.network (WARC of every request), browser.storage, browser.dom_raw, and
+#   browser.frames (a frame before each action and one 1 s after each observation; labels
+#   only, the agent never sees them; lookahead stability compares them).
+# - Run at most three sites at once: five in parallel starved page downloads.
+# Paths are relative to the repository root. Copy configs/lookahead/*.yaml into a round's own
+# directory and replace tmp/lookahead/round with that directory (lookahead/README.md, "A
+# collection round"). The agent, LLM, memory and capability blocks must stay identical across
+# the record and branch configs: branching refuses a source whose prompt, observation
+# negotiation or action space differ from the branch run's.
+agent:
+- agent_id: ui_tars
+  id: main
+  prompt_template: computer_use
+  coordinate_space: screenshot_pixels
+  agent_loop:
+    loop_id: react
+    max_steps: 32
+    max_actions_per_step: 4
+    terminal_observation: true
+    parse_retries_per_step: 1
+  llm:
+    model_type: openai
+    provider: {name: direct}
+    model: deepseek-v4.1-flash-1017
+    base_url: https://www.dmxapi.cn/v1
+    reasoning_effort: high
+    temperature: null
+    frequency_penalty: null
+    max_completion_tokens: 32768
+    max_retries: 2
+    timeout: 300.0
+  memory: {memory_id: simple, max_messages: 80}
+environment:
+- env_type: browser
+  id: browser_env
+  capabilities:
+  - capability_id: browser
+    profile: standard
+    mouse_trajectory: {trajectory_type: instant}
+    typing_rhythm: {rhythm_type: instant}
+    replayability:
+      replayability_id: pinned
+      random_seed: 7
+      base_time: run_start
+      timezone: Asia/Shanghai
+      locale: zh-CN
+      device_scale_factor: 1.0
+    network_source: {source_id: live}
+    dom_cleaner: {cleaner_type: browser_use}
+    dom_serializer: {serializer_type: text}
+    backend:
+      provider_id: local_chrome
+      headless: true
+      lifetime: run
+      window_width: 1280
+      window_height: 860
+    viewport_width: 1280
+    viewport_height: 720
+    screenshot_format: png
+    screenshot_cursor: true
+    new_tabs: follow
+    background_tabs: freeze
+hook:
+- hook_id: trace_writer
+  trace_dir: tmp/lookahead/round/record
+  recording: {metrics: true, errors: true, trajectory: true, observations: true}
+  archive:
+  - archiver_id: browser.network
+  - archiver_id: browser.storage
+  - archiver_id: browser.dom_raw
+  - archiver_id: browser.frames
+    before_action: true
+    after_observation_delay_s: 1.0
