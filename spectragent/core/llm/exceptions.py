@@ -47,15 +47,18 @@ class StructuredOutputValidationError(ModelProviderError):
     phase.
 
     ``raw_output`` carries the reply as the *validator* saw it, so the
-    caller can put it back through the agent's own parser: the agent knows
-    the negotiated verb set and produces one located error, where the
-    provider can only report a schema mismatch.
+    caller can word the refusal from it: the Loop validates it against the
+    same output model and tells the model every mistake, located, in the
+    voice of its params check (``core/action_guard.py::reply_refusal``),
+    where this exception's message is pydantic's dump. The agent's parser
+    never sees the refused reply. A branch rereads it from the trace
+    (``CallFailure.raw_output``) and words the same refusal again.
 
     Deliberately not "as the model wrote it", which is what this said while
     being untrue on most paths: a provider unwraps a Markdown fence
     (``core/llm/fences.py``), and some trim surrounding prose or parse the
-    text to a dict, before validating. The unwrapped form is the one the
-    agent's parser wants, so it is the one kept here — and when it differs
+    text to a dict, before validating. The unwrapped form is the one that
+    was validated, so it is the one kept here — and when it differs
     from the wire text the provider says so in ``message``, because "fenced
     *and* the wrong shape" is the signature of a gateway that dropped
     ``response_format`` and would otherwise leave no trace of itself.

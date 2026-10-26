@@ -105,8 +105,9 @@ The shipped flywheel code gives each kind of new piece a precedent:
   recording component, and Runtime resolves identity and measures `execution_ms` once.
   `core/loops/restore/source.py::SourceRun` wraps trace reads with checkpoint-specific
   errors; it exposes no forwarding aliases for the shared reconstruction functions.
-  ReAct consumers use public `execute_step`, `cap_actions`, `remember_rejected` and
-  `remember_reply`, without accessing another class's private helpers.
+  ReAct consumers use public `execute_step`, `read_reply`, `cap_actions`,
+  `remember_rejected` and `remember_reply`, without accessing another class's private
+  helpers.
 
 ## 2. Configuring each stage
 
