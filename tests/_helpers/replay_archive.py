@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from spectragent.core.archive import ArchiveFile
 from spectragent.core.capabilities.browser.archive import NetworkArchiver
@@ -78,6 +78,7 @@ class RecordingScript:
         browser_defaults: BrowserDefaults | None = RECORDED_DEFAULTS,
         color_scheme: ColorScheme | None = "light",
         input_platform: InputPlatform | None = "macos",
+        background_tabs: Literal["run", "freeze"] = "run",
         config: TraceConfig | None = None,
         **archiver_knobs: Any,
     ) -> None:
@@ -104,6 +105,8 @@ class RecordingScript:
         self.launch_flags = list(launch_flags) if launch_flags is not None else ["--headless=new"]
         #: What the recording's browser fell back to (``None``: a recording that measured none).
         self.browser_defaults = browser_defaults
+        # What the recording says became of a tab the focus left (§4.14 "离开焦点的 tab").
+        self.background_tabs: Literal["run", "freeze"] = background_tabs
         self.input_platform: InputPlatform | None = input_platform
         self._plan = self.replayability.plan(
             t0_ms=t0_ms, browser_user_agent="ScriptedChrome/1.0", color_scheme=color_scheme
@@ -450,7 +453,7 @@ class RecordingScript:
                 session_metadata={"launch_flags": self.launch_flags},
                 archivers=[self.archiver],
                 fresh_profile=True,
-                background_tabs="run",
+                background_tabs=self.background_tabs,
                 initial_storage=StorageSeed(
                     canonical_json(BrowserStorageState().model_dump(mode="json")), "fresh"
                 ).fingerprint(),

@@ -313,6 +313,8 @@ def _recorded_run_of(
         launch_flags=planned_launch_flags(cap, cdp_url=None, injected_client=False),
         # What this host's browser falls back to (a recording measures it right after launch).
         browser_defaults=planned_browser_defaults(cap, cdp_url=None, injected_client=False),
+        # Recorded as the shipped configuration treats a tab the focus left.
+        background_tabs=cap.background_tabs,
     )
 
     async def _record() -> None:

@@ -55,6 +55,7 @@ environment:
           miss_policy: { miss_policy_id: strict }
         dom_cleaner: { cleaner_type: browser_use }
         dom_serializer: { serializer_type: text }
+        background_tabs: freeze           # a tab the agent left runs nothing until it returns; sites that open many tabs replay only with this. Same value when replaying or branching
         backend:
           provider_id: local_chrome
           headless: true
