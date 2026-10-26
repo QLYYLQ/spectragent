@@ -18,6 +18,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel): the branch sweep restoring every recording to its last step (`step_selector: last`, `continue_steps: 0`, `verify: warn`, two tasks per source) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
 | `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
 | `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
+| `lookahead/judge_deepseek.yaml` | The judge model of `python -m lookahead variants` and `judge-forks` (`--judge-config`): one `llm` layer, DeepSeek's official API — see `lookahead/README.md`, "The judge model" |
 
 ## Quick start
 

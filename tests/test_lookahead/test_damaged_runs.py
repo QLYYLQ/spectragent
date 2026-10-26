@@ -11,8 +11,9 @@ import pytest
 from lookahead import extract
 from lookahead.cli import run
 from lookahead.runs import open_runs
+from spectragent.core.llm.messages import BaseMessage
 from tests.test_lookahead.conftest import World
-from tests.test_lookahead.fake_judge import ScriptedTransport, answers, prompt_text
+from tests.test_lookahead.fake_judge import ScriptedChatModel, answers, loader, prompt_text
 
 
 @pytest.fixture
@@ -56,15 +57,15 @@ def test_stability_and_gold_skip_the_damaged_run(
 def test_forks_of_a_damaged_source_are_unpaired_with_the_reason(
     damaged: Path, tmp_path: Path
 ) -> None:
-    def script(request: dict) -> str:
-        if "Two runs of an agent" in prompt_text(request):
+    def script(messages: list[BaseMessage]) -> str:
+        if "Two runs of an agent" in prompt_text(messages):
             return answers(same_intent="yes")
         return answers(reasonable="yes", executed_as_intended="yes")
 
     out = tmp_path / "forks"
     code = run(
-        ["judge-forks", "--root", str(damaged), "--out", str(out)],
-        transport_factory=lambda: ScriptedTransport(script),
+        ["judge-forks", "--root", str(damaged), "--out", str(out), "--judge-config", "j.yaml"],
+        load_judge=loader(ScriptedChatModel(script)),
     )
     assert code == 0
     records = {

@@ -12,6 +12,8 @@ import pytest
 from lookahead.cli import run
 from lookahead.forks import (
     SOURCE_ONLY,
+    IntentJudgment,
+    QualityJudgment,
     compare_urls,
     forks,
     judge_forks,
@@ -19,11 +21,21 @@ from lookahead.forks import (
     rule_verdict,
     volatile_parameter,
 )
-from lookahead.judge import Judge, TransportError
+from lookahead.judge import Judge
 from lookahead.rows import ActionRow, NextObservation
 from lookahead.runs import open_runs
+from spectragent.core.llm.exceptions import ModelProviderError
+from spectragent.core.llm.messages import BaseMessage
 from tests.test_lookahead.conftest import TASK, VARIANT, VARIANT_TASK, World
-from tests.test_lookahead.fake_judge import ScriptedTransport, answers, images, prompt_text
+from tests.test_lookahead.fake_judge import (
+    ScriptedChatModel,
+    answers,
+    images,
+    judge_model,
+    loader,
+    prompt_text,
+    refuse_loader,
+)
 
 
 def _action(
@@ -219,21 +231,21 @@ def test_branches_are_paired_and_classified_by_their_recorded_facts(world: World
     assert unparsed.excluded == "no_decision" and "parse" in unparsed.reason
 
 
-def _intent_request(request: dict[str, Any]) -> bool:
-    return "Two runs of an agent" in prompt_text(request)
+def _intent_request(messages: list[BaseMessage]) -> bool:
+    return "Two runs of an agent" in prompt_text(messages)
 
 
-def _script(request: dict[str, Any]) -> str:
+def _script(messages: list[BaseMessage]) -> str:
     """Same intent unless run B typed; the branch alone is reasonable but not surely executed."""
-    text = prompt_text(request)
-    if _intent_request(request):
+    text = prompt_text(messages)
+    if _intent_request(messages):
         branch_action = next(line for line in text.splitlines() if line.startswith("B1. "))
         return answers(same_intent="no" if "browser.type" in branch_action else "yes")
     return answers(reasonable="yes", executed_as_intended="uncertain")
 
 
-def _judge_forks(world: World, tmp_path: Path, transport: ScriptedTransport):
-    judge = Judge(transport)
+def _judge_forks(world: World, tmp_path: Path, llm: ScriptedChatModel):
+    judge = Judge(judge_model(llm))
     return asyncio.run(
         judge_forks(
             open_runs(world.root),
@@ -248,8 +260,8 @@ def _judge_forks(world: World, tmp_path: Path, transport: ScriptedTransport):
 def test_judgments_keep_rules_model_answers_and_the_checkpoint_check(
     world: World, tmp_path: Path
 ) -> None:
-    transport = ScriptedTransport(_script)
-    records, queue_path = _judge_forks(world, tmp_path, transport)
+    llm = ScriptedChatModel(_script)
+    records, queue_path = _judge_forks(world, tmp_path, llm)
     by_run = {record["branch_run"]: record for record in records}
     same = by_run["branches/br-same"]
     assert same["status"] == "judged" and same["rule"]["verdict"] == "same"
@@ -270,30 +282,27 @@ def test_judgments_keep_rules_model_answers_and_the_checkpoint_check(
     assert by_run["branches/br-unparsed"]["status"] == "no_decision"
     assert by_run["branches/br-ended"]["status"] == "checkpoint_diverged"
     # two separate requests per same-task fork, one per variant fork
-    assert len(transport.requests) == 5
+    assert len(llm.calls) == 5
     assert queue_path is not None
 
 
 def test_quality_requests_carry_no_source_information(world: World, tmp_path: Path) -> None:
-    transport = ScriptedTransport(_script)
-    _judge_forks(world, tmp_path, transport)
-    intent = [request for request in transport.requests if _intent_request(request)]
-    quality = [request for request in transport.requests if not _intent_request(request)]
+    llm = ScriptedChatModel(_script)
+    _judge_forks(world, tmp_path, llm)
+    asked = list(zip(llm.calls, llm.formats, strict=True))
+    intent = [messages for messages, reply in asked if _intent_request(messages)]
+    quality = [messages for messages, reply in asked if not _intent_request(messages)]
     assert len(intent) == 2 and len(quality) == 3
-    for request in quality:
-        text = prompt_text(request)
+    assert {reply for messages, reply in asked if _intent_request(messages)} == {IntentJudgment}
+    assert {reply for messages, reply in asked if not _intent_request(messages)} == {
+        QualityJudgment
+    }
+    for messages in quality:
+        text = prompt_text(messages)
         assert "Thought: run the search." not in text  # the source's reply
         assert "S1." not in text and "Run A" not in text and "original" not in text
-        assert len(images(request)) == 2  # the checkpoint and the branch's next screen
-        assert set(
-            json.loads(json.dumps(request["response_format"]))["json_schema"]["schema"][
-                "properties"
-            ]
-        ) == {
-            "reasonable",
-            "executed_as_intended",
-        }
-    variant = next(request for request in quality if VARIANT_TASK in prompt_text(request))
+        assert len(images(messages)) == 2  # the checkpoint and the branch's next screen
+    variant = next(messages for messages in quality if VARIANT_TASK in prompt_text(messages))
     assert TASK not in prompt_text(variant)
     assert 'measured: Clicked at (10, 90) on link "Returns"' in prompt_text(variant)
     same = intent[0]
@@ -302,7 +311,7 @@ def test_quality_requests_carry_no_source_information(world: World, tmp_path: Pa
 
 
 def test_report_counts_only_judged_forks_and_lists_the_others(world: World, tmp_path: Path) -> None:
-    _judge_forks(world, tmp_path, ScriptedTransport(_script))
+    _judge_forks(world, tmp_path, ScriptedChatModel(_script))
     report = (tmp_path / "forks" / "report.md").read_text(encoding="utf-8")
     assert "Judged (paired, restored at the checkpoint, decided by the branch): 3" in report
     assert "The rules decide (same or different) 2/2 (100%) of the same-task forks" in report
@@ -318,7 +327,7 @@ def test_report_counts_only_judged_forks_and_lists_the_others(world: World, tmp_
 def test_queue_shows_source_information_only_for_the_intent_question(
     world: World, tmp_path: Path
 ) -> None:
-    _, path = _judge_forks(world, tmp_path, ScriptedTransport(_script))
+    _, path = _judge_forks(world, tmp_path, ScriptedChatModel(_script))
     assert path is not None
     queue = json.loads(path.read_text(encoding="utf-8"))
     label = queue["label"]
@@ -340,7 +349,7 @@ def test_queue_shows_source_information_only_for_the_intent_question(
         "executed_as_intended": "uncertain",
     }
     assert same["suggestion"]["reasons"]["same_intent"] == "same_intent is yes."
-    assert same["suggestion"]["source"] == "deepseek-v4.1-flash-1017"
+    assert same["suggestion"]["source"] == "fake-judge"
     assert queue["suggestion_display"] == {"title": "模型的判断（仅供参考）", "shown": "on_request"}
     assert queue["guide"] and all(question["help"] for question in label["questions"])
     shown = [
@@ -376,7 +385,7 @@ def test_queue_shows_source_information_only_for_the_intent_question(
 
 
 def test_a_fork_without_a_valid_reply_keeps_its_rule_verdict(world: World, tmp_path: Path) -> None:
-    records, path = _judge_forks(world, tmp_path, ScriptedTransport(lambda request: "{}"))
+    records, path = _judge_forks(world, tmp_path, ScriptedChatModel(lambda messages: "{}"))
     same = next(record for record in records if record["branch_run"] == "branches/br-same")
     assert same["status"] == "rules_only" and same["rule"]["verdict"] == "same"
     assert same["llm"] is None and same["llm_errors"]["quality"] is not None
@@ -386,13 +395,10 @@ def test_a_fork_without_a_valid_reply_keeps_its_rule_verdict(world: World, tmp_p
 
 
 def test_cli_rules_only_asks_no_model(world: World, tmp_path: Path) -> None:
-    def refuse() -> ScriptedTransport:
-        raise AssertionError("no model may be asked")
-
     out = tmp_path / "forks"
     code = run(
         ["judge-forks", "--root", str(world.root), "--out", str(out), "--rules-only"],
-        transport_factory=refuse,
+        load_judge=refuse_loader,
     )
     assert code == 0
     assert "No judge model was asked." in (out / "report.md").read_text(encoding="utf-8")
@@ -400,13 +406,20 @@ def test_cli_rules_only_asks_no_model(world: World, tmp_path: Path) -> None:
 
 
 def test_cli_reuses_earlier_answers_without_asking_a_model(world: World, tmp_path: Path) -> None:
-    def refuse() -> ScriptedTransport:
-        raise AssertionError("no model may be asked")
-
     first = tmp_path / "first"
     code = run(
-        ["judge-forks", "--root", str(world.root), "--out", str(first), "--queue-id", "f"],
-        transport_factory=lambda: ScriptedTransport(_script),
+        [
+            "judge-forks",
+            "--root",
+            str(world.root),
+            "--out",
+            str(first),
+            "--queue-id",
+            "f",
+            "--judge-config",
+            "judge.yaml",
+        ],
+        load_judge=loader(ScriptedChatModel(_script)),
     )
     assert code == 0
     again = tmp_path / "again"
@@ -422,7 +435,7 @@ def test_cli_reuses_earlier_answers_without_asking_a_model(world: World, tmp_pat
             "--answers-from",
             str(first / "judgments.jsonl"),
         ],
-        transport_factory=refuse,
+        load_judge=refuse_loader,
     )
     assert code == 0
     earlier = json.loads((first / "queues" / "f.json").read_text(encoding="utf-8"))
@@ -458,13 +471,29 @@ def test_answers_from_refuses_a_file_of_another_format(world: World, tmp_path: P
 
 
 def test_cli_with_a_judge_writes_calls_and_queue(world: World, tmp_path: Path) -> None:
-    transport = ScriptedTransport(_script)
+    llm = ScriptedChatModel(_script)
     out = tmp_path / "forks"
+    composed: list[Path] = []
+
+    def load(path: Path):
+        composed.append(path)
+        return judge_model(llm, path)
+
     code = run(
-        ["judge-forks", "--root", str(world.root), "--out", str(out), "--queue-id", "forks-x"],
-        transport_factory=lambda: transport,
+        [
+            "judge-forks",
+            "--root",
+            str(world.root),
+            "--out",
+            str(out),
+            "--queue-id",
+            "forks-x",
+            "--judge-config",
+            str(tmp_path / "judge.yaml"),
+        ],
+        load_judge=load,
     )
-    assert code == 0 and transport.closed
+    assert code == 0 and llm.closed == 1 and composed == [tmp_path / "judge.yaml"]
     assert (out / "queues" / "forks-x.json").is_file()
     assert len((out / "calls.jsonl").read_text(encoding="utf-8").splitlines()) == 5
 
@@ -472,14 +501,42 @@ def test_cli_with_a_judge_writes_calls_and_queue(world: World, tmp_path: Path) -
 def test_cli_stops_when_the_route_refuses_the_probe(
     world: World, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    transport = ScriptedTransport(
-        lambda request: TransportError("bad", status=400, body="response_format not supported")
+    llm = ScriptedChatModel(
+        lambda messages: ModelProviderError("response_format not supported", status_code=400)
     )
     out = tmp_path / "forks"
     code = run(
-        ["judge-forks", "--root", str(world.root), "--out", str(out)],
-        transport_factory=lambda: transport,
+        ["judge-forks", "--root", str(world.root), "--out", str(out), "--judge-config", "j.yaml"],
+        load_judge=loader(llm),
     )
-    assert code == 2 and len(transport.requests) == 1 and transport.closed
+    assert code == 2 and len(llm.calls) == 1 and llm.closed == 1
     assert "response_format not supported" in capsys.readouterr().err
     assert not (out / "judgments.jsonl").exists() and not (out / "report.md").exists()
+
+
+def test_cli_needs_a_judge_configuration_or_no_model(
+    world: World, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        run(["judge-forks", "--root", str(world.root), "--out", str(tmp_path / "out")])
+    assert exited.value.code == 2
+    assert "--judge-config" in capsys.readouterr().err
+
+
+def test_cli_refuses_a_judge_configuration_it_cannot_read(
+    world: World, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "forks"
+    code = run(
+        [
+            "judge-forks",
+            "--root",
+            str(world.root),
+            "--out",
+            str(out),
+            "--judge-config",
+            str(tmp_path / "absent.yaml"),
+        ]
+    )
+    assert code == 2 and "absent.yaml cannot be read" in capsys.readouterr().err
+    assert not out.exists()

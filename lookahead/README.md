@@ -191,10 +191,12 @@ and edit the file (delete an entry to keep a run, add one by hand).
 ```bash
 uv run python -m lookahead health --root $E/record --viewer-root $E --out $E/out/health
 uv run python -m lookahead variants --root $E/record --viewer-root $E \
-  --exclude-runs $E/out/health/exclusions.json ...
+  --exclude-runs $E/out/health/exclusions.json \
+  --judge-config configs/lookahead/judge_deepseek.yaml ...
 # branch configs: task_loader[trace_branches].exclude_runs: $E/out/health/exclusions.json
 uv run python -m lookahead judge-forks --root $E --viewer-root $E \
-  --exclude-runs $E/out/health/exclusions.json ...
+  --exclude-runs $E/out/health/exclusions.json \
+  --judge-config configs/lookahead/judge_deepseek.yaml ...
 ```
 
 What the framework does not state, and is derived here: how many of a step's
@@ -297,7 +299,7 @@ Outputs:
   observation draws its step's actions, the before-action frame the first
   action.
 
-## `variants --root DIR --steps-per-run N --per-step K --out FILE.json`
+## `variants --root DIR --steps-per-run N --per-step K --judge-config FILE.yaml --out FILE.json`
 
 Alternative tasks that start from exactly a recorded screen, for task-variant
 branches. In each `record` run, N checkpoints are taken from the middle of N
@@ -315,7 +317,7 @@ recorded run id), `step`, `variant_id` (`"1"` … `"K"` per checkpoint, so task
 ids read `…/s<step>/v1/b<i>`), `task_text`, `note` (the model, the step, and
 where the answer is found). Every judge call is in `FILE.calls.jsonl`.
 
-## `judge-forks --root DIR --out DIR2`
+## `judge-forks --root DIR --judge-config FILE.yaml --out DIR2`
 
 For every branch run: is its decision at the checkpoint the same as the
 source's, and is it sound? The branch's first policy step is paired with the
@@ -375,7 +377,9 @@ item, the source run's actions at the checkpoint in a second colour
 (`marks_from`); the next screens draw none. A task-variant item shows nothing
 of the source run; a same-task item shows the source's actions and next
 screen only in fields and images marked （只用于“意图相同”）, the rule verdict
-among the technical details. `--rules-only` asks no model and writes no
+among the technical details. The command takes exactly one of
+`--judge-config` (ask the model), `--rules-only` and `--answers-from`; the
+last two need no configuration file. `--rules-only` asks no model and writes no
 queue. `--answers-from <judgments.jsonl>` asks no model either: it takes the
 model answers an earlier `judge-forks` run wrote (matched by branch run id
 and checkpoint) and writes the queue with them, so a queue can be rebuilt
@@ -414,27 +418,65 @@ counts the items by site, action type and run.
 
 ## The judge model
 
-`variants` and `judge-forks` call `--model` (default
-`deepseek-v4.1-flash-1017`) with `reasoning_effort` `--reasoning-effort`
-(default `high`) and `max_completion_tokens` `--max-completion-tokens`
-(default 8192) through the OpenAI-protocol gateway named by `OPENAI_BASE_URL`
-and `OPENAI_API_KEY`, with the `openai` SDK, `--concurrency` requests at once
-(default 4). Images are sent as base64 data URLs.
+`variants` and `judge-forks` ask the chat model that `--judge-config
+FILE.yaml` composes, `--concurrency` requests at once (default 4). The file
+holds one `llm` layer and nothing else (any other layer is refused); it is
+composed by spectragent's `ConfigComposer`, the one way every model in the
+framework is built (`docs/architecture_design.md` §4.7), so every provider
+and knob of `core/llm` is available, and the model's client is released when
+the command ends. `configs/lookahead/judge_deepseek.yaml` is DeepSeek's
+official API (`provider: {name: deepseek}`, `model: deepseek-flash`,
+`reasoning_effort: high`, `max_completion_tokens: 16384`, `max_retries: 5`,
+`timeout: 300`); its comments give the token counts the budget was chosen
+from. Its `api_key` is left out, so the OpenAI client reads `OPENAI_API_KEY`
+from the environment: give it DeepSeek's key for the command, or write
+`api_key` into a copy kept out of git. `--rules-only` and `--answers-from`
+need no configuration.
 
-Every request asks for strict JSON (`response_format` `json_schema`, strict).
-The schema sent leaves out what strict mode refuses (`minLength`, `minItems`,
-`pattern`, titles, defaults …); the pydantic models keep those constraints and
-validate every reply, since an HTTP 200 is no proof the schema was honoured. A
-refused reply is asked again at most twice, each time saying why.
+Each request goes through the chat Protocol's `ainvoke` with the reply's
+pydantic model as `output_format`. The provider sends the schema the way its
+route accepts it (DeepSeek has no `json_schema` response format, so the
+schema goes into the system message with `json_object`), removes a code
+fence and validates the reply against that model, the variants' own checks
+(count, distinct, not the source task, same script) included; an HTTP 200 is
+no proof the schema was honoured. A refused reply is asked again at most
+twice: the reply goes back as the assistant's turn, followed by "That reply
+was refused: <reason>. Reply again with only the JSON object the schema
+describes, nothing else.", the reason being pydantic's errors with their
+locations.
 
-A call that returns no reply is retried after an exponential, jittered pause
-(2 s doubling to at most 60 s, five times) when it is a rate limit (429), a
-server error (5xx) or a lost connection; any other 4xx is not retried. The
-first request is sent alone as a probe: when the route refuses it that way,
-the command stops with the status and the gateway's message, before sending
-anything else and before writing any output.
+A call that returns no reply is retried by the provider's SDK
+(`max_retries`; the OpenAI client pauses 0.5 s doubling to at most 8 s, or
+as long as the server's `Retry-After` says) when it is a rate limit (429), a
+server error (5xx) or a lost connection; what still fails then fails only its
+request. So does a reply cut at the token ceiling or stopped by the server
+(DeepSeek's `insufficient_system_resource` / `aborted`): it is recorded and
+not asked again, since the budget and the server would be the same. The first
+request is sent alone as a probe: when it gets no reply at all — the route
+refuses it (a wrong model id, a bad key), a rate limit or server error
+outlasts the SDK's retries, or the client cannot be built (no API key in the
+environment) — the command stops with the status, the provider's message and
+the configuration file, before sending anything else and before writing any
+output. A reply that was refused by validation, cut at the token ceiling or
+stopped by the server is an answer from the route, so the batch goes on.
 
-Every call is recorded (`calls.jsonl`): model, parameters, latency, usage
-(reasoning tokens included), the raw reply, the HTTP status of a failure,
-whether a code fence had to be removed, and why a reply was refused. The
-totals are printed at the end.
+Every call is recorded in `calls.jsonl` (`FILE.calls.jsonl` for `variants`),
+one JSON object per `ainvoke`, in the order the calls finished:
+
+| field | meaning |
+|---|---|
+| `call_id`, `purpose`, `item`, `attempt` | the call (`<purpose>-<n>`), what it asks about, the run and step it concerns, 0 for the first ask and 1, 2 for the re-asks |
+| `model`, `config` | the model id, and the composed `llm` entry redacted as a trace records it: numbers and closed choices as set, `null` for what was not set, `<omitted>` for a free-form string that was (the model id in it, a key, a base URL) |
+| `prompt_sha256`, `prompt_text`, `images` | a digest of the judge's messages (images included, the provider's schema instruction not), their text on the first attempt only, and which run and step each image is |
+| `started_at`, `latency_ms` | when the call started (epoch seconds) and how long it took, SDK retries included |
+| `usage` | the provider's `ModelInvokeUsage`: `prompt_tokens`, `prompt_cached_tokens`, `completion_tokens`, `completion_reasoning_tokens` (`null`: not reported), `total_tokens` |
+| `stop_reason`, `thinking` | the reply's finish reason, and the reasoning the response carried beside it |
+| `reply`, `raw_output` | the validated reply; or the text the validator refused, or what a cut reply had written |
+| `error_kind`, `error_type`, `status`, `error` | why there is no valid reply: `validation` (with the reason sent back to the model), `truncated`, `interrupted` or `call` (a failed call, with its status code: the HTTP status the route answered, 429 for a rate limit, 502 when no answer came); the exception's class; the detail |
+| `valid` | whether the reply validated |
+
+The totals are printed at the end (and written into `judge-forks`'
+`report.md`): requests and those without a valid reply; calls, valid ones,
+refused ones, failed ones (cut at the ceiling, stopped by the server);
+prompt, completion and reasoning tokens, with the calls whose usage stated
+no reasoning count and those without usage; summed latency and wall time.

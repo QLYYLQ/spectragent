@@ -10,21 +10,13 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from lookahead.judge import (
-    DEFAULT_MAX_COMPLETION_TOKENS,
-    DEFAULT_MODEL,
-    DEFAULT_REASONING_EFFORT,
-    ChatTransport,
-    Judge,
-    JudgeConfigurationError,
-    JudgeRouteError,
-    OpenAITransport,
-)
+from lookahead.judge import Judge, JudgeModel, JudgeRouteError, load_judge_model
 from lookahead.queues import default_queue_id
 from lookahead.runs import LookaheadInputError, RunSet, open_runs
 from lookahead.stability import DEFAULT_MIN_CHANGE_AREA
+from spectragent.core.llm.lifecycle import model_session
 
-TransportFactory = Callable[[], ChatTransport]
+JudgeLoader = Callable[[Path], JudgeModel]
 
 
 def _common(parser: argparse.ArgumentParser, *, exclusions: bool = True) -> None:
@@ -61,19 +53,12 @@ def _queue(parser: argparse.ArgumentParser, prefix: str) -> None:
     )
 
 
-def _judge_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Judge model id.")
-    parser.add_argument(
-        "--reasoning-effort",
-        default=DEFAULT_REASONING_EFFORT,
-        help="reasoning_effort sent with every request.",
-    )
-    parser.add_argument(
-        "--max-completion-tokens",
-        type=int,
-        default=DEFAULT_MAX_COMPLETION_TOKENS,
-        help=f"max_completion_tokens of every request (default {DEFAULT_MAX_COMPLETION_TOKENS}).",
-    )
+JUDGE_CONFIG_HELP = (
+    "YAML file holding one llm layer: the judge model (e.g. configs/lookahead/judge_deepseek.yaml)."
+)
+
+
+def _concurrency(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--concurrency", type=int, default=4, help="Requests in flight at once (default 4)."
     )
@@ -134,7 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     variants.add_argument(
         "--out", type=Path, required=True, help="task-variants-1 JSON file to write."
     )
-    _judge_options(variants)
+    variants.add_argument("--judge-config", type=Path, required=True, help=JUDGE_CONFIG_HELP)
+    _concurrency(variants)
 
     forks = commands.add_parser(
         "judge-forks", help="Judge every branch's decision at its checkpoint, by rules and model."
@@ -142,8 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
     _common(forks)
     forks.add_argument("--out", type=Path, required=True, help="Output directory.")
     _queue(forks, "fork-judge")
-    _judge_options(forks)
-    reuse = forks.add_mutually_exclusive_group()
+    _concurrency(forks)
+    # Exactly one: ask the model, apply the rules only, or reuse earlier answers.
+    reuse = forks.add_mutually_exclusive_group(required=True)
+    reuse.add_argument("--judge-config", type=Path, default=None, help=JUDGE_CONFIG_HELP)
     reuse.add_argument(
         "--rules-only",
         action="store_true",
@@ -177,39 +165,32 @@ def _print_skipped(runs: RunSet) -> None:
 
 async def _with_judge(
     args: argparse.Namespace,
-    transport_factory: TransportFactory,
+    judge_model: JudgeModel | None,
     log_path: Path,
     work: Callable[[Judge], Any],
 ) -> tuple[Any, Judge]:
-    transport = transport_factory()
-    judge = Judge(
-        transport,
-        model=args.model,
-        reasoning_effort=args.reasoning_effort or None,
-        max_completion_tokens=args.max_completion_tokens,
-        concurrency=args.concurrency,
-        log_path=log_path,
-    )
-    try:
+    assert judge_model is not None, "argparse requires --judge-config for this command"
+    async with model_session(judge_model.llm):
+        judge = Judge(judge_model, concurrency=args.concurrency, log_path=log_path)
         return await work(judge), judge
-    finally:
-        await transport.close()
 
 
-def run(
-    argv: Sequence[str] | None = None, *, transport_factory: TransportFactory | None = None
-) -> int:
-    """Run one command; the exit status. *transport_factory* replaces the gateway (tests)."""
+def run(argv: Sequence[str] | None = None, *, load_judge: JudgeLoader = load_judge_model) -> int:
+    """Run one command; the exit status. *load_judge* replaces the model's composition (tests)."""
     args = build_parser().parse_args(argv)
-    factory = transport_factory or OpenAITransport.from_environment
+    judge_config: Path | None = getattr(args, "judge_config", None)
     try:
+        # Before the runs are read, so a bad file fails at once. Composing opens
+        # no connection; the client opens at the first request, inside the
+        # model session that releases it.
+        judge_model = load_judge(judge_config) if judge_config is not None else None
         runs = open_runs(args.root, args.viewer_root, getattr(args, "exclude_runs", None))
     except LookaheadInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        code = _dispatch(args, runs, factory)
-    except (LookaheadInputError, JudgeConfigurationError, JudgeRouteError, ValueError) as exc:
+        code = _dispatch(args, runs, judge_model)
+    except (LookaheadInputError, JudgeRouteError, ValueError) as exc:
         _print_skipped(runs)
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -217,7 +198,7 @@ def run(
     return code
 
 
-def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory) -> int:
+def _dispatch(args: argparse.Namespace, runs: RunSet, judge_model: JudgeModel | None) -> int:
     if args.command == "health":
         from lookahead.health import EXCLUSIONS_NAME, run_health
 
@@ -263,7 +244,7 @@ def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory)
         summary, judge = asyncio.run(
             _with_judge(
                 args,
-                factory,
+                judge_model,
                 calls_path(args.out),
                 lambda judge: generate(
                     runs,
@@ -314,7 +295,7 @@ def _dispatch(args: argparse.Namespace, runs: RunSet, factory: TransportFactory)
         (records, queue), judge = asyncio.run(
             _with_judge(
                 args,
-                factory,
+                judge_model,
                 args.out / "calls.jsonl",
                 lambda judge: judge_forks(
                     runs, judge, args.out, annotations=annotations, queue_id=queue_id

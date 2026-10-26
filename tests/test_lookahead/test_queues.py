@@ -19,15 +19,16 @@ from spectragent.annotation import (
     ObservationImage,
     Region,
 )
+from spectragent.core.llm.messages import BaseMessage
 from spectragent.inspection import open_repository
 from tests.test_lookahead.conftest import World
-from tests.test_lookahead.fake_judge import ScriptedTransport, answers, prompt_text
+from tests.test_lookahead.fake_judge import ScriptedChatModel, answers, loader, prompt_text
 
 FRAME_NAME = re.compile(r"frame-\d+-(before-\d+|after)\.png")
 
 
-def _judge(request: dict) -> str:
-    if "same_intent" in prompt_text(request):
+def _judge(messages: list[BaseMessage]) -> str:
+    if "same_intent" in prompt_text(messages):
         return answers(same_intent="yes", reasonable="yes", executed_as_intended="no")
     return answers(reasonable="no", executed_as_intended="uncertain")
 
@@ -39,10 +40,9 @@ def annotation_dir(world: World, tmp_path: Path) -> Path:
     common = ["--root", str(world.root), "--annotations", str(directory)]
     assert run(["stability", *common, "--out", str(tmp_path / "stability")]) == 0
     assert run(["gold-queue", *common, "--out", str(tmp_path / "gold"), "--n", "50"]) == 0
-    transport = ScriptedTransport(_judge)
     code = run(
-        ["judge-forks", *common, "--out", str(tmp_path / "forks")],
-        transport_factory=lambda: transport,
+        ["judge-forks", *common, "--out", str(tmp_path / "forks"), "--judge-config", "j.yaml"],
+        load_judge=loader(ScriptedChatModel(_judge)),
     )
     assert code == 0
     return directory
