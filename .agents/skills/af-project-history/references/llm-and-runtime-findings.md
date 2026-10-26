@@ -30,6 +30,26 @@ Do not repeat the obsolete claim that `ReactLoop` always passes
 `output_format=None`; current code wires the output model. Use the current
 `af-add-an-llm-provider` skill and reality harness for a new diagnosis.
 
+User rulings of 2026-10-26, after DeepSeek's official API was probed (facts in
+the provider guide §11):
+
+- A model family without `json_schema` takes the schema in the prompt through
+  `OpenAICompatBase` (`takes_schema_in_prompt`); Vercel's own copy of that path was
+  folded into the base. `DeepSeekFamily.supports_json_schema` is `False`, so a
+  `deepseek-*` model behind a gateway no longer sends `json_schema` either: a gateway
+  may silently drop the field, and the prompt plus validation does not depend on it.
+- `core/llm` validates and raises; it never re-asks. Re-asking belongs to the
+  consumer: ReAct's parse retries for agents, the lookahead judge's own loop for
+  offline judging.
+- A structured reply that does not fit its output model is worded by the framework
+  (`core/action_guard.py::reply_refusal`), in the voice of the params refusal; the
+  agent's parser reads only validated replies. Rejected alternatives: validating in
+  the Loop instead of the provider (only the provider knows how the reply crossed the
+  wire), and putting it in the base Loop (only ReAct has output models).
+- The lookahead judge composes its model from YAML through `core/llm`
+  (`configs/lookahead/judge_deepseek.yaml`); it had bypassed the framework with no
+  recorded reason.
+
 ## Prompt-cache and usage accounting
 
 The 2026 survey found that cache support cannot safely be modeled by provider family
