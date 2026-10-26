@@ -555,6 +555,15 @@ Everything else still counts: URL, element signatures, document misses, action o
 every pixel outside the masked boxes. A player drawn on a `<canvas>` has no box in the media
 facts and is not masked. A run with `network_source: live` has no rule set.
 
+The same declarations serve the review of recorded runs: `lookahead stability
+--media-areas configs/replay_rules` (`lookahead/README.md`) loads this rule set as a replay
+does, with the same validation and digest, and on a page a rule declares masks the boxes
+measured on the observation's screenshot out of the observation and of each later frame
+before comparing them, with the same masking code and 75% limit
+(`spectragent/core/capabilities/browser/media_mask.py`). Its report also lists, by host and
+path, the observations whose playing media changed on pages no rule declares: leads for a
+new declaration, which still needs the restoration evidence described below.
+
 | Key | Type | Meaning |
 |---|---|---|
 | `id` | string | Rule identity, unique within the whole set (request and page-URL rules included). |
