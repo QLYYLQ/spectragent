@@ -1,0 +1,100 @@
+# Lookahead collection, step 2b: same page, different task. `lookahead variants` asks the
+# judge model for alternative tasks starting from recorded screens and writes the variants
+# file; every checkpoint it lists (selector all, one branch each) is restored and the teacher
+# decides under the variant task. history_source: restored rebuilds the history from what
+# restoration actually observed and did, because the source prompt carries the source task
+# (source history is refused with task variants). Everything else as branch_same_task.yaml.
+# Paths are relative to the repository root. Copy configs/lookahead/*.yaml into a round's own
+# directory and replace tmp/lookahead/round with that directory (lookahead/README.md, "A
+# collection round"). The agent, LLM, memory and capability blocks must stay identical across
+# the record and branch configs: branching refuses a source whose prompt, observation
+# negotiation or action space differ from the branch run's.
+agent:
+- agent_id: ui_tars
+  id: main
+  prompt_template: computer_use
+  coordinate_space: screenshot_pixels
+  agent_loop:
+    loop_id: branch
+    max_steps: 32
+    max_actions_per_step: 4
+    parse_retries_per_step: 1
+    continue_steps: 0
+    history_source: restored
+    restorer:
+      restorer_id: prefix_replay
+      verify: warn
+      screenshot_max_distance: 5
+      pace: recorded_llm_latency
+      media: align
+  llm:
+    model_type: openai
+    provider: {name: direct}
+    model: deepseek-v4.1-flash-1017
+    base_url: https://www.dmxapi.cn/v1
+    reasoning_effort: high
+    temperature: null
+    frequency_penalty: null
+    max_completion_tokens: 32768
+    max_retries: 2
+    timeout: 300.0
+  memory: {memory_id: simple, max_messages: 80}
+environment:
+- env_type: browser
+  id: browser_env
+  capabilities:
+  - capability_id: browser
+    profile: standard
+    mouse_trajectory: {trajectory_type: instant}
+    typing_rhythm: {rhythm_type: instant}
+    replayability:
+      replayability_id: pinned
+      random_seed: 7
+      base_time: from_archive
+      timezone: Asia/Shanghai
+      locale: zh-CN
+      device_scale_factor: 1.0
+    network_source:
+      source_id: archive
+      isolation: required
+      log_mode: full
+      matcher:
+        levels: [exact, normalized]
+        site_rules: configs/replay_rules
+      miss_policy: {miss_policy_id: strict}
+    dom_cleaner: {cleaner_type: browser_use}
+    dom_serializer: {serializer_type: text}
+    retarget_tolerance_px: 2.0
+    backend:
+      provider_id: local_chrome
+      headless: true
+      lifetime: run
+      window_width: 1280
+      window_height: 860
+    viewport_width: 1280
+    viewport_height: 720
+    screenshot_format: png
+    screenshot_cursor: true
+    new_tabs: follow
+    background_tabs: freeze
+hook:
+- hook_id: trace_writer
+  trace_dir: tmp/lookahead/round/branch_task_variants
+  recording: {metrics: true, errors: true, trajectory: true, observations: true}
+  archive:
+  - archiver_id: browser.replay_log
+  - archiver_id: browser.storage
+  - archiver_id: browser.dom_raw
+  - archiver_id: browser.frames
+    before_action: true
+    after_observation_delay_s: 1.0
+task_loader:
+- benchmark_name: trace_branches
+  data_dir: tmp/lookahead/round/record
+  exclude_runs: tmp/lookahead/round/out/health/exclusions.json
+  branches_per_step: 1
+  agent_outcome: any
+  on_unbranchable: skip
+  exclude_unloaded_checkpoints: true
+  step_selector: {selector_id: all}
+  task_variants: tmp/lookahead/round/variants/variants.json
