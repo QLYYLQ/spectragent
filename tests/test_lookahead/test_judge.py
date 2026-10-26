@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
+import httpx
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,12 +23,14 @@ from lookahead.judge import (
     text_part,
 )
 from lookahead.runs import LookaheadInputError
+from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.exceptions import (
     ModelGenerationInterruptedError,
     ModelOutputTruncatedError,
     ModelProviderError,
     ModelRateLimitError,
 )
+from spectragent.core.llm.lifecycle import model_session
 from spectragent.core.llm.messages import (
     AssistantMessage,
     BaseMessage,
@@ -159,6 +162,63 @@ def test_an_empty_reply_is_named_as_such() -> None:
     replies = iter(["", GOOD])
     outcome = _ask(_judge(ScriptedChatModel(lambda messages: next(replies))), _request())
     assert outcome.attempts[0].error == "the reply is empty"
+
+
+@pytest.mark.parametrize("empty_attempts", [1, 3], ids=["corrected", "budget_exhausted"])
+async def test_deepseek_null_probe_keeps_usage_and_does_not_stop_the_batch(
+    tmp_path: Path, empty_attempts: int
+) -> None:
+    replies = iter([None] * empty_attempts + [GOOD, GOOD])
+    requests: list[dict] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "test-reply",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "deepseek-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": next(replies)},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "completion_tokens_details": {"reasoning_tokens": 5},
+                },
+            },
+        )
+
+    log = tmp_path / "calls.jsonl"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        llm = ChatDeepSeek(model="deepseek-flash", api_key="stub", max_retries=0, http_client=http)
+        async with model_session(llm):
+            # Direct Python construction does not need the Protocol's pydantic schema hook.
+            model = JudgeModel(llm=cast(BaseChatModel, llm), source=SHIPPED, config={})
+            judge = Judge(model, log_path=log)
+            first, second = await judge.ask_all([_request("first"), _request("second")])
+
+    assert (first.value is not None) == (empty_attempts == 1)
+    assert first.failed_call is None and second.value is not None
+    assert len(first.attempts) == (2 if empty_attempts == 1 else 3)
+    for record in first.attempts[:empty_attempts]:
+        assert record.error_kind == "validation" and record.error == "the reply is empty"
+        assert record.raw_output == "" and record.usage == USAGE
+    assert requests[1]["messages"][-2] == {"role": "assistant", "content": ""}
+    assert "the reply is empty" in requests[1]["messages"][-1]["content"]
+    assert len(requests) == len(first.attempts) + 1
+    assert judge.totals.failed_calls == judge.totals.calls_without_usage == 0
+    assert judge.totals.completion_tokens == 20 * len(requests)
+    assert judge.totals.reasoning_tokens == 5 * len(requests)
+    saved = [CallRecord.model_validate_json(line) for line in log.read_text().splitlines()]
+    assert saved == [*first.attempts, *second.attempts]
 
 
 @pytest.mark.parametrize(

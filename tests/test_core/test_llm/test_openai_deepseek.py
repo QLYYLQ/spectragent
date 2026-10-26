@@ -25,8 +25,10 @@ from spectragent.core.actions.action_union import action_union
 from spectragent.core.llm.exceptions import (
     ModelGenerationInterruptedError,
     ModelOutputTruncatedError,
+    ModelProviderError,
     StructuredOutputValidationError,
 )
+from spectragent.core.llm.lifecycle import model_session
 from spectragent.core.llm.messages import (
     AssistantMessage,
     BaseMessage,
@@ -255,17 +257,60 @@ class TestTheOppositeHoldsElsewhere:
         assert '"browser.click"' in _system_text(wire.body)
 
 
+class TestEmptyStructuredReplies:
+    @pytest.mark.parametrize(
+        ("provider", "model"), [(ChatDeepSeek, "deepseek-flash"), (ChatOpenAI, "gpt-4o")]
+    )
+    @pytest.mark.parametrize("content", [None, ""])
+    async def test_empty_completed_replies_keep_usage_for_consumer_retries(
+        self, provider: type[ChatDeepSeek] | type[ChatOpenAI], model: str, content: str | None
+    ) -> None:
+        wire = _Wire(content)
+        async with wire.client() as http:
+            chat = provider(model=model, api_key="stub", max_retries=0, http_client=http)
+            async with model_session(chat):
+                with pytest.raises(StructuredOutputValidationError) as caught:
+                    await chat.ainvoke(_PROMPT, _agent_output())
+
+        error = caught.value
+        assert error.raw_output == "" and error.status_code == 422
+        assert error.usage is not None
+        assert error.usage.total_tokens == 52
+        assert error.usage.completion_reasoning_tokens == 31
+        assert len(wire.requests) == 1  # The consumer, not the provider, decides to re-ask.
+
+    @pytest.mark.parametrize("reason", ["content_filter", "refusal", "tool_calls"])
+    async def test_a_null_reply_with_another_outcome_is_still_a_provider_failure(
+        self, reason: str
+    ) -> None:
+        wire = _Wire(None)
+        choice: Any = wire.answer["choices"][0]
+        if reason == "refusal":
+            choice["message"]["refusal"] = "I cannot answer this request."
+        else:
+            choice["finish_reason"] = reason
+        async with wire.client() as http:
+            chat = ChatDeepSeek(model="deepseek-flash", api_key="stub", http_client=http)
+            async with model_session(chat):
+                with pytest.raises(ModelProviderError) as caught:
+                    await chat.ainvoke(_PROMPT, _agent_output())
+        assert type(caught.value) is ModelProviderError
+
+
 class TestFinishReasons:
+    @pytest.mark.parametrize("content", [None, '{"memory": "half'])
     @pytest.mark.parametrize("structured", [False, True], ids=["text", "structured"])
-    async def test_length_is_the_ceiling_not_the_schema(self, structured: bool) -> None:
-        wire = _Wire('{"memory": "half', finish_reason="length")
+    async def test_length_is_the_ceiling_not_the_schema(
+        self, structured: bool, content: str | None
+    ) -> None:
+        wire = _Wire(content, finish_reason="length")
         chat = _deepseek(wire, max_completion_tokens=40)
         with pytest.raises(ModelOutputTruncatedError) as caught:
             await chat.ainvoke(_PROMPT, _agent_output() if structured else None)
 
         # The knob a user raises, even though the wire field is ``max_tokens``.
         assert (caught.value.ceiling_field, caught.value.ceiling) == ("max_completion_tokens", 40)
-        assert caught.value.partial_output == '{"memory": "half'
+        assert caught.value.partial_output == content
         assert caught.value.usage is not None
 
     @pytest.mark.parametrize("reason", ["insufficient_system_resource", "aborted"])

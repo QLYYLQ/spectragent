@@ -602,10 +602,16 @@ class OpenAICompatBase(ChatModelBase):
         usage = self.get_usage(response)
         self._refuse_unfinished(choice, usage)
         content = choice.message.content
-        if content is None:
+        if content is None and (
+            choice.finish_reason != "stop" or choice.message.refusal or choice.message.tool_calls
+        ):
             raise ModelProviderError(
                 message="Failed to parse structured output", status_code=500, model=self.name
             )
+        # A normally completed null reply is empty text to validate, not a
+        # failed call. Keep its usage and let the consumer's retry budget
+        # handle it just like an empty string. Other outcomes stay distinct.
+        content = content or ""
 
         # No `tool_calls=` here: `standard_ainvoke` refuses tools on the
         # structured path, so a compliant provider cannot return any.
