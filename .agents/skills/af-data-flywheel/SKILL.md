@@ -19,3 +19,8 @@ The mechanics this guide points to live in sibling skills: `af-add-a-receptor` (
 
 For recording/replay diagnosis, scoped URL/API rule proposals and baseline/candidate
 validation, use [af-improve-replay-rules](../af-improve-replay-rules/SKILL.md).
+
+To run an actual collection round (record teacher runs, branch them into same-task and
+variant-task forks, build the review queues, label in the viewer), start from
+`lookahead/README.md` "A collection round" and the shipped `configs/lookahead/` files; what the
+earlier rounds measured is in `af-project-history/references/lookahead-rounds.md`.

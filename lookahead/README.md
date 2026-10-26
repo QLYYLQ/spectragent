@@ -12,6 +12,76 @@ browser package's readers. It never writes inside a run.
 uv run python -m lookahead <command> --help
 ```
 
+## A collection round
+
+One round records a few teacher runs live, multiplies them offline by branching, then builds
+review queues. The configurations the 2026-10-24 round ran are shipped in `configs/lookahead/`
+with paths relative to the repository root; each file's header explains its settings.
+
+| File | Step |
+|---|---|
+| `record_ui_tars_deepseek.yaml` | record: ui_tars + DeepSeek, pinned replayability, full browser archive plus `browser.frames` |
+| `branch_same_task.yaml` | same-task forks: every 4th policy step (`every_k`, k 4, offset 1), 2 forks per checkpoint, one decision each, source history |
+| `branch_task_variants.yaml` | same page, different task: the checkpoints `variants` lists, 1 fork each, restored history |
+| `branch_task_variants_without_source_thoughts.yaml` | ablation of the above with `omit_source_replies` |
+| `judge_deepseek.yaml` | the judge model `variants` and `judge-forks` use |
+
+Settings that decide whether forks restore at all, all in the branch configs: offline replay
+from the recording's archive with `site_rules: configs/replay_rules` (per-site request rules,
+page-URL rules such as Bilibili's `vt`, and the media-area rules of `media_areas.yaml`, which
+make restoration ignore playback and mask video boxes on declared video pages),
+`background_tabs: freeze` in both recording and branching, `base_time: from_archive`, the
+restorer's `verify: warn` (every check stays in the branch trace and only forks whose
+checkpoint restored are judged), `media: align`, and `pace` (`recorded_llm_latency` as run;
+`recorded_timeline` keeps the whole recorded timeline and is still to be compared on the same
+forks). A checkpoint captured before its main document loaded is skipped
+(`exclude_unloaded_checkpoints`).
+
+```bash
+set -a; . ./.env; set +a          # bench reads only the shell environment
+R=tmp/lookahead/<round>           # one directory per round
+mkdir -p $R/{configs,logs,sessions}
+cp configs/lookahead/*.yaml $R/configs/
+sed -i '' "s|tmp/lookahead/round|$R|g" $R/configs/*.yaml   # GNU sed: -i without ''
+
+# 1. Record, one sweep per site, at most three sites at once (five starved page downloads).
+uv run spectragent bench --config $R/configs/record_ui_tars_deepseek.yaml \
+  --benchmark lexbench_browser --subset L1 --task-id 6 --task-id 118 --task-id 158 \
+  --no-eval --timeout 1800 --session-dir $R/sessions/bilibili > $R/logs/record-bilibili.log 2>&1
+uv run python -m lookahead health --root $R/record --viewer-root $R --out $R/out/health
+
+# 2. Branch. List the tasks first; split the list over several processes for speed.
+uv run python -m lookahead variants --root $R/record --viewer-root $R \
+  --exclude-runs $R/out/health/exclusions.json --steps-per-run 2 --per-step 2 \
+  --judge-config $R/configs/judge_deepseek.yaml --out $R/variants/variants.json
+for c in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
+  uv run spectragent bench --config $R/configs/$c.yaml --no-eval --list
+  uv run spectragent bench --config $R/configs/$c.yaml --no-eval --timeout 1500 \
+    --session-dir $R/sessions/$c > $R/logs/$c.log 2>&1
+done
+
+# 3. Review queues, written to $R/annotations/queues/.
+uv run python -m lookahead extract --root $R --viewer-root $R \
+  --exclude-runs $R/out/health/exclusions.json --out $R/out/steps.jsonl
+X="--viewer-root $R --exclude-runs $R/out/health/exclusions.json --annotations $R/annotations"
+uv run python -m lookahead stability --root $R/record $X --out $R/out/stability \
+  --media-areas configs/replay_rules
+uv run python -m lookahead judge-forks --root $R $X --out $R/out/forks \
+  --judge-config $R/configs/judge_deepseek.yaml
+uv run python -m lookahead gold-queue --root $R/record $X --n 100 --out $R/out/gold
+
+# 4. Label.
+uv run spectragent view --root $R --annotations $R/annotations --annotator <name> --open
+```
+
+The 2026-10-24 round's LexBench L1 task ids per site: Bilibili 6 118 158, IGN 25 125 155,
+Tencent Video 28 128 263, iQIYI 18 108 208, Tonghuashun 44 134 233 (Ctrip was dropped: its
+recordings were anti-bot block pages). Keep the machine's light or dark
+appearance fixed for a whole round (headless Chrome's native scrollbar follows it, and it is
+not recorded). A round whose teacher prompt changed cannot be branched with `history_source:
+source` from older recordings: record again. The last measured round's numbers and open
+problems are in `.agents/skills/af-project-history/references/lookahead-rounds.md`.
+
 ## Runs, kinds and keys
 
 `--root DIR` is searched for run directories (a directory holding a readable
