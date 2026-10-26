@@ -244,8 +244,8 @@ it from the trace to word the same refusal again. Before this was fixed (defect 
 3 of 12 providers raised it, so whether a mistyped parameter cost a step or the whole run
 depended on which provider key the YAML happened to name.
 
-Two guards keep it: the AST scan above, and the 19-row behaviour table at
-`test_provider_validation.py:451`, which drives a real bad reply through every
+Two guards keep it: the AST scan above, and the 20-row behaviour table (`_CASES` in
+`test_provider_validation.py`), which drives a real bad reply through every
 registered key and asserts `status_code == 422` and a usable `raw_output`.
 
 **A failing call must still be visible to hooks.** An exception fires no `after` advice,
