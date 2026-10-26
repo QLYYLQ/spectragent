@@ -10,10 +10,21 @@ had been on.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
+import pytest
 from anthropic.types import Message, Usage
+from google.genai import types as genai_types
+from oci.generative_ai_inference import models as oci_models
+from openai.types.chat import ChatCompletion
+from openai.types.responses import Response, ResponseUsage
+from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
 
 from spectragent.core.llm.providers.anthropic import ChatAnthropic
+from spectragent.core.llm.providers.google import ChatGoogle
+from spectragent.core.llm.providers.oci import ChatOCI
+from spectragent.core.llm.providers.openai import ChatOpenAI
+from spectragent.core.llm.providers.openai_deepseek import ChatDeepSeek
 from spectragent.schemas.agent_result import AgentUsage
 
 
@@ -96,3 +107,129 @@ class TestAgentUsageAggregation:
     def test_carries_no_cost_fields(self) -> None:
         """Pricing is out of scope — see AgentUsage's docstring."""
         assert not [name for name in AgentUsage.model_fields if name.endswith("cost")]
+
+
+# ── How many completion tokens were reasoning ─────────────────────────
+
+
+def _chat_completion(usage: dict[str, Any]) -> ChatCompletion:
+    """A chat completion as DeepSeek's official API returns it, cache counters included."""
+    return ChatCompletion.model_validate(
+        {
+            "id": "c1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "deepseek-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "hi", "reasoning_content": "r"},
+                }
+            ],
+            "usage": usage,
+        }
+    )
+
+
+_DEEPSEEK_USAGE = {
+    "prompt_tokens": 12,
+    "completion_tokens": 40,
+    "total_tokens": 52,
+    "prompt_tokens_details": {"cached_tokens": 0},
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 12,
+}
+
+
+class TestReasoningTokenCounts:
+    """``completion_reasoning_tokens`` is the share of ``completion_tokens`` the response states.
+
+    ``None`` means the response stated none, which is not zero: a provider
+    that bills reasoning without a split must not read as "no reasoning".
+    """
+
+    @pytest.mark.parametrize("chat", [ChatOpenAI, ChatDeepSeek])
+    def test_chat_completions_read_the_details(self, chat: Any) -> None:
+        response = _chat_completion(
+            {**_DEEPSEEK_USAGE, "completion_tokens_details": {"reasoning_tokens": 31}}
+        )
+        usage = chat(model="deepseek-flash").get_usage(response)
+        assert usage is not None
+        assert (usage.completion_tokens, usage.completion_reasoning_tokens) == (40, 31)
+
+    def test_chat_completions_without_details_report_none(self) -> None:
+        usage = ChatDeepSeek(model="deepseek-flash").get_usage(_chat_completion(_DEEPSEEK_USAGE))
+        assert usage is not None
+        assert usage.completion_reasoning_tokens is None
+
+    def test_a_reported_zero_stays_zero(self) -> None:
+        response = _chat_completion(
+            {**_DEEPSEEK_USAGE, "completion_tokens_details": {"reasoning_tokens": 0}}
+        )
+        usage = ChatOpenAI(model="gpt-4o").get_usage(response)
+        assert usage is not None
+        assert usage.completion_reasoning_tokens == 0
+
+    def test_the_responses_api_reads_its_output_details(self) -> None:
+        response = Response.model_construct(
+            usage=ResponseUsage(
+                input_tokens=10,
+                input_tokens_details=InputTokensDetails(cached_tokens=0),
+                output_tokens=30,
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=22),
+                total_tokens=40,
+            )
+        )
+        usage = ChatOpenAI(model="gpt-5").get_usage_from_responses(response)
+        assert usage is not None
+        assert (usage.completion_tokens, usage.completion_reasoning_tokens) == (30, 22)
+
+    def test_gemini_counts_its_thoughts_inside_the_completion(self) -> None:
+        """Thoughts are added to ``completion_tokens``, so the count is a share of it."""
+        response = genai_types.GenerateContentResponse(
+            usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=10,
+                candidates_token_count=8,
+                thoughts_token_count=550,
+                total_token_count=568,
+            )
+        )
+        usage = ChatGoogle(model="gemini-3.5-flash", api_key="k")._get_usage(response)
+        assert usage is not None
+        assert (usage.completion_tokens, usage.completion_reasoning_tokens) == (558, 550)
+
+    def test_gemini_without_thoughts_reports_none(self) -> None:
+        response = genai_types.GenerateContentResponse(
+            usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=10, candidates_token_count=8, total_token_count=18
+            )
+        )
+        usage = ChatGoogle(model="gemini-2.0-flash", api_key="k")._get_usage(response)
+        assert usage is not None
+        assert usage.completion_reasoning_tokens is None
+
+    @pytest.mark.parametrize(("details", "expected"), [(5, 5), (None, None)])
+    def test_oci_reads_its_completion_details(self, details: int | None, expected: Any) -> None:
+        chat = ChatOCI(
+            model_id="ocid1.generativeaimodel.oc1..stub",
+            service_endpoint="https://oci.test",
+            compartment_id="ocid1.compartment.oc1..stub",
+        )
+        reported = oci_models.Usage(prompt_tokens=3, completion_tokens=9, total_tokens=12)
+        if details is not None:
+            reported.completion_tokens_details = oci_models.CompletionTokensDetails(
+                reasoning_tokens=details
+            )
+        response = SimpleNamespace(
+            data=SimpleNamespace(chat_response=SimpleNamespace(usage=reported))
+        )
+        usage = chat._extract_usage(response)
+        assert usage is not None
+        assert usage.completion_reasoning_tokens == expected
+
+    def test_anthropic_states_no_split(self) -> None:
+        usage = ChatAnthropic(model="claude-sonnet-4-5")._get_usage(
+            _anthropic_response(uncached=10, cache_read=0, cache_write=0, output=300)
+        )
+        assert usage.completion_reasoning_tokens is None

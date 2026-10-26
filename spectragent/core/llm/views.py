@@ -42,6 +42,19 @@ class ModelInvokeUsage(BaseModel):
     completion_tokens: int
     """The number of tokens in the completion."""
 
+    completion_reasoning_tokens: int | None = None
+    """How many of :attr:`completion_tokens` were the model's reasoning; ``None``: not reported.
+
+    Read from what the response states (an OpenAI-compatible reply's
+    ``completion_tokens_details.reasoning_tokens``, the Responses API's
+    ``output_tokens_details.reasoning_tokens``, Gemini's
+    ``thoughts_token_count``, OCI's ``completion_tokens_details``), never
+    estimated. A provider whose usage has no such count leaves it ``None``,
+    which is not zero: Anthropic bills thinking inside ``output_tokens`` and
+    states no split. The default keeps call records written before the field
+    existed readable.
+    """
+
     total_tokens: int
     """The total number of tokens in the response."""
 

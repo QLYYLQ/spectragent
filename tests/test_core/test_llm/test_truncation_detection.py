@@ -124,6 +124,7 @@ class _LengthCappedClient(FakeClient):
                 completion_tokens=16384,
                 total_tokens=18384,
                 prompt_tokens_details=None,
+                completion_tokens_details=None,
             ),
         )
 

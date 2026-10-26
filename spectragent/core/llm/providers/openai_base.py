@@ -294,6 +294,11 @@ class OpenAICompatBase(ChatModelBase):
             prompt_cache_creation_tokens=None,
             prompt_image_tokens=None,
             completion_tokens=response.usage.completion_tokens,
+            completion_reasoning_tokens=(
+                response.usage.completion_tokens_details.reasoning_tokens
+                if response.usage.completion_tokens_details
+                else None
+            ),
             total_tokens=response.usage.total_tokens,
         )
 
@@ -304,12 +309,16 @@ class OpenAICompatBase(ChatModelBase):
         cached = None
         if response.usage.input_tokens_details is not None:
             cached = getattr(response.usage.input_tokens_details, "cached_tokens", None)
+        reasoning = getattr(
+            getattr(response.usage, "output_tokens_details", None), "reasoning_tokens", None
+        )
         return ModelInvokeUsage(
             prompt_tokens=response.usage.input_tokens,
             prompt_cached_tokens=cached,
             prompt_cache_creation_tokens=None,
             prompt_image_tokens=None,
             completion_tokens=response.usage.output_tokens,
+            completion_reasoning_tokens=reasoning,
             total_tokens=response.usage.total_tokens,
         )
 

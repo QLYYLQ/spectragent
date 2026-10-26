@@ -181,6 +181,7 @@ class TestDeepSeekUsage:
                 completion_tokens=5,
                 total_tokens=15,
                 prompt_tokens_details=None,
+                completion_tokens_details=None,
             ),
         )
 
@@ -336,6 +337,7 @@ def _usage(prompt: int, completion: int):
         completion_tokens=completion,
         total_tokens=prompt + completion,
         prompt_tokens_details=None,
+        completion_tokens_details=None,
     )
 
 
