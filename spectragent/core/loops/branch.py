@@ -27,7 +27,7 @@ from spectragent.core.loops._loop_fragments import (
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import LoopInput
-from spectragent.core.loops.coordinate_frames import actions_in_capability_units, step_frame
+from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.react import ReactLoop, ReactRun, serialize_llm_output
 from spectragent.core.loops.restore import (
@@ -527,20 +527,12 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             reply = self._recorded_reply(source, call, output_model, step, index)
             output_text = serialize_llm_output(reply)
             try:
-                # Read back off the frame the source step recorded, as the
-                # live step read it.
-                actions = actions_in_capability_units(
-                    agent.parse_react_output(reply),
-                    record.frame,
-                    run.action_space,
-                    raw_output=output_text[:500],
-                )
-                # The same check the live step made before running anything:
-                # a reply it sent back (an unknown name, params that do not
-                # fit) is read back as the parse failure it was.
-                self.check_action_params(
-                    run, actions[: self.max_actions_per_step], raw_output=output_text
-                )
+                # Read as the live step read it (``read_reply``), off the
+                # frame the source step recorded: a reply it sent back (one
+                # the provider refused, an unknown name, params that do not
+                # fit) is read back as the same parse failure, in the same
+                # words.
+                actions = self.read_reply(run, reply, frame=record.frame, output_model=output_model)
             except RunAbort as veto:
                 await self._note_replay_veto(run, step, veto, llm_output=output_text)
                 raise
@@ -569,13 +561,14 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         step: int,
         index: int,
     ) -> Any:
-        """The reply the live loop handed the parser for this recorded call.
+        """The reply the live loop read for this recorded call (``ReactLoop.read_reply``).
 
         A text call's recorded text; a structured call's reply rebuilt into
         the agent's own reply model (the trace keeps its JSON form); a
-        structured reply the provider refused, as the text the model wrote
-        (``raw_output``) — which the live loop parsed too. Anything else a
-        prefix step cannot contain: such a call ended the source run.
+        structured reply the provider refused, as the text the validator saw
+        (``raw_output``) — which ``read_reply`` refuses again, in the words
+        the live step used. Anything else a prefix step cannot contain: such
+        a call ended the source run.
         """
         if call.status == "completed" and call.completion is not None:
             reply = call.completion.completion

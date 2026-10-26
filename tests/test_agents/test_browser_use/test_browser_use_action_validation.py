@@ -10,9 +10,10 @@ single-key model per negotiated verb, dispatched by a ``BeforeValidator``,
 so the schema *is* the vocabulary — one spelling, the fully-qualified key,
 the same string the prompt advertises and ``env.act`` routes on.
 
-The other half of the file is the error surface, because every message
-here is fed verbatim back to the model by ``ReactLoop``: one line, naming
-the verb, never one complaint per union branch.
+The other half of the file is the error surface: one typed error per
+mistake, naming the verb, never one complaint per union branch. The model is
+not shown these messages; ``core/action_guard.py::reply_refusal`` words the
+refusal from the errors' types and context (``tests/test_core/test_action_guard.py``).
 """
 
 from __future__ import annotations
@@ -26,7 +27,13 @@ from pydantic import ValidationError
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.agents.browser_use import BrowserUseAgent, BrowserUseDomAgent
 from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.actions.action_union import UnsupportedParamsSchema, action_union
+from spectragent.core.actions.action_union import (
+    ACTION_PARAMS,
+    ACTION_SHAPE,
+    ACTION_UNKNOWN,
+    UnsupportedParamsSchema,
+    action_union,
+)
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import ActionDescriptor
 from tests._helpers.action_spaces import space_of
@@ -88,6 +95,9 @@ class TestClosedUnion:
         with pytest.raises(ValidationError) as exc:
             model.model_validate({"memory": "", "action": [{"refresh": {}}]})
         assert len(exc.value.errors()) == 1, _errors(exc.value)
+        (error,) = exc.value.errors()
+        assert error["type"] == ACTION_UNKNOWN
+        assert error.get("ctx", {})["verb"] == "refresh"
         message = str(exc.value)
         assert "unknown action 'refresh'" in message
         assert "browser.click" in message and "browser.navigate" in message
@@ -103,7 +113,10 @@ class TestClosedUnion:
         with pytest.raises(ValidationError) as exc:
             model.model_validate({"memory": "", "action": [{}]})
         assert len(exc.value.errors()) == 1, _errors(exc.value)
-        assert "exactly one verb" in str(exc.value)
+        (error,) = exc.value.errors()
+        assert error["type"] == ACTION_SHAPE
+        assert error.get("ctx", {})["written"] == "an empty object"
+        assert "exactly one key" in error["msg"]
 
     def test_multi_key_item_is_one_error(self) -> None:
         model = self._model("browser.click", "browser.navigate")
@@ -115,7 +128,11 @@ class TestClosedUnion:
                 }
             )
         assert len(exc.value.errors()) == 1, _errors(exc.value)
-        assert "exactly one verb" in str(exc.value)
+        (error,) = exc.value.errors()
+        assert error["type"] == ACTION_SHAPE
+        assert error.get("ctx", {})["written"] == (
+            "an object naming 'browser.click', 'browser.navigate'"
+        )
 
     def test_bad_param_type_is_one_error_located_on_the_verb(self) -> None:
         model = self._model("browser.click", "browser.scroll", "browser.navigate")
@@ -124,8 +141,25 @@ class TestClosedUnion:
                 {"memory": "", "action": [{"browser.scroll": {"direction": "sideways"}}]}
             )
         assert len(exc.value.errors()) == 1, _errors(exc.value)
-        message = str(exc.value)
-        assert "browser.scroll: direction" in message
+        (error,) = exc.value.errors()
+        assert error["type"] == ACTION_PARAMS
+        ctx = error.get("ctx", {})
+        assert ctx["verb"] == "browser.scroll"
+        assert [problem["param"] for problem in ctx["problems"]] == ["direction"]
+        assert "browser.scroll: direction" in str(exc.value)
+
+    def test_every_bad_param_of_one_action_is_in_its_one_error(self) -> None:
+        """One error per action, listing each parameter at fault, as ``params_refusal`` does."""
+        model = self._model("browser.click")
+        with pytest.raises(ValidationError) as exc:
+            model.model_validate(
+                {"memory": "", "action": [{"browser.click": {"index": "x", "y": 2}}]}
+            )
+        (error,) = exc.value.errors()
+        assert [problem["param"] for problem in error.get("ctx", {})["problems"]] == [
+            "index",
+            "y",
+        ]
 
     def test_unexpected_param_is_refused(self) -> None:
         model = self._model("browser.click")

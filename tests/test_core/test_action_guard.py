@@ -1,15 +1,29 @@
-"""Tests for build_guarded_act — prompt-capability consistency guarantee."""
+"""Tests for build_guarded_act — prompt-capability consistency guarantee — and the refusals beside it."""
+
+import json
 
 import pytest
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
+from spectragent.agents.skyvern.reply import reply_model
 from spectragent.core.action_guard import (
     build_guarded_act,
     executed_descriptor,
     executed_name,
+    name_refusal,
+    params_refusal,
+    reply_refusal,
     resolve_action_name,
+)
+from spectragent.core.actions.action_union import (
+    ACTION_PARAMS,
+    ACTION_SHAPE,
+    ACTION_UNKNOWN,
+    action_union,
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
+from tests._helpers.action_spaces import browser_descriptors, space_of
 
 _DESCRIPTORS = [
     ActionDescriptor(name="click", description="Click"),
@@ -169,3 +183,140 @@ class TestTheAgentsNamingHelper:
         assert executed_descriptor(space, "scroll") is None
         # Another capability's click is not this run's, whatever its suffix.
         assert executed_name(space, "desktop.click") is None
+
+
+class TestReplyRefusal:
+    """A structured reply that does not fit its output model, refused as a params misfit is.
+
+    ``reply_refusal`` is a function of the reply's text, the output model and
+    the run's action space, so a branch rereading a recorded reply words it
+    as the live step did. Its action items read like ``check_action_params``
+    (``params_refusal``, ``name_refusal``), so a structured agent is told what
+    a text-protocol one is for the same mistake.
+    """
+
+    _SPACE = space_of(browser_descriptors("click", "type", "done"))
+
+    def _flat(self) -> type[BaseModel]:
+        """BrowserUse's shape: reasoning fields beside an action list."""
+        union, _ = action_union(self._SPACE.descriptors)
+        return create_model(
+            "Flat",
+            __config__=ConfigDict(extra="forbid"),
+            next_goal=(str, ...),
+            action=(list[union], ...),
+        )
+
+    def _refuse(self, model: type[BaseModel], reply: object) -> str:
+        refusal = reply_refusal(self._SPACE, model, json.dumps(reply))
+        assert refusal is not None
+        # Worded for the model: no pydantic links, no echo of the input.
+        assert "pydantic" not in refusal and "input_value" not in refusal
+        return refusal
+
+    def test_text_that_is_not_json_is_one_line_with_the_position(self) -> None:
+        refusal = reply_refusal(self._SPACE, self._flat(), '{"next_goal": "x", "action": [')
+        assert (
+            refusal == "the reply is not valid JSON: EOF while parsing a list at line 1 column 30"
+        )
+
+    def test_a_reply_that_fits_is_not_refused(self) -> None:
+        reply = {"next_goal": "x", "action": [{"browser.click": {"index": 1}}]}
+        assert reply_refusal(self._SPACE, self._flat(), json.dumps(reply)) is None
+
+    def test_a_missing_field_outside_the_actions_is_named_by_its_path(self) -> None:
+        refusal = self._refuse(self._flat(), {"action": [{"browser.click": {"index": 1}}]})
+        assert refusal == "the reply does not fit the output schema: next_goal: Field required"
+
+    def test_a_misfit_action_reads_as_the_params_check_words_it(self) -> None:
+        reply = {
+            "next_goal": "x",
+            "action": [{"browser.click": {"index": 1}}, {"browser.type": {"index": 2}}],
+        }
+        refusal = self._refuse(self._flat(), reply)
+        # The same clause ReAct's params check gives the same action.
+        same = params_refusal(self._SPACE, Action(name="browser.type", params={"index": 2}))
+        assert refusal == f"the reply does not fit the output schema: action 2, {same}"
+        assert "action 2, browser.type: text: Field required (browser.type takes index: " in refusal
+
+    def test_an_unknown_verb_reads_as_the_name_check_words_it(self) -> None:
+        refusal = self._refuse(self._flat(), {"next_goal": "x", "action": [{"browser.fly": {}}]})
+        same = name_refusal(self._SPACE, "browser.fly")
+        assert refusal == f"the reply does not fit the output schema: action 1, {same}"
+        assert "(its actions: browser.click, browser.done, browser.type)" in refusal
+
+    @pytest.mark.parametrize(
+        ("item", "written"),
+        [
+            ("click 3", "a string"),
+            ({}, "an empty object"),
+            (
+                {"browser.click": {"index": 1}, "browser.done": {}},
+                "an object naming 'browser.click', 'browser.done'",
+            ),
+            ({"browser.click": 3}, "'browser.click' given a number for its parameters"),
+        ],
+    )
+    def test_an_item_of_the_wrong_shape_says_what_it_is(self, item: object, written: str) -> None:
+        refusal = self._refuse(self._flat(), {"next_goal": "x", "action": [item]})
+        assert refusal == (
+            f"the reply does not fit the output schema: action 1, {written}: each action is an "
+            "object with exactly one key, the action's name, whose value is the object of its "
+            "parameters (its actions: browser.click, browser.done, browser.type)"
+        )
+
+    def test_every_mistake_is_located_in_reply_order(self) -> None:
+        reply = {
+            "action": [
+                {"browser.click": {"index": "the cart", "x": 1}},
+                {"browser.done": {"extracted_content": None}},
+                {"browser.fly": {}},
+            ]
+        }
+        refusal = self._refuse(self._flat(), reply)
+        assert refusal == (
+            "the reply does not fit the output schema: next_goal: Field required; "
+            f"action 1, {params_refusal(self._SPACE, Action(name='browser.click', params={'index': 'the cart', 'x': 1}))}; "
+            f"action 3, {name_refusal(self._SPACE, 'browser.fly')}"
+        )
+
+    def test_an_action_nested_in_an_item_is_numbered_by_its_item(self) -> None:
+        """Skyvern's shape, ``{"actions": [{"reasoning": ..., "action": {...}}]}``: the action
+        is the item's, so it is numbered by the item's place in the list."""
+        model = reply_model(self._SPACE.descriptors)
+        reply = {
+            "actions": [
+                {"reasoning": 3, "action": {"browser.click": {"index": 1}}},
+                {"reasoning": "then type", "action": {"browser.type": {"index": 2}}},
+            ]
+        }
+        refusal = self._refuse(model, reply)
+        same = params_refusal(self._SPACE, Action(name="browser.type", params={"index": 2}))
+        assert refusal == (
+            "the reply does not fit the output schema: actions[0].reasoning: Input should be a "
+            f"valid string; action 2, {same}"
+        )
+
+    def test_a_reply_that_is_not_an_object_has_no_path(self) -> None:
+        refusal = self._refuse(self._flat(), [1])
+        assert refusal == "the reply does not fit the output schema: Input should be an object"
+
+    def test_the_union_reports_its_mistakes_as_typed_errors(self) -> None:
+        """The refusal reads the union's error types and context, never its message."""
+        reply = {
+            "next_goal": "x",
+            "action": [{"browser.fly": {}}, [], {"browser.type": {"index": 2}}],
+        }
+        with pytest.raises(ValidationError) as caught:
+            self._flat().model_validate(reply)
+        errors = caught.value.errors()
+        assert [(error["type"], error["loc"]) for error in errors] == [
+            (ACTION_UNKNOWN, ("action", 0)),
+            (ACTION_SHAPE, ("action", 1)),
+            (ACTION_PARAMS, ("action", 2)),
+        ]
+        assert errors[0].get("ctx", {})["verb"] == "browser.fly"
+        assert errors[1].get("ctx", {})["written"] == "an array"
+        params = errors[2].get("ctx", {})
+        assert params["verb"] == "browser.type"
+        assert params["problems"] == ({"param": "text", "msg": "Field required"},)

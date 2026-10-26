@@ -774,7 +774,13 @@ class TestRecordedReplies:
             as_chat(recorded.llm_messages(2)[0]).messages
         )
 
-    async def test_a_structured_refusal_replays_as_the_raw_reply(self, tmp_path: Path) -> None:
+    async def test_a_structured_refusal_replays_as_the_same_refusal(self, tmp_path: Path) -> None:
+        """The refused reply is reread from its recorded text and refused in the same words.
+
+        The live step worded it from the text, the output model and the action
+        space (``reply_refusal``); the replay has all three, so the rebuilt
+        context matches the recorded one byte for byte, refusal included.
+        """
         from spectragent.core.llm.exceptions import StructuredOutputValidationError
 
         refusal = StructuredOutputValidationError(
@@ -788,9 +794,14 @@ class TestRecordedReplies:
         out = await run_branch(
             tmp_path, source, 2, ["done ok"], agent=BranchFakeAgent(structured=True)
         )
-        assert recorded_form(out.llm.prompts[0]) == recorded_form(
-            as_chat(recorded.llm_messages(2)[0]).messages
-        )
+        rebuilt = recorded_form(out.llm.prompts[0])
+        assert rebuilt == recorded_form(as_chat(recorded.llm_messages(2)[0]).messages)
+        said = [m["content"] for m in rebuilt if "could not be parsed" in str(m["content"])]
+        assert said == [
+            "[SYSTEM] Your previous output could not be parsed into actions. Error: the reply "
+            "does not fit the output schema: text: Field required\n"
+            "Please try again with valid output format."
+        ]
         assert out.result is not None and out.result.agent_done.value == "done"
 
     async def test_a_reply_naming_an_ablated_action_replays_as_its_parse_failure(

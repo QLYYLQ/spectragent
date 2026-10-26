@@ -1015,9 +1015,8 @@ class TestStructuredValidationIsFedBack:
         with pytest.raises(StructuredOutputValidationError) as exc:
             await chat.ainvoke([UserMessage(content="hi")], model)
 
-        # It carries the model's own text, so the caller can put it back
-        # through the agent's parser — which knows the verb set and answers
-        # with one located line.
+        # It carries the model's own text, so the Loop can word the refusal
+        # from it: every mistake located, in the voice of a params refusal.
         assert exc.value.raw_output == bad
         assert exc.value.status_code == 422
 
@@ -1027,6 +1026,14 @@ class TestStructuredValidationIsFedBack:
 
         agent = _prepared_agent()
         bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
+        parsed: list[Any] = []
+        parse = agent.parse_react_output
+
+        def spy(reply: Any) -> list[Action]:
+            parsed.append(reply)
+            return parse(reply)
+
+        agent.parse_react_output = spy  # type: ignore[method-assign]
 
         class _RaisingLLM:
             inference_kind = "chat"
@@ -1050,7 +1057,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": _RaisingLLM(),
                     "memory": memory,
                     "act_fn": env.act,
-                    "action_space": ActionSpace(),
+                    "action_space": space_of(_descriptors()),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1066,9 +1073,13 @@ class TestStructuredValidationIsFedBack:
             if getattr(m, "role", "") == "user" and "[SYSTEM]" in str(m.content)
         ]
         assert feedback, "the model was never told its reply did not parse"
-        assert "nope" in str(feedback[-1])
-        # The agent's parser produced the message, not the provider's.
-        assert "unknown action" in str(feedback[-1])
+        # The framework worded it, as ReAct's name check words an unknown
+        # action; the agent's parser never saw the refused reply.
+        assert (
+            "action 1, nope is not an action this run executes "
+            "(its actions: browser.click, browser.done, browser.navigate)"
+        ) in str(feedback[-1])
+        assert parsed == []
 
     def test_a_generic_provider_error_still_ends_the_run(self) -> None:
         """The other half of the pair — and the reason the type matters.

@@ -21,16 +21,20 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
-from spectragent.core.action_guard import executed_name, params_refusal, resolve_action_name
+from spectragent.core.action_guard import (
+    executed_name,
+    name_refusal,
+    params_refusal,
+    reply_refusal,
+)
 from spectragent.core.llm.exceptions import (
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
 )
 from spectragent.core.llm.messages import AssistantMessage, UserMessage
-from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops._loop_fragments import (
     loop_fragment_builders,
     populate_loop_fragments,
@@ -42,6 +46,7 @@ from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.observation.geometry import PointFrame
@@ -74,6 +79,32 @@ def serialize_llm_output(raw_output: Any) -> str:
     if callable(model_dump_json):
         return str(model_dump_json())
     return str(raw_output)
+
+
+def validated_reply(
+    space: ActionSpace, output_model: type[BaseModel] | None, reply: object
+) -> object:
+    """What an Agent's parser is handed for *reply*: a structured run's text validated first.
+
+    In a run whose Agent has an output model, the parser reads only replies
+    that fit it. A provider hands over a reply it validated; a reply that
+    arrives as text — the one the provider refused
+    (``StructuredOutputValidationError.raw_output``), or text a caller holds
+    (a student's ``format_react_output``) — is validated here, by the
+    framework. Text that does not fit is a :class:`ParseError` worded by
+    ``core/action_guard.py::reply_refusal``, in the voice of a params refusal,
+    and the parser never sees it. A text-protocol run (no output model) hands
+    its text over as is.
+
+    Raises:
+        ParseError: *reply* is text that does not fit *output_model*.
+    """
+    if output_model is None or not isinstance(reply, str):
+        return reply
+    refusal = reply_refusal(space, output_model, reply)
+    if refusal is not None:
+        raise ParseError(refusal, raw_output=reply[:500])
+    return output_model.model_validate_json(reply)
 
 
 def parse_feedback(exc: ParseError) -> str:
@@ -377,7 +408,8 @@ class ReactLoop(AgentLoopBase):
         #    ``output_format=None`` yields a
         #    ``ChatInvokeCompletion[str]``; a non-None model yields a
         #    ``ChatInvokeCompletion[T]`` already validated by the
-        #    provider.
+        #    provider, and a reply the provider refused arrives as its
+        #    text (``StructuredOutputValidationError.raw_output``).
         #
         #    A ParseError inside this while-loop is answered by
         #    re-asking the *same* observation up to
@@ -405,21 +437,17 @@ class ReactLoop(AgentLoopBase):
             except StructuredOutputValidationError as exc:
                 # The call succeeded; the *reply* did not fit the
                 # schema. That is the one provider error the model can
-                # fix, so it rejoins the ordinary path with the text
-                # the model wrote and is refused a second time by the
-                # agent's own parser — which knows this run's verbs and
-                # answers with one located line, where the provider can
-                # only report a schema mismatch. Aborting here instead
-                # ended an episode over a single mistyped parameter.
+                # fix, so it rejoins the ordinary path as the text the
+                # model wrote, which ``read_reply`` refuses in the
+                # framework's words — every mistake located, in the voice
+                # of a params refusal — without handing it to the Agent's
+                # parser. Aborting here instead ended an episode over a
+                # single mistyped parameter.
                 #
                 # The call stays visible to the hooks even though it
                 # raised: ``around_ainvoke`` on the recorder sees what ``after`` cannot, so the
                 # exchange and provider usage reach the unified recorder.
-                completion = ChatInvokeCompletion(
-                    completion=exc.raw_output,
-                    usage=exc.usage,
-                    stop_reason="structured_output_validation_error",
-                )
+                reply: object = exc.raw_output
             except RunAbort as exc:
                 await self._note_abort(
                     run,
@@ -468,30 +496,17 @@ class ReactLoop(AgentLoopBase):
                     env_status="success",
                     restoration=restoration,
                 )
+            else:
+                reply = completion.completion
 
-            raw_output = completion.completion
-            output_text = serialize_llm_output(raw_output)
+            output_text = serialize_llm_output(reply)
 
-            # Agent parses LLM output (domain knowledge). ParseError is
-            # a framework-level control signal — it does NOT go through
-            # action dispatch. The error detail is fed back so the LLM
-            # can self-correct, in this step if retries remain and on
-            # the next one otherwise.
+            # ParseError is a framework-level control signal — it does
+            # NOT go through action dispatch. The error detail is fed back
+            # so the LLM can self-correct, in this step if retries remain
+            # and on the next one otherwise.
             try:
-                # The Agent reads its own reply; the framework moves the
-                # points it states off this step's frame into the
-                # capability's units, before anything checks or runs them.
-                actions = actions_in_capability_units(
-                    agent.parse_react_output(raw_output),
-                    frame,
-                    run.action_space,
-                    raw_output=output_text[:500],
-                )
-                # The actions that would run must fit their ``Params``; one
-                # that does not is a reply to rewrite, not an action to fail.
-                self.check_action_params(
-                    run, actions[: self.max_actions_per_step], raw_output=output_text
-                )
+                actions = self.read_reply(run, reply, frame=frame, output_model=output_model)
             except RunAbort as exc:
                 # First, so the veto cannot be read as a parse failure
                 # even if a guard ever subclasses both. A parser is an
@@ -729,12 +744,53 @@ class ReactLoop(AgentLoopBase):
 
         return None
 
-    # -- ReAct's memory protocol ---------------------------------
+    # -- ReAct's reading of a reply and its memory protocol --------
     #
-    # The live step and a branch run's replay of a recorded step write
-    # memory through these and nothing else, so the two can never disagree
-    # about what a rejected reply, an accepted one or a truncation looks
-    # like to the model.
+    # The live step and a branch run's replay of a recorded step read a
+    # reply and write memory through these and nothing else, so the two can
+    # never disagree about which replies are refused, why, or what a
+    # rejected reply, an accepted one or a truncation looks like to the
+    # model.
+
+    def read_reply(
+        self,
+        run: LoopRun,
+        reply: object,
+        *,
+        frame: PointFrame | None,
+        output_model: type[BaseModel] | None,
+    ) -> list[Action]:
+        """The actions *reply* states, ready to run, or the :class:`ParseError` that sends it back.
+
+        A structured run's text reply — the text of one the provider refused
+        — is validated by the framework first and, not fitting, refused in
+        its words (:func:`validated_reply`); the Agent's parser reads only a
+        validated reply, or a text-protocol Agent's text. The framework then
+        moves the points the actions state off this step's *frame* into the
+        capability's units, and the actions that would run must fit their
+        ``Params`` (:meth:`check_action_params`): one that does not is a reply
+        to rewrite, not an action to fail.
+
+        Args:
+            run: The run, for its Agent and action space.
+            reply: The completion the model call returned, or the text of
+                the reply the provider refused.
+            frame: The frame the step showed (a replayed step's recorded one).
+            output_model: The output model the call was made with, ``None``
+                for a text-protocol Agent.
+
+        Raises:
+            ParseError: The reply cannot run as written.
+        """
+        text = serialize_llm_output(reply)
+        actions = actions_in_capability_units(
+            run.agent.parse_react_output(validated_reply(run.action_space, output_model, reply)),
+            frame,
+            run.action_space,
+            raw_output=text[:500],
+        )
+        self.check_action_params(run, actions[: self.max_actions_per_step], raw_output=text)
+        return actions
 
     def check_action_params(
         self, run: LoopRun, actions: Sequence[Action], *, raw_output: str = ""
@@ -761,22 +817,12 @@ class ReactLoop(AgentLoopBase):
             ParseError: An action is not one this run executes, or its params do not fit.
         """
         space = run.action_space
-        # A run that advertises no actions (no environment) told the model no
-        # names to keep to; its guard refuses whatever it is handed.
-        judge_names = bool(space.descriptors)
-        offered = ", ".join(sorted(d.name for d in space.descriptors))
-        problems: list[str] = []
-        for position, action in enumerate(actions, start=1):
-            if judge_names and (
-                resolve_action_name(action.name, space.allowed_actions, space.action_bindings)
-                is None
-            ):
-                problems.append(
-                    f"action {position}, {action.name} is not an action this run executes "
-                    f"(its actions: {offered})"
-                )
-            elif (refusal := params_refusal(space, action)) is not None:
-                problems.append(f"action {position}, {refusal}")
+        problems = [
+            f"action {position}, {refusal}"
+            for position, action in enumerate(actions, start=1)
+            if (refusal := name_refusal(space, action.name) or params_refusal(space, action))
+            is not None
+        ]
         if problems:
             raise ParseError(
                 "an action cannot run as written: " + "; ".join(problems),

@@ -24,9 +24,12 @@ compiles to ``oneOf``, which none of the three dialects accepts and which
 
 The union is fronted by one ``BeforeValidator`` that dispatches on the key
 and validates with that verb's model. Without it a bad ``amount`` produced
-one error *per branch* — seven lines of noise for one mistake — and the
-Loop feeds that text straight back to the model. With it, every failure is
-a single line naming the verb.
+one error *per branch* — seven lines of noise for one mistake. With it, every
+failure is a single error naming the verb, and a typed one: its ``type`` says
+which mistake it is (:data:`ACTION_SHAPE`, :data:`ACTION_UNKNOWN`,
+:data:`ACTION_PARAMS`) and its ``ctx`` carries the verb and the params at
+fault, so ``core/action_guard.py::reply_refusal`` words the refusal the model
+is shown from ``ValidationError.errors()`` without reading a message string.
 
 The agent never imports an action class: it reads descriptors, which is
 what negotiation produced, so what the model may write is exactly what the
@@ -38,19 +41,80 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Final, Literal, TypedDict, Union
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, create_model
 from pydantic import Field as PydanticField
+from pydantic_core import PydanticCustomError
 
 from spectragent.schemas.action import Action, ActionDescriptor
 
 __all__ = [
+    "ACTION_PARAMS",
+    "ACTION_SHAPE",
+    "ACTION_UNKNOWN",
+    "ActionParamsContext",
+    "ActionShapeContext",
+    "ActionUnknownContext",
+    "ParamProblem",
     "UnsupportedParamsSchema",
     "action_of",
     "action_union",
+    "param_problems",
     "params_model_from_schema",
 ]
+
+#: The error ``type`` of an action item that is not an object naming exactly
+#: one verb with an object of parameters; its ``ctx`` is an
+#: :class:`ActionShapeContext`.
+ACTION_SHAPE: Final = "action_shape"
+#: The error ``type`` of an action item naming a verb this run does not have;
+#: its ``ctx`` is an :class:`ActionUnknownContext`.
+ACTION_UNKNOWN: Final = "action_unknown"
+#: The error ``type`` of an action item whose parameters its verb's params
+#: model refuses; its ``ctx`` is an :class:`ActionParamsContext`.
+ACTION_PARAMS: Final = "action_params"
+
+
+class ParamProblem(TypedDict):
+    """One parameter an action's params model refused, and why."""
+
+    #: The parameter's path inside the params (``index``), or ``params`` when
+    #: the params as a whole were refused.
+    param: str
+    #: Pydantic's message for it (``Field required``).
+    msg: str
+
+
+class ActionShapeContext(TypedDict):
+    """The ``ctx`` of an :data:`ACTION_SHAPE` error."""
+
+    #: What the item is instead, in words: ``a string``, ``an object naming
+    #: 'browser.click', 'browser.navigate'``.
+    written: str
+    #: The run's verbs, for the message.
+    allowed: str
+
+
+class ActionUnknownContext(TypedDict):
+    """The ``ctx`` of an :data:`ACTION_UNKNOWN` error."""
+
+    #: The verb as the item wrote it.
+    verb: str
+    #: The run's verbs, for the message.
+    allowed: str
+
+
+class ActionParamsContext(TypedDict):
+    """The ``ctx`` of an :data:`ACTION_PARAMS` error."""
+
+    #: The verb, one of the run's.
+    verb: str
+    #: Every parameter its params model refused.
+    problems: tuple[ParamProblem, ...]
+    #: The problems in one line, for the message.
+    detail: str
+
 
 #: JSON Schema scalar types this converter understands. Anything else is a
 #: params schema no closed union can express — see
@@ -171,15 +235,39 @@ def params_model_from_schema(descriptor: ActionDescriptor) -> type[BaseModel]:
     )
 
 
-def _first_error(exc: ValidationError) -> str:
-    """One line for a params failure: ``direction: Input should be 'up', ...``.
+def param_problems(exc: ValidationError, *, under: int = 0) -> tuple[ParamProblem, ...]:
+    """Every parameter a params model's *exc* refused, located inside the params.
 
-    Only the first: the Loop hands this text back to the model verbatim,
-    and a model given seven complaints about one object fixes none of them.
+    Args:
+        exc: What validating one action's params raised.
+        under: How many leading ``loc`` parts name what the params were
+            validated under rather than a parameter: ``1`` for the union's
+            single-key ``{verb: params}`` model, ``0`` for a ``Params`` model.
     """
-    error = exc.errors()[0]
-    where = ".".join(str(part) for part in error["loc"][1:]) or "params"
-    return f"{where}: {error['msg']}"
+    return tuple(
+        ParamProblem(
+            param=".".join(str(part) for part in error["loc"][under:]) or "params",
+            msg=error["msg"],
+        )
+        for error in exc.errors()
+    )
+
+
+def _json_kind(value: object) -> str:
+    """*value*'s JSON kind with its article, for an action-shape error: ``a string``."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, int | float):
+        return "a number"
+    if isinstance(value, Mapping):
+        return "an object"
+    if isinstance(value, Sequence):
+        return "an array"
+    return f"a {type(value).__name__}"
 
 
 def action_union(descriptors: Sequence[ActionDescriptor]) -> tuple[Any, dict[str, type[BaseModel]]]:
@@ -222,30 +310,44 @@ def action_union(descriptors: Sequence[ActionDescriptor]) -> tuple[Any, dict[str
     allowed = ", ".join(items)
     member_types = tuple(items.values())
 
+    def shape_error(written: str) -> PydanticCustomError:
+        return PydanticCustomError(
+            ACTION_SHAPE,
+            "this action is {written}; each action is an object with exactly one key, "
+            "the verb, whose value is the object of its parameters. Allowed verbs: {allowed}",
+            dict(ActionShapeContext(written=written, allowed=allowed)),
+        )
+
     def dispatch(value: Any) -> Any:
         if isinstance(value, member_types):
             return value  # already validated — re-validation of a built model
         if not isinstance(value, Mapping):
-            raise ValueError(
-                f"each action is an object naming one verb, e.g. "
-                f"{{{next(iter(items))!r}: {{...}}}}; got "
-                f"{type(value).__name__}. Allowed verbs: {allowed}"
-            )
+            raise shape_error(_json_kind(value))
         if len(value) != 1:
-            written = ", ".join(repr(key) for key in value) or "nothing"
-            raise ValueError(
-                f"each action names exactly one verb and gives it an object "
-                f"of parameters; this one names {written}. Allowed verbs: "
-                f"{allowed}"
-            )
+            named = ", ".join(repr(key) for key in value)
+            raise shape_error(f"an object naming {named}" if named else "an empty object")
         verb, params = next(iter(value.items()))
         model = items.get(verb)
         if model is None:
-            raise ValueError(f"unknown action {verb!r}. Allowed verbs: {allowed}")
+            raise PydanticCustomError(
+                ACTION_UNKNOWN,
+                "unknown action '{verb}'. Allowed verbs: {allowed}",
+                dict(ActionUnknownContext(verb=str(verb), allowed=allowed)),
+            )
+        if not isinstance(params, Mapping | BaseModel):
+            raise shape_error(f"{verb!r} given {_json_kind(params)} for its parameters")
         try:
             return model.model_validate({verb: params})
         except ValidationError as exc:
-            raise ValueError(f"{verb}: {_first_error(exc)}") from None
+            # Every parameter at fault, in one error: one mistake per
+            # parameter, never one per union branch.
+            problems = param_problems(exc, under=1)
+            detail = "; ".join(f"{p['param']}: {p['msg']}" for p in problems)
+            raise PydanticCustomError(
+                ACTION_PARAMS,
+                "{verb}: {detail}",
+                dict(ActionParamsContext(verb=verb, problems=problems, detail=detail)),
+            ) from None
 
     annotation = member_types[0] if len(member_types) == 1 else Union[member_types]  # noqa: UP007
     return Annotated[annotation, BeforeValidator(dispatch)], items

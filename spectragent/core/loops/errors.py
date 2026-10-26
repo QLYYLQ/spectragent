@@ -1,7 +1,10 @@
 """Loop-level error types.
 
-``ParseError`` is raised by ``Agent.parse_react_output`` when the LLM
-output is structurally unparseable. ReactLoop catches it and treats it
+``ParseError`` is raised when the LLM output cannot run as written: by
+``Agent.parse_react_output`` when it cannot read it, and by ReAct's own
+reading of a reply (``ReactLoop.read_reply``) when a structured reply does
+not fit its output model, an action does not fit its ``Params`` or a point
+cannot be placed. ReactLoop catches it and treats it
 as a framework-level control signal — *not* as an action dispatch —
 feeding the error detail back into the next observation so the LLM can
 self-correct. Repeated consecutive parse failures terminate the run.
@@ -38,7 +41,8 @@ if TYPE_CHECKING:
 class ParseError(Exception):
     """LLM output could not be parsed into actions.
 
-    Raised by ``Agent.parse_react_output``. The Loop catches this and:
+    Raised by ``Agent.parse_react_output`` and by ``ReactLoop.read_reply``
+    (module docstring). The Loop catches this and:
     1. Logs a warning.
     2. Feeds ``detail`` back into the next prompt as error feedback.
     3. Terminates after ``max_consecutive_parse_errors`` consecutive

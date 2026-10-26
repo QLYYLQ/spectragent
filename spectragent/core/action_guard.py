@@ -6,18 +6,34 @@ every action emitted by the agent is in the active action set before
 delegating to ``env.act()``. This eliminates prompt/capability mismatch:
 what the prompt tells the LLM is available matches what actually executes.
 
+Beside it, the refusals a Loop words before anything runs, all in one voice:
+an action name the guard would refuse (:func:`name_refusal`), params that do
+not fit the action's ``Params`` (:func:`params_refusal`), and a structured
+reply that does not fit the run's output model (:func:`reply_refusal`).
+
 See docs/architecture_design.md §4.5 "guarded_act()" for the design.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from typing import Any
+from typing import Any, cast
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
+from pydantic_core import ErrorDetails
 
 from spectragent.core.actions._registrar import registered_params
+from spectragent.core.actions.action_union import (
+    ACTION_PARAMS,
+    ACTION_SHAPE,
+    ACTION_UNKNOWN,
+    ActionParamsContext,
+    ActionShapeContext,
+    ActionUnknownContext,
+    ParamProblem,
+    param_problems,
+)
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 
@@ -78,6 +94,41 @@ def executed_descriptor(space: ActionSpace, name: str) -> ActionDescriptor | Non
     return next(descriptor for descriptor in space.descriptors if descriptor.name == full)
 
 
+def _not_an_action(space: ActionSpace, name: str) -> str:
+    """The refusal of *name*, a name the run does not execute, listing the ones it does."""
+    offered = ", ".join(sorted(descriptor.name for descriptor in space.descriptors))
+    return f"{name} is not an action this run executes (its actions: {offered})"
+
+
+def _misfit(
+    name: str, descriptor: ActionDescriptor | None, problems: Sequence[ParamProblem]
+) -> str:
+    """The refusal of an action's params: each problem by param, then what the action takes."""
+    refused = "; ".join(f"{problem['param']}: {problem['msg']}" for problem in problems)
+    if descriptor is None:
+        return f"{name}: {refused}"
+    takes = (
+        ", ".join(f"{param}: {text}" for param, text in descriptor.params.items())
+        or "no parameters"
+    )
+    return f"{name}: {refused} ({descriptor.name} takes {takes})"
+
+
+def name_refusal(space: ActionSpace, name: str) -> str | None:
+    """Why *space*'s run does not execute an action called *name*, or ``None``.
+
+    The name check every parsed action passes before it runs
+    (``ReactLoop.check_action_params``): a name the guard would refuse
+    (:func:`executed_name` is ``None``), refused with the run's actions
+    listed. ``None`` when the guard executes the name, and in a run that
+    advertises no actions (no environment): it told the model no names to
+    keep to, and its guard refuses whatever it is handed.
+    """
+    if not space.descriptors or executed_name(space, name) is not None:
+        return None
+    return _not_an_action(space, name)
+
+
 def params_refusal(space: ActionSpace, action: Action) -> str | None:
     """Why *action*'s params break the ``Params`` of the action it executes as, or ``None``.
 
@@ -88,8 +139,8 @@ def params_refusal(space: ActionSpace, action: Action) -> str | None:
     (``index: Field required``, ``reasoning: Extra inputs are not
     permitted``), then what the action takes in this run, from its
     descriptor. ``None`` when the params fit, when the guard would refuse the
-    name itself (it says so when the action is executed), and when the action
-    has no registered ``Params`` to check against.
+    name itself (:func:`name_refusal` says so), and when the action has no
+    registered ``Params`` to check against.
     """
     descriptor = executed_descriptor(space, action.name)
     if descriptor is None:
@@ -100,16 +151,81 @@ def params_refusal(space: ActionSpace, action: Action) -> str | None:
     try:
         params.model_validate(action.params)
     except ValidationError as exc:
-        problems = "; ".join(
-            f"{'.'.join(str(part) for part in error['loc']) or 'params'}: {error['msg']}"
-            for error in exc.errors()
-        )
-        takes = (
-            ", ".join(f"{name}: {text}" for name, text in descriptor.params.items())
-            or "no parameters"
-        )
-        return f"{action.name}: {problems} ({descriptor.name} takes {takes})"
+        return _misfit(action.name, descriptor, param_problems(exc))
     return None
+
+
+def reply_refusal(space: ActionSpace, output_model: type[BaseModel], text: str) -> str | None:
+    """Why *text*, a structured reply, does not fit *output_model*, or ``None`` when it does.
+
+    The refusal of a reply that does not fit the run's output model, in the
+    voice of :func:`name_refusal` and :func:`params_refusal`, so the model is
+    told the same thing for the same mistake whether its reply is text or
+    structured. A function of the reply's text, the output model and the
+    run's action *space* alone: a live step words a refused reply with it
+    (``ReactLoop.read_reply``), and a branch's replay of the recorded reply
+    (``BranchLoop``) words it again, identically.
+
+    *text* is validated as JSON, as the provider validates it
+    (``ChatModelBase.validate_structured``). Text that is not JSON is one
+    line with the decoder's position. Otherwise every problem is located:
+    an action item by its number in the reply's action list, the way
+    :func:`params_refusal` names it (``action 2, browser.type: text: Field
+    required (browser.type takes index: ..., text: ...)``), an unknown verb the way
+    :func:`name_refusal` does, and any other field by its path
+    (``next_goal: Field required``). The action items' mistakes are read from
+    the typed errors of the closed action union
+    (``core/actions/action_union.py``), never from a message.
+    """
+    try:
+        output_model.model_validate_json(text)
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False)
+        for error in errors:
+            if error["type"] == "json_invalid":
+                # The decoder's words, with its position.
+                decoder = error.get("ctx", {}).get("error")
+                said = decoder if isinstance(decoder, str) else error["msg"]
+                return f"the reply is not valid JSON: {said}"
+        problems = "; ".join(_reply_problem(space, error) for error in errors)
+        return f"the reply does not fit the output schema: {problems}"
+    return None
+
+
+def _reply_problem(space: ActionSpace, error: ErrorDetails) -> str:
+    """One validation error of a structured reply, located and worded for the model."""
+    loc = error["loc"]
+    kind = error["type"]
+    if kind not in (ACTION_SHAPE, ACTION_UNKNOWN, ACTION_PARAMS):
+        # A problem with the reply as a whole (``Input should be an object``)
+        # has no path to name.
+        return f"{_field_path(loc)}: {error['msg']}" if loc else error["msg"]
+    # The action's number is its index in the list that holds it — the last
+    # index on its path, however deep an agent nests the union
+    # (``actions[1].action``).
+    index = next((part for part in reversed(loc) if isinstance(part, int)), None)
+    where = f"action {index + 1}" if index is not None else _field_path(loc)
+    if kind == ACTION_PARAMS:
+        params = cast(ActionParamsContext, error.get("ctx"))
+        verb = params["verb"]
+        return f"{where}, {_misfit(verb, executed_descriptor(space, verb), params['problems'])}"
+    if kind == ACTION_UNKNOWN:
+        unknown = cast(ActionUnknownContext, error.get("ctx"))
+        return f"{where}, {_not_an_action(space, unknown['verb'])}"
+    shape = cast(ActionShapeContext, error.get("ctx"))
+    offered = ", ".join(sorted(descriptor.name for descriptor in space.descriptors))
+    return (
+        f"{where}, {shape['written']}: each action is an object with exactly one key, the "
+        f"action's name, whose value is the object of its parameters (its actions: {offered})"
+    )
+
+
+def _field_path(loc: tuple[int | str, ...]) -> str:
+    """A field's path in a reply, as JSON reads it: ``actions[1].reasoning``."""
+    path = ""
+    for part in loc:
+        path += f"[{part}]" if isinstance(part, int) else (f".{part}" if path else part)
+    return path
 
 
 async def _reject_action(action: Action, active_names: frozenset[str]) -> ActionResult:

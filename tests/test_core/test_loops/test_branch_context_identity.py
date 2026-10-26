@@ -52,8 +52,9 @@ def _refusal(raw: str) -> StructuredOutputValidationError:
 
 
 #: Per agent: the source's replies in call order. Step 0 takes two calls (a
-#: reply the agent's parser refuses, then one it reads); step 1 is a
-#: two-action reply cut to one; step 2 one action; step 3 done.
+#: refused reply — by the provider and the framework's refusal for the
+#: structured agents, by UI-TARS's parser for its text — then one the agent
+#: reads); step 1 is a two-action reply cut to one; step 2 one action; step 3 done.
 SCRIPTS: dict[str, Callable[[], list[Any]]] = {
     "browser_use": lambda: [
         _refusal('{"memory": "", "action": [{"browser.fly": {}}]}'),
@@ -187,6 +188,34 @@ async def test_history_from_recording_prompt_from_live(
         # Recorded index actions ran against the fresh handles.
         if kind != "ui_tars" and step > 0:
             assert "'index': 501" in branch.cap.log[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "refused"),
+    [
+        (
+            "browser_use",
+            "Error: the reply does not fit the output schema: action 1, browser.fly is not an "
+            "action this run executes (its actions: ",
+        ),
+        (
+            "skyvern",
+            "Error: the reply does not fit the output schema: actions: Input should be a valid "
+            "array\n",
+        ),
+    ],
+)
+async def test_a_refused_structured_reply_reads_back_as_the_same_refusal(
+    tmp_path: Path, kind: AgentKind, refused: str
+) -> None:
+    """The framework words the refusal of a reply the provider refused, and words it again
+    from the recorded text when a branch rebuilds the history it is in."""
+    _, source = await _source(tmp_path, kind, "simple")
+    retry = recorded_form(as_chat(source.llm_messages(0)[1]).messages)
+    assert refused in str(retry[-1]["content"]), "the source's re-ask carries the refusal"
+    branch = await _branch(tmp_path, kind, "simple", source, 1, id_offset=100)
+    teacher = recorded_form(branch.teacher.prompts[0])
+    assert [m for m in teacher if refused in str(m["content"])] == [retry[-1]]
 
 
 @pytest.mark.parametrize("memory", MEMORIES)
