@@ -145,7 +145,7 @@
 
 - `python -m lookahead stability ... --media-areas configs/replay_rules`〔多轮〕：四到五成的观测在拍下之后 1 秒内就变了；有媒体在播的观测几乎全在媒体上变（上一轮百里有九十九），不加这个选项视频页几乎永远算不稳定。变化按 32 像素网格判，dHash 只作参考。
 - `judge-forks` 用模型判：规则和模型都下结论时只有约六成一致，分歧多是规则说"不同"、模型说"同一意图"，所以规则只适合预筛〔多轮〕。上一轮的 judge 是经 DMX 的 `deepseek-v4.1-flash-1017`，几百次调用全部通过校验；现在改用 DeepSeek 官方接口（`configs/lookahead/judge_deepseek.yaml`，`max_completion_tokens: 16384`，此前最长的回复不到 5000 token）。DeepSeek 没有 `json_schema`，provider 把 schema 写进提示、收到后校验；官方接口上的结构化回复只探测过几次〔小样本〕。
-- `gold-queue` 抽 100 条，用 `spectragent view --root <轮次目录> --annotations <标注目录> --annotator <名字>` 标注。三类队列都建过，还没有存下过人工标注，标注流程没走完过〔未验证〕。
+- `gold-queue` 抽 100 条，用 `spectragent view --root <轮次目录> --annotations <标注目录> --annotator <名字>` 标注。三类队列都建过，但只在早期一轮存过十来条人工标注（对应的录制已删），标注流程还没完整走完过〔未验证〕。
 
 ### 已知不行与还没验证的
 
