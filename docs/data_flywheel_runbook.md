@@ -10,6 +10,155 @@
 | 导出 | `spectragent export` | `export_sft.yaml`、`ui_tars_student.yaml` | 数据集目录 |
 | 度量 | `spectragent flywheel run`、`spectragent flywheel report` | 自己写的链规格 | `report.json`、`report.md` |
 
+## 配置指南 101（实测推荐）
+
+这一节只收前几轮真正跑过、量过或测过的设置，主要来自 2026 年 10 月下旬的几轮采集（每轮同样 15 个 LexBench L1 任务：同花顺、爱奇艺、哔哩哔哩、IGN、腾讯视频各 3 个，第一轮之后携程换成了 IGN；录制之后离线分叉、评判），加上更早一条跑通 12 个中文站点的完整链和 fixture 测试。每条写推荐值、为什么、在哪类页面上表现如何。证据范围用标记写在条目里：
+
+- 〔多轮〕几轮采集里反复用过；〔一轮〕只在一轮里量过；〔一次〕只跑过一次对比；
+- 〔小样本〕一两个站点、一个账号或几次运行；〔仅 fixture〕只在本机 fixture 或脚本化模型上测过；〔未验证〕还没在真实站点上跑过。
+
+完整配置不在这里重复。上一轮采集实际跑的配置在 `configs/lookahead/`，每个文件开头的注释逐项说明它的设置；通用的发布示例在 `configs/flywheel/`；一轮采集的命令顺序见 [lookahead/README.md](../lookahead/README.md) 的 "A collection round"。两套配置都写 `background_tabs: freeze`，其余差别见下表。
+
+### 一轮采集的顺序
+
+1. 准备：固定宿主外观，换到快网络，在 shell 里导出密钥（见"录制前准备"）。
+2. 录制：每个站点一个 sweep，最多 3 个站点同时跑。
+3. `lookahead health`：写出排除文件，之后每一段都读它。
+4. `lookahead variants`：judge 看着录下的画面写换任务的变体。
+5. 分叉：三组（同任务、换任务、换任务去掉源思考）各先 `--list` 看任务 id，再分几个进程跑。
+6. 审核：`extract`、`stability --media-areas configs/replay_rules`、`judge-forks`、`gold-queue`，再开 viewer 标注。
+7. 恢复不了的分叉：看近邻 miss 和恢复证据，补站点规则，只改 `site_rules` 在同一批录制上重跑分叉对比（下面"站点规则"）。
+
+### 发布示例与上一轮采集的差别
+
+| 设置 | `configs/flywheel/` | `configs/lookahead/` | 为什么（见下文各节） |
+|---|---|---|---|
+| teacher | `gpt-4o`，分叉温度 0.8 | `deepseek-v4.1-flash-1017`，`reasoning_effort: high`，温度 `null` | 采集实际用的模型；DeepSeek 思考时不看温度 |
+| loop | `max_steps: 30` | `max_steps: 32`，`parse_retries_per_step: 1`，录制 `terminal_observation: true` | 解析失败重问一次；最后一步要有结果画面 |
+| pinned | 时区 `UTC`、语言 `en-US`（默认） | `timezone: Asia/Shanghai`，`locale: zh-CN` | 中文站点 |
+| 截图与归档 | 不画指针，三个归档器 | `screenshot_cursor: true`，再加 `browser.frames` | 前瞻标签要动作前后的帧 |
+| 恢复器 | `verify: strict`，`pace: none` | `verify: warn`，`pace: recorded_llm_latency` | strict 丢掉大部分分叉；按录下的模型等待重放前缀恢复得更好 |
+| 选步 | `all`，每步 3 个分叉，`on_unbranchable: raise` | `every_k`（k 4，offset 1），每点 2 个，`skip`，加 `exclude_runs` | 控制花费；坏录制由健康检查排除 |
+
+### 录制前准备
+
+- **机器与后端**：本机 `local_chrome`，`headless: true`〔多轮〕。六个云后端既不能录制也不能回放，`prepare()` 就拒绝。`headless` 属于启动参数，录制与回放必须相同。
+- **网络要快**〔一轮〕。慢网络上 teacher 常在页面还没加载完时做决定。上一轮的采集里约 2/3 等到了落定；约 1/3 被 5 秒上限截断，但只是 DOM 还在变（播放器、轮播、行情），不是没加载完；约 3% 被截断时主文档还没到 `load`。只有最后一种算"没加载完"：这种步不当分叉检查点、不出导出样本，teacher 也会被直接告知（这三条 10 月 25 日才落地，还没在一整轮上跑过）。离线回放瞬间应答，录到"正在加载"的页面在分叉里永远对不上，回放时等多久也补不回来。
+- **同时最多录 3 个站点**〔一轮〕：每个站点一个 `spectragent bench` sweep，站内任务依次跑。5 个站点并行时页面下载被饿死、中途断开，爱奇艺首页因此停在骨架屏。
+- **整轮固定 macOS 外观**（例如一直用深色）〔一轮〕。页面配色由 pinned 测量并固定，但 headless Chrome 的原生滚动条跟随宿主外观，又不记录：外观自动切换时，白天回放夜里的录制，每张带滚动条的截图都差几位 dHash，曾让一批分叉作废重跑。开跑前 `defaults read -g AppleInterfaceStyle` 应输出 `Dark`。
+- **回放机器的系统语言与录制相同**：macOS 上 Chrome 的默认语言取系统语言，不同就拒绝回放（见"前提与限制"）。
+- **环境变量**：`spectragent bench` 不读 `.env`，先 `set -a; . ./.env; set +a`。teacher 和 judge 都从 `OPENAI_API_KEY` 读密钥，两者不是同一家服务时，在 judge 那条命令前单独写 `OPENAI_API_KEY=<那家的密钥>`（用错密钥第一个请求就被拒）。Chrome 自动找不到时设 `CHROME_EXECUTABLE_PATH`，基准数据位置用 `SPECTRAGENT_BENCHMARK_DATA`。
+- **超时**〔多轮〕：录制 `--timeout 1800`，分叉 `--timeout 1500`（都是每个任务的秒数），模型调用 `timeout: 300`。分叉按录下的模型等待节奏重放前缀，靠后的检查点单个要近 20 分钟，900 秒曾不够。
+- **录完先跑健康检查**〔两轮〕：`python -m lookahead health` 把页面一直没渲染、开头的内容请求在真实网络上就失败的录制写进一个排除文件，之后分叉（`trace_branches` 的 `exclude_runs`）和审核命令（`--exclude-runs`）都读它。这类录制的分叉反而"恢复得很好"（页面什么都没变），不排除就污染数据。它认不出风控拦截页：录完翻几张截图，携程那一轮就是看截图才发现几乎全是拦截页。
+- **teacher 的提示词变了就重录**。`history_source: source` 要求分叉前缀的提示与录制逐字节相同。10 月 24–25 日的改动（一步里有动作失败就停下、`send_keys` 执行浏览器自己的后退/前进/刷新/关标签页/切标签页快捷键、采集时页面没加载完的明确提示）都改了 teacher 的提示，之前的录制只能用 `restored` 历史分叉。
+
+### Teacher
+
+| 设置 | 推荐值 | 依据 |
+|---|---|---|
+| agent | `ui_tars`，`prompt_template: computer_use` | 〔多轮〕纯视觉，不协商 DOM |
+| 模型与路由 | `deepseek-v4.1-flash-1017`，`reasoning_effort: high`，经 DMX 网关的 OpenAI 兼容路由（`model_type: openai`，`provider: {name: direct}`，`base_url` 写网关的 `/v1`） | 〔多轮〕下一轮 teacher 走哪条路由还没定。截至 2026 年 9–10 月测得：DMX 在上游通道之间轮询，同一请求这次成功下次失败，它的 Claude 路由不适合要求复现的评测；HTTP 200 也不代表 schema 被遵守 |
+| `coordinate_space` | 这个 DeepSeek 模型用 `screenshot_pixels` | 〔一轮，两站〕用 0–1000 网格时它自己在网格和像素之间来回换，三到五成的输入把数写成了像素；改成像素后约 30 次输入没有一次写错坐标系。换模型先核对几次回答：Qwen 系和 dots-3 在 UI-TARS 提示下答 0–1000，用 `normalized_1000`〔小样本〕；Gemini 3.8 Flash 在像素提示下混入网格坐标〔一张合成图〕。学生照旧 `normalized_1000`，导出从 trace 的 CSS 像素换算 |
+| `max_steps` / `max_actions_per_step` | 32 / 4；`max_actions_per_step` 在录制、分叉、学生里都要相同 | 〔多轮〕分叉开跑前核对它与源 run 相同；学生的动作数小于录制时，多出动作的步导不出来 |
+| `parse_retries_per_step` | 1 | 〔多轮〕回复解析不了时同一步重问一次 |
+| `terminal_observation` | `true` | 最后一个动作也有结果画面，审核和判分都要用 |
+| `max_completion_tokens` | 32768 | 〔一轮〕16384 时 high 推理的回复被截断过 |
+| `temperature`、`frequency_penalty` | 都写 `null` | DeepSeek 思考时不看温度，penalty 完全不起作用（官方接口实测）；分叉之间的差别靠模型自己的采样 |
+| `show_capture_state`、`show_action_effects` | 默认 `true`，录制与分叉相同 | 前者改变观测协商，取值不同的录制不能互相分叉，也不能一起导出；后者只改提示，`history_source: source` 的分叉要求它与源相同 |
+
+花费〔一轮〕：一个分叉的决定与一个录制的决定 token 差不多（每次约 1.4 万输入 token，都带着全部历史）。一轮 15 个任务约 1200 万 token：录制约一半，同任务分叉约四分之一，换任务分叉约六分之一，评判不到十分之一。
+
+### 浏览器能力（capability 块）
+
+| 键 | 推荐值 | 依据与表现 |
+|---|---|---|
+| `replayability` | `pinned`，`random_seed: 7`，`base_time: run_start`（回放、分叉写 `from_archive`），`clock: shared`（默认），中文站 `timezone: Asia/Shanghai`、`locale: zh-CN`，`device_scale_factor: 1.0` | 〔多轮〕`clock: per_document` 让各标签页时间不一致，爱奇艺的跨标签页同步因此失控。`shared` 下页面拼进请求的时间戳每次回放都不同，带签名的接口（B 站 WBI）全部 miss，B 站分叉一度几乎全废，补了站点规则才恢复。评测和 anti-bot 实验用 `none`：pinned 会改变站点行为，本身也是能识别的特征（设计约定，没专门测） |
+| `user_agent`（pinned 的） | 采集几轮没写 | 没写时 headless Chrome 自报 `HeadlessChrome`。更早那条 12 站链写了本机大版本的普通 Chrome 标识，那时携程录得正常；一周后不写标识的一轮里携程几乎全是拦截页。两者有没有因果没验证〔未验证〕 |
+| `background_tabs` | `freeze`，录制、回放、分叉同值 | 〔多轮〕爱奇艺开到五个以上标签页时互相改写 `localStorage`，渲染进程占满 CPU、截图无应答，run 直接失败；冻结之后爱奇艺的任务都跑完了。`local_chrome` 的 `background_throttling: true` 实测无效。代价：离开的标签页里的视频回来时是暂停的，倒计时停住 |
+| `new_tabs` | `follow`（默认），三份配置同值 | 〔多轮〕新标签页的文档 10 秒内没加载完就不跟：慢网络上录制没跟过去，回放瞬间加载完跟了过去，从那一步起分叉对不上 |
+| `settle_quiet_ms` / `settle_max_wait_s` | 默认 500 / 5 | 〔多轮〕没调过。40 个真实站点上 `navigate` 之后平均多等约 1.8 秒，点击引起导航之后约 4.3 秒。视口里已经有内容时它不等在途请求：同花顺问财的结果页先拍到骨架条，约 1 秒后结果才填进来 |
+| `screenshot_cursor` | `true` | 〔多轮〕指针只画在给模型的图上，录下的截图是干净的；对 teacher 有没有帮助没对比过 |
+| 视口与截图 | 1280×720，`screenshot_format: png` | 〔多轮〕`jpeg` 没在采集里用过 |
+| `mouse_trajectory` / `typing_rhythm` | `instant` / `instant` | 〔多轮〕采集都用瞬时输入。2026 年 9 月的反爬实验：最像人的 `learned` 轨迹 9 项人类特征里中 7 项，真实 reCAPTCHA v2 仍然每次都升级到图片挑战；v3 给所有组都打 0.9，连瞬移也是。决定风控的是环境与信誉，光标动作远远不够 |
+| `retarget_tolerance_px` | 2.0（默认） | 只在分叉恢复时用，没调过 |
+
+### 归档（`trace_writer`）
+
+- 录制的 `archive` 写 `browser.network`、`browser.storage`、`browser.dom_raw`；要给前瞻模型做标签再加 `browser.frames`（`before_action: true`，`after_observation_delay_s: 1.0`）〔多轮〕。帧让每个动作通常多等约 0.07 秒，最多 1 秒，agent 看不到它们。回放与分叉把 `browser.network` 换成 `browser.replay_log`。
+- `recording` 四项全开〔多轮〕：`pace: recorded_timeline` 要读录制里每个动作的起止时间，`recording.metrics` 关着时不量，这样的源会被拒。
+- `browser.network` 用默认值。内联 body 一直扣到读完（`body_read_timeout_s` 默认 70 秒）：读完之前放行，会让中途断开的压缩脚本在页面一侧变成成功的空响应，爱奇艺骨架屏就是这么来的。
+- 网络归档每次收集的写盘预算固定 5 秒，没有旋钮：IGN 这类重页面加 8 路并行分叉时，少数分叉最后一两步的环境证据没收全（trace 记 `incomplete`，agent 的步照样提交）〔一轮〕。降低并行能不能避免没试过。
+- 需要登录的站点：任务 `setup` 的 `storage_state` 种子加 `browser.storage`（录下初态）；pinned 接受新建 context 加种子。小红书和 B 站各用一个账号录制并原路径回放过〔小样本〕。
+
+### 回放与分叉
+
+**网络来源**〔多轮〕：`network_source` 写 `source_id: archive`，`isolation: required`，`log_mode: full`，`shift_dates: none`，`matcher: {levels: [exact, normalized], site_rules: configs/replay_rules}`，`miss_policy: {miss_policy_id: strict}`。`fuzzy` 级别没在采集里用过〔未验证〕。
+
+**站点规则**是分叉恢复率逐轮上升（能评判的分叉从不到两成到约四分之三）的主要原因〔多轮〕。`configs/replay_rules/` 里每条规则的注释写着哪个站、什么失败、规则修好了什么：
+
+| 规则 | 做什么 | 实测 |
+|---|---|---|
+| 请求规则（`rules`） | 让只差易变字段的请求命中录下的应答：页面时钟算出的签名（B 站 WBI 的 `wts`、`w_rid`）、每次新生成的访客或设备号（爱奇艺）、jQuery 的 JSONP 回调名和防缓存参数；`parse_query` / `parse_body_paths` 解析字段里嵌套的值（腾讯视频播放器的 `vinfoparam`、爱奇艺 `dash` 的 `bop`） | B 站补了共享时钟规则后从几乎全废回到大部分可用；12 站原路径回放里 JSONP 回调改写多过了约 6 个百分点的校验〔一次〕。嵌套字段规则让播放器请求命中了，但离线视频仍然不播，校验结果没变 |
+| 页面地址规则（`page_urls`） | 恢复校验比较 URL 时去掉页面自己写进地址、不选内容的参数：B 站搜索页的 `vt`、同花顺选股结果页的 `sign` | 〔小样本〕7 个分叉里检查点恢复从 0 到 6，`url_mismatch` 不再出现 |
+| 媒体区域规则（`media_areas`） | 声明的视频页上恢复校验不判播放状态，截图比较前把视频框涂黑；涂黑超过画面 75% 时不涂 | 〔多轮〕腾讯视频的分叉从一个都恢复不了到过半可评判；IGN 首页和攻略页加上之后，IGN 能评判的分叉从约三分之二升到八成多 |
+
+加规则的流程：从度量报告的近邻 miss（`decision_inputs.site_rule_candidates`）找候选端点，看应答确认这些字段不选内容（关键词、页码、排序、id、筛选从不忽略），写反例测试，再只改 `site_rules` 重跑同一批分叉对比。媒体区域只声明视频页和搜索页。规则在每个回放 run 开始时冻结并记进 run，之后改目录不影响已跑的结果。
+
+**恢复器**（`restorer: {restorer_id: prefix_replay}`）：
+
+| 键 | 采集推荐 | 依据 |
+|---|---|---|
+| `verify` | `warn`，只评判检查点恢复了的分叉 | `strict` 遇到第一个不过的检查就结束 run：12 站那条链里约四分之三的分叉在前缀恢复时就被拒，这些分叉 teacher 一次都没调用〔一次〕。`warn` 把每项检查记进分叉的 trace，`lookahead judge-forks` 只评判检查点恢复了的〔多轮〕 |
+| `screenshot_max_distance` | 5（默认） | 没调过。dHash 看不见局部变化（视频预览变了 6–8% 的像素，距离仍是 0），所以视频差异不靠放宽阈值，交给媒体校验和媒体区域规则 |
+| `media` | `align` | 〔仅 fixture + 一个真实视频〕fixture 上不对齐时视频落后几秒、截图距离却在阈值之内；一个 31 秒的菜谱视频上，与视频有关的 27 步里对齐后过 26 步，不对齐只过 10 步 |
+| `pace` | `recorded_llm_latency`（上一轮实际用的） | 与 `none` 比，64 个分叉里检查点回到录下 URL 的从约六成升到约八成〔一次〕。分叉仍比录制早（按站点的中位数 3 到 35 秒，离线加载快得多），页面计时器（轮播的占位词、自动预告、弹窗）处在别的状态。`recorded_timeline` 按录制的整条时间线走：一个原型在 8 个恢复不了的分叉上救回 3 个，4 个本来能恢复的对照没弄坏〔小样本〕，合并进来的实现还没在真实数据上比过〔未验证〕，先在同一批分叉上比较两种再选 |
+| `media_time_tolerance_s` 等媒体旋钮 | 默认 | 没调过 |
+
+**任务加载器**（`trace_branches`）〔多轮〕：同任务分叉写 `step_selector: {selector_id: every_k, k: 4, offset: 1}`、`branches_per_step: 2`、`history_source: source`；换任务分叉用 `lookahead variants` 写出的变体文件（每个录制取 2 个检查点，每点 2 个变体）作 `task_variants`，每条 1 个分叉，必须 `history_source: restored`。都写 `on_unbranchable: skip`、`exclude_runs`（健康检查的排除文件）、`exclude_unloaded_checkpoints: true`（默认）。去掉源思考的对照（hook `omit_source_replies`）没看出差别〔小样本〕。
+
+**并行**〔一轮〕：把 `--list` 列出的任务分给几个 `spectragent bench` 进程，每个进程用自己的 `--session-dir`；上一轮同任务分叉开 8 个进程，两组换任务分叉各 4 个。重页面加 8 路并行会碰到上面的归档写盘问题。
+
+**分叉之间的差别**：发布示例的 teacher 用温度 0.8。高温下模型可能写出网格外的点：DMX 上的 qwen3.8-flash 在 `normalized_1000`、温度 0.8 下有一次写成了像素〔一次〕。换模型或调温度之后，先抽查几个分叉回复里的点再放量。
+
+### 各类网站的表现
+
+| 页面类型 | 例子 | 录制时 | 分叉恢复（上一轮能评判的比例） | 要注意的 |
+|---|---|---|---|---|
+| 行情、选股 | 同花顺、东方财富 | 几乎都等到了落定，但约三分之一的画面 1 秒内又变了（行情在跳） | 最好，近九成 | K 线请求的 `end_time` 有时是客户端时间、有时是翻页边界，规则分不开；首页推荐词一直在滚。东方财富的滑块验证码离线能显示，拖动的判定请求带着时间和随机数，回放不了 |
+| 视频站 | 腾讯视频、爱奇艺、B 站 | 播放页常等满 5 秒上限（视频一直在改变页面） | 腾讯视频近六成，爱奇艺约一半，B 站九成以上 | 离不开媒体区域规则。占满屏幕的自动预告（涂黑超过 75%）、shadow root 里 iframe 中的播放器处理不了；离线播放器常因加密的流请求不播；teacher 点了播放器上的广告或跳到别的视频站，之后的检查点全废（这一轮因此丢了约 7% 的分叉） |
+| 多标签页 | 爱奇艺 | 不冻结后台标签页会把渲染进程拖死 | — | 一定要 `background_tabs: freeze`；新标签页 10 秒的采纳等待见上 |
+| 搜索结果页 | B 站、爱奇艺、腾讯视频、同花顺 | 慢网络上常拍到"正在搜索" | 中等 | B 站 `vt`、同花顺 `sign` 靠页面地址规则；爱奇艺搜索框的轮播占位词随时间变，分叉比录制跑得快时，回车搜的是另一个词；腾讯视频搜索框回车会导航两次，记一次文档 miss |
+| 单页应用、页面自己改地址 | B 站个人空间、同花顺问财 | 落定等待不等在途请求 | — | 页面写进地址的参数用页面地址规则；带签名的数据接口用请求规则 |
+| 游戏资讯 | IGN | — | 八成多 | 攻略页用 `Math.random` 从 8 个视频里随机挑一个，挑到别的之后全部偏离；连按 PageDown 后有时滚到不同的位置 |
+| 新闻、门户、论坛 | V2EX、21 世纪经济报道、起点、豆瓣读书、澎湃、网易新闻 | — | 原路径回放校验约八成通过：V2EX、21 世纪经济报道、起点、豆瓣读书全过，网易新闻约三分之一，剩下的主要是轮播和定时切换的内容 | 〔一次，12 站，脚本化模型，每站两次〕那时 pinned 还是每文档一个时钟，换成共享时钟之后没在这些站上重测 |
+| 需要登录 | 小红书、B 站 | `storage_state` 种子 | B 站补了个人空间接口的规则后，30 次校验从只过几次到过 24–25 次 | 〔小样本，各一个账号〕B 站的登录信息接口（`/x/web-interface/nav`）按录制顺序应答，可能答给别的页面，没解决 |
+| 有风控的站 | 携程、搜狗 | 携程那一轮三个录制几乎全是拦截页，已剔除；搜狗筛站时出验证码 | 拦截页上的"恢复"没有意义 | 度量报告只按应答头认 Cloudflare 拦截，健康检查也认不出这类页面；拟人鼠标救不了 |
+
+### 导出
+
+- 用发布的 `export_sft.yaml` 和 `ui_tars_student.yaml`（学生 `normalized_1000`，`max_actions_per_step: 4`）。12 站那条链上两次导出逐字节相同，隐私检查零泄漏〔一次〕。导出代码冻结，学生一侧还没定。
+- `filters.exclude_unloaded_steps: true`（默认）：与分叉的检查点用同一条规则，只筛主文档没加载完的步〔仅 fixture〕。
+- `filters.exclude_restoration_diverged: true`（默认）会把任何一步校验没过的 run 整个排除。用 `verify: warn` 跑的分叉，前缀里常有没过的步，大多会被排除；这两者还没在真实数据上一起导出过〔未验证〕。
+- `wait_actions` 默认 `keep`。`drop_when_capped` 去掉 teacher 在被截断的采集上做的等待并改写受影响的 thought，要配 `thought_rewrite_llms` 和 `thought_rewrite_cache`；只用脚本化模型测过〔仅 fixture〕。上一轮约十分之一的步会受影响。
+
+### 审核与标注
+
+- `python -m lookahead stability ... --media-areas configs/replay_rules`〔多轮〕：四到五成的观测在拍下之后 1 秒内就变了；有媒体在播的观测几乎全在媒体上变（上一轮百里有九十九），不加这个选项视频页几乎永远算不稳定。变化按 32 像素网格判，dHash 只作参考。
+- `judge-forks` 用模型判：规则和模型都下结论时只有约六成一致，分歧多是规则说"不同"、模型说"同一意图"，所以规则只适合预筛〔多轮〕。上一轮的 judge 是经 DMX 的 `deepseek-v4.1-flash-1017`，几百次调用全部通过校验；现在改用 DeepSeek 官方接口（`configs/lookahead/judge_deepseek.yaml`，`max_completion_tokens: 16384`，此前最长的回复不到 5000 token）。DeepSeek 没有 `json_schema`，provider 把 schema 写进提示、收到后校验；官方接口上的结构化回复只探测过几次〔小样本〕。
+- `gold-queue` 抽 100 条，用 `spectragent view --root <轮次目录> --annotations <标注目录> --annotator <名字>` 标注。三类队列都建过，还没有存下过人工标注，标注流程没走完过〔未验证〕。
+
+### 已知不行与还没验证的
+
+已知不行：
+
+- 云浏览器后端录制或回放；`clock: per_document` 配多标签页同步的站点；用 `background_throttling: true` 代替冻结。
+- 用 `verify: strict` 采分叉（大部分在前缀就被拒）；放宽 `screenshot_max_distance` 来放过视频差异（阈值 5 以内已经放过过播放位置不同的画面，是媒体校验抓出来的）。
+- 控制页面时间（Chrome 虚拟时间）：六站探针里五站在截图时失败，没有接入。
+- 规则救不了的：选内容的字段、涂黑超过 75% 的全屏自动预告、shadow root 里 iframe 中的播放器、跳到录下字节之外的视频位置、WebSocket、录到的加载中页面（回放不按录下的时长延迟应答）。
+- 靠拟人鼠标和打字通过 reCAPTCHA v2。
+
+还没验证：合并后的 `pace: recorded_timeline`；`wait_actions: drop_when_capped` 和两个"没加载完"筛选在真实一轮上的效果；`send_keys` 执行浏览器快捷键之后 teacher 离站卡住的情况是否变少；pinned 写普通 Chrome 标识对风控站的影响；`matcher` 的 `fuzzy` 级别；`screenshot_format: jpeg`；`lifetime: experiment` 共享 Chrome 下的录制；整轮用 DeepSeek 官方接口做 judge；下一轮 teacher 的路由；半加载画面在评审标注里怎么算。
+
 ## 先在 fixture 上演练
 
 ```bash
