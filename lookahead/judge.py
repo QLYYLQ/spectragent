@@ -16,9 +16,10 @@ fails after that fails only its request, as does a reply cut at the token
 ceiling (``ModelOutputTruncatedError``) or stopped by the server
 (``ModelGenerationInterruptedError``): asking again would not change the
 budget or the server. The first request of a batch is sent alone, as a
-probe: when the route refuses it (a 4xx other than 429), the batch stops
-there with a message naming the status, instead of sending every request
-into the same refusal.
+probe: when it gets no reply at all — the route refuses it, the rate limit
+outlasts the SDK's retries, or the client cannot even be built (no API key)
+— the batch stops there with a message naming the status, instead of
+sending every request into the same failure.
 
 Every call is recorded — the model, its redacted configuration, latency,
 usage, the reply or the refused text, the model's reasoning, and why a call
@@ -77,7 +78,7 @@ CallErrorKind = Literal["validation", "truncated", "interrupted", "call"]
 
 
 class JudgeRouteError(RuntimeError):
-    """The judge model's route refused the probe request: no other request was sent."""
+    """The probe request got no reply from the judge model: no other request was sent."""
 
 
 @dataclass(frozen=True)
@@ -192,8 +193,9 @@ class JudgeOutcome(Generic[M]):
 
     value: M | None
     attempts: list[CallRecord]
-    #: The route's refusal (a 4xx other than 429) that ended the request, if one did.
-    refused: ModelProviderError | None = None
+    #: The failed call that left the request with no reply at all (after the SDK's own
+    #: retries), if one did; a refused, cut or stopped reply is not one.
+    failed_call: ModelProviderError | None = None
 
     @property
     def error(self) -> str | None:
@@ -256,11 +258,6 @@ class Totals:
         )
 
 
-def is_route_refusal(error: ModelProviderError) -> bool:
-    """A 4xx other than 429: the same request would be refused again."""
-    return 400 <= error.status_code < 500 and error.status_code != 429
-
-
 def refusal_reason(raw_output: str, reply_model: type[BaseModel]) -> str | None:
     """Why *raw_output* is not a *reply_model*: pydantic's errors, located and short.
 
@@ -317,19 +314,19 @@ class Judge:
         """Every request's outcome, in order; the first is sent alone as a probe.
 
         Raises:
-            JudgeRouteError: The route refused the probe (a 4xx other than
-                429); no other request was sent.
+            JudgeRouteError: The probe got no reply at all (a failed call,
+                whatever its status); no other request was sent.
         """
         if not requests:
             return []
         started = time.perf_counter()
         try:
             probe = await self.ask(requests[0])
-            if probe.refused is not None:
-                refused = probe.refused
+            if probe.failed_call is not None:
+                failed = probe.failed_call
                 raise JudgeRouteError(
-                    f"the judge model refused the first request (status "
-                    f"{refused.status_code}): {refused.message}. Model {self.model!r} from "
+                    f"the judge model gave the first request no reply (status "
+                    f"{failed.status_code}): {failed.message}. Model {self.model!r} from "
                     f"{self.judge_model.source}; check its model id, provider, base_url and API "
                     f"key. No other request was sent."
                 )
@@ -410,8 +407,7 @@ class Judge:
                 record.status = exc.status_code
                 record.error = exc.message
                 self._record(record, attempts)
-                refused = exc if is_route_refusal(exc) else None
-                return JudgeOutcome(value=None, attempts=attempts, refused=refused)
+                return JudgeOutcome(value=None, attempts=attempts, failed_call=exc)
             record.latency_ms = _elapsed_ms(started)
             record.usage = completion.usage
             record.stop_reason = completion.stop_reason

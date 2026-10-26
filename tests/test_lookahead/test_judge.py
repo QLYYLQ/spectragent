@@ -176,9 +176,9 @@ def test_a_cut_reply_fails_only_its_request_without_a_re_ask(
 
     llm = ScriptedChatModel(script)
     judge = _judge(llm)
-    # The cut reply is the probe: it is no route refusal, so the batch goes on.
+    # The cut reply is the probe: the route answered, so the batch goes on.
     outcomes = asyncio.run(judge.ask_all([_request("a", "first"), _request("b", "second")]))
-    assert outcomes[0].value is None and outcomes[0].refused is None
+    assert outcomes[0].value is None and outcomes[0].failed_call is None
     assert outcomes[1].value is not None
     (record,) = outcomes[0].attempts
     assert record.error_kind == kind and record.error_type == type(error).__name__
@@ -202,31 +202,44 @@ def test_a_cut_reply_fails_only_its_request_without_a_re_ask(
     ],
     ids=["429", "502", "connection", "503"],
 )
-def test_a_failure_left_after_the_sdk_retries_fails_only_its_request(
+def test_a_later_failure_left_after_the_sdk_retries_fails_only_its_request(
     error: ModelProviderError,
 ) -> None:
     def script(messages: list[BaseMessage]) -> str | Exception:
-        return error if "first" in prompt_text(messages) else GOOD
+        return error if "second" in prompt_text(messages) else GOOD
 
     judge = _judge(ScriptedChatModel(script))
-    outcomes = asyncio.run(judge.ask_all([_request("a", "first"), _request("b", "second")]))
-    assert outcomes[0].value is None and outcomes[0].refused is None
-    assert outcomes[1].value is not None
-    (record,) = outcomes[0].attempts
+    outcomes = asyncio.run(
+        judge.ask_all([_request("a", "first"), _request("b", "second"), _request("c", "third")])
+    )
+    assert outcomes[1].value is None and outcomes[1].failed_call is error
+    assert outcomes[0].value is not None and outcomes[2].value is not None
+    (record,) = outcomes[1].attempts
     assert record.error_kind == "call" and record.status == error.status_code
     assert record.error == error.message and record.error_type == type(error).__name__
 
 
-@pytest.mark.parametrize("status", [400, 401, 404])
-def test_the_first_request_probes_the_route_and_a_refusal_stops_the_batch(status: int) -> None:
-    llm = ScriptedChatModel(
-        lambda messages: ModelProviderError("Model Not Exist", status_code=status)
-    )
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModelProviderError("Model Not Exist", status_code=400),
+        ModelProviderError("Authentication Fails", status_code=401),
+        ModelProviderError("Model Not Exist", status_code=404),
+        ModelRateLimitError("slow down"),
+        ModelProviderError("bad gateway", status_code=502),
+        # What core/llm reports when the client cannot be built (no API key).
+        ModelProviderError("The api_key client option must be set", status_code=502),
+        ModelProviderError("unavailable", status_code=503),
+    ],
+    ids=["400", "401", "404", "429", "502", "no-key", "503"],
+)
+def test_a_first_request_without_any_reply_stops_the_batch(error: ModelProviderError) -> None:
+    llm = ScriptedChatModel(lambda messages: error)
     judge = Judge(judge_model(llm, Path("configs/judge.yaml")))
     with pytest.raises(JudgeRouteError) as raised:
         asyncio.run(judge.ask_all([_request(f"run@{index}") for index in range(5)]))
     message = str(raised.value)
-    assert f"status {status}" in message and "Model Not Exist" in message
+    assert f"status {error.status_code}" in message and error.message in message
     assert "configs/judge.yaml" in message and "No other request was sent" in message
     assert len(llm.calls) == 1
 
@@ -240,7 +253,7 @@ def test_a_later_refusal_fails_only_its_request() -> None:
     judge = _judge(ScriptedChatModel(script))
     outcomes = asyncio.run(judge.ask_all([_request("a"), _request("b", "second")]))
     assert outcomes[0].value is not None
-    assert outcomes[1].value is None and outcomes[1].refused is not None
+    assert outcomes[1].value is None and outcomes[1].failed_call is not None
     assert outcomes[1].attempts[0].status == 413
 
 

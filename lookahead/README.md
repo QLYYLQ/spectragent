@@ -452,10 +452,13 @@ server error (5xx) or a lost connection; what still fails then fails only its
 request. So does a reply cut at the token ceiling or stopped by the server
 (DeepSeek's `insufficient_system_resource` / `aborted`): it is recorded and
 not asked again, since the budget and the server would be the same. The first
-request is sent alone as a probe: when the route refuses it with any other
-4xx (a wrong model id, a bad key), the command stops with the status, the
-provider's message and the configuration file, before sending anything else
-and before writing any output.
+request is sent alone as a probe: when it gets no reply at all — the route
+refuses it (a wrong model id, a bad key), a rate limit or server error
+outlasts the SDK's retries, or the client cannot be built (no API key in the
+environment) — the command stops with the status, the provider's message and
+the configuration file, before sending anything else and before writing any
+output. A reply that was refused by validation, cut at the token ceiling or
+stopped by the server is an answer from the route, so the batch goes on.
 
 Every call is recorded in `calls.jsonl` (`FILE.calls.jsonl` for `variants`),
 one JSON object per `ainvoke`, in the order the calls finished:
