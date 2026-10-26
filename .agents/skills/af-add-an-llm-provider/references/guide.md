@@ -235,11 +235,14 @@ Two things to know:
 A reply that does not fit the schema is the **one provider error the model can fix**.
 It must raise `StructuredOutputValidationError` (`exceptions.py:38`, status 422,
 carrying `raw_output` + `usage`), never a generic `ModelProviderError`. The Loop catches
-it at `core/loops/react.py:357-376`, rebuilds a `ChatInvokeCompletion` from
-`exc.raw_output`, and feeds it back through the agent's own parser — which knows this
-run's negotiated verbs and answers with one located line. Before this was fixed (defect
-F10) only 3 of 12 providers did it, so whether a mistyped parameter cost a step or the
-whole run depended on which provider key the YAML happened to name.
+it in `ReactLoop.execute_step` and reads `exc.raw_output` through `ReactLoop.read_reply`:
+the framework words the refusal from that text, the output model and the run's action
+space (`core/action_guard.py::reply_refusal`), every mistake located in the voice of the
+params check, and the agent's parser never sees the refused reply. So `raw_output` must be
+the text the validator actually validated (unwrapped, not the wire text): a branch rereads
+it from the trace to word the same refusal again. Before this was fixed (defect F10) only
+3 of 12 providers raised it, so whether a mistyped parameter cost a step or the whole run
+depended on which provider key the YAML happened to name.
 
 Two guards keep it: the AST scan above, and the 19-row behaviour table at
 `test_provider_validation.py:451`, which drives a real bad reply through every

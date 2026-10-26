@@ -74,7 +74,7 @@ from spectragent.core.loops.coordinate_frames import (
     step_frame,
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
-from spectragent.core.loops.react import ReactLoop
+from spectragent.core.loops.react import ReactLoop, validated_reply
 from spectragent.core.negotiation.observation import IncompatibleFragmentError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
@@ -726,18 +726,27 @@ class StudentRenderer:
     ) -> tuple[list[Action], list[int]]:
         """The four round-trip clauses (arch §4.15); the executed actions and point errors.
 
-        The reply is read as a served one is: parsed by the student, its points
-        moved off the step's *frame* into the capability's units. The fixed
-        point writes those back onto the frame, and the points' tolerance is
-        the frame's grid ``quantum``.
+        The reply is read as a served one is: validated against the student's
+        output model when it has one (``validated_reply``: its parser reads
+        only a validated reply), parsed by the student, its points moved off
+        the step's *frame* into the capability's units. The fixed point writes
+        those back onto the frame, and the points' tolerance is the frame's
+        grid ``quantum``.
 
         Raises:
             RoundTripError: Naming the clause that failed.
         """
         sample_id = sample.sample_id
+        output_model = (
+            self.agent.get_react_output_model()
+            if hasattr(self.agent, "get_react_output_model")
+            else None
+        )
         try:
             parsed = actions_in_capability_units(
-                self.agent.parse_react_output(text), frame, self.space
+                self.agent.parse_react_output(validated_reply(self.space, output_model, text)),
+                frame,
+                self.space,
             )
         except ParseError as exc:
             raise RoundTripError(sample_id, f"the reply does not parse: {exc}") from exc

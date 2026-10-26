@@ -95,14 +95,32 @@ ReAct keeps its own phase vocabulary and knobs:
 
 Parsing is Agent knowledge; deciding what to do with a parse failure is Loop policy. The
 Agent raises `ParseError(detail, raw_output=...)`; ReAct's public `parse_feedback` renders
-that diagnostic for another ask. A schema validation failure carries its actual rejected
-reply. Before any parsed action runs, ReAct's public `check_action_params(run, actions)`
-validates the ones that would run against their `Params` (`core/action_guard.py::
-params_refusal` over `run.action_space`) and raises the same `ParseError` on a misfit, so a
-malformed action is rewritten by the model, never executed and never a failed
-`ActionResult` (user ruling 2026-10-23). A new Loop that executes parsed actions calls the
-same check. A truncated provider response follows the existing truncation policy; do not
-reinterpret it as a successful parse or manufacture a partial action.
+that diagnostic for another ask. Before any parsed action runs, ReAct's public
+`check_action_params(run, actions)` validates the ones that would run against their
+`Params` (`core/action_guard.py::params_refusal` over `run.action_space`, with
+`name_refusal` for a name the run does not execute) and raises the same `ParseError` on a
+misfit, so a malformed action is rewritten by the model, never executed and never a failed
+`ActionResult` (user ruling 2026-10-23). A truncated provider response follows the existing
+truncation policy; do not reinterpret it as a successful parse or manufacture a partial
+action.
+
+A structured reply that does not fit the Agent's output model is refused by the
+framework, not the Agent. The provider raises `StructuredOutputValidationError` with the
+text its validator saw (`raw_output`); ReAct words the refusal from that text, the output
+model and the run's action space (`core/action_guard.py::reply_refusal`), in the voice of
+the params check: invalid JSON as one line with the decoder's position, an action item as
+`action N, <verb>: <param>: <msg> (<verb> takes ...)`, an unknown verb as the name check
+words it, other fields by their path. It reads the action union's typed errors
+(`action_shape`, `action_unknown`, `action_params` in `core/actions/action_union.py`),
+never a message string. The Agent's parser never sees that reply: an Agent with an output
+model parses only a validated instance (`core/loops/react.py::validated_reply` validates
+any text first). There is no Agent slot for custom feedback.
+
+`read_reply(run, reply, *, frame, output_model)` is ReAct's one reading of a reply:
+framework validation of a structured run's text, the Agent's parser, the points moved off
+the step's frame (`actions_in_capability_units`), then `check_action_params`. A new Loop
+that executes parsed actions reads replies through it, or calls the same checks in the
+same order.
 
 A step stops at its first failed action (user ruling 2026-10-24): a result with `success`
 False, the guard's refusal of a name included, ends the step's execution, and the actions
@@ -121,6 +139,8 @@ hands over.
 
 The shared ReAct operations are public:
 
+- `read_reply(run, reply, *, frame, output_model)` reads a reply into checked actions or
+  raises the `ParseError` that sends it back (§2 above).
 - `cap_actions(actions, step_idx)` applies the action budget and names discarded actions.
 - `remember_rejected(memory, output_text, exc)` records the rejected assistant reply and
   feedback turn.
@@ -310,7 +330,11 @@ a guard's veto still propagates. Runtime's execution clock includes the observat
 consume the policy-step budget, enter the run's policy action history, or inherit source
 model usage. Source history reconstruction replays only Agent decision/retry calls, not
 auxiliary model replies. `history_source: source` reconstructs and exactly checks recorded prompts, replaying only
-main decision calls and recorded contributions. `restored` asks the Agent's public
+main decision calls and recorded contributions. It reads each recorded reply through
+`read_reply`, a refused structured reply from its recorded `raw_output`, so a refusal reads
+back in the words the live step used; a source recorded before structured refusals were the
+framework's (2026-10-26) carries the old pydantic wording and no longer matches.
+`restored` asks the Agent's public
 `build_restored_history` slot to express live restoration observations, actual retargeted
 actions and results, and separately labelled source material. It does not rewrite source
 thoughts or touch Agent-private history. Both use the same live checkpoint observation;

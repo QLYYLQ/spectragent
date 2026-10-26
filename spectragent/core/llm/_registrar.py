@@ -143,8 +143,9 @@ class ChatModelBase(ModelBase, metaclass=LLMRegistrar.Meta):
         for the model to fix.
 
         Raising :class:`StructuredOutputValidationError` instead keeps the
-        model's own text, so the Loop can put it through the agent's parser
-        and hand the model a located, single-line correction.
+        model's own text, so the Loop can word the correction itself, every
+        mistake located (``core/action_guard.py::reply_refusal``), and hand
+        it back to the model.
 
         **Every** registered provider routes its structured path through
         here, and a test walks ``providers/`` to keep it that way. That is
@@ -162,9 +163,9 @@ class ChatModelBase(ModelBase, metaclass=LLMRegistrar.Meta):
             wire_text: What the provider actually received, when *payload*
                 is not that — a fence was unwrapped, prose was trimmed off,
                 the text was parsed to a dict. ``raw_output`` still carries
-                *payload*, because its job is to go back through the
-                agent's parser and the unwrapped form is the one that
-                parses. But the difference is a diagnosis: a reply that
+                *payload*, because the Loop words its refusal from it by
+                validating it again, and the unwrapped form is the one that
+                was validated. But the difference is a diagnosis: a reply that
                 arrived fenced *and* does not fit the schema is the
                 signature of a gateway that dropped ``response_format`` on
                 the way to a vendor's native API, and with only the

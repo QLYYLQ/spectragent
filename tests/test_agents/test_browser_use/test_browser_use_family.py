@@ -73,6 +73,7 @@ from tests._helpers.action_params import minimal_params
 from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 from tests._helpers.fragment_formats import dom_formats
+from tests._helpers.replies import read_reply
 
 MEMBERS: tuple[type[BrowserUseAgent], ...] = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
 
@@ -223,6 +224,10 @@ class _Run:
 
     def reply(self, *items: dict[str, Any]) -> str:
         return json.dumps({"memory": "m", "action": list(items)})
+
+    def read(self, reply: object) -> list[Action]:
+        """*reply* read as a run reads it: text validated by the framework, then the parser."""
+        return read_reply(self.agent, reply, self.action_space)
 
 
 # ── The family ────────────────────────────────────────────────────────
@@ -583,14 +588,18 @@ def test_the_action_failure_names_the_member_too() -> None:
     ],
 )
 def test_a_verb_the_member_lacks_is_refused(item: dict[str, Any]) -> None:
-    """Structured and text paths alike — one per-run model validates both."""
+    """Structured and text paths alike — one per-run model validates both.
+
+    Text is the framework's to validate (a reply the provider refused): it
+    refuses the verb as ReAct's name check words it.
+    """
     from pydantic import ValidationError
 
     from spectragent.core.loops.errors import ParseError
 
     run = _Run(BrowserUseDomAgent)
-    with pytest.raises(ParseError):
-        run.agent.parse_react_output(run.reply(item))
+    with pytest.raises(ParseError, match=f"action 1, {next(iter(item))} is not an action"):
+        run.read(run.reply(item))
     with pytest.raises(ValidationError):
         run.model.model_validate({"memory": "", "action": [item]})
 
@@ -627,7 +636,7 @@ async def test_what_the_agent_emits_is_what_the_action_declares(
 
     for descriptor in run.descriptors:
         params = minimal_params(descriptor)
-        (action,) = run.agent.parse_react_output(run.reply({descriptor.name: params}))
+        (action,) = run.read(run.reply({descriptor.name: params}))
         await guard(action)
         emitted = routed[-1]
         assert emitted.name == descriptor.name
@@ -767,9 +776,7 @@ async def test_the_per_run_schema_republishes_default_null_on_purpose(
     )
     verb, name = optional_nulls[0]
     descriptor = next(d for d in run.descriptors if d.name == verb)
-    (action,) = run.agent.parse_react_output(
-        run.reply({verb: {**minimal_params(descriptor), name: None}})
-    )
+    (action,) = run.read(run.reply({verb: {**minimal_params(descriptor), name: None}}))
     assert name not in action.params
 
 
@@ -791,7 +798,7 @@ def test_done_with_no_answer_keeps_its_null_and_passes_the_params_check(
         if structured
         else run.reply(payload)
     )
-    (action,) = run.agent.parse_react_output(reply)
+    (action,) = run.read(reply)
     assert action == Action(name="browser.done", params={"extracted_content": None})
     assert params_refusal(run.action_space, action) is None
 

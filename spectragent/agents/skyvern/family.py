@@ -60,7 +60,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
 from spectragent.agents._registrar import AgentBase
@@ -87,7 +87,6 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
-from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
@@ -368,41 +367,30 @@ class SkyvernAgent(AgentBase):
         )
         return [*messages, restored]
 
-    def parse_react_output(self, llm_output: Any) -> list[Action]:
-        """Validate a reply against this run's closed schema, as Actions.
+    def parse_react_output(self, llm_output: BaseModel) -> list[Action]:
+        """The Actions of a reply validated against this run's closed schema.
 
-        A provider-validated instance and free-form JSON text go through the
-        same per-run model, so a run that falls back to text is held to the
-        same verbs and parameter types. A name the model wrote is a name the
-        run holds: the schema permits only negotiated, fully-qualified keys.
+        The reply is an instance of :meth:`get_react_output_model`: the
+        provider validated it, or the framework did (a reply that arrived as
+        text, ``core/loops/react.py::validated_reply``). A reply that does not
+        fit never gets here; the framework refuses it, in the words of its
+        params check (``core/action_guard.py::reply_refusal``). A name the
+        model wrote is a name the run holds: the schema permits only
+        negotiated, fully-qualified keys.
 
         Raises:
-            ParseError: Anything the model can fix by writing another reply.
+            TypeError: *llm_output* is not this run's reply model: a caller
+                skipped the framework's validation.
+            RuntimeError: Called before ``prepare()`` built the model.
         """
-        model = self._reply_model
-        if model is None:
-            raise ParseError(
-                f"{self.agent_name}.parse_react_output ran before prepare(), so there "
-                f"is no negotiated action set to validate against.",
-                raw_output=str(llm_output)[:500],
-            )
-        parsed: Any = llm_output
+        model = self.get_react_output_model()
         if not isinstance(llm_output, model):
-            text = llm_output if isinstance(llm_output, str) else str(llm_output)
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ParseError(
-                    f"LLM output is not valid JSON: {exc}", raw_output=text[:500]
-                ) from exc
-            try:
-                parsed = model.model_validate(data)
-            except ValidationError as exc:
-                raise ParseError(
-                    f"LLM JSON does not match this run's output schema: {exc}",
-                    raw_output=text[:500],
-                ) from exc
-        return [action_of(item.action) for item in getattr(parsed, ACTIONS_FIELD)]
+            raise TypeError(
+                f"{self.agent_name}.parse_react_output reads a reply validated as "
+                f"{model.__name__}, not a {type(llm_output).__name__}; validate text "
+                "with core/loops/react.py::validated_reply first"
+            )
+        return [action_of(item.action) for item in getattr(llm_output, ACTIONS_FIELD)]
 
     def get_react_output_model(self) -> type[BaseModel]:
         """The closed per-run reply model, once ``prepare()`` has built it.

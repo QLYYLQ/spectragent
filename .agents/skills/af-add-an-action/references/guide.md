@@ -276,7 +276,8 @@ them. There are two ways to fall through, and af has a test for one of them.
 
 Tested. `tests/test_agents/test_browser_use/test_browser_use_family.py::test_what_the_agent_emits_is_what_the_action_declares` walks every negotiated
 descriptor, synthesizes the minimal legal payload from its own `params_schema`
-(`tests/_helpers/action_params.py:44`), pushes it through the agent's parser and the
+(`tests/_helpers/action_params.py:44`), reads it as a run does (`tests/_helpers/replies.py`:
+the framework validates the reply, then the agent's parser maps it) and pushes it through the
 guard, and validates what arrives against the action's real `Params`:
 
 ```python
@@ -348,6 +349,18 @@ Pinned by `test_schema_dialects.py:400` (no `discriminator`/`const`/`oneOf`, str
 non-strict), `:409` (every branch has exactly one property and one `required`), and
 `test_browser_use_family.py` (`test_each_action_branch_names_exactly_one_verb`, `test_the_strict_schema_is_clean`). Do not "tidy" it into a discriminated union; it
 reads better and does not work.
+
+**The union's errors are typed, and the framework words them for the model.** Its one
+`BeforeValidator` reports each action item's mistake as a single `PydanticCustomError`:
+`action_shape` (not an object naming one verb with an object of params), `action_unknown`
+(a verb this run does not have) or `action_params` (the verb's params refused;
+`ctx["problems"]` lists every param at fault). The verb is in `ctx`, the item's list index
+in `loc`. When a provider refuses a reply, `core/action_guard.py::reply_refusal` words the
+refusal from those types in the voice of `params_refusal` (`action 2, browser.type: text:
+Field required (browser.type takes ...)`), so a structured agent and a text-protocol one
+are told the same thing for the same mistake. A change to the union keeps the types and
+their context; the messages only reach the trace (`CallFailure.detail`), never the model.
+Pinned by `tests/test_core/test_action_guard.py::TestReplyRefusal`.
 
 Two more constraints your params can trip:
 

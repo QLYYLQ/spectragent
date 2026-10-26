@@ -42,6 +42,7 @@ from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_of
 from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.llm_clients import FakeClient
+from tests._helpers.replies import read_reply
 from tests._helpers.trace_builder import as_chat
 
 # ── Shared fixtures ───────────────────────────────────────────────
@@ -150,16 +151,20 @@ class TestPerRunModelRoundTrip:
 
 
 class TestHallucinatedVerbRejection:
-    """§6.1.1 — the per-run verb set must bite on the text path too."""
+    """§6.1.1 — the per-run verb set must bite on the text path too.
+
+    The text path is a reply the provider refused, which the framework
+    validates against the same per-run model (``validated_reply``).
+    """
 
     def test_text_path_rejects_hallucinated_verb(self) -> None:
         agent = _prepared_agent()
         raw = json.dumps({"memory": "m", "action": [{"totally_hallucinated_verb": {}}]})
         with pytest.raises(ParseError) as exc:
-            agent.parse_react_output(raw)
+            read_reply(agent, raw)
 
         detail = exc.value.detail
-        assert "totally_hallucinated_verb" in detail
+        assert "action 1, totally_hallucinated_verb is not an action this run executes" in detail
         # The allowed set rides along so the LLM can self-correct next turn.
         assert "browser.click" in detail
 
@@ -181,9 +186,9 @@ class TestHallucinatedVerbRejection:
             fragment_formats=dom_formats(),
             action_space=space_of(_descriptors("browser.click")),
         )
-        with pytest.raises(ParseError):
-            agent.parse_react_output(
-                json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
+        with pytest.raises(ParseError, match="action 1, browser.navigate is not an action"):
+            read_reply(
+                agent, json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
             )
 
     def test_before_prepare_there_is_nothing_to_validate_against(self) -> None:
@@ -193,8 +198,8 @@ class TestHallucinatedVerbRejection:
         ``list[dict[str, Any]]`` schema kept reaching providers unnoticed.
         """
         agent = BrowserUseDomAgent()
-        with pytest.raises(ParseError, match="before prepare"):
-            agent.parse_react_output(json.dumps(_PAYLOAD))
+        with pytest.raises(RuntimeError, match="before prepare"):
+            agent.parse_react_output(_PAYLOAD)  # type: ignore[arg-type]
 
 
 # ── 3. ReactLoop actually routes output_format ────────────────────
@@ -1015,9 +1020,8 @@ class TestStructuredValidationIsFedBack:
         with pytest.raises(StructuredOutputValidationError) as exc:
             await chat.ainvoke([UserMessage(content="hi")], model)
 
-        # It carries the model's own text, so the caller can put it back
-        # through the agent's parser — which knows the verb set and answers
-        # with one located line.
+        # It carries the model's own text, so the Loop can word the refusal
+        # from it: every mistake located, in the voice of a params refusal.
         assert exc.value.raw_output == bad
         assert exc.value.status_code == 422
 
@@ -1027,6 +1031,14 @@ class TestStructuredValidationIsFedBack:
 
         agent = _prepared_agent()
         bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
+        parsed: list[Any] = []
+        parse = agent.parse_react_output
+
+        def spy(reply: Any) -> list[Action]:
+            parsed.append(reply)
+            return parse(reply)
+
+        agent.parse_react_output = spy  # type: ignore[method-assign]
 
         class _RaisingLLM:
             inference_kind = "chat"
@@ -1050,7 +1062,7 @@ class TestStructuredValidationIsFedBack:
                     "llm": _RaisingLLM(),
                     "memory": memory,
                     "act_fn": env.act,
-                    "action_space": ActionSpace(),
+                    "action_space": space_of(_descriptors()),
                     "session_id": None,
                     "task_id": "t",
                 },
@@ -1066,9 +1078,13 @@ class TestStructuredValidationIsFedBack:
             if getattr(m, "role", "") == "user" and "[SYSTEM]" in str(m.content)
         ]
         assert feedback, "the model was never told its reply did not parse"
-        assert "nope" in str(feedback[-1])
-        # The agent's parser produced the message, not the provider's.
-        assert "unknown action" in str(feedback[-1])
+        # The framework worded it, as ReAct's name check words an unknown
+        # action; the agent's parser never saw the refused reply.
+        assert (
+            "action 1, nope is not an action this run executes "
+            "(its actions: browser.click, browser.done, browser.navigate)"
+        ) in str(feedback[-1])
+        assert parsed == []
 
     def test_a_generic_provider_error_still_ends_the_run(self) -> None:
         """The other half of the pair — and the reason the type matters.
