@@ -1,0 +1,32 @@
+# The judge model of `python -m lookahead variants` and `judge-forks`, passed as
+# --judge-config. The file holds one llm layer and nothing else; it is composed
+# like every model in the framework (lookahead/README.md, "The judge model").
+#
+# DeepSeek's official API (provider deepseek, https://api.deepseek.com/v1): it has
+# no json_schema response format, so the provider writes the reply's schema into
+# the system message and asks for json_object; the budget goes out as max_tokens.
+#
+# The API key: api_key is left out, so the OpenAI client reads OPENAI_API_KEY from
+# the environment. Give it DeepSeek's key for the command, e.g.
+#   OPENAI_API_KEY=<DeepSeek key> uv run python -m lookahead variants ... \
+#     --judge-config configs/lookahead/judge_deepseek.yaml
+# (a key exported for another gateway is refused by the first request). Writing
+# api_key here works too, in a copy kept out of git; calls.jsonl records the
+# configuration redacted, never the key.
+llm:
+  - model_type: openai
+    provider: {name: deepseek}
+    model: deepseek-flash
+    reasoning_effort: high
+    # Measured on the earlier judge (deepseek-v4.1-flash-1017, effort high, budget
+    # 8192): 299 judge-forks calls of 2026-10-21/22/23 used at most 4806 completion
+    # tokens (4669 of them reasoning; median 376, 99th percentile 2554, two above
+    # 4096); the variants runs averaged 900-1150 per call. None was cut. 16384 leaves
+    # more than three times the largest; a cut reply fails its request and is not
+    # asked again.
+    max_completion_tokens: 16384
+    # The SDK retries a rate limit, a server error or a lost connection this many
+    # times (pausing 0.5 s doubling to 8 s, or the server's Retry-After).
+    max_retries: 5
+    # The slowest of those 299 calls took 30 s; the earlier judge allowed 300 s.
+    timeout: 300

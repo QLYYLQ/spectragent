@@ -42,7 +42,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lookahead import imaging
 from lookahead.extract import restoration_summary, step_rows
-from lookahead.judge import Judge, JudgeOutcome, JudgeRequest, image_part, text_part
+from lookahead.judge import (
+    ContentPart,
+    Judge,
+    JudgeOutcome,
+    JudgeRequest,
+    image_part,
+    text_part,
+)
 from lookahead.output import write_lines, write_text
 from lookahead.queues import item_title, observation_image
 from lookahead.report import crosstab, excluded_section, share, table
@@ -645,7 +652,7 @@ def quality_request(fork: Fork) -> JudgeRequest[Any] | None:
     checkpoint = fork.branch.screenshot_bytes(branch.step)
     if checkpoint is None:
         return None
-    content: list[dict[str, Any]] = [
+    content: list[ContentPart] = [
         text_part(f"The agent's task: {branch.task}{_geometry(branch)}"),
         text_part(
             "Image 1: the screen at the decision point, before the agent's actions. Red rings "
@@ -697,7 +704,7 @@ def intent_request(fork: Fork) -> JudgeRequest[Any] | None:
     rings = markers(fork.branch, branch.step, fork.source, source.step, "A", BLUE) + markers(
         fork.branch, branch.step, fork.branch, branch.step, "B", RED
     )
-    content: list[dict[str, Any]] = [
+    content: list[ContentPart] = [
         text_part(
             "Two runs of an agent with the same task reached the same screen, and each issued "
             f"actions there.\nTask: {branch.task}{_geometry(branch)}"
@@ -863,7 +870,7 @@ def judgment_record(
             "quality": quality.error if quality is not None else None,
         },
         "llm_calls": [
-            attempt["call_id"]
+            attempt.call_id
             for outcome in (intent, quality)
             if outcome is not None
             for attempt in outcome.attempts
