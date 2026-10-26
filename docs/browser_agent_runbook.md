@@ -351,7 +351,7 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 ## 录制、回放与训练导出
 
-数据飞轮把 browser run 连同它的网络、存储和原始 DOM 一起录下，再离线回放、从录制的检查点分叉、导出训练数据，最后出一份度量报告。用法见 [数据飞轮运行手册](data_flywheel_runbook.md)，配置字段见 [configs/README.md](../configs/README.md)。各步的入口：
+数据飞轮把 browser run 连同它的网络、存储和原始 DOM 一起录下，再离线回放、从录制的检查点分叉、导出训练数据，最后出一份度量报告。用法见 [数据飞轮运行手册](data_flywheel_runbook.md)，配置字段见 [configs/README.md](../configs/README.md)。录制用哪个 teacher、哪些浏览器设置、各类网站上表现如何，按实测结果写在运行手册的 [配置指南 101（实测推荐）](data_flywheel_runbook.md#配置指南-101实测推荐)。各步的入口：
 
 | 用途 | 命令 |
 |---|---|

@@ -16,7 +16,9 @@ uv run python -m lookahead <command> --help
 
 One round records a few teacher runs live, multiplies them offline by branching, then builds
 review queues. The configurations the 2026-10-24 round ran are shipped in `configs/lookahead/`
-with paths relative to the repository root; each file's header explains its settings.
+with paths relative to the repository root; each file's header explains its settings. Why each
+setting has its value, what it was measured to do on which kind of site, and what is known not
+to work: `docs/data_flywheel_runbook.md`, section "配置指南 101（实测推荐）".
 
 | File | Step |
 |---|---|
