@@ -163,17 +163,16 @@ class TestOllamaUsage:
 
 
 class TestDeepSeekUsage:
-    async def test_tool_call_path_reports_usage(self, monkeypatch) -> None:
+    async def test_structured_path_reports_usage(self, monkeypatch) -> None:
         from spectragent.core.llm.providers.openai_deepseek import ChatDeepSeek
 
         chat = ChatDeepSeek(model="deepseek-chat", api_key="test")
 
-        tool_call = SimpleNamespace(function=SimpleNamespace(arguments=json.dumps({"memory": "m"})))
         response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(tool_calls=[tool_call]),
-                    finish_reason="tool_calls",
+                    message=SimpleNamespace(content=json.dumps({"memory": "m"}), tool_calls=None),
+                    finish_reason="stop",
                 )
             ],
             usage=SimpleNamespace(
@@ -181,7 +180,7 @@ class TestDeepSeekUsage:
                 completion_tokens=5,
                 total_tokens=15,
                 prompt_tokens_details=None,
-                completion_tokens_details=None,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=3),
             ),
         )
 
@@ -197,10 +196,8 @@ class TestDeepSeekUsage:
         assert result.usage is not None
         assert result.usage.prompt_tokens == 10
         assert result.usage.completion_tokens == 5
-        assert result.stop_reason == "tool_calls"
-
-
-# ── §6.4.5 Bedrock tool schema ─────────────────────────────────────
+        assert result.usage.completion_reasoning_tokens == 3
+        assert result.stop_reason == "stop"
 
 
 class TestBedrockToolSchema:

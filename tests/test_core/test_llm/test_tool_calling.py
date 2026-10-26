@@ -913,7 +913,7 @@ class TestStructuredOutputAndToolsConflict:
         from spectragent.core.llm.providers.openai_deepseek import ChatDeepSeek
 
         chat = ChatDeepSeek(model="deepseek-chat", api_key="test")
-        with pytest.raises(ToolsUnsupportedError, match="no free tool slot"):
+        with pytest.raises(ToolsUnsupportedError, match="schema into the prompt"):
             await chat.ainvoke([UserMessage(content="hi")], self._Out, tools=[_tool()])
 
     async def test_cerebras(self) -> None:

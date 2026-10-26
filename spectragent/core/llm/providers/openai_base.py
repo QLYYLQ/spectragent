@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import (
+    ModelGenerationInterruptedError,
     ModelOutputTruncatedError,
     ModelProviderError,
     ModelRateLimitError,
@@ -51,6 +52,15 @@ _LISTED_MODEL_DEFAULT_EFFORT = "low"
 #: ``reasoning`` is OpenRouter's, and Groq's, Cerebras' and Vercel's.
 _REASONING_FIELDS = ("reasoning_content", "reasoning")
 
+#: ``finish_reason`` values that say the *server* ended the generation, not the
+#: model and not the token ceiling. DeepSeek documents both
+#: (https://api-docs.deepseek.com/zh-cn/api/create-chat-completion): it ran out
+#: of resources, or the request was aborted. A gateway that forwards DeepSeek
+#: forwards them too, which is why they are read here and not only by
+#: ``openai.deepseek``. The reply is unfinished either way, so it is refused
+#: (:class:`ModelGenerationInterruptedError`) rather than validated.
+_SERVER_STOP_REASONS = frozenset({"insufficient_system_resource", "aborted"})
+
 
 def resolve_http_transport(
     http_client: httpx.AsyncClient | None, client_params: Mapping[str, Any] | None
@@ -70,7 +80,10 @@ def with_schema_instruction(
     """*messages* with *output_format*'s schema written in as an instruction.
 
     The instruction goes at the end of a leading system message, or into a
-    new one when there is none; the caller's messages are not modified.
+    new one when there is none; the caller's messages are not modified. It
+    names "JSON", which DeepSeek's ``json_object`` mode requires the prompt to
+    contain ("Prompt must contain the word 'json' in some form to use
+    'response_format' of type 'json_object'.").
     """
     schema = SchemaOptimizer.create_optimized_json_schema(output_format)
     instruction = (
@@ -189,7 +202,8 @@ class OpenAICompatBase(ChatModelBase):
     # Writing the schema into the prompt does exist, as a rule rather than a
     # knob: ``takes_schema_in_prompt`` answers from the model family
     # (``ModelFamily.supports_json_schema``), and an endpoint states its own
-    # rule by overriding it or ``prompt_schema_response_format``.
+    # rule by overriding it or ``prompt_schema_response_format``
+    # (``openai.deepseek`` asks for ``json_object`` there).
 
     # --- Client params ---
     api_key: Annotated[
@@ -212,10 +226,10 @@ class OpenAICompatBase(ChatModelBase):
         float | None,
         Field(
             description=(
-                "Request timeout in seconds, read by the direct and groq providers only "
-                "(the others do not pass it to their client). None (the default): the "
-                "direct client's own 600 s; Groq's client is handed None, which waits "
-                "without a limit."
+                "Request timeout in seconds, read by the direct, groq and deepseek "
+                "providers only (the others do not pass it to their client). None (the "
+                "default): the direct and deepseek clients' own 600 s; Groq's client is "
+                "handed None, which waits without a limit."
             )
         ),
     ] = None
@@ -540,7 +554,8 @@ class OpenAICompatBase(ChatModelBase):
 
         Before any parse, not after: half-written JSON fails validation, and
         the resulting report would name the model's compliance instead of the
-        budget. See ``ModelOutputTruncatedError`` for why this is its own type.
+        budget or the server. See ``ModelOutputTruncatedError`` for why each
+        is its own type.
         """
         if choice.finish_reason == "length":
             raise ModelOutputTruncatedError(
@@ -548,6 +563,13 @@ class OpenAICompatBase(ChatModelBase):
                 stop_reason=choice.finish_reason,
                 ceiling_field="max_completion_tokens",
                 ceiling=self.max_completion_tokens,
+                usage=usage,
+                partial_output=choice.message.content,
+            )
+        if choice.finish_reason in _SERVER_STOP_REASONS:
+            raise ModelGenerationInterruptedError(
+                model=self.name,
+                stop_reason=choice.finish_reason,
                 usage=usage,
                 partial_output=choice.message.content,
             )

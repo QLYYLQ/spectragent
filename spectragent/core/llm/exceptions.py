@@ -164,3 +164,40 @@ class ToolsUnsupportedError(ModelProviderError):
         model: str | None = None,
     ):
         super().__init__(message, status_code, model)
+
+
+class ModelGenerationInterruptedError(ModelProviderError):
+    """The server ended the generation for a reason of its own, mid-answer.
+
+    Neither the model's mistake (:class:`StructuredOutputValidationError`)
+    nor our ceiling (:class:`ModelOutputTruncatedError`): the reply stopped
+    because the server ran out of resources or aborted the request. DeepSeek
+    documents both as ``finish_reason`` values, ``insufficient_system_resource``
+    and ``aborted``. Validating the unfinished reply would feed it back to the
+    model as its own mistake, so it is refused as a provider failure.
+
+    ``status_code`` is 503: the server could not complete the request.
+    ``stop_reason``, ``usage`` and ``partial_output`` mean what they mean on
+    :class:`ModelOutputTruncatedError`, so the trace's failure record keeps
+    the reason, the bill and whatever text the reply held. The partial text
+    is never part of the message.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        stop_reason: str | None = None,
+        usage: "ModelInvokeUsage | None" = None,
+        partial_output: str | None = None,
+    ) -> None:
+        super().__init__(
+            f"The server stopped the generation before the reply was complete: "
+            f"stop_reason={stop_reason!r}. The reply is incomplete; neither the model's "
+            "answer nor the completion-token ceiling ended it.",
+            503,
+            model,
+        )
+        self.stop_reason = stop_reason
+        self.usage = usage
+        self.partial_output = partial_output

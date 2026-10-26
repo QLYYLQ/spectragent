@@ -196,17 +196,10 @@ class _Case:
 # -- stub clients, one per wire shape -------------------------------------
 
 
-def _openai_client(content: str | None = _BAD, *, tool_arguments: str | None = None) -> Any:
+def _openai_client() -> Any:
     """``client.chat.completions.create``, answering once and badly."""
 
-    message = SimpleNamespace(
-        content=content,
-        tool_calls=(
-            [SimpleNamespace(function=SimpleNamespace(arguments=tool_arguments))]
-            if tool_arguments is not None
-            else None
-        ),
-    )
+    message = SimpleNamespace(content=_BAD, tool_calls=None)
 
     class _Completions:
         async def create(self, **_kw: Any) -> Any:
@@ -436,9 +429,8 @@ def _deepseek() -> Any:
     from spectragent.core.llm.providers.openai_deepseek import ChatDeepSeek
 
     chat = ChatDeepSeek(model="deepseek-chat", api_key="stub")
-    chat.get_client = lambda: _openai_client(  # type: ignore[method-assign]
-        content=None, tool_arguments=_BAD
-    )
+    chat.get_client = lambda: _openai_client()  # type: ignore[method-assign]
+    assert chat.takes_schema_in_prompt(), "this case no longer exercises the prompt path"
     return chat
 
 

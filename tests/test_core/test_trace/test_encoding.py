@@ -27,6 +27,7 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.llm.exceptions import (
+    ModelGenerationInterruptedError,
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
 )
@@ -268,6 +269,22 @@ class TestLLMCallRecords:
         assert record.failure.error == "ModelOutputTruncatedError"
         assert record.failure.partial_output == '{"thou'
         assert record.failure.stop_reason == "max_tokens"
+        assert record.failure.usage == usage()
+        assert record.failure.raw_output is None
+
+    def test_a_server_stop_keeps_what_was_generated(self) -> None:
+        pending = PendingLLMCall(prompt("go"))
+        pending.fail(
+            ModelGenerationInterruptedError(
+                stop_reason="insufficient_system_resource", usage=usage(), partial_output="I wil"
+            )
+        )
+        record = _round_trip(pending)
+
+        assert record.failure is not None
+        assert record.failure.error == "ModelGenerationInterruptedError"
+        assert record.failure.partial_output == "I wil"
+        assert record.failure.stop_reason == "insufficient_system_resource"
         assert record.failure.usage == usage()
         assert record.failure.raw_output is None
 
