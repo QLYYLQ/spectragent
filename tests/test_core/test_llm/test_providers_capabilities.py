@@ -73,8 +73,8 @@ class TestStrictModeComesFromTable:
         assert loose_schema["required"] == ["a"]
 
 
-class TestVercelPromptJsonRouting:
-    """`_vercel_needs_prompt_json` used to hardcode startswith("google/")."""
+class TestVercelPromptSchemaRouting:
+    """Vercel's prompt-schema triggers come from the family table, not `startswith("google/")`."""
 
     @pytest.mark.parametrize(
         ("model", "expected"),
@@ -88,7 +88,7 @@ class TestVercelPromptJsonRouting:
         chat = ChatVercel(model=model)
         # Neutralise the orthogonal reasoning-model heuristic.
         chat.reasoning_models = []
-        assert chat._vercel_needs_prompt_json() is expected
+        assert chat.takes_schema_in_prompt() is expected
 
 
 class TestNoStructuredOutputOptOut:

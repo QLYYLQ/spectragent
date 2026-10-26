@@ -2065,7 +2065,7 @@ Protocol 声明 `model/model_type/provider/name`、显式 `inference_kind: chat 
 两轴都用 `model_type.provider` 嵌套判别器，自动发现，均纳入 `collect_registrars()`。
 现有 Agent、chat judge、prompt helper 的受体继续是 Chat，不扩大为公共模型类型。
 直接 Python 装配也须在使用消费者前检查明确的调用协议，不能靠同名 `ainvoke` 猜测。
-通用用量类型名为 `ModelInvokeUsage`，保留原有未知/零/缓存/图片语义，不留旧名别名。
+通用用量类型名为 `ModelInvokeUsage`，保留原有未知/零/缓存/图片语义，不留旧名别名。`completion_reasoning_tokens` 是 `completion_tokens` 里属于推理的那部分，只取响应自己报的数（OpenAI 兼容回复的 `completion_tokens_details.reasoning_tokens`、Responses API 的 `output_tokens_details.reasoning_tokens`、Gemini 的 `thoughts_token_count`（它已计入 `completion_tokens`）、OCI 的 `completion_tokens_details`）；没报就是 `None`，不是 0（Anthropic 的 thinking 计在 `output_tokens` 里，不拆分）。它默认 `None`，此前写下的调用记录照常读取，trace 格式版本不变。它只在调用记录里（完整记录与轻量调用指标），步与 run 的合计不加它：合计的分项把没报当 0，会把不拆分的 provider 读成没有推理。
 
 **Decision 原生合同。** `DecisionRequest` 保留字符串、对象或数组 state；问题以 ID
 映射到 Choice / Score / Noul / Box 的判别联合。instructions 与 criteria 中的描述保留
@@ -2134,7 +2134,9 @@ Runtime 在任务的所有结束路径清理其实际持有的 agent 模型；�
 provider 作者通过公开 `ChatModelBase.client_resources: ClientResources`（`core/llm/client_resources.py`）
 声明 `get_or_create`、`own`、`use` 和 `run_sync`；缓存字典、关闭任务与使用计数是该组件的私有实现，消费者不读它们。
 
-同一基类的 `use_strict_schema` 与 `validate_structured` 是 provider 作者共享的结构化输出入口；`OpenAICompatBase` 的 `request_client`、`standard_ainvoke`、`common_model_params`、`tool_kwargs`、`get_usage`、`get_usage_from_responses`、`effective_reasoning_effort` 和 `is_listed_reasoning_model` 服务已有 provider 子类的复用与覆写。它们不扩张模型调用者的 `BaseChatModel` Protocol。身份字段使用 `model/model_type/provider/name`，不保留重复的 `model_name` 别名。由环境变量或模型家族推导的请求默认值是局部执行值，不写回配置字段。
+同一基类的 `use_strict_schema` 与 `validate_structured` 是 provider 作者共享的结构化输出入口；`OpenAICompatBase` 的 `request_client`、`standard_ainvoke`、`common_model_params`、`tool_kwargs`、`wire_messages`、`takes_schema_in_prompt`、`prompt_schema_response_format`、`get_usage`、`get_usage_from_responses`、`effective_reasoning_effort` 和 `is_listed_reasoning_model` 服务已有 provider 子类的复用与覆写。它们不扩张模型调用者的 `BaseChatModel` Protocol。身份字段使用 `model/model_type/provider/name`，不保留重复的 `model_name` 别名。由环境变量或模型家族推导的请求默认值是局部执行值，不写回配置字段。
+
+**OpenAI 兼容路由的结构化输出有两条路径，由模型家族和端点决定，不由配置决定。**`standard_ainvoke` 默认发 `response_format: json_schema`；`takes_schema_in_prompt()` 为真时，把编译后的 schema 作为指令写进 system 消息（追加到开头的 system 消息，没有就新插一条），请求带 `prompt_schema_response_format()`（默认不带 `response_format`），回复同样经 `strip_code_fence` → `validate_structured`，截断与空回复的处理与另一条路径相同。默认判断是模型家族的 `supports_json_schema`（`claude`、`deepseek` 为 False）；端点可以覆写方法，不能加配置开关：`openai.vercel` 另加两个沿用的触发条件，`openai.deepseek`（DeepSeek 官方 API，实测没有 `json_schema`，只有 `json_object`）要求 `json_object`。DeepSeek 的输出预算按 `max_tokens` 发出（它不认 `max_completion_tokens`），思考时不发不生效的 `temperature`，从不发 `frequency_penalty`，`reasoning_effort` 用它自己文档里的 `none | low | high | max`。`finish_reason` 为 `length` 抛 `ModelOutputTruncatedError`；为 `insufficient_system_resource` 或 `aborted`（服务端自己停下）抛 `ModelGenerationInterruptedError`，带已生成的部分文本，不当作模型能改的校验失败。实测与报错原文见 `.agents/skills/af-add-an-llm-provider/references/guide.md` §11。
 
 所有权按实际构造记录：provider 自建 SDK/HTTP transport 由 provider 关；通过 Python 注入的 transport 默认
 借用，由注入者关。SDK wrapper 的 close 若会关闭借用 transport，就不能调用它；不支持的注入必须明确拒绝。
@@ -4772,7 +4774,7 @@ AgentResult 结构未变，仍为 3.0。
 
 **调用记录带着模型的推理，前提是响应带回了它。** `RecordedCompletion.thinking` / `redacted_thinking` 就是 provider 填进 `ChatInvokeCompletion` 的那两个字段（来源与合成规则见 §4.7），写侧照录，读侧原样读回；响应没带推理的调用两者都是 `null`。它只是记录：请求从不为了拿到推理而改动，推理也从不回喂给模型，写进记忆、带进下一轮提示的只有 `completion`（§4.7）。失败的调用记 `CallFailure`，没有这两个字段，它的推理不记。
 
-**output schema 记的是请求的那份。** `OutputFormatRef.source = "requested"`：文件内容是回复模型的 `model_json_schema()`，不是 provider 编译后真正发出的 schema（strict 与否、Gemini 的清理、union 分支的展开，各家不同；`dont_force_structured_output` 时根本不发）。它不能当作"schema 被遵守了"的证据。记录 wire 级 schema 是后续工作。
+**output schema 记的是请求的那份。** `OutputFormatRef.source = "requested"`：文件内容是回复模型的 `model_json_schema()`，不是 provider 编译后真正发出的 schema（strict 与否、Gemini 的清理、union 分支的展开，各家不同；schema 写进提示词的路径不发 `json_schema`）。它不能当作"schema 被遵守了"的证据。记录 wire 级 schema 是后续工作。
 
 **不是 fragment 的 observation 不落盘。** 旧版把它整个写成 `NNN_observation.json` 兜底，没有任何访问器能读回；生产路径总是 `NegotiatedObservation`。这条兜底已删除，那一步的 fragment 索引为空。
 

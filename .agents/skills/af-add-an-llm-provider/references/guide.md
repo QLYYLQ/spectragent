@@ -17,6 +17,11 @@ route.
 | `claude-*` | `anthropic` | gateway **root** (no `/v1`) |
 | `gpt-*`, and models whose own vendor speaks OpenAI protocol (`deepseek-*`, `qwen-*`, `glm-*`) | `openai` | `<root>/v1` |
 
+DeepSeek's **official** endpoint is its own provider: `model_type: openai` plus
+`provider: {name: deepseek}` (`openai.deepseek`, default base URL
+`https://api.deepseek.com/v1`). It speaks the OpenAI protocol with DeepSeek's own
+parameters and has no `json_schema` response format, only `json_object` (§11).
+
 Measured live against dmxapi.cn this round, with af's real closed action union
 (`core/actions/action_union.py` — one single-key model per verb, every branch
 `extra="forbid"`), same key, same schema:
@@ -63,12 +68,15 @@ Model-specific behaviour goes on the **capability table**, never in an
 `if "gemini" in self.model` (`core/llm/model_families/_base.py`, reached by every
 provider via `ChatModelBase.model_family` → `detect_model_family`). Currently consulted:
 `supports_strict_mode`, `supports_json_schema`, `schema_requires_gemini_fix`,
-`schema_rejects_closed_union_branches`.
+`schema_rejects_closed_union_branches`. `supports_json_schema` is read by
+`OpenAICompatBase.takes_schema_in_prompt`, so it decides the structured path of every
+provider that goes through `standard_ainvoke` (§4); it is `False` for `claude` and
+`deepseek`.
 
 Adding a Chat provider owes the test suite five things:
 
-1. A `_Case` row in `tests/test_core/test_llm/test_provider_validation.py:451-470` —
-   19 rows for 15 keys, because a provider with two structured paths owes one per path.
+1. A `_Case` row in `tests/test_core/test_llm/test_provider_validation.py` (`_CASES`) —
+   20 rows for 15 keys, because a provider with two structured paths owes one per path.
    `test_every_registered_provider_is_covered` (`:474`) fails if you skip it, and the
    same row is re-run against the closed action union at `:537`.
 2. No private fence stripper. `test_no_provider_reimplements_fence_stripping`
@@ -135,11 +143,13 @@ and the reply is silently truncated into prose **that looks exactly like a model
 ignoring the schema**. Both defaults are safely above it, so this only bites someone
 who turned the knob down. Before blaming the route on a gemini-3.x schema failure, raise
 the budget above 1000 and reproduce once. (OpenAI's own path does catch the clean case:
-`finish_reason == "length"` raises `ModelOutputTruncatedError` at `openai_base.py:319`
-and `:405`.) A provider that detects truncation passes what the reply had generated as
-`partial_output` (every shipped raise site does, and Anthropic's includes the serialised
-`tool_use` input), because the Loop aborts the step on this error and the trace's
-failure record is the only place that text survives.
+`finish_reason == "length"` raises `ModelOutputTruncatedError` in
+`OpenAICompatBase._refuse_unfinished`, on the text path and both structured paths; the
+same method refuses DeepSeek's server-side stops, §11.) A provider that detects
+truncation passes what the reply had generated as `partial_output` (every shipped
+raise site does, and Anthropic's includes the serialised `tool_use` input), because
+the Loop aborts the step on this error and the trace's failure record is the only
+place that text survives.
 
 ## 4. Schema dialects
 
@@ -177,6 +187,21 @@ Whose rule is it?
 - **Model-family** rule (true for a family anywhere, and especially when the *opposite*
   is true for another family) → a flag on `ModelFamily` whose docstring states the
   measurement, read via `self.model_family.<flag>`.
+
+The same split decides where the schema goes at all. `OpenAICompatBase.standard_ainvoke`
+has two structured paths: `response_format: json_schema`, or the compiled schema written
+into the system message (`with_schema_instruction`: appended to a leading system message,
+or a new one) and the reply put through `strip_code_fence` → `validate_structured`, with
+the same truncation and empty-reply handling. `takes_schema_in_prompt()` picks the path;
+its default is the family rule `not model_family.supports_json_schema`. An endpoint
+overrides the methods, never a config field: `openai.vercel` adds its own two triggers
+(a Gemini-dialect family, a model on the reasoning list), and
+`prompt_schema_response_format()` (default: none) is where `openai.deepseek` asks for
+`json_object`. Since `ClaudeFamily.supports_json_schema` is `False`, a `claude-*` model on
+`openai.direct`, `openai.openrouter`, `openai.azure`'s chat path or `openai.vercel` takes
+the prompt path, as does a `deepseek-*` model on any of them; every other family keeps
+`json_schema`. Claude's real fix is still native routing (§1). `openai.groq` and
+`openai.cerebras` have structured paths of their own and are unaffected.
 
 Write the probe into the docstring; every rule there cites its exact error string. And
 do not write down a defect you did not measure.
@@ -265,6 +290,11 @@ The last two let a YAML hand-edit a compiled schema.
 > If you are reaching for a per-config boolean to paper over a gateway: fix the route
 > (§1), or add a tested dialect transform (§4). Never a fifth knob.
 
+Writing the schema into the prompt came back, as a rule and not as
+`add_schema_to_system_prompt`: the model family or the endpoint decides it
+(`takes_schema_in_prompt`, §4), so no YAML can switch it on for a model that has
+`json_schema`, or off for one that does not.
+
 ## 8. Debug checklist
 
 1. Reply ignores the schema, or 400s on `additionalProperties` → check the route first
@@ -343,3 +373,30 @@ Decision calls with purpose `replay_review` and no Agent step; they do not mutat
 runs or restoration policy. Use `configs/replay_review/` and the data flywheel runbook.
 Record real route coverage separately from mocked HTTP coverage; bounded synthetic image
 success does not establish real-page calibration.
+
+
+## 11. DeepSeek's official API
+
+Measured against `https://api.deepseek.com` on 2026-10-26 with `deepseek-flash` and
+`deepseek-v4-pro`; the API reference is
+<https://api-docs.deepseek.com/zh-cn/api/create-chat-completion>. `ChatDeepSeek`
+(`openai.deepseek`) uses `standard_ainvoke` with a few overrides, each citing these facts.
+
+| fact | what the provider does |
+|---|---|
+| `response_format: {"type": "json_schema"}` → HTTP 400 `This response_format type is unavailable now` (strict or not, `/v1` or `/beta`, thinking on or off, both models) | `DeepSeekFamily.supports_json_schema = False`: the schema goes into the prompt |
+| `json_object` works, but a prompt without the word "json" → HTTP 400 `Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'.` | `prompt_schema_response_format()` returns `{"type": "json_object"}`; the schema instruction names JSON (a test keeps it so) |
+| Thinking is on by default at effort `high`; while thinking, `tool_choice` naming a function or `required` → HTTP 400 `Thinking mode does not support this tool_choice` (`auto` works) | no forced-tool structured path; caller `tool_choice` is sent as given |
+| `reasoning_effort`: `none \| low \| high \| max` (default `high`, `none` = thinking off); the server also maps OpenAI spellings, and an unknown value → 422 | own setting `Literal["auto", "none", "low", "high", "max"]`; `auto` sends nothing, any other value is sent as written; the OpenAI spellings are not offered |
+| `max_completion_tokens` accepted and silently ignored (40 asked, 2457 generated); `max_tokens` honoured with `finish_reason: length` | the `max_completion_tokens` knob goes out as `max_tokens`; a truncation still names `max_completion_tokens`, the knob to raise |
+| `temperature` has no effect while thinking; `frequency_penalty` / `presence_penalty` have none at all; neither errors | `frequency_penalty` is never sent; `temperature` only under `reasoning_effort: none` |
+| `finish_reason` may be `insufficient_system_resource` or `aborted` | the base refuses either with `ModelGenerationInterruptedError` (status 503, `partial_output` kept); it is in the base because a gateway forwarding DeepSeek forwards them too |
+| replies carry `reasoning_content`; usage carries `completion_tokens_details.reasoning_tokens` (and `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`, `prompt_tokens_details.cached_tokens`) | `thinking` as for every OpenAI-compatible reply (§9); `ModelInvokeUsage.completion_reasoning_tokens` |
+| image input (`image_url` base64 data URL) works on `deepseek-flash` | nothing special |
+
+With the closed action union written into the system message and `json_object`, thinking
+at `high`, 5 of 5 replies validated. `/beta` prefix completion is kept: on a base URL
+ending in `/beta`, a trailing assistant message goes out with `prefix: true`
+(`wire_messages`). The request never adds DeepSeek's separate `thinking` toggle;
+`reasoning_effort` is the one control.
+

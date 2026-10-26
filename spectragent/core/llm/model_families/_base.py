@@ -15,9 +15,14 @@ class ModelFamily:
       schema and let :class:`SchemaOptimizer` force every property into
       ``required`` (``openai_base``, ``openai_azure``, ``openai_groq``,
       ``openai_deepseek``, ``anthropic_base``, ``bedrock``, ``ollama``).
-    * ``supports_json_schema`` / ``schema_requires_gemini_fix`` — whether a
-      model behind an OpenAI-compatible gateway needs the prompt-JSON fallback
-      (``openai_vercel``) and whether to run ``fix_gemini_schema`` (``google``).
+    * ``supports_json_schema`` — whether the model takes
+      ``response_format: json_schema`` behind an OpenAI-compatible endpoint.
+      ``False`` sends structured output down the prompt-schema path instead
+      (``OpenAICompatBase.takes_schema_in_prompt``, so every provider that
+      goes through ``openai_base``'s ``standard_ainvoke``).
+    * ``schema_requires_gemini_fix`` — whether to run ``fix_gemini_schema``
+      (``google``), and one of ``openai_vercel``'s own reasons to take the
+      schema in the prompt.
     * ``schema_rejects_closed_union_branches`` — whether to open the
       ``anyOf`` branches of a closed union before sending
       (``openai_base``, ``openai_azure``).

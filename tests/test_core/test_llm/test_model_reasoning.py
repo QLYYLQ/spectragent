@@ -597,14 +597,13 @@ _CASES: list[_Case] = [
         _REPLY_TEXT,
     ),
     _Case(
-        # Forced tool calling: the reply is a tool call, the reasoning sits beside it.
+        # The schema in the prompt, ``json_object`` on the wire.
         "openai.deepseek[structured]",
         "openai.deepseek",
         _openai_route(
             lambda: ChatDeepSeek(model="deepseek-chat", api_key="stub"),
-            reply=None,
+            reply=_REPLY_JSON,
             output_format=Reply,
-            tool_call=_tool_call("Reply", _REPLY_JSON),
         ),
         _HI,
     ),

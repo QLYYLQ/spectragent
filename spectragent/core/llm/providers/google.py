@@ -334,8 +334,11 @@ class ChatGoogle(ChatModelBase):
 
         return ModelInvokeUsage(
             prompt_tokens=response.usage_metadata.prompt_token_count or 0,
+            # Thoughts are billed as output, so they are part of the completion
+            # here, and the reasoning count is that part.
             completion_tokens=(response.usage_metadata.candidates_token_count or 0)
             + (response.usage_metadata.thoughts_token_count or 0),
+            completion_reasoning_tokens=response.usage_metadata.thoughts_token_count,
             total_tokens=response.usage_metadata.total_token_count or 0,
             prompt_cached_tokens=response.usage_metadata.cached_content_token_count,
             prompt_cache_creation_tokens=None,

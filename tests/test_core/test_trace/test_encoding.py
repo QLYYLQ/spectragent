@@ -27,6 +27,7 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.llm.exceptions import (
+    ModelGenerationInterruptedError,
     ModelOutputTruncatedError,
     StructuredOutputValidationError,
 )
@@ -270,6 +271,42 @@ class TestLLMCallRecords:
         assert record.failure.stop_reason == "max_tokens"
         assert record.failure.usage == usage()
         assert record.failure.raw_output is None
+
+    def test_a_server_stop_keeps_what_was_generated(self) -> None:
+        pending = PendingLLMCall(prompt("go"))
+        pending.fail(
+            ModelGenerationInterruptedError(
+                stop_reason="insufficient_system_resource", usage=usage(), partial_output="I wil"
+            )
+        )
+        record = _round_trip(pending)
+
+        assert record.failure is not None
+        assert record.failure.error == "ModelGenerationInterruptedError"
+        assert record.failure.partial_output == "I wil"
+        assert record.failure.stop_reason == "insufficient_system_resource"
+        assert record.failure.usage == usage()
+        assert record.failure.raw_output is None
+
+    def test_the_reasoning_token_count_is_kept(self) -> None:
+        reported = usage().model_copy(update={"completion_reasoning_tokens": 4})
+        pending = PendingLLMCall(prompt("go"))
+        pending.complete(ChatInvokeCompletion(completion="done()", usage=reported))
+
+        record = _round_trip(pending)
+        recorded = required(required(as_chat(record).completion).usage)
+        assert recorded.completion_reasoning_tokens == 4
+
+    def test_a_record_without_the_reasoning_count_reads_as_not_reported(self) -> None:
+        """Records written before the field existed still read; unknown is not zero."""
+        pending = PendingLLMCall(prompt("go"))
+        pending.complete(ChatInvokeCompletion(completion="done()", usage=usage()))
+        raw = _raw(pending)
+        del raw["completion"]["usage"]["completion_reasoning_tokens"]
+
+        record = TypeAdapter(RecordedLLMCall).validate_python(raw)
+        recorded = required(required(as_chat(record).completion).usage)
+        assert recorded.completion_reasoning_tokens is None
 
     def test_a_dead_socket_records_error_and_detail_only(self) -> None:
         pending = PendingLLMCall(prompt("go"))

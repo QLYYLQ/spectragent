@@ -141,6 +141,11 @@ class ChatOCI(ChatModelBase):
                         prompt_cache_creation_tokens=None,
                         prompt_image_tokens=None,
                         completion_tokens=getattr(usage, "completion_tokens", 0),
+                        completion_reasoning_tokens=getattr(
+                            getattr(usage, "completion_tokens_details", None),
+                            "reasoning_tokens",
+                            None,
+                        ),
                         total_tokens=getattr(usage, "total_tokens", 0),
                     )
         except Exception:

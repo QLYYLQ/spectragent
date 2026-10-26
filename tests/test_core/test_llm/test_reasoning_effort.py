@@ -117,6 +117,23 @@ class TestReachableFromYaml:
             _compose_with_llm(model="gemini-3.5-flash", reasoning_effort="lowest")
 
 
+class TestDeepSeekHasItsOwnSettings:
+    """DeepSeek's official API documents ``none | low | high | max``; YAML offers exactly those."""
+
+    def _deepseek(self, effort: str) -> Any:
+        return _compose_with_llm(
+            provider={"name": "deepseek"}, model="deepseek-flash", reasoning_effort=effort
+        )
+
+    def test_max_reaches_the_wire(self) -> None:
+        llm = self._deepseek("max")
+        assert llm.common_model_params()["reasoning_effort"] == "max"
+
+    def test_an_openai_spelling_deepseek_only_maps_is_refused(self) -> None:
+        with pytest.raises(Exception, match="reasoning_effort"):
+            self._deepseek("medium")
+
+
 def test_every_setting_but_auto_is_a_wire_value_the_sdk_accepts() -> None:
     (wire,) = (arg for arg in get_args(ReasoningEffort) if arg is not type(None))
     assert set(get_args(ReasoningEffortSetting)) == {"auto", *get_args(wire)}
