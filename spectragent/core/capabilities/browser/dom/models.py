@@ -122,14 +122,6 @@ class DOMRect:
     def center(self) -> tuple[float, float]:
         return (self.x + self.width / 2, self.y + self.height / 2)
 
-    def contains(self, other: DOMRect) -> bool:
-        return (
-            self.x <= other.x
-            and self.y <= other.y
-            and self.x + self.width >= other.x + other.width
-            and self.y + self.height >= other.y + other.height
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class HitTest:
@@ -292,10 +284,6 @@ class DOMElementNode:
             stack.extend(node.composed_children())
         return result
 
-    def interactive_elements(self) -> list[DOMElementNode]:
-        """Return all interactive descendant elements."""
-        return [n for n in self.descendants() if n.is_interactive]
-
     def frame_owners(self) -> list[DOMElementNode]:
         """The ``<iframe>`` / ``<frame>`` elements this node sits inside, innermost first.
 
@@ -361,17 +349,6 @@ class ScrollInfo:
     viewport_width: float = 0.0
     viewport_height: float = 0.0
 
-    @property
-    def can_scroll_down(self) -> bool:
-        return self.scroll_y + self.viewport_height < self.scroll_height
-
-    @property
-    def scroll_progress(self) -> float:
-        max_scroll = self.scroll_height - self.viewport_height
-        if max_scroll <= 0:
-            return 1.0
-        return self.scroll_y / max_scroll
-
 
 @dataclass
 class DOMState:
@@ -385,7 +362,3 @@ class DOMState:
     selector_map: DOMSelectorMap = field(default_factory=dict, metadata=TRACE_SKIP)
     scroll_info: ScrollInfo = field(default_factory=ScrollInfo)
     serialized_dom: str = ""
-
-    def get_element(self, index: int) -> DOMElementNode | None:
-        """Look up an element by its selector-map key (its ``element_index``)."""
-        return self.selector_map.get(index)

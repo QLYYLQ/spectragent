@@ -3,6 +3,7 @@
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from spectragent.core.capabilities.browser.dom.capture import frame_tree_nodes
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.schemas.browser_storage import (
     BrowserStorageState,
@@ -11,17 +12,6 @@ from spectragent.schemas.browser_storage import (
     StorageFailure,
     StorageTab,
 )
-
-
-def frame_tree_nodes(tree: dict[str, Any]) -> list[dict[str, Any]]:
-    pending = [tree.get("frameTree") or {}]
-    frames: list[dict[str, Any]] = []
-    while pending:
-        node = pending.pop(0)
-        if node.get("frame"):
-            frames.append(node["frame"])
-        pending.extend(node.get("childFrames") or [])
-    return frames
 
 
 class BrowserStorageCapture:
@@ -85,7 +75,7 @@ class BrowserStorageCapture:
                     StorageFailure(target=target.target_id, operation="frames", error=str(exc))
                 )
                 continue
-            for frame in frame_tree_nodes(tree or {}):
+            for frame in frame_tree_nodes(tree):
                 fid = str(frame.get("id") or "")
                 origin = str(frame.get("securityOrigin") or "")
                 if (

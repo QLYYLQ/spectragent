@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -415,21 +415,26 @@ async def _capture_ax_tree(
         frame_tree = None
     tree = (frame_tree or {}).get("frameTree")
     root_frame = dict((tree or {}).get("frame") or {})
-    frame_ids = _frame_ids(tree)
+    frame_ids = [frame["id"] for frame in frame_tree_nodes(frame_tree) if frame.get("id")]
     if not frame_ids:
         return {"nodes": await full_tree({})}, root_frame
     per_frame = await asyncio.gather(*(full_tree({"frameId": fid}) for fid in frame_ids))
     return {"nodes": [node for nodes in per_frame for node in nodes]}, root_frame
 
 
-def _frame_ids(tree: dict[str, Any] | None) -> list[str]:
-    """Frame ids of a ``Page.FrameTree``, root first."""
-    ids: list[str] = []
-    stack = [tree] if tree else []
-    while stack:
-        node = stack.pop(0)
-        frame_id = (node.get("frame") or {}).get("id")
-        if frame_id:
-            ids.append(frame_id)
-        stack.extend(node.get("childFrames") or [])
-    return ids
+def frame_tree_nodes(reply: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The ``frame`` objects of a ``Page.getFrameTree`` reply, root first, breadth first.
+
+    A node that is not an object, or carries no ``frame``, is skipped.
+    """
+    pending: list[object] = [(reply or {}).get("frameTree")]
+    frames: list[dict[str, Any]] = []
+    while pending:
+        node = pending.pop(0)
+        if not isinstance(node, dict):
+            continue
+        frame = node.get("frame")
+        if isinstance(frame, dict) and frame:
+            frames.append(frame)
+        pending.extend(node.get("childFrames") or [])
+    return frames

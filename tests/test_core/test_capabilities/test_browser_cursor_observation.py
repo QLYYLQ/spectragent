@@ -147,7 +147,7 @@ async def test_watchdogs_share_only_their_tab_confirmed_position(enabled: bool) 
     assert isinstance(captured, ScreenshotObs)
     assert captured.image_bytes == png()
     assert captured.trace_binary() == (".png", png())
-    assert action.cursor_position == (80, 70)
+    assert ctx.pointer_position.snapshot() == (80, 70)
     if enabled:
         assert captured.cursor == ScreenshotCursor(position=(80, 70), size_css_px=40)
         assert read_model_image(captured) != captured.image_bytes
