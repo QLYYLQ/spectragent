@@ -4163,6 +4163,14 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 审阅图片并排时（2026-10-27），全部图片在同一行的等宽列中，标题和动作说明共用行高，图片顶端对齐；适合窗口使用同一份可用高度，同尺寸原图以相同尺寸显示，缩放也不把第三张挤到下一行。保留图片比例和原像素标注坐标。差异模式可从条目的全部图片中任选两张不同的图片，只比较所选两张；尺寸不同时明确提示近似比较。差异图不叠加动作标记或标注框，原有并排、切换、缩放、画框与快捷键保持原义。
 
+**按时间理解审阅证据（2026-10-27）。** 前瞻信息标注按 `O_t → 第 t 步第一个动作之前 → O_(t+1)` 排列，标题写具体步号。中间图是模型想完之后的辅助归档帧，从未进入模型输入；右图是下一次观测，其动作标记是基于右图作出的 `A_(t+1)`，不是执行 `A_(t+1)` 之后的画面。人根据录下的下一次回复与动作判断它用到了右图中的哪些信息。`RegionSpec.image_roles` 明确允许画框的图片角色（省略时允许条目的全部图片），前瞻队列只允许 `next`；浏览器交互、建议校验和标注写入都执行同一约束。
+
+条目可显式声明 `trajectory: true`（同时必须给出 `run` 和 `step`），在当前观察下方展示该 run 截至此步的已提交轨迹。此前步骤堆叠为档案卡片，悬停或键盘聚焦预览，点击固定详情；详情提供完整观察片段、记录的回复、可用的独立 thinking、动作与结果，侧面按动作切换同一步的操作前截图。恢复步的 `source_history` 标明是源回复，不作本次新思考；未返回 thinking、未采集或超时的截图如实显示。全轨迹历史与模型某次请求实际包含的历史窗口分开，精确输入以 recorded calls 为准。历史接口每次校验队列版本，只允许条目明确开启的 run、截至该步的已提交步骤；图片经 manifest 和 browser 的帧读侧解析，以采集身份关联，不猜文件路径、不把批次号当动作归属，也不把观察截图冒充动作前截图。历史加载与图片读取均不写 trace。
+
+分叉评审先展示分叉自己的任务、恢复后的检查点画面、决定和动作结果，回答“这一步合理吗”“动作产生了预期效果吗”；同任务再独立展开原决定的对照，回答“意图相同吗”。换任务不问同意图。仅有 `done` 的决定不问执行效果，也不强迫 judge 为该题作答；混合动作仍判断实际页面操作的效果，终止观察不冒充另一次策略决定。是否合理与整条任务是否成功保持独立。恢复通过只说明满足已配置校验，不宣称原图和恢复图完全一样。证据分组由 `QueueItem.sections`（`key/title/description`）声明，图片、字段和跳转链接的 `section` 引用它，未分组证据留在主面板；查看器不根据中文标题或文件路径猜测分组。框标注和分叉判断仍写在各自的队列标签中，不自动变成训练筛选规则。
+
+**按任务浏览运行分支（2026-10-27）。** 网页运行区按记录的任务身份（benchmark、subset、task_id）聚类；分叉归到它明确引用的源任务，身份不足或来源有歧义时独立呈现并说明，绝不按任务文字、目录名字或相同步号猜来源。展开一个任务才加载轻量轨迹图：每条源运行是主干，每个已提交步骤是可访问的小圆点；分叉只从已记录的 checkpoint 伸出，分叉中的恢复前缀折叠，新的 policy 步和 terminal 观察分别标识。大量分叉分批展开，读取限制并发，不为了画图加载全部模型调用、图片或回放日志。源缺失、源不可读、来源歧义或被列表筛掉时显示真实状态，不画虚假的连线。run 标题打开完整 trajectory，步骤圆点打开那条 run 的具体步，动作入口定位该步中的具体 action；深链接与键盘操作保留这些选择。live、archive replay、fork 的身份只来自记录的网络来源与 branch provenance；记录状态不是进程存活证明。视觉沿用查看器的排版、离散谱色和明暗主题，不引入独立的图形应用。
+
 **回放与恢复显示。** 只由已录事实标记网络来源与分叉关系，不从目录名推测 same-path 或 fork 业务角色。分叉的来源链接指向源 run 的检查点；源缺失、ID 歧义或根外来源明确显示，查看器不越界打开。恢复步的普通 actions/action_results 是本次恢复中实际返回结果的配对；所有执行尝试、异常和重定位保存在 `restoration.actions`。旧回复与源动作只在 `source_history` 中作为来源材料展示，不能冒充本次新思考；顶层无返回结果的失败尝试也必须从完整恢复证据中显示。实时 TUI 显示配置的 max_steps 上限与 branch continue_steps，不能把 max_steps 当作分叉实际策略预算。浏览器回放决定通过既有 `iter_decisions` 读取和按权重计数，包含 trailing 的决定；未绑定日志、日志为空与已提交日志不可读三种情况分开，未知不能画成零 miss。
 
 **历史与环境的差异视图（2026-10-16）。** 分叉页面与 TUI 显式展示已记录的 `history_source`、恢复器 `verify`、checkpoint 和 continuation 预算。源历史与实际恢复观测并列，动作重定位、返回结果、异常、URL、DOM signature、截图 dHash 和 document misses 使用既有恢复证据；容差内通过与存在可测差异同时显示，零 dHash 不宣称像素相同，未测不补零。TUI 与网页查看器（用户 2026-10-24 裁定）：一个未测项若在某 run 的每个已检查步骤（有恢复差异记录的步骤：恢复步及带恢复校验的步）上都未测（例如 DOM signature 未测），只在 run 级说明一次，仍显示为未知、绝不变成 0；步骤行与步骤列表只计其余、在各步之间不同的未测项，每步详情与 JSON 保留完整的逐步记录，并标明哪一项是全 run 都未测的。这一 run 级事实由读侧唯一计算：`inspection/restoration.py` 的 `unmeasured_everywhere`，经 `run` 详情的 `unmeasured_everywhere`（`facts` 与 `checked_steps`）提供给网页与历史 TUI；实时监控对目前已观测到的步骤调用同一函数。只在恢复步与显式 checkpoint 校验处建立源步骤对应，后续 policy 步不凭相同步号伪造配对。源不可读不遮蔽本次可读证据。截图可切换 Browser state 原图与 Agent observation：后者经 fragment 的公开 `ModelImage` 合同按已记录元数据重建 cursor，默认显示模型视图，标明光标关闭或位置未知；精确提交的模型输入仍看 recorded calls，不把重建视图宣称为已提交输入。TUI 详情与日志支持选择和复制；在文本区 Ctrl-C 复制，活动区 Ctrl-C 与 q 保留取消并等待收尾；日志选择期间冻结文本，防止刷新破坏选区。
@@ -4623,7 +4631,7 @@ traces/
 
 `complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
-**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 5`）：
+**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 7`）：
 
 ```python
 class FragmentFiles(BaseModel):
@@ -5037,7 +5045,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 **二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
-**trace 格式有版本，只读当前这一版。** `TRACE_FORMAT_VERSION = 5`。本版引入声明记录范围、独立轻量调用账、稀疏步骤缺口和历史记录诊断；仍保留每 run 内容寻址的 prompt 图片。`AgentResult.schema_version = "5.0"`，总执行时间是 `metrics.execution_ms`，未测量的 usage/call count 为 None。读者拒绝旧格式和旧结果 schema，不保留迁移转发或对测试数据的兼容分支。
+**trace 格式有版本，只读当前这一版。** `TRACE_FORMAT_VERSION = 7`。本版引入声明记录范围、独立轻量调用账、稀疏步骤缺口和历史记录诊断；仍保留每 run 内容寻址的 prompt 图片。`AgentResult.schema_version = "5.0"`，总执行时间是 `metrics.execution_ms`，未测量的 usage/call count 为 None。读者拒绝旧格式和旧结果 schema，不保留迁移转发或对测试数据的兼容分支。
 
 **离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
 
