@@ -5,67 +5,38 @@ written by mouse-gan-torch. Which model it holds is read from that
 ``meta.json`` — its ``format`` and ``kind`` — never from YAML, so a config
 cannot disagree with its weights (:mod:`._learned_export`):
 
-- ``mouse-gan-generator/1`` — the faithful port of mouse-ai's conditional LSTM
-  GAN. It has no stop signal.
 - ``mouse-gan-generator/2``, kind ``mdn`` — autoregressive MDN-RNN over integer
   pixel moves with a stop head; the chosen v2 model (held-out realism 0.133
   against a real-vs-real floor of 0.12).
 - ``mouse-gan-generator/2``, kind ``gan_ar`` — a length head, then an
   autoregressive GAN.
 
-Any other format or kind fails at construction, naming it. Inference is the
-vendored numpy code of :mod:`._mouse_gan_v1` / :mod:`._mouse_gan_v2`; numpy
-comes from the optional ``learned-mouse`` extra and is imported when a
-``LearnedTrajectory`` is constructed, never at module import, so registration
-and config generation work without it.
+Any other format or kind fails at construction, naming it; that includes
+``mouse-gan-generator/1``, the earlier GAN port with no stop signal. Inference
+is the vendored numpy code of :mod:`._mouse_gan_v2`; numpy comes from the
+optional ``learned-mouse`` extra and is imported when a ``LearnedTrajectory``
+is constructed, never at module import, so registration and config generation
+work without it.
 
 Every model maps a condition ``(offset_x, offset_y, btn_w, btn_h)``, normalised
 by the 800 px training window, to per-tick deltas at the recorder's tick rate.
 Turning that into waypoints:
 
 1. **Candidates.** ``num_candidates`` paths are sampled in one batch, and each
-   is cut where the click happens.
-
-   *Exports that model stopping* (format /2) end each path where the model
-   does. A training path runs up to and including its click tick, so a sampled
-   length already holds the approach, any corrective submovement and the pause
-   inside the target before the click; nothing is added or trimmed. The first
-   candidate in batch order whose end lands inside the target wins, else the
-   one ending closest. Where the end comes from a per-tick stop head (``mdn``),
-   a candidate that used all ``max_seq_len`` ticks is one whose stop head never
-   fired — about 0.2 % of the exported model's samples, and those paths wander
-   (around 50 idle ticks, reaching the target at tick 86-99 if at all) — so it
-   is considered only when no candidate stopped. ``gan_ar`` draws its length up
-   front from a head capped at the horizon, so there a full-length path is an
-   ordinary draw and competes with the rest.
-
-   Arrival truncation is not applied to these exports, not even as a fallback.
-   Its sampled dwell would count the pre-click pause twice and replace the
-   model's timing with a fitted constant, and it cannot repair the one real
-   failure, a path that does not stop, whose arrival — if any — comes at the
-   end of the horizon anyway. A stopped path that ends outside the target
-   (about 8 % of ``mdn`` samples; 6 % of the human training paths do too) is
-   what the endpoint correction below absorbs.
-
-   *Exports without a stop signal* (format /1) are cut by the strategy:
-
-   - *Arrival truncation* (``truncate_at_arrival``, on by default). The model
-     does not stop on its own — every path of the trained generator runs all
-     ``max_seq_len`` ticks (2 s at 50 Hz, against a human median of 26), with
-     its speed peak at 6-9 % of the path instead of ~35 %. So a click is placed
-     the way mouse-ai's own ``inference.py`` places it: ``k`` dwell ticks after
-     the cursor is inside the target, with ``k`` drawn once per move from the
-     human "ticks inside the button before the click" fit
-     (:func:`sample_dwell_ticks`). "Inside" is the element box when the caller
-     passes one, else within ``arrival_radius_px`` of the target point. A
-     candidate that stays inside for its ``k`` dwell ticks (mouse-ai's click
-     rule — leaving resets the count) is preferred and is cut at that click
-     tick; otherwise a candidate that merely arrives is cut ``k`` ticks after
-     its first inside tick, whatever it does in between.
-   - *Fallback* — no candidate arrives, or truncation is off: each candidate
-     is trimmed to its effective end (last tick moving ``>= stop_px``); the
-     first whose trimmed end lands inside the target box wins, else the one
-     ending closest to the target.
+   ends where the model stops it. A training path runs up to and including its
+   click tick, so a sampled length already holds the approach, any corrective
+   submovement and the pause inside the target before the click; nothing is
+   added or trimmed. The first candidate in batch order whose end lands inside
+   the target wins, else the one ending closest. Where the end comes from a
+   per-tick stop head (``mdn``), a candidate that used all ``max_seq_len``
+   ticks is one whose stop head never fired — about 0.2 % of the exported
+   model's samples, and those paths wander (around 50 idle ticks, reaching the
+   target at tick 86-99 if at all) — so it is considered only when no
+   candidate stopped. ``gan_ar`` draws its length up front from a head capped
+   at the horizon, so there a full-length path is an ordinary draw and
+   competes with the rest. A stopped path that ends outside the target (about
+   8 % of ``mdn`` samples; 6 % of the human training paths do too) is what the
+   endpoint correction below absorbs.
 
    Within a tier the *first* candidate in batch order wins, not the closest,
    which keeps the human spread of landing points instead of always picking a
@@ -119,23 +90,12 @@ training`` (default) always conditions on that constant; ``target`` passes the
 real element box when the caller knows it — only useful with a model trained
 on varied sizes.
 
-**Knobs of exports without a stop signal.** ``truncate_at_arrival``,
-``arrival_radius_px`` and ``stop_px`` only say how a path that never stops is
-cut. Left unset they take the defaults above; set on an export that models
-stopping, construction fails naming them. They would have no effect there, and
-a config asking to truncate a model that stops on its own disagrees with its
-weights — the same reason a populated config block with no receptor, or a
-flag that could veto the configured strategy, is an error in af rather than a
-silent no-op.
-
 **Cost.** Generation runs synchronously inside ``HumanMouse.move_to`` on the
 event loop, once per move, before the first tick. Measured at the default 8
-candidates on an M-series laptop: format /1 about 36 ms per move (BiLSTMs over
-all 100 ticks); ``mdn`` and ``gan_ar`` about 9 ms median and under 25 ms at
-worst, because an ``mdn`` rollout ends once every candidate has stopped and a
-``gan_ar`` one at the longest sampled length. Next to a headless Chrome sharing
-the CPU that became 45-60 ms and 14-30 ms. Weights load once, on the first
-move.
+candidates on an M-series laptop: ``mdn`` and ``gan_ar`` about 9 ms median and
+under 25 ms at worst, because an ``mdn`` rollout ends once every candidate has
+stopped and a ``gan_ar`` one at the longest sampled length; 14-30 ms next to a
+headless Chrome sharing the CPU. Weights load once, on the first move.
 """
 
 from __future__ import annotations
@@ -179,17 +139,6 @@ TRAINING_BUTTON_PX: tuple[float, float] = (109.0, 34.0)
 DEFAULT_HZ = 50.0
 #: Training window the released data was normalised by (px).
 DEFAULT_PX_PER_UNIT = 800.0
-#: Defaults of the knobs that only apply to exports without a stop signal.
-DEFAULT_TRUNCATE_AT_ARRIVAL = True
-DEFAULT_ARRIVAL_RADIUS_PX = 12.0
-DEFAULT_STOP_PX = 0.5
-
-#: ``scipy.stats.gamma.fit`` of the human "ticks inside the button until the
-#: click" counts (outliers above 24 ticks removed), from mouse-ai
-#: ``src/ticks_inside_btn_until_click.py``: mean ~7.5 ticks, ~150 ms at 50 Hz.
-DWELL_GAMMA_SHAPE = 10.53369
-DWELL_GAMMA_SCALE = 0.80039
-DWELL_GAMMA_LOC = -0.93502
 
 
 def _declared_px_per_unit(export: Export) -> float | None:
@@ -251,38 +200,8 @@ def _require_numpy() -> None:
         raise ImportError(MISSING_NUMPY_MESSAGE) from exc
 
 
-def sample_dwell_ticks(rng: np.random.Generator) -> int:
-    """Ticks spent inside the target before clicking, drawn from the human fit.
-
-    Same transform as mouse-ai's ``random_ticks_inside_btn``:
-    ``max(0, round(gamma(shape, scale) + loc))`` (Python's ``round``).
-    """
-    draw = float(rng.gamma(DWELL_GAMMA_SHAPE, DWELL_GAMMA_SCALE)) + DWELL_GAMMA_LOC
-    return max(0, round(draw))
-
-
-def effective_ticks(moves_px: np.ndarray, stop_px: float) -> np.ndarray:
-    """Per path, the tick count up to the last tick moving ``>= stop_px`` pixels.
-
-    ``moves_px`` is ``(B, T, 2)`` in pixels; returns ``(B,)`` ints (0 = never moves).
-    """
-    import numpy as np
-
-    moving = np.linalg.norm(moves_px, axis=-1) >= stop_px  # (B, T)
-    steps = moving.shape[1]
-    last = steps - np.argmax(moving[:, ::-1], axis=1)  # index of last True, +1
-    return np.where(moving.any(axis=1), last, 0)
-
-
 def _smoothstep(u: np.ndarray) -> np.ndarray:
     return u * u * (3.0 - 2.0 * u)
-
-
-def _first_true(mask: np.ndarray) -> np.ndarray:
-    """Per row of a ``(B, T)`` bool array, the first True index, or -1."""
-    import numpy as np
-
-    return np.where(mask.any(axis=1), np.argmax(mask, axis=1), -1)
 
 
 class LearnedTrajectory(MouseTrajectoryBase):
@@ -297,11 +216,11 @@ class LearnedTrajectory(MouseTrajectoryBase):
             PydanticField(
                 description=(
                     "Export directory holding generator.npz and meta.json, as "
-                    "written by mouse-gan-torch (`mouse_gan.export` or "
-                    "`mouse_gan.v2.export_v2`). The model — format /1 GAN, /2 "
-                    "`mdn` or /2 `gan_ar` — is read from meta.json. `~` is "
-                    "expanded; a relative path is resolved against the working "
-                    "directory. Weights load lazily on the first move."
+                    "written by mouse-gan-torch (`mouse_gan.v2.export_v2`). "
+                    "The model — format /2 `mdn` or `gan_ar` — is read from "
+                    "meta.json. `~` is expanded; a relative path is resolved "
+                    "against the working directory. Weights load lazily on "
+                    "the first move."
                 ),
             ),
         ],
@@ -311,7 +230,7 @@ class LearnedTrajectory(MouseTrajectoryBase):
                 description=(
                     "Seed for this instance's numpy Generator. One stream "
                     "drives everything this strategy draws: model noise, "
-                    "arrival dwell, timing jitter, the click hold and the "
+                    "timing jitter, the click hold and the "
                     "landing point inside the target box — so one seed "
                     "replays a run's cursor behaviour whole, and changing it "
                     "perturbs all of it. None draws fresh entropy."
@@ -363,8 +282,8 @@ class LearnedTrajectory(MouseTrajectoryBase):
                 ge=1,
                 description=(
                     "Paths sampled per move in one batch. The first whose end "
-                    "lands inside the target wins (for a model that stops on its "
-                    "own, among the candidates that stopped), else the closest."
+                    "lands inside the target wins (among the candidates that "
+                    "stopped), else the closest."
                 ),
             ),
         ] = 8,
@@ -413,44 +332,6 @@ class LearnedTrajectory(MouseTrajectoryBase):
                 ),
             ),
         ] = 0.0,
-        truncate_at_arrival: Annotated[
-            bool | None,
-            PydanticField(
-                description=(
-                    "Exports without a stop signal (format /1) only; an error "
-                    "on one that stops. Cut each path where a human would "
-                    "click: a sampled number of dwell ticks (mouse-ai's human "
-                    "fit, mean ~7.5) after the cursor is inside the target; "
-                    "paths that never arrive fall back to trimming at the last "
-                    "moving tick. None means on."
-                ),
-            ),
-        ] = None,
-        arrival_radius_px: Annotated[
-            float | None,
-            PydanticField(
-                gt=0,
-                description=(
-                    "Exports without a stop signal (format /1) only; an error "
-                    "on one that stops. With no element box (a raw-coordinate "
-                    "click) the cursor has arrived once within this many pixels "
-                    "of the target point. None means 12, about half a small "
-                    "control."
-                ),
-            ),
-        ] = None,
-        stop_px: Annotated[
-            float | None,
-            PydanticField(
-                ge=0,
-                description=(
-                    "Exports without a stop signal (format /1) only; an error "
-                    "on one that stops. Fallback end of a path that never "
-                    "arrives (or with truncation off): its last tick moving at "
-                    "least this many pixels. None means 0.5."
-                ),
-            ),
-        ] = None,
         click_hold_median_ms: Annotated[
             float,
             PydanticField(
@@ -512,33 +393,14 @@ class LearnedTrajectory(MouseTrajectoryBase):
     ) -> None:
         # Fail at construction — before a browser launches — rather than at
         # the first click: missing numpy (named once, here), a wrong
-        # directory, an unknown format or kind, missing arrays, and knobs the
-        # export's model cannot use. Only the array data loads lazily.
+        # directory, an unknown format or kind, and missing arrays. Only the
+        # array data loads lazily.
         _require_numpy()
         import numpy as np
 
         from spectragent.core.capabilities.browser.input._learned_export import open_export
 
         self._export = open_export(weights_dir)
-        if self._export.models_stop:
-            set_knobs = [
-                name
-                for name, value in (
-                    ("truncate_at_arrival", truncate_at_arrival),
-                    ("arrival_radius_px", arrival_radius_px),
-                    ("stop_px", stop_px),
-                )
-                if value is not None
-            ]
-            if set_knobs:
-                one = len(set_knobs) == 1
-                raise ValueError(
-                    f"{' and '.join(set_knobs)} only appl{'ies' if one else 'y'} to "
-                    f"exports without a stop signal, but {self._export.directory} holds "
-                    f"{self._export.label}, whose paths end where the model stops; "
-                    f"remove {'it' if one else 'them'} from the mouse_trajectory block"
-                )
-
         declared_hz = self._export.meta.get("hz")
         resolved_hz = _from_meta(
             self._export,
@@ -567,13 +429,6 @@ class LearnedTrajectory(MouseTrajectoryBase):
         self._min_distance_px = min_distance_px
         self._correction_power = correction_power
         self._jitter = jitter
-        self._truncate_at_arrival = (
-            DEFAULT_TRUNCATE_AT_ARRIVAL if truncate_at_arrival is None else truncate_at_arrival
-        )
-        self._arrival_radius_px = (
-            DEFAULT_ARRIVAL_RADIUS_PX if arrival_radius_px is None else arrival_radius_px
-        )
-        self._stop_px = DEFAULT_STOP_PX if stop_px is None else stop_px
         self._hold_median_ms = click_hold_median_ms
         self._hold_sigma = click_hold_sigma
         self._hold_min_ms = click_hold_min_ms
@@ -617,17 +472,8 @@ class LearnedTrajectory(MouseTrajectoryBase):
         )
 
     @property
-    def hz(self) -> float:
-        return self._hz
-
-    @property
     def tick_ms(self) -> float:
         return 1000.0 / self._hz
-
-    @property
-    def model(self) -> str:
-        """The model named by the export's meta.json: ``mouse-gan-generator/2 kind 'mdn'``."""
-        return self._export.label
 
     # ── protocol ──────────────────────────────────────────────────────────
     def generate(
@@ -692,19 +538,14 @@ class LearnedTrajectory(MouseTrajectoryBase):
             )
 
         cumulative = np.cumsum(moves, axis=1)  # (k, T, 2) positions after each tick
-        known_half = np.array([target_w, target_h]) / 2.0 if known_box else None
         # Box an end must land in when choosing between ends: the element's,
         # else the button the model was conditioned on, stretched with the path.
-        end_half = known_half if known_half is not None else np.array([btn_w, btn_h]) * scale / 2.0
-
-        if draw.lengths is not None:
-            best, n = self._model_cut(cumulative, draw.lengths, target, end_half, finite)
-        else:
-            chosen = self._arrival_cut(cumulative, target, known_half, finite)
-            if chosen is None:
-                chosen = self._trimmed_cut(moves, cumulative, target, end_half, finite)
-            best, n = chosen
-
+        end_half = (
+            np.array([target_w, target_h]) / 2.0
+            if known_box
+            else np.array([btn_w, btn_h]) * scale / 2.0
+        )
+        best, n = self._model_cut(cumulative, draw.lengths, target, end_half, finite)
         return self._corrected(cumulative[best, :n], moves[best, :n], target)
 
     def _corrected(self, path: np.ndarray, moves: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -717,15 +558,13 @@ class LearnedTrajectory(MouseTrajectoryBase):
         therefore stays exactly as still. Spreading over every sampled tick
         instead (``u = k / n``) gave consecutive still ticks different weights
         and smeared 1 px of correction onto each — turning the model's settle
-        inside the target, which the /2 training paths record right up to the
+        inside the target, which the training paths record right up to the
         click, into micro-moves, and a mid-path pause into a drift.
 
-        Over a path whose every tick moves — every format /1 path, and any /2
-        path without a pause — ``u`` is ``k / n`` again, so this is the same
-        correction that was tuned there: ``w(1) == 1`` puts the end exactly on
-        the target, ``w'(0) == w'(1) == 0`` leaves launch and final
-        deceleration alone. A path that never moves at all has no stillness to
-        protect and falls back to ``k / n``.
+        Over a path whose every tick moves, ``u`` is ``k / n`` again:
+        ``w(1) == 1`` puts the end exactly on the target, ``w'(0) == w'(1) ==
+        0`` leaves launch and final deceleration alone. A path that never moves
+        at all has no stillness to protect and falls back to ``k / n``.
         """
         import numpy as np
 
@@ -747,7 +586,7 @@ class LearnedTrajectory(MouseTrajectoryBase):
         end_half: np.ndarray,
         finite: np.ndarray,
     ) -> tuple[int, int]:
-        """``(candidate, ticks)`` ending where the model stopped (exports that model stopping)."""
+        """``(candidate, ticks)`` ending where the model stopped."""
         import numpy as np
 
         k, steps = cumulative.shape[0], cumulative.shape[1]
@@ -768,65 +607,6 @@ class LearnedTrajectory(MouseTrajectoryBase):
             best = int(np.argmax(inside))
         else:
             errors = np.where(eligible, np.linalg.norm(ends - target, axis=1), np.inf)
-            best = int(np.argmin(errors))
-        return best, int(lengths[best])
-
-    def _arrival_cut(
-        self,
-        cumulative: np.ndarray,
-        target: np.ndarray,
-        known_half: np.ndarray | None,
-        finite: np.ndarray,
-    ) -> tuple[int, int] | None:
-        """``(candidate, ticks)`` cut at the click after arrival, or None if none arrives."""
-        import numpy as np
-
-        if not self._truncate_at_arrival:
-            return None
-        rel = cumulative - target
-        if known_half is not None:
-            inside = np.all(np.abs(rel) <= known_half, axis=-1)
-        else:
-            inside = np.linalg.norm(rel, axis=-1) <= self._arrival_radius_px
-        inside &= finite[:, None]  # (k, T)
-        steps = inside.shape[1]
-        dwell = sample_dwell_ticks(self._rng)
-
-        # mouse-ai's click rule: dwell + 1 consecutive inside ticks.
-        window = dwell + 1
-        if window <= steps:
-            runs = np.cumsum(inside, axis=1, dtype=np.int64)
-            runs[:, window:] -= runs[:, :-window].copy()
-            settled = _first_true(runs[:, window - 1 :] == window)
-            if (settled >= 0).any():
-                best = int(np.argmax(settled >= 0))
-                return best, int(settled[best]) + window  # click tick index + 1
-
-        arrived = _first_true(inside)
-        if (arrived >= 0).any():
-            best = int(np.argmax(arrived >= 0))
-            return best, min(int(arrived[best]) + 1 + dwell, steps)
-        return None
-
-    def _trimmed_cut(
-        self,
-        moves: np.ndarray,
-        cumulative: np.ndarray,
-        target: np.ndarray,
-        end_half: np.ndarray,
-        finite: np.ndarray,
-    ) -> tuple[int, int]:
-        """``(candidate, ticks)`` trimmed at the last moving tick (no-arrival fallback)."""
-        import numpy as np
-
-        k = moves.shape[0]
-        lengths = np.maximum(effective_ticks(moves, self._stop_px), 1)
-        ends = cumulative[np.arange(k), lengths - 1]  # (k, 2)
-        inside = finite & np.all(np.abs(ends - target) <= end_half, axis=1)
-        if inside.any():
-            best = int(np.argmax(inside))
-        else:
-            errors = np.where(finite, np.linalg.norm(ends - target, axis=1), np.inf)
             best = int(np.argmin(errors))
         return best, int(lengths[best])
 

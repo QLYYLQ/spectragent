@@ -91,7 +91,6 @@ def _assert_matches_reference(
     # ... and a seeded draw is the trainer's seeded sample.
     drawn = ours.draw(cond, np.random.default_rng(17))
     sampled = theirs.sample(cond, np.random.default_rng(17))
-    assert drawn.lengths is not None
     assert np.array_equal(drawn.lengths, sampled.lengths)
     assert np.array_equal(drawn.moves, sampled.moves)
 
@@ -151,10 +150,10 @@ def test_inspect_reports_the_kind_and_how_the_model_stops(
     # tick (a Bernoulli stop head); ``gan_ar`` draws the whole length up front,
     # so a length at the horizon is a capped draw rather than a runaway.
     assert v2.inspect(mdn_export, _meta(mdn_export)) == ExportInfo(
-        kind="mdn", models_stop=True, stop_is_per_tick=True
+        kind="mdn", stop_is_per_tick=True
     )
     assert v2.inspect(gan_ar_export, _meta(gan_ar_export)) == ExportInfo(
-        kind="gan_ar", models_stop=True, stop_is_per_tick=False
+        kind="gan_ar", stop_is_per_tick=False
     )
 
 
@@ -162,7 +161,6 @@ def test_inspect_reports_the_kind_and_how_the_model_stops(
 def test_paths_are_zero_after_their_length(make_export: Callable[..., Path], kind: str) -> None:
     sampler = _load(make_export(kind))
     drawn = sampler.draw(_conds(64, 1), np.random.default_rng(0))
-    assert drawn.lengths is not None
     assert drawn.moves.shape == (64, TINY_SEQ_LEN, 2)
     assert drawn.moves.dtype == np.float32
     assert drawn.lengths.dtype == np.int64
@@ -211,7 +209,6 @@ def test_the_mdn_stop_head_alone_decides_the_length(
     drawn = _load(make_export("mdn", stop_bias=stop_bias)).draw(
         _conds(16, 2), np.random.default_rng(0)
     )
-    assert drawn.lengths is not None
     assert (drawn.lengths == length).all()
 
 
@@ -249,7 +246,7 @@ def test_draws_are_reproducible_from_the_generator_state(
     a = sampler.draw(cond, np.random.default_rng(9))
     b = sampler.draw(cond, np.random.default_rng(9))
     c = sampler.draw(cond, np.random.default_rng(10))
-    assert np.array_equal(a.moves, b.moves) and a.lengths is not None and b.lengths is not None
+    assert np.array_equal(a.moves, b.moves)
     assert np.array_equal(a.lengths, b.lengths)
     assert not np.array_equal(a.moves, c.moves)
 
