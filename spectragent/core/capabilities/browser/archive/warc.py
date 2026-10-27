@@ -39,8 +39,6 @@ from warcio.warcwriter import WARCWriter
 #: Response headers that describe the wire encoding, not the stored body.
 ENCODING_HEADERS = ("content-encoding", "transfer-encoding", "content-length")
 
-IDENTICAL_PAYLOAD_PROFILE = "http://netpreserve.org/warc/1.1/revisit/identical-payload-digest"
-
 
 @dataclass(frozen=True)
 class FirstPayload:

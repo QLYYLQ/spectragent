@@ -148,7 +148,7 @@ def is_credential_name(name: str) -> bool:
     return is_sensitive_field(name) or CREDENTIAL_NAME_PATTERN.search(name) is not None
 
 
-def _escape_pointer(token: str) -> str:
+def escape_pointer(token: str) -> str:
     """One JSON-pointer reference token (RFC 6901)."""
     return token.replace("~", "~0").replace("/", "~1")
 
@@ -256,7 +256,7 @@ def _redact(value: Any, location: str, entries: list[RedactionEntry]) -> Any:
         out: dict[Any, Any] = {}
         for key, child in value.items():
             name = str(key)
-            child_location = f"{location}/{_escape_pointer(name)}"
+            child_location = f"{location}/{escape_pointer(name)}"
             if child is not None and is_credential_name(name):
                 out[key] = REDACTED
                 entries.append(

@@ -42,6 +42,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from spectragent.core.archive import ARCHIVE_MAX_P50_OVERHEAD_MS
+from spectragent.core.archive.privacy import escape_pointer
 from spectragent.flywheel.metrics import (
     DATASETS,
     NO_SITE,
@@ -326,7 +327,7 @@ class FlywheelReport(_Model):
 
 def pointer(*parts: str | int) -> str:
     """An RFC 6901 JSON pointer to ``parts`` (``~`` and ``/`` escaped)."""
-    return "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in parts)
+    return "".join("/" + escape_pointer(str(part)) for part in parts)
 
 
 def _ratio_ref(value: Ratio, *parts: str) -> EvidenceRef:

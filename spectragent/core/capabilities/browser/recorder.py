@@ -594,11 +594,6 @@ class RecorderConnection:
                 f"{self._ready_timeout_s:g}s"
             )
 
-    @property
-    def cleanup_failures(self) -> tuple[str, ...]:
-        """Unconfirmed cleanup operations, without claiming they rolled back."""
-        return tuple(self._cleanup_failures)
-
     async def close(self) -> None:
         """Finish owned cleanup before propagating cancellation of its caller."""
         if self._closed:

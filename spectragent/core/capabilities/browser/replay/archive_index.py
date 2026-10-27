@@ -70,7 +70,10 @@ from spectragent.core.capabilities.browser.archive.network import (
     INDEX_NAME,
     WARC_NAME,
 )
-from spectragent.core.capabilities.browser.archive.network_model import TARGET_DETACHED_ERROR
+from spectragent.core.capabilities.browser.archive.network_model import (
+    TARGET_DETACHED_ERROR,
+    header_value,
+)
 from spectragent.core.capabilities.browser.archive.warc import header_lines
 from spectragent.core.capabilities.browser.replay.canonical import (
     RequestKeys,
@@ -963,7 +966,7 @@ def _content_type(line: ExchangeLine, headers: Mapping[str, str]) -> str | None:
     declared = post.get("content_type")
     if isinstance(declared, str) and declared:
         return declared
-    return next((value for name, value in headers.items() if name.lower() == "content-type"), None)
+    return header_value(headers, "content-type")
 
 
 def _range_segment(record: IndexedRecord) -> RangeSegment | None:

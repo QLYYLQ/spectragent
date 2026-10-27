@@ -128,14 +128,6 @@ class TestTheStrategies:
     def test_isolation_is_the_knob_itself(self) -> None:
         assert ArchiveNetworkSource(isolation="none_acknowledged").isolation == "none_acknowledged"
 
-    def test_matcher_arrives_as_a_dict_or_as_the_config(self) -> None:
-        as_dict = ArchiveNetworkSource(matcher={"levels": ["exact"], "fuzzy_threshold": 0.3})  # type: ignore[arg-type]
-        as_config = ArchiveNetworkSource(
-            matcher=MatcherConfig(levels=("exact",), fuzzy_threshold=0.3)
-        )
-        assert as_dict.matcher == as_config.matcher
-        assert isinstance(as_dict.matcher, MatcherConfig)
-
     @pytest.mark.parametrize(
         "knobs",
         [

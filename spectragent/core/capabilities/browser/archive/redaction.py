@@ -56,6 +56,7 @@ from spectragent.core.archive.privacy import (
     REDACTED,
     RedactionEntry,
     RedactionLedger,
+    escape_pointer,
     is_credential_name,
     redact_value,
 )
@@ -166,7 +167,7 @@ def blank_stripped_headers(headers: Any, strip: frozenset[str]) -> Any:
 # ── POST bodies ───────────────────────────────────────────────────────
 
 
-def _media_type(content_type: str | None) -> tuple[str, dict[str, str]]:
+def media_type(content_type: str | None) -> tuple[str, dict[str, str]]:
     """``"multipart/form-data; boundary=x"`` → ``("multipart/form-data", {"boundary": "x"})``."""
     if not content_type:
         return "", {}
@@ -191,7 +192,7 @@ def _redact_urlencoded(body: bytes) -> tuple[bytes, list[RedactionEntry]]:
             parts[index] = name + b"=" + _REDACTED_BYTES
             entries.append(
                 RedactionEntry(
-                    location=f"/{_pointer_token(decoded)}", field=decoded, rule="field_name"
+                    location=f"/{escape_pointer(decoded)}", field=decoded, rule="field_name"
                 )
             )
     return b"&".join(parts), entries
@@ -217,7 +218,7 @@ def _redact_multipart(body: bytes, boundary: str) -> tuple[bytes, list[Redaction
         pieces[index] = head + sep + _REDACTED_BYTES + tail
         entries.append(
             RedactionEntry(
-                location=f"/{_pointer_token(match.group(1))}",
+                location=f"/{escape_pointer(match.group(1))}",
                 field=match.group(1),
                 rule="field_name",
             )
@@ -265,7 +266,7 @@ def redact_post_body(body: bytes, content_type: str | None) -> tuple[bytes, list
         The redacted body and its ledger entries (rule ``field_name``; the
         location is a JSON pointer to the field).
     """
-    media, params = _media_type(content_type)
+    media, params = media_type(content_type)
     if media == "application/x-www-form-urlencoded":
         return _redact_urlencoded(body)
     if media == "multipart/form-data" and params.get("boundary"):
@@ -282,11 +283,6 @@ def redact_post_body(body: bytes, content_type: str | None) -> tuple[bytes, list
 
 
 # ── raw DOM captures ──────────────────────────────────────────────────
-
-
-def _pointer_token(token: str) -> str:
-    """One JSON-pointer reference token (RFC 6901)."""
-    return token.replace("~", "~0").replace("/", "~1")
 
 
 class _DomRedaction:
@@ -550,11 +546,11 @@ def _capture_dict(
     if isinstance(nodes, dict):
         for key, node in nodes.items():
             pass_.dom_node(
-                node, f"{pointer}/raw_dom/skyvern_nodes/{_pointer_token(str(key))}", False
+                node, f"{pointer}/raw_dom/skyvern_nodes/{escape_pointer(str(key))}", False
             )
     pass_.snapshot(snapshot, f"{pointer}/snapshot")
     frames = {
-        frame_id: _capture_dict(child, f"{pointer}/frames/{_pointer_token(frame_id)}", entries)
+        frame_id: _capture_dict(child, f"{pointer}/frames/{escape_pointer(frame_id)}", entries)
         for frame_id, child in sorted(capture.frames.items())
     }
     # Accessibility last: it is matched against the sensitive nodes this

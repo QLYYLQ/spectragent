@@ -30,6 +30,7 @@ from pydantic import (
     model_validator,
 )
 
+from spectragent.core.capabilities.browser.archive.redaction import media_type
 from spectragent.core.capabilities.browser.replay.media_areas import MediaAreaRule
 from spectragent.core.capabilities.browser.replay.page_urls import PageUrlRule
 
@@ -567,7 +568,7 @@ def _request_document(body: bytes, content_type: str | None) -> Any:
         return json.loads(text)
     except (ValueError, RecursionError):
         pass
-    media = (content_type or "").split(";", 1)[0].strip().lower()
+    media = media_type(content_type)[0]
     if media not in ("", "application/x-www-form-urlencoded", "text/plain"):
         return None
     form: dict[str, Any] = {}

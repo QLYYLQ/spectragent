@@ -72,7 +72,7 @@ Rules (Chrome facts measured on Chrome 153 and on the fixture site,
 
 import base64
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -124,16 +124,27 @@ def recordable(url: str) -> bool:
 
 
 def header_value(headers: Any, name: str) -> str | None:
-    """A header's value from either CDP header shape, case-insensitively."""
+    """The first value of header *name*, case-insensitively.
+
+    *headers* is either CDP shape (a dict, or a list of ``{name, value}``) or
+    a sequence of ``(name, value)`` pairs.
+    """
     wanted = name.lower()
     if isinstance(headers, Mapping):
-        for key, value in headers.items():
-            if str(key).lower() == wanted:
-                return str(value)
-    elif isinstance(headers, list):
-        for item in headers:
-            if isinstance(item, Mapping) and str(item.get("name", "")).lower() == wanted:
-                return str(item.get("value", ""))
+        items: Iterable[object] = headers.items()
+    elif isinstance(headers, list | tuple):
+        items = headers
+    else:
+        return None
+    for item in items:
+        if isinstance(item, tuple) and len(item) == 2:
+            key, value = item
+        elif isinstance(item, Mapping):
+            key, value = item.get("name", ""), item.get("value", "")
+        else:
+            continue
+        if str(key).lower() == wanted:
+            return str(value)
     return None
 
 

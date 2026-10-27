@@ -346,7 +346,7 @@ class TestTheRepeatLimit:
         assert [line["kind"] for line in log.drain()] == ["miss", "summary"]
         log.append(_entry())
         assert [line["kind"] for line in log.drain()] == ["miss"]
-        assert log.drain() == [] and len(log) == 0
+        assert log.drain() == []
 
     def test_drained_entries_are_json_and_read_back(self) -> None:
         log = ReplayLog()

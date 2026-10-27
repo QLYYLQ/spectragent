@@ -240,7 +240,7 @@ class ReplayLog:
         self._diverged_total = 0
 
     def append(self, entry: ReplayLogEntry) -> None:
-        if entry.kind == "summary" or not entry.occurrence_times_complete:
+        if entry.kind == "summary":
             raise ValueError("summaries are made by the log, not appended to it")
         if entry.diverged:
             self._diverged_total += 1
@@ -309,9 +309,6 @@ class ReplayLog:
         return [
             entry.model_dump(mode="json", exclude_none=True) for entry in (*entries, *summaries)
         ]
-
-    def __len__(self) -> int:
-        return len(self._entries) + len(self._folded)
 
 
 def short_key(key: str | None) -> str | None:
