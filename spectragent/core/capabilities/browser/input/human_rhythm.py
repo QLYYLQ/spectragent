@@ -46,6 +46,7 @@ from typing import Annotated
 
 from pydantic import Field as PydanticField
 
+from spectragent.core.capabilities.browser.input.keyboard import SHIFT_PAIRS
 from spectragent.core.capabilities.browser.input.rhythm import (
     Keystroke,
     TypingRhythmBase,
@@ -55,9 +56,6 @@ from spectragent.core.capabilities.browser.input.rhythm import (
 #: strategy times a Chinese string too, even though its characters are
 #: delivered differently (see ``HumanKeyboard``).
 _PUNCTUATION = frozenset(".,;:!?'\"()[]{}<>/\\-_=+@#$%^&*|~`。，、；：！？（）【】《》…—“”‘’")
-
-#: Characters a US layout needs Shift for, beyond the uppercase letters.
-_SHIFTED = frozenset('~!@#$%^&*()_+{}|:"<>?')
 
 
 class HumanRhythm(TypingRhythmBase):
@@ -121,7 +119,8 @@ class HumanRhythm(TypingRhythmBase):
         elif previous is not None and previous in _PUNCTUATION:
             # The break *after* a sentence mark, not only the reach to it.
             factor *= self._punctuation_factor
-        if ch in _SHIFTED or (ch.isalpha() and ch.isupper()):
+        # Shift: a US layout's shifted characters (``SHIFT_PAIRS``) and capitals.
+        if ch in SHIFT_PAIRS or (ch.isalpha() and ch.isupper()):
             factor *= self._shift_factor
         return factor
 

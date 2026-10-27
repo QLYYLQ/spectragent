@@ -115,7 +115,7 @@ _PUNCTUATION_KEYS: dict[str, tuple[str, int]] = {
 
 #: Shifted character → the unshifted character on the same physical key, so
 #: ``code`` and ``keyCode`` report the *key*, which is what they mean.
-_SHIFT_PAIRS: dict[str, str] = {
+SHIFT_PAIRS: dict[str, str] = {
     "~": "`",
     "!": "1",
     "@": "2",
@@ -147,12 +147,14 @@ _CONTROL_KEYS: dict[str, tuple[str, str, int, str]] = {
 }
 
 
-def _key_event(ch: str) -> tuple[dict[str, Any], str] | None:
+def key_event(ch: str) -> tuple[dict[str, Any], str] | None:
     """CDP key-event fields for *ch*, or ``None`` if no US key bears it.
 
     Returns ``(shared_payload, text)``: the caller wraps the payload with
     ``type: "keyDown"`` (adding ``text``, which is what makes Chrome fire
-    ``keypress`` and ``input``) and ``type: "keyUp"``.
+    ``keypress`` and ``input``) and ``type: "keyUp"``. The one character-to-key
+    table: ``browser.send_keys`` takes a single character's key from here too
+    (``input/chords.py``).
 
     ``None`` means the character has to go through ``Input.insertText`` —
     every non-ASCII character, which on a real keyboard would have come from
@@ -177,8 +179,8 @@ def _key_event(ch: str) -> tuple[dict[str, Any], str] | None:
         code, vk = f"Digit{ch}", ord(ch)
     elif ch in _PUNCTUATION_KEYS:
         code, vk = _PUNCTUATION_KEYS[ch]
-    elif ch in _SHIFT_PAIRS:
-        base = _SHIFT_PAIRS[ch]
+    elif ch in SHIFT_PAIRS:
+        base = SHIFT_PAIRS[ch]
         modifiers = SHIFT_MODIFIER
         if base.isdigit():
             code, vk = f"Digit{base}", ord(base)
@@ -427,7 +429,7 @@ class HumanKeyboard:
         schedule: list[float] = []
         events: list[tuple[str, dict[str, Any]] | None] = []
         for keystroke in keystrokes:
-            resolved = _key_event(keystroke.char)
+            resolved = key_event(keystroke.char)
             schedule.append(keystroke.gap_ms)
             schedule.append(keystroke.hold_ms)
             if resolved is None:

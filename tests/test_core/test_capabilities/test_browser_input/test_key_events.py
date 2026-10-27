@@ -8,7 +8,9 @@ browser is in ``test_browser_keys_live.py``). Every path that builds key
 events is checked here, without a browser: ``browser.send_keys`` (named keys,
 single characters, chords, a key name it does not know), and the keyboard's
 typing and clearing. What a page reads — ``key``, ``code``,
-``windowsVirtualKeyCode`` and the text — is unchanged.
+``windowsVirtualKeyCode`` and the text — is unchanged. A single character in
+``send_keys`` is the US key typing presses for it: one table, so ``.`` is not
+sent with the Delete key's code.
 """
 
 from __future__ import annotations
@@ -20,6 +22,11 @@ import pytest
 
 from spectragent.core.capabilities.browser.input import HumanKeyboard, InstantRhythm, Keystroke
 from spectragent.core.capabilities.browser.input.chords import KEY_INFO, parse_key_chord
+from spectragent.core.capabilities.browser.input.keyboard import (
+    CONTROL_MODIFIER,
+    SHIFT_MODIFIER,
+    key_event,
+)
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
@@ -60,6 +67,51 @@ def test_a_resolved_key_has_no_native_code_and_keeps_what_pages_read(raw: str) -
             vk,
             text,
         )
+
+
+@pytest.mark.parametrize(
+    "raw,code,key_code",
+    [
+        (".", "Period", 190),  # not 46, the Delete key's code
+        ("%", "Digit5", 53),  # not 37, ArrowLeft's
+        ("[", "BracketLeft", 219),  # not 91, Meta's
+        ("a", "KeyA", 65),
+        ("Z", "KeyZ", 90),
+        ("7", "Digit7", 55),
+    ],
+)
+def test_a_character_is_sent_as_the_us_key_that_types_it(
+    raw: str, code: str, key_code: int
+) -> None:
+    chord = parse_key_chord(raw)
+    assert chord.payload == {"key": raw, "code": code, "windowsVirtualKeyCode": key_code}
+    assert chord.char_text == raw
+    # Only the modifiers written: a shifted character does not add Shift.
+    assert chord.modifier_mask == 0
+
+
+@pytest.mark.parametrize("raw", sorted(set(string.printable) - set(string.whitespace)))
+def test_send_keys_and_typing_share_one_character_table(raw: str) -> None:
+    typed = key_event(raw)
+    assert typed is not None
+    payload, text = typed
+    payload.pop("modifiers", None)
+    chord = parse_key_chord(raw)
+    assert (chord.payload, chord.char_text) == (payload, text)
+
+
+def test_a_chord_with_a_shifted_character_keeps_its_written_modifiers() -> None:
+    assert parse_key_chord("Control+%").modifier_mask == CONTROL_MODIFIER
+    assert parse_key_chord("Shift+%").modifier_mask == SHIFT_MODIFIER
+    assert parse_key_chord("Control+A").modifier_mask == CONTROL_MODIFIER
+
+
+@pytest.mark.parametrize("raw", ["é", "ß", "你"])
+def test_a_character_no_us_key_bears_is_still_a_key(raw: str) -> None:
+    """Accepted, with its text, and with no ``code`` or key code to claim a key it is not on."""
+    chord = parse_key_chord(raw)
+    assert chord.payload == {"key": raw, "code": "", "windowsVirtualKeyCode": 0}
+    assert chord.char_text == raw
 
 
 def test_enter_is_a_real_enter() -> None:

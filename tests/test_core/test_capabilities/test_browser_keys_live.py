@@ -263,8 +263,7 @@ def test_a_key_with_nothing_editable_focused_opens_nothing(session: Session, key
     downs = [k for k in case.state["keys"] or [] if k["type"] == "keydown"]
     assert downs, "the page saw no keydown"
     assert downs[-1]["key"] and downs[-1]["keyCode"] != 0
-    if keys != "%":  # send_keys writes a punctuation character as its own code; Chrome drops it
-        assert downs[-1]["code"] != ""
+    assert downs[-1]["code"] != ""
 
 
 @pytest.mark.parametrize("keys", FIELD_KEYS)
