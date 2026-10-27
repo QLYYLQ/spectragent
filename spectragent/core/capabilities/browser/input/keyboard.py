@@ -80,12 +80,15 @@ here. **A page that gates on ``keydown`` sees nothing for CJK text.**
 from __future__ import annotations
 
 import logging
-from asyncio import CancelledError, create_task, shield, wait_for
+from asyncio import CancelledError
 from typing import Any, get_args
 
 from agent_cdp import CDPCommandProtocol
 
-from spectragent.core.capabilities.browser.input._schedule import play_on_deadline
+from spectragent.core.capabilities.browser.input._schedule import (
+    finish_cleanup,
+    play_on_deadline,
+)
 from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.core.capabilities.browser.input.rhythm import Keystroke, TypingRhythmProtocol
 from spectragent.core.capabilities.browser.platform import InputPlatform
@@ -292,27 +295,12 @@ class HumanKeyboard:
             await self._release_key(up, session_id)
 
     async def _release_key(self, params: dict[str, Any], session_id: str | None) -> None:
-        release = create_task(
-            wait_for(
-                self._cdp.send("Input.dispatchKeyEvent", params, session_id=session_id),
-                timeout=_KEY_RELEASE_TIMEOUT_S,
-            )
+        await finish_cleanup(
+            self._cdp.send("Input.dispatchKeyEvent", params, session_id=session_id),
+            timeout=_KEY_RELEASE_TIMEOUT_S,
+            logger=logger,
+            failure="Could not release cancelled key",
         )
-        cancellation: CancelledError | None = None
-        while not release.done():
-            try:
-                await shield(release)
-            except CancelledError as exc:
-                cancellation = cancellation or exc
-            except Exception:
-                break
-        if cancellation is not None:
-            try:
-                release.result()
-            except BaseException:
-                logger.warning("Could not release cancelled key", exc_info=True)
-            raise cancellation
-        release.result()
 
     def _keystrokes(self, text: str) -> list[Keystroke]:
         """Check the strategy's promise before using its timing."""

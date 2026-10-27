@@ -70,7 +70,7 @@ Both failure modes are now Pydantic validation errors before anything launches.
 from __future__ import annotations
 
 import logging
-from asyncio import CancelledError, create_task, shield, wait_for
+from asyncio import CancelledError
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -78,6 +78,7 @@ from typing import Any
 from agent_cdp import CDPCommandProtocol
 
 from spectragent.core.capabilities.browser.input._schedule import (
+    finish_cleanup,
     maybe_await,
     play_on_deadline,
 )
@@ -119,7 +120,6 @@ class HumanMouse:
         trajectory: MouseTrajectoryProtocol | None = None,
         viewport: tuple[int, int] = (1280, 720),
         move_callback: Callable[[int, int], Any] | None = None,
-        cold_start: str = "center",
         pointer_position: PointerPosition | None = None,
         wheel_steps: int = 8,
         wheel_step_delay_ms: float = 12.0,
@@ -144,7 +144,7 @@ class HumanMouse:
         # Cursor origin. Humanized runs start from viewport centre (matching the
         # debug overlay's initial 50vw/50vh) so the first action isn't a long
         # top-left diagonal; otherwise (0, 0) preserves the legacy starting point.
-        if self._humanized and cold_start == "center":
+        if self._humanized:
             self._x, self._y = self._vw // 2, self._vh // 2
         else:
             self._x, self._y = 0, 0
@@ -449,35 +449,20 @@ class HumanMouse:
 
     async def _release_drag(self, sid: str | None, button: str) -> None:
         """Finish this gesture before propagating a cancellation of its release."""
-        release = create_task(
-            wait_for(
-                self._cdp.send(
-                    "Input.dispatchMouseEvent",
-                    {
-                        "type": "mouseReleased",
-                        "x": self._x,
-                        "y": self._y,
-                        "button": button,
-                        "buttons": 0,
-                        "clickCount": 1,
-                    },
-                    session_id=sid,
-                ),
-                timeout=_DRAG_RELEASE_TIMEOUT_S,
-            )
+        await finish_cleanup(
+            self._cdp.send(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": "mouseReleased",
+                    "x": self._x,
+                    "y": self._y,
+                    "button": button,
+                    "buttons": 0,
+                    "clickCount": 1,
+                },
+                session_id=sid,
+            ),
+            timeout=_DRAG_RELEASE_TIMEOUT_S,
+            logger=logger,
+            failure="Could not release cancelled drag",
         )
-        cancellation: CancelledError | None = None
-        while not release.done():
-            try:
-                await shield(release)
-            except CancelledError as exc:
-                cancellation = cancellation or exc
-            except Exception:
-                break  # Retrieve the failure below, preserving an earlier cancellation.
-        if cancellation is not None:
-            try:
-                release.result()
-            except BaseException:
-                logger.warning("Could not release cancelled drag", exc_info=True)
-            raise cancellation
-        release.result()

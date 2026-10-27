@@ -13,17 +13,7 @@ registers the built-in strategies as a side effect.
 
 from __future__ import annotations
 
-# Import concrete strategies for side-effect registration (conscribe metaclass).
-from spectragent.core.capabilities.browser.input import bezier as _bezier  # noqa: F401, E402
-from spectragent.core.capabilities.browser.input import (  # noqa: F401, E402
-    human_rhythm as _human_rhythm,
-)
-from spectragent.core.capabilities.browser.input import instant as _instant  # noqa: F401, E402
-from spectragent.core.capabilities.browser.input import (  # noqa: F401, E402
-    instant_rhythm as _instant_rhythm,
-)
-from spectragent.core.capabilities.browser.input import learned as _learned  # noqa: F401, E402
-from spectragent.core.capabilities.browser.input import windmouse as _windmouse  # noqa: F401, E402
+# Importing the concrete strategies registers them (conscribe metaclass).
 from spectragent.core.capabilities.browser.input.bezier import BezierTrajectory
 from spectragent.core.capabilities.browser.input.human_rhythm import HumanRhythm
 from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
