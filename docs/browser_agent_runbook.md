@@ -347,11 +347,19 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。`format_version` 不是 7 的旧 trace 整个读不出来（构造 `RunTrace` 时就抛 `TraceSchemaError`，点名版本）：不做兼容。保留旧轨迹原件，历史复核使用冻结的已准备证据或原版本工具；要获得当前格式轨迹则重跑任务。当前格式明确记录范围、稀疏提交和轻量调用事实，并要求模型调用带 `kind: chat | decision`；旧版本测试数据需要重建。调用记录引用的图片缺失或与它的摘要不符，读那一步的调用时同样抛 `TraceSchemaError`，点名那张图片。
 
+格式升级不意味着所有现存轨迹都要重采。2026 年 10 月 25 日十站轮次的 22 条源 run 已经是 v7，当前读者能打开；历史 observation、动作与回复可直接审阅。`browser.frames` 的动作前截图和调用中的独立 thinking 只有实际录到或服务商返回时才有，缺失时保留缺失；不能用之后更新的配置补造。
+
 需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use/`（家族根 `family.py`，成员 `dom.py`、`dom_vision.py`）、`skyvern/`（家族根 `family.py`，成员 `dom.py`、`dom_vision.py`，闭合回复 `reply.py`）、`ui_tars/agent.py`（UI-TARS 的回复读写在无状态编解码 `ui_tars/codec.py`）；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
 
 ## 录制、回放与训练导出
 
-数据飞轮把 browser run 连同它的网络、存储和原始 DOM 一起录下，再离线回放、从录制的检查点分叉、导出训练数据，最后出一份度量报告。用法见 [数据飞轮运行手册](data_flywheel_runbook.md)，配置字段见 [configs/README.md](../configs/README.md)。录制用哪个 teacher、哪些浏览器设置、各类网站上表现如何，按实测结果写在运行手册的 [配置指南 101（实测推荐）](data_flywheel_runbook.md#配置指南-101实测推荐)。各步的入口：
+数据飞轮把 browser run 连同它的网络、存储和原始 DOM 一起录下，再离线回放、从录制的检查点分叉、导出训练数据，最后出一份度量报告。用法见 [数据飞轮运行手册](data_flywheel_runbook.md)，配置字段见 [configs/README.md](../configs/README.md)。录制用哪个 teacher、哪些浏览器设置、各类网站上表现如何，按实测结果写在运行手册的 [配置指南 101（实测推荐）](data_flywheel_runbook.md#配置指南-101实测推荐)。
+
+当前前瞻采集用 `configs/lookahead/`：录制与分叉统一 `learned` 鼠标（同一导出、seed 0）、`screenshot_cursor: true`、`Asia/Shanghai` 和 `zh-CN`，分叉默认 `pace: recorded_timeline`。learned 需要 `learned-mouse` extra 以及配置里指定的 `generator.npz` / `meta.json` 导出目录；发布路径是可修改的本机路径，不是内置权重。当前设置与 10 月 24 日五站轮次、10 月 25 日十站轮次均有差别，比较表及证据范围见上述指南。
+
+视频采集保留原始播放画面。分叉用 `media: align` 尝试对齐，`site_rules` 中的 `media_areas` 只调整声明页面的恢复比较，不修改原图；超过 75% 的像素遮罩不应用。`freeze`、共享时钟、落定等待与“主文档没加载完”的筛选各有作用，不能靠放宽截图阈值互相替代，详见数据飞轮手册“视频和动态页面”。
+
+各步的入口：
 
 | 用途 | 命令 |
 |---|---|

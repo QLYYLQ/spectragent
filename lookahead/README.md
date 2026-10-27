@@ -15,14 +15,16 @@ uv run python -m lookahead <command> --help
 ## A collection round
 
 One round records a few teacher runs live, multiplies them offline by branching, then builds
-review queues. The configurations the 2026-10-24 round ran are shipped in `configs/lookahead/`
-with paths relative to the repository root; each file's header explains its settings. Why each
-setting has its value, what it was measured to do on which kind of site, and what is known not
-to work: `docs/data_flywheel_runbook.md`, section "配置指南 101（实测推荐）".
+review queues. `configs/lookahead/` holds the current collection settings, updated after
+the 2026-10-25 ten-site round; it is not a frozen copy of a historical experiment. Paths
+are relative to the repository root except the learned mouse export, whose `~` expands
+to the current user's home. Each file's header explains its settings. The measured scope,
+the differences from historical runs, and the video-page policy are in
+`docs/data_flywheel_runbook.md`, section "配置指南 101（实测推荐）".
 
 | File | Step |
 |---|---|
-| `record_ui_tars_deepseek.yaml` | record: ui_tars + DeepSeek, pinned replayability, full browser archive plus `browser.frames` |
+| `record_ui_tars_deepseek.yaml` | record: ui_tars + DeepSeek, learned mouse, pinned replayability, full browser archive plus `browser.frames` |
 | `branch_same_task.yaml` | same-task forks: every 4th policy step (`every_k`, k 4, offset 1), 2 forks per checkpoint, one decision each, source history |
 | `branch_task_variants.yaml` | same page, different task: the checkpoints `variants` lists, 1 fork each, restored history |
 | `branch_task_variants_without_source_thoughts.yaml` | ablation of the above with `omit_source_replies` |
@@ -34,21 +36,37 @@ page-URL rules such as Bilibili's `vt`, and the media-area rules of `media_areas
 make restoration ignore playback and mask video boxes on declared video pages),
 `background_tabs: freeze` in both recording and branching, `base_time: from_archive`, the
 restorer's `verify: warn` (every check stays in the branch trace and only forks whose
-checkpoint restored are judged), `media: align`, and `pace` (`recorded_llm_latency` as run;
-`recorded_timeline` keeps the whole recorded timeline and is still to be compared on the same
-forks). A checkpoint captured before its main document loaded is skipped
-(`exclude_unloaded_checkpoints`).
+checkpoint restored are judged), `media: align`, and `pace: recorded_timeline`. The
+2026-10-25 paired round recorded 266/466 `ok` checkpoints with timeline and 243/466 with
+`none`, counting committed checkpoints including one incomplete run. These are restoration
+checks, not task success or label eligibility; that round had no `recorded_llm_latency` arm.
+The current default follows this one-round result without claiming superiority to latency.
+A checkpoint captured before its main document loaded is skipped
+(`exclude_unloaded_checkpoints`); a DOM-only settle cap is not that evidence. Media-area
+rules affect restoration comparisons, not the saved or model-visible images, and pixel
+masking is refused above 75% coverage. Read the runbook's video policy before changing them.
+
+Recording and all branch arms use the same learned export and seed (`0`),
+`screenshot_cursor: true`, `timezone: Asia/Shanghai`, and `locale: zh-CN`. The export
+path in these files is `~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export`; change all
+four copies together when the model lives elsewhere. It must contain `generator.npz`
+and `meta.json`; the export declares the model and timing, and is not included in this
+repository. Keep the 32768 completion budget, 32 steps, one parse retry and 80-message
+memory aligned across recording and branching. Copy the configs before recording and
+retain that copy: changing it later does not change a trace's recorded experiment.
 
 ```bash
+uv sync --extra dev --extra learned-mouse
 set -a; . ./.env; set +a          # bench reads only the shell environment
 R=tmp/lookahead/<round>           # one directory per round
 mkdir -p $R/{configs,logs,sessions}
 cp configs/lookahead/*.yaml $R/configs/
 sed -i '' "s|tmp/lookahead/round|$R|g" $R/configs/*.yaml   # GNU sed: -i without ''
+uv run spectragent config check $R/configs/record_ui_tars_deepseek.yaml
 
 # 1. Record, one sweep per site, at most three sites at once (five starved page downloads).
 uv run spectragent bench --config $R/configs/record_ui_tars_deepseek.yaml \
-  --benchmark lexbench_browser --subset L1 --task-id 6 --task-id 118 --task-id 158 \
+  --benchmark lexbench_browser --subset All --task-id 6 --task-id 118 --task-id 158 \
   --no-eval --timeout 1800 --session-dir $R/sessions/bilibili > $R/logs/record-bilibili.log 2>&1
 uv run python -m lookahead health --root $R/record --viewer-root $R --out $R/out/health
 
@@ -78,11 +96,20 @@ uv run spectragent view --root $R --annotations $R/annotations --annotator <name
 
 The 2026-10-24 round's LexBench L1 task ids per site: Bilibili 6 118 158, IGN 25 125 155,
 Tencent Video 28 128 263, iQIYI 18 108 208, Tonghuashun 44 134 233 (Ctrip was dropped: its
-recordings were anti-bot block pages). Keep the machine's light or dark
+recordings were anti-bot block pages). That round used the historical L1 split; the command above uses `All`, as in the
+2026-10-25 local public dataset (22 selected tasks on ten sites, no L1 split). Check task
+IDs against the installed dataset before starting. Keep the machine's light or dark
 appearance fixed for a whole round (headless Chrome's native scrollbar follows it, and it is
 not recorded). A round whose teacher prompt changed cannot be branched with `history_source:
-source` from older recordings: record again. The last measured round's numbers and open
-problems are in `.agents/skills/af-project-history/references/lookahead-rounds.md`.
+source` from older recordings: record again for that experiment. This does not require
+re-recording existing v7 traces merely to review them: all 22 sources of the 2026-10-25
+round remain readable, with history, screenshots and frames. The 10/21–24 numbers are in
+`.agents/skills/af-project-history/references/lookahead-rounds.md`; the newer comparison
+is in the runbook. Local evidence is under `tmp/lookahead_10site_ui_tars_20261025/`
+(`RUN.md`, `STRATEGY_DIFF.md`, `out/judge-forks/report.md`). Its YAML files were edited
+after collection; the original copies are under
+`out/stability_improvement_20261026/input/configs/`, and the trace configuration remains
+the authority for what ran.
 
 ## Runs, kinds and keys
 

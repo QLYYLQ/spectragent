@@ -3,9 +3,10 @@
 # the source model.
 # Paths are relative to the repository root. Copy configs/lookahead/*.yaml into a round's own
 # directory and replace tmp/lookahead/round with that directory (lookahead/README.md, "A
-# collection round"). The agent, LLM, memory and capability blocks must stay identical across
-# the record and branch configs: branching refuses a source whose prompt, observation
-# negotiation or action space differ from the branch run's.
+# collection round"). Keep the agent, memory and browser settings consistent across
+# the record and branch configs: branching checks the prompt, observation and action
+# identity. The learned export directory must exist on the collection machine; install
+# the learned-mouse extra, and use the same weights and seed in every arm.
 agent:
 - agent_id: ui_tars
   id: main
@@ -22,7 +23,7 @@ agent:
       restorer_id: prefix_replay
       verify: warn
       screenshot_max_distance: 5
-      pace: recorded_llm_latency
+      pace: recorded_timeline
       media: align
   llm:
     model_type: openai
@@ -42,10 +43,14 @@ environment:
   capabilities:
   - capability_id: browser
     profile: standard
-    mouse_trajectory: {trajectory_type: instant}
+    mouse_trajectory:
+      trajectory_type: learned
+      weights_dir: ~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export
+      seed: 0
     typing_rhythm: {rhythm_type: instant}
     replayability:
       replayability_id: pinned
+      clock: shared
       random_seed: 7
       base_time: from_archive
       timezone: Asia/Shanghai
