@@ -11,8 +11,8 @@ separately — an orphaned result is an API error, and so is an unanswered call.
 An eviction policy that slices history at an arbitrary offset will cut a group
 in half unless it is taught not to.
 
-The repair is applied to the context view only. ``get_messages()`` keeps the
-full history so the trace stays complete.
+The repair is applied to the context view only; the store keeps the full
+history, so a later, wider view still holds every message.
 """
 
 from __future__ import annotations
@@ -162,8 +162,14 @@ class TestRepeatedCallIds:
             ]
         )
         assert _ids(memory.get_context_messages()) == ["A[search_0]", "T[search_0]"]
-        # The store is untouched, as always.
-        assert memory.message_count == 4
+        # The store is untouched, as always: a window wide enough shows all of it.
+        memory.window_size = 4
+        assert _ids(memory.get_context_messages()) == [
+            "A[search_0]",
+            "T[search_0]",
+            "A[search_0]",
+            "T[search_0]",
+        ]
 
     def test_duplicate_ids_in_one_turn_need_one_result_each(self) -> None:
         """Multiplicity, not membership: two live calls sharing an id are two
@@ -221,12 +227,12 @@ class TestSlidingWindowKeepsPairsIntact:
         assert _ids(memory.get_context_messages()) == ["U", "A[c1]", "T[c1]"]
 
     def test_store_is_not_mutated(self) -> None:
-        """The trace needs the full history even when the view is repaired."""
+        """Repairing the view leaves the store whole: a wider window shows the group again."""
         memory = SlidingWindowMemory(window_size=1)
         memory.add_messages([_assistant("c1"), _result("c1")])
         assert memory.get_context_messages() == []
-        assert _ids(memory.get_messages()) == ["A[c1]", "T[c1]"]
-        assert memory.message_count == 2
+        memory.window_size = 2
+        assert _ids(memory.get_context_messages()) == ["A[c1]", "T[c1]"]
 
     def test_system_messages_still_lead(self) -> None:
         memory = SlidingWindowMemory(window_size=2)

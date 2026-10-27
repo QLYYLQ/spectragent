@@ -9,7 +9,6 @@ DeepSeekFamily = ModelFamily(
     # and "json_object" exist, so the schema goes into the prompt
     # (``OpenAICompatBase.takes_schema_in_prompt``).
     supports_json_schema=False,
-    supports_tool_calling=True,
     name_patterns=(
         "deepseek-",
         "deepseek/",

@@ -8,7 +8,6 @@ See docs/architecture_design.md §4.1 and docs/execution_dag.md M12.
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Annotated, Any, ClassVar, Self
 
 from conscribe import create_registrar
@@ -18,7 +17,6 @@ from spectragent.agents.base import BaseAgent
 from spectragent.agents.prompts import (
     AGENT_KEY_SEPARATOR,
     PromptEngine,
-    agent_prompt_dir,
     load_prompt,
     render_template,
 )
@@ -138,11 +136,6 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         """Return the conscribe registry key as agent_id."""
         return self.__registry_key__
 
-    @property
-    def domain(self) -> str:
-        """Domain identifier. Override in subclasses for specific domains."""
-        return "general"
-
     # ── Negotiation ─────────────────────────────────────────────────
 
     def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
@@ -167,11 +160,6 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
     # through its family root (``agent_prompt_dir``): the members of one
     # family share a directory. No agent holds a path constant, so no agent
     # can name a directory the registry does not know about.
-
-    @property
-    def prompt_dir(self) -> Path:
-        """This agent's prompt directory — derived, never mapped."""
-        return agent_prompt_dir(self.__registry_key__)
 
     def load_prompt(self, name: str) -> tuple[str, PromptRef]:
         return load_prompt(self.__registry_key__, name)

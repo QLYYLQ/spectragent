@@ -46,7 +46,6 @@ def test_missing_consumption_declaration_is_refused_before_setup():
     runtime = runtime_for(Undeclared(), ReactLoop())
     with pytest.raises(IncompatibleExecutionLimitsError, match="declare.*explicitly"):
         runtime.prepare()
-    assert runtime.step_records == []
 
 
 def test_explicit_empty_consumption_needs_no_prepare_slot():

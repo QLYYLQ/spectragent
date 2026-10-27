@@ -16,16 +16,11 @@ works on OpenAI (it sniffs) and is rejected by Anthropic (it does not).
 
 from __future__ import annotations
 
-import base64
 import io
 from pathlib import Path
 from typing import Literal
 
-from spectragent.core.llm.messages import (
-    ContentPartImageParam,
-    ImageURL,
-    SupportedImageMediaType,
-)
+from spectragent.core.llm.messages import ContentPartImageParam, SupportedImageMediaType
 
 _SUFFIX_MEDIA_TYPE: dict[str, SupportedImageMediaType] = {
     ".png": "image/png",
@@ -49,13 +44,8 @@ def image_part(
     else:
         data, media_type = _rescaled_jpeg(path, scale)
 
-    encoded = base64.b64encode(data).decode("ascii")
-    return ContentPartImageParam(
-        image_url=ImageURL(
-            url=f"data:{media_type};base64,{encoded}",
-            detail=_detail_literal(detail),
-            media_type=media_type,
-        )
+    return ContentPartImageParam.from_bytes(
+        data, media_type=media_type, detail=_detail_literal(detail)
     )
 
 

@@ -54,7 +54,6 @@ class TestRegistryMembership:
             cls = ActionRegistrar.get(name)
             # action_id returns the fully-qualified registry key.
             assert cls().action_id == name
-            assert cls().source == name.split(".", 1)[0]
 
 
 class TestDescriptorContract:

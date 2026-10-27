@@ -12,15 +12,47 @@ anti-bot system reads.
 So there is exactly one scheduler, here, and every consumer in
 ``input/`` drives it. A second one would drift from this one the moment
 either was tuned.
+
+The release an interrupted press still owes (:func:`finish_cleanup`) is here
+too: the mouse and the keyboard send it the same way.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import AsyncIterator, Sequence
+import logging
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from time import monotonic
 from typing import Any
+
+
+async def finish_cleanup(
+    cleanup: Awaitable[object], *, timeout: float, logger: logging.Logger, failure: str
+) -> None:
+    """Run *cleanup* to its end, within *timeout*, however often the caller is cancelled.
+
+    Not cancelled, it raises the cleanup's error, if any. Once the caller is
+    cancelled, the cleanup still runs to its end; then the first cancellation
+    is raised, and the cleanup's own error, if any, is only logged on *logger*
+    as *failure*: an external cancellation outranks a cleanup error.
+    """
+    task = asyncio.create_task(asyncio.wait_for(cleanup, timeout=timeout))
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+        except Exception:
+            break  # Retrieve the failure below, preserving an earlier cancellation.
+    if cancellation is not None:
+        try:
+            task.result()
+        except BaseException:
+            logger.warning(failure, exc_info=True)
+        raise cancellation
+    task.result()
 
 
 async def maybe_await(value: Any) -> None:

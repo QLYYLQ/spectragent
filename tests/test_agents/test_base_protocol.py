@@ -11,9 +11,6 @@ class TestBaseAgentProtocol:
     def test_has_agent_name(self):
         assert hasattr(BaseAgent, "agent_name")
 
-    def test_has_domain(self):
-        assert hasattr(BaseAgent, "domain")
-
     def test_has_no_observation_types(self):
         """Deleted: it contradicted ``__wiring__`` and nothing read it.
 
@@ -28,10 +25,6 @@ class TestBaseAgentProtocol:
 
     def test_has_system_prompt(self):
         assert hasattr(BaseAgent, "system_prompt")
-
-    def test_has_get_action_space(self):
-        assert hasattr(BaseAgent, "get_action_space")
-        assert callable(getattr(BaseAgent, "get_action_space", None))
 
     def test_no_step_method(self):
         """step() was removed in M12 — agents no longer drive execution."""
@@ -57,14 +50,7 @@ class TestBaseAgentProtocol:
                 return "fake"
 
             @property
-            def domain(self) -> str:
-                return "test"
-
-            @property
             def system_prompt(self):
                 return None
-
-            def get_action_space(self):
-                return []
 
         assert isinstance(FakeAgent(), BaseAgent)

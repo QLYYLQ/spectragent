@@ -54,7 +54,6 @@ optional criteria and on the member's surface. That is declared
 
 from __future__ import annotations
 
-import base64
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -82,7 +81,6 @@ from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     ContentPartTextParam,
-    ImageURL,
     SystemMessage,
     UserMessage,
 )
@@ -248,15 +246,8 @@ class SkyvernAgent(AgentBase):
         return self.__registry_key__
 
     @property
-    def domain(self) -> str:
-        return "web_navigation"
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
-
-    def get_action_space(self) -> list[ActionDescriptor]:
-        return list(self._action_space.descriptors)
 
     # ── The member's surface ───────────────────────────────────
 
@@ -611,9 +602,8 @@ def _screenshot_note(image: bytes | None, frame: PointFrame | None) -> str:
 def _image_message(body: str, image: bytes, detail: ImageDetail) -> UserMessage:
     """The step's message with the screenshot attached after its text."""
     media_type = image_media_type(image) or "image/png"
-    url = f"data:{media_type};base64,{base64.b64encode(image).decode()}"
     content: list[Any] = [
         ContentPartTextParam(text=body),
-        ContentPartImageParam(image_url=ImageURL(url=url, detail=detail, media_type=media_type)),
+        ContentPartImageParam.from_bytes(image, media_type=media_type, detail=detail),
     ]
     return UserMessage(content=content, cache=True)

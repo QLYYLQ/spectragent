@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pydantic import ConfigDict, Field, field_validator
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
+from spectragent.core.capabilities.browser.archive.network_model import header_value
 from spectragent.core.capabilities.browser.archive.redaction import (
     DEFAULT_STRIPPED_REQUEST_HEADERS,
 )
@@ -128,12 +129,16 @@ class LiveRequest:
     resource_type: str | None = None
 
     def header(self, name: str) -> str | None:
-        wanted = name.lower()
-        return next((value for key, value in self.headers.items() if key.lower() == wanted), None)
+        return header_value(self.headers, name)
 
     @property
     def content_type(self) -> str | None:
         return self.header("content-type")
+
+    @property
+    def conditional(self) -> bool:
+        """Whether a ``304`` may answer this request (``If-None-Match`` and the like)."""
+        return any(self.header(name) is not None for name in CONDITIONAL_HEADERS)
 
 
 @dataclass(frozen=True)
@@ -264,7 +269,7 @@ class Matcher:
     def _match_sequence(
         self, request: LiveRequest, keys: RequestKeys, rule: SiteRule | None
     ) -> MatchResult:
-        conditional = any(request.header(name) is not None for name in CONDITIONAL_HEADERS)
+        conditional = request.conditional
         live_headers = {(name.lower(), value) for name, value in request.headers.items()}
         for level in self._levels(request, rule):
             groups = self._groups(level, keys, conditional, live_headers, rule)

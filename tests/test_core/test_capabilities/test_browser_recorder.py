@@ -13,6 +13,7 @@ not — send on each connection.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, ClassVar
 
@@ -20,6 +21,7 @@ import pytest
 from agent_cdp import EventScope, ScopeGroup
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser import recorder as recorder_module
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
@@ -931,7 +933,9 @@ class TestCleanup:
         )
         assert browser.is_running("pop-1")
 
-    async def test_a_resume_that_fails_does_not_stop_the_cleanup(self) -> None:
+    async def test_a_resume_that_fails_does_not_stop_the_cleanup(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """A waiting target that is gone (or a browser too busy to answer) at close."""
         browser = FakeBrowser()
         plan = _Participant("plan", commands=(CDPCommand("X.slow"),), patterns=RESPONSE_STAGE)
@@ -947,8 +951,13 @@ class TestCleanup:
         assert tasks, "the popup's preparation is still running"
         mark = len(client.sent)
 
-        await recorder.close()  # does not raise
-        assert any("Runtime.runIfWaitingForDebugger" in item for item in recorder.cleanup_failures)
+        with caplog.at_level(logging.WARNING, logger=recorder_module.__name__):
+            await recorder.close()  # does not raise
+        assert any(
+            "recorder cleanup unconfirmed" in record.getMessage()
+            and "Runtime.runIfWaitingForDebugger" in record.getMessage()
+            for record in caplog.records
+        )
         assert sid in recorder._waiting, "failed acknowledgement retains the pending fact"
 
         tail = [(s.method, s.session_id) for s in client.sent[mark:]]

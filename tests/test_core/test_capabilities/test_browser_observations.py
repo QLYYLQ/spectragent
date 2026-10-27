@@ -460,7 +460,6 @@ class TestReadingTheTraceBack:
         obs = self._read(build_page())
         assert isinstance(obs.element_tree, DOMState)
         assert obs.element_tree.selector_map is obs.selector_map
-        assert obs.element_tree.get_element(4) is obs.selector_map[4]
 
     def test_every_traced_field_type_comes_back_typed(self) -> None:
         obs = self._read(dom_page())

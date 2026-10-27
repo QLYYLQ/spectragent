@@ -19,7 +19,7 @@ not vendored: they were screening arms that mostly missed their targets (val
 hit 0.09 and 0.63 against the human 0.94) and nothing exports them. An export
 of either, or of any other kind, is rejected at construction by name.
 
-Contract of both kinds (the same condition as format /1):
+Contract of both kinds:
 
 * ``cond``: ``(B, 4)`` float32 ``(offset_x, offset_y, btn_w, btn_h) / 800``.
 * output: ``moves`` ``(B, max_seq_len, 2)`` float32 deltas ``/ 800``, exactly 0
@@ -149,7 +149,7 @@ def inspect(directory: Path, meta: Mapping[str, Any]) -> ExportInfo:
     if missing:
         raise ValueError(f"{where} model_args lacks {missing}, which kind {kind!r} needs")
     require_arrays(directory, required_arrays(kind, model_args), f"{FORMAT} kind {kind!r}")
-    return ExportInfo(kind=kind, models_stop=True, stop_is_per_tick=kind in PER_TICK_STOP)
+    return ExportInfo(kind=kind, stop_is_per_tick=kind in PER_TICK_STOP)
 
 
 def load(directory: Path, meta: Mapping[str, Any]) -> MdnSampler | GanArSampler:

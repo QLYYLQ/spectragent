@@ -16,6 +16,7 @@ and fail again, the same way, every time the consumer retried the batch.
 Refusing it here keeps that failure at the capability that produced it.
 """
 
+import json
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -89,6 +90,17 @@ def segment_problem(value: str) -> str | None:
     if size > MAX_SEGMENT_BYTES:
         return f"is {size} bytes of UTF-8, longer than the {MAX_SEGMENT_BYTES} a file name may have"
     return None
+
+
+def canonical_json(value: object) -> str:
+    """*value* as JSON with sorted keys, compact separators and raw UTF-8 — byte-stable.
+
+    A content-addressed file (:attr:`ArchiveFile.content_addressed`) is
+    deduplicated by its bytes, so equal evidence must encode to equal bytes;
+    the training export and the flywheel metrics compare and hash values
+    the same way.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _check_segment(value: object, what: str) -> None:

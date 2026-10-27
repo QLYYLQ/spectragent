@@ -379,7 +379,7 @@ class TestWheelDeadlineSchedule:
         assert clock.sleeps == []
 
 
-@pytest.mark.parametrize("kind", ["v1", "mdn", "gan_ar"])
+@pytest.mark.parametrize("kind", ["mdn", "gan_ar"])
 class TestLearnedStrategy:
     """A ``learned`` click through the controller, on each tiny export kind."""
 
@@ -481,11 +481,10 @@ class TestStrategyIsInjectedNotResolved:
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"]
         assert no_sleep == []
 
-    def test_every_path_strategy_is_humanized(self, v1_export: Path, mdn_export: Path) -> None:
+    def test_every_path_strategy_is_humanized(self, mdn_export: Path) -> None:
         for strategy in (
             WindMouseTrajectory(seed=1),
             BezierTrajectory(seed=1),
-            LearnedTrajectory(weights_dir=str(v1_export)),
             LearnedTrajectory(weights_dir=str(mdn_export)),
         ):
             mouse = HumanMouse(RecordCDP(), session_id_getter=lambda: None, trajectory=strategy)

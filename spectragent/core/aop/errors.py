@@ -101,9 +101,9 @@ class UnclaimedRoleError(RegistryError):
     """A Hook intercepts a role that nothing in the run ever wraps.
 
     ``Intercept.role`` is a free-form string, so ``role="capability"`` or
-    a plain typo used to register cleanly, show up in
-    ``Weaver.intercepted_methods``, and then never fire — with no log and
-    no exception. Raising here turns a silent no-op into a config error.
+    a plain typo used to register cleanly and then never fire — with no
+    log and no exception. Raising here turns a silent no-op into a config
+    error.
     """
 
     def __init__(self, *, unclaimed: dict[str, list[str]], claimed: list[str]) -> None:

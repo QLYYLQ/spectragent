@@ -117,6 +117,18 @@ class _Agent:
         return None
 
 
+class _Recorder(StepRecorder):
+    """Keeps every observation handed over, beside its record."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.observations: list[Any] = []
+
+    async def record_step(self, record: Any, *, observation: Any = None) -> None:
+        await super().record_step(record, observation=observation)
+        self.observations.append(observation)
+
+
 def _ctx(*, env: Any, llm: Any, act_fn: Any, recorder: Any, memory: Any = None) -> dict:
     return {
         "env": env,
@@ -176,7 +188,7 @@ class TestAbortEscapesTheActGuard:
         observation and the action that triggered the veto — precisely the
         one step anybody debugging the abort wants to look at.
         """
-        recorder = StepRecorder()
+        recorder = _Recorder()
         loop = ReactLoop(max_steps=3)
 
         with pytest.raises(RunAbort):
@@ -198,7 +210,7 @@ class TestAbortEscapesTheActGuard:
         # The action that provoked it is on the record, with its LLM turn.
         assert [a.name for a in rec.actions] == ["browser.click"]
         assert rec.llm_output == "out"
-        assert recorder.last_observation is not None
+        assert recorder.observations[-1] is not None
 
     async def test_abort_stops_the_run_immediately(self) -> None:
         """No further observe/LLM round trip after the veto."""
@@ -370,7 +382,7 @@ class TestAbortOnEveryPhase:
         ``RunAbort`` derives from ``Exception`` rather than
         ``BaseException``.
         """
-        recorder = StepRecorder()
+        recorder = _Recorder()
 
         class _AbortingAgent(_Agent):
             def parse_react_output(self, out: Any) -> list[Action]:
@@ -395,12 +407,12 @@ class TestAbortOnEveryPhase:
         assert "self_check" in (rec.error or "")
         # The refused reply, and the observation it was an answer to.
         assert rec.llm_output == "out"
-        assert recorder.last_observation is not None
+        assert recorder.observations[-1] is not None
 
     async def test_abort_from_the_prompt_builder_is_recorded(self) -> None:
         """``build_react_prompt`` is woven too, and used to sit outside
         every ``try`` — a veto there propagated with no step at all."""
-        recorder = StepRecorder()
+        recorder = _Recorder()
 
         class _AbortingAgent(_Agent):
             __execution_limit_fields__ = frozenset()
@@ -427,7 +439,7 @@ class TestAbortOnEveryPhase:
         assert "dom_guard" in (recorder.records[0].error or "")
         # Vetoed before the model was ever asked.
         assert llm.calls == 0
-        assert recorder.last_observation is not None
+        assert recorder.observations[-1] is not None
 
     async def test_an_ordinary_prompt_builder_bug_still_propagates_raw(self) -> None:
         """No blanket handler was added around the builder.

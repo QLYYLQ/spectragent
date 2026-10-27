@@ -56,6 +56,8 @@ from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from spectragent.core.capabilities.browser.archive.redaction import media_type
+
 #: A UTF-8 byte order mark: allowed once, at the very start of the body.
 _BOM = b"\xef\xbb\xbf"
 _WHITESPACE = frozenset(b" \t\n\r\f\v")
@@ -118,7 +120,7 @@ def may_be_script(resource_type: str | None, content_type: str | None) -> bool:
     """
     if resource_type not in SCRIPT_RESOURCE_TYPES:
         return False
-    media = (content_type or "").split(";", 1)[0].strip().lower()
+    media = media_type(content_type)[0]
     return (
         not media
         or media in _SCRIPT_TEXT_TYPES

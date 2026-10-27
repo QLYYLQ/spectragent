@@ -60,6 +60,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
+from spectragent.core.archive import canonical_json
 from spectragent.core.capabilities.browser.archive_stats import (
     BodyCompleteness,
     ReplayNearMisses,
@@ -375,11 +376,6 @@ def percentile(values: Sequence[float], q: float) -> float:
         raise ValueError("a percentile of no values")
     rank = max(0, min(len(ordered) - 1, round(q / 100 * (len(ordered) - 1))))
     return float(ordered[rank])
-
-
-def canonical_json(value: Any) -> str:
-    """*value* as JSON with sorted keys and fixed separators — byte-stable."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _counts(counter: Mapping[str, int]) -> dict[str, int]:
@@ -2677,7 +2673,6 @@ __all__ = [
     "body_completeness_metric",
     "branch_coverage",
     "branch_document_misses",
-    "canonical_json",
     "components",
     "dataset_samples",
     "duplicate_branches",

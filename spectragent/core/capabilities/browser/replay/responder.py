@@ -78,9 +78,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from spectragent.core.capabilities.browser.archive.network_model import header_value
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord, RangeCover
 from spectragent.core.capabilities.browser.replay.jsonp import CallbackRewrite, rewrite_callback
-from spectragent.core.capabilities.browser.replay.matcher import CONDITIONAL_HEADERS, LiveRequest
+from spectragent.core.capabilities.browser.replay.matcher import LiveRequest
 from spectragent.core.capabilities.browser.replay.miss_policy import MissDecision, MissReason
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 
@@ -129,8 +130,7 @@ class Fulfilment:
     callback_rewrite: CallbackRewrite | None = None
 
     def header(self, name: str) -> str | None:
-        wanted = name.lower()
-        return next((value for key, value in self.headers if key.lower() == wanted), None)
+        return header_value(self.headers, name)
 
     def command_params(self, request_id: str) -> dict[str, Any]:
         """The ``Fetch.fulfillRequest`` parameters answering *request_id*."""
@@ -183,11 +183,6 @@ def is_preflight(request: LiveRequest) -> bool:
     )
 
 
-def is_conditional(request: LiveRequest) -> bool:
-    """Whether a ``304`` may answer *request* (``If-None-Match`` and the like)."""
-    return any(request.header(name) is not None for name in CONDITIONAL_HEADERS)
-
-
 def exceeds_cap(length: int | None, cap: int) -> bool:
     """Whether a body of *length* bytes is over the fulfil cap (unknown length: not known to be)."""
     return length is not None and length > cap
@@ -217,7 +212,7 @@ def serve_record(
     """
     if record.status is None:
         return Refusal("body_unavailable")
-    if record.status == 304 and not is_conditional(request):
+    if record.status == 304 and not request.conditional:
         return Refusal("no_match")
     served = body
     if rule is not None and raw_body:
@@ -228,7 +223,7 @@ def serve_record(
         recorded_url=record.url,
         request_url=request.url,
         resource_type=request.resource_type,
-        content_type=_header(record.response_headers, "content-type"),
+        content_type=header_value(record.response_headers, "content-type"),
     )
     if rewritten is not None:
         served, rewrite = rewritten
@@ -322,12 +317,6 @@ def miss_response(decision: MissDecision) -> Fulfilment:
 
 
 # ── headers ───────────────────────────────────────────────────────────
-
-
-def _header(headers: Iterable[tuple[str, str]], name: str) -> str | None:
-    """The first value of header *name* (any case) in *headers*, or ``None``."""
-    wanted = name.lower()
-    return next((value for key, value in headers if key.lower() == wanted), None)
 
 
 def sanitised_headers(

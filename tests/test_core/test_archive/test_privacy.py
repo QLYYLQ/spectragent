@@ -322,10 +322,11 @@ class TestPlaceholders:
 #: ``test_a_rule_change_bumps_the_policy``: bump ``PRIVACY_POLICY`` and pin the new
 #: digest. A change that alters no behaviour (a comment, a docstring) moves it too —
 #: re-pin, and say so: ``af-privacy-1`` was re-pinned on 2026-10-13 when
-#: ``is_sensitive_field``'s docstring stopped citing a local planning document; the
-#: rules did not change.
+#: ``is_sensitive_field``'s docstring stopped citing a local planning document, and
+#: again on 2026-10-27 when ``_escape_pointer`` became the public ``escape_pointer``
+#: (browser redaction and the flywheel report now share it); the rules did not change.
 _KNOWN_POLICIES = {
-    "af-privacy-1": "c1f10a69ec3c9aee1e8bb8f543499434e789e66290cc57c5839be516e7d30951",
+    "af-privacy-1": "5059c552c7464ef9122ea120a79107ebd313470fdec7dc88b68a6e07797f9700",
 }
 
 
@@ -334,7 +335,7 @@ def _rule_functions() -> tuple[Any, ...]:
     return (
         privacy.is_sensitive_field,
         privacy.is_credential_name,
-        privacy._escape_pointer,
+        privacy.escape_pointer,
         privacy._redact_params,
         privacy.redact_url,
         privacy.redact_value,

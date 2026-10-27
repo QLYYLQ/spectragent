@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from spectragent.agents._registrar import AgentRegistrar
+from spectragent.core.archive import canonical_json
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.sources import (
@@ -113,13 +114,6 @@ logger = logging.getLogger(__name__)
 PARTIAL_SUFFIX = ".partial"
 #: Suffixes by media type, for image bytes whose header names no known type.
 _SUFFIXES = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
-
-
-def canonical_json(value: Any, *, indent: int | None = None) -> str:
-    """*value* as JSON with sorted keys and fixed separators — byte-stable."""
-    if indent is not None:
-        return json.dumps(value, sort_keys=True, indent=indent, ensure_ascii=False)
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 class FileImageStore:
@@ -548,11 +542,13 @@ class ExportRunner:
             per_source[item.source] += 1
 
         samples = {split: len(lines) for split, lines in sorted(records.items())}
-        written = canonical_json(
+        written = json.dumps(
             self._manifest(
                 selection, renderer, rendered, samples, per_source, scanner, rendering
             ).model_dump(mode="json"),
+            sort_keys=True,
             indent=2,
+            ensure_ascii=False,
         )
         # Read back from the bytes written, so the report's manifest is exactly the
         # one on disk — through the model every reader uses.
@@ -805,7 +801,6 @@ __all__ = [
     "ExportReport",
     "ExportRunner",
     "FileImageStore",
-    "canonical_json",
     "exporter_settings",
     "translator_settings",
 ]

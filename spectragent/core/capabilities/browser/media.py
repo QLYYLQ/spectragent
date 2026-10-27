@@ -72,7 +72,11 @@ from typing import Any, Final, Literal
 from agent_cdp import CDPCommandProtocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from spectragent.core.capabilities.browser.dom.capture import MAX_FRAME_DEPTH, FrameTargets
+from spectragent.core.capabilities.browser.dom.capture import (
+    MAX_FRAME_DEPTH,
+    FrameTargets,
+    frame_tree_nodes,
+)
 from spectragent.schemas.restoration import (
     MediaAlignment,
     MediaComparison,
@@ -485,27 +489,17 @@ async def _read_frame(
     return value
 
 
-def _frame_ids(tree: Any) -> list[str]:
-    """Every frame id of a ``Page.getFrameTree`` reply, depth first."""
-    ids: list[str] = []
-    pending = [((tree or {}).get("frameTree") if isinstance(tree, dict) else None)]
-    while pending:
-        node = pending.pop()
-        if not isinstance(node, dict):
-            continue
-        frame_id = (node.get("frame") or {}).get("id")
-        if isinstance(frame_id, str) and frame_id:
-            ids.append(frame_id)
-        pending.extend(reversed(node.get("childFrames") or []))
-    return ids
-
-
 async def _frames_of(
     cdp: CDPCommandProtocol, session_id: str | None, root_frame_id: str
 ) -> list[FrameAddress]:
     """The frames one session serves: its frame tree, else just its root frame."""
     try:
-        ids = _frame_ids(await cdp.send("Page.getFrameTree", {}, session_id=session_id))
+        reply = await cdp.send("Page.getFrameTree", {}, session_id=session_id)
+        ids = [
+            frame["id"]
+            for frame in frame_tree_nodes(reply)
+            if isinstance(frame.get("id"), str) and frame["id"]
+        ]
     except asyncio.CancelledError:
         raise
     except Exception as exc:

@@ -32,6 +32,7 @@ from spectragent.core.capabilities.browser.input.keyboard import (
     CONTROL_MODIFIER,
     META_MODIFIER,
     SHIFT_MODIFIER,
+    key_event,
 )
 
 # Key name → (DOM ``key``, DOM ``code``, Windows virtual key code, optional
@@ -113,7 +114,11 @@ class KeyChord:
     ``payload`` is the shared part of the CDP key event (``key``, ``code``,
     ``windowsVirtualKeyCode``); ``char_text`` is the text a ``type=char``
     event carries between keyDown and keyUp, ``None`` for a key that types
-    nothing. ``modifier_mask`` is the CDP modifier bits.
+    nothing. ``modifier_mask`` is the CDP modifier bits of exactly the
+    modifiers written: a character typed with Shift on a US keyboard (``%``,
+    ``A``) is sent as its key (``Digit5``, ``KeyA``) without Shift unless the
+    chord names it, because the ``shiftKey`` a page reads must agree with the
+    request (``docs/architecture_design.md`` §4.13).
     """
 
     modifiers: tuple[str, ...]
@@ -148,22 +153,28 @@ def _refuse(raw: str, why: str) -> InvalidKeysError:
 
 
 def _key(raw_key: str) -> tuple[dict[str, Any], str | None] | None:
-    """The CDP payload and char text of one key name or character; ``None`` when it is neither."""
+    """The CDP payload and char text of one key name or character; ``None`` when it is neither.
+
+    A character's ``code`` and ``windowsVirtualKeyCode`` are those of the US
+    key typing presses for it (:func:`~.keyboard.key_event`): ``.`` is
+    ``Period`` / 190, not 46 (Delete). The Shift that table adds for a
+    shifted character is dropped (:class:`KeyChord`). A character no US key
+    bears (any non-ASCII) is still accepted, sent with its text and with an
+    empty ``code`` and key code 0.
+    """
     name = KEY_ALIASES.get(raw_key.lower(), raw_key.lower())
     info = KEY_INFO.get(name)
     if info is not None:
         key, code, vk, char = info
         return {"key": key, "code": code, "windowsVirtualKeyCode": vk}, char
-    if len(raw_key) == 1:
-        upper = raw_key.upper()
-        if raw_key.isalpha():
-            code = f"Key{upper}"
-        elif raw_key.isdigit():
-            code = f"Digit{raw_key}"
-        else:
-            code = upper
-        return {"key": raw_key, "code": code, "windowsVirtualKeyCode": ord(upper)}, raw_key
-    return None
+    if len(raw_key) != 1:
+        return None
+    typed = key_event(raw_key)
+    if typed is None:
+        return {"key": raw_key, "code": "", "windowsVirtualKeyCode": 0}, raw_key
+    payload, text = typed
+    payload.pop("modifiers", None)
+    return payload, text
 
 
 def parse_key_chord(raw: str) -> KeyChord:

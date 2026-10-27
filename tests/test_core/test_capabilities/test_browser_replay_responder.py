@@ -21,7 +21,6 @@ from spectragent.core.capabilities.browser.replay.responder import (
     Refusal,
     exceeds_cap,
     format_http_date,
-    is_conditional,
     is_preflight,
     miss_response,
     parse_http_date,
@@ -289,7 +288,7 @@ def test_304_never_answers_an_unconditional_request() -> None:
     not_modified = _record(304, (("ETag", '"v1"'),), status_text="Not Modified")
     assert _serve(not_modified) == Refusal("no_match")
     conditional = _get(**{"If-None-Match": '"v1"'})
-    assert is_conditional(conditional) and not is_conditional(_get())
+    assert conditional.conditional and not _get().conditional
     served = _served(_serve(not_modified, request=conditional))
     assert served.status == 304 and served.header("etag") == '"v1"'
 

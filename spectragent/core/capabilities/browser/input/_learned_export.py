@@ -10,11 +10,11 @@ names) at construction, before a browser launches.
 
 Backends, each vendored from mouse-gan-torch and numpy only:
 
-- ``mouse-gan-generator/1`` — :mod:`._mouse_gan_v1`, the faithful port of
-  mouse-ai's conditional LSTM GAN. It has no stop signal: every path runs the
-  whole horizon and the strategy decides where it ends.
 - ``mouse-gan-generator/2`` — :mod:`._mouse_gan_v2`, kinds ``mdn`` and
   ``gan_ar``. Each path ends where the model says.
+
+``mouse-gan-generator/1``, the earlier GAN port that never stopped a path, is
+no longer read: an export in that format is refused like any unknown format.
 
 A backend module provides ``FORMAT``, ``inspect(directory, meta)`` and
 ``load(directory, meta)``. A new model family is a new module plus one entry
@@ -44,13 +44,12 @@ class Draw:
     """One batch of sampled paths, in model units (pixels / training window).
 
     ``moves`` is ``(B, T, 2)`` per-tick cursor deltas. ``lengths`` is ``(B,)``
-    ticks per path (``1..T``, zero moves after) when the model decides where a
-    path ends, and ``None`` when it has no stop signal and every path runs all
-    ``T`` ticks.
+    ticks per path (``1..T``, zero moves after): the model decides where each
+    path ends.
     """
 
     moves: np.ndarray
-    lengths: np.ndarray | None
+    lengths: np.ndarray
 
 
 class Sampler(Protocol):
@@ -67,17 +66,15 @@ class ExportInfo:
 
     #: Model within the format (``None`` when the format holds one model).
     kind: str | None
-    #: Whether the model decides where each path ends (``Draw.lengths`` set).
-    models_stop: bool
-    #: Whether that decision is taken tick by tick, so a path that used the
-    #: whole horizon is one that never ended — ``mdn``'s Bernoulli stop head.
+    #: Whether the model decides where a path ends tick by tick, so a path that
+    #: used the whole horizon is one that never ended — ``mdn``'s Bernoulli stop head.
     #: ``gan_ar`` instead draws the length up front from a head capped at
     #: ``max_seq_len``, where the full horizon is an ordinary draw.
     stop_is_per_tick: bool = False
 
 
 class _Backend(Protocol):
-    """Module-level contract of a backend (``_mouse_gan_v1`` / ``_mouse_gan_v2``)."""
+    """Module-level contract of a backend (``_mouse_gan_v2``)."""
 
     FORMAT: str
 
@@ -87,9 +84,9 @@ class _Backend(Protocol):
 
 
 def _backends() -> dict[str, _Backend]:
-    from spectragent.core.capabilities.browser.input import _mouse_gan_v1, _mouse_gan_v2
+    from spectragent.core.capabilities.browser.input import _mouse_gan_v2
 
-    modules: tuple[_Backend, ...] = (_mouse_gan_v1, _mouse_gan_v2)
+    modules: tuple[_Backend, ...] = (_mouse_gan_v2,)
     return {module.FORMAT: module for module in modules}
 
 
@@ -101,7 +98,6 @@ class Export:
     meta: Mapping[str, Any]
     format: str
     kind: str | None
-    models_stop: bool
     stop_is_per_tick: bool
 
     @property
@@ -151,7 +147,7 @@ def open_export(weights_dir: str) -> Export:
             f"{meta_path} {declared}; the learned trajectory reads {', '.join(sorted(backends))}"
         )
     info = backends[fmt].inspect(directory, meta)
-    return Export(directory, meta, fmt, info.kind, info.models_stop, info.stop_is_per_tick)
+    return Export(directory, meta, fmt, info.kind, info.stop_is_per_tick)
 
 
 def require_arrays(directory: Path, required: Iterable[str], label: str) -> None:

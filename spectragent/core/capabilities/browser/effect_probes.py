@@ -151,7 +151,7 @@ function facts(el) {
 #: whose body is itself the editor (``designMode``, or a ``contenteditable``
 #: body: the rich-text editors that live in an ``<iframe>``) is focused on
 #: that body, which is then the focused element.
-_DEEP_FOCUS_JS = r"""
+DEEP_FOCUS_JS = r"""
 function deepFocus() {
   let el = document.activeElement;
   for (let hops = 0; el && hops < 64; hops += 1) {
@@ -204,11 +204,12 @@ function textEntry(el) {
 }
 """
 
-#: ``deepHit(x, y)``: the element hit-tested at a viewport point, through open
-#: shadow roots and same-origin frames; a frame of another site is the frame.
-_DEEP_HIT_JS = r"""
+#: ``deepHit(x, y)``: ``{el, opaque}``, the element hit-tested at a viewport
+#: point, through open shadow roots and same-origin frames; a frame of another
+#: site is the frame, with ``opaque`` true.
+DEEP_HIT_JS = r"""
 function deepHit(x, y) {
-  let doc = document, el = document.elementFromPoint(x, y);
+  let el = document.elementFromPoint(x, y), opaque = false;
   for (let hops = 0; el && hops < 64; hops += 1) {
     if (el.shadowRoot) {
       const inner = el.shadowRoot.elementFromPoint(x, y);
@@ -217,15 +218,15 @@ function deepHit(x, y) {
     if (el.localName === 'iframe' || el.localName === 'frame') {
       let inner = null;
       try { inner = el.contentDocument; } catch (e) { inner = null; }
-      if (!inner) break;
+      if (!inner) { opaque = true; break; }
       const box = el.getBoundingClientRect();
       x -= box.left + el.clientLeft; y -= box.top + el.clientTop;
-      doc = inner; el = inner.elementFromPoint(x, y);
+      el = inner.elementFromPoint(x, y);
       continue;
     }
     break;
   }
-  return el;
+  return {el: el, opaque: opaque};
 }
 """
 
@@ -241,23 +242,27 @@ function inside(target, node) {
 """
 
 _HIT_EXPRESSION = (
-    "(() => {" + ELEMENT_FACTS_JS + _DEEP_HIT_JS + "const el = deepHit(%(x)d, %(y)d);"
+    "(() => {" + ELEMENT_FACTS_JS + DEEP_HIT_JS + "const el = deepHit(%(x)d, %(y)d).el;"
     " return el ? {facts: facts(el)} : {nothing: true}; })()"
 )
 
 _HIT_ON_TARGET_FN = (
-    "function(x, y) {" + ELEMENT_FACTS_JS + _DEEP_HIT_JS + _INSIDE_JS + "const el = deepHit(x, y);"
+    "function(x, y) {"
+    + ELEMENT_FACTS_JS
+    + DEEP_HIT_JS
+    + _INSIDE_JS
+    + "const el = deepHit(x, y).el;"
     " return el ? {facts: facts(el), on_target: inside(this, el)} : {nothing: true}; }"
 )
 
 _FOCUS_EXPRESSION = (
-    "(() => {" + ELEMENT_FACTS_JS + _DEEP_FOCUS_JS + "const f = deepFocus();"
+    "(() => {" + ELEMENT_FACTS_JS + DEEP_FOCUS_JS + "const f = deepFocus();"
     " if (f.opaque) return {opaque: true}; return f.el ? {facts: facts(f.el)} : {nothing: true}; })()"
 )
 
 #: The focused element itself (by reference), for :class:`FieldProbe`.
 _FOCUSED_REF_EXPRESSION = (
-    "(() => {" + _DEEP_FOCUS_JS + "const f = deepFocus(); return f.opaque ? 'opaque' : f.el; })()"
+    "(() => {" + DEEP_FOCUS_JS + "const f = deepFocus(); return f.opaque ? 'opaque' : f.el; })()"
 )
 
 #: What :class:`FieldProbe` reads off its element: facts, the sensitivity
@@ -864,6 +869,8 @@ def _index(value: Any) -> int | None:
 
 
 __all__ = [
+    "DEEP_FOCUS_JS",
+    "DEEP_HIT_JS",
     "ELEMENT_FACTS_JS",
     "HISTORY_POLL_S",
     "NO_ANSWER",

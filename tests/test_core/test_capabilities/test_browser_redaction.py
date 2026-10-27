@@ -341,7 +341,10 @@ def test_ledgers_carry_the_browser_policy() -> None:
 _KNOWN_BROWSER_POLICIES = {
     "af-privacy-1+browser-1": "93828aa353848cf72dfaddbe903d73b908d9bf51e0ba4e81ff5205e71b4a92d7",
     # browser-2: cookie values are no longer hashed (storage.json stores them raw).
-    "af-privacy-1+browser-2": "5bf1fca59190d55ecad9b05a04753c0ba8a8c55351c9babc322c7dd27f0c3a17",
+    # Re-pinned 2026-10-27, rules unchanged: ``_media_type`` became the public
+    # ``media_type`` (replay parses Content-Type with it) and the pointer escape
+    # moved to ``privacy.escape_pointer``.
+    "af-privacy-1+browser-2": "28e2d0b27a4e59aed66e89a09e9be56ea49fea315fde044eeae973b51018a23c",
 }
 
 
@@ -351,7 +354,7 @@ def _rule_digest() -> str:
         sensitivity.attribute_map,
         redaction.stripped_header_set,
         redaction.strip_headers,
-        redaction._media_type,
+        redaction.media_type,
         redaction._redact_urlencoded,
         redaction._redact_multipart,
         redaction._redact_json,

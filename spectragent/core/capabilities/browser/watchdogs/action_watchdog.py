@@ -1,8 +1,9 @@
 """ActionWatchdog — executes browser actions via CDP Input/Page/DOM domains.
 
 Listens to action events (Click, Type, Scroll, Navigate, ...) and translates
-them into CDP commands.  Uses ``DOMWatchdog.selector_map`` to resolve an
-element ``(session_id, backend_node_id)`` → element coordinates.
+them into CDP commands.  Resolves an element ``(session_id, backend_node_id)``
+→ element coordinates through the selector map ``DOMWatchdog`` publishes to
+the capability (``WatchdogContext.selector_map_getter``).
 
 Elements in frames. DOM commands about an element (scroll into view, measure,
 focus, select, read) go to the session that owns it — the tab's own for the
@@ -62,6 +63,7 @@ from spectragent.core.capabilities.browser.dom.sensitivity import (
     withhold_sensitive_markup,
 )
 from spectragent.core.capabilities.browser.effect_probes import (
+    DEEP_FOCUS_JS,
     SELECT_FACTS_JS,
     UNKNOWN,
     FieldProbe,
@@ -142,22 +144,13 @@ logger = logging.getLogger(__name__)
 #: its tag and the four attributes the rule looks at. Follows the focus
 #: through open shadow roots and frames this document can reach; a frame it
 #: cannot look into (another process, another origin) is reported opaque.
-_FOCUSED_FIELD_JS = """(() => {
-  let el = document.activeElement;
-  for (let hops = 0; el && hops < 64; hops += 1) {
-    if (el.shadowRoot && el.shadowRoot.activeElement) {
-      el = el.shadowRoot.activeElement;
-      continue;
-    }
-    if (el.localName === 'iframe' || el.localName === 'frame') {
-      let inner = null;
-      try { inner = el.contentDocument; } catch (e) { inner = null; }
-      if (!inner) return {opaque: true};
-      el = inner.activeElement;
-      continue;
-    }
-    break;
-  }
+_FOCUSED_FIELD_JS = (
+    "(() => {"
+    + DEEP_FOCUS_JS
+    + """
+  const f = deepFocus();
+  if (f.opaque) return {opaque: true};
+  const el = f.el;
   if (!el) return null;
   const attrs = {};
   for (const name of ['type', 'autocomplete', 'id', 'name']) {
@@ -166,6 +159,7 @@ _FOCUSED_FIELD_JS = """(() => {
   }
   return {tag: el.tagName, attrs};
 })()"""
+)
 
 
 def _focused_field_verdict(reply: Any) -> bool | None:
@@ -448,11 +442,6 @@ class ActionWatchdog(BrowserWatchdog):
             action_effect_timeout_s=ctx.action_effect_timeout_s,
             type_focus_wait_s=ctx.type_focus_wait_s,
         )
-
-    @property
-    def cursor_position(self) -> tuple[int, int] | None:
-        """The tab's last acknowledged pointer position, for observation snapshots."""
-        return self._mouse.observed_position
 
     def __init__(
         self,

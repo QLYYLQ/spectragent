@@ -39,7 +39,7 @@ from spectragent.core.capabilities.browser.dom.cleaning import (
     DOMCleanerProtocol,
     default_cleaner,
 )
-from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState, TargetCapture
+from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, TargetCapture
 from spectragent.core.capabilities.browser.dom.serializers import (
     DOMSerializerProtocol,
     default_serializer,
@@ -134,11 +134,6 @@ class DOMWatchdog(BrowserWatchdog):
         self._scope: EventScope | None = None
         self._session_id: str | None = None
 
-        # Latest DOM state (accessible by other watchdogs, e.g. ActionWatchdog).
-        # ``selector_map`` is *post*-budget: it is what the action layer
-        # routes on, so it must hold exactly what the model was shown.
-        self.current_state: DOMState | None = None
-        self.selector_map: DOMSelectorMap = {}
         # What the cleaner indexed last step, *pre*-budget. Only the
         # ``is_new`` marker reads it, and it has to be the pre-budget map:
         # ``*`` means "this element was not on the page last step", and an
@@ -218,11 +213,9 @@ class DOMWatchdog(BrowserWatchdog):
             # ``None`` when it removed nothing.
             budget = DOMBudgetPass(self._budget).apply(state, self._serializer.serialize)
 
-            # Update internal state. The selector map is post-budget, so an
-            # element the budget dropped is not reachable by an action: this
-            # map is what ``build_guarded_act`` resolves an index against.
-            self.current_state = state
-            self.selector_map = state.selector_map
+            # The published selector map is post-budget, so an element the
+            # budget dropped is not reachable by an action: the action layer
+            # routes on exactly what the model was shown.
             if self._publish_selector_map is not None:
                 self._publish_selector_map(dict(state.selector_map))
 

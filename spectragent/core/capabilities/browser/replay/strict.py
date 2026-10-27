@@ -16,7 +16,8 @@ from typing import Annotated
 
 from pydantic import Field as PydanticField
 
-from spectragent.core.capabilities.browser.replay.canonical import host_of, media_type
+from spectragent.core.capabilities.browser.archive.redaction import media_type
+from spectragent.core.capabilities.browser.replay.canonical import host_of
 from spectragent.core.capabilities.browser.replay.miss_policy import (
     DOCUMENT_ERROR_REASON,
     REPLAY_MISS_HEADER,

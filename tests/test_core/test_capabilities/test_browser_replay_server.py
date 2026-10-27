@@ -588,7 +588,7 @@ class TestMisses:
         assert all(
             entry["kind"] != "miss" or entry["reason"] != "unservable" for entry in _log(server)
         )
-        assert server.pending_sessions() == set()
+        assert not server._announced
 
 
 # ── answers that never reach the page (§4.14 "服务", "回放日志") ─────────
@@ -886,7 +886,7 @@ class TestState:
         gate = browser.hold("Fetch.fulfillRequest")
         _pause(client, pop_sid, "mid", "http://shop.test/api/data.json")
         await _settle()
-        assert pop_sid in server.pending_sessions()
+        assert pop_sid in {item.session_id for item in server._announced.values()}
         assert recorder._held  # the pause is still being answered
         # The tab closes: the recorder's detach bookkeeping reaches the server too.
         client.fire("Target.detachedFromTarget", {"sessionId": pop_sid}, None)
@@ -901,12 +901,12 @@ class TestState:
         )
         gate.set()
         await _settle()
-        assert server.pending_sessions() == set()
+        assert not server._announced
         assert not recorder._held and not recorder._pause_tasks
         assert recorder.target(pop_sid) is None
         await recorder.close()
         server.close()
-        assert server.pending_sessions() == set()
+        assert not server._announced
 
 
 def test_the_fingerprint_names_the_source_run_and_the_warnings(source_run: Path) -> None:

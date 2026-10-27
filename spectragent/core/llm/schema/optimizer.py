@@ -110,8 +110,6 @@ class SchemaOptimizer:
         model: type[BaseModel],
         *,
         strict: bool = False,
-        remove_min_items: bool = False,
-        remove_defaults: bool = False,
     ) -> dict[str, Any]:
         """
         Create the most optimized schema by flattening all $ref/$defs while preserving
@@ -124,10 +122,6 @@ class SchemaOptimizer:
                         array keywords that dialect refuses are dropped (see below).
                         Leave False for tool-use / prompt-JSON / Gemini paths, which
                         honour the model's own optionality.
-                remove_min_items: If True, remove minItems from the schema. Implied by
-                        ``strict``; set it for a *non-strict* endpoint that also chokes
-                        on it.
-                remove_defaults: If True, remove default values from the schema.
 
         ``minItems`` is not a preference under strict, it is a rejection —
         see :meth:`remove_min_items`, which is the transform this implies.
@@ -137,9 +131,6 @@ class SchemaOptimizer:
         Returns:
                 Optimized schema with all $refs resolved
         """
-        # Strict is a dialect, not a flag the caller can half-apply.
-        remove_min_items = remove_min_items or strict
-
         # Generate original schema
         original_schema = model.model_json_schema()
 
@@ -198,11 +189,9 @@ class SchemaOptimizer:
                         if isinstance(value, dict):
                             optimized[key] = optimize_schema(value, defs_lookup)
 
-                    # Skip minItems/min_items and default if requested (check BEFORE processing)
-                    elif key in ("minItems", "min_items") and remove_min_items:
-                        continue  # Skip minItems/min_items
-                    elif key == "default" and remove_defaults:
-                        continue  # Skip default values
+                    # Skip minItems/min_items under strict (check BEFORE processing)
+                    elif key in ("minItems", "min_items") and strict:
+                        continue
 
                     # Keep all anyOf structures (action unions) and resolve any $refs within
                     elif key == "anyOf" and isinstance(value, list):
@@ -281,10 +270,8 @@ class SchemaOptimizer:
         # Final pass, through the same named transforms a provider would call
         # on its own — one implementation of "drop this keyword everywhere",
         # not a second private copy of the walk.
-        if remove_min_items:
+        if strict:
             SchemaOptimizer.remove_min_items(optimized_schema)
-        if remove_defaults:
-            SchemaOptimizer._pop_everywhere(optimized_schema, ("default",))
 
         return optimized_schema
 

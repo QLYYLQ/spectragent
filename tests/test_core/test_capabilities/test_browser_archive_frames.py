@@ -66,7 +66,7 @@ from tests._helpers.browser_archive import (
     archiving_capability,
     settle,
 )
-from tests._helpers.trace_builder import agent_result, step_record
+from tests._helpers.trace_builder import agent_result, persisted, step_record
 
 #: The fake browser's screenshot: a real PNG, so its size is read from its header.
 WIDTH, HEIGHT = 16, 9
@@ -723,12 +723,12 @@ class TestTheReaders:
             await driver.observe()
             await driver.act()
             await writer.after_record_step(None, args=(step_record(0),), kwargs={})
-            await writer.flush()
+            await persisted(writer)
             # Step 1: no action — the after-observation frame is taken.
             await driver.observe()
             await asyncio.sleep(0.15)
             await writer.after_record_step(None, args=(step_record(1),), kwargs={})
-            await writer.flush()
+            await persisted(writer)
             # The run ends on an observation whose frame is still waiting.
             await driver.observe()
             await writer.on_run_end(result=agent_result())

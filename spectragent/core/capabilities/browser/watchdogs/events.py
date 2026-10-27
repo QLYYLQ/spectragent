@@ -425,19 +425,6 @@ class LifecycleEvent(BaseEvent[None]):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TabCreatedEvent(BaseEvent[None]):
-    """A new browser tab was detected (Target.attachedToTarget)."""
-
-    target_id: str
-    url: str = ""
-
-
-class TabClosedEvent(BaseEvent[None]):
-    """A browser tab was closed (Target.detachedFromTarget)."""
-
-    target_id: str
-
-
 class NavigationStartedEvent(BaseEvent[None]):
     """Page navigation started."""
 
@@ -467,14 +454,6 @@ class BrowserErrorEvent(BaseEvent[None]):
     error_type: str
     message: str
     details: dict[str, Any] | None = None
-
-
-class AgentFocusChangedEvent(BaseEvent[None]):
-    """Agent focus switched to a different tab."""
-
-    target_id: str
-    url: str = ""
-    reason: str = ""  # "user_switch" | "crash_recovery" | "new_tab"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -30,31 +30,6 @@ from spectragent.core.capabilities.browser.watchdogs.crash_watchdog import (
     CrashWatchdog,
 )
 from spectragent.core.capabilities.browser.watchdogs.dom_watchdog import DOMWatchdog
-from spectragent.core.capabilities.browser.watchdogs.events import (
-    AgentFocusChangedEvent,
-    BrowserErrorEvent,
-    BrowserStateRequestEvent,
-    ClickCoordinateEvent,
-    ClickElementEvent,
-    DialogOpenedEvent,
-    DOMContentLoadedEvent,
-    ExecuteJavaScriptEvent,
-    GoBackEvent,
-    GoForwardEvent,
-    LifecycleEvent,
-    NavigateToUrlEvent,
-    NavigationCompleteEvent,
-    NavigationStartedEvent,
-    PageLoadEvent,
-    RefreshEvent,
-    ScreenshotRequestEvent,
-    ScrollEvent,
-    SendKeysEvent,
-    TabClosedEvent,
-    TabCreatedEvent,
-    TargetCrashedEvent,
-    TypeTextEvent,
-)
 from spectragent.core.capabilities.browser.watchdogs.js_execution import (
     JavaScriptExecutionWatchdog,
 )
@@ -89,31 +64,4 @@ __all__ = [
     "PlatformWatchdog",
     "ScreenshotWatchdog",
     "SecurityWatchdog",
-    # Action request events
-    "NavigateToUrlEvent",
-    "ClickElementEvent",
-    "ClickCoordinateEvent",
-    "TypeTextEvent",
-    "ScrollEvent",
-    "SendKeysEvent",
-    "GoBackEvent",
-    "GoForwardEvent",
-    "RefreshEvent",
-    "ScreenshotRequestEvent",
-    "BrowserStateRequestEvent",
-    "ExecuteJavaScriptEvent",
-    # CDP Page-domain bridged events
-    "PageLoadEvent",
-    "DOMContentLoadedEvent",
-    "LifecycleEvent",
-    # Lifecycle events
-    "TabCreatedEvent",
-    "TabClosedEvent",
-    "NavigationStartedEvent",
-    "NavigationCompleteEvent",
-    "TargetCrashedEvent",
-    "BrowserErrorEvent",
-    "AgentFocusChangedEvent",
-    # Dialog events
-    "DialogOpenedEvent",
 ]

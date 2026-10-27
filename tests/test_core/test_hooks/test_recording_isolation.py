@@ -151,8 +151,9 @@ async def test_persistent_initialization_failure_preserves_calls_and_run_outcome
     assert record.actions[0].name == "browser.click"
     assert record.action_results[0].success is True
     result = await close(writer)
-    assert writer.health.status == "incomplete"
-    assert writer.health.missing_steps == [0]
+    health = required(result.metrics.recording_health)
+    assert health.status == "incomplete"
+    assert health.missing_steps == [0]
     assert result.metrics.llm_calls == 1
     assert result.metrics.usage is not None
     assert result.metrics.usage.total_tokens == 15
@@ -176,35 +177,13 @@ async def test_recovered_initialization_failure_does_not_leave_current_trace_inc
     await start(writer)
     await call(writer, returns=completion())
     await seal(writer, 0)
-    await close(writer)
+    result = await close(writer)
     trace = trace_of(writer)
     assert trace.manifest.status is TraceStatus.COMPLETE
     assert trace.manifest.missing_steps == []
-    assert writer.health.problems
-    assert all(problem.recovered for problem in writer.health.problems)
-
-
-async def test_health_snapshot_cannot_erase_a_recording_fault(writer_factory, monkeypatch):
-    def refuse_observation(*args, **kwargs):
-        raise ValueError("capture failed")
-
-    monkeypatch.setattr(hook_module, "encode_observation", refuse_observation)
-    writer = writer_factory()
-    await start(writer)
-    await seal(writer, 0)
-    health = writer.health
-    health.problems[0].recovered = True
-    health.problems.clear()
-    health.expected_steps = 0
-
-    result = await close(writer)
-
-    assert writer.health.status == "incomplete"
-    assert writer.health.missing_steps == [0]
-    assert writer.health.problems[0].recovered is False
-    assert trace_of(writer).manifest.status is TraceStatus.INCOMPLETE
-    assert result.metrics.recording_health is not None
-    assert result.metrics.recording_health.missing_steps == [0]
+    problems = required(result.metrics.recording_health).problems
+    assert problems
+    assert all(problem.recovered for problem in problems)
 
 
 @pytest.mark.parametrize("fault", ["encoding", "commit"])
@@ -302,7 +281,7 @@ async def test_archive_collection_failure_keeps_the_step_and_future_capture(writ
     assert record.action_results[0].success is True
     await call(writer, "next", returns=completion())
     await seal(writer, 1)
-    await close(writer, steps=2)
+    result = await close(writer, steps=2)
     trace = trace_of(writer)
     assert trace.manifest.missing_steps == []
     assert trace.manifest.complete_through == -1
@@ -315,7 +294,7 @@ async def test_archive_collection_failure_keeps_the_step_and_future_capture(writ
         "kept without evidence"
     ]
     assert [as_chat(item).messages[-1].text for item in trace.llm_messages(1)] == ["next"]
-    (problem,) = writer.health.problems
+    (problem,) = required(result.metrics.recording_health).problems
     assert (problem.step, problem.channel, problem.phase) == (0, "archive", "collect")
     assert (problem.error, problem.detail) == ("OSError", "capture failed")
 
@@ -336,9 +315,10 @@ async def test_call_capture_failure_does_not_replace_success_or_original_error(
         await call(writer, raises=original)
     assert caught.value is original
     await seal(writer, 0)
-    await close(writer)
-    assert writer.health.status == "incomplete"
-    assert all(problem.phase == "capture" for problem in writer.health.problems)
+    result = await close(writer)
+    health = required(result.metrics.recording_health)
+    assert health.status == "incomplete"
+    assert all(problem.phase == "capture" for problem in health.problems)
 
 
 async def test_missing_requested_schema_caps_online_and_persisted_complete_prefix(writer_factory):
@@ -391,7 +371,9 @@ async def test_finalize_failure_preserves_the_successful_execution(writer_factor
     assert result.metrics.recording_health is not None
     assert result.metrics.recording_health.status == "incomplete"
     assert trace_of(writer).manifest.status is TraceStatus.WRITING
-    assert any(problem.channel == "manifest" for problem in writer.health.problems)
+    assert any(
+        problem.channel == "manifest" for problem in result.metrics.recording_health.problems
+    )
 
 
 async def test_usage_keeps_zero_missing_failed_and_auxiliary_calls_distinct(writer_factory):
@@ -691,7 +673,7 @@ async def test_a_close_out_collection_that_outlasts_the_drain_budget_still_close
     assert trace.result is not None
     assert trace.step(0) is not None
     assert trace.manifest.complete_through == 0
-    (problem,) = writer.health.problems
+    (problem,) = required(result.metrics.recording_health).problems
     assert (problem.step, problem.channel, problem.phase, problem.error) == (
         None,
         "archive",
@@ -716,9 +698,9 @@ async def test_an_error_without_a_message_is_logged_and_recorded_by_its_class(
     await start_archiving(writer, ScriptedArchive(ArchiveBatch(), TimeoutError()))
     caplog.set_level("WARNING", logger=hook_module.__name__)
     await seal(writer, 0)
-    await close(writer)
+    result = await close(writer)
 
-    (problem,) = writer.health.problems
+    (problem,) = required(result.metrics.recording_health).problems
     assert (problem.channel, problem.phase, problem.error, problem.detail) == (
         "archive",
         "closeout",
@@ -1007,7 +989,9 @@ async def test_blocked_background_write_and_full_queue_do_not_block_execution(
     assert trace.manifest.status is TraceStatus.INCOMPLETE
     assert result.metrics.llm_calls == 3
     assert recorded_usage(trace).calls == 2
-    assert any(problem.phase == "buffer" for problem in writer.health.problems)
+    assert any(
+        problem.phase == "buffer" for problem in required(result.metrics.recording_health).problems
+    )
 
 
 async def test_restored_prefix_step_does_not_fabricate_new_model_calls(writer_factory):

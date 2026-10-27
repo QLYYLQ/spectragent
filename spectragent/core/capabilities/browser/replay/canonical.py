@@ -73,6 +73,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
+from spectragent.core.capabilities.browser.archive.redaction import media_type
 from spectragent.core.capabilities.browser.replay.site_rules import FieldFormat, SiteRule
 
 #: Ports a canonical URL leaves out.
@@ -225,19 +226,6 @@ def exact_body_digest(body: bytes | None, content_type: str | None) -> str | Non
     if media.startswith("multipart/") and boundary:
         body = body.replace(boundary.encode("utf-8"), b"")
     return hashlib.sha256(body).hexdigest()
-
-
-def media_type(content_type: str | None) -> tuple[str, dict[str, str]]:
-    """``"multipart/form-data; boundary=x"`` → ``("multipart/form-data", {"boundary": "x"})``."""
-    if not content_type:
-        return "", {}
-    head, *options = content_type.split(";")
-    parsed: dict[str, str] = {}
-    for option in options:
-        key, eq, value = option.strip().partition("=")
-        if eq:
-            parsed[key.strip().lower()] = value.strip().strip('"')
-    return head.strip().lower(), parsed
 
 
 # ── the query ──────────────────────────────────────────────────────────

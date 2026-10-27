@@ -26,18 +26,11 @@ class ModelFamily:
     * ``schema_rejects_closed_union_branches`` — whether to open the
       ``anyOf`` branches of a closed union before sending
       (``openai_base``, ``openai_azure``).
-
-    The remaining flags are declared but not yet consulted by any provider.
     """
 
     name: str
     supports_json_schema: bool = True
-    supports_tool_calling: bool = True
-    prefers_tool_for_structured: bool = False
     supports_strict_mode: bool = False
-    supports_thinking: bool = False
-    supports_reasoning_effort: bool = False
-    supports_cache_control: bool = False
     schema_requires_gemini_fix: bool = False
     schema_rejects_closed_union_branches: bool = False
     """The family's schema parser refuses ``additionalProperties`` inside an

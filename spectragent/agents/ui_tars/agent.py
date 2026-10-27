@@ -30,7 +30,6 @@ a browser, a desktop VM or an Android emulator unchanged.
 
 from __future__ import annotations
 
-import base64
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -58,13 +57,12 @@ from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     ContentPartTextParam,
-    ImageURL,
     SystemMessage,
     UserMessage,
 )
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import CoordinateSpace
 from spectragent.schemas.observation.image import image_media_type, read_model_image
@@ -288,15 +286,8 @@ class UITarsAgent(AgentBase):
         return self.__registry_key__
 
     @property
-    def domain(self) -> str:
-        return "web_navigation_vision"
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
-
-    def get_action_space(self) -> list[ActionDescriptor]:
-        return list(self._codec.space.descriptors)
 
     # ── Negotiation ────────────────────────────────────────────
 
@@ -410,16 +401,9 @@ class UITarsAgent(AgentBase):
         # configured to capture JPEG, and a JPEG behind a
         # ``data:image/png`` prefix is rejected outright by Anthropic.
         media_type = image_media_type(image_bytes) or "image/png"
-        b64 = base64.b64encode(image_bytes).decode()
         content: list[Any] = [
             ContentPartTextParam(text=text),
-            ContentPartImageParam(
-                image_url=ImageURL(
-                    url=f"data:{media_type};base64,{b64}",
-                    detail="high",
-                    media_type=media_type,
-                ),
-            ),
+            ContentPartImageParam.from_bytes(image_bytes, media_type=media_type, detail="high"),
         ]
         messages = place_prompt_contributions(
             [*prefix, UserMessage(content=content)], context=context

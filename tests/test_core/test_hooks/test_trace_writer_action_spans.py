@@ -40,6 +40,7 @@ from tests._helpers.branch_fakes import (
     record_source,
     run_branch,
 )
+from tests._helpers.trace_builder import persisted
 
 
 def _loop(**settings: Any) -> ReactLoop:
@@ -284,7 +285,7 @@ class TestTheAdvice:
             )
 
         await writer.around_execute_step(proceed=execution, args=(None, 0), kwargs={})
-        await writer.flush()
+        await persisted(writer)
         return outcome
 
     @pytest.fixture()
@@ -340,9 +341,9 @@ class TestTheAdvice:
         assert await writer.around_execute_step(proceed=execution, args=(None, 0), kwargs={}) is (
             returned
         )
-        await writer.flush()
+        health = await persisted(writer)
         assert _read(writer, 0).action_spans == []
-        assert [(p.channel, p.phase) for p in writer.health.problems] == [("timing", "capture")]
+        assert [(p.channel, p.phase) for p in health.problems] == [("timing", "capture")]
 
 
 async def _sink() -> None:

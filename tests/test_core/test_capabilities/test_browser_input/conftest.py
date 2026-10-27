@@ -5,12 +5,11 @@ mouse and the keyboard play against the *same* scheduler
 (``input/_schedule.py``): giving each a clock of its own is how the two would
 drift apart.
 
-Tiny, randomly initialised exports in each format the ``learned`` strategy
+Tiny, randomly initialised exports of each kind the ``learned`` strategy
 reads, with the exact array names, layer wiring and meta keys of the
-trainer's exporters (``mouse_gan.export`` for ``mouse-gan-generator/1``,
-``mouse_gan.v2.export_v2`` for ``/2``) and much smaller widths, so no test
-depends on the real 1-10 MB weights. ``test_mouse_gan_v2`` checks the names
-against the real exports whenever the trainer project is on the machine.
+trainer's exporter (``mouse_gan.v2.export_v2``) and much smaller widths, so no
+test depends on the real 1-10 MB weights. ``test_mouse_gan_v2`` checks the
+names against the real exports whenever the trainer project is on the machine.
 """
 
 from __future__ import annotations
@@ -24,12 +23,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-TINY_LATENT = 8
 TINY_SEQ_LEN = 30
 
 #: The trainer project, when this machine has it (real exports + reference samplers).
 TRAINER_ROOT = Path("/Users/qly/QLY/code/study/mouse-gan-torch")
-V1_SMOKE_EXPORT = TRAINER_ROOT / "runs" / "smoke" / "export"
 V2_MDN_EXPORT = TRAINER_ROOT / "runs" / "v2_mdn_h128_d3" / "export"
 V2_GAN_AR_EXPORT = TRAINER_ROOT / "runs" / "v2_ar_gate" / "export"
 
@@ -37,15 +34,14 @@ V2_GAN_AR_EXPORT = TRAINER_ROOT / "runs" / "v2_ar_gate" / "export"
 def _write(
     directory: Path,
     arrays: dict[str, np.ndarray],
-    meta: dict[str, Any] | None,
+    meta: dict[str, Any],
     drop_arrays: Iterable[str],
 ) -> Path:
     for name in drop_arrays:
         del arrays[name]
     directory.mkdir(parents=True, exist_ok=True)
     np.savez(directory / "generator.npz", **arrays)  # type: ignore[arg-type]
-    if meta is not None:
-        (directory / "meta.json").write_text(json.dumps(meta))
+    (directory / "meta.json").write_text(json.dumps(meta))
     return directory
 
 
@@ -58,61 +54,6 @@ class _Init:
 
     def vec(self, n: int, scale: float = 0.1) -> np.ndarray:
         return (self.rng.standard_normal(n) * scale).astype(np.float32)
-
-
-def write_tiny_v1_export(
-    directory: Path,
-    *,
-    meta: dict[str, Any] | None = None,
-    write_meta: bool = True,
-    drop_arrays: Iterable[str] = (),
-    seed: int = 0,
-) -> Path:
-    """A ``mouse-gan-generator/1`` export (``generator.npz`` + ``meta.json``)."""
-    init = _Init(seed)
-    cond_dim, h1, h2, u, u1, u2, d = 4, 16, 16, 8, 8, 8, 8
-    arrays: dict[str, np.ndarray] = {
-        "dense1.weight": init.mat(h1, TINY_LATENT + cond_dim),
-        "dense1.bias": init.vec(h1),
-        "bn1.gamma": np.ones(h1, np.float32),
-        "bn1.beta": np.zeros(h1, np.float32),
-        "bn1.moving_mean": np.zeros(h1, np.float32),
-        "bn1.moving_var": np.ones(h1, np.float32),
-        "dense2.weight": init.mat(h2, h1),
-        "dense2.bias": init.vec(h2),
-        "bn2.gamma": np.ones(2 * u, np.float32),
-        "bn2.beta": np.zeros(2 * u, np.float32),
-        "bn2.moving_mean": np.zeros(2 * u, np.float32),
-        "bn2.moving_var": np.ones(2 * u, np.float32),
-        "td_dense.weight": init.mat(d, u2),
-        "td_dense.bias": init.vec(d),
-        "out.weight": init.mat(2, d) * 0.05,
-        "out.bias": init.vec(2, 0.01),
-    }
-    for prefix, units, inputs in (
-        ("bilstm.fw", u, h2),
-        ("bilstm.bw", u, h2),
-        ("lstm1", u1, 2 * u),
-        ("lstm2", u2, u1),
-    ):
-        arrays[f"{prefix}.w_ih"] = init.mat(4 * units, inputs)
-        arrays[f"{prefix}.w_hh"] = init.mat(4 * units, units)
-        arrays[f"{prefix}.b"] = init.vec(4 * units)
-
-    full_meta: dict[str, Any] = {
-        "format": "mouse-gan-generator/1",
-        "latent_dim": TINY_LATENT,
-        "max_seq_len": TINY_SEQ_LEN,
-        "feature_dim": 2,
-        "cond_dim": cond_dim,
-        "hz": 50,
-        "norm_reference_window": [800, 800],
-        "leaky_relu_negative_slope": 0.2,
-        "bn_epsilon": 0.001,
-        "dtype": "float32",
-    }
-    full_meta.update(meta or {})
-    return _write(directory, arrays, full_meta if write_meta else None, drop_arrays)
 
 
 def _v2_meta(kind: str, model_args: dict[str, Any], sampling: dict[str, Any]) -> dict[str, Any]:
@@ -251,15 +192,9 @@ def write_tiny_gan_ar_export(
 
 
 WRITERS: dict[str, Callable[..., Path]] = {
-    "v1": write_tiny_v1_export,
     "mdn": write_tiny_mdn_export,
     "gan_ar": write_tiny_gan_ar_export,
 }
-
-
-@pytest.fixture
-def v1_export(tmp_path: Path) -> Path:
-    return write_tiny_v1_export(tmp_path / "v1_export")
 
 
 @pytest.fixture
@@ -274,7 +209,7 @@ def gan_ar_export(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def make_export(tmp_path: Path) -> Callable[..., Path]:
-    """``make_export("v1" | "mdn" | "gan_ar", **writer_kwargs)`` in a fresh directory."""
+    """``make_export("mdn" | "gan_ar", **writer_kwargs)`` in a fresh directory."""
     counter = iter(range(1_000_000))
 
     def make(kind: str, **kwargs: Any) -> Path:

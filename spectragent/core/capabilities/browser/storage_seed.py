@@ -19,6 +19,7 @@ from typing import Any, Literal
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.commands import BrowserConnection, PendingCommand
+from spectragent.core.capabilities.browser.dom.capture import frame_tree_nodes
 from spectragent.schemas.browser_storage import BrowserStorageState, StorageArea
 
 INITIAL_STATE_NAME = "initial_state.json"
@@ -208,11 +209,7 @@ class _Hydration:
                     tree = await self.cdp.send("Page.getFrameTree", {}, session, timeout=1)
                     if session not in self.sessions:
                         continue
-                    nodes = [tree["frameTree"]]
-                    while nodes:
-                        node = nodes.pop()
-                        nodes.extend(node.get("childFrames") or [])
-                        frame = node["frame"]
+                    for frame in frame_tree_nodes(tree):
                         if (
                             frame.get("securityOrigin") != area.origin
                             or frame.get("url") != expected_url

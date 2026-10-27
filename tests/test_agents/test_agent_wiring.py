@@ -14,9 +14,7 @@ class TestAgentBaseWiring:
         assert "llm" in AgentBase.__wiring__
         assert AgentBase.__wiring__["llm"] == "llm"
 
-    def test_default_domain(self):
-        """AgentBase default domain is 'general'."""
-
+    def test_agent_id_is_the_registry_key(self):
         class _TestAgent(AgentBase):
             __registry_key__ = "_test_wiring_domain"
 
@@ -28,11 +26,7 @@ class TestAgentBaseWiring:
             def system_prompt(self):
                 return None
 
-            def get_action_space(self):
-                return []
-
         agent = _TestAgent()
-        assert agent.domain == "general"
         assert agent.agent_id == "_test_wiring_domain"
 
     def test_subclass_narrows_wiring(self):
@@ -51,9 +45,6 @@ class TestAgentBaseWiring:
             @property
             def system_prompt(self):
                 return None
-
-            def get_action_space(self):
-                return []
 
         # Subclass wiring narrows agent_loop to react only
         assert _NarrowAgent.__wiring__["agent_loop"] == ("agent_loop", ["react"])
@@ -75,38 +66,12 @@ class TestAgentBaseWiring:
             def system_prompt(self):
                 return None
 
-            def get_action_space(self):
-                return []
-
         wiring = _ObsAgent.__wiring__
         assert "observation" in wiring
         obs_wiring = wiring["observation"]
         assert obs_wiring[0] == "observation"
         assert "dom" in obs_wiring[1]
         assert "screenshot" in obs_wiring[1]
-
-    def test_subclass_overrides_domain(self):
-        """Subclass can override domain property."""
-
-        class _WebAgent(AgentBase):
-            __registry_key__ = "_test_web_domain"
-
-            @property
-            def domain(self):
-                return "web_navigation"
-
-            @property
-            def agent_name(self):
-                return "web"
-
-            @property
-            def system_prompt(self):
-                return None
-
-            def get_action_space(self):
-                return []
-
-        assert _WebAgent().domain == "web_navigation"
 
     def test_registration(self):
         """AgentBase subclasses auto-register via conscribe."""
@@ -121,9 +86,6 @@ class TestAgentBaseWiring:
             @property
             def system_prompt(self):
                 return None
-
-            def get_action_space(self):
-                return []
 
         cls = AgentRegistrar.get("_test_reg_agent")
         assert cls is _RegTestAgent

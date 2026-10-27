@@ -33,6 +33,7 @@ from spectragent.core.capabilities.browser.archive.network import (
 from spectragent.core.capabilities.browser.archive.network_model import (
     FAILED_AFTER_READ_NOTE,
     TARGET_DETACHED_ERROR,
+    header_value,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay.archive_source import (
@@ -1096,6 +1097,20 @@ class TestContentRange:
         assert (parse_content_range("bytes 0-1/*") or {})["total"] is None
         assert parse_content_range("garbage") == {"raw": "garbage"}
         assert parse_content_range(None) is None
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Accept": "*/*", "Content-Type": "text/html", "content-type": "text/plain"},
+        [{"name": "Accept", "value": "*/*"}, {"name": "Content-Type", "value": "text/html"}],
+        (("Accept", "*/*"), ("Content-Type", "text/html"), ("content-type", "text/plain")),
+    ],
+    ids=["cdp-dict", "cdp-list", "pairs"],
+)
+def test_a_header_is_found_by_name_in_any_case_and_any_shape(headers: Any) -> None:
+    assert header_value(headers, "CONTENT-TYPE") == "text/html"
+    assert header_value(headers, "range") is None
 
 
 class TestTheArchiver:

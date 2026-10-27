@@ -13,13 +13,11 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M04/M11.
 
 from spectragent.core.hooks._registrar import HookBase, HookRegistrar
 from spectragent.core.hooks.base import RuntimeHook
-from spectragent.core.hooks.events import LifecycleEvents
 from spectragent.core.hooks.trace_writer import TraceWriter
 
 __all__ = [
     "RuntimeHook",
     "HookRegistrar",
     "HookBase",
-    "LifecycleEvents",
     "TraceWriter",
 ]

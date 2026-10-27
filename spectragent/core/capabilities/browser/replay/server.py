@@ -48,7 +48,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from spectragent.core.capabilities.browser.archive.base import RecorderHandle
-from spectragent.core.capabilities.browser.archive.network_model import post_body_of
+from spectragent.core.capabilities.browser.archive.network_model import (
+    header_value,
+    post_body_of,
+)
 from spectragent.core.capabilities.browser.archive.redaction import redact_post_body
 from spectragent.core.capabilities.browser.recorder import (
     FETCH_TARGET_TYPES,
@@ -315,7 +318,7 @@ class ReplayServer(RecorderParticipantBase):
         frame = self._frame(paused.target, params.get("frameId")) if is_document else None
         found = post_body_of(request)
         raw_body = found[0] if found is not None else None
-        content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), None)
+        content_type = header_value(headers, "content-type")
         live = LiveRequest(
             method=str(request.get("method") or "GET").upper(),
             url=str(request.get("url") or ""),
@@ -553,10 +556,6 @@ class ReplayServer(RecorderParticipantBase):
             nid for nid, item in self._announced.items() if item.session_id == session_id
         ]:
             del self._announced[network_id]
-
-    def pending_sessions(self) -> set[str | None]:
-        """The sessions the server still keeps state for (diagnostics and tests)."""
-        return {item.session_id for item in self._announced.values()}
 
     # ── the run ──────────────────────────────────────────────────────
 

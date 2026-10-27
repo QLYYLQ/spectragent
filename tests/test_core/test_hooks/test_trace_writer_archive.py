@@ -45,6 +45,8 @@ from spectragent.core.trace.models import TraceManifest, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
+from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.recording import RecordingHealth
 from spectragent.schemas.task import TaskContext
 from tests._helpers.archive_fakes import (
     BLOBS_KEY,
@@ -71,6 +73,8 @@ from tests._helpers.trace_builder import (
     archive_file,
     archive_item,
     as_chat,
+    persisted,
+    required,
     step_record,
     usage,
 )
@@ -120,7 +124,7 @@ async def _call(writer: TraceWriter, text: str = "go") -> None:
 async def _commit(writer: TraceWriter, step: int) -> None:
     """Hand off a step, then explicitly wait before inspecting durable evidence."""
     await writer.after_record_step(None, args=(step_record(step),), kwargs={})
-    await writer.flush()
+    await persisted(writer)
 
 
 def _manifest_on_disk(run_dir: Path) -> TraceManifest:
@@ -268,11 +272,11 @@ def _archive_extras(trace: RunTrace) -> list[Any]:
     return [record for record in trace.trailing_extra_files if ARCHIVE_META_KEY in record.meta]
 
 
-def _problem(writer: TraceWriter, *, step: int | None, error: str, detail: str) -> Any:
+def _problem(health: RecordingHealth | None, *, step: int | None, error: str, detail: str) -> Any:
     """Find the public diagnostic for a deliberately injected recording fault."""
     return next(
         problem
-        for problem in writer.health.problems
+        for problem in required(health).problems
         if problem.step == step and problem.error == error and detail in problem.detail
     )
 
@@ -355,7 +359,7 @@ class TestTheConsumerTakesTheRawEnvironment:
             trace_dir=str(tmp_path / "traces"), archive=[FakeStepArchiver(), FakeBlobArchiver()]
         )
         await writer.on_run_start(env=env, task="t", config={}, archive_negotiation=negotiation)
-        problem = _problem(writer, step=None, error="RuntimeError", detail=why)
+        problem = _problem(await persisted(writer), step=None, error="RuntimeError", detail=why)
         assert problem.phase == "initialize"
         assert "AgentRuntime.prepare" in problem.detail
         assert repr(sorted([STEPS_KEY, BLOBS_KEY])) in problem.detail
@@ -364,7 +368,7 @@ class TestTheConsumerTakesTheRawEnvironment:
         await writer.on_run_end(result=result)
         assert result.agent_done == AgentDoneStatus.DONE
         assert result.error is None
-        assert writer.health.status == "incomplete"
+        assert required(result.metrics.recording_health).status == "incomplete"
 
 
 # ── evidence rides the step commit ────────────────────────────────────
@@ -693,7 +697,8 @@ class TestTheCloseOut:
         await bench.step(0)
         await _call(bench.writer, "the last word")
         bench.cap.broken = True
-        await bench.writer.on_run_end(result=_done())
+        result = _done()
+        await bench.writer.on_run_end(result=result)
 
         trace = bench.trace()
         assert trace.manifest.status == TraceStatus.INCOMPLETE
@@ -702,7 +707,10 @@ class TestTheCloseOut:
         assert f"{CAPABILITY_ID}: RuntimeError:" in reason
         assert "broken on purpose" in reason
         problem = _problem(
-            bench.writer, step=None, error="RuntimeError", detail="broken on purpose"
+            result.metrics.recording_health,
+            step=None,
+            error="RuntimeError",
+            detail="broken on purpose",
         )
         assert (problem.channel, problem.phase) == (CAPABILITY_ID, "closeout")
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
@@ -864,7 +872,7 @@ class TestAReusedWriterStartsEachRunClean:
 
         monkeypatch.setattr(fsio, "write_durable", write_durable)
         await _commit(bench.writer, 1)
-        assert bench.writer.health.missing_steps == [1]
+        assert (await persisted(bench.writer)).missing_steps == [1]
         await bench.writer.on_run_end(result=_failed())
         await bench.writer.on_run_error(error=OSError("disk gone"), partial_steps=[])
         assert bench.trace().manifest.status == TraceStatus.WRITING
@@ -874,7 +882,7 @@ class TestAReusedWriterStartsEachRunClean:
         assert [
             (step, r.name) for step, r in second.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(0, "cycle_003.json")]
-        assert bench.writer.health.problems == []
+        assert second.manifest.recording_problems == []
 
     async def test_through_a_runtime_that_drives_two_tasks(self, tmp_path) -> None:
         cap = FakeArchivingCapability()
@@ -1003,7 +1011,9 @@ class TestArchiveFaultsPreserveExecution:
         trace = RunTrace(run_dir)
         assert trace.step(0) is not None
         assert not (run_dir / "env").exists()
-        problem = _problem(writer, step=0, error="ArchiveContractError", detail=why)
+        problem = _problem(
+            await persisted(writer), step=0, error="ArchiveContractError", detail=why
+        )
         assert (problem.channel, problem.phase) == ("archive", "collect")
         assert not problem.recovered
         await _call(writer, "the later step's call")
@@ -1042,7 +1052,9 @@ class TestArchiveFaultsPreserveExecution:
         await writer.on_run_end(result=result)
         assert (result.agent_done, result.error) == outcome
         assert why in caplog.text
-        problem = _problem(writer, step=None, error="ArchiveContractError", detail=why)
+        problem = _problem(
+            result.metrics.recording_health, step=None, error="ArchiveContractError", detail=why
+        )
         assert problem.channel == "archive" and problem.phase == "closeout"
 
         trace = RunTrace(run_dir)
@@ -1063,7 +1075,8 @@ class TestArchiveFaultsPreserveExecution:
         await _commit(writer, 1)
         await _call(writer, "step 2")
         await _commit(writer, 2)
-        await writer.on_run_end(result=_done())
+        result = _done()
+        await writer.on_run_end(result=result)
 
         trace = RunTrace(run_dir)
         assert env.calls == 4
@@ -1076,7 +1089,9 @@ class TestArchiveFaultsPreserveExecution:
         assert trace.manifest.missing_steps == []
         assert trace.manifest.complete_through == 0
         assert "archive: RuntimeError: socket gone" in (trace.manifest.incomplete_reason or "")
-        problem = _problem(writer, step=1, error="RuntimeError", detail="socket gone")
+        problem = _problem(
+            result.metrics.recording_health, step=1, error="RuntimeError", detail="socket gone"
+        )
         assert (problem.channel, problem.phase) == ("archive", "collect")
 
     async def test_one_archivers_gap_keeps_the_step_and_the_other_archivers_evidence(
@@ -1089,7 +1104,8 @@ class TestArchiveFaultsPreserveExecution:
         await bench.step(1, call="step without its bodies")
         bench.cap.failing.clear()
         await bench.step(2)
-        await bench.writer.on_run_end(result=_done())
+        result = _done()
+        await bench.writer.on_run_end(result=result)
 
         trace = bench.trace()
         assert [entry.step for entry in trace.manifest.steps] == [0, 1, 2]
@@ -1099,7 +1115,7 @@ class TestArchiveFaultsPreserveExecution:
         assert [r.name for r in trace.archive_files(1, STEPS_KEY)] == ["cycle_002.json"]
         assert trace.archive_files(1, BLOBS_KEY) == []
         assert [len(trace.archive_files(step, BLOBS_KEY)) for step in (0, 2)] == [1, 1]
-        (problem,) = bench.writer.health.problems
+        (problem,) = required(result.metrics.recording_health).problems
         assert (problem.step, problem.channel, problem.phase) == (1, BLOBS_KEY, "collect")
         assert problem.detail == f"{BLOBS_KEY}: evidence lost on purpose"
         assert trace.manifest.status == TraceStatus.INCOMPLETE
@@ -1115,13 +1131,14 @@ class TestArchiveFaultsPreserveExecution:
         await bench.step(0)
         await bench.cap.produce(1)
         bench.cap.failing.add(BLOBS_KEY)
-        await bench.writer.on_run_end(result=_done())
+        result = _done()
+        await bench.writer.on_run_end(result=result)
 
         trace = bench.trace()
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(0, "cycle_001.json"), (None, "cycle_002.json")]
-        (problem,) = bench.writer.health.problems
+        (problem,) = required(result.metrics.recording_health).problems
         assert (problem.step, problem.channel, problem.phase) == (None, BLOBS_KEY, "closeout")
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == 0
@@ -1164,7 +1181,8 @@ class TestArchiveFaultsPreserveExecution:
         await _call(bench.writer, "step 1")
         _lose_power_once(monkeypatch)
         await _commit(bench.writer, 1)
-        await bench.writer.on_run_end(result=_done())
+        result = _done()
+        await bench.writer.on_run_end(result=result)
 
         trace = bench.trace()
         assert trace.step(1) is not None
@@ -1179,7 +1197,9 @@ class TestArchiveFaultsPreserveExecution:
         assert _latest_run_record(trace, CAPABILITY_ID) == ("env/run.contract_archive.1.json", 1)
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.missing_steps == []
-        assert _problem(bench.writer, step=1, error="OSError", detail="power lost").recovered
+        assert _problem(
+            result.metrics.recording_health, step=1, error="OSError", detail="power lost"
+        ).recovered
         assert trace.manifest.recording_problems
 
     async def test_a_permanent_trailing_failure_exhausts_only_its_bounded_retries(
@@ -1359,7 +1379,7 @@ class TestArchiveFaultsPreserveExecution:
             await bench.writer.after_record_step(None, args=(step_record(2),), kwargs={})
         finally:
             release_first.set()
-        await bench.writer.flush()
+        await persisted(bench.writer)
         await bench.writer.on_run_end(result=_done())
 
         trace = bench.trace()
@@ -1479,10 +1499,19 @@ class _RiskGuard(HookBase):
         self.veto_at = veto_at
         self.breaks = breaks
         self.acts = 0
+        self.result: AgentResult | None = None
 
     @property
     def blocking(self) -> bool:
         return True  # a guard that vetoes must be blocking, or its veto is logged and dropped
+
+    @property
+    def health(self) -> RecordingHealth | None:
+        """The recording health on the result this run closed out with (the veto returns none)."""
+        return self.result.metrics.recording_health if self.result is not None else None
+
+    async def on_run_end(self, *, result: Any = None, **kwargs: Any) -> None:
+        self.result = result
 
     async def after_act(self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any) -> None:
         self.acts += 1
@@ -1648,7 +1677,10 @@ class TestThroughTheRuntime:
         assert result.metrics.recording_health is not None
         assert result.metrics.recording_health.missing_steps == []
         problem = _problem(
-            writer, step=failing_step, error="RuntimeError", detail="broken on purpose"
+            result.metrics.recording_health,
+            step=failing_step,
+            error="RuntimeError",
+            detail="broken on purpose",
         )
         assert (problem.channel, problem.phase) == (CAPABILITY_ID, "collect")
 
@@ -1776,7 +1808,7 @@ class TestThroughTheRuntime:
             )
 
         assert "broken on purpose" not in str(caught.value)
-        _problem(writer, step=1, error="RuntimeError", detail="broken on purpose")
+        _problem(guard.health, step=1, error="RuntimeError", detail="broken on purpose")
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
@@ -1807,7 +1839,12 @@ class TestThroughTheRuntime:
         assert result.error.startswith("observe failed at step 1: ObservationFailedError")
         assert "ConnectionError: CDP websocket closed" in result.error
         assert "broken on purpose" not in result.error
-        _problem(writer, step=1, error="RuntimeError", detail="broken on purpose")
+        _problem(
+            result.metrics.recording_health,
+            step=1,
+            error="RuntimeError",
+            detail="broken on purpose",
+        )
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
@@ -1948,11 +1985,10 @@ class TestThroughTheRuntime:
 
         assert "No space left on device" not in str(caught.value)
         assert "No space left on device" in caplog.text
-        assert any(
-            "No space left on device" in problem.detail for problem in writer.health.problems
-        )
-        assert writer.health.status == "incomplete"
-        assert 1 in writer.health.missing_steps
+        health = required(guard.health)
+        assert any("No space left on device" in problem.detail for problem in health.problems)
+        assert health.status == "incomplete"
+        assert 1 in health.missing_steps
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.step(1) is None

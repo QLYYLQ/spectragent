@@ -38,7 +38,6 @@ from __future__ import annotations
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field as PydanticField
-from pydantic import TypeAdapter
 
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.replay.archive_index import (
@@ -70,7 +69,6 @@ DEFAULT_FULFILL_BODY_BYTES = 64 * MIB
 #: under the 100 MiB a single CDP message to Chrome may carry (measured, arch §4.14).
 MAX_FULFILL_BODY_BYTES = 72 * MIB
 
-_MATCHER: TypeAdapter[MatcherConfig] = TypeAdapter(MatcherConfig)
 #: The ``matcher`` default (frozen, so one shared instance is safe).
 DEFAULT_MATCHER = MatcherConfig()
 
@@ -176,11 +174,7 @@ class ArchiveNetworkSource(NetworkSourceBase):
     ) -> None:
         # The receptor's in-Python default; the Composer injects the configured one.
         self.miss_policy = default_miss_policy()
-        # The Composer hands a nested knob over as a dict; Python callers pass
-        # the config itself.
-        self.matcher = (
-            matcher if isinstance(matcher, MatcherConfig) else _MATCHER.validate_python(matcher)
-        )
+        self.matcher = matcher
         if isolation not in ("required", "none_acknowledged"):
             raise ValueError(
                 f"archive: isolation is 'required' or 'none_acknowledged', got {isolation!r}"

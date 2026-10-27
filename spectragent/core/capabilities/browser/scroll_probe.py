@@ -34,6 +34,7 @@ from typing import Any, Literal
 from agent_cdp import CDPCommandProtocol
 
 from spectragent.core.capabilities.browser.effect_probes import (
+    DEEP_HIT_JS,
     ELEMENT_FACTS_JS,
     NO_ANSWER,
     UNKNOWN,
@@ -58,8 +59,10 @@ _MAX_READS = 200
 
 #: The containers the wheel at ``(x, y)`` could move, innermost first, held by
 #: reference: ``{chain: [elements], frame: <the point is over another site's frame>}``.
-_CHAIN_EXPRESSION = r"""
-((x, y) => {
+_CHAIN_EXPRESSION = (
+    "((x, y) => {"
+    + DEEP_HIT_JS
+    + r"""
   function scrolls(n) {
     const doc = n.ownerDocument;
     if (n === doc.scrollingElement || n === doc.documentElement || n === doc.body) return false;
@@ -69,26 +72,8 @@ _CHAIN_EXPRESSION = r"""
         || (open(cs.overflowX) && n.scrollWidth > n.clientWidth);
   }
   const chain = [];
-  let frame = false;
-  let doc = document, px = x, py = y;
-  let el = document.elementFromPoint(px, py);
-  for (let hops = 0; el && hops < 64; hops += 1) {
-    if (el.shadowRoot) {
-      const inner = el.shadowRoot.elementFromPoint(px, py);
-      if (inner && inner !== el) { el = inner; continue; }
-    }
-    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-      let inner = null;
-      try { inner = el.contentDocument; } catch (e) { inner = null; }
-      if (!inner) { frame = true; break; }
-      const box = el.getBoundingClientRect();
-      px -= box.left + el.clientLeft; py -= box.top + el.clientTop;
-      doc = inner; el = inner.elementFromPoint(px, py);
-      continue;
-    }
-    break;
-  }
-  let n = el;
+  const hit = deepHit(x, y);
+  let n = hit.el;
   for (let hops = 0; hops < 4096; hops += 1) {
     if (!n) break;
     if (n.nodeType === 1 && scrolls(n)) chain.push(n);
@@ -102,9 +87,10 @@ _CHAIN_EXPRESSION = r"""
     n = up;
   }
   if (!chain.length) chain.push(document.scrollingElement || document.documentElement);
-  return {chain: chain, frame: frame};
+  return {chain: chain, frame: hit.opaque};
 })(%(x)d, %(y)d)
 """
+)
 
 #: The offsets of every held container, and (when asked) the facts of each.
 _READ_FN = (

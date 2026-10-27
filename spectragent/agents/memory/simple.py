@@ -42,10 +42,6 @@ class SimpleMemory(MemoryBase):
     # ── internal state ─────────────────────────────────────────
     _messages: list[BaseMessage] = field(default_factory=list, init=False, repr=False)
 
-    @property
-    def memory_type(self) -> str:
-        return "simple"
-
     def _evict(self) -> None:
         """Trim the store back to *max_messages*, oldest non-system first."""
         if len(self._messages) <= self.max_messages:
@@ -76,15 +72,8 @@ class SimpleMemory(MemoryBase):
         self._messages.extend(messages)
         self._evict()
 
-    def get_messages(self) -> list[BaseMessage]:
-        return list(self._messages)
-
-    def get_context_messages(self, *, max_tokens: int | None = None) -> list[BaseMessage]:
+    def get_context_messages(self) -> list[BaseMessage]:
         return drop_broken_tool_groups(self._messages)
 
     def clear(self) -> None:
         self._messages.clear()
-
-    @property
-    def message_count(self) -> int:
-        return len(self._messages)

@@ -15,12 +15,11 @@ from typing import Any
 from spectragent.core.loops.react import validated_reply
 from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
-from tests._helpers.action_spaces import space_of
 
 __all__ = ["read_reply"]
 
 
-def read_reply(agent: Any, reply: object, space: ActionSpace | None = None) -> list[Action]:
+def read_reply(agent: Any, reply: object, space: ActionSpace) -> list[Action]:
     """*agent*'s Actions for *reply*, as its parser gives them to ``ReactLoop.read_reply``.
 
     Points are left as the reply wrote them; a test of the point conversion
@@ -29,8 +28,7 @@ def read_reply(agent: Any, reply: object, space: ActionSpace | None = None) -> l
     Args:
         agent: A prepared Agent.
         reply: The reply: a validated output model, or text.
-        space: The run's action space, which words a refusal; the Agent's own
-            descriptors when omitted.
+        space: The action space *agent* was prepared with, which words a refusal.
 
     Raises:
         ParseError: The framework refuses the text (``reply_refusal``), or
@@ -39,6 +37,4 @@ def read_reply(agent: Any, reply: object, space: ActionSpace | None = None) -> l
     output_model = (
         agent.get_react_output_model() if hasattr(agent, "get_react_output_model") else None
     )
-    if space is None:
-        space = space_of(agent.get_action_space())
     return agent.parse_react_output(validated_reply(space, output_model, reply))

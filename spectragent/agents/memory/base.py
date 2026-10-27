@@ -18,11 +18,6 @@ class BaseMemoryManager(Protocol):
 
     supports_protocols: ClassVar[frozenset[MessageProtocol]]
 
-    @property
-    def memory_type(self) -> str:
-        """Identifier for this memory strategy."""
-        ...
-
     def add_message(self, message: BaseMessage) -> None:
         """Append a single message to the memory store."""
         ...
@@ -31,26 +26,10 @@ class BaseMemoryManager(Protocol):
         """Append multiple messages to the memory store."""
         ...
 
-    def get_messages(self) -> list[BaseMessage]:
-        """Return all stored messages (unfiltered)."""
-        ...
-
-    def get_context_messages(self, *, max_tokens: int | None = None) -> list[BaseMessage]:
-        """Return messages suitable for LLM context, possibly truncated.
-
-        Parameters
-        ----------
-        max_tokens:
-            Optional token budget.  Implementations may ignore this
-            if their strategy has its own limit.
-        """
+    def get_context_messages(self) -> list[BaseMessage]:
+        """Return messages suitable for LLM context, possibly truncated."""
         ...
 
     def clear(self) -> None:
         """Remove all messages from the store."""
-        ...
-
-    @property
-    def message_count(self) -> int:
-        """Number of messages currently stored."""
         ...

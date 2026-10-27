@@ -25,7 +25,7 @@ branching on an archiver id or looking one up (receptor hygiene Rule 2).
 """
 
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
@@ -356,7 +356,3 @@ def archive_needs(archivers: Sequence[BrowserArchiverBase]) -> frozenset[Archive
     for archiver in archivers:
         needs |= archiver.needs
     return frozenset(needs)
-
-
-#: How the capability collects the fingerprint run record after the sessions.
-FingerprintCollector = Callable[[], Awaitable[ArchiveFile | None]]

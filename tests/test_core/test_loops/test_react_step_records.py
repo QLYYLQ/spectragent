@@ -107,6 +107,18 @@ class _Agent:
         return None
 
 
+class _Recorder(StepRecorder):
+    """Keeps every observation handed over, beside its record."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.observations: list[Any] = []
+
+    async def record_step(self, record: Any, *, observation: Any = None) -> None:
+        await super().record_step(record, observation=observation)
+        self.observations.append(observation)
+
+
 def _ctx(*, env, llm, memory, act_fn, negotiated, recorder, task_id="t-1"):
     return {
         "env": env,
@@ -140,7 +152,7 @@ def _act_ok(done_after: int = 1, boom: bool = False):
 class TestStepSurrender:
     async def test_records_reach_the_sink_with_observation(self):
         active = frozenset({"browser.browser_meta", "loop.task"})
-        recorder = StepRecorder()
+        recorder = _Recorder()
         loop = ReactLoop(max_steps=3)
         result = await loop._execute(
             _Agent([[Action(name="browser.click", params={"index": 1})]]),
@@ -165,8 +177,9 @@ class TestStepSurrender:
         assert rec.token_usage is None
         # The observation handed over is the one the agent saw — loop
         # fragments populated, not env.observe's return value.
-        assert isinstance(recorder.last_observation.task, TaskObs)
-        assert recorder.last_observation.task.user_request == "find the price"
+        (observation,) = recorder.observations
+        assert isinstance(observation.task, TaskObs)
+        assert observation.task.user_request == "find the price"
 
     async def test_observation_summary_is_filled(self):
         active = frozenset({"browser.browser_meta"})

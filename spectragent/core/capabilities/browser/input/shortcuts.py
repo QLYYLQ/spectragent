@@ -47,9 +47,9 @@ macOS's Meta+ArrowLeft / Meta+ArrowRight are Chrome's "delayed" shortcuts:
 Chrome goes back or forward only when the page did not use the key, and in a
 text field the key moves the caret to the start or end of the line. So they
 run only when nothing that takes text has focus (:attr:`Shortcut.yields_to_text`);
-otherwise the key goes to the page. A chord typed with Shift and a bracket is
-matched by the key under it (``Meta+Shift+]`` and ``Meta+Shift+}`` are one
-chord); letters match in either case.
+otherwise the key goes to the page. A chord typed with Shift and a shifted
+character is matched by the key under it (``Meta+Shift+]`` and
+``Meta+Shift+}`` are one chord); letters match in either case.
 """
 
 from __future__ import annotations
@@ -60,13 +60,11 @@ from typing import get_args
 
 from spectragent.core.capabilities.browser.effects import BrowserCommand, BrowserUiCommand
 from spectragent.core.capabilities.browser.input.chords import KeyChord, parse_key_chord
+from spectragent.core.capabilities.browser.input.keyboard import SHIFT_PAIRS
 from spectragent.core.capabilities.browser.platform import InputPlatform
 
 #: A chord as the table matches it: its modifiers and its key.
 ChordKey = tuple[frozenset[str], str]
-
-#: Shifted characters on a key the table names, as the key under them.
-_SHIFTED_KEYS = {"{": "[", "}": "]"}
 
 
 @dataclass(frozen=True)
@@ -117,7 +115,7 @@ def chord_key(chord: KeyChord) -> ChordKey:
     if len(key) == 1:
         key = key.lower()
         if "Shift" in chord.modifiers:
-            key = _SHIFTED_KEYS.get(key, key)
+            key = SHIFT_PAIRS.get(key, key)
     return frozenset(chord.modifiers), key
 
 
