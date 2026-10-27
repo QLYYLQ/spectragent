@@ -50,6 +50,7 @@ export function ImageBoard({
   // drag never maps through the previous item's image size.
   const signature = images.map((image) => image.src).join("\n");
   const [measured, setMeasured] = useState({ signature, sizes: {} });
+  const [differencePair, setDifferencePair] = useState([]);
   const sizes = measured.signature === signature ? measured.sizes : {};
   const setSizes = (update) =>
     setMeasured((old) => {
@@ -57,16 +58,39 @@ export function ImageBoard({
       const next = update(base);
       return next === base && old.signature === signature ? old : { signature, sizes: next };
     });
-  const comparable =
-    images.length >= 2 &&
-    sizes[images[0].role] &&
-    images.every(
-      (image) =>
-        sizes[image.role] &&
-        sizes[image.role].width === sizes[images[0].role].width &&
-        sizes[image.role].height === sizes[images[0].role].height,
-    );
   const mode = images.length < 2 ? "side" : compare;
+  const base = images.find((image) => image.role === differencePair[0]) || images[0];
+  const top =
+    images.find((image) => image.role === differencePair[1] && image !== base) ||
+    images.find((image) => image !== base);
+  const baseSize = sizes[base?.role];
+  const topSize = sizes[top?.role];
+  const comparable =
+    baseSize && topSize && baseSize.width === topSize.width && baseSize.height === topSize.height;
+
+  // Every panel uses the same space below the aligned image row. Observe the
+  // stage too: asynchronously loaded legends and expanded facts move that row.
+  const board = useRef(null);
+  const [room, setRoom] = useState(null);
+  useEffect(() => {
+    const element = board.current;
+    if (!element) return undefined;
+    const measure = () => {
+      const viewport = element.querySelector(".board-viewport");
+      if (!viewport) return;
+      const top = fit === "below" ? viewport.getBoundingClientRect().top + window.scrollY : 120;
+      setRoom(Math.max(260, window.innerHeight - top - 20));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    if (element.parentElement) observer.observe(element.parentElement);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [signature, mode, fit]);
   const colors = Object.fromEntries((kinds || []).map((kind) => [kind.value, kind]));
   const record = (role) => (size) =>
     setSizes((old) =>
@@ -93,25 +117,52 @@ export function ImageBoard({
       onSelect={onSelect}
       onChange={onChange}
       zoom={zoom}
-      fit={fit}
+      room={room}
       showMarks={showMarks}
       {...extra}
     />
   );
   if (mode === "difference") {
-    const [base, top] = images;
     return (
-      <div className="board single">
-        {!comparable && sizes[base.role] && sizes[top.role] && (
+      <div className="board single" ref={board}>
+        <div className="board-pair" role="group" aria-label="选择差异图片">
+          {[base, top].map((image, index) => (
+            <label key={index}>
+              {index === 0 ? "图片一" : "图片二"}
+              <select
+                value={image.role}
+                onChange={(event) =>
+                  setDifferencePair(
+                    index === 0 ? [event.target.value, top.role] : [base.role, event.target.value],
+                  )
+                }
+              >
+                {images.map((option) => (
+                  <option
+                    key={option.role}
+                    value={option.role}
+                    disabled={option.role === (index === 0 ? top.role : base.role)}
+                  >
+                    {option.text || option.role}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+        {!comparable && baseSize && topSize && (
           <p className="board-note">
             两张图大小不同，差异只是大致的。
           </p>
         )}
         {panel(base, {
           overlay: top,
+          onOverlaySize: record(top.role),
           caption: `“${base.text || base.role}”和“${top.text || top.role}”的差异：黑色表示像素没有变化。`,
           editable: false,
           marks: null,
+          regions: [],
+          suggested: [],
         })}
       </div>
     );
@@ -119,7 +170,7 @@ export function ImageBoard({
   if (mode === "flip") {
     const shown = images[flipIndex % images.length];
     return (
-      <div className="board single">
+      <div className="board single" ref={board}>
         {panel(shown, {
           caption: `正在看第 ${(flipIndex % images.length) + 1} 张，共 ${images.length} 张。按 F 切换。`,
         })}
@@ -128,9 +179,10 @@ export function ImageBoard({
   }
   return (
     <div
-      className="board"
+      className="board side"
+      ref={board}
       style={{
-        gridTemplateColumns: `repeat(${Math.min(images.length, zoom === "fit" ? 2 : 1)}, minmax(0, 1fr))`,
+        gridTemplateColumns: `repeat(${images.length}, minmax(0, 1fr))`,
       }}
     >
       {images.map((image) => panel(image))}
@@ -151,8 +203,9 @@ function ImagePanel({
   onSelect,
   onChange,
   zoom,
-  fit,
+  room,
   overlay = null,
+  onOverlaySize = null,
   caption = null,
   showMarks = true,
   marks = image.marks,
@@ -160,10 +213,12 @@ function ImagePanel({
   const surface = useRef(null);
   const [drag, setDrag] = useState(null);
   const [failed, setFailed] = useState(null);
+  const [overlayFailed, setOverlayFailed] = useState(null);
   useEffect(() => {
     setFailed(null);
     setDrag(null);
   }, [image.src]);
+  const overlayProblem = overlayFailed?.src === overlay?.src ? overlayFailed?.message : null;
   const own = regions
     .map((region, index) => ({ region, index }))
     .filter(({ region }) => region.image === image.role);
@@ -234,24 +289,7 @@ function ImagePanel({
     setDrag(null);
   }
 
-  // Fit shows the whole image: as wide as the panel and, on the review
-  // screen ("below"), as tall as the window below the panel's top allows;
-  // inside a scrolling page ("window"), as tall as the window.
-  const viewport = useRef(null);
-  const [room, setRoom] = useState(null);
-  useEffect(() => {
-    const measure = () => {
-      if (!viewport.current) return;
-      const top =
-        fit === "below"
-          ? viewport.current.getBoundingClientRect().top + window.scrollY
-          : 120;
-      setRoom(Math.max(260, window.innerHeight - top - 20));
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [size, caption]);
+  // Preserve the image's aspect ratio within the board's shared fit bounds.
   const width =
     !size
       ? "100%"
@@ -274,12 +312,14 @@ function ImagePanel({
           原图
         </a>
       </figcaption>
-      {caption && <p className="board-caption">{caption}</p>}
-      {marks && <MarkLegend data={marks} hidden={!showMarks} />}
-      <div className="board-viewport" ref={viewport}>
-        {failed ? (
+      <div className="board-meta">
+        {caption && <p className="board-caption">{caption}</p>}
+        {marks && <MarkLegend data={marks} hidden={!showMarks} />}
+      </div>
+      <div className="board-viewport">
+        {failed || overlayProblem ? (
           <div className="board-missing" role="alert">
-            {failed}
+            {failed || overlayProblem}
           </div>
         ) : (
           <div
@@ -304,7 +344,22 @@ function ImagePanel({
               onError={() => explainFailure(image, setFailed)}
             />
             {overlay && (
-              <img className="board-difference" src={overlay.src} alt="" draggable="false" />
+              <img
+                key={overlay.src}
+                className="board-difference"
+                src={overlay.src}
+                alt=""
+                draggable="false"
+                onLoad={(event) =>
+                  onOverlaySize({
+                    width: event.currentTarget.naturalWidth,
+                    height: event.currentTarget.naturalHeight,
+                  })
+                }
+                onError={() =>
+                  explainFailure(overlay, (message) => setOverlayFailed({ src: overlay.src, message }))
+                }
+              />
             )}
             {marks && showMarks && <MarkLayer data={marks} />}
             {size &&
