@@ -2,7 +2,9 @@
 
 从仓库根目录执行下列命令。数据飞轮把一次真实的浏览器 run 连同它当时的网络环境录下来，之后不访问线上站点也能复用它：离线回放、从中间某一步分叉、导出成学生模型的 SFT 数据，最后用一份报告度量这条数据线的质量。每一段都是现有入口加 `configs/flywheel/` 下的一份 YAML，产物都是 trace 目录或数据集目录。各层为什么这样设计，见 [architecture_design.md](architecture_design.md) §4.14（录制与离线回放）、§4.15（训练导出）、§4.16（度量）；YAML 字段的逐项说明见 [configs/README.md](../configs/README.md#recording-environment-evidence)。
 
-| 段 | 入口 | 发布的配置 | 产物 |
+下表是通用飞轮机制示例，使用同组配置配套演练；下一轮前瞻采集的实际选择见下节。
+
+| 段 | 入口 | 通用示例配置 | 产物 |
 |---|---|---|---|
 | 录制 | `spectragent bench` 或 `spectragent run` | `record_ui_tars_pinned.yaml` | run 目录下的 `env/` |
 | 离线回放 | `spectragent run --replay-archive` | `replay_ui_tars_archive.yaml` | 一个新 run，`env/` 里是回放日志 |
@@ -12,135 +14,293 @@
 
 ## 配置指南 101（实测推荐）
 
-这一节区分历史实跑与当前采集设置。证据包括 2026 年 10 月 21–24 日的五站 15 个 LexBench L1 任务、10 月 25 日的十站 22 个公开 `All` 任务，以及更早跑通 12 个中文站点的完整链和 fixture 测试。10 月 25 日那批录制及其分叉仍在本地；更早五站轮次的原始轨迹已删除，只剩报告。当前设置结合这些证据和已确定的采集选择，不声称整套组合已经跑过。证据范围用标记写在条目里：
+**下一轮采集统一使用 `configs/lookahead/` 的五份模板；本节是逐项采用决定（2026-10-28）。** `configs/flywheel/` 保留通用机制示例，不能把其中的 GPT-4o、instant、strict、UTC 默认值混进本轮。模板中的 teacher 私有地址和轮次路径须先按 [lookahead/README.md](../lookahead/README.md#a-collection-round) 写入轮次副本，再做配置检查。teacher 和 judge 是两个独立的模型角色，分别配置路由与密钥。
 
-- 〔多轮〕几轮采集里反复用过；〔一轮〕只在一轮里量过；〔一次〕只跑过一次对比；
-- 〔小样本〕一两个站点、一个账号或几次运行；〔仅 fixture〕只在本机 fixture 或脚本化模型上测过；〔未验证〕还没在真实站点上跑过。
+取舍按下面的证据作出。用户明确的采集选择优先；其余字段逐项比较运行事实、故障和成本，不把“曾跑过”直接等同于“更好”。新增组合尚未完成真实站点 rollout。
 
-完整的当前采集配置在 `configs/lookahead/`，每个文件开头解释设置；它们会更新，不是历史实验的冻结副本。通用发布示例在 `configs/flywheel/`；命令顺序见 [lookahead/README.md](../lookahead/README.md) 的 "A collection round"。两套配置都写 `background_tabs: freeze`，其余差别见下表。
+| 依据 | 用来决定什么 | 边界 |
+|---|---|---|
+| 10 月 27 日用户选择 | learned 鼠标、显示指针、`Asia/Shanghai`、`zh-CN` | 下一轮要求；不伪造旧轨迹设置，也没有宣称提高成功率 |
+| 10 月 25 日十站 trace、指纹、调用与冻结 YAML | 30 步、200 条 memory、窗口几何、归档与恢复参数的实际值；重试与 pace 的成对比较 | 22 条源 run；分叉统计实际来自健康筛选留下的 18 条源，不把十站录制覆盖当作所有后续统计的覆盖 |
+| 10 月 21–24 日轮次总结 | freeze/shared、站点规则、媒体对齐与遮罩、像素坐标等已有经验 | 早期原始轨迹已删除；保留为有日期的文本证据，不能重新验算每条历史结论 |
+| 10 月 26 日路由要求、请求探针与后续 provider 实现 | 下一轮 teacher 的 m17 路由、`max_tokens` 参数通道；独立 judge 的官方 DeepSeek 配置 | 新路由完成聊天、图像、JSON object 和 thinking 探针，尚无该组合的整轮任务效果证据；60 条稳定性回归仍用旧 1017 路由 |
+| 当前设计、源码及离线装配 | 字段归属、默认值、请求参数与录制/分叉兼容条件 | 配置检查通过证明能装配，不证明真实网站表现 |
+
+原始证据在本地 `tmp/lookahead_10site_ui_tars_20261025/` 的 `RUN.md`、`STRATEGY_DIFF.md`、trace、`out/health/`、`out/judge-forks/`；10 月 26 日探针与旧配置在 `out/stability_improvement_20261026/`（`input/configs/`、`new_route_probe/`）。旧配置副本与 trace 用来辨认当时实际跑了什么，不能用后改的同名 YAML 替代。10 月 28 日逐项重算的中间结果在本地 `tmp/config-reconciliation/`。本节已保存结论与分母，以上本地目录不随 Git 发布。
 
 ### 一轮采集的顺序
 
-1. 准备：固定宿主外观，换到快网络，在 shell 里导出密钥（见"录制前准备"）。
-2. 录制：每个站点一个 sweep，最多 3 个站点同时跑。
-3. `lookahead health`：写出排除文件，之后每一段都读它。
-4. `lookahead variants`：judge 看着录下的画面写换任务的变体。
-5. 分叉：三组（同任务、换任务、换任务去掉源思考）各先 `--list` 看任务 id，再分几个进程跑。
-6. 审核：`extract`、`stability --media-areas configs/replay_rules`、`judge-forks`、`gold-queue`，再开 viewer 标注。
-7. 恢复不了的分叉：看近邻 miss 和恢复证据，补站点规则，只改 `site_rules` 在同一批录制上重跑分叉对比（下面"站点规则"）。
+1. 复制到新的轮次目录，填入 teacher 地址，冻结本轮规则副本和 learned 导出身份；固定 Chrome 版本、宿主外观及系统语言。检查 agent、memory、浏览器参数在录制和三个分叉臂中一致。
+2. 先小样本录制和分叉检查模型输出坐标、请求预算、恢复与记录健康，再启动同一份冻结配置；正式录制最多 3 个站点并行，站内串行。
+3. 运行 `lookahead health`，保留机器生成的 `exclusions.json`；查看失败端点、主文档、截图和持续空白证据，另存 `reviewed-exclusions.json` 及复核理由。后续任务只读复核版。
+4. 用独立 judge 生成任务变体。同任务、换任务、换任务去源回复三组都先 `--list`；以该列表划分互不重复的任务，记录每个进程的会话目录。
+5. 执行分叉，检查 recording health。统计恢复必须注明 checkpoint、完整前缀、任务成功或可评判性中的哪一种，不能互换分母。
+6. `extract`、`stability --media-areas <本轮规则目录>`、`judge-forks`、`gold-queue` 都使用同一份复核排除清单，再开 viewer 标注。
+7. 新规则的效果以同一源、同一任务列表、只改规则的对照判断。保留旧产物与规则快照；新增或撤销排除项后另算结果，不改写原轮次分母。
 
-### 通用示例、当前配置与历史实跑
+### 录制前准备与操作取舍
 
-| 设置 | `configs/flywheel/` | `configs/lookahead/` | 为什么（见下文各节） |
+| 项目 | 采用值／做法 | 采用谁，为什么 |
+|---|---|---|
+| 配置和路径 | 每轮独立目录；四份 agent 文件的 `id: main`、环境 `browser_env` 是装配名称；各 `trace_dir`、`data_dir`、`task_variants` 指向该轮目录 | 沿用现有命名，隔离输出；路径不是模型策略。保留执行时 YAML、源码提交、规则摘要和 learned 文件摘要 |
+| teacher 地址与密钥 | 将本地 `OPENAI_BASE_URL` 写入四份轮次 YAML 的 `llm.base_url`，密钥仍由环境读取；不将私有地址或凭据写入仓库 | 采用 10/26 用户的新路由要求，并使实际地址进入该轮配置身份；`base_url: null` 是未填写模板，不能直接开跑 |
+| learned 导出 | `~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export`，`generator.npz` 与 `meta.json`；`uv sync --extra dev --extra learned-mouse` | 用户指定 learned，沿用 10/25 实跑导出与 seed 0；换机器统一改四份文件。模型和时序以 meta 为准，整轮固定同一份文件内容 |
+| 数据集与身份 | `lexbench_browser / All`，开跑前核对本机任务 ID | 采用 10/25 实际数据集；旧五站轮次的 L1 在当前本地数据中不存在，不凭旧拆分名运行 |
+| 登录态 | 按任务需要选择新 context 的 `storage_state` 种子；任务清单明确“有种子/无种子”，用页面核实种子有效 | 10/25 八站用种子、同花顺和 Steam 从新状态开始；公开任务不等于未登录。沿用需要账号的任务种子，不一律清空或复用长期 profile |
+| 页面外观与浏览器 | 同轮固定 Chrome 版本、系统语言与宿主 Light/Dark；记录实际指纹，不照抄文档中的版本号 | 10/25 指纹是 Chrome 143、宿主 Light；较早 Chrome 155 实验另属一批。原生滚动条受宿主外观影响，切换曾破坏截图比较 |
+| live 网络与并发 | 快网络；最多 3 个站点并行，每站任务串行 | 采用多轮操作经验：5 站并行曾使下载饥饿；离线即时应答无法复现录下的“还在加载”状态 |
+| 每任务超时 | 录制 `1800 s`；分叉 `1500 s`；模型请求 `300 s` 单独限制 | 沿用已用过的 runbook 预算；恢复后段检查点曾超出 `900 s`，不能把模型请求上限当整个 task 上限 |
+| 健康排除 | 机器报告原样保存，所有下游统一 `out/health/reviewed-exclusions.json` | 采用这次证据复核：10/25 腾讯 3 条只有遥测请求失败、首末画面已渲染，应撤销其 recording-health 整 run 排除；爱奇艺任务 18 有连续 5 个空白策略步，保留。原报告的 4 条排除和原 932 分叉结果继续作为历史事实 |
+| 复核不是成功判分 | 验证主文档/内容和截图；验证码、站外跳转和账号状态人工检查 | 当前 health 把 Document/Fetch/XHR 一并统计，会误伤遥测，也识别不了所有风控页。恢复通过、health 保留、Agent done 均不能替代任务正确性 |
+| 旧 trace 的复用 | 审阅 v7 不重采；继续分叉时从该源的实际配置建立匹配副本，保留 cursor、时区、窗口、memory、提示等身份 | 新模板用于下一轮。仅换配置不能补出旧帧/thinking；改提示、memory 或浏览器指纹后，不能把新模板直接套到旧录制上要求 source 精确历史 |
+
+### Teacher、judge 与决策预算：逐项采用结论
+
+本表的“实跑”指 2026-10-25 十站轮次的已提交 trace 与实际调用；该目录在 10 月 26 日改过 YAML，不能用现在的 YAML 反推旧运行身份。新采集采用用户后来要求的 `m17` 路由；judge 则采用后来单独确定的 DeepSeek 官方接口。两者不是同一次迁移。
+
+| 键（四份 teacher 录制/分叉配置） | 候选差异 | 最终值 | 采用谁、为什么 | 证据范围 |
+|---|---|---|---|---|
+| `agent_id` / `prompt_template` | 已停的 BrowserUse DOM；实跑和手册 UI-TARS | `ui_tars` / `computer_use` | 采用用户 10/25 选定且已采集的纯视觉策略 | 22 条源、932 条分叉；旧 BrowserUse 轨迹保留作检查，不混入本批 〔策略对照〕〔十站调用复算〕 |
+| `coordinate_space` | 早期 `normalized_1000`；实跑和手册 `screenshot_pixels` | `screenshot_pixels` | 保持已录的图像与动作坐标合同 | 1017 早期样本改像素提示后未再观察到坐标系混写；m17 仅有图像理解探针，尚未完成坐标行为整轮验证 〔早期轮次〕〔新路由探针〕 |
+| `show_capture_state` | 默认开启，实跑解析为 `true` | `true` | 保持录制/分叉观测协商一致，模型能看到主文档未加载的事实 | 954 份配置解析一致；没有开关对照证明成功率提升 〔十站调用复算〕 |
+| `show_action_effects` | 默认开启，实跑解析为 `true` | `true` | 保留实际动作效果和失败反馈；录制、分叉提示一致 | 954 份解析配置；不是模型成功率对照 〔十站调用复算〕 |
+| `llm.model_type` | 实跑与当前均 OpenAI 兼容协议 | `openai` | 按线协议选型，不把网关名称当模型协议 | 新旧路由均有此协议证据 〔十站调用复算〕〔新路由探针〕 |
+| `llm.model` | 历史 `deepseek-v4.1-flash-1017`；10/26 用户指定 `deepseek-v4.1-flash-m17` | `deepseek-v4.1-flash-m17` | 采用后来的明确用户选择；不能用旧轮次规模较大覆盖新选择 | 旧 1,562 次策略调用请求的是 1017；m17 只有聊天、图像、JSON object、thinking 探针，响应自报 `deepseek-flash`，不证明与旧别名权重相同 〔十站调用复算〕〔新路由探针〕 |
+| `llm.provider` | 历史与10/26手写配置 `direct`；现有 `deepseek` 可覆盖端点并正确映射预算 | `{name: deepseek}` | 采用现有 DeepSeek provider，向指定网关发已被探针验证的 `max_tokens`；无需新适配层 | 已离线验证 m17+自定义地址可构造，参数为 `max_tokens:32768`、`reasoning_effort:high`；此 provider+网关组合尚未整轮实跑 〔新路由探针〕〔请求实现〕 |
+| `llm.base_url` | 手册固定 DMX；新路由是本地私有端点；隐式环境读取不利于固定轮次身份 | 公共模板 `null`；新轮次副本写入已提供的 `OPENAI_BASE_URL` | 运行前复制四份模板到 ignored 轮次目录，缺环境地址即停止准备，再写成显式 URL；不直接执行未解析模板，不把私有地址提交 Git | `direct` 省略地址时 SDK 会读环境、缺省后落到 OpenAI；`deepseek` 缺省则是官方地址，故新 teacher 必须完成轮次解析。已离线检查现有代码，不读密钥、不发请求 〔请求实现〕 |
+| `llm.api_key` | teacher 与官方 judge 属于不同服务 | YAML 省略；各命令用对应 `OPENAI_API_KEY` | 密钥只在运行环境，不写模板或轮次 YAML；不能把 teacher 的密钥直接沿用于官方 judge | 现有 SDK/接口约定；密钥不写入产物 〔请求实现〕 |
+| `llm.reasoning_effort` | 实跑 `high`；m17 探过 none/low/high/max | `high` | 保留用户采用的推理模式 | m17 的 high 有原生 reasoning 内容；15 个探针不能证明档位强度单调，也未证明 high 对浏览任务最优 〔新路由探针〕 |
+| `llm.temperature` | 实跑录制 `0.2`、分叉 `0.8`；手册 `null` | `null` | 采用手册的明确无采样覆盖；DeepSeek 思考模式下不发无效温度，不能把旧温度差解释成已控制的分叉多样性 | 官方接口实测思考模式下无效；m17 网关没有温度因果对照 〔十站调用复算〕〔官方接口探针〕 |
+| `llm.frequency_penalty` | 实跑继承默认 `0.3`；手册 `null` | `null` | 采用手册；DeepSeek provider 不发送该无效参数 | 官方接口实测；历史值仍应如实记录为 0.3 〔十站调用复算〕〔官方接口探针〕 |
+| `llm.seed` / `top_p` / `service_tier` | 实跑未指定，解析为 `null`；手册也不指定 | 均不指定（`null`） | 保留既有身份，不添无证据的采样或服务层选择 | 解析配置事实；不据此宣称确定性 〔十站调用复算〕 |
+| `llm.max_completion_tokens` | 实跑 `8192`；手册 `32768`，另有已无法重验的“16384 曾截断”文字 | `32768`，经 provider 发送为 `max_tokens` | 采用较大保守预算；8192 已实际截断，不能机械退回历史值 | 一条换任务分叉在 8192 截断，其他两臂峰值 7852/7978；32768 不是实测最优值。m17 探针只证明 `max_tokens:2048` 能截断及 4096 下简单题返回，未验证 32768 整轮表现 〔十站调用复算〕〔新路由探针〕 |
+| `llm.timeout` | 手册 `300`；实跑解析为 `null`，使用当时 SDK 默认 | `300` 秒 | 采用显式可解释的当前调用上限；不要把旧实跑叙述成配置了 300 秒 | 源调用最大 40.641 秒；300 是有余量的运行策略，新路由长尾未测 〔十站调用复算〕 |
+| `llm.max_retries` | 手册 `2`；实跑解析为 `5` | `2` | 采用当前有界传输重试策略；它与模型重写解析错误不同 | 未单独记录 SDK 内部传输重试，无法从策略调用次数推出 5 次的收益或证明未发生重试；2 是预算选择，不是实验最优结论 〔十站调用复算〕〔请求实现〕 |
+| `agent_loop.loop_id` | 两边一致 | 录制 `react`；分叉 `branch` | 保留工作流职责 | 954 份运行配置 〔十站调用复算〕 |
+| `agent_loop.max_steps` | 手册 `32`；实际 `30` | `30` | 采用真实轮次的步数与提示预算身份；32 不只是额外两步，UI-TARS 每步提示包含 max_steps | 22 源中 20 个发出 done、2 个用尽步数；其中4个在第30步发出 done。没有30/32对照；done不等于任务经验证成功 〔十站调用复算〕〔提示与历史实现〕 |
+| `agent_loop.max_actions_per_step` | 两边一致 | `4` | 保持录制/分叉动作合同一致；学生若更少会影响可导出样本 | 954 份配置，没有动作批量最优性实验 〔十站调用复算〕 |
+| `agent_loop.parse_retries_per_step` | 手册 `1`；实际 `2` | `1` | 采用手册值，但依据更新为本轮实际边际结果：第二次调用有效，第三次没有新增成功 | 源14步、分叉47步在第二次调用成功；唯一三次调用最终仍解析失败。是本批观测，不保证新模型分布相同 〔十站调用复算〕 |
+| `agent_loop.max_consecutive_parse_errors` | 两边默认一致 | `3` | 保持连续失败步的停止上限；不要与同一步重试数混为一谈 | 954 份解析配置，未做阈值对照 〔十站调用复算〕 |
+| `agent_loop.terminal_observation` | 两边一致，分叉可继承默认 | `true` | 最后一个动作需要结果画面 | 22 源都有终止观测；一条模型截断的分叉没有终止观测，开启不保证异常路径一定有图 〔十站调用复算〕 |
+| `memory.memory_id` / `keep_system` | 两边一致 | `simple` / `true` | 保持完整消息存储策略与 system 保护 | 954 份解析配置 〔十站调用复算〕 |
+| `memory.max_messages` | 手册 `80`；实际 `200` | `200` | 采用实跑容量；每次解析重试还会加入 assistant 与反馈消息，30步带重试可能超过80，200留住这部分历史。容量上限本身不会预先增加实际token | 本批所有实际请求最多65条，所以80在本批未造成截断；这不是追溯修复，也不是200提高任务成功率的对照结论 〔十站调用复算〕〔提示与历史实现〕 |
+
+分叉的 `continue_steps`、`history_source`、恢复与选步配置由分叉表另列；它们应与上面的提示预算和 memory 共同核对，不把新配置当成与旧 trace 逐字节相同的 source-history 续跑。
+
+| 键（`judge_deepseek.yaml`） | 候选差异 | 最终值 | 采用谁、为什么 | 证据范围 |
+|---|---|---|---|---|
+| `model_type` / `provider` / `model` | 历史 judge 为网关1017；后来单独选择官方DeepSeek | `openai` / `{name: deepseek}` / `deepseek-flash` | 采用后来的 judge 明确选择，独立于 teacher 的 m17 网关 | 旧轮次746次judge全有效、当日稳定性回归60次也为旧1017；官方只做过小样本真实schema探测，不是整轮成绩 〔新路由探针〕〔官方接口探针〕〔十站 judge〕 |
+| `base_url` | 先前模板依 provider 官方默认；teacher另有环境地址 | 显式 `https://api.deepseek.com/v1` | 固定官方 judge 身份，不让 teacher 环境地址成为歧义 | 现有 provider 默认本就为此官方地址；显式写出便于审阅 〔请求实现〕〔官方接口探针〕 |
+| `api_key` | 不同服务密钥不能混用 | YAML省略；judge命令注入官方的 `OPENAI_API_KEY` | 保持凭据与 teacher 分离 | 不写入Git、轮次副本或报告；密钥不进入产物 |
+| `reasoning_effort` | 两边 high | `high` | 保留当前模式 | 官方真实闭合动作schema5/5有效；没有推理档位质量比较 〔官方接口探针〕 |
+| `temperature` / `frequency_penalty` | 旧helper未显式采样；旧模板继承通用默认再由provider省略 | `null` / `null` | 显式表达不发送，无行为变化 | 官方DeepSeek参数实测；避免与teacher旧0.2/0.8实验配置混淆 〔官方接口探针〕 |
+| `max_completion_tokens` | 历史8192；当前16384 | `16384`，发送 `max_tokens` | 采用当前judge独立预算，不因teacher截断而同步放大 | 十站746次最大2816且全有效；更早299次摘要最大4806。官方整轮输出尾部尚未测 〔十站 judge〕〔早期 judge〕 |
+| `timeout` | 当前300；旧轮次调用最大28.486秒 | `300` 秒 | 保持明确上限和余量 | 历史路由延迟，不能当官方新路由SLA 〔十站 judge〕 |
+| `max_retries` | 当前SDK传输重试5；旧helper尝试记法不同 | `5` | 保留离线批量judge的传输容错策略；与teacher的2分开 | 未证明第3至5次重试带来收益，属于运行预算选择 〔请求实现〕 |
+| 结构化重问 | 旧报告称新路由仍强制json_schema而拒绝；现代码已改 | provider按模型家族把schema写进提示并校验；judge收到不合schema回复最多重问2次 | 采用10/26后的架构裁决，删除把旧限制当当前状态的措辞；截断或服务端中止不会反复重问 | `DeepSeekFamily.supports_json_schema=False`已在代码，官方json_object+真实闭合schema5/5。m17当前自动judge没有整轮实跑，本次也未调用 〔请求实现〕〔官方接口探针〕 |
+
+证据索引：
+
+- **策略对照**：`tmp/lookahead_10site_ui_tars_20261025/STRATEGY_DIFF.md`，UI-TARS策略及停止BrowserUse的身份区分。
+- **十站调用复算**：`tmp/config-reconciliation/model-observed-stats.json`（本次经 `RunTrace` 对954条运行、1,499个策略步/1,562次调用的只读复算）；`model-source-stats.json`（源调用长度/延迟补充）；原始解析配置例 `tmp/lookahead_10site_ui_tars_20261025/record/128_3deaf2bd/config.json`，关键路径 `resolved.agent[0]`，模型身份另核对顶层 `llm_model` 和调用记录。
+- **早期轮次**：`.agents/skills/af-project-history/references/lookahead-rounds.md:24-26`；旧轮次原数据已删除，属于日期化摘要。
+- **新路由探针**：`tmp/lookahead_10site_ui_tars_20261025/out/stability_improvement_20261026/report.md:58-73` 及 `new_route_probe/effort.json`、`formats_and_vision.json`、`user_schema_control.json`。冻结旧YAML在 `input/configs/`；后改的 `configs/*.yaml` 不能证明旧运行已用m17。
+- **请求实现**：`spectragent/core/llm/providers/openai.py:32-43`、`openai_deepseek.py:77-110`；`lookahead/judge.py:1-21`。SDK读取环境的路径已本地检查，未访问端点。
+- **官方接口探针**：`docs/architecture_design.md:2140`；`.agents/skills/af-add-an-llm-provider/references/guide.md:381-403`，官方API的有日期实测与当前实现。
+- **提示与历史实现**：`spectragent/agents/ui_tars/agent.py:374`（max_steps进提示）；`spectragent/agents/memory/simple.py:19-57`；`spectragent/core/loops/react.py:855-856`（重试向memory追加两条）。
+- **十站 judge**：`tmp/lookahead_10site_ui_tars_20261025/out/judge-forks/calls.jsonl`，本次只抽取参数、响应模型名、有效性、usage和latency统计；746次请求1017、响应自报 `DeepSeek-V4.1-Flash-261017`，全有效，最大2816 completion tokens、28,486 ms。
+- **早期 judge**：`configs/lookahead/judge_deepseek.yaml:21-27` 的较早299次调用摘要。其16384预算说明有余量，不是新官方路由整轮验证。
+
+采用新teacher与以上预算后，必须把“配置已解析/装配通过”“小探针通过”“整轮成功率验证”分开陈述。较大预算、历史容量和重试次数都不应宣传为已证明的最优值。
+
+下表把三个来源分开：`configs/flywheel/` 是通用示例，10 月 25 日十站轮次是已有实跑证据，本轮配置是根据证据和用户要求选定的下一轮设置。不能把下一轮的整套组合写成已经验证完成。比较基线为 `cdfed03`；表中的“原模板”指这次统一之前的 `configs/lookahead/`。
+
+这次直接读取了 22 个源 run，以及 `branch_actions_none`、`branch_actions_recorded_timeline` 各 202 个分叉的已提交配置和浏览器指纹。其他任务变体与消融 arm 没有在本次浏览器审计中逐个重扫。旧配置中被脱敏为 `<omitted>` 的字段，使用 10 月 26 日保存的输入 YAML 或已提交环境指纹交叉核对，没有据此猜测实际值。
+
+**最终选择：learned 鼠标、光标开启、`Asia/Shanghai`、`zh-CN` 按用户要求采用；窗口高度改回已有真实轮次使用的 720；其余关键默认值沿用实际记录并显式写出。** 原有回放规则集继续使用，不新增视频、广告或整站资源阻断。
+
+### 浏览器、窗口与 DOM
+
+| 配置或条件 | 候选差异 | 最终采用 | 采用谁、理由与验证范围 |
 |---|---|---|---|
-| teacher | `gpt-4o`，分叉温度 0.8 | `deepseek-v4.1-flash-1017`，`reasoning_effort: high`，温度 `null` | 保留已采过的 teacher 路由；换路由先在轮次副本中做冒烟 |
-| loop | `max_steps: 30` | `max_steps: 32`，`parse_retries_per_step: 1`，录制 `terminal_observation: true` | 解析失败重问一次；最后一步要有结果画面 |
-| pinned | 时区 `UTC`、语言 `en-US`（默认） | `timezone: Asia/Shanghai`，`locale: zh-CN` | 中文站点 |
-| 截图与归档 | 不画指针，三个归档器 | `screenshot_cursor: true`，再加 `browser.frames` | 前瞻标签要动作前后的帧 |
-| 鼠标与打字 | `instant` / `instant` | `learned`（固定导出、seed 0）/ `instant` | 10 月 25 日十站轮次用了 learned；当前录制和分叉统一使用它 |
-| 恢复器 | `verify: strict`，`pace: none` | `verify: warn`，`pace: recorded_timeline` | 十站轮次与 none 做过对照；没有与 recorded_llm_latency 做同批对照 |
-| 选步 | `all`，每步 3 个分叉，`on_unbranchable: raise` | `every_k`（k 4，offset 1），每点 2 个，`skip`，加 `exclude_runs` | 控制花费；坏录制由健康检查排除 |
+| `backend.provider_id` | 通用示例、原模板与实跑均为 `local_chrome` | `local_chrome` | 沿用采集链；本地 Chrome 具备归档与严格离线隔离能力。其他云后端的运行示例不构成此链的验证。 |
+| `backend.headless` | 均为 `true` | `true` | 多轮实跑。录制和所有分叉保持一致；改成有头会改变启动参数指纹，不能直接用于旧源回放。 |
+| `backend.lifetime` | browser runbook 的共享浏览器示例用 `experiment`；这条采集链实际是 `run` | `run` | 按采集链实跑采用。共享 sweep 是另一种实验配置；不能从另一份运行示例复制过来。 |
+| `backend.window_width` | 均为 1280 | `1280` | 22 个源及本次读取的 404 个分叉一致。 |
+| `backend.window_height` | 原 lookahead 模板为 860；十站实跑及框架默认均为 720 | **`720`** | 采用真实轮次。没有找到 860 的对应采集证据或用户要求。窗口大小参与启动参数兼容检查；四个新轮次配置一致。 |
+| `viewport_width` / `viewport_height` | 均为 1280×720 | `1280` / `720` | 多轮实跑。窗口和视口是两个独立字段，即使本轮取相同数字也分别写出。 |
+| `backend.executable_path`、浏览器版本 | 十站冻结 YAML 写了本机 Chrome 路径；模板自动发现 | 路径保持可在采集机器自动发现，开跑记录实际 Chrome 版本，同轮保持一致 | 22 个源指纹全部为 **`Chrome/143.0.7499.170`**。文档里冻后台、节流等历史测试提到的 Chrome 155 是另一次测试，不能当成十站轮次版本。当前兼容检查对 Chrome 版本变化只警告，仍应控制实验变量。 |
+| `profile` | 均为 `standard` | `standard` | 冻结 YAML 与代码支持。它决定 watchdog 和采集能力；`security_allowed_domains`、`security_blocked_domains` 都为空，**没有视频或广告域名阻断**。 |
+| `dom_cleaner.cleaner_type` / `dom_serializer.serializer_type` | 均为 `browser_use` / `text` | 沿用 | UI-TARS 的纯视觉观测不会因为配置了这两个 receptor 就收到 DOM 文本；`browser.dom_raw` 归档也不是模型输入。 |
+| DOM 细项 | 实际 cleaner 使用 `descendants_occlude: false`、`enable_compound_components: true`、`include_shadow_dom: true`、`max_occlusion_nodes: 5000`；serializer `max_text_length: 200` | 保留默认，不新增调参 | 没有这些参数的同源对照，纯视觉策略不靠这组 DOM 文本参数做决定。记录有效配置即可，不必把无效轴堆进采集模板。 |
+| 宿主外观、系统语言 | 十站实跑为 Light；旧实验曾因日夜模式导致滚动条不同 | 同轮固定一种宿主外观和系统语言，记录实际值；不要求改成 Dark | 已出现真实恢复差异。页面 color-scheme override 不能保证原生滚动条不受宿主外观影响。Light 是已有轮次事实，不是所有站点的最佳主题结论。 |
 
-10 月 25 日十站轮次与当前配置还有这些差别，不能把后改的 YAML 当成当时的实验身份：
+### 输入与模型画面
 
-| 项目 | 十站轮次实际录下的设置或事实 | 当前 `configs/lookahead/` |
+| 配置 | 候选差异 | 最终采用 | 采用谁、理由与验证范围 |
+|---|---|---|---|
+| `mouse_trajectory.trajectory_type` | 通用示例是 `instant`；十站实跑及原模板是 `learned` | **`learned`** | 用户明确选择；也有十站实跑。829 条人类轨迹的 9 项特征比较中，learned 有 7 项进入范围，拟合 WindMouse 3 项、默认 WindMouse 2 项、instant 1 项。这支持运动形态相似，不能写成已提升任务成功率或回放恢复率。 |
+| `weights_dir` | 模板使用 `~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export`，旧轮次使用同一导出的绝对路径 | 同一 v2 导出 | 四份配置使用同一 `generator.npz` / `meta.json`。选定模型是带 stop head 的 MDN-RNN；目录名字不代表仍在用早期 GAN。训练采样率、归一化以 meta 为准，不擅自覆盖。 |
+| `mouse_trajectory.seed` | 实跑和原模板均为 0 | `0` | 沿用已有采集。它不同于 pinned 的 V8 随机种子；后者不允许 0。 |
+| learned 形状与点击时长细项 | 实跑使用默认 `num_candidates: 8`、`button_size: training`、`jitter: 0`、点击 hold median/min/max 为 92/35/400 ms，sigma 为 0.32 等 | 不调参数，保留导出元数据和现有默认 | 没有逐项采集 A/B。避免为了“更像人”任意改变训练坐标、速率或时长解释。 |
+| `typing_rhythm.rhythm_type` | 全部为 `instant` | `instant` | 沿用多轮实际配置。用户要求的是 learned 鼠标；没有同源证据要求改成人类节奏打字。 |
+| `screenshot_format` | 均为 `png` | `png` | 多轮实跑；JPEG 没用于这些采集轮次。 |
+| `screenshot_quality` | 默认 80 | 保留默认，不作为本轮有效旋钮 | 仅影响 JPEG，PNG 下不生效。 |
+| `screenshot_cursor` | 十站实跑与通用示例为 `false`；原 lookahead 模板为 `true` | **`true`** | 按用户要求。必须明确这是相对十站旧轮次的变化，不写成旧轮次已开启。它只给模型图片加光标，原始干净截图证据保留。没有本轮开/关光标帮助效果的 A/B。 |
+| `screenshot_cursor_size` | 默认 32；旧轮次虽记录 32，但光标关闭 | `32` | 固定已有实现的默认大小。不能把“关闭时记录了 32”说成“32 像素光标已在该轮验证有效”。 |
+
+输入仿真人类不是反爬保证：已有 reCAPTCHA v3 各组都为 0.9，缺乏区分度；真实 v2 测试各组都进入图片验证，包含最像人的那组；一次已登录小红书成功只能算小样本冒烟。
+
+### pinned、后台标签页与启动参数
+
+| 配置 | 候选差异 | 最终采用 | 采用谁、理由与验证范围 |
+|---|---|---|---|
+| `replayability.replayability_id` | 采集配置均为 `pinned`；反爬/评测通常使用 `none` | `pinned` | 本轮目标是可回放采集。pinned 会改变环境；不能把这个实验直接当自然浏览器反爬评测。 |
+| `replayability.clock` | 更早 12 站链是 `per_document`；十站实跑与原模板为 `shared` | `shared` | 各文档独立时钟曾使爱奇艺跨标签页时间戳同步失控。shared 已用于后续多轮，但会让每次回放的请求时间戳变化，必须配现有站点规则。更早新闻站的 per_document 成绩不算 shared 重测。 |
+| `replayability.random_seed` | 均为 7 | `7` | 沿用已测配置；source 与所有 fork 相同。 |
+| `replayability.base_time` | 录制为 `run_start`，回放/分叉为 `from_archive` | 保持这个分工 | 已有链验证；HTTP 日期平移是独立设置。 |
+| `replayability.timezone` | 十站指纹确认 **`UTC`**；原模板 `Asia/Shanghai` | **`Asia/Shanghai`** | 用户明确要求优先。这是下一轮变化；回放旧 UTC 源数据仍要遵守源指纹兼容，不能套新模板。 |
+| `replayability.locale` | 十站指纹确认 override **`en-US`**；原模板 `zh-CN` | **`zh-CN`** | 用户明确要求优先。十站的 `browser_defaults.locale` 同时是 `zh-CN`，它是宿主默认语言，不等于 pinned override。两层值都应报告，不能仅说“没有写语言”。 |
+| `device_scale_factor` | 默认与实跑为 1.0 | `1.0` | 保持截图和坐标几何一致。 |
+| `reduced_motion` | 默认与实跑为 `true` | `true` | 固定已测环境偏好。只是 `prefers-reduced-motion: reduce`，网站是否尊重由网站决定，不会统一暂停视频。没有开/关对照。 |
+| pinned `user_agent` | 十站实际为 `null`；较早 12 站链曾设置普通 Chrome 标识 | `null` | 采用十站真实配置，保留 Chrome 自己的 UA/client hints。携程早期正常、后来被拦的比较有多项混杂，不能据此认定改 UA 能解决。 |
+| `backend.user_agent` | 默认及实跑为 `null` | `null` | 保持与 pinned 一致，避免 provider 和 pinned 身份冲突。 |
+| `background_tabs` | 框架默认 `run`；发布采集模板和十站实际 `freeze` | `freeze` | 多轮实跑；曾阻止爱奇艺多标签页 storage 事件反馈循环。仅冻结此前有焦点、后来被离开的页，回到该页前恢复；从未被跟随的弹窗不会因此被冻结。返回后视频可能仍暂停，这是已知行为变化。 |
+| `backend.background_throttling` | 默认及实际为 `false`；尝试过 `true` | `false` | 保持已测启动参数。节流能减慢计时器，但没阻止 storage 事件互相触发；不能替代 `freeze`。历史局部 Chrome 155 测试约 330 次写入/秒，freeze 后为 0，节流仍约 330；版本范围与十站 Chrome 143 分开说明。 |
+| `new_tabs` | 默认、原模板和实跑均为 `follow` | `follow` | 采用已有行为。跟随用户动作触发的候选新页，不跟随任意自动弹窗。10 秒上限等待的是候选页首次导航提交，后面的完整 load/落定由 observation settle 处理，不能统称“等页面加载完 10 秒”。 |
+| `backend.mute_audio` | 默认及实际为 `true` | `true` | 保留静音输出；它不会阻断音视频资源、暂停播放或删除媒体元素。 |
+| `backend.disable_automation_controlled` | 默认及实际为 `true` | `true` | 固定已有启动行为；不把它当已证实的反爬优化。 |
+| `backend.ignore_default_args` | 默认及实际为 `false` | `false` | 保留启动基线；去掉默认参数会影响弹窗等行为，需要新证据。默认参数禁用的是部分浏览器后台服务，不是统一屏蔽网站视频。 |
+| 其他启动默认 | `deterministic_rendering: false`、`force_device_scale_factor: null`、`extra_args: null`、`disable_security: false`、`no_sandbox: false`、`disable_gpu: false`、`disable_dev_shm_usage: false` | 全部沿用；不添加新覆盖 | 本次读到的 426 个 run 配置一致；没有逐项 A/B。随机种子和 DPR 由 pinned 负责，不再叠加另一套设置。 |
+
+macOS 上 `--lang`/`LANG` 不一定改变所有 frame 看到的浏览器默认语言。旧轮次实际为 pinned `UTC/en-US`，浏览器默认 `UTC/zh-CN`；下一轮选择 pinned `Asia/Shanghai/zh-CN`，仍要记录浏览器默认层，保持源与回放的宿主系统语言相同。
+
+### 落定、对应与媒体恢复
+
+表中的 `capture_state.settle_state.loaded` 是公共 reader 属性；浏览器原始 fragment JSON 存的是 `settle.main_document_loaded`。两者表达同一个已测加载事实，字段名不混写。
+
+| 配置 | 候选差异 | 最终采用 | 采用谁、理由与验证范围 |
+|---|---|---|---|
+| `settle_quiet_ms` | 默认、十站实际 500 | `500` | 沿用多轮。40 站测过额外等待开销，但没有比较不同阈值。等待 load、视口有内容与静默窗口，不保证所有在途请求完成。 |
+| `settle_max_wait_s` | 默认、实际 5 | `5.0` | 沿用。到上限仍按当前画面采集；DOM 一直变化导致 `capped` 不等于页面未加载，不能自动排除全部 capped。 |
+| `capture_state_timeout_s` | 默认、实际 1 | `1.0` | 保持现有预算。超时事实是 unknown，不能当没有失败图片或画面稳定。 |
+| `media_state_timeout_s` | 默认、实际 1 | `1.0` | 截图前后各读一次；加 capture_state 共 3 秒，小于当前 4 秒探针预算，没有调参证据。 |
+| `retarget_tolerance_px` | 默认、实际 2 | `2.0` | 沿用元素/媒体位置对应容差，没有调参。提高它可能把不同对象误对应。 |
+| `restorer.screenshot_max_distance` | 均为 5 | `5` | 不为提高通过率而放宽。dHash 对局部视频变化可能不敏感，必须同时保留媒体事实与真实图片。 |
+| `restorer.media` | `align` 或对照 `none` | `align` | 实跑采用；fixture 和一个真实 31 秒菜谱视频有对照，两次重复得到相同结果。修复 ended 状态对齐后 27 个视频步骤过 26 个，none 过 10 个；这不是所有视频站的成功保证。 |
+| `media_time_tolerance_s` | 默认、实际 1 | `1.0` | 固定已有媒体判定；没有阈值扫描。 |
+| `media_seek_timeout_s` | 默认、实际 2 | `2.0` | 同上。必须真正 seek 完、位置落到目标并可呈现画面；只设置 currentTime 不算完成。 |
+| `media_end_lead_s` | 默认、实际 0.5 | `0.5` | 自结尾前播放到自然结束，避免只 seek 到结尾留下旧帧；必须小于 seek timeout。真实菜谱视频验证过此修复，仍保留一次 seek 未落到目标的失败。 |
+| `exclude_unloaded_checkpoints` | 现有配置为 `true` | `true` | 只排除明确 `capture_state.settle_state.loaded: false`。unknown、DOM 改变的 capped 不自动算 unloaded；也不能据此声称保留下来的全是稳定画面。没有 on/off 对照。 |
+| `browser.frames` | 通用 flywheel 示例没有；lookahead 与十站实跑有 | `before_action: true`、`after_observation_delay_s: 1.0` | 保留动作前、观测约 1 秒后证据，供标注使用。不是 agent 新 observation；不能把延迟帧叫下一屏；缺失时保留 unknown。 |
+
+### 网络请求匹配、归档与阻断语义
+
+| 配置或策略 | 候选差异 | 最终采用 | 采用谁、理由与验证范围 |
+|---|---|---|---|
+| `network_source.source_id` | record 为 `live`；fork 为 `archive` | 保持 | 实际采集获取线上资源；离线分叉不补抓线上缺失内容。 |
+| `network_source.isolation` | 默认、原模板、实际 `required` | `required` | 保持离线隔离；不用只依靠 Fetch 拦截的 `none_acknowledged`。 |
+| `shift_dates` | 实跑与通用示例 `none`；原模板省略 | `none` | 显式沿用原始 HTTP 日期，和 `base_time: from_archive` 配套但不是同一个开关。 |
+| `log_mode` | 默认、实际 `full` | `full` | 保留每次服务决策；`log_repeat_limit: 3` 只在 summary 模式有意义，本轮不用因此额外调参。 |
+| `max_fulfill_body_bytes` | 默认、实际 67,108,864 | `67108864` | 64 MiB 单响应上限，控制 CDP 消息体积；超限产生 miss，不改成线上回源。没有上限 A/B。 |
+| `fulfill_timeout_s` | 默认、实际 10 | `10.0` | 保持已有预算；超时失败，不能继续到真实网络。没有调参证据。 |
+| `matcher.levels` | 默认与实际为 exact、normalized | `[exact, normalized]` | 多轮使用；fuzzy 未在这些采集验证，不为了提高命中率启用。`fuzzy_threshold: 0.5` 在未启用 fuzzy 时无效，保留默认即可。 |
+| `matcher.site_rules` | 均为 `configs/replay_rules` | 沿用现有规则；准备时复制进轮次目录，每次运行再保存已加载快照 | 当前目录摘要与本次读取的 404 个分叉冻结摘要完全相同：`e467a2dd5e0fc7d5a05fe5d9190ebb4cd1aecdc40dd34dce2c8d9ea15d7a39dc`。没有另一个未经说明的新规则版本。 |
+| `miss_policy_id` | 均为 `strict` | `strict` | 文档 miss 失败，主 frame 文档 miss 标发散；benign beacon/report/analytics miss 返回 204，其他子资源 miss 返回 404，并带 `x-replay-miss: 1`。始终不访问线上。**这不是录制时统一阻断媒体。** |
+| `extra_benign_hosts` | 默认及实际 `null` | `null` | 不新增整站/视频域名白名单或 204 策略。现有 strict 内置分类和有证据的精确站点声明沿用。 |
+| 响应用尽 `exhaustion` | 发布 baseline 显式 `repeat_last` | 沿用 | 是这组实验的复用策略，不是框架偷偷补的默认。状态接口若需要用尽即 miss，应另有证据定义，不能在本轮任意更换。日志保留 repeated 事实。 |
+| 无 body 的 `unavailable` | 发布 baseline 显式 `serve_identical` | 沿用 | 只有同序列可用记录状态和正文都相同才代答；源网络失败不代答、录到错误码不改成 200。日志保留 substituted 和源结束原因。没有复用/不复用 A/B。 |
+| 请求易变字段规则 | B 站时钟签名、爱奇艺访客/设备号、JSONP callback、nested `vinfoparam`/`bop` 等 | 沿用已限定端点、方法的现有规则 | 有逐端点请求和响应证据及反例测试。关键词、页码、排序、内容 ID、筛选、清晰度、byte range 等内容选择字段不能一起忽略。时间戳也不总是安全：同花顺 `end_time` 可能是分页边界。 |
+| JSONP response 回调改写 | 请求忽略 callback 后仍需让返回包装匹配当前函数名 | 沿用 | 更早 12 站链一次比较多过约 6 个百分点；只支持明确包装形状。命中不等于页面必然成功消费响应。 |
+| `page_urls` 规则 | B 站客户端写入 `vt`、同花顺 `sign` | 沿用 | 7 个同源分叉的检查点通过从 0 到 6；只作用于页面地址比较，两个 URL 都要匹配范围，其余字节保留。请求匹配不读这部分。 |
+| `synthesize_204` | 现有规则含腾讯 Qidian sharing frame 的两个精确 POST 遥测端点等 | 不扩大范围 | 区分这些有证据的端点声明与 strict 的 benign miss 分类；不能改写成“腾讯视频资源全部阻断”。 |
+| live 资源阻断 | 没有视频/广告/媒体资源类别的统一屏蔽 | 保持没有 | `standard` 域名限制为空；静音、reduced-motion、后台 freeze 各管一件事。离线未录到媒体字节而失败是证据覆盖问题，不能描述成录制主动禁视频。 |
+
+| `archive.browser.network` 字段 | 十站 22 个源的实际值 | 最终采用及理由 |
 |---|---|---|
-| teacher 预算 | `max_completion_tokens: 8192`，30 步、解析重试 2 次、memory 200；分叉报告有一次回复被 8192 截断 | 32768、32 步、重试 1 次、memory 80；保留较大的输出预算 |
-| 指针、时区、语言 | 指针关闭；未显式配置中文时区与语言 | 指针开启；`Asia/Shanghai`、`zh-CN`，录制分叉相同 |
-| 恢复节奏 | 三种分叉各有 `none` / `recorded_timeline` 两臂；没有 `recorded_llm_latency` 臂 | 以 `recorded_timeline` 起步；需要选型结论时做同源对照 |
-| 证据 | 22 条源 run 都为 v7、complete；567 个策略步＋22 个末尾观测，共 589 张观测截图；四个 recording 通道与 frames 已开 | 保持完整录制及 `terminal_observation: true` |
+| `max_inline_body_bytes` | `5000000` | 显式保留。小响应在完整下载前被 Chrome 持有；更大且不超过 64 MiB 的非文档响应走流式记录。不是按媒体类别禁止下载。 |
+| `body_read_timeout_s` | `70.0` | 显式保留。过去提前放行仍在读的压缩脚本曾导致成功但空/截断的响应，使爱奇艺只显示骨架。没有理由重回提前释放或缩短预算。 |
+| `command_timeout_s` | `1.0` | 显式保留，无参数对照。 |
+| `drain_timeout_s` | `2.0` | 显式保留，每次收集等待已开始的正文读取；未完成仍记录 pending。 |
+| `max_post_data_size` | `65536` | 显式保留，Network 事件内联 POST body 的上限。 |
+| `require_replayable` | `true` | 显式保留这条 pinned 数据链要求。 |
+| `allow_session_state` | `false` | 显式保留；从私有登录 seed 导入一个新建的 pinned context，不等同于复用持久 Chrome profile。 |
+| `strip_request_headers` | `null` | 不新增额外剥离；Cookie、Authorization、Proxy-Authorization 仍由强制隐私规则剥离，不是可以关闭的默认。 |
 
-本地证据根为 `tmp/lookahead_10site_ui_tars_20261025/`：`RUN.md`、`STRATEGY_DIFF.md`、`out/judge-forks/report.md` 和已提交的 trace。10 月 26 日该目录的七份手写 YAML 换过模型及路由，原始轨迹没有变；变更前配置保存在 `out/stability_improvement_20261026/input/configs/`。当时的模型身份以 trace 的 `config.json` 为准，仍是 `deepseek-v4.1-flash-1017`。这些本地文件不随仓库发布；当前源码能打开这批 v7，历史档案、动作前帧和已有 thinking 可以直接用于审阅，无需只因格式升级重采。缺失的帧或未返回的 thinking 不能由新配置补出。
+归档最后的固定 5 秒 flush 是实现预算，不是可随意加到 YAML 的 knob。旧 IGN 在 8 个并发任务下有尾部 incomplete；降低并发对这个 flush 问题的效果没有单独对照。live 同时最多 3 个站点沿用已有操作证据：5 路 live 曾使下载资源争抢、爱奇艺停在骨架。不要把离线每 arm 的 8 workers 和 live 站点并发混成一个数字。
 
-### 录制前准备
+### 视频和动态页面：媒体区域究竟遮什么
 
-- **learned 鼠标的导出**：当前四份采集/分叉配置使用 `~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export`、`seed: 0`。安装 `uv sync --extra dev --extra learned-mouse`，该目录必须有 `generator.npz` 与 `meta.json`；模型类型、训练窗口和速率由 meta 声明。换机器时统一改四份配置的 `weights_dir`，使用同一份导出；路径不是框架默认值。先 `spectragent config check <录制配置>` 检查装配，分叉检查还需对应的已录检查点。
-- **机器与后端**：本机 `local_chrome`，`headless: true`〔多轮〕。六个云后端既不能录制也不能回放，`prepare()` 就拒绝。`headless` 属于启动参数，录制与回放必须相同。
-- **网络要快**〔一轮〕。慢网络上 teacher 常在页面还没加载完时做决定。10 月 24 日的采集里约 2/3 等到了落定；约 1/3 被 5 秒上限截断，但只是 DOM 还在变（播放器、轮播、行情），不是没加载完；约 3% 被截断时主文档还没到 `load`。只有最后一种算"没加载完"：这种步不当分叉检查点、不出导出样本，teacher 也会被直接告知。10 月 25 日十站轮次已经启用检查点筛选，但没有关闭筛选的对照，不能量化它带来的提升。离线回放瞬间应答，录到"正在加载"的页面在分叉里永远对不上，回放时等多久也补不回来。
-- **同时最多录 3 个站点**〔一轮〕：每个站点一个 `spectragent bench` sweep，站内任务依次跑。5 个站点并行时页面下载被饿死、中途断开，爱奇艺首页因此停在骨架屏。
-- **整轮固定 macOS 外观**（例如一直用深色）〔一轮〕。页面配色由 pinned 测量并固定，但 headless Chrome 的原生滚动条跟随宿主外观，又不记录：外观自动切换时，白天回放夜里的录制，每张带滚动条的截图都差几位 dHash，曾让一批分叉作废重跑。开跑前确认并固定当前外观即可；10 月 25 日十站轮次固定的是 Light，不要求一律切成 Dark。
-- **回放机器的系统语言与录制相同**：macOS 上 Chrome 的默认语言取系统语言，不同就拒绝回放（见"前提与限制"）。
-- **环境变量**：`spectragent bench` 不读 `.env`，先 `set -a; . ./.env; set +a`。teacher 和 judge 都从 `OPENAI_API_KEY` 读密钥，两者不是同一家服务时，在 judge 那条命令前单独写 `OPENAI_API_KEY=<那家的密钥>`（用错密钥第一个请求就被拒）。Chrome 自动找不到时设 `CHROME_EXECUTABLE_PATH`，基准数据位置用 `SPECTRAGENT_BENCHMARK_DATA`。
-- **超时**〔多轮〕：录制 `--timeout 1800`，分叉 `--timeout 1500`（都是每个任务的秒数），模型调用 `timeout: 300`。分叉按录下的模型等待节奏重放前缀，靠后的检查点单个要近 20 分钟，900 秒曾不够。
-- **录完先跑健康检查**〔两轮〕：`python -m lookahead health` 把页面一直没渲染、开头的内容请求在真实网络上就失败的录制写进一个排除文件，之后分叉（`trace_branches` 的 `exclude_runs`）和审核命令（`--exclude-runs`）都读它。这类录制的分叉反而"恢复得很好"（页面什么都没变），不排除就污染数据。它认不出风控拦截页：录完翻几张截图，携程那一轮就是看截图才发现几乎全是拦截页。
-- **teacher 的提示词变了就重录**。`history_source: source` 要求分叉前缀的提示与录制逐字节相同。10 月 24–25 日的改动（一步里有动作失败就停下、`send_keys` 执行浏览器自己的后退/前进/刷新/关标签页/切标签页快捷键、采集时页面没加载完的明确提示）都改了 teacher 的提示，之前的录制只能用 `restored` 历史分叉。
+`media_areas` 保留现有十条声明：腾讯视频播放/搜索、爱奇艺播放/搜索、IGN review/search/home/wiki、B 站 video/search。它们不是所有视频站的统一放行，也没有覆盖所有已知视频站的所有页面。
 
-### Teacher
+1. **录制不阻断、不暂停前台视频。** 原始截图、动作前帧和模型图片保持真实；`mute_audio` 只静音，`reduced_motion` 只是偏好，`freeze` 只作用于被离开的后台标签页。
+2. **恢复先尝试媒体对齐。** `media: align` 仍执行。加密失败、没录到的分片、直播和错误对应不能靠 seek 补齐。既有嵌套请求规则虽让腾讯 player info、爱奇艺 stream 请求命中，但那次同源对照的检查点仍是腾讯 0/23、爱奇艺 0/6；请求命中率不是视频可播放证明。
+3. **只在源和恢复页面 URL 都符合声明时改变比较。** 媒体状态仍测量、仍写证据，但不再据它判 `media_mismatch`。两张用于计算距离的图片副本遮掉双方测得的 video/audio 框与不可读 frame 框的并集；原图没有涂黑。URL、动作结果、文档 miss、框外像素仍检查。
+4. **超过 75% 时不遮，退回完整图片比较。** 75% 是实现常量，不是待添加的 YAML 参数；恰好 75% 仍可遮。退回整图时，声明页的媒体状态仍不参与判失败，不会自动恢复全部媒体严格校验。这个保护来自腾讯首页 100% 和频道页 87% 不可读 frame：大面积涂黑可能把明显失败变成通过。现有声明没有把这两类腾讯页扩大纳入。
+5. **通过率上升属于校验范围重新分类。** 334 个既有分叉换比较规则重算，腾讯检查点从 0/70 到 52/70；14 个分叉做同配置有/无规则的重放，腾讯检查点从 0/3 到 3/3。IGN 新增首页/wiki 后既有检查点从 42/64 到 53/64，12 个失败检查点再跑有 6 个恢复。这些是明确局部证据，不能写成视频播放保真提高或所有任务都可忽略视频内容。字幕、剧情、时刻等若与任务有关，人工审阅仍要看原图和媒体事实。
 
-| 设置 | 推荐值 | 依据 |
-|---|---|---|
-| agent | `ui_tars`，`prompt_template: computer_use` | 〔多轮〕纯视觉，不协商 DOM |
-| 模型与路由 | `deepseek-v4.1-flash-1017`，`reasoning_effort: high`，经 DMX 网关的 OpenAI 兼容路由（`model_type: openai`，`provider: {name: direct}`，`base_url` 写网关的 `/v1`） | 〔多轮〕这是已录制模型的路由，当前模板保留它；本地 10 月 26 日试过的新路由不等于旧轨迹使用了新模型。截至 2026 年 9–10 月测得：DMX 在上游通道之间轮询，同一请求这次成功下次失败，它的 Claude 路由不适合要求复现的评测；HTTP 200 也不代表 schema 被遵守 |
-| `coordinate_space` | 这个 DeepSeek 模型用 `screenshot_pixels` | 〔一轮，两站〕用 0–1000 网格时它自己在网格和像素之间来回换，三到五成的输入把数写成了像素；改成像素后约 30 次输入没有一次写错坐标系。换模型先核对几次回答：Qwen 系和 dots-3 在 UI-TARS 提示下答 0–1000，用 `normalized_1000`〔小样本〕；Gemini 3.8 Flash 在像素提示下混入网格坐标〔一张合成图〕。学生照旧 `normalized_1000`，导出从 trace 的 CSS 像素换算 |
-| `max_steps` / `max_actions_per_step` | 32 / 4；`max_actions_per_step` 在录制、分叉、学生里都要相同 | 〔多轮〕分叉开跑前核对它与源 run 相同；学生的动作数小于录制时，多出动作的步导不出来 |
-| `parse_retries_per_step` | 1 | 〔多轮〕回复解析不了时同一步重问一次 |
-| `terminal_observation` | `true` | 最后一个动作也有结果画面，审核和判分都要用 |
-| `max_completion_tokens` | 32768 | 16384 时 high 推理的回复曾截断；10 月 25 日十站分叉也有一条在 8192 截断，保持当前较大预算 |
-| `temperature`、`frequency_penalty` | 都写 `null` | DeepSeek 思考时不看温度，penalty 完全不起作用（官方接口实测）；分叉之间的差别靠模型自己的采样 |
-| `show_capture_state`、`show_action_effects` | 默认 `true`，录制与分叉相同 | 前者改变观测协商，取值不同的录制不能互相分叉，也不能一起导出；后者只改提示，`history_source: source` 的分叉要求它与源相同 |
+`stability --media-areas` 使用同样的声明和 75% 上限辅助定位自动变化；这仍不等于证明加载结束。10 月 26 日那次 60 条旧标注的 judge 改进是开发集回归；它改变的是审阅定义/判断，不是十站录制浏览器配置，也不是独立准确率测试。
 
-花费〔一轮〕：一个分叉的决定与一个录制的决定 token 差不多（每次约 1.4 万输入 token，都带着全部历史）。一轮 15 个任务约 1200 万 token：录制约一半，同任务分叉约四分之一，换任务分叉约六分之一，评判不到十分之一。
+证据路径：逐字段数据在 `tmp/config-reconciliation/browser-audit.json`、`browser-trace-values.json`、`browser-fingerprint-values.json`、`browser-other-defaults.json`。历史媒体对齐结果见 `.agents/skills/af-project-history/references/enhance.md:354`，请求/媒体规则的同源对照见 `configs/replay_rules/README.md:100`、`:168`、`:528`；当前规范见 `docs/architecture_design.md:3383`、`:3466`、`:3737`。更早五站原始轨迹已删除，本次使用保留下来的规范与历史报告记录，未重新运行 Chrome 或模型。
 
-### 浏览器能力（capability 块）
+### 分叉恢复与预算
 
-| 键 | 推荐值 | 依据与表现 |
-|---|---|---|
-| `replayability` | `pinned`，`random_seed: 7`，`base_time: run_start`（回放、分叉写 `from_archive`），`clock: shared`（默认），中文站 `timezone: Asia/Shanghai`、`locale: zh-CN`，`device_scale_factor: 1.0` | 〔多轮〕`clock: per_document` 让各标签页时间不一致，爱奇艺的跨标签页同步因此失控。`shared` 下页面拼进请求的时间戳每次回放都不同，带签名的接口（B 站 WBI）全部 miss，B 站分叉一度几乎全废，补了站点规则才恢复。评测和 anti-bot 实验用 `none`：pinned 会改变站点行为，本身也是能识别的特征（设计约定，没专门测） |
-| `user_agent`（pinned 的） | 采集几轮没写 | 没写时 headless Chrome 自报 `HeadlessChrome`。更早那条 12 站链写了本机大版本的普通 Chrome 标识，那时携程录得正常；一周后不写标识的一轮里携程几乎全是拦截页。两者有没有因果没验证〔未验证〕 |
-| `background_tabs` | `freeze`，录制、回放、分叉同值 | 〔多轮〕爱奇艺开到五个以上标签页时互相改写 `localStorage`，渲染进程占满 CPU、截图无应答，run 直接失败；冻结之后爱奇艺的任务都跑完了。`local_chrome` 的 `background_throttling: true` 实测无效。代价：离开的标签页里的视频回来时是暂停的，倒计时停住 |
-| `new_tabs` | `follow`（默认），三份配置同值 | 〔多轮〕新标签页的文档 10 秒内没加载完就不跟：慢网络上录制没跟过去，回放瞬间加载完跟了过去，从那一步起分叉对不上 |
-| `settle_quiet_ms` / `settle_max_wait_s` | 默认 500 / 5 | 〔多轮〕没调过。40 个真实站点上 `navigate` 之后平均多等约 1.8 秒，点击引起导航之后约 4.3 秒。视口里已经有内容时它不等在途请求：同花顺问财的结果页先拍到骨架条，约 1 秒后结果才填进来 |
-| `screenshot_cursor` | `true` | 〔多轮〕指针只画在给模型的图上，录下的截图是干净的；对 teacher 有没有帮助没对比过 |
-| 视口与截图 | 1280×720，`screenshot_format: png` | 〔多轮〕`jpeg` 没在采集里用过 |
-| `mouse_trajectory` / `typing_rhythm` | `learned`（同一导出、seed 0）/ `instant` | 10 月 21–24 日用 instant；10 月 25 日十站轮次用了 learned。当前采集按此选择，尚无同源实验证明它提高任务成功率或恢复率。早期 reCAPTCHA 实验中 learned 也没免去图片挑战，不能当绕过风控的保证 |
-| `retarget_tolerance_px` | 2.0（默认） | 只在分叉恢复时用，没调过 |
+Agent、loop 与 memory 的共有预算见上面的 Teacher 表。分叉 `max_steps` 不限定恢复前缀长度；恢复后新策略步预算为 `min(1 + continue_steps, max_steps)`。
 
-### 归档（`trace_writer`）
+| 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
+|---|---|---|---|---|
+| 新决策预算 | 三臂 continue_steps 0；通用配置允许更多 | **continue_steps: 0** | 每个检查点只采一次新 policy 决定，随后观察结果，符合当前标注单元。 | `min(1 + continue_steps, max_steps)` 才是分叉的新策略步预算。单步 branch 的 max_steps 结局不是任务失败。 |
+| 恢复器 | 都 prefix_replay；generic branch strict，collection warn | **prefix_replay / warn** | 取采集实跑；让不同前缀检查结果留下证据，再按检查点评定能否审阅。 | 509 个 checkpoint ok 中，321 个此前至少有一次 warn；全检查通过只有 188/932。strict 仍适合专门保真控制，并非框架不可用。 |
+| 恢复节奏 | 当前 timeline；十站 paired none/timeline；更早有 latency | **recorded_timeline** | 默认选择更接近录制时序的一臂；none 留作专门控制，不每轮重跑。 | 同源配对 466 个：241 两臂都 ok，25 仅 timeline ok，2 仅 none ok，198 都失败；266/466 对 243/466，净增 4.94 个百分点。总 execution 78,868 秒对 23,633 秒，约 3.34 倍；不是墙钟工期。没有同批 latency 臂，不能声称胜过 latency 或达到最优。 |
+| 历史来源 | 同任务 source；两类换任务 restored | **保持该分工** | 同任务在原上下文上重新采样；换任务必须 rebuilt restored facts，因为源 prompt 带原任务。 | restored 的实际动作和结果来自本次恢复；源回复只是带出处的材料。不得把它展示或统计成本次新 thinking。 |
+| 去源回复 | 第三臂 omit_source_replies；不是所有变体默认 | **保留独立第三对照臂** | 与普通 variant 复用同一份任务文件与预算，继续观察源任务回复的影响；不把未经证明的消融替换成默认历史。 | timeline 下旧 judge 合理性 63/71 对 59/69、效果 39/71 对 38/69，条件入组不同且无人工 gold，不能宣布胜负；旧 effect 还包含当时的 done-only 口径。该 hook 只去掉送入 restored prompt 的源回复，不删 trace、不禁止当前模型原生思考。 |
 
-- 录制的 `archive` 写 `browser.network`、`browser.storage`、`browser.dom_raw`；要给前瞻模型做标签再加 `browser.frames`（`before_action: true`，`after_observation_delay_s: 1.0`）〔多轮〕。帧让每个动作通常多等约 0.07 秒，最多 1 秒，agent 看不到它们。回放与分叉把 `browser.network` 换成 `browser.replay_log`。
-- `recording` 四项全开〔多轮〕：`pace: recorded_timeline` 要读录制里每个动作的起止时间，`recording.metrics` 关着时不量，这样的源会被拒。
-- `browser.network` 用默认值。内联 body 一直扣到读完（`body_read_timeout_s` 默认 70 秒）：读完之前放行，会让中途断开的压缩脚本在页面一侧变成成功的空响应，爱奇艺骨架屏就是这么来的。
-- 网络归档每次收集的写盘预算固定 5 秒，没有旋钮：IGN 这类重页面加 8 路并行分叉时，少数分叉最后一两步的环境证据没收全（trace 记 `incomplete`，agent 的步照样提交）〔一轮〕。降低并行能不能避免没试过。
-- 需要登录的站点：任务 `setup` 的 `storage_state` 种子加 `browser.storage`（录下初态）；pinned 接受新建 context 加种子。小红书和 B 站各用一个账号录制并原路径回放过〔小样本〕。
+### 选步、重复数与三臂成本
 
-### 回放与分叉
+| 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
+|---|---|---|---|---|
+| 同任务选步 | generic all/3；停下的 BrowserUse 为 k4/offset0；当前与 UI-TARS 实跑 k4/offset1/2 | **every_k: {k: 4, offset: 1}，每点 2 个** | 取 UI-TARS 实跑与当前配置；稀疏覆盖全程，每点保留重复采样。 | 十站每 pace 为 101 个 checkpoint、202 条分叉；不是最佳抽样间隔的证明。 |
+| 变体生成 | 当前和实跑均每源 2 个点、每点 2 个任务 | **steps-per-run 2，per-step 2** | 保留不同屏幕和不同信息需求的覆盖。 | 原健康名单下 18 源生成 36 点、72 个变体。实际分叉预算要看最终 `--list`，不能直接乘生成条数。 |
+| 每个变体的重复数 | 当前每 variant 1；十站每 variant 2 | **普通 variant 与去源回复均为 1** | 取当前较小预算，理由是下一轮先覆盖不同信息需求；同任务臂已有重复决策样本。两 variant 臂各 1 仍保留同一任务上的消融对照。 | 以十站原任务列表计，单 pace 三臂由 202+132+132=466 降到 202+66+66=334，少 132 条、28.3%。代价是不能估计同一 variant 在同一臂内的采样方差；研究该问题时另设 2。没有证据说 1 的效果更好，也不是为了声称复刻旧轮次。 |
+| 未加载检查点 | 两者 true；有时误将所有 settle capped 都剔除 | **exclude_unloaded_checkpoints: true** | 只按明确 `capture_state.settle_state.loaded: false` 排除；DOM-only capped 不等于未加载。 | 实跑 72 变体中 6 个被 loader 排除：Steam 135@7、35@6、35@20 三个点。前两点甚至记录 settled，但 loaded 为 false。当前 variants 生成与 loader 存在这层筛选差异。 |
+| 源结局与不可分叉源 | 当前与实跑 any / skip；generic raise | **agent_outcome: any；on_unbranchable: skip** | 不把任务未完成等同无数据；必须同时满足闭合 trace、完整前缀和录制范围要求，并保留 skipped 理由。 | 源有 2 个 max_steps；单步 branch 常见 max_steps。any 不代表损坏轨迹也能分叉。 |
+| 对照预算冻结 | 当前 README 只说先 list；实跑脚本先比较两 pace 列表 | **保存每臂列表和摘要；成对臂确认相同源点与变体** | 取实跑可复核操作；变体/去源回复共享同一文件，不重新生成各自的任务。 | 健康名单或 loaded 筛选改变会改变分母；新批统计另存，不回写旧报告。 |
 
-**网络来源**〔多轮〕：`network_source` 写 `source_id: archive`，`isolation: required`，`log_mode: full`，`shift_dates: none`，`matcher: {levels: [exact, normalized], site_rules: configs/replay_rules}`，`miss_policy: {miss_policy_id: strict}`。`fuzzy` 级别没在采集里用过〔未验证〕。
+### 归档与录制证据
 
-**站点规则**是分叉恢复率逐轮上升（能评判的分叉从不到两成到约四分之三）的主要原因〔多轮〕。`configs/replay_rules/` 里每条规则的注释写着哪个站、什么失败、规则修好了什么：
+除网络归档表中的值外，保持并显式填写：`browser.storage.command_timeout_s: 1.0`；`browser.dom_raw.self_capture_timeout_s: 10.0`；`browser.frames.capture_timeout_s: 3.0`、`max_action_wait_s: 1.0`。这些 archiver 的 `allow_session_state: false` 保持默认；新 context 的登录种子仍可使用，复用持久 profile 是另一项设置。值取自现有录制/默认预算，没有阈值优化对照。
 
-| 规则 | 做什么 | 实测 |
-|---|---|---|
-| 请求规则（`rules`） | 让只差易变字段的请求命中录下的应答：页面时钟算出的签名（B 站 WBI 的 `wts`、`w_rid`）、每次新生成的访客或设备号（爱奇艺）、jQuery 的 JSONP 回调名和防缓存参数；`parse_query` / `parse_body_paths` 解析字段里嵌套的值（腾讯视频播放器的 `vinfoparam`、爱奇艺 `dash` 的 `bop`） | B 站补了共享时钟规则后从几乎全废回到大部分可用；12 站原路径回放里 JSONP 回调改写多过了约 6 个百分点的校验〔一次〕。嵌套字段规则让播放器请求命中了，但离线视频仍然不播，校验结果没变 |
-| 页面地址规则（`page_urls`） | 恢复校验比较 URL 时去掉页面自己写进地址、不选内容的参数：B 站搜索页的 `vt`、同花顺选股结果页的 `sign` | 〔小样本〕7 个分叉里检查点恢复从 0 到 6，`url_mismatch` 不再出现 |
-| 媒体区域规则（`media_areas`） | 声明的视频页上恢复校验不判播放状态，截图比较前把视频框涂黑；涂黑超过画面 75% 时不涂 | 〔多轮〕腾讯视频的分叉从一个都恢复不了到过半可评判；IGN 首页和攻略页加上之后，IGN 能评判的分叉从约三分之二升到八成多 |
+| 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
+|---|---|---|---|---|
+| recording | 当前显式四通道；历史 YAML 多依赖默认 | **metrics / errors / trajectory / observations 全 true** | 取两者实际行为并显式化。timeline 依赖 action timing；review 历史与 thinking 依赖正文通道。 | 22 源都是 v7、complete，567 policy +22 terminal，共 589 观察。已有 v7 无需为新界面重录；提示身份变化须重录是另一件事。 |
+| live archivers | generic 三类；collection 加 frames | **network + storage + dom_raw + frames** | 取 collection 实跑；纯视觉 agent 仍需 rawDOM 支撑重定位、诊断与后续坐标处理。 | 归档不是 agent 额外观察，不能把辅助帧当下一次 observation。 |
+| offline archivers | 网络录制不能用在 archive source | **replay_log + storage + dom_raw + frames** | replay log 替换 network，其他同录制。 | 来源严格离线，miss 不临时上线补。 |
+| replay log / matcher | 部分历史靠默认，当前 full / exact+normalized | **log_mode full；exact+normalized；site_rules；strict miss；isolation required；shift_dates none** | 保留可追溯的逐请求诊断；不为压缩日志使用 summary 丢掉近邻 miss 细节。 | fuzzy 没有采集证据；站点规则必须冻结到 run，仅忽略不选内容的字段。 |
+| frames | 当前显式 before=true / after=1s；实际默认同值 | **before_action true，after_observation_delay_s 1.0** | 取现有采集行为。 | 公共 reader 全量审计：1050 实际 action_spans 对应 1050 动作前记录，其中 1043 captured、7 timeout；589 次 after_observation 全 captured。1050 不包括另 24 个 skipped 动作。帧缺失不可推定稳定。 |
+| archive 子预算 | storage 1s、flush 5s、network body 70s | **保持这些值，不无证据调大** | 用真实缺口说明风险并独立重跑故障任务，避免把 task timeout 当所有故障的解决开关。 | 10/25 唯一 incomplete 是 Storage.getCookies 的 1s 超时，不是网络 flush 5s；10/24 的另几条缺口才与重页并行归档有关。 |
 
-加规则的流程：从度量报告的近邻 miss（`decision_inputs.site_rule_candidates`）找候选端点，看应答确认这些字段不选内容（关键词、页码、排序、id、筛选从不忽略），写反例测试，再只改 `site_rules` 重跑同一批分叉对比。媒体区域只声明视频页和搜索页。规则在每个回放 run 开始时冻结并记进 run，之后改目录不影响已跑的结果。
+### 离线并发的采用决定
 
-**恢复器**（`restorer: {restorer_id: prefix_replay}`）：
+| 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
+|---|---|---|---|---|
+| offline 并发 | README说几个；10/25每臂 8；更早 variant 4 | **每臂最多 8 个 disjoint workers，臂间顺序** | 取十站实际吞吐配置。932 个任务中 931 complete，未出现 task timeout；凭一例 storage 故障改为 4 没有证据可解决，却预计明显延长工期。 | 8 不是性能最优证明；保存每 worker session/log，结束后检查 recording health，独立重跑 incomplete 项，保留原失败记录。出现持续资源故障时再降低实际 worker 数并记录该批差异。 |
 
-| 键 | 采集推荐 | 依据 |
-|---|---|---|
-| `verify` | `warn`，只评判检查点恢复了的分叉 | `strict` 遇到第一个不过的检查就结束 run：12 站那条链里约四分之三的分叉在前缀恢复时就被拒，这些分叉 teacher 一次都没调用〔一次〕。`warn` 把每项检查记进分叉的 trace，`lookahead judge-forks` 只评判检查点恢复了的〔多轮〕 |
-| `screenshot_max_distance` | 5（默认） | 没调过。dHash 看不见局部变化（视频预览变了 6–8% 的像素，距离仍是 0），所以视频差异不靠放宽阈值，交给媒体校验和媒体区域规则 |
-| `media` | `align` | 〔仅 fixture + 一个真实视频〕fixture 上不对齐时视频落后几秒、截图距离却在阈值之内；一个 31 秒的菜谱视频上，与视频有关的 27 步里对齐后过 26 步，不对齐只过 10 步 |
-| `pace` | `recorded_timeline` | 10 月 25 日十站轮次〔一轮〕：同任务、换任务、去源思考三组共 466 个分叉/臂，timeline 的检查点 `ok` 为 266/466（57.1%），none 为 243/466（52.1%）。统计已提交的检查点，含唯一一条 incomplete run；不是任务成功率或可标注率。此轮没有 `recorded_llm_latency` 臂，不能据此断言 timeline 比它好。更早 latency 对 none 的 64 分叉实验只比较了回到录下 URL 的比例，不能跨批相减 |
-| `media_time_tolerance_s` 等媒体旋钮 | 默认 | 没调过 |
+### 导出与历史说明
 
-**任务加载器**（`trace_branches`）〔多轮〕：同任务分叉写 `step_selector: {selector_id: every_k, k: 4, offset: 1}`、`branches_per_step: 2`、`history_source: source`；换任务分叉用 `lookahead variants` 写出的变体文件（每个录制取 2 个检查点，每点 2 个变体）作 `task_variants`，每条 1 个分叉，必须 `history_source: restored`。都写 `on_unbranchable: skip`、`exclude_runs`（健康检查的排除文件）、`exclude_unloaded_checkpoints: true`（默认）。去掉源思考的对照（hook `omit_source_replies`）没看出差别〔小样本〕。
+| 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
+|---|---|---|---|---|
+| 默认交付 | 通用flywheel有SFT；lookahead轮次实际只到review | **本轮交付teacher traces与labels，SFT仍是独立后续流程** | 取实际采集目标，避免把可审阅分叉数当训练样本数。 | 旧报告可评507；其中包含唯一incomplete run里可读的checkpoint决定。全恢复检查无warn只有188/932，导出还会受其他过滤。 |
+| export filters | generic exclude_restoration_diverged=true、document_misses0、exclude_unloaded=true | **保持严格过滤，不为产量关掉** | 训练要求与 review 的 checkpoint 入组不同。 | warn采集与严格export同时使用会损失大量分叉，真实十站尚未做该导出；不能说507都可训练。 |
+| wait_actions | 默认 keep；新功能 drop_when_capped | **keep** | 保留未经过真实轮次验证的后处理为独立试验，防止改写 thought 与动作关联。 | drop_when_capped需helper及缓存，只做过fixture，不是采集默认。 |
+| 隐私字段 | RUN主要提secrets_recorded policy | **原authenticated trace私有；导出产物独立检查，不以secrets_recorded:false推出可公开** | 当前22源该字段全false，但env_evidence_privacy全含contains_session_state。 | secret录制开关与环境cookie/Web Storage原始证据是不同范围；不把env目录一并发布。 |
+| 10/26复核 | 新judge开发集局部改善 | **规则预筛+人工继续保留，judge-stability按需补充，不替换gold** | 新方法在原始分类一致率41/60低于旧45/60；解释六条备注后与二分类才提升，不能只挑有利口径。 | 60条开发集、人工框全空，不能报告定位IoU；不回写人工答案。 |
 
-**并行**：把 `--list` 列出的任务分给几个 `spectragent bench` 进程，每个进程用自己的 `--session-dir`；10 月 24 日同任务开 8 个、换任务各 4 个，10 月 25 日六个分叉臂分别用 8 个进程。重页面加 8 路并行会碰到上面的归档写盘问题。
+### 重算口径
 
-**分叉之间的差别**：发布示例的 teacher 用温度 0.8。高温下模型可能写出网格外的点：DMX 上的 qwen3.8-flash 在 `normalized_1000`、温度 0.8 下有一次写成了像素〔一次〕。换模型或调温度之后，先抽查几个分叉回复里的点再放量。
-
-### 视频和动态页面：按采集、恢复、标注分别处理
-
-1. **录制保留真实页面。** 前台视频照常播放，不为得到稳定截图而暂停。`pinned` 固定随机种子、时钟起点、语言等，`clock: shared` 保持多标签页时钟一致；它不冻结前台视频，也不重放真实网络的加载速度。`background_tabs: freeze` 只冻结离开的标签页，可能让返回的播放器处于暂停状态，所以录制与分叉必须同值。
-2. **落定等待与加载事实分开。** 保持 `settle_quiet_ms: 500`、`settle_max_wait_s: 5`。播放器、轮播、行情导致 DOM 一直变时可记 `capped`，这本身不证明没加载完；`capture_state.settle_state.loaded is False` 才由 `exclude_unloaded_checkpoints` 排除。截图和后续档案仍保留该步；导出另有 `exclude_unloaded_steps`。没有加载事实时记未知，不能当成已经加载完。
-3. **先对齐时间和媒体，再比较恢复。** `pace: recorded_timeline` 尽量按源观测与每步第一个动作的时间点走；`media: align` 在恢复观测前尝试对应媒体元素、跳到录下位置并恢复播放/暂停状态，结果写入恢复证据。它不能补齐未录到的流、解密失败的流或直播。离线网络仍使用 strict miss，不临时访问线上站点补内容。
-4. **站点规则按职责生效。** `matcher.site_rules: configs/replay_rules` 同时载入请求、页面 URL 和 `media_areas` 规则。请求/URL 规则只忽略证据支持的易变字段，不能忽略关键词、页码、排序、内容 id。视频区域规则必须同时匹配源和恢复的页面范围：恢复比较不判媒体状态差异，且在两张用于计算距离的副本中遮住已测得的媒体框；媒体对齐仍执行，URL、文档 miss、动作成败和框外像素仍比较。
-5. **保留遮罩的界限。** 媒体框并集覆盖视口超过 75% 时，不应用像素遮罩，改用整图距离；这避免几乎整张图被遮掉而自动通过。该保护不重新启用声明页面的媒体状态判定。规则、框、覆盖率及整图/遮罩距离都在恢复证据里。原始 observation、动作前帧和给模型的图不涂黑，标注员仍能看到视频内容；不能把“恢复检查通过”解释成“视频相同”。
-6. **标注看到完整证据。** `browser.frames` 留下每个动作之前和观测约 1 秒后的截图，专供标注、从不作为 agent 新观测。`stability --media-areas configs/replay_rules` 帮助区分媒体自动变化；gold 审阅仍依据真实下一次 observation 标信息区域，不能把 1 秒后的稳定性帧当下一屏。帧超时或媒体读数缺失时显示缺证据，不能推定稳定。
+- 932 分叉，509 个已提交 checkpoint 为 ok；只看 manifest complete 的 run 是 508。
+- 既有 judge 报告入组 507：509 中有 1 个解析失败、1 个 completion-token ceiling 截断。报告入组允许那条 incomplete run 的可读 checkpoint；若新加“整 run complete”门槛，会变成 506，必须另标口径。
+- 509 个 checkpoint ok 中 321 个此前有 warn；全检查 ok 为 188。
+- 重算脚本和结果在 `tmp/config-reconciliation/compute_branch_audit.py`、`branch-metrics.json`、`branch-audit.json`。
 
 ### 各类网站的表现（10 月 24 日及更早的证据）
 
@@ -156,17 +316,10 @@
 | 需要登录 | 小红书、B 站 | `storage_state` 种子 | B 站补了个人空间接口的规则后，30 次校验从只过几次到过 24–25 次 | 〔小样本，各一个账号〕B 站的登录信息接口（`/x/web-interface/nav`）按录制顺序应答，可能答给别的页面，没解决 |
 | 有风控的站 | 携程、搜狗 | 携程那一轮三个录制几乎全是拦截页，已剔除；搜狗筛站时出验证码 | 拦截页上的"恢复"没有意义 | 度量报告只按应答头认 Cloudflare 拦截，健康检查也认不出这类页面；拟人鼠标救不了 |
 
-### 导出
-
-- 用发布的 `export_sft.yaml` 和 `ui_tars_student.yaml`（学生 `normalized_1000`，`max_actions_per_step: 4`）。12 站那条链上两次导出逐字节相同，隐私检查零泄漏〔一次〕。导出代码冻结，学生一侧还没定。
-- `filters.exclude_unloaded_steps: true`（默认）：与分叉的检查点用同一条规则，只筛主文档没加载完的步〔仅 fixture〕。
-- `filters.exclude_restoration_diverged: true`（默认）会把任何一步校验没过的 run 整个排除。用 `verify: warn` 跑的分叉，前缀里常有没过的步，大多会被排除；这两者还没在真实数据上一起导出过〔未验证〕。
-- `wait_actions` 默认 `keep`。`drop_when_capped` 去掉 teacher 在被截断的采集上做的等待并改写受影响的 thought，要配 `thought_rewrite_llms` 和 `thought_rewrite_cache`；只用脚本化模型测过〔仅 fixture〕。上一轮约十分之一的步会受影响。
-
 ### 审核与标注
 
 - `python -m lookahead stability ... --media-areas configs/replay_rules`〔多轮〕：四到五成的观测在拍下之后 1 秒内就变了；有媒体在播的观测几乎全在媒体上变（上一轮百里有九十九），不加这个选项视频页几乎永远算不稳定。变化按 32 像素网格判，dHash 只作参考。
-- `judge-forks` 用模型判：规则和模型都下结论时只有约六成一致，分歧多是规则说"不同"、模型说"同一意图"，所以规则只适合预筛〔多轮〕。上一轮的 judge 是经 DMX 的 `deepseek-v4.1-flash-1017`，几百次调用全部通过校验；现在改用 DeepSeek 官方接口（`configs/lookahead/judge_deepseek.yaml`，`max_completion_tokens: 16384`，此前最长的回复不到 5000 token）。DeepSeek 没有 `json_schema`，provider 把 schema 写进提示、收到后校验；官方接口上的结构化回复只探测过几次〔小样本〕。
+- `judge-forks` 的模型、请求预算与重问行为采用上面的独立 judge 表。恢复入组只看可读取的检查点证据；规则与模型的一致性、任务正确性与人工 gold 分开报告。
 - `gold-queue` 抽 100 条，用 `spectragent view --root <轮次目录> --annotations <标注目录> --annotator <名字>` 标注。10 月 25 日十站轮次已建三类队列；10 月 26 日保存的稳定性标注有 60 条，并做了固定队列的开发集复核。它不是独立测试集准确率，也不表示分叉决策和 gold 区域标注已完成。
 
 当前审阅交互（2026 年 10 月 27 日）按以下方式读证据；详细命令见 [lookahead/README.md](../lookahead/README.md)：
@@ -180,7 +333,7 @@
 已知不行：
 
 - 云浏览器后端录制或回放；`clock: per_document` 配多标签页同步的站点；用 `background_throttling: true` 代替冻结。
-- 用 `verify: strict` 采分叉（大部分在前缀就被拒）；放宽 `screenshot_max_distance` 来放过视频差异（阈值 5 以内已经放过过播放位置不同的画面，是媒体校验抓出来的）。
+- 本轮采集不采用 `verify: strict`（大部分在前缀就被拒；专门保真对照仍可使用）；不放宽 `screenshot_max_distance` 来放过视频差异（阈值 5 以内已经放过过播放位置不同的画面，是媒体校验抓出来的）。
 - 控制页面时间（Chrome 虚拟时间）：六站探针里五站在截图时失败，没有接入。
 - 规则救不了的：选内容的字段、涂黑超过 75% 的全屏自动预告、shadow root 里 iframe 中的播放器、跳到录下字节之外的视频位置、WebSocket、录到的加载中页面（回放不按录下的时长延迟应答）。
 - 靠拟人鼠标和打字通过 reCAPTCHA v2。
@@ -400,7 +553,7 @@ task_loader:
 
 `agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。`exclude_runs` 也是筛选：它指向一个 `run-exclusions-1` 文件（`{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`~` 展开、相对启动目录），它列出的 run id 不当源，加载器的跳过记录里写着文件给的原因（以 `filtered:` 开头）。这份文件通常由 `python -m lookahead health` 写出（页面一直没渲染、录制时内容请求就失败了、最终回答说任务失败的录制），见 `lookahead/README.md`。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
 
-`exclude_unloaded_checkpoints`（默认 `true`，发布的两份分叉配置都写出来）在选步之后再排一遍：录制网络慢时，teacher 有时在主文档还没加载完的页面上做决定，而离线回放里同一步早已加载完，这样的步不当检查点。判断只读录下的 `capture_state`：每次采集都记下那一刻主文档是否已经到了它的 `load` 事件，还没到就算没加载完（`settle.loaded: false`），不论落定等待是在上限（`settle_max_wait_s`，5 秒）处结束还是早就停了；只是 DOM 一直在变（播放器、轮播、行情）不算。被排除的步记在加载器的跳过记录里，键 `<源路径>#s<t>`，原因写着 `captured before its initial load finished` 和等了多久；`--list` 列出的任务里没有它们。它在选步之后起作用：`last` 选中的最后一步没加载完，这个源就不分叉，不会往前补一步；任务变体落在这样的步上也跳过并记原因。没录 `capture_state` 的源（没协商它，或 agent 写了 `show_capture_state: false`）没有证据，检查点照常保留。写 `false` 不查。一个从没加载完的文档只在第一步花掉 5 秒上限，之后同一文档的步不再等它的加载，但每一步都照实记作没加载完；两步之间加载完了，下一步就记作已加载（[architecture_design.md](architecture_design.md) §4.4 “初次加载是否完成”）。
+`exclude_unloaded_checkpoints`（默认 `true`，发布的两份分叉配置都写出来）在选步之后再排一遍：录制网络慢时，teacher 有时在主文档还没加载完的页面上做决定，而离线回放里同一步早已加载完，这样的步不当检查点。判断只读录下的 `capture_state`：每次采集都记下那一刻主文档是否已经到了它的 `load` 事件，还没到就算没加载完（reader 的 `capture_state.settle_state.loaded` 为 `false`），不论落定等待是在上限（`settle_max_wait_s`，5 秒）处结束还是早就停了；只是 DOM 一直在变（播放器、轮播、行情）不算。被排除的步记在加载器的跳过记录里，键 `<源路径>#s<t>`，原因写着 `captured before its initial load finished` 和等了多久；`--list` 列出的任务里没有它们。它在选步之后起作用：`last` 选中的最后一步没加载完，这个源就不分叉，不会往前补一步；任务变体落在这样的步上也跳过并记原因。没录 `capture_state` 的源（没协商它，或 agent 写了 `show_capture_state: false`）没有证据，检查点照常保留。写 `false` 不查。一个从没加载完的文档只在第一步花掉 5 秒上限，之后同一文档的步不再等它的加载，但每一步都照实记作没加载完；两步之间加载完了，下一步就记作已加载（[architecture_design.md](architecture_design.md) §4.4 “初次加载是否完成”）。
 
 Loop 一侧：
 
@@ -542,7 +695,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 导出 YAML 有一个 `exporter:` 块，可以再加 `eval_loader:` / `task_loader:` 块（见下面的去污染），没有 agent 和 environment。v1 唯一的导出器是 `exporter_id: openai_messages`，`sample: per_step` 与 `image_store: files` 也只有这一个取值。发布的 `export_sft.yaml` 不按评测结果筛（`filters.require_eval: null`），也不去污染（`decontamination.against: []`），所以直接用在 online_mind2web 的录制上就能导出；teacher 失败的轨迹也会进数据集，每个样本带着 `labels.step_status` 和判定标签，训练时可以再筛。开跑前按自己的数据改这几处：
 
 - `sources_root` 和 `sources`：发布值是 `sources_root: traces`、`sources: ["recorded/*"]`。`sources` 是相对 `sources_root` 的 glob，按路径排序；`sources_root` 写相对路径时按工作目录解析。要导出分叉 run 就加上它们的目录，例如 `["recorded/*", "branches/*"]`，原路径回放的 run 在 `same_path/*`。分叉 run（含原路径回放的 run）的源 run 也必须在本次读到的源里，否则被筛掉，原因记为 `branch source '<id>' not among the sources`。列进来的录制 run 自己也会产出样本，没有只导出分叉的开关。
-- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。`exclude_unloaded_steps: true`（默认，发布值也写出来）按步筛：录下的 `capture_state` 说这一步采集时主文档还没加载完（`settle.loaded: false`，与分叉的 `exclude_unloaded_checkpoints` 同一条规则），这一步不产生样本，但照样留在之后样本的上下文里，段不断；每个被筛掉的步记在 manifest 的 `steps.filtered`（`<源路径>#s<t>` → 原因）。没录 `capture_state` 的步照常导出。
+- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。`exclude_unloaded_steps: true`（默认，发布值也写出来）按步筛：录下的 `capture_state` 说这一步采集时主文档还没加载完（reader 的 `capture_state.settle_state.loaded` 为 `false`，与分叉的 `exclude_unloaded_checkpoints` 同一条规则），这一步不产生样本，但照样留在之后样本的上下文里，段不断；每个被筛掉的步记在 manifest 的 `steps.filtered`（`<源路径>#s<t>` → 原因）。没录 `capture_state` 的步照常导出。
 - `decontamination`：`against` 列出学生将来评测用的 benchmark（`[{benchmark: <名字>, subset: <子集>}]`），只查列出来的这些，从不从评测器或判定推断。默认 `[]`：不去污染，manifest 记 `decontaminated: false`；`null` 不是列表，组装时报错。把录制所用的 benchmark 自己列进去会把这些录制全部排除（`ExportEmptyError`）。`match` 取 `task_id`、`site_instruction` 或 `either`。去污染和参考答案泄漏扫描经导出 YAML 自己的 `eval_loader:` / `task_loader:` 块读基准数据，没配的 benchmark 用注册加载器的默认值。
 - `split`：`by: site`（源任务 `start_url` 的主机）或 `by: task`，从不按步切，同一组分叉总在同一个切分里。
 - `translator`：`identity` 原样使用 teacher 执行过的动作，UI-TARS 录下的本来就是坐标动作。`index_to_coordinate` 把带元素 index 的 `browser.click`、`browser.type` 换成元素可见部分上的坐标动作，其余带 index 的动作不可译（`no_counterpart`），不带 index 的原样保留。它的 `occlusion: check` 要确认换算出的点没有被别的元素盖住，证据按优先级是 cleaner `skyvern_hit_test` 录下的命中测试、`browser.dom_raw` 的原始 DOM、BrowserUse cleaner 录下的 paint order（只认得出部分遮挡）。三样都没有时抛 `OcclusionEvidenceMissingError`；写 `occlusion_unknown: untranslatable` 则把这一步当作不可译。`occlusion: none` 不查遮挡（原来写作 `"off"`）。`untranslatable` 决定不可译的步怎么处理：`drop_step`（结束当前段）、`truncate`（结束这条轨迹）、`keep_as_text`、`fail`。
@@ -699,11 +852,11 @@ uv run spectragent flywheel diagnose \
 uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ```
 
-已知的残余：正则认的是凭证的形状，teacher 键入的、不像凭证的密码会原样成为训练目标（键入动作的结果已标出它进了敏感控件，导出还不用这个标记）；WebSocket 帧的内容和 URL（含查询参数）原样记录；`browser.extract_content` 不给编号时返回的页面文本会列出 `<select>` 的选项文字，被判敏感的下拉框也一样（那是页面写的选项，不是你选了哪一项）。数据来源请选无需登录的公开站点。
+已知的残余：正则认的是凭证的形状，teacher 键入的、不像凭证的密码会原样成为训练目标（键入动作的结果已标出它进了敏感控件，导出还不用这个标记）；WebSocket 帧的内容和 URL（含查询参数）原样记录；`browser.extract_content` 不给编号时返回的页面文本会列出 `<select>` 的选项文字，被判敏感的下拉框也一样（那是页面写的选项，不是你选了哪一项）。需要公开分享的数据优先使用无需登录的公开站点；本轮带登录种子的采集按前述私有证据流程处理，不能据此声称原始 trace 可公开。
 
 ## 在真实站点上跑
 
-真实站点上的每一段都会花 LLM token。开跑之前先定下：模型路由（model id 和 `coordinate_space`）、任务列表、链的 token 上限、要不要对照组、要不要评测、磁盘预算。
+本节是 `configs/flywheel/` 通用链的操作示例；前瞻采集的任务、三臂预算与登录种子采用前面的逐项决定及 `lookahead/README.md`。真实录制与分叉会消耗模型 token，纯报告重算不会。开跑之前先定下：模型路由（model id 和 `coordinate_space`）、任务列表、链的 token 上限、要不要对照组、要不要评测、磁盘预算。
 
 1. 路由与密钥。`spectragent bench` 和 `spectragent flywheel` 都不读 `.env`（`spectragent run` 会读），先在 shell 里导出：
 
@@ -711,17 +864,17 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    set -a; . ./.env; set +a
    ```
 
-   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项只看发给模型的请求和导出的数据集，不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`OPENAI_BASE_URL` 只在 YAML 没写 `base_url` 时生效。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉三份 YAML 的 agent 块必须相同，分叉在开跑前核对；teacher 的模型和采样可以换（发布的分叉配置用温度 0.8），原路径回放通常用录制时的模型和默认温度。
-2. 选任务。先取 10 个，只跑录制、原路径回放和报告，看保真度和花费；再扩到 10 到 20 个任务跑整条链。任务要无需登录、公开、不被 Cloudflare 拦截。online_mind2web 的每个任务有 `task_id`、`task_text`、`start_url`、`difficulty` 和 `metadata.reference_length`，可以离线挑：先挑 `easy`，每个可注册域名只取一个任务，跳过任务文本要求账号的，跳过已知重度反爬的站点。会不会被拦截离线判断不了，被拦截的站点会出现在报告的 anti-bot 一节和剔除名单里，代价是一次录制。`lexbench_browser` 的起始页在数据里不带协议头，加载器补成 `https://`；写成文字或几个站点的任务在开跑前的检查里被拒，挑任务时直接跳过。提交表单（POST）的任务在回放和分叉里必然 miss。
-3. token 上限。真跑的规格写一个具体的数，例如 `token_limit: 2000000`（默认 `unlimited` 不限）。链从每个 run 的模型调用记录里数用量，每跑完一个任务加一次；达到上限时，那个任务照常跑完，之后的任务和段（包括导出）都不开始，报告照样按已有的数据算，并写明是因为 token 上限停的，`spectragent flywheel run` 退出码 4（见"度量报告"）。按段跑时上限照样管住整条链：链每次开跑前先数链根下已有的 run。上限按估算加上余量来定；一个任务不会被打断，实际用量最多超出上限一个任务的用量。每个任务的模型调用数：
+   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项只看发给模型的请求和导出的数据集，不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`openai/direct` 在 YAML 未写 `base_url` 时由 SDK 读取 `OPENAI_BASE_URL`；其他 provider 可有独立默认地址，例如 `openai/deepseek` 默认官方接口。本轮 teacher 由准备脚本把私有地址显式写入副本，不依赖这个隐式回退。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉的提示、坐标系、memory 和动作上限保持一致，loop 按各段职责配置；分叉在开跑前核对兼容性，teacher 的模型和采样可以换（通用 GPT-4o 分叉示例用温度 0.8；本轮 DeepSeek 思考配置不发温度），原路径回放通常用录制时的模型和默认温度。
+2. 选任务。先取 10 个，只跑录制、原路径回放和报告，看保真度和花费；再扩到 10 到 20 个任务跑整条链。通用匿名演练先选无需登录的公开任务；本轮前瞻采集则按冻结清单保留所需登录种子。被 Cloudflare 等拦截的画面不能当任务正常内容。online_mind2web 的每个任务有 `task_id`、`task_text`、`start_url`、`difficulty` 和 `metadata.reference_length`，可以离线挑：先挑 `easy`，每个可注册域名只取一个任务，跳过任务文本要求账号的，跳过已知重度反爬的站点。会不会被拦截离线判断不了，被拦截的站点会出现在报告的 anti-bot 一节和剔除名单里，代价是一次录制。`lexbench_browser` 的起始页在数据里不带协议头，加载器补成 `https://`；写成文字或几个站点的任务在开跑前的检查里被拒，挑任务时直接跳过。POST 请求也能命中录下的应答：方法、URL、正文经同一套脱敏和匹配规则比较。分叉产生未录制的提交内容时可能 miss，不能把所有 POST 任务判为必然失败。
+3. token 上限。真跑的规格写一个具体的数，例如 `token_limit: 2000000`（默认 `unlimited` 不限）。链从每个 run 的模型调用记录里数用量，每跑完一个任务加一次；达到上限时，那个任务照常跑完，之后的任务和段（包括导出）都不开始，报告照样按已有的数据算，并写明是因为 token 上限停的，`spectragent flywheel run` 退出码 4（见"度量报告"）。按段跑时上限照样管住整条链：链每次开跑前先数链根下已有的 run。上限按估算加上余量来定；一个任务不会被打断，实际用量最多超出上限一个任务的用量。不含解析重试、传输重试与独立 helper 的策略调用预算：
 
    | 段 | 每个任务的调用数 |
    |---|---|
    | `record`、`control` | 策略步数 S，不超过 `max_steps` |
-   | `same_path` | `branches_per_step`（发布值 2），都在最后一步 |
-   | `branch` | 选中的步数 × `branches_per_step`（发布值 3）× (1 + `continue_steps`) |
+   | `same_path` | 每个源的 `branches_per_step`（通用示例为 2），各 branch 在最后一步作一次新决定 |
+   | `branch` | 每个源的选中步数 × `branches_per_step`（通用示例为 3）× `min(1 + continue_steps, max_steps)`；提前 done 或失败会减少调用 |
 
-   UI-TARS 的 memory 保留每一张截图，第 k 步的调用带 k+1 张截图。单张 1280×720 截图算多少 token 因路由而异：先录一个任务，看报告的 `token_use`（每个角色的 token、调用数），再定上限。按这种算法粗估（没有实测）：gpt-4o 上 10 个 easy 任务的录制加原路径回放约 0.2 到 0.6 M token；20 个任务再加分叉（`every_k` 取 k=2，每步 3 叉）约 0.9 到 2.7 M token；对照组相当于每个任务再录一次。provider 没报用量的调用不计 token，报告和 `chain.json` 会逐个点名；从不报用量的路由会让上限形同虚设，开跑前先确认录下的调用带着 `usage`。
+   在 memory 没有达到容量上限且每步有一张图时，UI-TARS 第 k 步的调用带 k+1 张截图；实际请求还受所选 memory 与重试历史影响。单张 1280×720 截图算多少 token 因路由而异：先录一个任务，看报告的 `token_use`（每个角色的 token、调用数），再定上限。按这种算法粗估（没有实测）：gpt-4o 上 10 个 easy 任务的录制加原路径回放约 0.2 到 0.6 M token；20 个任务再加分叉（`every_k` 取 k=2，每步 3 叉）约 0.9 到 2.7 M token；对照组相当于每个任务再录一次。provider 没报用量的调用不计 token，报告和 `chain.json` 会逐个点名；从不报用量的路由会让上限形同虚设，开跑前先确认录下的调用带着 `usage`。
 
 4. 按段跑，每段之后重算报告（只读，不花钱），先看 `token_use` 和 `inputs.roles.<段>.model_failures` 再继续：
 
@@ -735,7 +888,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    ```
 
    以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单。teacher 调用失败的分叉是空分叉，不计入 `miss_policy` 依据的占比，按原因记在 `metrics.branch_coverage.empty`；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
-5. 磁盘。UI-TARS 每次模型调用都带着之前的每一张截图，但 trace 里每张截图只存一份（`messages/images/`，报告存储一节的 `messages:images` 类别），调用记录里只写引用，所以 `messages/` 随不同截图的张数线性增长；此外还有 WARC 里的 body 和原始 DOM。截图只存一份之前，一个 12 步的 UI-TARS 录制在 `messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB）；现在同一个录制的 `messages/` 约 3 MB。三个站点的冒烟链按每个任务各段合计约 74 MB（之前约 102 MB），300 个任务约 22 GB；真实页面上的字节以报告的存储和保留期两节的实测为准。
+5. 磁盘。UI-TARS 在 memory 容量范围内携带此前截图；trace 里每张截图只存一份（`messages/images/`，报告存储一节的 `messages:images` 类别），调用记录里只写引用，所以 `messages/` 随不同截图的张数线性增长；此外还有 WARC 里的 body 和原始 DOM。截图只存一份之前，一个 12 步的 UI-TARS 录制在 `messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB）；现在同一个录制的 `messages/` 约 3 MB。三个站点的冒烟链按每个任务各段合计约 74 MB（之前约 102 MB），300 个任务约 22 GB；真实页面上的字节以报告的存储和保留期两节的实测为准。
 6. 评测默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true` 并在录制 YAML 里加 `evaluator:` 块，每个录制的任务会多一次评测器调用，判定写到 `<root>/evals/record/` 和每个 trace 的 `evals/`。
 7. 报告之后，把 `sections.sites.yaml` 放进导出配置的 `filters`，手动再导一次。
 

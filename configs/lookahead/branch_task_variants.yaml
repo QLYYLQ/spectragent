@@ -1,15 +1,18 @@
-# Lookahead collection, step 2b: same page, different task. `lookahead variants` asks the
-# judge model for alternative tasks starting from recorded screens and writes the variants
-# file; every checkpoint it lists (selector all, one branch each) is restored and the teacher
-# decides under the variant task. history_source: restored rebuilds the history from what
-# restoration actually observed and did, because the source prompt carries the source task
-# (source history is refused with task variants). Everything else as branch_same_task.yaml.
-# Paths are relative to the repository root. Copy configs/lookahead/*.yaml into a round's own
-# directory and replace tmp/lookahead/round with that directory (lookahead/README.md, "A
-# collection round"). Keep the agent, memory and browser settings consistent across
-# the record and branch configs: branching checks the prompt, observation and action
-# identity. The learned export directory must exist on the collection machine; install
-# the learned-mouse extra, and use the same weights and seed in every arm.
+# Task-variant forks: use the checkpoints and tasks in the variants file.
+# Adopted settings, 2026-10-28: docs/data_flywheel_runbook.md, 配置指南 101.
+# Each choice is compared with the 2026-10-25 rollout and later route probes there.
+# This is a next-round template, not the identity of an existing recording.
+#
+# Teacher: the requested m17 route, using the DeepSeek adapter's measured max_tokens wire
+# format. base_url is intentionally null: write the private endpoint into the round copy
+# before checking/running it (lookahead/README.md, A collection round). The complete new
+# combination has not had a live rollout. Do not run this unresolved template directly.
+# Keep agent/memory/browser identity aligned across all four files for a new recording.
+# Use a source recording's own identity when branching existing traces.
+# Learned mouse needs the learned-mouse extra and the same weights/seed in every arm.
+# Media-area rules change restoration comparisons, never the saved/model-visible images.
+# Copy this file to a round directory and replace tmp/lookahead/round before execution.
+# Only the reviewed health exclusions feed branching; preserve the raw health output.
 agent:
 - agent_id: ui_tars
   id: main
@@ -17,9 +20,10 @@ agent:
   coordinate_space: screenshot_pixels
   agent_loop:
     loop_id: branch
-    max_steps: 32
+    max_steps: 30
     max_actions_per_step: 4
     parse_retries_per_step: 1
+    max_consecutive_parse_errors: 3
     continue_steps: 0
     history_source: restored
     restorer:
@@ -28,18 +32,28 @@ agent:
       screenshot_max_distance: 5
       pace: recorded_timeline
       media: align
+      media_time_tolerance_s: 1.0
+      media_seek_timeout_s: 2.0
+      media_end_lead_s: 0.5
+    terminal_observation: true
   llm:
     model_type: openai
-    provider: {name: direct}
-    model: deepseek-v4.1-flash-1017
-    base_url: https://www.dmxapi.cn/v1
+    provider:
+      name: deepseek
+    model: deepseek-v4.1-flash-m17
+    base_url: null
     reasoning_effort: high
     temperature: null
     frequency_penalty: null
     max_completion_tokens: 32768
     max_retries: 2
     timeout: 300.0
-  memory: {memory_id: simple, max_messages: 80}
+  memory:
+    memory_id: simple
+    max_messages: 200
+    keep_system: true
+  show_capture_state: true
+  show_action_effects: true
 environment:
 - env_type: browser
   id: browser_env
@@ -50,7 +64,8 @@ environment:
       trajectory_type: learned
       weights_dir: ~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export
       seed: 0
-    typing_rhythm: {rhythm_type: instant}
+    typing_rhythm:
+      rhythm_type: instant
     replayability:
       replayability_id: pinned
       clock: shared
@@ -59,47 +74,80 @@ environment:
       timezone: Asia/Shanghai
       locale: zh-CN
       device_scale_factor: 1.0
+      user_agent: null
+      reduced_motion: true
     network_source:
       source_id: archive
       isolation: required
       log_mode: full
       matcher:
-        levels: [exact, normalized]
+        levels:
+        - exact
+        - normalized
         site_rules: configs/replay_rules
-      miss_policy: {miss_policy_id: strict}
-    dom_cleaner: {cleaner_type: browser_use}
-    dom_serializer: {serializer_type: text}
+      miss_policy:
+        miss_policy_id: strict
+      shift_dates: none
+      max_fulfill_body_bytes: 67108864
+      fulfill_timeout_s: 10.0
+    dom_cleaner:
+      cleaner_type: browser_use
+    dom_serializer:
+      serializer_type: text
     retarget_tolerance_px: 2.0
     backend:
       provider_id: local_chrome
       headless: true
       lifetime: run
       window_width: 1280
-      window_height: 860
+      window_height: 720
+      mute_audio: true
+      user_agent: null
+      disable_automation_controlled: true
+      background_throttling: false
+      deterministic_rendering: false
+      ignore_default_args: false
     viewport_width: 1280
     viewport_height: 720
     screenshot_format: png
     screenshot_cursor: true
     new_tabs: follow
     background_tabs: freeze
+    settle_quiet_ms: 500
+    settle_max_wait_s: 5.0
+    capture_state_timeout_s: 1.0
+    media_state_timeout_s: 1.0
+    screenshot_cursor_size: 32
 hook:
 - hook_id: trace_writer
   trace_dir: tmp/lookahead/round/branch_task_variants
-  recording: {metrics: true, errors: true, trajectory: true, observations: true}
+  recording:
+    metrics: true
+    errors: true
+    trajectory: true
+    observations: true
   archive:
   - archiver_id: browser.replay_log
   - archiver_id: browser.storage
+    command_timeout_s: 1.0
+    allow_session_state: false
   - archiver_id: browser.dom_raw
+    self_capture_timeout_s: 10.0
+    allow_session_state: false
   - archiver_id: browser.frames
     before_action: true
     after_observation_delay_s: 1.0
+    capture_timeout_s: 3.0
+    max_action_wait_s: 1.0
+    allow_session_state: false
 task_loader:
 - benchmark_name: trace_branches
   data_dir: tmp/lookahead/round/record
-  exclude_runs: tmp/lookahead/round/out/health/exclusions.json
+  exclude_runs: tmp/lookahead/round/out/health/reviewed-exclusions.json
   branches_per_step: 1
   agent_outcome: any
   on_unbranchable: skip
   exclude_unloaded_checkpoints: true
-  step_selector: {selector_id: all}
+  step_selector:
+    selector_id: all
   task_variants: tmp/lookahead/round/variants/variants.json

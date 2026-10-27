@@ -2,9 +2,10 @@
 
 How to run a round is in `lookahead/README.md` ("A collection round") with the shipped
 `configs/lookahead/` files. This file keeps what the rounds measured, so a session without
-the earlier conversations knows why the settings are what they are. Every raw recording and
-fork of these rounds was deleted on 2026-10-25; only text reports remain locally
-(`tmp/lookahead_*/REPORT.md`), so none of them can be replayed or labelled again.
+the earlier conversations knows why the settings are what they are. The raw recordings and forks of the earlier 2026-10-21–24 rounds were deleted on
+2026-10-25; their dated summaries remain. This does not include the newer ten-site
+2026-10-25 round below, whose traces remain available. Some old REPORT.md files
+are also absent locally; do not claim they were reopened when using this summary.
 
 ## What the data is for
 
@@ -66,3 +67,47 @@ Other 2026-10-24 measurements:
 
 The 2026-10-24/25 changes altered the teacher's system prompt, so older recordings cannot be
 branched with `history_source: source`; the next round records on current `main`.
+
+
+## Ten-site round and adopted next-round settings (2026-10-25–28)
+
+The user selected UI-TARS in place of the stopped BrowserUse collection. The new
+root `tmp/lookahead_10site_ui_tars_20261025/` retains 22 complete source runs (567
+policy steps plus 22 terminal observations) and 932 forks. It uses the local
+public LexBench `All` task dataset, with eight sites seeded into fresh contexts
+and two fresh sites; public tasks do not imply anonymous browsing.
+
+The historical teacher was `deepseek-v4.1-flash-1017`, 30 steps, two parse retries,
+200-message memory and 8192 completion tokens. Fingerprints record learned mouse
+seed 0, cursor off, pinned shared clock/seed 7 with UTC/en-US, host-default zh-CN,
+Chrome 143, and 1280×720 window/viewport. Current YAML under that old root was
+edited after recording; use trace configuration and the copies in
+`out/stability_improvement_20261026/input/configs/` for historical identity.
+
+The paired none/timeline comparison has 466 forks per pace: 241 pairs both pass
+the checkpoint, 25 pass only with timeline, two only with none and 198 neither.
+That is 266/466 versus 243/466; summed execution duration is about 3.34 times as
+large with timeline, not a wall-clock estimate. No same-batch latency arm exists.
+Of 509 readable passing checkpoints, 321 had an earlier warn; only 188/932 forks
+passed every restoration check. The existing judge report admits 507 decisions,
+including one readable checkpoint in an incomplete run; it is not an SFT count.
+
+Raw health excluded four sources. The 2026-10-28 evidence review found the three
+Tencent Video exclusions were telemetry failures despite rendered start/end
+screens; a new reviewed set should retain only iQIYI18's five-step blank stretch
+for those four candidates. Preserve the raw list and old statistics. Future
+stages share `reviewed-exclusions.json`, with the review decision recorded.
+
+User decisions after that collection: m17 on the supplied private teacher route
+(2026-10-26), an independently configured official DeepSeek judge, then learned,
+cursor on, Asia/Shanghai and zh-CN (2026-10-27). The m17 probes verified chat,
+images, JSON object and thinking with `max_tokens`; the 60-item stability
+regression still used old 1017 and is a development-set comparison.
+
+The authoritative per-field adoption table is now `docs/data_flywheel_runbook.md`
+"配置指南 101" (2026-10-28), with matching `configs/lookahead/` and round preparation
+in `lookahead/README.md`. It selects 30 steps, one parse retry, memory 200, the
+larger conservative output ceiling and the requested browser changes. Each
+selection names its evidence and limits; do not infer a fresh live rollout from
+configuration or compose checks. User-requested dashboard changes were merged
+to main at `cdfed03`; source v7 traces remain reviewable without recollection.

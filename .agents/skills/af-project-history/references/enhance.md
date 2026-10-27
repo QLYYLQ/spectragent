@@ -5,6 +5,18 @@ Subsequent work focuses on enhancements and fixes. This ledger records that queu
 `docs/architecture_design.md` remains design authority and `docs/execution_dag.md`
 continues to govern dependencies. These items are not implemented by recording them.
 
+**Current addition, 2026-10-28.** The user requested merging
+`enhance/dashboard-review-and-task-branches`; main now includes `cdfed03` (review
+history cards, bounded action-before images, independent fork questions and task
+branch graphs). The user then prioritized a per-setting reconciliation of runbook
+recommendations and actual rollout evidence. Its authoritative adopted values,
+source choices and limits are in `docs/data_flywheel_runbook.md` "配置指南 101";
+`configs/lookahead/` and `lookahead/README.md` implement that next-round workflow.
+The preserved ten-site data, route probes and raw/reviewed health distinction are
+indexed in `lookahead-rounds.md`. No new collection is implied by these edits.
+The following 2026-10-21 status remains a dated snapshot; revalidate its pending
+items against the later entries and current code.
+
 **Status, 2026-10-21.** Merged into `main` (head `4991c64`): action effects and capture
 state (`6db1d3e`), keyboard argument validation (`9de7649`, plus key `201e136`), image
 response availability (`c7a4e97`), Bilibili account request matching (`3893b39`), Jev split

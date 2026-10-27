@@ -10,13 +10,16 @@
 # the environment. Give it DeepSeek's key for the command, e.g.
 #   OPENAI_API_KEY=<DeepSeek key> uv run python -m lookahead variants ... \
 #     --judge-config configs/lookahead/judge_deepseek.yaml
-# (a key exported for another gateway is refused by the first request). Writing
-# api_key here works too, in a copy kept out of git; calls.jsonl records the
-# configuration redacted, never the key.
+# (a key exported for another gateway is refused by the first request). Keep
+# credentials in each command's environment; round copies record configuration,
+# not keys. calls.jsonl stores the redacted model configuration.
 llm:
   - model_type: openai
     provider: {name: deepseek}
     model: deepseek-flash
+    base_url: https://api.deepseek.com/v1
+    temperature: null
+    frequency_penalty: null
     reasoning_effort: high
     # Measured on the earlier judge (deepseek-v4.1-flash-1017, effort high, budget
     # 8192): 299 judge-forks calls of 2026-10-21/22/23 used at most 4806 completion

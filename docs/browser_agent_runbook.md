@@ -355,21 +355,23 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 数据飞轮把 browser run 连同它的网络、存储和原始 DOM 一起录下，再离线回放、从录制的检查点分叉、导出训练数据，最后出一份度量报告。用法见 [数据飞轮运行手册](data_flywheel_runbook.md)，配置字段见 [configs/README.md](../configs/README.md)。录制用哪个 teacher、哪些浏览器设置、各类网站上表现如何，按实测结果写在运行手册的 [配置指南 101（实测推荐）](data_flywheel_runbook.md#配置指南-101实测推荐)。
 
-当前前瞻采集用 `configs/lookahead/`：录制与分叉统一 `learned` 鼠标（同一导出、seed 0）、`screenshot_cursor: true`、`Asia/Shanghai` 和 `zh-CN`，分叉默认 `pace: recorded_timeline`。learned 需要 `learned-mouse` extra 以及配置里指定的 `generator.npz` / `meta.json` 导出目录；发布路径是可修改的本机路径，不是内置权重。当前设置与 10 月 24 日五站轮次、10 月 25 日十站轮次均有差别，比较表及证据范围见上述指南。
+当前前瞻采集的唯一采用表在上述指南（2026-10-28 逐项核对）。四份 agent 模板采用 UI-TARS、30 步、1 次解析重试、200 条 memory；teacher 是用户选定的 m17 私有路由，通过 `openai/deepseek` 发送 `max_tokens`，judge 独立使用官方 DeepSeek。先按 [lookahead/README.md](../lookahead/README.md#a-collection-round) 把地址、规则和任务上下文固定进轮次副本，不能直接运行 teacher 地址仍为 `null` 的公共模板。
+
+录制和分叉统一 learned（同一导出、seed 0）、显示指针、`Asia/Shanghai`、`zh-CN`、1280×720 窗口及视口，恢复采用 `warn` 与 `recorded_timeline`。learned 需要 `learned-mouse` extra 和指定的 `generator.npz` / `meta.json`。每项为何采用实跑值、原 runbook 值或用户新选择，以及输出预算、时间成本、旧源兼容和未验证范围，都在采用表中说明。新组合尚未整轮实跑；健康报告先复核为 `reviewed-exclusions.json` 再供所有下游使用。
 
 视频采集保留原始播放画面。分叉用 `media: align` 尝试对齐，`site_rules` 中的 `media_areas` 只调整声明页面的恢复比较，不修改原图；超过 75% 的像素遮罩不应用。`freeze`、共享时钟、落定等待与“主文档没加载完”的筛选各有作用，不能靠放宽截图阈值互相替代，详见数据飞轮手册“视频和动态页面”。
 
-各步的入口：
+本轮采集与通用示例的入口分开选择：
 
 | 用途 | 命令 |
 |---|---|
-| 录制（`pinned` 加三个归档器） | `uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml --start-url URL --task "任务"`；数据集换用 `spectragent bench` |
-| 用录制的网络离线重跑 | `uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml --start-url URL --task "录制时的任务" --replay-archive traces/<录制的 run_id>` |
-| 从录制的检查点分叉 | 把 `configs/flywheel/branch_ui_tars_archive.yaml` 的 `task_loader.data_dir` 指向录制所在的目录，再 `uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval` |
+| 本轮录制（四个归档器） | 先准备轮次副本，再 `uv run spectragent bench --config <轮次>/configs/record_ui_tars_deepseek.yaml --no-eval --timeout 1800`，任务及种子按轮次清单选择 |
+| 通用离线重跑示例（只配套同组 `configs/flywheel/` 录制） | `uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml --start-url URL --task "录制时的任务" --replay-archive traces/<录制的 run_id>` |
+| 本轮检查点分叉 | 先复核排除文件并生成变体，再按轮次 `branch_same_task.yaml`、`branch_task_variants.yaml`、`branch_task_variants_without_source_thoughts.yaml` 执行 `spectragent bench --no-eval --timeout 1500` |
 | 导出训练数据 | `uv run spectragent export --config configs/flywheel/export_sft.yaml` |
 | 跑整条链并出度量报告 | `uv run spectragent flywheel run --spec chain.yaml`；只重算报告用 `uv run spectragent flywheel report --spec chain.yaml` |
 
-`--replay-archive` 只能配 `network_source: archive`，YAML 写的是 `live` 时 setup 会拒绝。`spectragent export` 只读 trace，不启动浏览器，也不调用模型。`chain.yaml` 要自己写，格式见 [configs/README.md](../configs/README.md#measuring-the-flywheel)。`spectragent flywheel` 和 `spectragent bench` 一样不读 `.env`，跑之前先在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
+`--replay-archive` 只能配 `network_source: archive`，YAML 写的是 `live` 时 setup 会拒绝。`spectragent export` 只读 trace，不启动浏览器；默认 `wait_actions: keep` 不调用模型，显式选择 `drop_when_capped` 时由配置的 helper 改写受影响的 thought。`chain.yaml` 要自己写，格式见 [configs/README.md](../configs/README.md#measuring-the-flywheel)。`spectragent flywheel` 和 `spectragent bench` 一样不读 `.env`，跑之前先在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
 
 宿主机的浅色 / 深色外观既不固定也不记录。运行固定页面配色，但 headless Chrome 的原生滚动条看起来跟随操作系统外观：宿主机设成自动切换时，同一页面在不同时段的截图可能只在滚动条那一条上不同，改变恢复校验的截图距离。正式运行请固定宿主机外观，恢复校验的结果只在同一外观下的运行之间比较。
 

@@ -14,102 +14,199 @@ uv run python -m lookahead <command> --help
 
 ## A collection round
 
-One round records a few teacher runs live, multiplies them offline by branching, then builds
-review queues. `configs/lookahead/` holds the current collection settings, updated after
-the 2026-10-25 ten-site round; it is not a frozen copy of a historical experiment. Paths
-are relative to the repository root except the learned mouse export, whose `~` expands
-to the current user's home. Each file's header explains its settings. The measured scope,
-the differences from historical runs, and the video-page policy are in
-`docs/data_flywheel_runbook.md`, section "配置指南 101（实测推荐）".
+Use `configs/lookahead/` for the next collection round. The adopted settings are reconciled
+one by one in [配置指南 101](../docs/data_flywheel_runbook.md#配置指南-101实测推荐), including the
+candidate values, evidence, costs and limits. `configs/flywheel/` remains a separate set of
+generic examples. The templates are not frozen copies of the 2026-10-25 experiment.
 
-| File | Step |
+| File | Adopted role |
 |---|---|
-| `record_ui_tars_deepseek.yaml` | record: ui_tars + DeepSeek, learned mouse, pinned replayability, full browser archive plus `browser.frames` |
-| `branch_same_task.yaml` | same-task forks: every 4th policy step (`every_k`, k 4, offset 1), 2 forks per checkpoint, one decision each, source history |
-| `branch_task_variants.yaml` | same page, different task: the checkpoints `variants` lists, 1 fork each, restored history |
-| `branch_task_variants_without_source_thoughts.yaml` | ablation of the above with `omit_source_replies` |
-| `judge_deepseek.yaml` | the judge model `variants` and `judge-forks` use |
+| `record_ui_tars_deepseek.yaml` | UI-TARS computer-use teacher, screenshot-pixel coordinates; m17 on the requested private route through the DeepSeek adapter; 30 steps, 4 actions, one parse retry, 200-message memory, 32768 output ceiling |
+| `branch_same_task.yaml` | every fourth policy step, offset 1; 2 forks per checkpoint; source history; one new decision per fork |
+| `branch_task_variants.yaml` | checkpoints and tasks from `variants`; 1 fork per variant; restored history |
+| `branch_task_variants_without_source_thoughts.yaml` | the same variants and budget, with `omit_source_replies` as a separate control |
+| `judge_deepseek.yaml` | independent official DeepSeek judge, `deepseek-flash`, high reasoning, 16384 output ceiling; use its own API key |
 
-Settings that decide whether forks restore at all, all in the branch configs: offline replay
-from the recording's archive with `site_rules: configs/replay_rules` (per-site request rules,
-page-URL rules such as Bilibili's `vt`, and the media-area rules of `media_areas.yaml`, which
-make restoration ignore playback and mask video boxes on declared video pages),
-`background_tabs: freeze` in both recording and branching, `base_time: from_archive`, the
-restorer's `verify: warn` (every check stays in the branch trace and only forks whose
-checkpoint restored are judged), `media: align`, and `pace: recorded_timeline`. The
-2026-10-25 paired round recorded 266/466 `ok` checkpoints with timeline and 243/466 with
-`none`, counting committed checkpoints including one incomplete run. These are restoration
-checks, not task success or label eligibility; that round had no `recorded_llm_latency` arm.
-The current default follows this one-round result without claiming superiority to latency.
-A checkpoint captured before its main document loaded is skipped
-(`exclude_unloaded_checkpoints`); a DOM-only settle cap is not that evidence. Media-area
-rules affect restoration comparisons, not the saved or model-visible images, and pixel
-masking is refused above 75% coverage. Read the runbook's video policy before changing them.
+The teacher's `base_url: null` is an unfilled template. Resolve it from the already supplied
+private route into all four **round copies** before checking or running them. The DeepSeek
+adapter sends the configured ceiling as `max_tokens`, the parameter used by the m17 probes;
+this adapter/route/budget combination has not completed a live collection round. The judge's
+explicit official URL is independent of the teacher's endpoint. Credentials stay in each
+command's environment. Plain `config check` does not prove that a private endpoint was
+selected or that its model behaves correctly.
 
-Recording and all branch arms use the same learned export and seed (`0`),
-`screenshot_cursor: true`, `timezone: Asia/Shanghai`, and `locale: zh-CN`. The export
-path in these files is `~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export`; change all
-four copies together when the model lives elsewhere. It must contain `generator.npz`
-and `meta.json`; the export declares the model and timing, and is not included in this
-repository. Keep the 32768 completion budget, 32 steps, one parse retry and 80-message
-memory aligned across recording and branching. Copy the configs before recording and
-retain that copy: changing it later does not change a trace's recorded experiment.
+All four agent configs use the same learned export and seed 0, cursor on, `Asia/Shanghai`,
+`zh-CN`, 1280×720 window and viewport, PNG, shared pinned clock, frozen background tabs and
+followed action-opened tabs. The export needs `generator.npz` and `meta.json` at
+`~/code/mouse-gan-torch/runs/v2_mdn_h128_d3/export`; change all four paths together on another
+machine. Freeze their contents for the round. Important browser/archive defaults are explicit
+in the YAML; the runbook also identifies unchanged and inactive defaults.
+
+Forks use strict isolated archive serving, exact/normalized matching, the frozen site rules,
+`verify: warn`, `media: align`, `pace: recorded_timeline`, and one terminal observation.
+Timeline recovered 266/466 checkpoints versus 243/466 with none in the paired ten-site round,
+at about 3.34 times the summed execution duration. Those are checkpoint checks, not task
+success or wall-clock cost; there was no paired latency arm. The default keeps timeline and
+does not repeat the none arm in every collection. A dedicated comparison uses a new output
+and the same source/task list.
+
+Video remains visible and recorded. Media-area rules only change declared pages' restoration
+comparison; they neither block live video requests nor black out saved/model-visible images.
+Above 75% mask coverage, pixel comparison uses the full image. Explicitly unloaded checkpoints
+are skipped; DOM-only settle caps are not equivalent to unloaded pages. See the runbook's
+video policy for alignment, masking and incomplete evidence.
+
+Prepare a new round from the repository root. Set `LOOKAHEAD_JUDGE_API_KEY` to the official
+judge credential in your shell; the sourced `OPENAI_API_KEY` and `OPENAI_BASE_URL` belong to
+the teacher. The preparation below writes the private route only under the ignored round
+folder, copies the current rules, and refuses an existing config folder. Prepare a private
+LexBench `All` task directory first, including `data_info.json` and the intended per-task
+`setup.storage_state`; set `LOOKAHEAD_TASK_DATA` to that frozen directory. Use local seed
+paths whose contents stay fixed for the round. The script explicitly binds that dataset
+to the recording config, rather than silently falling back to the installed anonymous data.
 
 ```bash
 uv sync --extra dev --extra learned-mouse
-set -a; . ./.env; set +a          # bench reads only the shell environment
-R=tmp/lookahead/<round>           # one directory per round
-mkdir -p $R/{configs,logs,sessions}
-cp configs/lookahead/*.yaml $R/configs/
-sed -i '' "s|tmp/lookahead/round|$R|g" $R/configs/*.yaml   # GNU sed: -i without ''
-uv run spectragent config check $R/configs/record_ui_tars_deepseek.yaml
+set -a; . ./.env; set +a
+: "${OPENAI_BASE_URL:?Set the teacher endpoint before preparing the round}"
+: "${OPENAI_API_KEY:?Set the teacher credential}"
+: "${LOOKAHEAD_JUDGE_API_KEY:?Set the independent official judge credential}"
+ROUND_DIR=tmp/lookahead/round-20261028  # choose a new directory for each round
+: "${LOOKAHEAD_TASK_DATA:?Set the prepared private LexBench task directory}"
+export OPENAI_API_KEY OPENAI_BASE_URL LOOKAHEAD_TASK_DATA
+mkdir -p "$ROUND_DIR/logs" "$ROUND_DIR/sessions"
+uv run python - "$ROUND_DIR" <<'PY'
+import os
+import shutil
+import sys
+from pathlib import Path
+import yaml
 
-# 1. Record, one sweep per site, at most three sites at once (five starved page downloads).
-uv run spectragent bench --config $R/configs/record_ui_tars_deepseek.yaml \
-  --benchmark lexbench_browser --subset All --task-id 6 --task-id 118 --task-id 158 \
-  --no-eval --timeout 1800 --session-dir $R/sessions/bilibili > $R/logs/record-bilibili.log 2>&1
-uv run python -m lookahead health --root $R/record --viewer-root $R --out $R/out/health
+round_dir = Path(sys.argv[1])
+task_data = Path(os.environ["LOOKAHEAD_TASK_DATA"]).expanduser().resolve()
+if not (task_data / "data_info.json").is_file():
+    raise SystemExit("LOOKAHEAD_TASK_DATA must contain data_info.json")
+config_dir = round_dir / "configs"
+config_dir.mkdir(exist_ok=False)
+shutil.copytree("configs/replay_rules", config_dir / "replay_rules")
 
-# 2. Branch. List the tasks first; split the list over several processes for speed.
-uv run python -m lookahead variants --root $R/record --viewer-root $R \
-  --exclude-runs $R/out/health/exclusions.json --steps-per-run 2 --per-step 2 \
-  --judge-config $R/configs/judge_deepseek.yaml --out $R/variants/variants.json
-for c in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
-  uv run spectragent bench --config $R/configs/$c.yaml --no-eval --list
-  uv run spectragent bench --config $R/configs/$c.yaml --no-eval --timeout 1500 \
-    --session-dir $R/sessions/$c > $R/logs/$c.log 2>&1
-done
+def paths(value):
+    if isinstance(value, dict):
+        return {key: paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [paths(item) for item in value]
+    if isinstance(value, str):
+        return value.replace("tmp/lookahead/round", str(round_dir))
+    return value
 
-# 3. Review queues, written to $R/annotations/queues/.
-uv run python -m lookahead extract --root $R --viewer-root $R \
-  --exclude-runs $R/out/health/exclusions.json --out $R/out/steps.jsonl
-X="--viewer-root $R --exclude-runs $R/out/health/exclusions.json --annotations $R/annotations"
-uv run python -m lookahead stability --root $R/record $X --out $R/out/stability \
-  --media-areas configs/replay_rules
-uv run python -m lookahead judge-forks --root $R $X --out $R/out/forks \
-  --judge-config $R/configs/judge_deepseek.yaml
-uv run python -m lookahead gold-queue --root $R/record $X --n 100 --out $R/out/gold
-
-# 4. Label.
-uv run spectragent view --root $R --annotations $R/annotations --annotator <name> --open
+for source in Path("configs/lookahead").glob("*.yaml"):
+    data = paths(yaml.safe_load(source.read_text()))
+    if source.name == "record_ui_tars_deepseek.yaml":
+        data["task_loader"] = [{"benchmark_name": "lexbench_browser", "subset": "All",
+                                "data_dir": str(task_data)}]
+    for agent in data.get("agent", []):
+        agent["llm"]["base_url"] = os.environ["OPENAI_BASE_URL"]
+    for environment in data.get("environment", []):
+        for capability in environment["capabilities"]:
+            network = capability["network_source"]
+            if network["source_id"] == "archive":
+                network["matcher"]["site_rules"] = str(config_dir / "replay_rules")
+    (config_dir / source.name).write_text(yaml.safe_dump(data, sort_keys=False))
+PY
+uv run spectragent config check "$ROUND_DIR/configs/record_ui_tars_deepseek.yaml"
 ```
 
-The 2026-10-24 round's LexBench L1 task ids per site: Bilibili 6 118 158, IGN 25 125 155,
-Tencent Video 28 128 263, iQIYI 18 108 208, Tonghuashun 44 134 233 (Ctrip was dropped: its
-recordings were anti-bot block pages). That round used the historical L1 split; the command above uses `All`, as in the
-2026-10-25 local public dataset (22 selected tasks on ten sites, no L1 split). Check task
-IDs against the installed dataset before starting. Keep the machine's light or dark
-appearance fixed for a whole round (headless Chrome's native scrollbar follows it, and it is
-not recorded). A round whose teacher prompt changed cannot be branched with `history_source:
-source` from older recordings: record again for that experiment. This does not require
-re-recording existing v7 traces merely to review them: all 22 sources of the 2026-10-25
-round remain readable, with history, screenshots and frames. The 10/21–24 numbers are in
-`.agents/skills/af-project-history/references/lookahead-rounds.md`; the newer comparison
-is in the runbook. Local evidence is under `tmp/lookahead_10site_ui_tars_20261025/`
-(`RUN.md`, `STRATEGY_DIFF.md`, `out/judge-forks/report.md`). Its YAML files were edited
-after collection; the original copies are under
-`out/stability_improvement_20261026/input/configs/`, and the trace configuration remains
-the authority for what ran.
+Before starting, keep the machine's appearance, system language and Chrome version fixed;
+record their actual values and the source commit, rules and learned-file digests. The 10/25
+source browser was Chrome 143, pinned UTC/en-US with host-default zh-CN, cursor off and a
+1280×720 window. These facts differ from the next-round choices. Do not apply the new
+browser identity to an old archive; derive an old-run branch configuration from that source's
+own recorded settings. Existing v7 history, frames and thinking remain reviewable without
+re-recording.
+
+For the same ten-site task set, preserve the explicit eight seeded sites and two fresh sites
+(Tonghuashun and Steam). `All` describes the public task dataset, not an anonymous browser.
+The preparation script binds `LOOKAHEAD_TASK_DATA` as the record copy's explicit
+`lexbench_browser / All` task loader. Keep this private dataset and seed contents fixed;
+its directory contains `data_info.json`. Check the visible
+account in a pilot. For an anonymous experiment use a separate round and record that change.
+If using the installed public task data without seeds, pass `--benchmark lexbench_browser
+--subset All` explicitly; that is a different task setup from the authenticated ten-site run.
+
+For the pilot, record one task, run health and create its reviewed exclusion file, then
+use `branch_same_task --list` and run one selected branch task ID. Keep an unsuccessful
+pilot in its own output. If the pilot uses the frozen formal configuration and is retained
+in the formal source set, do not record that task again unnoticed; after expanding the
+source set, rerun health and freeze a new reviewed list before variants or bulk forks.
+
+After this small live/offline pilot checks the chosen route, coordinates, archive completeness
+and restoration, run the collection. Below each bench command is one worker: split its saved
+`--list` into disjoint `--task-id` subsets for up to eight offline workers per arm, with a
+separate session/log per worker and arms run in sequence. Live recording remains at most
+three site sweeps, sequential within each site. Preserve failed/incomplete attempts and
+rerun those tasks separately; inspect recording health before consuming them.
+
+```bash
+# 1. Record from the round's explicit task-loader configuration; example Bilibili tasks.
+uv run spectragent bench --config "$ROUND_DIR/configs/record_ui_tars_deepseek.yaml" \
+  --task-id 6 --task-id 118 --task-id 158 --no-eval --timeout 1800 \
+  --session-dir "$ROUND_DIR/sessions/bilibili" > "$ROUND_DIR/logs/record-bilibili.log" 2>&1
+uv run python -m lookahead health --root "$ROUND_DIR/record" --viewer-root "$ROUND_DIR" \
+  --out "$ROUND_DIR/out/health"
+
+# Review the report, failed endpoints and screenshots. Save a separate run-exclusions-1
+# reviewed-exclusions.json plus review notes; preserve the generated exclusions.json.
+# An empty reviewed result is {"format": "run-exclusions-1", "runs": []}.
+EXCLUDE="$ROUND_DIR/out/health/reviewed-exclusions.json"
+test -f "$EXCLUDE" || { echo "Review the raw health exclusions first"; exit 2; }
+
+# 2. Generate one shared variant file with the official judge's credential.
+OPENAI_API_KEY="$LOOKAHEAD_JUDGE_API_KEY" uv run python -m lookahead variants \
+  --root "$ROUND_DIR/record" --viewer-root "$ROUND_DIR" --exclude-runs "$EXCLUDE" \
+  --steps-per-run 2 --per-step 2 --judge-config "$ROUND_DIR/configs/judge_deepseek.yaml" \
+  --out "$ROUND_DIR/variants/variants.json"
+for arm in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
+  uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" --no-eval --list \
+    > "$ROUND_DIR/logs/$arm-list.txt"
+done
+cmp "$ROUND_DIR/logs/branch_task_variants-list.txt" \
+    "$ROUND_DIR/logs/branch_task_variants_without_source_thoughts-list.txt" || exit 2
+# Only the two variant arms share a task list; same-task forks have their own list.
+for arm in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
+  uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" --no-eval --timeout 1500 \
+    --session-dir "$ROUND_DIR/sessions/$arm" > "$ROUND_DIR/logs/$arm.log" 2>&1
+done
+
+# 3. Build all downstream outputs using the same reviewed exclusions and frozen rules.
+uv run python -m lookahead extract --root "$ROUND_DIR" --viewer-root "$ROUND_DIR" \
+  --exclude-runs "$EXCLUDE" --out "$ROUND_DIR/out/steps.jsonl"
+uv run python -m lookahead stability --root "$ROUND_DIR/record" --viewer-root "$ROUND_DIR" \
+  --exclude-runs "$EXCLUDE" --annotations "$ROUND_DIR/annotations" \
+  --out "$ROUND_DIR/out/stability" --media-areas "$ROUND_DIR/configs/replay_rules"
+OPENAI_API_KEY="$LOOKAHEAD_JUDGE_API_KEY" uv run python -m lookahead judge-forks \
+  --root "$ROUND_DIR" --viewer-root "$ROUND_DIR" --exclude-runs "$EXCLUDE" \
+  --annotations "$ROUND_DIR/annotations" --out "$ROUND_DIR/out/forks" \
+  --judge-config "$ROUND_DIR/configs/judge_deepseek.yaml"
+uv run python -m lookahead gold-queue --root "$ROUND_DIR/record" --viewer-root "$ROUND_DIR" \
+  --exclude-runs "$EXCLUDE" --annotations "$ROUND_DIR/annotations" \
+  --n 100 --out "$ROUND_DIR/out/gold"
+uv run spectragent view --root "$ROUND_DIR" --annotations "$ROUND_DIR/annotations" \
+  --annotator QLYYLQ --open
+```
+
+Health is a review signal, not task correctness. In the old ten-site run it excluded four
+sources; three Tencent Video exclusions came only from failed telemetry while documents and
+screens rendered. A reviewed next pass should remove those three exclusions and retain the
+five-step blank iQIYI task 18 exclusion. Preserve the old list and its 932-fork statistics;
+new eligibility produces a new denominator. `agent_done`, a readable checkpoint and a
+complete run also mean different things, especially for strict training export.
+
+The earlier five-site L1 slice is not installed in the current public dataset; the ten-site
+round selected 22 `All` tasks. Check IDs before starting. Historical sources and the newer
+comparison are indexed in `.agents/skills/af-project-history/references/lookahead-rounds.md`
+and the runbook. The live evidence is under `tmp/lookahead_10site_ui_tars_20261025/`; its
+post-edited YAML does not change the trace identity. Pre-edit copies are under
+`out/stability_improvement_20261026/input/configs/`.
 
 ## Runs, kinds and keys
 
@@ -215,7 +312,8 @@ geometry. Which actions an image draws:
 Is each recording usable as data? A recording whose page never rendered, or
 whose content requests failed while it was recorded, still yields steps,
 forks and queue items, and its forks even restore well because nothing on
-the screen changes; it has to be recorded again instead. Every `record` run
+the screen changes. If review confirms the evidence is unusable, exclude it and
+record again; failed telemetry alone does not establish that. Every `record` run
 gets a verdict, `usable` or `unusable`, and every signal that fired is a named
 reason with its evidence. A run is `unusable` when a reason measured on the
 recording fired; an answer-only reason is a flag. Branch and replay runs are not judged (listed in
@@ -252,8 +350,9 @@ recording fired; an answer-only reason is a flag. Branch and replay runs are not
   achievable`); "未能读取播放量" (one field missing) is a partial answer and
   matches none. It is the agent's own statement, not a measurement of the
   recording, and labelled so (`basis: answer`). The agent's
-  `done(success=...)` flag (`agent_reported_success`) is never read: UI-TARS's
-  `finished` verb always reports success.
+  finish/`agent_done` state is not a correctness verdict: UI-TARS's `finished`
+  verb has no task-success parameter. A finished run may answer that the task
+  could not be completed.
 
 Every threshold is a named constant in `lookahead/health.py`, with the
 2026-10-23 measurements behind it; `health.json` repeats them.
@@ -275,26 +374,28 @@ Outputs:
   built with the loader's own model (`RunExclusionsFile`): `run_id`, `reason`
   (the reasons' summaries) and `note` (the run key).
 
-**One exclusions file, read everywhere.** `health` runs once, right after
-recording; the file it writes is then the input of every later stage: the
-`trace_branches` loader's `exclude_runs` (so the branch task list leaves those
-sources out) and `--exclude-runs` of `variants`, `extract`, `stability`,
-`judge-forks` and `gold-queue`. A file rather than each command judging the
-runs itself, because the decision is made once from the recordings alone and
-before the expensive stages (`variants` asks a model; a branch sweep runs for
-hours); every stage then leaves out the same runs, whatever thresholds a later
-version applies; the loader, which cannot import this package, reads it in its
-own format, as it reads `variants`' file; and a person can read the reasons
-and edit the file (delete an entry to keep a run, add one by hand).
+**One reviewed exclusions file, read everywhere.** Run `health` after recording and
+preserve its generated `exclusions.json` as the raw machine result. Review start
+Documents, failed endpoints, screenshots and blank stretches before adopting it:
+Fetch/XHR telemetry failures can trigger a whole-run exclusion even when pages
+rendered. Save decisions separately as `reviewed-exclusions.json` in the same
+`run-exclusions-1` format, with reasons and notes. Delete an entry there to keep a
+run; add an entry only with its evidence. An empty reviewed set is valid.
+
+The `trace_branches` loader's `exclude_runs` and `--exclude-runs` of `variants`,
+`extract`, `stability`, `judge-forks` and `gold-queue` all use that one reviewed file.
+Decide before the expensive stages; changing the list later produces a new batch
+and denominator, while the original list and reports remain evidence.
 
 ```bash
-uv run python -m lookahead health --root $E/record --viewer-root $E --out $E/out/health
-uv run python -m lookahead variants --root $E/record --viewer-root $E \
-  --exclude-runs $E/out/health/exclusions.json \
+uv run python -m lookahead health --root "$E/record" --viewer-root "$E" --out "$E/out/health"
+# Review raw exclusions and save the separate reviewed-exclusions.json first.
+uv run python -m lookahead variants --root "$E/record" --viewer-root "$E" \
+  --exclude-runs "$E/out/health/reviewed-exclusions.json" \
   --judge-config configs/lookahead/judge_deepseek.yaml ...
-# branch configs: task_loader[trace_branches].exclude_runs: $E/out/health/exclusions.json
-uv run python -m lookahead judge-forks --root $E --viewer-root $E \
-  --exclude-runs $E/out/health/exclusions.json \
+# branch loader exclude_runs: <round>/out/health/reviewed-exclusions.json
+uv run python -m lookahead judge-forks --root "$E" --viewer-root "$E" \
+  --exclude-runs "$E/out/health/reviewed-exclusions.json" \
   --judge-config configs/lookahead/judge_deepseek.yaml ...
 ```
 
@@ -620,9 +721,8 @@ official API (`provider: {name: deepseek}`, `model: deepseek-flash`,
 `reasoning_effort: high`, `max_completion_tokens: 16384`, `max_retries: 5`,
 `timeout: 300`); its comments give the token counts the budget was chosen
 from. Its `api_key` is left out, so the OpenAI client reads `OPENAI_API_KEY`
-from the environment: give it DeepSeek's key for the command, or write
-`api_key` into a copy kept out of git. `--rules-only` and `--answers-from`
-need no configuration.
+from the environment. Give the command the official judge credential, as in the
+collection recipe. `--rules-only` and `--answers-from` need no configuration.
 
 Each request goes through the chat Protocol's `ainvoke` with the reply's
 pydantic model as `output_format`. The provider sends the schema the way its
