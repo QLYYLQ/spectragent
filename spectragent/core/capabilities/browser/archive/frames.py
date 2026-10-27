@@ -682,6 +682,46 @@ def iter_frames(
             yield step, record
 
 
+def before_action_frames(
+    reader: ArchiveReader,
+    step: int,
+    *,
+    action_times: Sequence[tuple[float, float]] | None,
+) -> list[tuple[int | None, FrameRecord]]:
+    """Frames of the actual action calls, independent of which commit collected them.
+
+    The caller supplies measured ``env.act`` spans in call order. A frame's
+    own action ordinal and request time identify the call. If timing was not
+    recorded, a uniquely recorded raw-DOM cycle can identify the observation
+    instead; an unknown or ambiguous cycle is never guessed from a step number.
+    """
+    cycle: int | None = None
+    if action_times is None:
+        cycles = {
+            entry.cycle
+            for entry in reader.archive_files(step, "browser.dom_raw")
+            if entry.cycle is not None
+        }
+        if len(cycles) != 1:
+            return []
+        cycle = cycles.pop()
+    found = []
+    for at, frame in iter_frames(reader, include_trailing=True):
+        if frame.kind != "before_action":
+            continue
+        if action_times is not None:
+            index = frame.action_index
+            if index is None or not 0 <= index < len(action_times):
+                continue
+            started, ended = action_times[index]
+            if not started <= frame.requested_at <= ended:
+                continue
+        elif frame.cycle != cycle:
+            continue
+        found.append((at, frame))
+    return sorted(found, key=lambda item: (item[1].action_index or 0, item[1].requested_at))
+
+
 def read_frame_image(reader: ArchiveReader, step: int | None, record: FrameRecord) -> bytes:
     """The PNG of a captured *record* listed by *step*'s index (``None``: a trailing batch).
 

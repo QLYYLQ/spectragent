@@ -12,6 +12,7 @@ import {
   toImagePoint,
 } from "./boxes.js";
 import { MarkLayer, MarkLegend } from "./marks.jsx";
+import { imageCanBeEdited } from "./reviewEvidence.js";
 
 export const ZOOMS = ["fit", 1, 1.5, 2, 3];
 export const COMPARE_MODES = [
@@ -37,6 +38,7 @@ export function ImageBoard({
   kinds = null,
   activeKind = null,
   editable = false,
+  editableRoles = null,
   selected = null,
   onSelect = () => {},
   onChange = () => {},
@@ -112,7 +114,7 @@ export function ImageBoard({
       suggested={showSuggested ? suggested : []}
       colors={colors}
       activeKind={activeKind}
-      editable={editable && Boolean(kinds)}
+      editable={editable && Boolean(kinds) && imageCanBeEdited(image.role, editableRoles)}
       selected={selected}
       onSelect={onSelect}
       onChange={onChange}

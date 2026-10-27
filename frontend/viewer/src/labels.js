@@ -145,6 +145,8 @@ export function draftProblems(draft, spec, asked = []) {
   } else if (!spec.multi && spec.choices.length && draft.choice == null)
     problems.push("请选一个答案，或者驳回建议、跳过。");
   problems.push(...regionRuleProblems(pickedChoices(draft, spec, asked), draft.regions || []));
+  if (spec.regions?.image_roles && (draft.regions || []).some(region => !spec.regions.image_roles.includes(region.image)))
+    problems.push("有标注框画在辅助图片上，请删除后在指定的标注图上重新画框。");
   if (isBlank(draft) && (spec.choices.length || spec.regions || spec.questions))
     problems.push("还没有可以保存的内容：请选择答案、画框，或者跳过。");
   return problems;

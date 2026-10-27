@@ -15,6 +15,11 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
 
+from spectragent.core.capabilities.browser.archive.frames import (
+    FrameRecord,
+    before_action_frames,
+    read_frame_image,
+)
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
@@ -22,6 +27,7 @@ from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
 from spectragent.inspection.marks import (
     MarkRequest,
+    action_lines,
     action_verbs,
     default_requests,
     marks_on,
@@ -48,7 +54,11 @@ class RunRepository(Protocol):
     def list_runs(self, search: str = "") -> list[dict[str, Any]]: ...
     def matches(self, key: str) -> bool: ...
     def run(self, key: str) -> dict[str, Any]: ...
-    def step(self, key: str, index: int) -> dict[str, Any]: ...
+    def graph(self, key: str) -> dict[str, Any]: ...
+    def trajectory(self, key: str, through: int) -> dict[str, Any]: ...
+    def step_frames(self, key: str, index: int) -> list[dict[str, Any]]: ...
+    def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes: ...
+    def step(self, key: str, index: int, *, include_messages: bool = True) -> dict[str, Any]: ...
     def screenshot(
         self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
     ) -> bytes | None: ...
@@ -104,6 +114,24 @@ def _has_screenshot(entry: Any) -> bool:
     return any(
         key.rsplit(".", 1)[-1] == "screenshot" and files.artifact and not files.failed
         for key, files in entry.fragments.items()
+    )
+
+
+def _frame_identity(at: int | None, cycle: int, index: int | None) -> str:
+    return f"{at if at is not None else 'trailing'}:{cycle}:{index}"
+
+
+def _action_frames(trace: RunTrace, index: int) -> list[tuple[int | None, FrameRecord]]:
+    record = trace.step(index)
+    if record is None:
+        raise FileNotFoundError(f"Run {trace.run_id} has no committed step {index}")
+    spans = record.action_spans
+    return before_action_frames(
+        trace,
+        index,
+        action_times=[(span.started_at, span.ended_at) for span in spans]
+        if spans is not None
+        else None,
     )
 
 
@@ -556,7 +584,80 @@ class _FileRepository:
             comparison.update(source_status="unreadable", error=str(exc))
         return comparison
 
-    def step(self, key: str, index: int) -> dict[str, Any]:
+    def graph(self, key: str) -> dict[str, Any]:
+        from spectragent.inspection.graph import run_graph
+
+        try:
+            return run_graph(self._trace(key))
+        except (TraceSchemaError, KeyError) as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def trajectory(self, key: str, through: int) -> dict[str, Any]:
+        trace = self._trace(key)
+        try:
+            if trace.step(through) is None:
+                raise FileNotFoundError(f"Run {key} has no committed step {through}")
+            steps = []
+            for entry in trace.manifest.steps:
+                if entry.step > through:
+                    continue
+                record = trace.step(entry.step)
+                assert record is not None
+                steps.append(
+                    {
+                        "index": entry.step,
+                        "origin": record.origin,
+                        "record": _json(record),
+                        "action_summary": action_lines(record),
+                        "has_screenshot": _has_screenshot(entry),
+                    }
+                )
+            return {
+                "run": key,
+                "anchor_step": through,
+                "steps": steps,
+                "recording": _json(trace.config.recording),
+                "missing_steps": [step for step in trace.manifest.missing_steps if step <= through],
+            }
+        except (TraceSchemaError, KeyError) as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def step_frames(self, key: str, index: int) -> list[dict[str, Any]]:
+        trace = self._trace(key)
+        try:
+            return [
+                {
+                    "id": _frame_identity(at, frame.cycle, frame.action_index),
+                    "action_index": frame.action_index,
+                    "action": frame.action,
+                    "kind": frame.kind,
+                    "outcome": frame.outcome,
+                    "detail": frame.detail,
+                    "has_image": frame.outcome == "captured" and frame.name is not None,
+                }
+                for at, frame in _action_frames(trace, index)
+            ]
+        except (TraceSchemaError, KeyError, ValueError) as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes:
+        trace = self._trace(key)
+        try:
+            matches = [
+                (at, frame)
+                for at, frame in _action_frames(trace, index)
+                if _frame_identity(at, frame.cycle, frame.action_index) == frame_id
+            ]
+            if len(matches) != 1:
+                raise FileNotFoundError(f"第 {index} 步没有唯一匹配的动作前截图")
+            at, frame = matches[0]
+            if frame.outcome != "captured":
+                raise FileNotFoundError(f"这张动作前截图未采集成功：{frame.outcome}")
+            return read_frame_image(trace, at, frame)
+        except (TraceSchemaError, KeyError, ValueError) as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def step(self, key: str, index: int, *, include_messages: bool = True) -> dict[str, Any]:
         trace = self._trace(key)
         try:
             record = trace.step(index)
@@ -574,7 +675,12 @@ class _FileRepository:
                 "fragments": {
                     name: _json(trace.observation_fragment(index, name)) for name in entry.fragments
                 },
-                "calls": _json(calls),
+                "calls": [
+                    _json(call)
+                    if include_messages
+                    else {**_json(call.model_dump(exclude={"messages"})), "messages_omitted": True}
+                    for call in calls
+                ],
                 "call_metrics": _json(trace.call_metrics(index)),
                 "recording": _json(trace.config.recording),
                 "output_schemas": schemas,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 import ipaddress
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -251,6 +251,58 @@ def annotation_router(
         loaded, _ = item(queue_id, item_id)
         lines = require().labels(queue_id).history(item_id)
         return {"labels": [_label(line, loaded.sha256) for line in lines]}
+
+    def trajectory_target(
+        queue_id: str, item_id: str, queue_sha256: str, index: int | None = None
+    ) -> tuple[str, int]:
+        _, found = item(queue_id, item_id, queue_sha256)
+        if not found.trajectory or found.run is None or found.step is None:
+            raise HTTPException(404, "这个条目没有开启轨迹历史")
+        key = run_key(found.run)
+        if not repository.has_step(key, found.step):
+            raise FileNotFoundError("这个条目引用的当前步骤未提交")
+        if index is not None and (index > found.step or not repository.has_step(key, index)):
+            raise HTTPException(404, "只能查看这个条目截至当前步骤的已提交历史")
+        return key, found.step
+
+    @router.get("/trajectory")
+    def trajectory(queue_id: str, item_id: str, queue_sha256: str) -> dict[str, Any]:
+        key, anchor = trajectory_target(queue_id, item_id, queue_sha256)
+        return repository.trajectory(key, anchor)
+
+    @router.get("/trajectory-step")
+    def trajectory_step(
+        queue_id: str,
+        item_id: str,
+        queue_sha256: str,
+        index: Annotated[int, Query(ge=0)],
+        include_messages: bool = False,
+    ) -> dict[str, Any]:
+        key, _ = trajectory_target(queue_id, item_id, queue_sha256, index)
+        return {
+            **repository.step(key, index, include_messages=include_messages),
+            "frames": repository.step_frames(key, index),
+        }
+
+    @router.get("/trajectory-image")
+    def trajectory_image(
+        queue_id: str,
+        item_id: str,
+        queue_sha256: str,
+        index: Annotated[int, Query(ge=0)],
+        kind: Literal["observation", "before_action"],
+        frame_id: str | None = None,
+    ) -> Response:
+        key, _ = trajectory_target(queue_id, item_id, queue_sha256, index)
+        if kind == "before_action":
+            if not frame_id:
+                raise HTTPException(422, "动作前截图需要 frame_id")
+            data = repository.step_frame_image(key, index, frame_id)
+        else:
+            data = repository.screenshot(key, index, view="browser")
+            if data is None:
+                raise FileNotFoundError("这一步没有已提交的观察截图")
+        return Response(content=data, media_type=image_type(data))
 
     @router.get("/image")
     def image(queue_id: str, item_id: str, role: str, queue_sha256: str) -> Response:

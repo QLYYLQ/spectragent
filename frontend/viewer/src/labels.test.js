@@ -316,3 +316,11 @@ test("question answers are held to their choices' box rules too", () => {
     "选了“甲”就至少要画一个框",
   ]);
 });
+
+
+test("a saved box on an auxiliary image cannot silently become a new gold label", () => {
+  const spec = {...single, regions: {kinds: [{value: "evidence"}], image_roles: ["next"]}};
+  const draft = {...emptyDraft(), choice: "yes", regions: [{...region, image: "current"}]};
+  assert.match(draftProblems(draft, spec)[0], /辅助图片/);
+  assert.deepEqual(draftProblems({...draft, regions: [{...region, image: "next"}]}, spec), []);
+});

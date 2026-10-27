@@ -66,6 +66,15 @@ class RegionKind(_Strict):
 
 class RegionSpec(_Strict):
     kinds: list[RegionKind] = Field(min_length=1)
+    #: Only these image roles accept boxes; ``None`` allows every item image.
+    image_roles: list[str] | None = Field(default=None, min_length=1)
+
+    @field_validator("image_roles")
+    @classmethod
+    def _roles(cls, roles: list[str] | None) -> list[str] | None:
+        if roles is not None and (any(not role for role in roles) or len(set(roles)) != len(roles)):
+            raise ValueError("可画框的图片角色不能为空或重复")
+        return roles
 
 
 class Question(_Strict):
@@ -206,6 +215,7 @@ class QueueImage(_Strict):
     text: str = ""
     source: ImageSource
     marks_from: list[MarkSource] | None = None
+    section: str | None = None
 
 
 class ItemField(_Strict):
@@ -214,6 +224,15 @@ class ItemField(_Strict):
     text: str
     value: str | int | float | bool | None = None
     technical: bool = False
+    section: str | None = None
+
+
+class QueueSection(_Strict):
+    """An explicitly grouped, independently expandable part of one item's evidence."""
+
+    key: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str = ""
 
 
 class GuideSection(_Strict):
@@ -240,6 +259,7 @@ class ItemLink(_Strict):
     text: str
     run: str = Field(min_length=1)
     step: int | None = Field(default=None, ge=0)
+    section: str | None = None
 
 
 class Suggestion(_Strict):
@@ -274,9 +294,24 @@ class QueueItem(_Strict):
     images: list[QueueImage] = Field(default_factory=list)
     fields: list[ItemField] = Field(default_factory=list)
     links: list[ItemLink] = Field(default_factory=list)
+    sections: list[QueueSection] = Field(default_factory=list)
+    #: Expose the committed history of ``run`` through ``step``, never later steps.
+    trajectory: bool = False
     #: The question keys this item asks; ``None`` defers to each question's ``applies_to``.
     questions: list[str] | None = None
     suggestion: Suggestion | None = None
+
+    @model_validator(mode="after")
+    def _evidence_scope(self) -> QueueItem:
+        keys = [section.key for section in self.sections]
+        if len(keys) != len(set(keys)):
+            raise ValueError("条目的证据分组 key 不能重复")
+        for evidence in [*self.images, *self.fields, *self.links]:
+            if evidence.section is not None and evidence.section not in keys:
+                raise ValueError(f"证据引用了未声明的分组 {evidence.section!r}")
+        if self.trajectory and (not self.run or self.step is None):
+            raise ValueError("展示轨迹历史的条目需要 run 和 step")
+        return self
 
     def image(self, role: str) -> QueueImage | None:
         return next((image for image in self.images if image.role == role), None)
@@ -482,6 +517,12 @@ def answer_problems(
             problems.append(f"{region.kind!r} 不是这个队列的框类别")
         if region.image not in images:
             problems.append(f"{region.image!r} 不是这个条目的图片")
+        elif (
+            spec.regions is not None
+            and spec.regions.image_roles is not None
+            and region.image not in spec.regions.image_roles
+        ):
+            problems.append(f"图片 {region.image!r} 只供查看，不能在这张图上画框")
     if regions is not None:
         problems += region_rule_problems(picked, regions)
     return problems

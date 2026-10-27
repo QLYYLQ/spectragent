@@ -153,6 +153,10 @@ def create_app(
     def run(key: str) -> dict[str, Any]:
         return repository.run(_key(key))
 
+    @app.get("/api/graph")
+    def graph(key: str) -> dict[str, Any]:
+        return repository.graph(_key(key))
+
     @app.get("/api/step")
     def step(key: str, index: Annotated[int, Query(ge=0)]) -> dict[str, Any]:
         return repository.step(_key(key), index)

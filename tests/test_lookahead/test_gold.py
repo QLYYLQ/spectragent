@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from lookahead.cli import run
-from lookahead.gold import candidates, gold_queue, main_action, sample
+from lookahead.gold import candidates, gold_item, gold_queue, main_action, sample
 from lookahead.runs import open_runs
 from tests.test_lookahead.conftest import World
 
@@ -63,15 +63,18 @@ def test_items_show_both_screens_and_actions_without_a_suggestion(
     assert "record/rec-1@3" not in items  # a step that finished the task
     first = items["record/rec-1@0"]
     assert first["title"] == "shop.example · 任务 rec-1 · 第 0 步"
+    assert first["trajectory"] is True
+    assert [image["role"] for image in first["images"]] == ["current", "before_action", "next"]
+    assert queue["label"]["regions"]["image_roles"] == ["next"]
     images = {image["role"]: image for image in first["images"]}
     assert images["current"]["source"] == {"kind": "observation", "run": "record/rec-1", "step": 0}
     assert images["next"]["source"] == {"kind": "observation", "run": "record/rec-1", "step": 1}
     # the current screen draws this step's actions, the next screen the next step's
     assert images["current"]["marks_from"] == [
-        {"run": "record/rec-1", "step": 0, "label": "这一步的动作"}
+        {"run": "record/rec-1", "step": 0, "label": "当前步的动作"}
     ]
     assert images["next"]["marks_from"] == [
-        {"run": "record/rec-1", "step": 1, "label": "下一步的动作"}
+        {"run": "record/rec-1", "step": 1, "label": "本次标注的下一步动作"}
     ]
     assert images["before_action"]["marks_from"] is None  # the action the frame preceded
     before = images["before_action"]["source"]
@@ -82,11 +85,12 @@ def test_items_show_both_screens_and_actions_without_a_suggestion(
         "1. 点击 (20, 10) → 输入框“Search”\n2. 等待 1 秒"
     )
     assert fields["下一步的动作（画在“下一屏”上）"]["value"] == "1. 点击 (100, 10) → 按钮“Search”"
-    assert fields["下一步：智能体的回复（原文）"]["value"] == "Thought: run the search."
+    assert fields["下一步的回复（完整记录）"]["value"] == "Thought: run the search."
     assert fields["下一屏网址"] == {
         "text": "下一屏网址",
         "value": "https://shop.example/search",
         "technical": True,
+        "section": None,
     }
     assert not fields["任务"]["technical"]
     assert "before_action" not in {image["role"] for image in items["record/rec-2@0"]["images"]}
@@ -102,3 +106,17 @@ def test_cli_writes_the_queue_under_the_output_by_default(world: World, tmp_path
     )
     assert code == 0
     assert len(json.loads((out / "queues" / "g.json").read_text(encoding="utf-8"))["items"]) == 3
+
+
+def test_next_decision_keeps_its_complete_reply(world: World) -> None:
+    run, row = next(
+        (run, row)
+        for run, row in candidates(open_runs(world.root))
+        if run.key == "record/rec-1" and row.step == 0
+    )
+    assert row.next.step is not None
+    reply = "完整的判断依据。" * 500
+    run.records[row.next.step] = run.records[row.next.step].model_copy(update={"llm_output": reply})
+    item = gold_item(run, row)
+    field = next(field for field in item.fields if field.text == "下一步的回复（完整记录）")
+    assert field.value == reply

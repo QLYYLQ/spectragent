@@ -12,16 +12,25 @@ import pytest
 from lookahead.cli import run
 from lookahead.forks import (
     SOURCE_ONLY,
+    Answer,
+    EarlierAnswers,
     IntentJudgment,
     QualityJudgment,
+    ReasonablenessJudgment,
     compare_urls,
+    fork_rule,
     forks,
     judge_forks,
+    judgment_record,
     markers,
+    quality_questions,
+    quality_request,
+    queue_item,
+    render_report,
     rule_verdict,
     volatile_parameter,
 )
-from lookahead.judge import Judge
+from lookahead.judge import Judge, JudgeOutcome
 from lookahead.rows import ActionRow, NextObservation
 from lookahead.runs import open_runs
 from spectragent.core.llm.exceptions import ModelProviderError
@@ -273,7 +282,7 @@ def test_judgments_keep_rules_model_answers_and_the_checkpoint_check(
     assert typed["llm"]["same_intent"]["answer"] == "no"
     variant = by_run["branches/br-variant"]
     assert variant["fork_kind"] == "task_variant" and variant["task"] == VARIANT_TASK
-    assert variant["llm"]["same_intent"] is None
+    assert "same_intent" not in variant["llm"]
     assert variant["llm"]["executed_as_intended"]["answer"] == "uncertain"
     offpage = by_run["branches/br-offpage"]
     assert offpage["status"] == "checkpoint_diverged" and offpage["llm"] is None
@@ -333,16 +342,16 @@ def test_queue_shows_source_information_only_for_the_intent_question(
     label = queue["label"]
     assert label["regions"] is None and label["choices"] == [] and label["multi"] is False
     assert [question["key"] for question in label["questions"]] == [
-        "same_intent",
         "reasonable",
         "executed_as_intended",
+        "same_intent",
     ]
     for question in label["questions"]:
         assert [choice["value"] for choice in question["choices"]] == ["yes", "no", "uncertain"]
     items = {item["item_id"]: item for item in queue["items"]}
     assert set(items) == {"branches/br-same@1", "branches/br-typed@1", "branches/br-variant@1"}
     same = items["branches/br-same@1"]
-    assert same["questions"] == ["same_intent", "reasonable", "executed_as_intended"]
+    assert same["questions"] == ["reasonable", "executed_as_intended", "same_intent"]
     assert same["suggestion"]["answers"] == {
         "same_intent": "yes",
         "reasonable": "yes",
@@ -366,10 +375,19 @@ def test_queue_shows_source_information_only_for_the_intent_question(
         "run": "record/rec-1",
         "step": 2,
     }
-    # the checkpoint draws the branch's actions, and the source's for the intent question
+    assert same["trajectory"] is True
+    assert same["sections"][0]["key"] == "source_comparison"
+    assert images["source_checkpoint"]["section"] == "source_comparison"
+    assert images["source_next"]["section"] == "execution_comparison"
+    assert images["comparison_checkpoint"]["section"] == "source_comparison"
+    assert images["comparison_branch_next"]["section"] == "execution_comparison"
+    assert all(field["section"] == "source_comparison" for field in shown)
+    # Main evidence contains only this branch; source evidence is independently grouped.
     assert [(entry["run"], entry["step"]) for entry in images["checkpoint"]["marks_from"]] == [
         ("branches/br-same", 1),
-        ("record/rec-1", 1),
+    ]
+    assert images["source_checkpoint"]["marks_from"] == [
+        {"run": "record/rec-1", "step": 1, "label": "原运行的动作"}
     ]
     assert images["branch_next"]["marks_from"] == [] and images["source_next"]["marks_from"] == []
     variant = items["branches/br-variant@1"]
@@ -540,3 +558,81 @@ def test_cli_refuses_a_judge_configuration_it_cannot_read(
     )
     assert code == 2 and "absent.yaml cannot be read" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_done_only_has_no_execution_effect_question(world: World) -> None:
+    fork = next(
+        fork for fork in forks(open_runs(world.root)) if fork.branch.key == "branches/br-same"
+    )
+    assert fork.branch_row is not None
+    fork.branch_row = fork.branch_row.model_copy(
+        update={"actions": [_action("browser.done", extracted_content="Answer")]}
+    )
+    assert quality_questions(fork.branch_row) == ("reasonable",)
+    request = quality_request(fork)
+    assert request is not None and request.reply_model is ReasonablenessJudgment
+    item = queue_item(
+        {
+            "llm": {
+                "reasonable": {"answer": "yes", "reason": "Answer is supported."},
+                "executed_as_intended": {"answer": "no", "reason": "Old answer."},
+                "same_intent": {"answer": "yes", "reason": "Same answer."},
+            },
+            "task": fork.branch.config.task,
+            "rule": {},
+            "model": "judge",
+        },
+        fork,
+    )
+    assert item is not None and item.questions == ["reasonable", "same_intent"]
+    assert item.suggestion is not None
+    assert set(item.suggestion.answers or {}) == {"reasonable", "same_intent"}
+    mixed = fork.branch_row.model_copy(
+        update={"actions": [_action("browser.click"), _action("browser.done")]}
+    )
+    assert quality_questions(mixed) == ("reasonable", "executed_as_intended")
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_done_only_applicability_matches_record_report_and_queue(
+    world: World, tmp_path: Path, reuse: bool
+) -> None:
+    fork = next(
+        fork for fork in forks(open_runs(world.root)) if fork.branch.key == "branches/br-same"
+    )
+    assert fork.branch_row is not None
+    fork.branch_row = fork.branch_row.model_copy(
+        update={"actions": [_action("browser.done", extracted_content="Answer")]}
+    )
+    answer = {"answer": "yes", "reason": "The answer is supported."}
+    previous = (
+        EarlierAnswers(
+            tmp_path / "old-judgments.jsonl",
+            {
+                (fork.branch.run_id, fork.checkpoint): (
+                    {"reasonable": answer, "same_intent": answer, "executed_as_intended": answer},
+                    "old-judge",
+                )
+            },
+        )
+        if reuse
+        else None
+    )
+    parsed_answer = Answer.model_validate(answer)
+    intent = None if reuse else JudgeOutcome(IntentJudgment(same_intent=parsed_answer), [])
+    quality = None if reuse else JudgeOutcome(ReasonablenessJudgment(reasonable=parsed_answer), [])
+    record = judgment_record(fork, fork_rule(fork), intent, quality, "new-judge", previous)
+    assert record["questions"] == ["reasonable", "same_intent"]
+    assert set(record["llm"]) == {"reasonable", "same_intent"}
+    assert record["llm"]["reasonable"] == answer
+    assert record["answers_from"] == (str(previous.path) if previous else None)
+    report = render_report([record], "No live calls")
+    quality_table = report.split("same-task forks, reasonable × executed_as_intended:", 1)[1].split(
+        "## Rule verdicts", 1
+    )[0]
+    assert "not applicable" in quality_table
+    assert "| yes | 0 | 0 | 0 | 0 | 1 | 1 |" in quality_table
+    item = queue_item(record, fork)
+    assert item is not None and item.suggestion is not None
+    assert item.questions == record["questions"]
+    assert set(item.suggestion.answers or {}) == set(record["questions"])

@@ -58,6 +58,22 @@ def test_refresh_reads_new_commits_without_exposing_orphans(tmp_path: Path) -> N
         repo.step("live", 1)
 
 
+def test_review_can_defer_prompt_images_without_losing_replies(tmp_path: Path) -> None:
+    build_reference_trace(tmp_path)
+    repo = open_repository(tmp_path)
+    full = repo.step("run-test", 0)
+    preview = repo.step("run-test", 0, include_messages=False)
+    assert len(preview["calls"]) == len(full["calls"])
+    for small, original in zip(preview["calls"], full["calls"], strict=True):
+        assert original["messages"]
+        assert "messages" not in small
+        assert small == {
+            **{key: value for key, value in original.items() if key != "messages"},
+            "messages_omitted": True,
+        }
+    assert preview["record"] == full["record"]
+
+
 def test_missing_usage_is_unknown_and_restored_steps_do_not_use_budget(tmp_path: Path) -> None:
     wal = WALWriter(tmp_path, "unknown")
     wal.init_run(TraceConfig())

@@ -66,6 +66,7 @@ from spectragent.annotation import (
     Question,
     QueueImage,
     QueueItem,
+    QueueSection,
     ReviewQueue,
     Suggestion,
     SuggestionDisplay,
@@ -565,10 +566,13 @@ class IntentJudgment(BaseModel):
     same_intent: Answer
 
 
-class QualityJudgment(BaseModel):
+class ReasonablenessJudgment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reasonable: Answer
+
+
+class QualityJudgment(ReasonablenessJudgment):
     executed_as_intended: Answer
 
 
@@ -588,6 +592,13 @@ QUESTIONS = {
     ),
 }
 QUALITY_QUESTIONS = ("reasonable", "executed_as_intended")
+
+
+def quality_questions(row: StepRow) -> tuple[str, ...]:
+    """Finishing without a browser operation has no screen effect to judge."""
+    if row.actions and all(action_type(action.name) == "done" for action in row.actions):
+        return ("reasonable",)
+    return QUALITY_QUESTIONS
 
 
 def describe_actions(row: StepRow, label: str) -> str:
@@ -683,13 +694,28 @@ def quality_request(fork: Fork) -> JudgeRequest[Any] | None:
         sources.append(f"{fork.branch.key}@{branch.next.step}")
     else:
         content.append(text_part("No next screen was recorded: the run ended at this step."))
-    content.append(text_part(_answer_shape(QUALITY_QUESTIONS)))
+    questions = quality_questions(branch)
+    if questions == ("reasonable",):
+        content.append(
+            text_part(
+                "The agent only finished and answered. Judge whether that answer "
+                "is reasonable; there is no browser effect to assess."
+            )
+        )
+    elif any(action_type(action.name) == "done" for action in branch.actions):
+        content.append(
+            text_part(
+                "For executed_as_intended, assess only the browser operations; "
+                "a finish/answer action itself has no browser effect."
+            )
+        )
+    content.append(text_part(_answer_shape(questions)))
     return JudgeRequest(
         purpose=QUALITY_PURPOSE,
         item=f"{fork.branch.key}@{branch.step}",
         system=SYSTEM,
         content=content,
-        reply_model=QualityJudgment,
+        reply_model=QualityJudgment if len(questions) > 1 else ReasonablenessJudgment,
         image_sources=sources,
     )
 
@@ -758,6 +784,13 @@ def asks_intent(fork: Fork) -> bool:
     )
 
 
+def applicable_questions(fork: Fork) -> list[str]:
+    """The judgments that mean something for this checkpoint decision."""
+    if not fork.counted or fork.branch_row is None:
+        return []
+    return list(quality_questions(fork.branch_row)) + (["same_intent"] if asks_intent(fork) else [])
+
+
 # ── output ────────────────────────────────────────────────────────────
 
 
@@ -822,17 +855,11 @@ def judgment_record(
     if reused is not None:
         answers = {key: value for key, value in reused[0].items() if value}
         model = reused[1]
+    questions = applicable_questions(fork)
+    answers = {key: value for key, value in answers.items() if key in questions and value}
     counted: ForkStatus = "judged" if answers else "rules_only"
     status: ForkStatus = fork.excluded if fork.excluded is not None else counted
-    llm = (
-        {
-            "same_intent": answers.get("same_intent"),
-            "reasonable": answers.get("reasonable"),
-            "executed_as_intended": answers.get("executed_as_intended"),
-        }
-        if answers
-        else None
-    )
+    llm = {key: answers.get(key) for key in questions} if answers else None
     asked = intent is not None or quality is not None or reused is not None
     return {
         "format": JUDGMENT_FORMAT,
@@ -863,6 +890,7 @@ def judgment_record(
         "branch_next": branch.next.model_dump(mode="json") if branch else None,
         "source_next": source.next.model_dump(mode="json") if source else None,
         "rule": rule.model_dump(mode="json") if rule is not None else None,
+        "questions": questions,
         "llm": llm,
         "model": model if asked else None,
         "llm_errors": {
@@ -892,71 +920,67 @@ ANSWERS = [
 #: The questions as the reviewer reads them (the model reads ``QUESTIONS``).
 REVIEW_QUESTIONS = [
     Question(
-        key="same_intent",
-        text="意图相同：原运行和分叉在这一屏上的目标和目的一样吗？",
-        help="两边要找的、要操作的是同一个东西，目的也一样，就选“是”；做法细节可以不同"
-        "（点的位置略有偏差、多一步或少一步）。看“检查点”图上两种颜色的标记和两边的动作。",
-        choices=ANSWERS,
-    ),
-    Question(
         key="reasonable",
-        text="合理：只看分叉自己，按它的任务和这一屏，这批动作是朝任务前进的合理一步吗？",
-        help="不要求是最好的做法，合理就选“是”。不要拿原运行来比。",
+        text="这次决定合理吗？",
+        help="按分叉当前的任务、检查点画面和先前经过，判断它的动作或最终回答是否合理。"
+        "合理就选“是”，不要求最佳；这题不需要和原运行比较。",
         choices=ANSWERS,
     ),
     Question(
         key="executed_as_intended",
-        text="执行如意：分叉的下一屏显示出它的动作想要的效果了吗？",
-        help="下一屏出现了动作想要的结果，并且没有报错、没有被拦住（登录墙、验证码、拒绝访问）、"
-        "内容也没有缺失，就选“是”。",
+        text="动作执行后，出现预期的结果了吗？",
+        help="看分叉动作后的画面和动作结果。想打开的页面打开了、想输入的文字出现了，选“是”；"
+        "报错、登录墙、验证码或缺失内容妨碍了动作目的，选“否”。只有完成/回答而无浏览器操作时不问这题。",
+        choices=ANSWERS,
+    ),
+    Question(
+        key="same_intent",
+        text="与原决定比较：两次决定的意图相同吗？",
+        help="展开“与原决定比较”，判断两边想操作的目标和目的是不是相同；具体做法可以不同。"
+        "意图不同也可能合理，这题不改变前两题的判断。换任务时不问这题。",
         choices=ANSWERS,
     ),
 ]
-TITLE = "分叉在检查点上的决定"
+TITLE = "检查点重新决策：合理性与执行结果"
 INSTRUCTIONS = (
-    "分叉是把一次录好的运行恢复到某一步（检查点），让模型在同一个画面上重新做一次决定。"
-    "请回答条目问的每个问题。“合理”和“执行如意”只看分叉自己：它的任务、它的画面和它的动作。"
-    "只有“意图相同”要和原运行比较；标着“原运行”的图、标记和字段只用于这个问题。"
-    "模型的判断默认不显示，请先自己判断。"
+    "浏览器先恢复到一个已录下的检查点，再让智能体重新作决定。先读分叉的任务和决定，"
+    "回答“这次决定合理吗”；再看动作后的画面，回答是否出现预期结果。"
+    "只有同任务条目还需展开“与原决定比较”，单独判断意图是否相同。模型建议默认隐藏。"
 )
 GUIDE = [
     GuideSection(
-        title="什么是分叉",
+        title="这次要标注什么",
         text=(
-            "- 先有一次完整录下来的运行（原运行）。\n"
-            "- 分叉把浏览器恢复到原运行的某一步（检查点），画面和原运行当时一样，"
-            "再让模型在这个画面上重新决定下一步做什么。\n"
-            "- 同任务：分叉的任务和原运行一样，可以比较两边的决定是不是一个意思。\n"
-            "- 换任务：同一个画面，给了一个新任务；这种条目不问“意图相同”，也不显示原运行。"
+            "- 一个条目只评一次重新决策，不是给整条轨迹或整个任务打成功分。\n"
+            "- 第一步：读分叉任务、检查点画面、回复和动作，判断这次决定是否合理。\n"
+            "- 第二步：看执行后的画面及动作结果，判断动作是否产生了想要的效果。\n"
+            "- 第三步（同任务才有）：展开原运行资料，判断两次决定是否想做同一件事。"
         ),
     ),
     GuideSection(
-        title="图和标记",
+        title="检查点、历史和动作后画面",
         text=(
-            "- 检查点：分叉做决定时看到的画面。分叉的动作用第一种颜色标出；同任务的条目里，"
-            "原运行在同一画面上的动作用第二种颜色标出（只用于“意图相同”）。\n"
-            "- 分叉的下一屏：分叉执行动作之后的画面，用来判断“执行如意”。\n"
-            "- 原运行的下一屏：只用于“意图相同”。\n"
-            "- 标记上的编号和右边动作列表的编号一致；点“动作标记”可以隐藏或显示。"
+            "- 检查点是恢复到的决策位置。恢复检查通过说明满足已配置的容差，不等于像素完全相同。\n"
+            "- 检查点图上的编号只标分叉自己的动作；原运行有独立的图和动作列表。\n"
+            "- 历史档案显示这条分叉此前的实际恢复经过；原回复会标为来源材料，不当作这次的新思考。\n"
+            "- 动作后的画面可能是终止观测，只说明操作后的页面状态，不代表智能体又作了一次决定。"
         ),
     ),
     GuideSection(
-        title="三个问题",
+        title="如何判断",
         text=(
-            "- 意图相同：比如两边都是点开“更多筛选”来限定发布时间，即使一边先多点了一下排序，"
-            "也选“是”；一边点“最多播放”、另一边去搜索别的关键词，选“否”。\n"
-            "- 合理：只看分叉的任务和画面。比如任务要找播放量最高的视频，分叉点了“最多播放”排序，"
-            "选“是”；点了无关的广告，选“否”。\n"
-            "- 执行如意：看分叉的下一屏。想打开的页面打开了、想输入的文字出现了，选“是”；"
-            "出现登录墙、验证码、“拒绝访问”、报错页或空白页，选“否”。"
+            "- 任务要找播放量最高的视频，点击“最多播放”排序：决定合理。点击无关广告：不合理。\n"
+            "- 排序后列表按播放量重排：产生预期效果。只出现登录墙而未完成排序：没有产生预期效果。\n"
+            "- 只调用完成/回答动作时，判断答案是否合理；没有浏览器操作，不问执行效果。\n"
+            "- 比较意图：两边都为限定发布时间而打开“更多筛选”，即使点的位置不同也是相同意图。\n"
+            "- 换任务的分叉只按新任务判断，不要求沿用原任务的决定。信息不够时选“看不出”，并说明原因。"
         ),
     ),
     GuideSection(
-        title="模型的判断",
+        title="模型建议",
         text=(
-            "- 每个条目都有一个模型给出的判断和理由（理由是英文原文）。\n"
-            "- 它默认藏起来，免得影响你的判断。先自己选，再点“查看模型的判断”对照。\n"
-            "- 模型的判断只供参考，它常常会错；和你的判断不一样时，以你的为准。"
+            "- 请先独立判断，再按 V 或点击按钮查看模型的建议。\n"
+            "- 模型建议只供参考；与证据不符时填写自己的答案。"
         ),
     ),
 ]
@@ -970,20 +994,13 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
     if branch is None or llm is None or not fork.counted:
         return None
     intent = asks_intent(fork) and source is not None and fork.source is not None
-    asked = (["same_intent"] if intent else []) + list(QUALITY_QUESTIONS)
+    asked = applicable_questions(fork)
     branch_record = fork.branch.records[branch.step]
     marks = [MarkSource(run=fork.branch.key, step=branch.step, label="分叉的动作")]
-    if intent:
-        assert source is not None and fork.source is not None
-        marks.append(
-            MarkSource(run=fork.source.key, step=source.step, label="原运行的动作" + SOURCE_ONLY)
-        )
     images: list[QueueImage] = [
         observation_image(
             "checkpoint",
-            "检查点（分叉和原运行都在这一屏上做决定）"
-            if intent
-            else "检查点（分叉在这一屏上做决定）",
+            f"第 {branch.step} 步 · 分叉作决定时的检查点",
             fork.branch.key,
             branch.step,
             marks_from=marks,
@@ -992,7 +1009,16 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
     if branch.next.exists and branch.next.screenshot and branch.next.step is not None:
         images.append(
             observation_image(
-                "branch_next", "分叉的下一屏", fork.branch.key, branch.next.step, marks_from=[]
+                "branch_next",
+                "分叉动作后的画面"
+                + (
+                    "（终止观测，没有新的决定）"
+                    if branch.next.origin == "terminal"
+                    else f"（第 {branch.next.step} 步观察）"
+                ),
+                fork.branch.key,
+                branch.next.step,
+                marks_from=[],
             )
         )
     fields = [
@@ -1004,35 +1030,103 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
             else "换任务（同一个画面，新的任务）",
         ),
         ItemField(text="分叉的动作（画在“检查点”上）", value=action_lines(branch_record)),
-        ItemField(text="分叉的回复（原文）", value=_thought(branch)),
+        ItemField(text="分叉的回复（完整记录）", value=branch.llm_output),
+        ItemField(
+            text="动作调用结果（是否达成目的请结合画面判断）",
+            value="\n".join(
+                f"{index + 1}. "
+                + ("返回成功" if result.success else f"返回失败：{result.error or '未记录原因'}")
+                for index, result in enumerate(branch_record.action_results)
+            )
+            or "没有返回结果",
+        ),
     ]
+    if quality_questions(branch) == ("reasonable",):
+        fields.append(
+            ItemField(
+                text="本条只判断回答是否合理",
+                value="智能体仅完成任务或提交回答，没有浏览器操作；执行效果不适用。",
+            )
+        )
     links = [ItemLink(text="打开分叉的这一步", run=fork.branch.key, step=branch.step)]
     if intent:
         assert source is not None and fork.source is not None
+        images.append(
+            observation_image(
+                "comparison_checkpoint",
+                f"分叉 · 第 {branch.step} 步的观察与动作",
+                fork.branch.key,
+                branch.step,
+                marks_from=marks,
+            ).model_copy(update={"section": "source_comparison"})
+        )
+        images.append(
+            observation_image(
+                "source_checkpoint",
+                f"原运行 · 第 {source.step} 步的观察与动作",
+                fork.source.key,
+                source.step,
+                marks_from=[
+                    MarkSource(run=fork.source.key, step=source.step, label="原运行的动作")
+                ],
+            ).model_copy(update={"section": "source_comparison"})
+        )
+        if branch.next.exists and branch.next.screenshot and branch.next.step is not None:
+            images.append(
+                observation_image(
+                    "comparison_branch_next",
+                    "分叉动作后的画面（只作执行结果参考）",
+                    fork.branch.key,
+                    branch.next.step,
+                    marks_from=[],
+                ).model_copy(update={"section": "execution_comparison"})
+            )
         if source.next.exists and source.next.screenshot and source.next.step is not None:
             images.append(
                 observation_image(
                     "source_next",
-                    "原运行的下一屏" + SOURCE_ONLY,
+                    "原运行动作后的画面" + SOURCE_ONLY,
                     fork.source.key,
                     source.next.step,
                     marks_from=[],
-                )
+                ).model_copy(update={"section": "execution_comparison"})
             )
         rule = record["rule"] or {}
         fields += [
             ItemField(
+                text="分叉的动作（对照）",
+                value=action_lines(branch_record),
+                section="source_comparison",
+            ),
+            ItemField(
                 text="原运行的动作" + SOURCE_ONLY,
                 value=action_lines(fork.source.records[source.step]),
+                section="source_comparison",
+            ),
+            ItemField(
+                text="分叉的回复（完整记录，对照）",
+                value=branch.llm_output,
+                section="source_comparison",
+            ),
+            ItemField(
+                text="原运行的回复（完整记录）" + SOURCE_ONLY,
+                value=source.llm_output,
+                section="source_comparison",
             ),
             ItemField(
                 text="规则判断（原运行对比）",
                 value=f"{rule.get('verdict')}: " + "; ".join(rule.get("reasons") or []),
                 technical=True,
+                section="source_comparison",
             ),
         ]
         links.append(
-            ItemLink(text="打开原运行的这一步" + SOURCE_ONLY, run=fork.source.key, step=source.step)
+            ItemLink(
+                text="打开原运行的这一步" + SOURCE_ONLY,
+                run=fork.source.key,
+                step=source.step,
+                section="source_comparison",
+            )
         )
     check = fork.checkpoint_check
     fields += [
@@ -1059,6 +1153,27 @@ def queue_item(record: dict[str, Any], fork: Fork) -> QueueItem | None:
         fields=fields,
         links=links,
         questions=asked,
+        trajectory=True,
+        sections=[
+            QueueSection(
+                key="source_comparison",
+                title="与原决定比较（只回答意图是否相同）",
+                description="并排比较分叉和原运行在检查点上的观察、动作与回复，只回答它们是否想做同一件事。",
+            ),
+            *(
+                [
+                    QueueSection(
+                        key="execution_comparison",
+                        title="两次操作后的画面（按需查看）",
+                        description="这些图是动作之后的状态，用来辅助理解执行结果；终止观测不代表新的决定。",
+                    )
+                ]
+                if any(image.section == "execution_comparison" for image in images)
+                else []
+            ),
+        ]
+        if intent
+        else [],
         suggestion=Suggestion(
             answers={key: value["answer"] for key, value in answered.items()},
             reasons={key: value["reason"] for key, value in answered.items()},
@@ -1117,11 +1232,15 @@ def render_report(
         "",
         "## Reasonable and executed as intended",
         "",
-        "Asked from the branch alone, the same way for both kinds of fork.",
+        "Asked from the branch alone, the same way for both kinds of fork. Done-only decisions "
+        "have no browser effect: executed_as_intended is not applicable, counted separately "
+        "from yes/no/uncertain and from missing replies.",
         "",
     ]
 
     def answer(record: dict[str, Any], question: str) -> str:
+        if question not in record["questions"]:
+            return "not applicable"
         llm = record["llm"]
         found = llm.get(question) if llm else None
         return found["answer"] if found else "no reply"
@@ -1138,7 +1257,7 @@ def render_report(
                     for record in group
                 ),
                 row_title="reasonable",
-                columns=["yes", "no", "uncertain", "no reply"],
+                columns=["yes", "no", "uncertain", "no reply", "not applicable"],
             ),
             "",
         ]

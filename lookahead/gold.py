@@ -48,7 +48,6 @@ from spectragent.annotation import (
 from spectragent.inspection.marks import action_lines
 
 NO_SITE = "(no site)"
-THOUGHT_CHARS = 600
 CHOICES = [
     LabelChoice(
         value="result_list",
@@ -98,8 +97,8 @@ EVIDENCE = RegionKind(
 )
 TITLE = "下一步用到的信息在哪里"
 INSTRUCTIONS = (
-    "先看智能体下一步做了什么：右边的“下一步：智能体的回复”和“下一步的动作”，以及“下一屏”上"
-    "画的编号标记。再在“下一屏”上框出它做这一步所需信息所在的位置，并选择这是哪一类信息。"
+    "本条标注的是下一步的决定：先读“下一步的回复”和“下一步的动作”，再在最右侧的下一次观察上，"
+    "框出这次决定实际用到的信息，并选择信息类型。左侧的辅助图和历史档案帮助你理解经过，不能画标注框。"
     "如果下一屏是空白的或还没加载出来，请按“跳过”，并在备注里写明原因。"
 )
 GUIDE = [
@@ -115,8 +114,10 @@ GUIDE = [
         title="三张图分别是什么",
         text=(
             "- 当前屏幕：智能体做这一步决定时看到的画面；上面的编号标记是它在这一屏上做的动作。\n"
-            "- 下一屏：这一步的动作之后的画面；上面的编号标记是智能体下一步的动作。框画在这张图上。\n"
-            "- 第一个动作之前：智能体想完、刚要执行第一个动作时的画面，用来看页面在它思考时有没有变化。\n"
+            "- 第一个动作之前：当前步的智能体想完、刚要执行第一个动作时的画面；这是辅助证据，模型没有看到。\n"
+            "- 下一屏：当前步动作执行后的下一次观察；标记是基于这张新观察作出的下一步动作，并非这些动作执行后的结果。只在这张图上画框。\n"
+            "- 三张图按发生顺序排列：当前观察 → 思考 → 第一个动作前 → 执行动作 → 下一次观察。\n"
+            "- 当前观察下的历史档案可悬停预览、点击固定，查看先前每一步的观察、回复、思考和动作结果。\n"
             "- 标记的编号和右边动作列表的编号一致；点“动作标记”可以隐藏或显示。"
         ),
     ),
@@ -213,11 +214,6 @@ def sample(pool: list[tuple[Run, StepRow]], count: int, seed: int) -> list[tuple
     return chosen
 
 
-def _clip(text: str) -> str:
-    text = text.strip()
-    return text if len(text) <= THOUGHT_CHARS else text[: THOUGHT_CHARS - 1] + "…"
-
-
 def gold_item(run: Run, row: StepRow) -> QueueItem:
     assert row.next.step is not None
     following = run.records[row.next.step]
@@ -225,17 +221,10 @@ def gold_item(run: Run, row: StepRow) -> QueueItem:
     images: list[QueueImage] = [
         observation_image(
             "current",
-            "当前屏幕（智能体做这一步时看到的）",
+            f"当前屏幕 · 第 {row.step} 步的观察",
             run.key,
             row.step,
-            marks_from=[MarkSource(run=run.key, step=row.step, label="这一步的动作")],
-        ),
-        observation_image(
-            "next",
-            "下一屏（这一步之后；标记是智能体下一步的动作）",
-            run.key,
-            row.next.step,
-            marks_from=[MarkSource(run=run.key, step=row.next.step, label="下一步的动作")],
+            marks_from=[MarkSource(run=run.key, step=row.step, label="当前步的动作")],
         ),
     ]
     before = row.frame("before_action")
@@ -244,20 +233,27 @@ def gold_item(run: Run, row: StepRow) -> QueueItem:
         images.append(
             frame_image(
                 "before_action",
-                "第一个动作之前（智能体刚想完时）",
+                f"第 {row.step} 步 · 第一个动作执行前（思考结束）",
                 run.key,
                 before.batch_step,
                 before.name,
             )
         )
+    images.append(
+        observation_image(
+            "next",
+            f"下一屏 · 第 {row.next.step} 步的观察与动作（在这里标注）",
+            run.key,
+            row.next.step,
+            marks_from=[MarkSource(run=run.key, step=row.next.step, label="本次标注的下一步动作")],
+        )
+    )
     fields = [
         ItemField(text="任务", value=row.task),
         ItemField(text="这一步的动作（画在“当前屏幕”上）", value=action_lines(current)),
-        ItemField(
-            text="下一步：智能体的回复（原文）", value=_clip(following.llm_output) or "（没有回复）"
-        ),
+        ItemField(text="下一步的回复（完整记录）", value=following.llm_output or "（没有回复）"),
         ItemField(text="下一步的动作（画在“下一屏”上）", value=action_lines(following)),
-        ItemField(text="这一步：智能体的回复（原文）", value=_clip(row.llm_output), technical=True),
+        ItemField(text="当前步的回复（完整记录）", value=row.llm_output, technical=True),
         ItemField(text="当前网址", value=row.observation.url or "未记录", technical=True),
         ItemField(text="下一屏网址", value=row.next.url or "未记录", technical=True),
         ItemField(text="运行", value=run.key, technical=True),
@@ -272,12 +268,28 @@ def gold_item(run: Run, row: StepRow) -> QueueItem:
             technical=True,
         ),
     ]
+    if before is None or not before.captured:
+        missing = {
+            "timeout": "拍摄超时",
+            "failed": "拍摄失败",
+            "no_tab": "页面不可用",
+            "superseded": "拍摄已取消",
+        }
+        fields.append(
+            ItemField(
+                text="第一个动作前截图",
+                value="未记录可定位的截图"
+                if before is None
+                else missing.get(before.outcome, "没有拍到截图"),
+            )
+        )
     return QueueItem(
         item_id=f"{run.key}@{row.step}",
         title=item_title(row.observation.url, run.start_url, run.task_id, f"第 {row.step} 步"),
         run=run.key,
         step=row.step,
         images=images,
+        trajectory=True,
         fields=fields,
         links=[ItemLink(text="打开下一步", run=run.key, step=row.next.step)],
     )
@@ -300,7 +312,7 @@ def gold_queue(
         label=LabelSpec(
             choices=CHOICES,
             multi=False,
-            regions=RegionSpec(kinds=[EVIDENCE]),
+            regions=RegionSpec(kinds=[EVIDENCE], image_roles=["next"]),
             note=True,
         ),
         items=[gold_item(run, row) for run, row in chosen],

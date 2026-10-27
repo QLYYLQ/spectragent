@@ -15,6 +15,8 @@ import {
 } from "./common.jsx";
 import { COMPARE_MODES, ImageBoard, ZOOMS, zoomText } from "./board.jsx";
 import "./review.css";
+import { ReviewHistory } from "./reviewHistory.jsx";
+import { comparisonEvidence, sectionEvidence } from "./reviewEvidence.js";
 import { moveBox } from "./boxes.js";
 import { SHORTCUTS, isTextTarget, keyAction } from "./keys.js";
 import { MarkToggle } from "./marks.jsx";
@@ -564,7 +566,8 @@ function Session({ data, route, annotations, onReload }) {
     setDraft(next);
     setFocused(nextOpenQuestion(asked, next.answers, focused));
   };
-  const images = item.images.map((image) => ({
+  const mainItem = sectionEvidence(item);
+  const presentImage = (image) => ({
     role: image.role,
     text: image.text,
     src: imageSource(data.queue_id, item.item_id, image.role, data.sha256),
@@ -573,7 +576,9 @@ function Session({ data, route, annotations, onReload }) {
       image.source.kind === "archive"
         ? `画面帧 · ${image.source.step == null ? "收尾记录" : `第 ${image.source.step} 步`}`
         : `第 ${image.source.step} 步的截图`,
-  }));
+  });
+  const images = mainItem.images.map(presentImage);
+  const boardImages = comparisonEvidence(item, compare).map(presentImage);
   const anyMarks = images.some((image) => image.marks);
 
   const setDraft = (next) => {
@@ -803,7 +808,7 @@ function Session({ data, route, annotations, onReload }) {
     : regionRuleProblems(pickedChoices(draft, spec, asked), draft.regions || []);
   const position = index + 1;
   const inFilter = states.filter((s) => matchesFilter(s, filter)).length;
-  const multiImage = images.length >= 2;
+  const multiImage = item.images.length >= 2;
 
   return (
     <div className="review">
@@ -822,7 +827,7 @@ function Session({ data, route, annotations, onReload }) {
               第 {position} 条，共 {states.length} 条
               {item.title && ` · ${item.title}`}
             </span>
-            <ItemLinks item={item} />
+            <ItemLinks item={mainItem} />
           </p>
         </div>
         <div className="review-controls">
@@ -909,7 +914,7 @@ function Session({ data, route, annotations, onReload }) {
       )}
       <div className="review-body">
         <section className="review-stage" aria-label="条目">
-          <ItemFacts item={item} />
+          <ItemFacts item={mainItem} />
           <div className="stage-tools">
             {multiImage && (
               <div className="segmented" role="group" aria-label="对比图片">
@@ -957,13 +962,14 @@ function Session({ data, route, annotations, onReload }) {
             )}
             {kinds && !(multiImage && compare === "difference") && (
               <span className="muted small stage-hint">
-                在图上拖动画框 · 按住 Alt 拖动可在已有框上再画框
+                {spec.regions.image_roles?.length ? "只在标注图上拖动画框" : "在图上拖动画框"} · 按住 Alt 拖动可在已有框上再画框
               </span>
             )}
           </div>
+          {compare === "difference" && item.sections?.length > 0 && <p className="board-note">可从主图和折叠资料的全部图片中任选两张进行像素比较。</p>}
           <ImageBoard
-            key={itemId}
-            images={images}
+            key={`board:${itemId}`}
+            images={boardImages}
             regions={regions}
             suggested={visible?.regions || []}
             showSuggested={showSuggested}
@@ -971,6 +977,7 @@ function Session({ data, route, annotations, onReload }) {
             kinds={kinds}
             activeKind={activeKind}
             editable={Boolean(kinds) && !draft.reject}
+            editableRoles={spec.regions?.image_roles}
             selected={selected}
             onSelect={setSelected}
             onChange={(next) => setDraft({ ...draft, regions: next, reject: false })}
@@ -979,6 +986,17 @@ function Session({ data, route, annotations, onReload }) {
             zoom={ZOOMS[zoom]}
             fit="below"
           />
+          {(item.sections || []).map((section) => {
+            const evidence = sectionEvidence(item, section.key);
+            return <details key={`${itemId}:${section.key}`} className="review-evidence-section">
+              <summary>{section.title}</summary>
+              {section.description && <p>{section.description}</p>}
+              <ItemFacts item={evidence} />
+              <ImageBoard images={evidence.images.map(presentImage)} showMarks={showMarks} zoom={ZOOMS[zoom]} fit="below" />
+              <div className="item-line"><ItemLinks item={evidence} /></div>
+            </details>;
+          })}
+          {item.trajectory && <ReviewHistory key={`history:${itemId}`} queueId={data.queue_id} item={item} version={data.sha256} columns={images.length} />}
         </section>
         <aside className="review-rail" aria-label="标注" ref={rail}>
           <Instructions text={data.instructions} onGuide={() => setGuide(true)} />

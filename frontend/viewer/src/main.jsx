@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { startupRoute } from "./routing.js";
+import { actionRoute, selectedActionIndex, startupRoute } from "./routing.js";
 import {
   actionLabel,
   restoredActionOutcome,
@@ -35,6 +35,7 @@ import { ReviewDisabled, ReviewHome, ReviewSession } from "./review.jsx";
 import { StepLabels } from "./stepLabels.jsx";
 import { MarkLayer, MarkLegend, MarkToggle } from "./marks.jsx";
 import { hasMarks } from "./marks.js";
+import { TaskGraphs } from "./taskGraph.jsx";
 import "./styles.css";
 
 /** Display names for the restorer's verify setting (``strict`` or ``warn``). */
@@ -208,6 +209,7 @@ function Ledger({ row }) {
 }
 
 function RunList({ revision, selected, setSelected, workspace }) {
+  const [view, setView] = useState("tasks");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("");
   const [benchmark, setBenchmark] = useState("");
@@ -294,6 +296,10 @@ function RunList({ revision, selected, setSelected, workspace }) {
       </div>
       <div className="panel">
         <div className="toolbar">
+          <div className="run-view-toggle" role="group" aria-label="运行视图">
+            <button aria-pressed={view === "tasks"} onClick={() => setView("tasks")}>按任务看分支</button>
+            <button aria-pressed={view === "table"} onClick={() => setView("table")}>运行列表</button>
+          </div>
           <label className="search">
             <Icon name="search" />
             <input
@@ -360,6 +366,8 @@ function RunList({ revision, selected, setSelected, workspace }) {
                       ? "这个根目录下没有使用这个配置摘要的运行记录。存放在别处的运行需要换一个根目录打开。"
                       : "请选择包含运行记录的目录，然后刷新。这里只显示已提交的记录。"}
               </Empty>
+            ) : view === "tasks" ? (
+              <TaskGraphs rows={rows} visible={visible} revision={revision} selected={selected} onToggle={toggle} />
             ) : (
               <div className="table-scroll">
                 <table className="runs-table">
@@ -1074,11 +1082,36 @@ function RestorationComparison({ step, runKey, index, everywhere }) {
   );
 }
 
-function StepActions({ record }) {
+function StepActions({ record, selectedAction = null, onSelectAction }) {
+  const [localAction, setLocalAction] = useState(0);
   const restored = record.origin === "restored";
   const check = record.restoration;
+  const selected = selectedAction ?? (localAction < record.actions.length ? localAction : 0);
+  const action = record.actions[selected];
+  const result = record.action_results[selected];
+  const skipped = record.skipped_actions > 0 && selected >= record.actions.length - record.skipped_actions;
   return (
     <>
+      {!!record.actions.length && (
+        <section className="single-action-picker" aria-label="单个动作详情">
+          <label>查看单个动作
+            <select value={action ? selected : "missing"} onChange={(event) => (onSelectAction || setLocalAction)(Number(event.target.value))}>
+              {!action && <option value="missing">这一步没有动作 {selected + 1}</option>}
+              {record.actions.map((item, index) => <option key={index} value={index}>动作 {index + 1} · {item.name}</option>)}
+            </select>
+          </label>
+          {action ? (
+            <div className="single-action-facts">
+              <JsonPanel title={`动作 ${selected + 1} 的参数`} value={action} initialOpen />
+              <div>
+                {result ? <JsonPanel title="这个动作的返回结果" value={result} initialOpen />
+                  : <p className="notice">{skipped ? "前面的动作失败，这个动作没有执行。" : "这个动作没有记录返回结果；不能据此判为成功。"}</p>}
+              </div>
+            </div>
+          ) : <p className="notice">这个动作编号不在已记录动作中，请选择列表里的动作。</p>}
+        </section>
+      )}
+      {!record.actions.length && selectedAction !== null && <p className="notice">这一步没有记录动作，无法打开动作 {selectedAction + 1}。</p>}
       {restored && (
         <>
           <div className="notice">
@@ -1191,9 +1224,10 @@ function StepActions({ record }) {
   );
 }
 
-function StepDetail({ runKey, index, revision, everywhere = [] }) {
+function StepDetail({ runKey, index, revision, everywhere = [], action = null }) {
   const state = useRemote(query("step", { key: runKey, index }), revision);
-  const [tab, setTab] = useState("observation");
+  const [tab, setTab] = useState(action === null ? "observation" : "actions");
+  useEffect(() => { setTab(action === null ? "observation" : "actions"); }, [runKey, index, action]);
   const annotations = useContext(AnnotationContext);
   return (
     <RemoteState state={state}>
@@ -1307,7 +1341,7 @@ function StepDetail({ runKey, index, revision, everywhere = [] }) {
           {tab === "actions" && (
             <>
               {step.recording.trajectory ? (
-                <StepActions record={step.record} />
+                <StepActions record={step.record} selectedAction={action} onSelectAction={(selected) => navigate(actionRoute(runKey, index, selected))} />
               ) : (
                 <Empty title="未记录动作">
                   记录设置中没有选择保存智能体轨迹。
@@ -1431,6 +1465,7 @@ function Trajectory({ run, route, revision }) {
         index={selected}
         revision={revision}
         everywhere={everywhere}
+        action={selectedActionIndex(route.action)}
       />
     </div>
   );
