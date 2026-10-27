@@ -457,9 +457,12 @@ where the answer is found). Every judge call is in `FILE.calls.jsonl`.
 
 ## `judge-forks --root DIR --judge-config FILE.yaml --out DIR2`
 
-For every branch run: is its decision at the checkpoint the same as the
-source's, and is it sound? The branch's first policy step is paired with the
-source run's step at the checkpoint through the recorded provenance; same-task
+For every branch run: is its checkpoint decision reasonable for its task,
+and did its browser actions produce the intended effect? Same-task forks
+also ask whether the source and branch intended the same thing. These are
+independent judgments of one decision, not a task-success score. The branch's
+first policy step is paired with the source run's step at the checkpoint
+through the recorded provenance; same-task
 and task-variant branches alike. A fork is judged only when it is paired, its
 checkpoint restored (the restorer's check of the checkpoint observation is
 `ok`; the check is copied into the judgment) and the branch made a decision.
@@ -481,48 +484,72 @@ report lists them by count and reason.
   `utm_*` or long digit and hex tokens is neutral, any other query difference
   leaves it `unknown`). `no_decision` when either side ended in an error
   without an action (a reply that did not parse).
-- **Judge model**, in two separate requests so that neither answer sees the
-  other side. `reasonable` and `executed_as_intended` are asked from the
-  branch alone, identically for both kinds of fork: its task, the checkpoint
+- **Judge model**, in separate quality and intent requests. `reasonable`
+  and `executed_as_intended` are asked from the branch alone, identically for
+  both kinds of fork: its task, the checkpoint
   screen with its pointer and coordinate-typing actions ringed, its actions
   with their measured effects, its reply and its next screen. `same_intent`
-  (same-task forks whose source decided) shows both runs' actions on the same
-  screen (run A blue, run B red) and both next screens. Each answer is `yes` /
-  `no` / `uncertain` with a one-sentence reason.
+  (same-task forks whose source decided) alone uses source-run evidence: it
+  shows both runs' actions on the same screen (run A blue, run B red) and
+  both next screens. Each answer is `yes` /
+  `no` / `uncertain` with a one-sentence reason. A decision containing only
+  `done` asks only `reasonable` in the quality request: judge the answer,
+  with no browser effect to assess. A mixed batch still asks about the effect
+  of its browser operations.
 
 Outputs: `judgments.jsonl` (`"format": "lookahead-fork-judgment-2"`, one object
 per branch run: both runs, the checkpoint and its check, fork kind, tasks, both
-sides' actions, errors and next observations, the rule verdict, the model's
-answers, its call ids; `status` `judged`, `rules_only` (no model answer),
+sides' actions, errors and next observations, the rule verdict, the applicable
+`questions`, the model's answers and its call ids; `status` `judged`,
+`rules_only` (no model answer),
 `checkpoint_diverged`, `no_decision` or `unpaired`), `report.md` (how many
 same-task forks the rules decide, their agreement with the model, rule verdict
 × model `same_intent`, reasonable × executed per fork kind, the forks not
-judged), `calls.jsonl`, and a review queue that asks the same questions
-separately (`label.questions`, each 是 / 否 / 看不出). The queue explains in
-Chinese what a branch is (a recorded run restored to a checkpoint, where the
-model decides again on the same screen) and its two kinds, 同任务 (same task)
-and 换任务 (same screen, a new task), and asks, each with its help:
-意图相同 `same_intent` (do the source and the branch pursue the same target and
-purpose on this screen; execution details may differ), 合理 `reasonable`
-(judging the branch alone: is this batch a reasonable step toward its task; it
-need not be optimal) and 执行如意 `executed_as_intended` (does the branch's
-next screen show the intended effect, without an error, a block or missing
-content). Each item lists the keys it asks and suggests the model's `answers`
+judged), `calls.jsonl`, and a review queue that asks the same applicable questions
+separately (`label.questions`, each 是 / 否 / 看不出). The report counts a
+done-only decision's execution effect as `not applicable`, separately from
+yes/no/uncertain and missing replies; it is not a failed or unanswered effect.
+
+The review page explains 同任务 (same task) and 换任务 (a new task at the
+checkpoint), and asks in this order:
+
+1. **这次决定合理吗？** `reasonable`: read the branch's task, checkpoint,
+   complete reply and actions. A reasonable step need not be optimal; a final
+   answer is judged for its content.
+2. **动作执行后，出现预期的结果了吗？** `executed_as_intended`: compare the
+   branch's post-action screen and action results with what its actions
+   intended. A successful action return alone does not establish the effect.
+   Done-only items omit this question.
+3. **与原决定比较：两次决定的意图相同吗？** `same_intent`: for same-task items
+   whose source decided, separately compare the intended target and purpose.
+   Different intent can still be reasonable; task-variant items omit this question.
+
+Each item lists the keys it asks and suggests the model's `answers`
 with its (English) `reasons`, titled 模型的判断（仅供参考） and hidden until the
 person asks (`suggestion_display.shown: on_request`), so it cannot anchor
-them. The checkpoint image draws the branch's actions and, for a same-task
-item, the source run's actions at the checkpoint in a second colour
-(`marks_from`); the next screens draw none. A task-variant item shows nothing
-of the source run; a same-task item shows the source's actions and next
-screen only in fields and images marked （只用于“意图相同”）, the rule verdict
-among the technical details. The command takes exactly one of
+them. The main checkpoint image draws only the branch's actions. Same-task
+items have a separate, initially collapsed **与原决定比较** section: the
+branch and source checkpoint images each carry their own actions, alongside
+their action lists and complete replies. A further **两次操作后的画面** section
+holds their post-action images without action marks. These are result
+references; a terminal observation is not another policy decision. A passed
+restoration check means the configured tolerances were met, not that the two
+checkpoint images are identical. Task-variant items show no source comparison.
+The rule verdict stays in the comparison's technical details. The image
+difference mode can select any two images across these sections; default
+side-by-side presentation keeps the evidence groups separate.
+
+The command takes exactly one of
 `--judge-config` (ask the model), `--rules-only` and `--answers-from`; the
 last two need no configuration file. `--rules-only` asks no model and writes no
 queue. `--answers-from <judgments.jsonl>` asks no model either: it takes the
 model answers an earlier `judge-forks` run wrote (matched by branch run id
 and checkpoint) and writes the queue with them, so a queue can be rebuilt
-without paying for the same answers twice; each record names that file in
-`answers_from` (`null` when the model was asked now).
+without paying for the same answers twice. Both fresh and reused answers are
+limited to the applicable `questions`: an older done-only execution answer
+does not enter the new record, suggestion or report counts. Reuse does not
+rejudge earlier answers under the revised wording. Each record names that
+file in `answers_from` (`null` when the model was asked now).
 
 ## `gold-queue --root DIR --n 100 --out DIR2`
 
@@ -531,14 +558,40 @@ used** for its next step (user ruling). Items are policy steps whose screen and
 next screen were both recorded and whose next step is a policy step that
 acted; a step that finished the task (`done`) is left out, since nothing
 follows it. They are taken in turn from each (site, action type) group, the
-least-used run first (`--seed`). Each shows `current` (O_t, drawing this
-step's actions), `next` (O_{t+1}, drawing the agent's **next** step's actions)
-and `before_action` (the frame before the first action, when one was taken,
-drawing that action), with the task, this step's actions, and the next step's
-reply and actions in Chinese; URLs, the run, the step numbers and the raw
-parameters are technical details. The instructions say: see what the agent
-did next, then box where on the next screen the information it needed for
-that is; if the next screen is blank or not loaded, press 跳过 and add a note.
+least-used run first (`--seed`). Images are ordered by time:
+
+1. **当前屏幕** `current`: O_t, with this step's actions A_t marked.
+2. **第一个动作之前** `before_action`: the frame immediately before the first
+   action, after the agent thought, with that action marked. It is auxiliary
+   archive evidence the model did not see. If no captured frame is available,
+   the page explains the missing evidence instead of substituting an observation.
+3. **下一屏** `next`: O_{t+1}, with the **next** decision's actions A_{t+1}
+   marked. This is the observation those actions were based on, not their result.
+
+Read the complete next-step reply and actions, then box the information on
+O_{t+1} that the decision actually used. Only `next` accepts boxes, enforced
+for both human labels and machine suggestions; the current screen and action
+frame are context. The task, current actions and full recorded replies remain
+available; URLs, run and step numbers and raw parameters are technical details.
+If the next screen is blank or not loaded, press 跳过 and add a note.
+
+Both gold and fork review items expose **轨迹历史档案** below the current
+observation. Cards show this run's committed steps through the item's anchor
+step, including the current step and no later steps. Hover or focus a card to
+preview it; click to pin and load its full observation fragments, recorded
+reply, available native thinking, actions and results. The side image shows
+the same step before an action, selectable when several action frames exist.
+Restored steps label `source_history` as source material rather than a new
+decision or new thinking. Missing thinking and missing or timed-out frames
+remain explicit gaps. The actual model request, including the history window
+it received, loads only when expanded: the full recorded trajectory is not a
+claim that every step was in that request. History reads check the queue version
+and never write to the trace.
+
+Existing queue files keep the layout they were generated with. Rebuild them
+from the saved traces to obtain these fields and history controls; for fork
+queues, `--answers-from` reuses existing judge answers. Updating a queue does
+not fill gaps in old recordings or require recapturing an otherwise readable trace.
 
 Options (help in the queue; box rule in brackets): 结果列表 `result_list` (the
 next step picks or reads among several similar items, even if it then clicks
