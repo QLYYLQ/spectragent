@@ -279,17 +279,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         object.__setattr__(self, "__intercepts__", intercepts)
 
     @property
-    def health(self) -> RecordingHealth:
-        """An independent snapshot of this run's recording coverage and faults."""
-        return self._health.model_copy(deep=True)
-
-    @property
     def run_dir(self) -> Path | None:
         return self.wal.run_dir if self.wal is not None else None
-
-    @property
-    def llm_calls(self) -> int | None:
-        return self._coverage.calls if self.recording.metrics else None
 
     async def on_run_start(
         self,
@@ -1013,26 +1004,6 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             self._problem(None, "manifest", "closeout", exc)
             self._health.status = "incomplete"
         self._enrich_result()
-
-    async def flush(self, timeout: float | None = None) -> None:
-        """Wait boundedly for sealed segments, without ending this recording.
-
-        Intended for explicit inspection/checkpoint callers, never required by
-        a Loop's step handoff. Failures remain recording-health facts.
-        """
-        budget = self.close_timeout if timeout is None else timeout
-        if budget <= 0:
-            raise ValueError("recording flush timeout must be positive")
-        try:
-            await asyncio.wait_for(self._queue.join(), timeout=budget)
-        except TimeoutError:
-            self._problem(
-                None,
-                "worker",
-                "flush",
-                TimeoutError(f"the sealed segments were not persisted within {budget:g} s"),
-            )
-        self._refresh_health()
 
     async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
         """Close the recording: owed calls, the last archive collection, then the drain.

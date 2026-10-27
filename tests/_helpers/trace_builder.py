@@ -30,7 +30,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -75,6 +75,10 @@ from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.observation.image import image_media_type
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 from tests._helpers.fragment_samples import JPEG_BYTES, PNG_BYTES, SAMPLES
+
+if TYPE_CHECKING:
+    from spectragent.core.hooks.trace_writer import TraceWriter
+    from spectragent.schemas.recording import RecordingHealth
 
 
 class Reply(BaseModel):
@@ -264,6 +268,18 @@ def new_wal(base: Path, run_id: str = "run-test") -> WALWriter:
     wal = WALWriter(base, run_id)
     wal.init_run(TraceConfig(agent_id="test_agent", loop_id="react", task="find the answer"))
     return wal
+
+
+async def persisted(writer: TraceWriter) -> RecordingHealth:
+    """Wait until every step *writer* sealed is persisted, without ending the run.
+
+    A test's inspection point between steps: a run never waits for its
+    recording, so production has no such call. Returns the recording health
+    at that moment; after ``on_run_end`` read ``result.metrics.recording_health``.
+    """
+    await asyncio.wait_for(writer._queue.join(), timeout=writer.close_timeout)
+    writer._refresh_health()
+    return writer._health.model_copy(deep=True)
 
 
 #: An image URL whose base64 is not the standard encoding of what it decodes to

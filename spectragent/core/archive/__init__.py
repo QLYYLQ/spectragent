@@ -37,6 +37,7 @@ from spectragent.core.archive.types import (
     ArchiveGap,
     ArchiveProvenance,
     ArchiveScope,
+    canonical_json,
     segment_problem,
     text_problem,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "ArchiverBase",
     "ArchiverRegistrar",
     "ArchivingCapability",
+    "canonical_json",
     "segment_problem",
     "text_problem",
 ]

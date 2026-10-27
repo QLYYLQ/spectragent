@@ -104,6 +104,7 @@ from spectragent.core.trace.encoding import (
 )
 from spectragent.core.trace.models import ArchiveRecord, TraceStatus
 from spectragent.core.trace.reader import RunTrace
+from spectragent.schemas.agent_result import AgentResult
 from tests._helpers.archive_fakes import (
     PEER_A,
     PEER_A_KEY,
@@ -116,7 +117,7 @@ from tests._helpers.archive_fakes import (
     PeerArchivingCapability,
 )
 from tests._helpers.assembly import make_env
-from tests._helpers.trace_builder import agent_result, step_record
+from tests._helpers.trace_builder import agent_result, persisted, required, step_record
 
 
 @dataclass
@@ -525,7 +526,7 @@ async def assert_crash_window_hides_uncommitted_evidence(
         await recording.commit(1)
     assert any(
         problem.step == 1 and problem.phase == "commit" and problem.error == "OSError"
-        for problem in recording.writer.health.problems
+        for problem in (await persisted(recording.writer)).problems
     ), "the failed write must be visible as recording health, not an execution exception"
     crashed = recording.spy.batches[-1]
     crashed_steps = [item for item in crashed.files if item.scope == "step"]
@@ -659,7 +660,8 @@ async def assert_a_failed_collection_leaves_the_trace_incomplete(
     await harness.produce(1)
     harness.break_collect()
     await recording.commit(1)
-    failures = [problem for problem in recording.writer.health.problems if problem.step == 1]
+    health = await persisted(recording.writer)
+    failures = [problem for problem in health.problems if problem.step == 1]
     assert failures and all(problem.phase == "collect" for problem in failures)
     assert any(problem.channel.partition(".")[0] == harness.capability_id for problem in failures)
     trace = RunTrace(run_dir)
@@ -672,11 +674,11 @@ async def assert_a_failed_collection_leaves_the_trace_incomplete(
 
     collected = recording.spy.calls
     await recording.commit(2)
-    await recording.close()
+    result = await recording.close()
     trace = RunTrace(run_dir)
     assert trace.manifest.status == TraceStatus.INCOMPLETE
     assert trace.manifest.complete_through == 0
-    assert recording.writer.health.missing_steps == []
+    assert required(result.metrics.recording_health).missing_steps == []
     assert [entry.step for entry in trace.manifest.steps] == [0, 1, 2]
     assert recording.spy.calls == collected + 2, "later steps and close-out still collect"
     assert trace.result is not None and trace.result.agent_done == agent_result().agent_done
@@ -925,15 +927,17 @@ class _Recording:
     async def commit(self, step: int) -> None:
         """Seal one step, then explicitly wait for persistence in this test harness."""
         await self.writer.after_record_step(None, args=(step_record(step),), kwargs={})
-        await self.writer.flush()
+        await persisted(self.writer)
 
     async def step(self, step: int) -> None:
         """One step of activity the capability captures, then its commit point."""
         await self.harness.produce(step)
         await self.commit(step)
 
-    async def close(self) -> None:
-        await self.writer.on_run_end(result=agent_result())
+    async def close(self) -> AgentResult:
+        result = agent_result()
+        await self.writer.on_run_end(result=result)
+        return result
 
 
 class _Seen:

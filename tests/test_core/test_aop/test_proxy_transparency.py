@@ -10,8 +10,8 @@ The bugs pinned here:
   reads, while writes of those names went to the target.
 * Method resolution snapshotted at wrap time, so anything installed
   afterwards was never intercepted.
-* A hook declaring a role nobody wraps registering cleanly, appearing in
-  ``intercepted_methods``, and never firing — with no log and no error.
+* A hook declaring a role nobody wraps registering cleanly and never
+  firing — with no log and no error.
 * The inverse: a wrap-time "no such attribute" warning declaring a
   working ``agent.run`` hook dead, because it judged a lazily resolved
   method before ``Loop.weave()`` had installed it.

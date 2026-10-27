@@ -70,8 +70,8 @@ history and training export require Chat main decisions and ignore helper calls.
 A sealed segment keeps its original step, calls, observations, action results and handed
 over archive batch even when its commit fails. Only a genuinely unfinished step's calls
 are trailing. Retry waits are bounded and background-only; buffer exhaustion describes
-a lost range and does not stop Agent execution. Public `flush()` allows a bounded explicit
-inspection wait without closing the run; normal step handoff does not call it.
+a lost range and does not stop Agent execution. Nothing in a run waits for persistence;
+a test that inspects a step before `on_run_end` waits with `tests/_helpers/trace_builder.py::persisted`.
 
 WAL validates paths first, durably writes contents and records, fsyncs distinct directories,
 then atomically replaces the manifest. Orphans remain invisible. If rename succeeds but

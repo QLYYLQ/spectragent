@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from spectragent.core.actions._registrar import is_wait_action
+from spectragent.core.archive import canonical_json
 from spectragent.core.llm.base import BaseChatModel, require_inference_protocol
 from spectragent.core.llm.lifecycle import close_models, report_cleanup
 from spectragent.core.llm.messages import SystemMessage, UserMessage
@@ -91,20 +92,13 @@ REWRITE_USER_TEMPLATE = (
 
 #: sha256 of the prompt's version and text, as canonical JSON.
 REWRITE_PROMPT_DIGEST = hashlib.sha256(
-    json.dumps(
-        [REWRITE_PROMPT_VERSION, REWRITE_SYSTEM_PROMPT, REWRITE_USER_TEMPLATE],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
+    canonical_json([REWRITE_PROMPT_VERSION, REWRITE_SYSTEM_PROMPT, REWRITE_USER_TEMPLATE]).encode(
+        "utf-8"
+    )
 ).hexdigest()
 
 #: The shape of one cache entry (``<cache>/<key>.json``).
 CACHE_FORMAT = "af-thought-rewrite-1"
-
-
-def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _capability(key: str) -> str:
@@ -235,7 +229,7 @@ def without_waits(sample: CanonicalStepSample, waits: StepWaits) -> CanonicalSte
 def _action_lines(actions: Sequence[Action]) -> str:
     if not actions:
         return "(none)"
-    return "\n".join(_canonical(action.model_dump(mode="json")) for action in actions)
+    return "\n".join(canonical_json(action.model_dump(mode="json")) for action in actions)
 
 
 class ThoughtRewriter:
@@ -281,7 +275,7 @@ class ThoughtRewriter:
             "removed_from_step": [a.model_dump(mode="json") for a in removed_from_step],
             "removed_steps_before": [a.model_dump(mode="json") for a in removed_before],
         }
-        key = hashlib.sha256(_canonical(inputs).encode("utf-8")).hexdigest()
+        key = hashlib.sha256(canonical_json(inputs).encode("utf-8")).hexdigest()
         rewritten = self._done.get(key)
         if rewritten is None:
             rewritten = self._read(key, inputs)

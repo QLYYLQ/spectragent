@@ -41,11 +41,6 @@ class StepSink(Protocol):
         """The number of surrendered policy decisions."""
         ...
 
-    @property
-    def last_observation(self) -> Any:
-        """Most recent surrendered observation, or None."""
-        ...
-
     def clear(self) -> None:
         """Start a fresh execution's in-memory record history."""
         ...
@@ -79,7 +74,6 @@ class StepRecorder:
 
     def __init__(self) -> None:
         self._records: list[StepRecord] = []
-        self._last_observation: Any = None
 
     @property
     def records(self) -> list[StepRecord]:
@@ -95,11 +89,6 @@ class StepRecorder:
         """
         return sum(1 for record in self._records if record.origin == "policy")
 
-    @property
-    def last_observation(self) -> Any:
-        """The most recent observation handed over with a step."""
-        return self._last_observation
-
     async def record_step(
         self,
         record: StepRecord,
@@ -107,9 +96,6 @@ class StepRecorder:
         observation: Any = None,
     ) -> None:
         self._records.append(record)
-        if observation is not None:
-            self._last_observation = observation
 
     def clear(self) -> None:
         self._records.clear()
-        self._last_observation = None

@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from conscribe import create_registrar
-from pydantic import Field, TypeAdapter
+from pydantic import Field
 
 from spectragent.core.llm.base import BaseChatModel, require_inference_protocol
 from spectragent.core.trace.sources import source_pattern_problem
@@ -55,12 +55,6 @@ from spectragent.export.translate._registrar import ActionTranslator, default_tr
 
 #: ``sources_root`` when the config leaves it null (relative to the working directory).
 DEFAULT_SOURCES_ROOT = "traces"
-
-
-_FILTERS: TypeAdapter[ExportFilters] = TypeAdapter(ExportFilters)
-_SPLIT: TypeAdapter[SplitSettings] = TypeAdapter(SplitSettings)
-_DECONTAMINATION: TypeAdapter[Decontamination] = TypeAdapter(Decontamination)
-_LENGTH: TypeAdapter[LengthBudget] = TypeAdapter(LengthBudget)
 
 
 @runtime_checkable
@@ -341,27 +335,10 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
             problem = source_pattern_problem(pattern)
             if problem is not None:
                 raise ValueError(f"{self.exporter_id}: source glob {pattern!r} {problem}")
-        # The Composer hands a nested knob over as a dict; Python callers pass the type.
-        self.filters = (
-            DEFAULT_FILTERS
-            if filters is None
-            else filters
-            if isinstance(filters, ExportFilters)
-            else _FILTERS.validate_python(filters)
-        )
-        self.split = (
-            DEFAULT_SPLIT
-            if split is None
-            else split
-            if isinstance(split, SplitSettings)
-            else _SPLIT.validate_python(split)
-        )
+        self.filters = DEFAULT_FILTERS if filters is None else filters
+        self.split = DEFAULT_SPLIT if split is None else split
         self.decontamination = (
-            DEFAULT_DECONTAMINATION
-            if decontamination is None
-            else decontamination
-            if isinstance(decontamination, Decontamination)
-            else _DECONTAMINATION.validate_python(decontamination)
+            DEFAULT_DECONTAMINATION if decontamination is None else decontamination
         )
         self.thought_source = thought_source
         self.thought_index_refs = thought_index_refs
@@ -380,11 +357,7 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
             require_inference_protocol(
                 model, "chat", consumer=f"{self.exporter_id}.thought_rewrite_llms"
             )
-        self.length = (
-            length
-            if length is None or isinstance(length, LengthBudget)
-            else _LENGTH.validate_python(length)
-        )
+        self.length = length
 
     @property
     def exporter_id(self) -> str:

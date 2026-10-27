@@ -505,7 +505,7 @@ class TestOneSchemaCompiler:
             UnsupportedParamsSchema,
             params_model_from_schema,
         )
-        from spectragent.core.actions.params import params_schema
+        from spectragent.core.actions.params import params_view
         from spectragent.schemas.action import ActionDescriptor
 
         class _Direction(StrEnum):
@@ -515,7 +515,7 @@ class TestOneSchemaCompiler:
         class _Params(PydanticBaseModel):
             direction: Annotated[_Direction, Field(description="which way")]
 
-        schema = params_schema(_Params)
+        _prose, schema = params_view(_Params)
         assert "$ref" not in json.dumps(schema)
         assert schema["properties"]["direction"]["enum"] == ["up", "down"]
 
@@ -565,7 +565,7 @@ class TestOneSchemaCompiler:
         """
         from pydantic import BaseModel as PydanticBaseModel
 
-        from spectragent.core.actions.params import params_schema
+        from spectragent.core.actions.params import params_view
         from spectragent.core.llm.tools import ToolDefinition
 
         class _Params(PydanticBaseModel):
@@ -573,7 +573,7 @@ class TestOneSchemaCompiler:
             amount: int | None = Field(default=None, description="how far")
 
         from_tool = ToolDefinition.from_model(_Params).parameters
-        from_descriptor = params_schema(_Params)
+        _prose, from_descriptor = params_view(_Params)
 
         assert set(from_tool["properties"]) == set(from_descriptor["properties"])
         assert from_tool["required"] == from_descriptor["required"]

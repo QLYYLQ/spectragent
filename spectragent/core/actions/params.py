@@ -10,12 +10,11 @@ tree.
 Here the contract is a flat Pydantic model, ``ActionBase.Params``, and
 everything else is derived from it:
 
-- :func:`params_schema` — the JSON Schema an agent compiles into the
-  closed per-run output model it ships to a provider.
-- :func:`params_prose` — the one-line-per-param text the prompt shows.
-  Rendered, never written: two agents (Skyvern, UI-TARS) print a
-  descriptor's param text verbatim, so a second hand-written copy is a
-  second thing to drift.
+- :func:`params_view` — the one-line-per-param text the prompt shows, and
+  the JSON Schema an agent compiles into the closed per-run output model it
+  ships to a provider. The text is rendered, never written: two agents
+  (Skyvern, UI-TARS) print a descriptor's param text verbatim, so a second
+  hand-written copy is a second thing to drift.
 - :func:`action_fragments` / :func:`param_fragments` — which observation
   fragments a param cannot exist without.
 - :func:`point_params` — which params are a point in the capability's
@@ -71,8 +70,6 @@ __all__ = [
     "element_params",
     "param_fragments",
     "point_params",
-    "params_prose",
-    "params_schema",
     "params_view",
 ]
 
@@ -394,23 +391,3 @@ def params_view(
         "additionalProperties": False,
     }
     return prose, schema
-
-
-def params_prose(
-    params: type[BaseModel],
-    *,
-    hints: Mapping[str, str] | None = None,
-    fragments: frozenset[str] | None = None,
-) -> dict[str, str]:
-    """Just the prompt text half of :func:`params_view`."""
-    return params_view(params, hints=hints, fragments=fragments)[0]
-
-
-def params_schema(
-    params: type[BaseModel],
-    *,
-    hints: Mapping[str, str] | None = None,
-    fragments: frozenset[str] | None = None,
-) -> dict[str, Any]:
-    """Just the JSON Schema half of :func:`params_view`."""
-    return params_view(params, hints=hints, fragments=fragments)[1]

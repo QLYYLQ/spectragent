@@ -404,13 +404,13 @@ class TestTheTracesOwnLedger:
         }
         write_source(tmp_path, "run-a", steps=1, verdicts=verdicts)
         for need, kept in [
-            ({"evaluator_id": "exact_match"}, True),
-            ({"evaluator_id": "exact_match", "label": 0}, True),
-            ({"evaluator_id": "exact_match", "slug": "exact_match-strict"}, False),
-            ({"evaluator_id": "exact_match", "slug": "exact_match-loose"}, True),
-            ({"evaluator_id": "exact_match", "slug": "exact_match-strict", "label": 0}, True),
+            (RequireEval(evaluator_id="exact_match"), True),
+            (RequireEval(evaluator_id="exact_match", label=0), True),
+            (RequireEval(evaluator_id="exact_match", slug="exact_match-strict"), False),
+            (RequireEval(evaluator_id="exact_match", slug="exact_match-loose"), True),
+            (RequireEval(evaluator_id="exact_match", slug="exact_match-strict", label=0), True),
         ]:
-            tasks = loader(tmp_path, require_eval=need)  # the Composer's dict form
+            tasks = loader(tmp_path, require_eval=need)
             assert bool(tasks.task_ids()) is kept, need
 
     def test_result_json_is_never_read(self, tmp_path: Path) -> None:

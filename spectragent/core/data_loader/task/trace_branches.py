@@ -87,7 +87,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field
 
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase, TaskLoaderRegistrar
@@ -128,7 +128,6 @@ logger = logging.getLogger(__name__)
 
 #: The Loop-input key ``BranchLoop`` declares.
 CHECKPOINT_KEY = "checkpoint"
-_REQUIRE_EVAL: TypeAdapter[RequireEval] = TypeAdapter(RequireEval)
 
 
 class TraceBranchesTaskLoader(TaskLoaderBase):
@@ -298,12 +297,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             )
         self.branches_per_step = branches_per_step
         self.agent_outcome = agent_outcome
-        # The Composer hands a nested knob over as a dict; Python callers pass the config.
-        self.require_eval = (
-            require_eval
-            if require_eval is None or isinstance(require_eval, RequireEval)
-            else _REQUIRE_EVAL.validate_python(require_eval)
-        )
+        self.require_eval = require_eval
         self.require_archive = tuple(require_archive)
         self.on_unbranchable = on_unbranchable
         self.task_variants = task_variants

@@ -74,14 +74,6 @@ class SourceRun:
         return self._checkpoint
 
     @property
-    def trace_dir(self) -> Path:
-        return self._trace.trace_dir
-
-    @property
-    def run_id(self) -> str:
-        return self._trace.run_id
-
-    @property
     def name(self) -> str:
         """How errors name the source: its run id and directory."""
         return f"run {self._trace.run_id!r} ({self._trace.trace_dir})"

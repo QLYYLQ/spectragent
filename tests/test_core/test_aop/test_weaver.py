@@ -48,21 +48,6 @@ class _MockLLM:
 class TestWeaverIndex:
     """Weaver builds intercept index from hooks."""
 
-    def test_empty_hooks(self) -> None:
-        weaver = Weaver([])
-        assert weaver.intercepted_methods == {}
-
-    def test_index_built(self) -> None:
-        hook = _MockHook(
-            "h1",
-            [
-                Intercept("observe", role="env", advice="after"),
-            ],
-        )
-        weaver = Weaver([hook])
-        assert "env" in weaver.intercepted_methods
-        assert "observe" in weaver.intercepted_methods["env"]
-
     @pytest.mark.parametrize("handler", [None, 3])
     def test_missing_or_noncallable_handler_is_refused(self, handler) -> None:
         """Hook declares intercept but has no matching handler method."""

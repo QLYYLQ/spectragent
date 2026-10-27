@@ -3974,7 +3974,7 @@ round-trip 在渲染里做（它要学生在这一步的坐标系），其余的
 
 - **开关**：导出器的 `wait_actions: keep | drop_when_capped`（`export/settings.py::WaitActions`），与 `thought_index_refs` 一样是整形样本的选项，不是源的筛选。默认 `keep`：与此前完全相同，不读 `capture_state`、不调模型。发布的 `configs/flywheel/export_sft.yaml` 用 `keep`，所以脚本化的度量演练（`tests/_helpers/flywheel_rehearsal.py`）不需要 API key。
 - **哪一步的采集算截断**：策略步 k 的观测里有平台中立的采集状态（注册类是 `CaptureStateFragment` 的子类的 fragment，§4.4 "跨平台采集状态"；browser 上是 `browser.capture_state`），它的 `settle_state.outcome == "capped"`（`pending` 是什么都算）。fragment 键的前缀是采集它的 capability。没有采集状态的步（没协商、不在录制范围里、这一项采集失败、等待关掉了）原样保留：没有证据就不改。
-- **哪些动作算等待**：由动作自己声明（与 §4.5 "参数的含义" 同一条原则：含义只在声明处写一次）：`ActionBase.only_waits: ClassVar[bool]`，只让时间过去、不碰环境的动作为 `True`（`browser.wait`），其余为 `False`。导出按录下的全限定名（守卫限定过的名字）在 `ActionRegistrar` 里找到动作类读它（`core/actions/_registrar.py::is_wait_action`），从不按名字或后缀认。去掉的只是与截断的采集状态同一个 capability（键的前缀，`ActionBase.source`）的等待动作。
+- **哪些动作算等待**：由动作自己声明（与 §4.5 "参数的含义" 同一条原则：含义只在声明处写一次）：`ActionBase.only_waits: ClassVar[bool]`，只让时间过去、不碰环境的动作为 `True`（`browser.wait`），其余为 `False`。导出按录下的全限定名（守卫限定过的名字）在 `ActionRegistrar` 里找到动作类读它（`core/actions/_registrar.py::is_wait_action`），从不按名字或后缀认。去掉的只是与截断的采集状态同一个 capability（键的前缀）的等待动作。
 - **去掉什么**：可导出的策略步 k 的采集被截断时，去掉 k 里每一个**执行了而且成功**的等待动作，连同它的结果。
   - **失败的等待留下。** 它的失败是 teacher 的错（例如秒数超过 `max_seconds`），记录用它说明后面的动作为什么没执行（`skipped_actions`，§4.1 "一步里有动作失败，这一步就停下"）。"等待后面跟着跳过的动作"一定是这种情形，因为跳过的动作只跟在失败的动作后面：这一步就原样保留，`skipped_actions` 不变，学生学到的仍是那条停在失败处的回复。
   - **跳过的尾部里的等待留下。** 它没执行；跳过的尾部是 teacher 的回复在失败之后的部分，导出照录（"可导出的步与 `CanonicalStepSample`" 的 `teacher_actions`）。

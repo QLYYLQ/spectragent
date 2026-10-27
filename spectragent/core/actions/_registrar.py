@@ -150,11 +150,6 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
         """Fully-qualified registry key (e.g. ``"browser.click"``)."""
         return self.__registry_key__
 
-    @property
-    def source(self) -> str:
-        """First segment of ``__registry_key__`` — the owning capability."""
-        return self.__registry_key__.split(".", 1)[0]
-
     def descriptor(self, **context: Any) -> ActionDescriptor:
         """This action as the prompt and the schema see it.
 

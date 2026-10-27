@@ -227,21 +227,3 @@ class Weaver:
 
         if dead:
             raise DeadInterceptError(dead=dead)
-
-    @property
-    def claimed_roles(self) -> frozenset[str]:
-        """Roles handed to :meth:`wrap` so far."""
-        return frozenset(self._claimed_roles)
-
-    @property
-    def declared_roles(self) -> frozenset[str]:
-        """Roles any active hook declares an interception for."""
-        return frozenset(role for role, _ in self._index)
-
-    @property
-    def intercepted_methods(self) -> dict[str, list[str]]:
-        """Return {role: [method_names]} for introspection."""
-        result: dict[str, list[str]] = {}
-        for role, method in self._index:
-            result.setdefault(role, []).append(method)
-        return {k: sorted(v) for k, v in result.items()}

@@ -1198,7 +1198,6 @@ class TestPartialSteps:
         partial = hook.error_kwargs["partial_steps"]
         assert [r.step for r in partial] == [0, 1]
         assert result.metrics.steps == 2
-        assert runtime.step_records == partial
 
 
 class TestExecutionTiming:

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spectragent.core.trace.models import RecordedCallMetrics, RecordedLLMCall, TraceStatus
+from spectragent.core.trace.models import RecordedLLMCall, TraceStatus
 from spectragent.schemas.step_record import TokenUsage
 
 if TYPE_CHECKING:
@@ -129,25 +129,6 @@ def recorded_usage(
     )
 
 
-def reported_usage(call: RecordedLLMCall | RecordedCallMetrics) -> TokenUsage | None:
-    """What *call*'s provider reported, by the step record's rule; ``None`` when it reported nothing.
-
-    A completed call's ``completion.usage``, a failed or cancelled call's
-    ``failure.usage``.
-    """
-    if isinstance(call, RecordedCallMetrics):
-        return TokenUsage.from_llm_usage(call.usage)
-    if call.kind == "decision" and call.result is not None:
-        usage = call.result.usage
-    elif call.kind == "chat" and call.completion is not None:
-        usage = call.completion.usage
-    elif call.failure is not None:
-        usage = call.failure.usage
-    else:
-        usage = None
-    return TokenUsage.from_llm_usage(usage)
-
-
 def _committed_calls(trace: RunTrace) -> list[RecordedLLMCall]:
     return [call for entry in trace.manifest.steps for call in trace.llm_messages(entry.step)]
 
@@ -157,5 +138,4 @@ __all__ = [
     "RunUsage",
     "recorded_calls",
     "recorded_usage",
-    "reported_usage",
 ]

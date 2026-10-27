@@ -33,7 +33,7 @@ from spectragent.schemas.observation import build_observation_model
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.step_record import StepRecord, TokenUsage
-from tests._helpers.trace_builder import as_chat, required
+from tests._helpers.trace_builder import as_chat, persisted, required
 
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
@@ -113,7 +113,7 @@ async def _call(
 
 async def _seal(writer: TraceWriter, result: Any, *, args: tuple, kwargs: dict) -> None:
     await writer.after_record_step(result, args=args, kwargs=kwargs)
-    await writer.flush()
+    await persisted(writer)
 
 
 async def _start(writer: TraceWriter, **kwargs: Any) -> Path:
@@ -318,7 +318,7 @@ class TestTraceWriterLifecycle:
 
         trace = RunTrace(run_dir)
         assert trace.manifest.last_step_completed == 2
-        assert writer.health.committed_steps == 3
+        assert (await persisted(writer)).committed_steps == 3
         assert [as_chat(trace.llm_messages(i)[0]).messages[0].text for i in range(3)] == [
             "step 0",
             "step 1",
@@ -881,20 +881,6 @@ class TestTrailingCalls:
         assert trace.trailing_calls == []
         assert all(not entry.llm_calls for entry in trace.manifest.trailing)
         assert trace.manifest.status == TraceStatus.COMPLETE
-
-    async def test_explicit_flush_does_not_seal_an_unfinished_step(self, writer):
-        run_dir = await _start(writer)
-        await _call(writer, "before the flush")
-        await writer.flush()
-        await _call(writer, "after the flush")
-        await _seal(writer, None, args=(_step(0),), kwargs={})
-        await writer.on_run_end(result=_result())
-        trace = RunTrace(run_dir)
-        assert trace.trailing_calls == []
-        assert [(call.call, as_chat(call).messages[0].text) for call in trace.llm_messages(0)] == [
-            (0, "before the flush"),
-            (1, "after the flush"),
-        ]
 
     async def test_calls_of_a_step_that_failed_to_commit_are_kept_for_run_end(
         self, writer, monkeypatch

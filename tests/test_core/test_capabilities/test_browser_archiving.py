@@ -41,7 +41,7 @@ from spectragent.schemas.action import Action
 from tests._helpers.archive_contract import ArchiveHarness
 from tests._helpers.browser_archive import OwnedBrowser, archiving_capability, settle
 from tests._helpers.fake_cdp import FakeBrowser
-from tests._helpers.trace_builder import agent_result, step_record
+from tests._helpers.trace_builder import agent_result, required, step_record
 
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
@@ -539,7 +539,8 @@ class TestWiring:
             driver.browser.hold("DOM.getDocument", session_id=driver.page_session())
             await driver.produce(1)
             await writer.after_record_step(None, args=(step_record(1),), kwargs={})
-            await writer.on_run_end(result=agent_result())
+            result = agent_result()
+            await writer.on_run_end(result=result)
         finally:
             await harness.aclose()
 
@@ -550,7 +551,8 @@ class TestWiring:
         assert trace.archive_files(1, "browser.storage"), "storage evidence of step 1 kept"
         assert trace.archive_files(1, "browser.dom_raw") == []
         assert trace.archive_files(0, "browser.dom_raw")
-        lost = [problem for problem in writer.health.problems if problem.step == 1]
+        health = required(result.metrics.recording_health)
+        lost = [problem for problem in health.problems if problem.step == 1]
         assert lost and {problem.channel for problem in lost} == {"browser.dom_raw"}
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == 0

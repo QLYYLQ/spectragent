@@ -7,16 +7,15 @@ same bytes.
 """
 
 import gzip
-import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from spectragent.core.archive import canonical_json as canonical_text
+
 
 def canonical_json(value: Any) -> bytes:
-    """*value* as compact JSON with sorted keys (UTF-8)."""
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    """*value* as compact JSON with sorted keys, as UTF-8 bytes (:func:`canonical_text`)."""
+    return canonical_text(value).encode("utf-8")
 
 
 def jsonl(lines: Sequence[Mapping[str, Any]]) -> bytes:
