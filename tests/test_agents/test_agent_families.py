@@ -60,9 +60,6 @@ def _define_family() -> tuple[type[AgentBase], type[AgentBase], type[AgentBase]]
         def system_prompt(self) -> Any:
             return None
 
-        def get_action_space(self) -> list[Any]:
-            return []
-
     @dataclass
     class Dom(ProbeFamily):
         # No ``__registry_key__``: derived from the root, ``probe_family.dom``.
@@ -192,9 +189,6 @@ def test_keys_without_a_separator_are_unchanged():
         def system_prompt(self) -> Any:
             return None
 
-        def get_action_space(self) -> list[Any]:
-            return []
-
     assert AgentRegistrar.get("standalone_probe") is StandaloneProbe
     assert agent_family("standalone_probe") == "standalone_probe"
     assert agent_prompt_dir("ui_tars") == AGENT_PROMPT_ROOT / "ui_tars"
@@ -208,7 +202,8 @@ def test_a_member_reads_its_family_roots_prompt_directory():
 
     assert AGENT_KEY_SEPARATOR == "."
     assert agent_family("probe_family.dom") == _ROOT
-    assert dom().prompt_dir == dom_vision().prompt_dir == AGENT_PROMPT_ROOT / _ROOT
+    assert agent_prompt_dir(dom().agent_id) == agent_prompt_dir(dom_vision().agent_id)
+    assert agent_prompt_dir(dom().agent_id) == AGENT_PROMPT_ROOT / _ROOT
 
 
 def test_a_dotted_key_loads_the_family_templates():
@@ -265,4 +260,4 @@ def test_a_dotted_agent_id_stays_a_flat_discriminator_value():
     assert type(agent) is AgentRegistrar.get("probe_family.dom")
     assert agent.agent_id == "probe_family.dom"
     assert (agent.shared_knob, agent.member_knob) == (3, "y")
-    assert agent.prompt_dir == AGENT_PROMPT_ROOT / _ROOT
+    assert agent_prompt_dir(agent.agent_id) == AGENT_PROMPT_ROOT / _ROOT

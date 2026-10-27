@@ -3,7 +3,8 @@ This implementation is based on the OpenAI types, while removing all the parts t
 """
 
 # region - Content parts
-from typing import Literal
+import base64
+from typing import Literal, Self
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -76,6 +77,18 @@ class ImageURL(BaseModel):
 class ContentPartImageParam(BaseModel):
     image_url: ImageURL
     type: Literal["image_url"] = "image_url"
+
+    @classmethod
+    def from_bytes(
+        cls,
+        data: bytes,
+        *,
+        media_type: SupportedImageMediaType,
+        detail: Literal["auto", "low", "high"],
+    ) -> Self:
+        """Inline image bytes as a base64 ``data:`` URL labelled *media_type*."""
+        url = f"data:{media_type};base64,{base64.b64encode(data).decode('ascii')}"
+        return cls(image_url=ImageURL(url=url, detail=detail, media_type=media_type))
 
     def __str__(self) -> str:
         return str(self.image_url)

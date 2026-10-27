@@ -145,10 +145,9 @@ class TestSlotConformance:
         assert not hasattr(agent, "step")
         assert not hasattr(agent, "build_messages")
 
-    def test_agent_id_and_domain(self) -> None:
+    def test_agent_id(self) -> None:
         agent = _make_agent()
         assert agent.agent_id == "ui_tars"
-        assert agent.domain == "web_navigation_vision"
 
 
 class TestWiring:
@@ -246,7 +245,7 @@ class TestPrepare:
         assert len(seed) == 1
         assert isinstance(seed[0], SystemMessage)
         # Pure builder — agent memory remains untouched.
-        assert agent.memory.get_messages() == []
+        assert agent.memory.get_context_messages() == []
 
 
 class TestBuildReactPrompt:

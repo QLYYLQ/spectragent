@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from spectragent.schemas.action import ActionDescriptor
 from spectragent.schemas.prompt import PromptSnapshot
 
 
@@ -40,15 +39,6 @@ class BaseAgent(Protocol):
         ...
 
     @property
-    def domain(self) -> str:
-        """Domain identifier (e.g. 'web_navigation', 'software_engineering')."""
-        ...
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         """System prompt snapshot from the last run."""
-        ...
-
-    def get_action_space(self) -> list[ActionDescriptor]:
-        """Declare the actions this agent can emit."""
         ...

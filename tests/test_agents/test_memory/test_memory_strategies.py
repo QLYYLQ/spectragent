@@ -47,8 +47,8 @@ class TestSimpleMemoryKeepsSystem:
                 UserMessage(content="u2"),
             ]
         )
-        assert _roles(mem.get_messages()) == ["system", "assistant", "user"]
-        assert mem.get_messages()[0].content == "SYS"
+        assert _roles(mem.get_context_messages()) == ["system", "assistant", "user"]
+        assert mem.get_context_messages()[0].content == "SYS"
 
     def test_add_message_one_at_a_time_also_keeps_system(self) -> None:
         mem = SimpleMemory(max_messages=3)
@@ -60,7 +60,7 @@ class TestSimpleMemoryKeepsSystem:
             AssistantMessage(content="a2"),
         ]:
             mem.add_message(msg)
-        stored = mem.get_messages()
+        stored = mem.get_context_messages()
         assert stored[0].content == "SYS"
         assert len(stored) == 3
         assert _roles(stored) == ["system", "user", "assistant"]
@@ -77,7 +77,7 @@ class TestSimpleMemoryKeepsSystem:
             ]
         )
         # Oldest non-system dropped; the system message stays where it was.
-        assert [m.content for m in mem.get_messages()] == ["SYS", "u2", "u3", "u4"]
+        assert [m.content for m in mem.get_context_messages()] == ["SYS", "u2", "u3", "u4"]
 
     def test_keep_system_false_restores_plain_truncation(self) -> None:
         mem = SimpleMemory(max_messages=3, keep_system=False)
@@ -89,7 +89,7 @@ class TestSimpleMemoryKeepsSystem:
                 UserMessage(content="u2"),
             ]
         )
-        assert _roles(mem.get_messages()) == ["user", "assistant", "user"]
+        assert _roles(mem.get_context_messages()) == ["user", "assistant", "user"]
 
     def test_all_system_messages_kept_when_over_budget(self) -> None:
         mem = SimpleMemory(max_messages=2)
@@ -101,12 +101,12 @@ class TestSimpleMemoryKeepsSystem:
                 UserMessage(content="u1"),
             ]
         )
-        assert [m.content for m in mem.get_messages()] == ["SYS A", "SYS B", "SYS C"]
+        assert [m.content for m in mem.get_context_messages()] == ["SYS A", "SYS B", "SYS C"]
 
     def test_under_cap_is_untouched(self) -> None:
         mem = SimpleMemory(max_messages=10)
         mem.add_messages([SystemMessage(content="SYS"), UserMessage(content="u1")])
-        assert mem.message_count == 2
+        assert len(mem.get_context_messages()) == 2
 
     def test_context_messages_include_system(self) -> None:
         mem = SimpleMemory(max_messages=2)

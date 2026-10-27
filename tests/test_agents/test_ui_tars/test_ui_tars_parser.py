@@ -244,7 +244,7 @@ class TestTheRealFailures:
         assert result.agent_done.value == "done"
         fed_back = [
             m.content
-            for m in memory.get_messages()
+            for m in memory.get_context_messages()
             if isinstance(m, UserMessage) and isinstance(m.content, str)
         ]
         assert any("[SYSTEM]" in text and "The reply was empty." in text for text in fed_back)

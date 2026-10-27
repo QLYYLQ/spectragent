@@ -88,10 +88,6 @@ class TokenBudgetMemory(MemoryBase):
     # ── internal state ─────────────────────────────────────────
     _messages: list[BaseMessage] = field(default_factory=list, init=False, repr=False)
 
-    @property
-    def memory_type(self) -> str:
-        return "token_budget"
-
     def _estimate_tokens(self, message: BaseMessage) -> int:
         estimate_text = TEXT_TOKEN_ESTIMATORS[self.token_estimator]
         content = message.content
@@ -126,11 +122,8 @@ class TokenBudgetMemory(MemoryBase):
     def add_messages(self, messages: Sequence[BaseMessage]) -> None:
         self._messages.extend(messages)
 
-    def get_messages(self) -> list[BaseMessage]:
-        return list(self._messages)
-
-    def get_context_messages(self, *, max_tokens: int | None = None) -> list[BaseMessage]:
-        budget = max_tokens if max_tokens is not None else self.max_tokens
+    def get_context_messages(self) -> list[BaseMessage]:
+        budget = self.max_tokens
         if not self._messages:
             return []
 
@@ -161,7 +154,3 @@ class TokenBudgetMemory(MemoryBase):
 
     def clear(self) -> None:
         self._messages.clear()
-
-    @property
-    def message_count(self) -> int:
-        return len(self._messages)

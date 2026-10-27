@@ -49,6 +49,7 @@ from spectragent.agents.prompts import (
     AGENT_PROMPT_ROOT,
     PROMPT_SUFFIX,
     agent_family,
+    agent_prompt_dir,
     agent_prompt_variants,
     load_prompt,
     template_variables,
@@ -230,14 +231,12 @@ def test_every_prompt_directory_is_exactly_a_family_root():
 def test_prompt_dir_is_derived_from_the_registry_key(agent_id):
     """The evaluator twin, on the agent side (``test_evaluator/test_registrar``).
 
-    Reads the property an agent resolves prompts through rather than the
-    module function, so ``AgentBase.prompt_dir`` has a caller — and asserts
-    the directory exists, which is what catches an agent registered with
-    no prompts at all (the key-set check above only runs the other way).
+    Asserts the directory exists, which is what catches an agent registered
+    with no prompts at all (the key-set check above only runs the other way).
     """
-    agent = AgentRegistrar.get(agent_id)()
-    assert agent.prompt_dir == AGENT_PROMPT_ROOT / agent_family(agent_id)
-    assert agent.prompt_dir.is_dir()
+    directory = agent_prompt_dir(agent_id)
+    assert directory == AGENT_PROMPT_ROOT / agent_family(agent_id)
+    assert directory.is_dir()
 
 
 def test_no_agent_carries_its_own_prompt_directory_constant():

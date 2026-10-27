@@ -14,7 +14,6 @@ from typing import get_type_hints
 import yaml
 
 from spectragent.agents import AgentRegistrar
-from spectragent.agents.prompts import AGENT_PROMPT_ROOT
 from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.coordinate_frames import declared_space
@@ -87,8 +86,9 @@ def test_only_dom_vision_declares_a_grid() -> None:
 
 
 def test_members_share_the_family_prompt_directory() -> None:
-    assert SkyvernDomAgent().prompt_dir == SkyvernDomVisionAgent().prompt_dir
-    assert SkyvernDomAgent().prompt_dir == AGENT_PROMPT_ROOT / "skyvern"
+    text, ref = SkyvernDomAgent().load_prompt("system_prompt")
+    assert (text, ref) == SkyvernDomVisionAgent().load_prompt("system_prompt")
+    assert ref.path == "agents/skyvern/system_prompt.md"
 
 
 def test_a_member_composes_from_yaml_with_its_own_knobs() -> None:

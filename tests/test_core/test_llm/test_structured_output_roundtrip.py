@@ -161,7 +161,7 @@ class TestHallucinatedVerbRejection:
         agent = _prepared_agent()
         raw = json.dumps({"memory": "m", "action": [{"totally_hallucinated_verb": {}}]})
         with pytest.raises(ParseError) as exc:
-            read_reply(agent, raw)
+            read_reply(agent, raw, space_of(_descriptors()))
 
         detail = exc.value.detail
         assert "action 1, totally_hallucinated_verb is not an action this run executes" in detail
@@ -180,16 +180,16 @@ class TestHallucinatedVerbRejection:
     def test_negotiated_out_verb_is_rejected(self) -> None:
         """A real action the capability did not offer this run."""
         agent = BrowserUseDomAgent()
+        space = space_of(_descriptors("browser.click"))
         agent.prepare(
             task="t",
             execution_limits=ReactLoop().execution_limits(),
             fragment_formats=dom_formats(),
-            action_space=space_of(_descriptors("browser.click")),
+            action_space=space,
         )
+        reply = json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
         with pytest.raises(ParseError, match="action 1, browser.navigate is not an action"):
-            read_reply(
-                agent, json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
-            )
+            read_reply(agent, reply, space)
 
     def test_before_prepare_there_is_nothing_to_validate_against(self) -> None:
         """No ``prepare()`` → no negotiated set → refuse, loudly.

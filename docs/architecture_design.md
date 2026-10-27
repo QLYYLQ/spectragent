@@ -313,9 +313,6 @@ class SWEAgent(AgentBase):
         "observation": ("observation", ["terminal"], ["filesystem"]),
     }
 
-    # 共享领域知识（一份代码）
-    domain: str = "software_engineering"
-
     # 满足 ReactLoop.__required_slots__ 的方法
     async def build_react_prompt(self, obs, *, context: ReactPromptContext): ...
     def parse_react_output(self, output): ...

@@ -161,13 +161,14 @@ class TestPromptVocabulary:
         which parsed to ``browser.COMPLETE`` and was rejected — the agent was
         structurally incapable of ending a task.
         """
-        agent, prompt, _descriptors, guarded_act = prepared
+        agent, prompt, descriptors, guarded_act = prepared
         assert "`browser.done`" in prompt and "extracted_content" in prompt
 
         (action,) = read_reply(
             agent,
             '{"actions": [{"reasoning": "found it", "action": '
             '{"browser.done": {"extracted_content": "42", "success": false}}}]}',
+            space_of(descriptors, coordinate_space=declared_space(agent)),
         )
         assert action == Action(
             name="browser.done", params={"extracted_content": "42", "success": False}

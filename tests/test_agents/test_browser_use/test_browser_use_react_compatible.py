@@ -170,6 +170,11 @@ def _prepared(
     return agent
 
 
+def _read(agent: BrowserUseAgent, reply: object) -> list[Action]:
+    """*reply* as an agent from :func:`_prepared` reads it, with the space it was prepared with."""
+    return read_reply(agent, reply, space_of(_descriptors()))
+
+
 def _reply(*items: dict[str, Any]) -> str:
     import json as _json
 
@@ -193,10 +198,9 @@ class TestSlotConformance:
         assert not hasattr(agent, "step")
         assert not hasattr(agent, "build_messages")
 
-    def test_agent_id_and_domain(self) -> None:
+    def test_agent_id(self) -> None:
         agent = _make_agent()
         assert agent.agent_id == "browser_use.dom"
-        assert agent.domain == "web_navigation"
 
 
 # ── Wiring ────────────────────────────────────────────────────────────
@@ -264,9 +268,8 @@ class TestPrepare:
         assert isinstance(seed[0], SystemMessage)
         assert agent._system_prompt_text  # populated
         assert not hasattr(agent, "_task")  # task lives on obs.task now
-        assert agent.get_action_space() == descriptors
         # prepare is a pure builder — agent memory remains untouched.
-        assert agent.memory.get_messages() == []
+        assert agent.memory.get_context_messages() == []
 
     def test_prepare_builds_prompt_snapshot(self) -> None:
         agent = _make_agent()
@@ -506,7 +509,7 @@ class TestParseReactOutput:
 
     def test_multi_action_output(self) -> None:
         agent = _prepared()
-        actions = read_reply(
+        actions = _read(
             agent,
             _reply(
                 {"browser.click": {"index": 1}},
@@ -529,9 +532,7 @@ class TestParseReactOutput:
         that writes ``null`` is saying exactly that.
         """
         agent = _prepared()
-        (action,) = read_reply(
-            agent, _reply({"browser.type": {"index": 2, "text": "x", "clear": None}})
-        )
+        (action,) = _read(agent, _reply({"browser.type": {"index": 2, "text": "x", "clear": None}}))
         assert "clear" not in action.params
 
     def test_parses_raw_json_string_matching_prompt_template(self) -> None:
@@ -547,7 +548,7 @@ class TestParseReactOutput:
                 "action": [{"browser.navigate": {"url": "https://www.example.com"}}],
             }
         )
-        actions = read_reply(agent, payload)
+        actions = _read(agent, payload)
         assert len(actions) == 1
         assert actions[0].name == "browser.navigate"
         assert actions[0].params == {"url": "https://www.example.com"}
@@ -557,7 +558,7 @@ class TestParseReactOutput:
 
         agent = _prepared()
         with pytest.raises(ParseError, match="action: List should have at least 1 item"):
-            read_reply(agent, _reply())
+            _read(agent, _reply())
 
     def test_unparseable_text_raises_parse_error(self) -> None:
         # Regression: parse failures used to return a "done" action
@@ -569,7 +570,7 @@ class TestParseReactOutput:
         with pytest.raises(
             ParseError, match="^the reply is not valid JSON: expected ident at line 1 column 2$"
         ):
-            read_reply(agent, "not valid json at all")
+            _read(agent, "not valid json at all")
 
     def test_the_parser_reads_only_a_validated_reply(self) -> None:
         """Text is the framework's to validate and, not fitting, to refuse in its words."""
@@ -585,7 +586,7 @@ class TestParseReactOutput:
         executor read another.
         """
         agent = _prepared()
-        (action,) = read_reply(
+        (action,) = _read(
             agent,
             _reply({"browser.done": {"extracted_content": "the final answer", "success": True}}),
         )
@@ -601,7 +602,7 @@ class TestParseReactOutput:
             ParseError,
             match="action 1, browser.done: extracted_content: Field required; text: Extra inputs",
         ):
-            read_reply(agent, _reply({"browser.done": {"text": "answer"}}))
+            _read(agent, _reply({"browser.done": {"text": "answer"}}))
 
 
 class TestOutputModel:
@@ -652,7 +653,7 @@ class TestFrameElementIndices:
 
     async def test_through_the_text_path(self) -> None:
         agent = _prepared()
-        (action,) = read_reply(agent, _reply({"browser.click": {"index": self.KEY}}))
+        (action,) = _read(agent, _reply({"browser.click": {"index": self.KEY}}))
         assert action.params == {"index": self.KEY}
         assert type(action.params["index"]) is int
 

@@ -39,20 +39,13 @@ class SlidingWindowMemory(MemoryBase):
     # ── internal state ─────────────────────────────────────────
     _messages: list[BaseMessage] = field(default_factory=list, init=False, repr=False)
 
-    @property
-    def memory_type(self) -> str:
-        return "sliding_window"
-
     def add_message(self, message: BaseMessage) -> None:
         self._messages.append(message)
 
     def add_messages(self, messages: Sequence[BaseMessage]) -> None:
         self._messages.extend(messages)
 
-    def get_messages(self) -> list[BaseMessage]:
-        return list(self._messages)
-
-    def get_context_messages(self, *, max_tokens: int | None = None) -> list[BaseMessage]:
+    def get_context_messages(self) -> list[BaseMessage]:
         if not self._messages:
             return []
 
@@ -75,7 +68,3 @@ class SlidingWindowMemory(MemoryBase):
 
     def clear(self) -> None:
         self._messages.clear()
-
-    @property
-    def message_count(self) -> int:
-        return len(self._messages)

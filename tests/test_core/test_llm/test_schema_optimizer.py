@@ -155,14 +155,3 @@ class TestFlattening:
 
         schema = SchemaOptimizer.create_optimized_json_schema(_Described)
         assert schema["properties"]["field_a"]["description"] == "A very important field"
-
-    def test_remove_defaults_and_min_items(self) -> None:
-        class _WithConstraints(BaseModel):
-            values: list[int] = Field(default_factory=lambda: [1], min_length=1)
-
-        schema = SchemaOptimizer.create_optimized_json_schema(
-            _WithConstraints, remove_min_items=True, remove_defaults=True
-        )
-        for node in _walk(schema):
-            assert "minItems" not in node
-            assert "default" not in node

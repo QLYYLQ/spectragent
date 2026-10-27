@@ -213,7 +213,7 @@ class TestTheProductionPath:
         # The second request is the turn after a reply that carried reasoning.
         assert with_reasoning.bodies == without.bodies
         _assert_never_sent(with_reasoning.bodies)
-        assert all(_THINKING not in str(m.content) for m in memory.get_messages())
+        assert all(_THINKING not in str(m.content) for m in memory.get_context_messages())
 
 
 # ── Every shipped agent: the turn it builds after such a reply ────────
@@ -368,4 +368,4 @@ async def test_a_shipped_agent_builds_the_same_next_turn(agent_kind: str) -> Non
     assert len(with_reasoning.bodies) == 2
     assert with_reasoning.bodies == without.bodies
     _assert_never_sent(with_reasoning.bodies)
-    assert all(_THINKING not in str(m.content) for m in memory.get_messages())
+    assert all(_THINKING not in str(m.content) for m in memory.get_context_messages())

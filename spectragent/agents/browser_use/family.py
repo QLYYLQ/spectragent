@@ -252,18 +252,8 @@ class BrowserUseAgent(AgentBase):
         return self.__registry_key__
 
     @property
-    def domain(self) -> str:
-        return "web_navigation"
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
-
-    def get_action_space(self) -> list[ActionDescriptor]:
-        """Domain action descriptors. The Capability owns the actual
-        executable action set; this method just exposes them for
-        introspection."""
-        return list(self._action_space.descriptors)
 
     # ── Negotiation ────────────────────────────────────────────
 

@@ -13,7 +13,6 @@ this member's whole part in coordinates (``core/loops/coordinate_frames.py``).
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal
@@ -26,7 +25,6 @@ from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     ContentPartTextParam,
-    ImageURL,
     UserMessage,
 )
 from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame
@@ -140,15 +138,10 @@ class BrowserUseDomVisionAgent(BrowserUseAgent):
             )
         body = self._build_step_text(observation, frame, screenshot_note=note)
         media_type = image_media_type(image) or "image/png"
-        b64 = base64.b64encode(image).decode()
         content: list[Any] = [
             ContentPartTextParam(text=body),
-            ContentPartImageParam(
-                image_url=ImageURL(
-                    url=f"data:{media_type};base64,{b64}",
-                    detail=self.vision_detail,
-                    media_type=media_type,
-                ),
+            ContentPartImageParam.from_bytes(
+                image, media_type=media_type, detail=self.vision_detail
             ),
         ]
         return [UserMessage(content=content, cache=True)]
