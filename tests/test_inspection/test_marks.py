@@ -24,6 +24,7 @@ from spectragent.inspection.marks import (
     default_requests,
     marks_on,
     observation_marks,
+    observation_pointer,
     step_marks,
 )
 from spectragent.schemas.action import Action, ActionResult
@@ -173,6 +174,40 @@ def test_a_measured_point_wins_and_a_scroll_follows_the_pointer(run: RunTrace) -
     assert (clicked.x, clicked.y, clicked.measured) == (60, 40, True)
     assert clicked.text == "点击 (30, 20) → 按钮“最多播放”"
     assert (scroll.x, scroll.y) == (60, 40)  # where the click left the pointer
+
+
+def test_observation_pointer_keeps_the_position_before_the_recorded_actions(run: RunTrace) -> None:
+    pointer = observation_pointer(run, 1)
+    assert (pointer.status, pointer.x, pointer.y, pointer.source) == (
+        "known",
+        12,
+        14,
+        "capture_state",
+    )
+    assert (pointer.viewport_x, pointer.viewport_y) == (6, 7)
+
+
+@pytest.mark.parametrize("pointer", [None, (6, 7)])
+def test_pointer_measurement_and_unknown_image_geometry_stay_distinct(
+    tmp_path: Path, pointer
+) -> None:
+    path = write_run(
+        tmp_path,
+        "pointer-state",
+        task="t",
+        viewport=(0, 0),
+        pointer=pointer,
+        steps=[StepSpec(step=0, image=IMAGE, actions=[click(3, 4, "link", "")])],
+    )
+    found = observation_pointer(RunTrace(path), 0)
+    assert found.x is None and found.y is None
+    assert found.problem is not None
+    if pointer is None:
+        assert found.status == "unknown" and "位置未知" in found.problem
+        assert found.viewport_x is None and found.viewport_y is None
+    else:
+        assert found.status == "known" and "视口" in found.problem
+        assert (found.viewport_x, found.viewport_y) == pointer
 
 
 def test_sensitive_text_is_withheld_and_done_reads_as_an_answer(run: RunTrace) -> None:

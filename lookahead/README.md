@@ -676,17 +676,22 @@ frame are context. The task, current actions and full recorded replies remain
 available; URLs, run and step numbers and raw parameters are technical details.
 If the next screen is blank or not loaded, press 跳过 and add a note.
 
-Both gold and fork review items expose **轨迹历史档案** below the current
-observation. Cards show this run's committed steps through the item's anchor
-step, including the current step and no later steps. Hover or focus a card to
+Both gold and fork review items expose **档案** below the current
+observation. Cards show all of this run's committed steps, grouped before,
+at and after the item's anchor step. Later evidence helps the reviewer judge
+what happened; it was not available to the model at the anchor step. Hover or focus a card to
 preview it; click to pin and load its full observation fragments, recorded
 reply, available native thinking, actions and results. The side image shows
 the same step before an action, selectable when several action frames exist.
+Both images align at the top. Independent checkboxes display action locations
+and the pointer position recorded at capture time, using each image's geometry.
+Missing pointer evidence stays unknown; an action's resulting pointer position
+is never substituted for a before-action reading.
 Restored steps label `source_history` as source material rather than a new
 decision or new thinking. Missing thinking and missing or timed-out frames
 remain explicit gaps. The actual model request, including the history window
 it received, loads only when expanded: the full recorded trajectory is not a
-claim that every step was in that request. History reads check the queue version
+claim that every step was in that request. Archive reads check the queue version
 and never write to the trace.
 
 Existing queue files keep the layout they were generated with. Rebuild them

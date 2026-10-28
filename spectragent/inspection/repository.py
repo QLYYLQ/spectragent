@@ -26,12 +26,15 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
 from spectragent.inspection.marks import (
+    ImagePointer,
     MarkRequest,
     action_lines,
     action_verbs,
+    before_action_marks,
     default_requests,
     marks_on,
     observation_marks,
+    observation_pointer,
 )
 from spectragent.inspection.restoration import (
     restoration_gap,
@@ -55,7 +58,7 @@ class RunRepository(Protocol):
     def matches(self, key: str) -> bool: ...
     def run(self, key: str) -> dict[str, Any]: ...
     def graph(self, key: str) -> dict[str, Any]: ...
-    def trajectory(self, key: str, through: int) -> dict[str, Any]: ...
+    def trajectory(self, key: str, anchor: int) -> dict[str, Any]: ...
     def step_frames(self, key: str, index: int) -> list[dict[str, Any]]: ...
     def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes: ...
     def step(self, key: str, index: int, *, include_messages: bool = True) -> dict[str, Any]: ...
@@ -65,6 +68,7 @@ class RunRepository(Protocol):
     def has_step(self, key: str, index: int) -> bool: ...
     def archive_image(self, key: str, step: int | None, archiver: str, name: str) -> bytes: ...
     def observation_marks(self, key: str, index: int) -> dict[str, Any]: ...
+    def observation_pointer(self, key: str, index: int) -> dict[str, Any]: ...
     def image_marks(
         self,
         key: str,
@@ -592,15 +596,13 @@ class _FileRepository:
         except (TraceSchemaError, KeyError) as exc:
             raise RepositoryError(str(exc)) from exc
 
-    def trajectory(self, key: str, through: int) -> dict[str, Any]:
+    def trajectory(self, key: str, anchor: int) -> dict[str, Any]:
         trace = self._trace(key)
         try:
-            if trace.step(through) is None:
-                raise FileNotFoundError(f"Run {key} has no committed step {through}")
+            if trace.step(anchor) is None:
+                raise FileNotFoundError(f"Run {key} has no committed step {anchor}")
             steps = []
             for entry in trace.manifest.steps:
-                if entry.step > through:
-                    continue
                 record = trace.step(entry.step)
                 assert record is not None
                 steps.append(
@@ -614,10 +616,10 @@ class _FileRepository:
                 )
             return {
                 "run": key,
-                "anchor_step": through,
+                "anchor_step": anchor,
                 "steps": steps,
                 "recording": _json(trace.config.recording),
-                "missing_steps": [step for step in trace.manifest.missing_steps if step <= through],
+                "missing_steps": list(trace.manifest.missing_steps),
             }
         except (TraceSchemaError, KeyError) as exc:
             raise RepositoryError(str(exc)) from exc
@@ -634,11 +636,22 @@ class _FileRepository:
                     "outcome": frame.outcome,
                     "detail": frame.detail,
                     "has_image": frame.outcome == "captured" and frame.name is not None,
+                    "marks": _json(before_action_marks(trace, key, index, frame)),
+                    "pointer": _json(
+                        ImagePointer(
+                            width=frame.width,
+                            height=frame.height,
+                            problem="动作前截图没有独立记录鼠标位置",
+                        )
+                    ),
                 }
                 for at, frame in _action_frames(trace, index)
             ]
         except (TraceSchemaError, KeyError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
+
+    def observation_pointer(self, key: str, index: int) -> dict[str, Any]:
+        return _json(observation_pointer(self._trace(key), index))
 
     def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes:
         trace = self._trace(key)

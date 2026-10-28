@@ -1,4 +1,4 @@
-"""A review history stays inside its item, step boundary and queue version."""
+"""A review archive exposes committed steps of its opted-in run and queue version."""
 
 import json
 
@@ -66,8 +66,32 @@ def review(tmp_path):
                     )
                 ],
             ),
-            StepSpec(2, image=picture, origin="terminal"),
+            StepSpec(
+                2,
+                image=picture,
+                actions=[click(20, 30, "button", "Next")],
+                action_spans=[
+                    ActionSpan(
+                        action="browser.click_coordinate",
+                        started_at=1021,
+                        ended_at=1022,
+                        outcome="returned",
+                    )
+                ],
+                frames=[
+                    frame(
+                        "before_action",
+                        19,
+                        image=gradient(size=(256, 192)),
+                        action_index=0,
+                        action="browser.click_coordinate",
+                        requested_at=1021.1,
+                    )
+                ],
+            ),
+            StepSpec(3, image=picture, origin="terminal"),
         ],
+        viewport=(64, 48),
     )
     queue = ReviewQueue.model_validate(
         {
@@ -91,14 +115,16 @@ def review(tmp_path):
     )
 
 
-def test_history_contains_committed_prefix_and_full_record(review):
+def test_archive_contains_all_committed_steps_and_keeps_review_anchor(review):
     client, _, params = review
     response = client.get("/api/review/trajectory", params=params)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["anchor_step"] == 1
-    assert [step["index"] for step in body["steps"]] == [0, 1]
+    assert [step["index"] for step in body["steps"]] == [0, 1, 2, 3]
     assert body["steps"][0]["record"]["llm_output"] == "The complete recorded reply."
+    assert body["steps"][2]["record"]["actions"][0]["params"]["coordinate_x"] == 20
+    assert body["steps"][3]["origin"] == "terminal"
 
 
 def test_frames_follow_actual_calls_not_collection_step(review):
@@ -107,6 +133,11 @@ def test_frames_follow_actual_calls_not_collection_step(review):
     assert detail.status_code == 200, detail.text
     frames = detail.json()["frames"]
     assert len(frames) == 1 and frames[0]["id"] == "1:17:0"
+    mark = frames[0]["marks"]["sets"][0]["marks"][0]
+    assert (mark["x"], mark["y"], mark["number"]) == (20, 20, 1)
+    # The later collection step had no corresponding recorded action. The
+    # marker belongs to the call the frame actually preceded in step zero.
+    assert frames[0]["marks"]["sets"][0]["step"] == 0
     image = client.get(
         "/api/review/trajectory-image",
         params={
@@ -160,7 +191,49 @@ def test_history_requires_opt_in_and_matching_queue_version(review, path, extra)
         ("trajectory-image", {"kind": "before_action", "frame_id": "1:17:0"}),
     ],
 )
-def test_review_never_serves_steps_after_its_anchor(review, path, extra):
+def test_archive_never_serves_uncommitted_steps(review, path, extra):
     client, _, params = review
-    response = client.get(f"/api/review/{path}", params={**params, **extra, "index": 2})
+    response = client.get(f"/api/review/{path}", params={**params, **extra, "index": 99})
     assert response.status_code == 404
+
+
+def test_future_actions_observations_and_frames_are_available_with_independent_geometry(review):
+    client, _, params = review
+    detail = client.get("/api/review/trajectory-step", params={**params, "index": 2})
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    observation = body["observation_marks"]
+    assert (observation["width"], observation["height"]) == (128, 96)
+    mark = observation["sets"][0]["marks"][0]
+    assert (mark["x"], mark["y"]) == (40, 60)
+    frame_data = body["frames"][0]
+    marks = frame_data["marks"]
+    assert (marks["width"], marks["height"]) == (256, 192)
+    mark = marks["sets"][0]["marks"][0]
+    assert (mark["x"], mark["y"]) == (80, 120)
+    for kind, frame_id, expected in [
+        ("observation", None, gradient()),
+        ("before_action", frame_data["id"], gradient(size=(256, 192))),
+    ]:
+        image = client.get(
+            "/api/review/trajectory-image",
+            params={
+                **params,
+                "index": 2,
+                "kind": kind,
+                **({"frame_id": frame_id} if frame_id else {}),
+            },
+        )
+        assert image.status_code == 200 and image.content == expected
+
+
+def test_observation_pointer_is_independent_of_action_target_and_frame_pointer(review):
+    client, _, params = review
+    body = client.get("/api/review/trajectory-step", params={**params, "index": 2}).json()
+    pointer = body["observation_pointer"]
+    assert (pointer["status"], pointer["x"], pointer["y"]) == ("known", 10, 10)
+    assert (pointer["viewport_x"], pointer["viewport_y"]) == (5, 5)
+    assert pointer["source"] == "capture_state"
+    before = body["frames"][0]["pointer"]
+    assert before["status"] == "unknown" and before["x"] is None and before["y"] is None
+    assert "没有独立记录" in before["problem"]

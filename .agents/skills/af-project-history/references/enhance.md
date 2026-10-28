@@ -1,5 +1,49 @@
 # Enhance and fix work after Jev integration
 
+**Implemented on `main`, 2026-10-28.** The user requested
+humanized mouse initialization and review archive improvements. Humanized tabs
+now confirm their center starting point before the first observation; the first
+click already used the configured trajectory before this fix. `instant` keeps
+its existing behavior. Review **档案** exposes all committed steps of its opted-in
+run, grouped before/current/after the anchor, with aligned observation/action-before
+images and independent action/pointer switches. Missing action-before pointer
+evidence remains unknown. Contracts are in `architecture_design.md` §4.13 and
+the review section; raw case evidence is in
+`tmp/mouse_archive_20261028/case_evidence/`, fresh external-site validation in
+`tmp/mouse_archive_fix_20261028/live/`. The eBay case additionally reproduces a
+learned path crossing the My eBay hover menu and clicking Summary instead of
+Search; initializing the pointer does not fix that separate behavior. The user
+approved stopping a click when its target measurably changes during pointer
+movement, returning an action failure so the next policy step observes again.
+Automatic target correction, detours and retries were not selected. The contract
+is §4.13 “移动期间的目标变化”; implementation and fresh guarded-site validation
+are part of this change.
+
+The requested replay regression is complete for the 13 unique runs in the
+50-item calibration queue: 26 arms, 248 target checks over 129 unique source
+operations. The active arm stops at its first refusal; its independently
+reviewed normal controls have 0 false refusals in 41 checks (shadow: 0/47).
+One unique offline positive, regex101 step 4, is detected in both arms and
+blocked before any press in the active arm. Its original coordinate is on an
+input tab, not a text field, so this does not establish task success. The eBay
+positive is verified live but cannot be reproduced offline after an earlier
+archive miss; loc.gov remains a security-verification loop, not an established
+target-change positive. General recall is not established. Independent review
+excludes 138 post-divergence checks and leaves 7 identity-ambiguous checks
+unknown. Evidence, frozen-rule checks and source metadata integrity are in
+`tmp/mouse_archive_fix_20261028/replay/{report.md,adjudication_report.md,execution_audit.json}`;
+the overall UI/test record is `tmp/mouse_archive_fix_20261028/verification.json`.
+
+The pre-push full suite recorded 11,229 passed, 15 failed, 3 errors and 34 skips.
+Three behavior-sensitive test assertions were corrected: initialization/input
+ordering (46 tests passed on recheck) and archive collection timing/revisits
+(5 live rehearsal tests passed on recheck). The remaining 15 failing/error nodes
+also reproduce at the unchanged `524fa9b` baseline: 13 depend on absent local
+LexBench splits, and two worker tests assume Chrome behavior that differs on
+the installed Chrome 143. Those two pass on the explicitly selected Chrome 156.
+These checks are recorded in the same evidence directory; the full suite is
+not represented as an unconditional green run.
+
 User ruling, 2026-10-19: the Jev feature phase is accepted for merging into `main`.
 Subsequent work focuses on enhancements and fixes. This ledger records that queue;
 `docs/architecture_design.md` remains design authority and `docs/execution_dag.md`

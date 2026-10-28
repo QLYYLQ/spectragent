@@ -15,7 +15,30 @@ export function imageCanBeEdited(role, imageRoles) {
 }
 
 export function trajectorySteps(steps, anchor) {
-  return steps.filter((step) => step.index < anchor).sort((a, b) => a.index - b.index);
+  const ordered = [...steps].sort((a, b) => a.index - b.index);
+  return {
+    past: ordered.filter((step) => step.index < anchor),
+    current: ordered.find((step) => step.index === anchor) || null,
+    future: ordered.filter((step) => step.index > anchor),
+  };
+}
+
+/** These are the served image's pixels; an unknown reading never becomes (0, 0). */
+export function pointerPresentation(pointer) {
+  const {width, height, x, y, viewport_x: viewportX, viewport_y: viewportY, status, problem} = pointer || {};
+  const placed = status === "known" &&
+    [width, height, x, y].every(Number.isFinite) && width > 0 && height > 0 &&
+    x >= 0 && y >= 0 && x < width && y < height;
+  const reading = status === "known" && [viewportX, viewportY].every(Number.isFinite)
+    ? `鼠标位置 (${viewportX}, ${viewportY}) · 视口 CSS 像素`
+    : placed ? `鼠标位置 (${x}, ${y}) · 图像像素` : null;
+  const missing = problem || "鼠标位置未记录或无法映射到此图";
+  return {
+    placed,
+    style: placed ? {left: `${x / width * 100}%`, top: `${y / height * 100}%`} : null,
+    label: placed ? reading : reading ? `${reading}；${missing}` : missing,
+    labelLeft: placed && x / width > 0.75,
+  };
 }
 
 export function frameStatus(frame) {

@@ -219,6 +219,26 @@ class ImageMarks(BaseModel):
     problem: str | None = None
 
 
+class ImagePointer(BaseModel):
+    """The pointer recorded with an image, distinct from later action targets.
+
+    ``x``/``y`` use image pixels; ``viewport_x``/``viewport_y`` retain the
+    measured viewport position even when missing image geometry prevents drawing.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    width: int | None = None
+    height: int | None = None
+    status: Literal["known", "unknown", "unavailable"] = "unknown"
+    x: int | None = None
+    y: int | None = None
+    viewport_x: int | None = None
+    viewport_y: int | None = None
+    source: Literal["capture_state", "screenshot_cursor"] | None = None
+    problem: str | None = None
+
+
 @dataclass(frozen=True)
 class Geometry:
     """How CSS viewport pixels land on one image; ``grid`` ``None`` with the reason."""
@@ -297,8 +317,8 @@ def frame_record(trace: RunTrace, step: int | None, name: str) -> FrameRecord | 
 def frame_geometry(trace: RunTrace, step: int | None, record: FrameRecord | None) -> Geometry:
     """A frame's geometry: its own pixel size over the viewport of the observation of *step*.
 
-    A frame shows the tab the observation of the step whose commit took it
-    showed, so that observation's viewport is the area it depicts.
+    For an action frame, callers that resolve its execution owner pass that
+    step, independently of which archive collection committed the image.
     """
     if record is None:
         return Geometry(None, None, None, "找不到这张画面的记录，动作只列出、不画出")
@@ -733,6 +753,69 @@ def observation_marks(trace: RunTrace, run: str, step: int) -> ImageMarks:
     )
 
 
+def observation_pointer(trace: RunTrace, step: int) -> ImagePointer:
+    """The pointer of the observation itself; action results never supply it."""
+    geometry = observation_geometry(trace, step)
+    base: dict[str, Any] = {"width": geometry.width, "height": geometry.height}
+    try:
+        state = _fragment(trace, step, _CAPTURE_STATE)
+        pointer = getattr(state, "pointer", None)
+        if pointer is not None:
+            if pointer.status != "known":
+                return ImagePointer(
+                    **base,
+                    status=pointer.status,
+                    source="capture_state",
+                    problem="这个环境没有鼠标"
+                    if pointer.status == "unavailable"
+                    else "观察时鼠标位置未知",
+                )
+            position = (pointer.x, pointer.y)
+            source = "capture_state"
+        else:
+            shot = _fragment(trace, step, _SCREENSHOT)
+            position = getattr(getattr(shot, "cursor", None), "position", None)
+            source = "screenshot_cursor"
+    except (TraceSchemaError, KeyError, ValueError) as exc:
+        return ImagePointer(**base, problem=f"观察时鼠标位置读不出来：{exc}")
+    if position is None:
+        return ImagePointer(**base, problem="这次观察没有记录鼠标位置")
+    viewport = (int(position[0]), int(position[1]))
+    point = _place(viewport, geometry.grid)
+    return ImagePointer(
+        **base,
+        status="known",
+        x=point[0] if point is not None else None,
+        y=point[1] if point is not None else None,
+        viewport_x=viewport[0],
+        viewport_y=viewport[1],
+        source=source,
+        problem=geometry.problem,
+    )
+
+
+def before_action_marks(trace: RunTrace, run: str, step: int, frame: FrameRecord) -> ImageMarks:
+    """Marks for a frame already associated with *step*'s actual action call.
+
+    The step is its execution owner, not the later archive collection batch.
+    """
+    geometry = frame_geometry(trace, step, frame)
+    record = trace.step(step) if trace.config.recording.trajectory else None
+    index = (
+        executed_action(record, frame.action_index, frame.action)
+        if record is not None and frame.action_index is not None
+        else None
+    )
+    request = MarkRequest(
+        run,
+        step,
+        "这张画面之后马上执行的动作",
+        only=frozenset({index}) if index is not None else None,
+        problem="找不到这张画面之后执行的那个动作" if index is None else None,
+    )
+    return marks_on(geometry, [request], lambda _key: trace)
+
+
 def observation_request(run: str, step: int) -> MarkRequest:
     """An observation's own actions: what its step decided on that screen."""
     return MarkRequest(run, step, f"第 {step} 步在这一屏上做的动作")
@@ -783,12 +866,14 @@ __all__ = [
     "ActionMark",
     "Geometry",
     "ImageMarks",
+    "ImagePointer",
     "MarkRequest",
     "MarkSet",
     "action_lines",
     "action_text",
     "action_verb",
     "action_verbs",
+    "before_action_marks",
     "default_requests",
     "element_text",
     "executed_action",
@@ -799,5 +884,6 @@ __all__ = [
     "marks_on",
     "observation_geometry",
     "observation_marks",
+    "observation_pointer",
     "step_marks",
 ]

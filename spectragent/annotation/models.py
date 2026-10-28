@@ -310,7 +310,7 @@ class QueueItem(_Strict):
             if evidence.section is not None and evidence.section not in keys:
                 raise ValueError(f"证据引用了未声明的分组 {evidence.section!r}")
         if self.trajectory and (not self.run or self.step is None):
-            raise ValueError("展示轨迹历史的条目需要 run 和 step")
+            raise ValueError("展示档案的条目需要 run 和 step")
         return self
 
     def image(self, role: str) -> QueueImage | None:

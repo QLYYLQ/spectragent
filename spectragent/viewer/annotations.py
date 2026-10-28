@@ -257,12 +257,12 @@ def annotation_router(
     ) -> tuple[str, int]:
         _, found = item(queue_id, item_id, queue_sha256)
         if not found.trajectory or found.run is None or found.step is None:
-            raise HTTPException(404, "这个条目没有开启轨迹历史")
+            raise HTTPException(404, "这个条目没有开启档案")
         key = run_key(found.run)
         if not repository.has_step(key, found.step):
             raise FileNotFoundError("这个条目引用的当前步骤未提交")
-        if index is not None and (index > found.step or not repository.has_step(key, index)):
-            raise HTTPException(404, "只能查看这个条目截至当前步骤的已提交历史")
+        if index is not None and not repository.has_step(key, index):
+            raise HTTPException(404, "只能查看这个条目所属运行的已提交步骤")
         return key, found.step
 
     @router.get("/trajectory")
@@ -282,6 +282,8 @@ def annotation_router(
         return {
             **repository.step(key, index, include_messages=include_messages),
             "frames": repository.step_frames(key, index),
+            "observation_marks": repository.observation_marks(key, index),
+            "observation_pointer": repository.observation_pointer(key, index),
         }
 
     @router.get("/trajectory-image")
