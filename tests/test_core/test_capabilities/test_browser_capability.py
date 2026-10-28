@@ -6,8 +6,10 @@ the cache and lazy-batch resolution live in ``test_browser_lazy_batch.py``.
 
 from __future__ import annotations
 
+from asyncio import CancelledError
 from typing import Any
 
+import pytest
 from agent_cdp import EventScope
 
 from spectragent.core.capabilities.base import BaseCapability
@@ -691,6 +693,54 @@ class TestPageLifecycleWiring:
                 "Page.getFrameTree",
             }:
                 assert sid == "cdp-sid-1"
+
+    @pytest.mark.parametrize("failure", [None, TimeoutError, CancelledError])
+    async def test_humanized_pointer_is_confirmed_during_tab_preparation_or_attach_rolls_back(
+        self, failure: type[BaseException] | None
+    ) -> None:
+        from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
+        from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
+
+        cap, cdp, scope_group = self._make_cap_with_stub()
+        action = ActionWatchdog(
+            cdp,  # type: ignore[arg-type]
+            input_platform="macos",
+            mouse_trajectory=WindMouseTrajectory(seed=1),
+        )
+        cap._create_watchdogs_for_scope = (  # type: ignore[method-assign]
+            lambda level="tab", cdp_session_id=None: [action]
+        )
+        send = cdp.send
+
+        async def dispatch(method, params=None, session_id=None):
+            if method == "Input.dispatchMouseEvent" and failure is not None:
+                raise failure("initial pointer not acknowledged")
+            return await send(method, params, session_id)
+
+        cdp.send = dispatch  # type: ignore[method-assign]
+        if failure is None:
+            try:
+                await cap._attach_tab("T1")
+                assert action._mouse.observed_position == (640, 360)
+                assert [call for call in cdp.sent if call[0] == "Input.dispatchMouseEvent"] == [
+                    (
+                        "Input.dispatchMouseEvent",
+                        {"type": "mouseMoved", "x": 640, "y": 360, "button": "none", "buttons": 0},
+                        "cdp-sid-1",
+                    )
+                ]
+            finally:
+                await cap.teardown()
+        else:
+            with pytest.raises(failure, match="initial pointer not acknowledged"):
+                await cap._attach_tab("T1")
+            assert action._mouse.observed_position is None
+            assert not action.bindings
+            assert scope_group.scope_ids == []
+            assert cap._target_to_session == cap._session_to_target == {}
+            assert cap._watchdogs == cap._bridges == cap._navigation_feeds == {}
+            assert not cap._tab_sessions.owns("cdp-sid-1", "cdp-sid-1")
+            assert cdp.sent[-1] == ("Target.detachFromTarget", {"sessionId": "cdp-sid-1"}, None)
 
     def test_attach_tab_applies_viewport_override(self) -> None:
         """The configured viewport is pushed to the browser, not just assumed.

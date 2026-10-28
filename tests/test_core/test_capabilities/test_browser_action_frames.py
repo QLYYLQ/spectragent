@@ -629,7 +629,9 @@ class TestKeyboardAndDom:
         await watchdog(cdp, selector_map, mouse_trajectory=Straight())._on_type_text(
             TypeTextEvent(backend_node_id=11, session_id="cross", text="hi")
         )
-        (move,) = cdp.mouse()
+        initial, move = cdp.mouse()
+        # Direct watchdog use confirms the humanized origin before approaching.
+        assert (initial.params["x"], initial.params["y"], initial.session_id) == (640, 360, "tab")
         # (0, 72, 150x21) in the frame + #cross (50, 510).
         assert (move.params["x"], move.params["y"], move.session_id) == (125, 592, "tab")
 

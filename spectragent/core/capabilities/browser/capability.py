@@ -935,9 +935,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "to land counts, and so does type's wait for focus to land on a text "
                     "field (type_focus_wait_s). A fact whose probe runs out of it is "
                     "recorded as unknown, and an unknown fact never decides the action's "
-                    "success or error. One measured fact does: type and type_coordinate "
+                    "success or error. Typing has a measured precondition: type and type_coordinate "
                     "fail, sending no key, when the focus reading found that no text "
-                    "field has focus (a reading that runs out types as asked). Measured "
+                    "field has focus (a reading that runs out types as asked). Clicks, including "
+                    "type_coordinate's focusing click, get a separate target-check budget of "
+                    "this same duration: only a measured DOM target change during movement "
+                    "refuses the press and asks for another observation. Its budget counts "
+                    "only the before/after checks, never trajectory time; effects and target "
+                    "checks may together spend twice this duration. Measured "
                     "in headless Chrome: a click, a type or a key "
                     "press spends 2-4 ms (at most ~26 ms), a navigation ~5 ms, a scroll "
                     "40-80 ms waiting for the wheel to land (the first wheel on a fresh page "
@@ -3962,6 +3967,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._watchdogs[target_id] = watchdogs
         for wd in watchdogs:
             wd.attach(scope, session_id=cdp_session_id)
+        for wd in watchdogs:
+            await wd.initialize()
 
         # Shared watchdogs may fan in events from many tabs.  The
         # binding hook is generic: each watchdog decides whether it needs

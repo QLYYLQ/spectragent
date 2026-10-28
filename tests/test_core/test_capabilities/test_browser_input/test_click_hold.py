@@ -180,6 +180,8 @@ class TestTheControllerSpendsIt:
         cdp = RecordCDP(clock)
         strategy = _FixedHold(120.0)
         mouse = HumanMouse(cdp, session_id_getter=lambda: "sid", trajectory=strategy)
+        await mouse.initialize()
+        cdp.calls.clear()
         start = clock.now
         await mouse.click(300, 200, "left", 1)
 
@@ -211,6 +213,8 @@ class TestTheControllerSpendsIt:
         """Shorten the hold, never skip the press — a release with no press is a bug."""
         cdp = RecordCDP(clock, cost_ms=200.0)
         mouse = HumanMouse(cdp, session_id_getter=lambda: "sid", trajectory=_FixedHold(50.0))
+        await mouse.initialize()
+        cdp.calls.clear()
         await mouse.click(300, 200, "left", 1)
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
         assert clock.sleeps == []  # the hold was gone before it started

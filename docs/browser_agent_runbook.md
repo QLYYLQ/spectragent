@@ -221,7 +221,7 @@ BrowserUse 是一个 agent 家族，用 `agent[0].agent_id` 选成员：
 
 | 写在哪里 | 字段 | 默认 | 作用 |
 |---|---|---|---|
-| browser capability 块 | `action_effect_timeout_s` | `1` | 一个动作测量自身效果的上限，秒；只计探测（含等滚轮生效），不计动作本身。超时的事实记 `unknown` |
+| browser capability 块 | `action_effect_timeout_s` | `1` | 一个动作测量自身效果的上限，秒；只计探测（含等滚轮生效），不计动作本身。点击另有同值的独立目标检查预算，两份探测合计最多为该值两倍。超时的事实记 `unknown` |
 | browser capability 块 | `capture_state_timeout_s` | `1` | `capture_state` 页内探测（可见图片加载失败）的上限，秒，最多 3；超时记 `unknown`，不影响这次观测的其他部分 |
 | browser capability 块 | `media_state_timeout_s` | `1` | 截图前后两次媒体读数各自的上限，秒，最多 1.5；超时记 `unknown`，截图照常。分叉恢复时也是媒体对齐起始读数的上限 |
 | 三个 Agent | `show_action_effects` | `true` | 把效果那一行写进提示词；关掉时 trace 照样记录效果，消融的两组测量开销相同 |

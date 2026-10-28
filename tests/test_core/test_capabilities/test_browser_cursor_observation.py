@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.capabilities.browser.input.mouse import HumanMouse, PointerPosition
 from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.capabilities.browser.restoration import measure
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
@@ -115,6 +116,25 @@ async def test_partial_trajectory_lost_acknowledgement_makes_current_position_un
     with pytest.raises(TimeoutError):
         await mouse.move_to(30, 30)
     assert mouse.observed_position is None
+
+
+async def test_humanized_initialization_requires_acknowledgement_and_retains_button_state() -> None:
+    cdp = CDP()
+    cdp.fail_move = 1
+    mouse = HumanMouse(
+        cdp,
+        session_id_getter=lambda: "tab",
+        trajectory=WindMouseTrajectory(seed=1),
+    )
+    with pytest.raises(TimeoutError):
+        await mouse.initialize()
+    assert mouse.observed_position is None
+    cdp.fail_move = None
+    await mouse.move_to(641, 361, button="left")
+    moves = [params for method, params in cdp.calls if method == "Input.dispatchMouseEvent"]
+    assert (moves[1]["x"], moves[1]["y"]) == (640, 360)
+    assert all(move["button"] == "left" and move["buttons"] == 1 for move in moves[1:])
+    assert mouse.observed_position == (641, 361)
 
 
 @pytest.mark.parametrize("enabled", [False, True])

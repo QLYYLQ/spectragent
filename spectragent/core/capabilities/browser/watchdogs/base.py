@@ -291,6 +291,10 @@ class BrowserWatchdog(WatchdogBase):
         """
         return None
 
+    async def initialize(self) -> None:
+        """Finish asynchronous preparation after attachment, before tab use."""
+        return None
+
     def unbind_tab(self, session_id: str) -> None:
         """Forget per-tab state before its scopes are closed, if any."""
         return None

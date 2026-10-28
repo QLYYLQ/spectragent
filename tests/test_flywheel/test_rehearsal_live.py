@@ -29,6 +29,7 @@ that value, read back from the runs themselves where it can be:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -171,10 +172,38 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
         "/flywheel_shop/cart",
     )
     assert sections["post_branch_misses"]["document_misses"] == 1
-    # The two as-recorded branches open the product page, whose script asks recommend.json
-    # with the time origin: a subresource near miss, collected with the terminal observation.
+    # The product page asks recommend.json with its time origin. Its asynchronous miss
+    # can be collected with the click or the terminal observation; the committed batch
+    # determines attribution, not which action caused the request.
+    recommend_misses = [
+        (run, step, entry, weight)
+        for run in chain.role("branch").runs
+        for step, entry, weight in run.decisions
+        if entry.kind == "miss" and not entry.diverged
+    ]
+    assert len(recommend_misses) == 2
+    collected_as = []
+    for run, step, entry, weight in recommend_misses:
+        assert (weight, entry.method, urlsplit(entry.url).path, entry.resource_type) == (
+            1,
+            "GET",
+            "/flywheel_shop/recommend.json",
+            "XHR",
+        )
+        assert (entry.request_class, entry.reason) == ("subresource", "no_match")
+        assert step is not None and step in (BRANCH_STEP, BRANCH_STEP + 1)
+        owner = run.step(step)
+        assert owner is not None
+        if step == BRANCH_STEP:
+            assert owner.origin == "policy"
+            assert [action.name for action in owner.actions] == ["browser.click_coordinate"]
+            collected_as.append("browser.click_coordinate")
+        else:
+            assert owner.origin == "terminal" and not owner.actions
+            collected_as.append("terminal")
+    assert coverage["other_misses"]["total"] == 2
     assert coverage["other_misses"]["by_host"] == {SHOP: 2}
-    assert coverage["other_misses"]["by_action"] == {"terminal": 2}
+    assert coverage["other_misses"]["by_action"] == dict(Counter(collected_as))
 
     assert sections["duplicate_branches"]["duplicates"] == 1
     assert sections["duplicate_branches"]["dataset_duplicates"] == 1
@@ -212,12 +241,14 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     assert overhead["archived"]["tier"] == overhead["control"]["tier"] == "browser:pinned"
     assert overhead["p50_overhead_ms"] is not None and overhead["reason"] is None
     bytes_ = overhead["bytes"]["total"]
-    # Cross-page logo/CSS repeats belong to different collections. The only
-    # same-collection duplicate is the login page's two tiny JSON responses:
-    # a WARC revisit's reference headers outweigh that payload. Verify the
-    # source records and actual bytes before comparing the signed metric.
+    # A collection's first logo/CSS response must own its payload. Reloads may
+    # repeat assets within that same collection. Verify every revisit's local
+    # reference and body, including the login API pair whose tiny payload costs
+    # less than the revisit's headers, before comparing the signed metric.
     savings = []
+    login_savings = []
     repeated_assets = []
+    asset_collections = set()
     for run in chain.role("record").runs:
         archive = load_archive(run.trace)
         records = {record.record_id: record for record in archive.index.records}
@@ -234,28 +265,37 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
                 for line in exchanges
                 if not line.revisit_of and line.response_record_id
             }
+            seen_assets = set()
             for line in exchanges:
                 path = urlsplit(line.url).path
                 if path in ("/flywheel_shop/site.css", "/flywheel_shop/logo.png"):
                     repeated_assets.append(line)
-                    assert line.revisit_of is None, "separate collections own independent responses"
+                    asset_collections.add((run.rel, entry.path))
+                    if path not in seen_assets:
+                        assert line.revisit_of is None, (
+                            "separate collections own independent responses"
+                        )
+                    seen_assets.add(path)
                 if line.revisit_of is None:
                     continue
                 original = full[line.revisit_of]  # the reference must stay inside this index batch
-                assert {path, urlsplit(original.url).path} == {
-                    "/flywheel_shop/api/me",
-                    "/flywheel_shop/api/login",
-                }
                 assert original.payload_sha256 == line.payload_sha256
-                assert archive.body(records[original.record_id]) == b'{"ok": true}'
-                assert archive.body(records[line.record_id]) == b'{"ok": true}'
+                body = archive.body(records[line.record_id])
+                assert archive.body(records[original.record_id]) == body
                 assert original.warc.response is not None and line.warc.response is not None
                 saving = original.warc.response.length - line.warc.response.length
-                assert saving < 0, "the revisit costs more than this tiny complete response"
+                if {path, urlsplit(original.url).path} == {
+                    "/flywheel_shop/api/me",
+                    "/flywheel_shop/api/login",
+                }:
+                    assert body == b'{"ok": true}'
+                    assert saving < 0, "the revisit costs more than this tiny complete response"
+                    login_savings.append(saving)
                 savings.append(saving)
     assert len(repeated_assets) > 2, "the shop assets were recorded on multiple pages"
-    assert len(savings) == 1, "the login API pair is the one same-collection duplicate"
-    assert bytes_["saved_by_revisit"] == sum(savings) < 0
+    assert len(asset_collections) > 1, "the repeated assets must span independent collections"
+    assert len(login_savings) == 1, "the login API pair must deduplicate within its collection"
+    assert bytes_["saved_by_revisit"] == sum(savings)
     assert bytes_["before"] == (
         bytes_["after"] + bytes_["saved_by_revisit"] + bytes_["saved_by_content_addressing"]
     )

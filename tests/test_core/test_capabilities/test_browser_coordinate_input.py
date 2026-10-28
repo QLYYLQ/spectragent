@@ -75,11 +75,15 @@ class TestTypeAtCoordinate:
 
         # The fake answers nothing for the focused-field read: unknown, not "not sensitive".
         assert _outcome(result) == {"typed": True, "length": 2, "sensitive": None}
-        methods = [c.method for c in cdp.calls]
         # move + press + release, then select-all/backspace, the focus read, then insert
-        # (the effect's reads around the typing are not input).
+        # (target checks and effect reads around the typing are not input).
         inputs = [c for c in cdp.calls if c.method.startswith("Input.")]
-        assert methods[:3] == ["Input.dispatchMouseEvent"] * 3
+        assert [c.method for c in inputs[:3]] == ["Input.dispatchMouseEvent"] * 3
+        assert [c.params["type"] for c in inputs[:3]] == [
+            "mouseMoved",
+            "mousePressed",
+            "mouseReleased",
+        ]
         assert inputs[-1].method == "Input.insertText"
         assert inputs[-1].params == {"text": "hi"}
 

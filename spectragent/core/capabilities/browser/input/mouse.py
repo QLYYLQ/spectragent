@@ -18,7 +18,7 @@ when no strategy is given) is one waypoint at the destination and reports
 → mouseReleased`` at the target, ``wheel`` emits a single ``mouseWheel`` and the
 cursor cold-starts at ``(0, 0)``.
 Any other strategy reports ``humanized == True``, which also switches on the
-behaviour around the path: centre cold start and eased, segmented wheel (here)
+behaviour around the path: confirmed centre cold start and eased, segmented wheel (here)
 and the cursor approach before type/select (``ActionWatchdog``). There used to
 be a separate ``humanize`` flag that forced ``instant`` when off, silently
 discarding a configured strategy; the two could disagree, so it is gone.
@@ -141,9 +141,9 @@ class HumanMouse:
         )
         self._humanized = self._traj.humanized
 
-        # Cursor origin. Humanized runs start from viewport centre (matching the
-        # debug overlay's initial 50vw/50vh) so the first action isn't a long
-        # top-left diagonal; otherwise (0, 0) preserves the legacy starting point.
+        # Planned origin only until initialize() dispatches and confirms it.
+        # Humanized runs start from viewport centre; instant retains (0, 0)
+        # without sending an extra input before its first one-point move.
         if self._humanized:
             self._x, self._y = self._vw // 2, self._vh // 2
         else:
@@ -214,6 +214,18 @@ class HumanMouse:
                 logger.debug("mouse move_callback failed at (%d,%d): %s", x, y, exc)
 
     # ── primitives ────────────────────────────────────────────────────────
+    async def initialize(self, *, button: str = "none") -> None:
+        """Confirm a humanized path's origin before observations or movement.
+
+        Tab preparation calls this before its first observation. Direct users
+        and moves after an uncertain dispatch reach the same boundary through
+        ``move_to``. Acknowledgement, not the planned coordinate, makes the
+        position known; errors and cancellation propagate with it still unknown.
+        This positioning command does not sample or consume the strategy.
+        """
+        if self._humanized and self.observed_position is None:
+            await self._dispatch_move(self._x, self._y, button=button)
+
     async def move_to(
         self,
         x: float,
@@ -247,6 +259,7 @@ class HumanMouse:
         the endpoint stays exact, and a repeated waypoint still waits out its
         time without dispatching — a strategy's pre-click dwell survives.
         """
+        await self.initialize(button=button)
         ex, ey = round(x), round(y)
         path = self._traj.generate(self._x, self._y, ex, ey, target_w=target_w, target_h=target_h)
         if not path:

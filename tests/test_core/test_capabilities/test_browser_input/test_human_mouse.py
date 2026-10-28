@@ -166,6 +166,24 @@ class _ScriptedPath:
 class TestRepeatedWaypoints:
     """A repeated waypoint is stillness: its time is spent, no event is sent."""
 
+    async def test_first_click_at_origin_confirms_the_pointer_before_only_dwelling(
+        self, no_sleep: list[float]
+    ) -> None:
+        cdp = RecordCDP()
+        mouse = HumanMouse(
+            cdp,
+            session_id_getter=lambda: "sid",
+            trajectory=_ScriptedPath([TrajectoryPoint(640, 360), TrajectoryPoint(640, 360, 20)]),
+        )
+        assert mouse.observed_position is None
+        await mouse.click(640, 360)
+        assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
+        assert mouse.observed_position == (640, 360)
+        assert no_sleep == pytest.approx([0.02])
+        # Re-preparing a tab never teleports an already known pointer.
+        await mouse.initialize()
+        assert len(cdp.calls) == 3
+
     async def test_repeats_sleep_without_dispatching(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
         path = [
@@ -178,7 +196,7 @@ class TestRepeatedWaypoints:
         ]
         mouse = HumanMouse(cdp, session_id_getter=lambda: "sid", trajectory=_ScriptedPath(path))
         await mouse.click(760, 400, "left", 1)
-        assert cdp.types() == ["mouseMoved", "mouseMoved", "mousePressed", "mouseReleased"]
+        assert cdp.types() == ["mouseMoved"] * 3 + ["mousePressed", "mouseReleased"]
         assert no_sleep == pytest.approx([0.02] * 5)
 
     async def test_single_point_path_always_dispatches(self, no_sleep: list[float]) -> None:
@@ -217,6 +235,8 @@ class TestDeadlineSchedule:
     async def test_dispatch_latency_is_absorbed_into_the_tick(self, clock: VirtualClock) -> None:
         cdp = RecordCDP(clock, cost_ms=8.0)
         mouse = self._mouse(cdp, self._path(10))
+        await mouse.initialize()
+        cdp.calls.clear()
         start = clock.now
         await mouse.move_to(740, 360)
 
@@ -234,6 +254,8 @@ class TestDeadlineSchedule:
     ) -> None:
         cdp = RecordCDP(clock, cost_ms=47.0)
         mouse = self._mouse(cdp, self._path(10))
+        await mouse.initialize()
+        cdp.calls.clear()
         start = clock.now
         await mouse.move_to(740, 360)
 
@@ -251,6 +273,8 @@ class TestDeadlineSchedule:
         # ease-out tail. Everything intermediate goes; the endpoint never does.
         cdp = RecordCDP(clock, cost_ms=40.0)
         mouse = self._mouse(cdp, self._path(10, dt_ms=1.0))
+        await mouse.initialize()
+        cdp.calls.clear()
         start = clock.now
         await mouse.move_to(740, 360)
 
@@ -267,6 +291,8 @@ class TestDeadlineSchedule:
         path = [*self._path(3), *([TrajectoryPoint(670, 360, 20.0)] * 3)]
         cdp = RecordCDP(clock, cost_ms=8.0)
         mouse = self._mouse(cdp, path)
+        await mouse.initialize()
+        cdp.calls.clear()
         start = clock.now
         await mouse.move_to(670, 360)
 
@@ -317,8 +343,10 @@ class TestWheelDeadlineSchedule:
 
     async def test_dispatch_latency_is_absorbed_into_the_step(self, clock: VirtualClock) -> None:
         cdp = RecordCDP(clock, cost_ms=8.0)
+        mouse = self._mouse(cdp)
+        await mouse.initialize()
         start = clock.now
-        await self._mouse(cdp).wheel(300, 300, 0, 600)
+        await mouse.wheel(300, 300, 0, 600)
 
         assert self._wheels(cdp) == self.INCREMENTS
         # Five 12 ms gaps is what a six-step scroll asks for; each pays for its
@@ -338,8 +366,10 @@ class TestWheelDeadlineSchedule:
         self, clock: VirtualClock
     ) -> None:
         cdp = RecordCDP(clock, cost_ms=40.0)
+        mouse = self._mouse(cdp)
+        await mouse.initialize()
         start = clock.now
-        await self._mouse(cdp).wheel(300, 300, 0, 600)
+        await mouse.wheel(300, 300, 0, 600)
 
         # Steps 2-4 and 6 never got a slot of their own; their deltas ride
         # along with the next step that is sent, so nothing is lost and the
@@ -410,7 +440,8 @@ class TestLearnedStrategy:
         # Every tick that moves the cursor is one mouseMoved — intermediate
         # points clamped into the viewport, the endpoint raw — and a tick that
         # holds still sends nothing.
-        expected: list[tuple[int, int]] = []
+        # The first move establishes the origin; it consumes no strategy draws.
+        expected: list[tuple[int, int]] = [(640, 360)]
         cursor = (640, 360)
         for i, pt in enumerate(path):
             is_last = i == len(path) - 1

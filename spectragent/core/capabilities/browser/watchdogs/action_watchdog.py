@@ -44,7 +44,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar
 
 from agent_cdp import (
@@ -57,6 +57,10 @@ from agent_cdp import (
 )
 from agent_cdp.events.base import BaseEvent
 
+from spectragent.core.capabilities.browser.click_target import (
+    CLICK_TARGET_CHANGED,
+    ClickTargetGuard,
+)
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
 from spectragent.core.capabilities.browser.dom.sensitivity import (
     is_sensitive_control,
@@ -513,6 +517,9 @@ class ActionWatchdog(BrowserWatchdog):
         """A fresh measurement budget for one action (``action_effect_timeout_s``)."""
         return ProbeBudget(self._effect_timeout_s)
 
+    async def initialize(self) -> None:
+        await self._mouse.initialize()
+
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
         self._session_id = session_id
@@ -782,7 +789,9 @@ class ActionWatchdog(BrowserWatchdog):
         (``None``: the click named no element). Measuring never changes the
         click: a probe that fails or runs out of the budget leaves its fact
         unknown. Without a budget (the focusing click of ``type_coordinate``)
-        nothing is measured.
+        no effect is measured. Independently, the DOM target at the point is
+        compared before movement and before pressing. Only a measured change
+        refuses the click, so the caller can observe the changed page again.
         """
         facts: dict[str, Any] = {
             "point": ViewportPoint(x=x, y=y),
@@ -791,27 +800,29 @@ class ActionWatchdog(BrowserWatchdog):
             "focus_after": UNKNOWN,
         }
 
-        before_press: Callable[[int, int], Awaitable[None]] | None = None
-        if budget is not None:
-            probe_budget = budget
+        target_guard = ClickTargetGuard(
+            self._cdp, self._session_id, ProbeBudget(self._effect_timeout_s)
+        )
 
-            async def hit_test(px: int, py: int) -> None:
+        async def before_press(px: int, py: int) -> None:
+            if budget is not None:
                 facts["point"] = ViewportPoint(x=px, y=py)
                 hit, verdict = await element_at(
                     self._cdp,
                     self._session_id,
                     px,
                     py,
-                    probe_budget,
+                    budget,
                     target_object_id=target_object_id,
                 )
                 facts["hit"] = hit
                 if target_object_id is not None:
                     facts["on_target"] = verdict
-
-            before_press = hit_test
+            if await target_guard.changed(px, py) is True:
+                raise RuntimeError(CLICK_TARGET_CHANGED)
 
         try:
+            await target_guard.capture(x, y)
             await self._mouse.click(
                 x,
                 y,
@@ -831,12 +842,13 @@ class ActionWatchdog(BrowserWatchdog):
             logger.error("Click failed at (%d, %d): %s", x, y, e)
             return {"error": str(e)}
         finally:
-            if target_object_id is not None and budget is not None:
-                object_id = target_object_id
-                await budget.run(
-                    lambda: release_object(self._cdp, self._session_id, object_id),
-                    "release target",
-                )
+            try:
+                await target_guard.close()
+            finally:
+                if target_object_id is not None:
+                    # Releasing a retained node is cleanup, not a measurement:
+                    # an exhausted effect budget must not keep it alive.
+                    await release_object(self._cdp, self._session_id, target_object_id)
 
     # -----------------------------------------------------------------------
     # Type

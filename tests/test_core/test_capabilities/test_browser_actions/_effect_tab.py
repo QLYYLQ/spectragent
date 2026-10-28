@@ -84,6 +84,8 @@ def probe_kind(method: str, params: dict[str, Any]) -> str | None:
     """Which effect probe (or measuring call) a CDP call is; ``None`` for input and the rest."""
     if method == "Runtime.evaluate":
         expression = params.get("expression", "")
+        if "spectragent click target snapshot" in expression:
+            return "click_target_snapshot"
         if "deepHit" in expression:
             return "hit"
         if expression == _FOCUSED_FIELD_JS:
@@ -93,6 +95,8 @@ def probe_kind(method: str, params: dict[str, Any]) -> str | None:
         return None
     if method == "Runtime.callFunctionOn":
         function = params.get("functionDeclaration", "")
+        if "spectragent click target check" in function:
+            return "click_target_check"
         if "deepHit" in function:
             return "hit"
         if "digest" in function:

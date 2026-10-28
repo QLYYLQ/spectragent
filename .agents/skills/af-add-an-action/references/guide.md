@@ -427,6 +427,18 @@ the move is to ask, not to ship a compromise.
 
 ## Browser event execution contracts
 
+A browser click checks its actual DOM target before movement and again before
+pressing (`click_target.py`, architecture §4.13). A measured replacement returns
+an action failure without pressing; unknown evidence does not claim a change.
+The shared click seam includes `type_coordinate`'s focusing click, whose refusal
+must prevent clearing or typing. This is an execution precondition, separate from
+the diagnostic effect probes. Preserve the target's real node identity (including
+the semantic control around a text/icon child), the configured trajectory and its
+exact endpoint, and the per-click reference cleanup. The existing ReAct failure
+path skips the step's remaining actions and observes again; add no browser branch
+inside the Loop. Regression coverage includes `test_browser_click_target.py` and
+`test_browser_click_target_live.py`.
+
 A browser action dispatches through `watchdogs.contracts.dispatch_request` and
 requires its actual executor's receiver key. Connect executors as `HANDLER` with
 an explicit `ResultContract`; connect guards, logging and archive observers as
