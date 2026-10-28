@@ -58,7 +58,7 @@ from agent_cdp import (
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.click_target import (
-    CLICK_TARGET_CHANGED,
+    ClickTargetChanged,
     ClickTargetGuard,
 )
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
@@ -818,8 +818,8 @@ class ActionWatchdog(BrowserWatchdog):
                 facts["hit"] = hit
                 if target_object_id is not None:
                     facts["on_target"] = verdict
-            if await target_guard.changed(px, py) is True:
-                raise RuntimeError(CLICK_TARGET_CHANGED)
+            if await target_guard.changed(px, py):
+                raise ClickTargetChanged
 
         try:
             await target_guard.capture(x, y)
@@ -838,6 +838,9 @@ class ActionWatchdog(BrowserWatchdog):
                 facts["focus_after"] = await focused_element(self._cdp, self._session_id, budget)
                 answer["effect_facts"] = facts
             return answer
+        except ClickTargetChanged as e:
+            logger.warning("Not clicking at (%d, %d): %s", x, y, e)
+            return {"error": str(e)}
         except Exception as e:
             logger.error("Click failed at (%d, %d): %s", x, y, e)
             return {"error": str(e)}

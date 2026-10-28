@@ -115,7 +115,10 @@ class TestTargetBox:
             ClickCoordinateEvent(coordinate_x=30, coordinate_y=20)
         )
         assert _outcome(result) == {"clicked": True, "x": 30, "y": 20}
-        assert [c.method for c in cdp.calls] == ["Input.dispatchMouseEvent"] * 3
+        # The last call is the click's target-check cleanup, sent even when no probe ran.
+        assert [c.method for c in cdp.calls] == ["Input.dispatchMouseEvent"] * 3 + [
+            "Runtime.releaseObjectGroup"
+        ]
 
     async def test_humanized_click_gets_a_box_centred_on_the_point(
         self, no_sleep: None, monkeypatch: pytest.MonkeyPatch

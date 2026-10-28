@@ -118,7 +118,7 @@ async def test_partial_trajectory_lost_acknowledgement_makes_current_position_un
     assert mouse.observed_position is None
 
 
-async def test_humanized_initialization_requires_acknowledgement_and_retains_button_state() -> None:
+async def test_humanized_initialization_requires_acknowledgement() -> None:
     cdp = CDP()
     cdp.fail_move = 1
     mouse = HumanMouse(
@@ -130,10 +130,10 @@ async def test_humanized_initialization_requires_acknowledgement_and_retains_but
         await mouse.initialize()
     assert mouse.observed_position is None
     cdp.fail_move = None
-    await mouse.move_to(641, 361, button="left")
+    await mouse.move_to(641, 361)
     moves = [params for method, params in cdp.calls if method == "Input.dispatchMouseEvent"]
+    # The next move confirms the unknown origin again before leaving it.
     assert (moves[1]["x"], moves[1]["y"]) == (640, 360)
-    assert all(move["button"] == "left" and move["buttons"] == 1 for move in moves[1:])
     assert mouse.observed_position == (641, 361)
 
 

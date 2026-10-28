@@ -214,7 +214,7 @@ class HumanMouse:
                 logger.debug("mouse move_callback failed at (%d,%d): %s", x, y, exc)
 
     # ── primitives ────────────────────────────────────────────────────────
-    async def initialize(self, *, button: str = "none") -> None:
+    async def initialize(self) -> None:
         """Confirm a humanized path's origin before observations or movement.
 
         Tab preparation calls this before its first observation. Direct users
@@ -224,7 +224,7 @@ class HumanMouse:
         This positioning command does not sample or consume the strategy.
         """
         if self._humanized and self.observed_position is None:
-            await self._dispatch_move(self._x, self._y, button=button)
+            await self._dispatch_move(self._x, self._y)
 
     async def move_to(
         self,
@@ -259,7 +259,7 @@ class HumanMouse:
         the endpoint stays exact, and a repeated waypoint still waits out its
         time without dispatching — a strategy's pre-click dwell survives.
         """
-        await self.initialize(button=button)
+        await self.initialize()
         ex, ey = round(x), round(y)
         path = self._traj.generate(self._x, self._y, ex, ey, target_w=target_w, target_h=target_h)
         if not path:
