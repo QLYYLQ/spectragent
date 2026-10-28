@@ -1,29 +1,37 @@
 """Compare a click's actual DOM target before movement and before the press.
 
 This is an execution precondition, separate from diagnostic action effects.
-Only a measured target change refuses the click; unavailable evidence stays
-unknown. References live in one object group per click, never in page globals.
+Only a measured target change refuses the click; evidence that cannot be read
+never does. References live in one object group per click, never in page globals.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 from uuid import uuid4
 
 from agent_cdp import CDPCommandProtocol
 
-from spectragent.core.capabilities.browser.effect_probes import DEEP_HIT_JS, UNKNOWN, ProbeBudget
+from spectragent.core.capabilities.browser.effect_probes import (
+    DEEP_HIT_JS,
+    ProbeBudget,
+    evaluation_value,
+)
 from spectragent.core.capabilities.browser.input._schedule import finish_cleanup
-from spectragent.schemas.action import Unmeasured
 
 logger = logging.getLogger(__name__)
 
-CLICK_TARGET_CHANGED = (
-    "Click target changed while the pointer was moving; no mouse button was pressed. "
-    "Observe the page again before choosing the next action."
-)
+
+class ClickTargetChanged(RuntimeError):
+    """The target under the pointer was replaced while it moved; nothing was pressed."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Click target changed while the pointer was moving; no mouse button was pressed. "
+            "Observe the page again before choosing the next action."
+        )
+
 
 # These identify the DOM control, not its label: replacing a span inside the
 # same button preserves identity, replacing a button with its twin does not.
@@ -54,18 +62,14 @@ _CAPTURE_EXPRESSION = (
     "(() => { /* spectragent click target snapshot */"
     + DEEP_HIT_JS
     + _CLICK_TARGET_JS
-    + "const hit = deepHit(%(x)d, %(y)d);"
-    " const target = clickTarget(hit.el);"
-    " return target ? {target, opaque: hit.opaque} : null; })()"
+    + "return clickTarget(deepHit(%(x)d, %(y)d).el); })()"
 )
 
 _CHANGED_FUNCTION = (
     "function(x, y) { /* spectragent click target check */"
     + DEEP_HIT_JS
     + _CLICK_TARGET_JS
-    + "const hit = deepHit(x, y); const target = clickTarget(hit.el);"
-    " if (!this.target.isConnected || target !== this.target) return true;"
-    " return this.opaque || hit.opaque ? null : false; }"
+    + "return !this.isConnected || clickTarget(deepHit(x, y).el) !== this; }"
 )
 
 
@@ -78,11 +82,9 @@ class ClickTargetGuard:
     budget: ProbeBudget
     _object_id: str | None = field(default=None, init=False)
     _group: str = field(default_factory=lambda: f"click-target-{uuid4().hex}", init=False)
-    _capture_started: bool = field(default=False, init=False)
 
     async def capture(self, x: int, y: int) -> None:
-        async def read() -> Any:
-            self._capture_started = True
+        async def read() -> str | None:
             reply = await self.cdp.send(
                 "Runtime.evaluate",
                 {
@@ -100,11 +102,12 @@ class ClickTargetGuard:
         answer = await self.budget.run(read, "click target before movement")
         self._object_id = answer if isinstance(answer, str) else None
 
-    async def changed(self, x: int, y: int) -> bool | Unmeasured:
+    async def changed(self, x: int, y: int) -> bool:
+        """Whether a change was measured; a target that cannot be compared never counts."""
         if self._object_id is None:
-            return UNKNOWN
+            return False
 
-        async def compare() -> Any:
+        async def compare() -> bool:
             reply = await self.cdp.send(
                 "Runtime.callFunctionOn",
                 {
@@ -115,19 +118,11 @@ class ClickTargetGuard:
                 },
                 session_id=self.session_id,
             )
-            if not isinstance(reply, dict) or reply.get("exceptionDetails"):
-                return None
-            result = reply.get("result")
-            return result.get("value") if isinstance(result, dict) else None
+            return evaluation_value(reply) is True
 
-        answer = await self.budget.run(compare, "click target before press")
-        return answer if isinstance(answer, bool) else UNKNOWN
+        return await self.budget.run(compare, "click target before press") is True
 
     async def close(self) -> None:
-        if not self._capture_started:
-            return
-        self._capture_started = False
-        self._object_id = None
         # Also frees a reference whose reply was lost or cancelled. The cleanup
         # has its own finite bound, even when either probe budget is exhausted.
         try:

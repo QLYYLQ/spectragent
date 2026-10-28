@@ -267,6 +267,8 @@ class TestClick:
             ("DOM.scrollIntoViewIfNeeded", "cross"),
             ("DOM.getContentQuads", "cross"),
             ("DOM.getBoxModel", "tab"),
+            # The click's target-check cleanup, sent even when no probe ran.
+            ("Runtime.releaseObjectGroup", "tab"),
         ]
         assert cdp.about_nodes()[2].params == {
             "backendNodeId": cb.frame_owners()[0].backend_node_id
@@ -305,6 +307,7 @@ class TestClick:
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
+            "Runtime.releaseObjectGroup",
         ]
 
     async def test_a_shadow_root_element_takes_the_page_path(
@@ -322,6 +325,7 @@ class TestClick:
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
+            "Runtime.releaseObjectGroup",
         ]
 
     @pytest.mark.parametrize(("session", "backend_id"), [("cross", 10), ("nested", 10)])
@@ -505,6 +509,7 @@ class TestFramesUnderATransform:
         assert [c.method for c in cdp.about_nodes()] == [
             "DOM.scrollIntoViewIfNeeded",
             "DOM.getContentQuads",
+            "Runtime.releaseObjectGroup",
         ]
 
     async def test_a_page_element_is_untouched_by_any_of_it(

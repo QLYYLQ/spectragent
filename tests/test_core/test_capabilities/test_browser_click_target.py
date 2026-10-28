@@ -33,7 +33,7 @@ class TargetCDP(ProbeCDP):
     def off_event(self, method: str, callback: Any) -> None:
         return None
 
-    def __init__(self, *, changed: bool | str = True, missing: bool = False, **kwargs: Any):
+    def __init__(self, *, changed: bool = True, missing: bool = False, **kwargs: Any):
         super().__init__(**kwargs)
         self.changed = changed
         self.missing = missing
@@ -73,17 +73,16 @@ class TargetCDP(ProbeCDP):
         ]
 
 
-@pytest.mark.parametrize("changed", [False, True, "unknown"])
+@pytest.mark.parametrize("changed", [False, True])
 async def test_target_identity_verdict_and_reference_lifetime(changed):
     cdp = TargetCDP(changed=changed)
     guard = ClickTargetGuard(cdp, "tab", ProbeBudget(0.1))
     await guard.capture(300, 200)
-    assert await guard.changed(300, 200) == changed
+    assert await guard.changed(300, 200) is changed
     assert len(cdp.target_calls("snapshot")) == len(cdp.target_calls("check")) == 1
     check = cdp.target_calls("check")[0]
     assert check.params["objectId"] == "click-target"
     assert check.session_id == "tab"
-    await guard.close()
     await guard.close()
     releases = [call for call in cdp.calls if call.method == "Runtime.releaseObjectGroup"]
     assert len(releases) == 1
@@ -92,11 +91,11 @@ async def test_target_identity_verdict_and_reference_lifetime(changed):
     }
 
 
-async def test_no_target_identity_is_unknown_without_a_check():
+async def test_no_target_identity_is_no_change_without_a_check():
     cdp = TargetCDP(missing=True)
     guard = ClickTargetGuard(cdp, "tab", ProbeBudget(0.1))
     await guard.capture(300, 200)
-    assert await guard.changed(300, 200) == "unknown"
+    assert await guard.changed(300, 200) is False
     await guard.close()
     assert not cdp.target_calls("check")
     assert len([call for call in cdp.calls if call.method == "Runtime.releaseObjectGroup"]) == 1
@@ -104,12 +103,12 @@ async def test_no_target_identity_is_unknown_without_a_check():
 
 @pytest.mark.parametrize("stage", ["snapshot", "check"])
 @pytest.mark.parametrize("problem", ["target_fail", "target_hang"])
-async def test_unavailable_or_timed_out_identity_is_unknown(stage, problem):
+async def test_unavailable_or_timed_out_identity_is_no_change(stage, problem):
     cdp = TargetCDP()
     setattr(cdp, problem, stage)
     guard = ClickTargetGuard(cdp, "tab", ProbeBudget(0.01))
     await asyncio.wait_for(guard.capture(300, 200), 0.5)
-    assert await asyncio.wait_for(guard.changed(300, 200), 0.5) == "unknown"
+    assert await asyncio.wait_for(guard.changed(300, 200), 0.5) is False
     await guard.close()
     releases = [call for call in cdp.calls if call.method == "Runtime.releaseObjectGroup"]
     assert len(releases) == 1
@@ -145,9 +144,11 @@ async def test_changed_target_refuses_press_release_and_following_text_input(kin
     )
 
 
-@pytest.mark.parametrize("changed", [False, "unknown"])
-async def test_stable_or_unknown_target_preserves_the_requested_click(changed):
-    cdp = TargetCDP(changed=changed)
+@pytest.mark.parametrize("failing", [None, "snapshot", "check"])
+async def test_stable_or_unmeasured_target_preserves_the_requested_click(failing):
+    # An unreadable comparison never refuses, even where a readable one would.
+    cdp = TargetCDP(changed=failing is not None)
+    cdp.target_fail = failing
     async with effect_tab(cdp) as tab:
         result = await ClickCoordinateAction(post_delay_ms=0).execute(
             {"coordinate_x": 55, "coordinate_y": 70},

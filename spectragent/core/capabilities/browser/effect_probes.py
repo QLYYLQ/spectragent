@@ -371,7 +371,7 @@ def element_facts(value: Any) -> ElementFacts | None:
     return ElementFacts(role=role, name=name)
 
 
-def _value(reply: Any) -> Any:
+def evaluation_value(reply: Any) -> Any:
     """The by-value result of an evaluation; raises on a JavaScript exception."""
     if not isinstance(reply, dict) or reply.get("exceptionDetails"):
         raise RuntimeError(f"evaluation failed: {reply!r:.200}")
@@ -410,7 +410,7 @@ async def element_at(
             {"expression": _HIT_EXPRESSION % {"x": x, "y": y}, "returnByValue": True},
             session_id=session_id,
         )
-        return _value(reply)
+        return evaluation_value(reply)
 
     async def on_target() -> dict[str, Any]:
         reply = await cdp.send(
@@ -423,7 +423,7 @@ async def element_at(
             },
             session_id=session_id,
         )
-        return _value(reply)
+        return evaluation_value(reply)
 
     if target_object_id is None:
         answer = await budget.run(by_point, "hit test")
@@ -448,7 +448,7 @@ async def focused_element(
             {"expression": _FOCUS_EXPRESSION, "returnByValue": True},
             session_id=session_id,
         )
-        return _value(reply)
+        return evaluation_value(reply)
 
     return _fact_from(await budget.run(probe, "focus"))
 
@@ -629,7 +629,7 @@ class FieldProbe:
                 {"functionDeclaration": _FIELD_FN, "objectId": object_id, "returnByValue": True},
                 session_id=self.session_id,
             )
-            return _value(reply)
+            return evaluation_value(reply)
 
         return await self.budget.run(read, "field reading")
 
@@ -770,7 +770,7 @@ async def document_loaded(
             {"expression": "document.readyState", "returnByValue": True},
             session_id=session_id,
         )
-        state = _value(reply)
+        state = evaluation_value(reply)
         if not isinstance(state, str):
             raise RuntimeError(f"no document state: {state!r:.80}")
         return state == "complete"
@@ -884,6 +884,7 @@ __all__ = [
     "document_loader",
     "element_at",
     "element_facts",
+    "evaluation_value",
     "focused_element",
     "history_entry_committed",
     "history_location",
