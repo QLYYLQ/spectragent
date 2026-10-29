@@ -262,8 +262,7 @@ About 320 tests launch a real headless Chrome, usually a fresh one per test. All
 ## 4. External dependencies worth knowing
 
 - `conscribe` (v≥2.1.0,<3, in-house) — the registrar + `__wiring__` + config-generation framework. Its three-element `__wiring__` tuple (`(registry, required, optional)`) is the keystone of the whole design. M01 in the DAG = already shipped.
-- `agent-cdp` (v0.5.0, in-house) — CDP client + Watchdog + Event scope; **only the Browser Capability consumes it**, it is not a framework-level concern.
-- `bubus` — event bus used inside `agent-cdp` watchdogs (optional extra).
+- `agent-cdp` (v0.5.0, in-house) — an in-process event scheduler: typed events, serial event scopes, watchdog bindings, and `CDPEventBridge` (its only CDP-specific module), which feeds CDP events into a scope. It ships no CDP client and does no target or session discovery; the browser package's own `cdp_client.py` and trackers do that. **Only the Browser Capability consumes it**, it is not a framework-level concern.
 - `pydantic` v2 — all data contracts.
 - Cloud browser "lite" SDKs (`lexmount`, `browser-use-lite`, `hyperbrowser-lite`, `agentbay-lite`, `airtop-lite`, `skyvern-lite`) — session lifecycle + CDP URL only, wrapped behind the Browser Capability's backend abstraction. None of them declares `NETWORK_CAPTURE`, so browser archiving and `replayability: pinned` refuse them (`docs/architecture_design.md` §4.9.x, §4.14).
 - `warcio` (Apache-2.0) — writes `browser.network`'s WARC files. **Never** add `py-wacz`, `cdxj-indexer` or `surt` as dependencies: `surt` is AGPL and the other two pull it in. A lockfile test enforces this; port permissive code instead and record it in `THIRD_PARTY_NOTICES.md`.
