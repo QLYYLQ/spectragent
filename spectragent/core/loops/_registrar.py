@@ -20,6 +20,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -29,13 +30,16 @@ from conscribe import create_registrar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
+from spectragent.core.actions._registrar import is_loop_action
 from spectragent.core.loops._loop_fragments import LOOP_FRAGMENT_KEYS
+from spectragent.core.loops.actions import LOOP_ACTION_KEYS, loop_action
 from spectragent.core.loops.base import AgentLoop
 from spectragent.core.loops.errors import RunAbort, carry_outcome
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleError, IncompatibleLoopInputError
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.step_record import StepRecord
@@ -98,6 +102,13 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
       the Loop's side, so an agent requiring another loop-source fragment is
       refused at ``prepare()``, naming the fragment and the Loop. A Loop
       that builds other loop-source fragments, or none, overrides it.
+    - ``__loop_actions__``: the actions it provides and executes itself, all
+      ``loop.*`` (default: ``loop.done``, which ends the run with the agent's
+      answer and its claim). Action negotiation offers these on the Loop's
+      side, :meth:`get_action_space` describes them and the guard hands them
+      to :meth:`execute_action`, never to ``env.act``
+      (``docs/architecture_design.md`` §4.5, "Loop 提供的动作"). A Loop that
+      provides none overrides it.
 
     ``weave()`` hands runtime deps to ``_execute`` as the ``ctx``
     parameter. Nothing is stored on the loop instance, so the same loop
@@ -126,6 +137,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __requires_env__: ClassVar[bool] = True
     __loop_inputs__: ClassVar[Mapping[str, LoopInput]] = MappingProxyType({})
     __loop_fragments__: ClassVar[frozenset[str]] = LOOP_FRAGMENT_KEYS
+    __loop_actions__: ClassVar[frozenset[str]] = LOOP_ACTION_KEYS
 
     id: Annotated[
         str | None,
@@ -149,6 +161,18 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
                     f"{cls!r}: __loop_fragments__ must be a set of fragment keys, got {fragments!r}"
                 )
             cls.__loop_fragments__ = frozenset(fragments)
+        actions = cls.__dict__.get("__loop_actions__")
+        if actions is not None:
+            # The guard routes a ``loop.*`` name to the Loop, so a key without
+            # that prefix would be handed to the environment instead.
+            if isinstance(actions, str) or not all(
+                isinstance(key, str) and is_loop_action(key) for key in actions
+            ):
+                raise TypeError(
+                    f"{cls!r}: __loop_actions__ must be a set of 'loop.*' action keys, "
+                    f"got {actions!r}"
+                )
+            cls.__loop_actions__ = frozenset(actions)
         declared = cls.__dict__.get("__loop_inputs__")
         if declared is None:
             return
@@ -213,6 +237,42 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
                 mistyped=mistyped,
                 accepted=declared,
             )
+
+    # ── the actions this Loop provides (shared by all loops) ──
+
+    def get_action_space(
+        self, *, active_actions: AbstractSet[str], **context: Any
+    ) -> list[ActionDescriptor]:
+        """The descriptors of this Loop's actions that negotiation activated, by key.
+
+        The Loop's half of the run's action table: ``AgentRuntime.prepare``
+        puts them after the environment's (``env.get_action_space``), so the
+        prompt advertises ``loop.done`` like any other action. *context* is
+        the same channel the environment's descriptors get (the run's active
+        ``fragments``).
+        """
+        return [
+            loop_action(key).descriptor(**context)
+            for key in sorted(type(self).__loop_actions__ & active_actions)
+        ]
+
+    async def execute_action(self, action: Action) -> ActionResult:
+        """Execute one of this Loop's actions: the guard's route for every ``loop.*`` name.
+
+        The guard hands over only names this run activated, so a name this
+        Loop does not provide comes only from a direct caller; it is refused,
+        as a capability refuses an action it does not hold.
+        """
+        provided = type(self).__loop_actions__
+        if action.name not in provided:
+            return ActionResult(
+                success=False,
+                error=(
+                    f"loop {self.loop_id!r} does not execute {action.name!r} "
+                    f"(its actions: {sorted(provided)})"
+                ),
+            )
+        return await loop_action(action.name).execute(action.params)
 
     # ── weave: bind deps + patch agent.run ───────────────────
 

@@ -103,13 +103,14 @@ capabilities:
         default_amount: 600
       - action_id: browser.click
       - action_id: browser.type
-      - action_id: browser.done
     backend: { provider_id: local_chrome }
 ```
 
 `browser.navigate` (also what setup opens the task's start page with) waits twice. First for the page to commit, which is Chrome answering the navigation, for at most `timeout_ms` (default 30000). Then for its `wait_until` phase (`load` by default), for at most `lifecycle_timeout_ms` (default: the same as `timeout_ms`). A page that committed but whose `load` never arrives in time (a resource that never finishes loading, while the page is already drawn) gets a WARNING in the log and the navigation succeeds. A server that never answers, a URL Chrome refuses, and a navigation Chrome reports failed (an unreachable host, a 204, a download) fail it.
 
 The list is also an **ablation switch**: only the actions it names are instantiated, advertised to the model and executable. Omit the block entirely (or write `actions: null`) to get everything `BrowserCapability.__wiring__` offers; `actions: []` builds no action at all. Narrow it and an agent that *requires* a dropped action fails action negotiation before the run starts — that is the intended "config errors surface at negotiation, not at the first LLM call" guarantee.
+
+`done` is not on this list and cannot be: ending the run with an answer directs no environment, so the Loop provides it, as `loop.done` (`docs/architecture_design.md` §4.5). Every shipped loop offers it to an agent that declares `done`.
 
 `action_id` uses the fully-qualified registry key (`browser.scroll`, not `scroll`).
 
@@ -193,10 +194,9 @@ capabilities:
       - action_id: browser.send_keys
       - action_id: browser.drag
       - action_id: browser.wait
-      - action_id: browser.done
 ```
 
-The list is the ablation switch described above, so it has to name every action the run needs: `ui_tars` requires `click_coordinate`, `type_coordinate` and `done`, and a task with a `start_url` needs `browser.navigate`, because the capability opens the landing page by executing it.
+The list is the ablation switch described above, so it has to name every browser action the run needs: `ui_tars` requires `click_coordinate` and `type_coordinate` (its third required action, `done`, is the Loop's `loop.done`), and a task with a `start_url` needs `browser.navigate`, because the capability opens the landing page by executing it.
 
 **What a point is.** `coordinate_space` declares which grid the model writes points on, and `ui_tars` teaches it. The framework does the converting: each point the model writes goes into the capability's units (CSS pixels for the browser) using the size of the screenshot that step showed, and every point fed back to the model (actions, effects, the pointer) is written on the same grid. The device scale factor and viewport size need no setting of their own. Pick the grid the model really answers on — `screenshot_pixels` (the default) or `normalized_1000` (0-1000 on both axes, x first):
 

@@ -138,7 +138,7 @@ class TaskClaim:
 
         success: Annotated[bool | None, TaskClaim()] = None
 
-    ``browser.done``'s ``success``: what the agent says about the task, carried
+    ``loop.done``'s ``success``: what the agent says about the task, carried
     out as ``ActionResult.reported_success``, never a verdict
     (``docs/architecture_design.md`` §4.1, "agent 的任务结论"). It is the one
     param of an action that is not an instruction to the environment, which

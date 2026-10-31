@@ -38,6 +38,7 @@ from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDom
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.coordinate_frames import declared_space
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
@@ -50,7 +51,7 @@ from tests._helpers.replies import read_reply
 
 #: Anything that looks like an action name where the prompt could be
 #: teaching one: the rendered descriptor list (``- `browser.click(...)```),
-#: prose references (``` `browser.done` ```), and any verb key in a JSON
+#: prose references (``` `loop.done` ```), and any verb key in a JSON
 #: example (``{"browser.click": {...}}``). Case-insensitive on purpose — an
 #: UPPERCASE verb sneaking back into the template is precisely the
 #: regression, so the scraper has to see it.
@@ -61,15 +62,24 @@ MEMBERS = [SkyvernDomAgent, SkyvernDomVisionAgent]
 
 
 def _negotiated(member: type[SkyvernAgent]) -> tuple[list[ActionDescriptor], Mapping[str, str]]:
-    """What ``AgentRuntime.prepare`` would hand ``prepare()`` and the guard."""
+    """What ``AgentRuntime.prepare`` would hand ``prepare()`` and the guard.
+
+    The browser's actions, then the Loop's own (``loop.done``).
+    """
     capability = BrowserCapability()
     env = make_env(BrowserEnvironment, {"browser": capability})
+    loop = ReactLoop()
     result = _action_rules(
         agent=extract_wiring(member, "action"),
         env_provides=set(capability.provided_actions),
+        loop_provides=loop.__loop_actions__,
     )
+    active = result.active_actions
     return (
-        env.get_action_space(active_actions=result.active_actions),
+        [
+            *env.get_action_space(active_actions=active),
+            *loop.get_action_space(active_actions=active),
+        ],
         result.action_bindings,
     )
 
@@ -116,7 +126,9 @@ def prepared(request: Any) -> tuple[SkyvernAgent, str, list[ActionDescriptor], A
     async def _accept(action: Action, **_kw: Any) -> ActionResult:
         return ActionResult(success=True, extracted_content=action.name)
 
-    _active, guarded_act = build_guarded_act(_accept, descriptors, bindings=bindings)
+    _active, guarded_act = build_guarded_act(
+        _accept, descriptors, bindings=bindings, loop_act=_accept
+    )
     return agent, prompt, descriptors, guarded_act
 
 
@@ -162,16 +174,16 @@ class TestPromptVocabulary:
         structurally incapable of ending a task.
         """
         agent, prompt, descriptors, guarded_act = prepared
-        assert "`browser.done`" in prompt and "extracted_content" in prompt
+        assert "`loop.done`" in prompt and "extracted_content" in prompt
 
         (action,) = read_reply(
             agent,
             '{"actions": [{"reasoning": "found it", "action": '
-            '{"browser.done": {"extracted_content": "42", "success": false}}}]}',
+            '{"loop.done": {"extracted_content": "42", "success": false}}}]}',
             space_of(descriptors, coordinate_space=declared_space(agent)),
         )
         assert action == Action(
-            name="browser.done", params={"extracted_content": "42", "success": False}
+            name="loop.done", params={"extracted_content": "42", "success": False}
         )
         result = await guarded_act(action)
         assert result.success

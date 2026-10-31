@@ -89,22 +89,26 @@ async def _run(
 ) -> tuple[Any, list[Action], _Memory, StepRecorder]:
     ran: list[Action] = []
 
-    async def execute(action: Action, **_kw: Any) -> ActionResult:
-        ran.append(action)
-        done = action.name == "browser.done"
-        return ActionResult(success=True, is_done=done, extracted_content="42" if done else None)
-
-    descriptors = browser_descriptors("click", "type", "done")
-    space, act_fn = build_guarded_act(
-        execute, descriptors, bindings=space_of(descriptors).action_bindings
-    )
-    memory, recorder = _Memory(), StepRecorder()
     loop = ReactLoop(
         max_steps=2,
         max_actions_per_step=max_actions,
         parse_retries_per_step=retries,
         max_consecutive_parse_errors=1,
     )
+
+    async def execute(action: Action, **_kw: Any) -> ActionResult:
+        ran.append(action)
+        return ActionResult(success=True)
+
+    async def loop_act(action: Action) -> ActionResult:
+        ran.append(action)
+        return await loop.execute_action(action)
+
+    descriptors = browser_descriptors("click", "type", "done")
+    space, act_fn = build_guarded_act(
+        execute, descriptors, bindings=space_of(descriptors).action_bindings, loop_act=loop_act
+    )
+    memory, recorder = _Memory(), StepRecorder()
     result = await loop._execute(
         _Agent(),
         "t",
@@ -122,7 +126,7 @@ async def _run(
     return result, ran, memory, recorder
 
 
-_DONE = {"name": "browser.done", "params": {"extracted_content": "42"}}
+_DONE = {"name": "loop.done", "params": {"extracted_content": "42"}}
 
 
 def _feedback(memory: _Memory) -> list[str]:
@@ -144,7 +148,7 @@ async def test_a_misfit_is_rewritten_by_the_model_and_never_executed() -> None:
     assert result.agent_done == "done"
     assert [(a.name, a.params) for a in ran] == [
         ("browser.click", {"index": 3}),
-        ("browser.done", {"extracted_content": "42"}),
+        ("loop.done", {"extracted_content": "42"}),
     ]
     (said,) = _feedback(memory)
     assert "action 1, browser.click: index: Field required" in said
@@ -159,7 +163,7 @@ async def test_a_param_the_action_does_not_declare_is_a_misfit() -> None:
         ],
         retries=1,
     )
-    assert [a.name for a in ran] == ["browser.done"]
+    assert [a.name for a in ran] == ["loop.done"]
     (said,) = _feedback(memory)
     assert "click: reasoning: Extra inputs are not permitted" in said
 
@@ -180,7 +184,7 @@ async def test_an_action_past_the_step_budget_is_not_judged() -> None:
     _, ran, memory, _ = await _run(
         [[_DONE, {"name": "browser.click", "params": {}}]], retries=0, max_actions=1
     )
-    assert [a.name for a in ran] == ["browser.done"]
+    assert [a.name for a in ran] == ["loop.done"]
     assert _feedback(memory) == []
 
 
@@ -190,10 +194,10 @@ async def test_a_name_this_run_does_not_execute_is_rewritten_by_the_model() -> N
         [[{"name": "browser.fly", "params": {"high": True}}, _DONE], [_DONE]], retries=1
     )
     assert result.agent_done == "done"
-    assert ran == [Action(name="browser.done", params={"extracted_content": "42"})]
+    assert ran == [Action(name="loop.done", params={"extracted_content": "42"})]
     (said,) = _feedback(memory)
     assert "action 1, browser.fly is not an action this run executes" in said
-    assert "browser.click, browser.done, browser.type" in said, "the reason lists the run's actions"
+    assert "browser.click, browser.type, loop.done" in said, "the reason lists the run's actions"
 
 
 async def test_an_unknown_name_with_spent_retries_runs_nothing() -> None:

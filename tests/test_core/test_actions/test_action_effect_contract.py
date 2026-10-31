@@ -5,7 +5,8 @@ nested ``Effect`` model; the trace reader finds it by the action's key to read
 a recorded effect back as its type, so a value that is not an ``ActionEffect``
 subclass would make every recorded effect of that action unreadable. The
 browser's effects cover pointer, text input, scroll, navigation, tab, select
-and wait actions; ``done``, ``screenshot`` and ``extract_content`` report none.
+and wait actions; ``screenshot`` and ``extract_content`` report none, and so
+does the Loop's ``loop.done``.
 """
 
 from __future__ import annotations
@@ -46,7 +47,6 @@ BROWSER_EFFECTS: dict[str, type[ActionEffect] | None] = {
     "browser.switch_tab": TabSwitchEffect,
     "browser.select_dropdown": SelectionEffect,
     "browser.wait": WaitEffect,
-    "browser.done": None,
     "browser.screenshot": None,
     "browser.extract_content": None,
 }

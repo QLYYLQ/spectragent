@@ -229,7 +229,7 @@ async def test_concurrent_runtimes_commit_independent_complete_traces(tmp_path):
         agent_id = "fixture"
         __execution_limit_fields__ = frozenset()
         __wiring__ = {
-            "action": ("action", ["browser.done"]),
+            "action": ("action", ["loop.done"]),
             "observation": ("observation", ["browser.browser_meta"]),
         }
 
@@ -240,7 +240,7 @@ async def test_concurrent_runtimes_commit_independent_complete_traces(tmp_path):
             return None
 
         def parse_react_output(self, output):
-            return [Action(name="browser.done", params={"extracted_content": "fixture complete"})]
+            return [Action(name="loop.done", params={"extracted_content": "fixture complete"})]
 
     async with fixture_site() as (origin, requests), ExperimentScope() as scope:
 

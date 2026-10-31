@@ -18,16 +18,17 @@ from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.negotiation import FragmentFormatError
 from spectragent.core.runtime import AgentRuntime
-from spectragent.schemas.action import ActionDescriptor, ActionResult
 from tests._helpers.assembly import AGENT_ID, make_env
 from tests.test_core.test_runtime.test_agent_runtime import SimpleAgent, SimpleEnv, _mk
 
 
 class _Page(CapabilityBase):
-    """A browser stand-in that provides ``browser.dom`` and describes nothing."""
+    """A browser stand-in that provides ``browser.dom`` and describes nothing.
+
+    It offers no action: the agent ends the run with the Loop's ``loop.done``.
+    """
 
     __abstract__ = True
-    __wiring__ = {"action": ("action", ["browser.done"])}
 
     setups: int
 
@@ -38,12 +39,6 @@ class _Page(CapabilityBase):
     @property
     def declared_fragments(self) -> frozenset[str]:
         return frozenset({"browser.dom"})
-
-    def get_action_descriptors(self, **ctx: Any) -> list[ActionDescriptor]:
-        return [ActionDescriptor(name="browser.done", description="Done")]
-
-    async def execute_action(self, action: Any, **kw: Any) -> ActionResult:
-        return ActionResult(success=True, is_done=True, extracted_content="answer")
 
     async def setup(self, *, negotiation: Any = None) -> None:
         self.setups += 1
@@ -59,7 +54,7 @@ class _DescribedPage(_Page):
 class _Quoting(SimpleAgent):
     __wiring__ = {
         "observation": ("observation", ["dom"], []),
-        "action": ("action", ["browser.done"]),
+        "action": ("action", ["loop.done"]),
     }
     __fragment_formats__ = frozenset({"dom"})
 

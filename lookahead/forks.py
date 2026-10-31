@@ -75,6 +75,7 @@ from spectragent.annotation import (
 from spectragent.core.actions._registrar import registered_params
 from spectragent.core.actions.params import point_params
 from spectragent.core.capabilities.browser.index_points import COORDINATE_COUNTERPARTS
+from spectragent.core.loops.actions import DoneAction
 from spectragent.inspection.marks import action_lines, observation_geometry, step_marks
 from spectragent.schemas.restoration import BranchTaskVariant
 
@@ -317,6 +318,11 @@ class RuleVerdict(BaseModel):
 
 def action_type(name: str) -> str:
     return FAMILY.get(name, name).rpartition(".")[2]
+
+
+def is_done_action(name: str) -> bool:
+    """Whether the recorded action *name* ended the run: the Loop's ``loop.done``, by its key."""
+    return name == DoneAction.__registry_key__
 
 
 def _norm(value: Any) -> str:
@@ -596,7 +602,7 @@ QUALITY_QUESTIONS = ("reasonable", "executed_as_intended")
 
 def quality_questions(row: StepRow) -> tuple[str, ...]:
     """Finishing without a browser operation has no screen effect to judge."""
-    if row.actions and all(action_type(action.name) == "done" for action in row.actions):
+    if row.actions and all(is_done_action(action.name) for action in row.actions):
         return ("reasonable",)
     return QUALITY_QUESTIONS
 
@@ -702,7 +708,7 @@ def quality_request(fork: Fork) -> JudgeRequest[Any] | None:
                 "is reasonable; there is no browser effect to assess."
             )
         )
-    elif any(action_type(action.name) == "done" for action in branch.actions):
+    elif any(is_done_action(action.name) for action in branch.actions):
         content.append(
             text_part(
                 "For executed_as_intended, assess only the browser operations; "

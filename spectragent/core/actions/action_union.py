@@ -361,7 +361,7 @@ def action_of(member: BaseModel) -> Action:
     null and an omission reach the capability identically and its own knob
     decides (``clear: null`` must not override ``clear_by_default``). A
     *required* param keeps its ``null``: there the null is the value the
-    action's ``Params`` asks for (``browser.done``'s ``extracted_content``
+    action's ``Params`` asks for (``loop.done``'s ``extracted_content``
     is required and nullable, the honest answer to a task that has none),
     and dropping it would turn a correct reply into a missing-param error.
     """

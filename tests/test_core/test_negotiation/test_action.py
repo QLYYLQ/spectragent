@@ -1,8 +1,9 @@
-"""Tests for the two-party action negotiation engine.
+"""Tests for the action negotiation engine: the environment's side.
 
 Structurally parallel to :mod:`tests.test_core.test_negotiation.test_observation`.
-Action negotiation has only two parties (env ↔ agent); loops are drivers
-and do not contribute action requirements.
+The environment and the Loop provide, the agent requires. These run the rules
+with a Loop that provides nothing; the Loop's own actions (``loop.done``) are
+``test_loop_action_provider.py``'s.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ def _run(
     return _action_rules(
         agent=(agent_required, agent_optional),
         env_provides=env_provides,
+        loop_provides=frozenset(),
     )
 
 

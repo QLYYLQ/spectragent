@@ -41,7 +41,11 @@ from spectragent.core.trace.redaction import redact_config
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection.repository import open_repository
 from spectragent.replay_review.evidence import prepare_case
-from spectragent.replay_review.jev import JevReplayReviewer, route_result
+from spectragent.replay_review.jev import (
+    JevReplayReviewer,
+    route_result,
+    withhold_done_answers,
+)
 from spectragent.replay_review.models import (
     EvidenceRef,
     MachineFacts,
@@ -153,7 +157,7 @@ def case():
     )
     return ReviewCase(
         task="Read the results",
-        next_actions=[Action(name="browser.done", params={"extracted_content": "four eggs"})],
+        next_actions=[Action(name="loop.done", params={"extracted_content": "four eggs"})],
         reference=obs,
         replay=obs.model_copy(deep=True),
         source_ref=ref,
@@ -532,13 +536,24 @@ def test_old_question_and_policy_versions_are_gone():
                 assert "replay-relevance-1" not in text and "replay-triage-1" not in text, path
 
 
+def test_only_the_loops_done_has_its_answer_withheld():
+    """``done`` is the Loop's ``loop.done``, matched by its key, never by a name's ending."""
+    actions = [
+        {"name": "loop.done", "params": {"extracted_content": "four eggs"}},
+        {"name": "desktop.done", "params": {"extracted_content": "kept"}},
+    ]
+    withhold_done_answers(actions, [])
+    assert actions[0]["params"] == {}
+    assert actions[1]["params"] == {"extracted_content": "kept"}
+
+
 def test_request_asks_three_independent_noul_questions_and_withholds_done_answers():
     subject = case()
     subject.machine_evidence["restoration"] = {
         "actions": [
             {
-                "recorded": {"name": "browser.done", "params": {"extracted_content": "four eggs"}},
-                "executed": {"name": "browser.done", "params": {"extracted_content": "four eggs"}},
+                "recorded": {"name": "loop.done", "params": {"extracted_content": "four eggs"}},
+                "executed": {"name": "loop.done", "params": {"extracted_content": "four eggs"}},
                 "result": {"success": True, "is_done": True, "extracted_content": "four eggs"},
             }
         ]
@@ -547,7 +562,7 @@ def test_request_asks_three_independent_noul_questions_and_withholds_done_answer
     assert tuple(withheld.questions) == QUESTION_IDS
     assert {q.type for q in withheld.questions.values()} == {"noul"}
     state = json.dumps(withheld.state, ensure_ascii=False)
-    assert "four eggs" not in state and "browser.done" in state
+    assert "four eggs" not in state and "loop.done" in state
     assert '"is_done": true' in state
     kept = make_reviewer(
         evidence={**reviewer_block()["evidence"], "done_answer": "keep"}
@@ -917,7 +932,7 @@ async def _recorded_pair(
             fragments.append(encode_fragment(0, captured))
         record = StepRecord(
             step=0,
-            actions=[Action(name="browser.done")],
+            actions=[Action(name="loop.done")],
             origin="restored" if name == "replay" else "policy",
             restoration=RestorationCheck(step=0, verdict="ok") if name == "replay" else None,
         )

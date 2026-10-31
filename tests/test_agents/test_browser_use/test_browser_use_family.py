@@ -122,7 +122,7 @@ _DOM_ACTIONS = {
     "browser.click",
     "browser.type",
     "browser.navigate",
-    "browser.done",
+    "loop.done",
     "browser.scroll",
     "browser.send_keys",
     "browser.extract_content",
@@ -190,16 +190,18 @@ class _Run:
         self.agent = make_agent(member, memory=SimpleMemory(max_messages=10), **kwargs)
         self.loop = ReactLoop(max_actions_per_step=1)
         self.obs = negotiate_observation(self.agent, self.loop, self.env)
-        self.actions = negotiate_action(self.agent, self.env)
-        descriptors = self.env.get_action_space(
-            active_actions=self.actions.active_actions,
-            fragments=self.obs.active_fragments,
-        )
+        self.actions = negotiate_action(self.agent, self.loop, self.env)
+        active, fragments = self.actions.active_actions, self.obs.active_fragments
+        descriptors = [
+            *self.env.get_action_space(active_actions=active, fragments=fragments),
+            *self.loop.get_action_space(active_actions=active, fragments=fragments),
+        ]
         self.action_space, self.guard = build_guarded_act(
             self.env.act,
             descriptors,
             None,
             bindings=self.actions.action_bindings,
+            loop_act=self.loop.execute_action,
         )
         self.descriptors = self.action_space.descriptors
         self.agent.prepare(
@@ -573,10 +575,10 @@ def test_the_action_failure_names_the_member_too() -> None:
     """Symmetric with observation, per §2.5 — one rule, both axes."""
     # An ablated environment, reduced to the one attribute action
     # negotiation reads. The agent and the rules are the real ones.
-    env = SimpleNamespace(provided_actions=frozenset({"browser.navigate", "browser.done"}))
+    env = SimpleNamespace(provided_actions=frozenset({"browser.navigate"}))
     agent = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
     with pytest.raises(IncompatibleActionError) as exc:
-        negotiate_action(agent, env)
+        negotiate_action(agent, ReactLoop(), env)
     assert "click ← browser_use.dom" in str(exc.value)
 
 
@@ -630,8 +632,10 @@ async def test_what_the_agent_emits_is_what_the_action_declares(
         routed.append(action)
         return ActionResult(success=True)
 
+    # Whoever executes it — the capability, or the Loop for ``loop.done`` —
+    # receives what the agent emitted.
     _kept, guard = build_guarded_act(
-        _capture, run.descriptors, None, bindings=run.actions.action_bindings
+        _capture, run.descriptors, None, bindings=run.actions.action_bindings, loop_act=_capture
     )
 
     for descriptor in run.descriptors:
@@ -792,14 +796,14 @@ def test_done_with_no_answer_keeps_its_null_and_passes_the_params_check(
     params check, so a task with no answer to return could not end.
     """
     run = _Run(member)
-    payload = {"browser.done": {"extracted_content": None, "success": None}}
+    payload = {"loop.done": {"extracted_content": None, "success": None}}
     reply: Any = (
         run.model.model_validate({"memory": "m", "action": [payload]})
         if structured
         else run.reply(payload)
     )
     (action,) = run.read(reply)
-    assert action == Action(name="browser.done", params={"extracted_content": None})
+    assert action == Action(name="loop.done", params={"extracted_content": None})
     assert params_refusal(run.action_space, action) is None
 
 

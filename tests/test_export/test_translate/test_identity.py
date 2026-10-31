@@ -17,7 +17,7 @@ def test_the_teacher_actions_validated_and_unchanged(recorded: Recorder) -> None
             name="browser.type_coordinate",
             params={"coordinate_x": 3, "coordinate_y": 4, "text": "a"},
         ),
-        Action(name="browser.done", params={"extracted_content": None}),
+        Action(name="loop.done", params={"extracted_content": None}),
     ]
     sample, trace = recorded(actions)
     translation = IdentityTranslator().translate(sample, trace)

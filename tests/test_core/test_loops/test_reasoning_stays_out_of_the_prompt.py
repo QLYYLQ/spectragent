@@ -39,13 +39,13 @@ from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.negotiation import negotiate_action
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, TaskObs
 from tests._helpers.action_params import minimal_params
+from tests._helpers.action_spaces import negotiated_actions
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 from tests._helpers.fragment_formats import formats_for
 
@@ -120,19 +120,14 @@ class _Cap(CapabilityBase):
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "reasoning_prompt_cap"
     __wiring__ = {
-        "action": ("action", ["reasoning_prompt_cap.done", "reasoning_prompt_cap.click"]),
+        "action": ("action", ["reasoning_prompt_cap.click"]),
         "observation": ("observation", ["browser.browser_meta"]),
     }
 
     def get_action_descriptors(self, **ctx: Any) -> list[ActionDescriptor]:
-        return [
-            ActionDescriptor(name="reasoning_prompt_cap.done", description="Done"),
-            ActionDescriptor(name="reasoning_prompt_cap.click", description="Click"),
-        ]
+        return [ActionDescriptor(name="reasoning_prompt_cap.click", description="Click")]
 
     async def execute_action(self, action: Action, **kw: Any) -> ActionResult:
-        if action.name.endswith("done"):
-            return ActionResult(success=True, is_done=True, extracted_content="42")
         return ActionResult(success=True, extracted_content="clicked")
 
     async def resolve_fragment(self, fragment_key: str, **kwargs: Any) -> Any:
@@ -161,7 +156,7 @@ class _Agent:
 
     def parse_react_output(self, out: Any) -> list[Action]:
         if out == "done":
-            return [Action(name="done", params={})]
+            return [Action(name="done", params={"extracted_content": "42"})]
         return [Action(name="click", params={"index": 1})]
 
     def get_react_output_model(self) -> None:
@@ -231,8 +226,6 @@ class _Env2:
 
     async def act(self, action: Action, **kwargs: Any) -> ActionResult:
         self.acted.append(action.name)
-        if action.name == "browser.done":
-            return ActionResult(success=True, is_done=True, extracted_content="42")
         return ActionResult(success=True)
 
 
@@ -266,18 +259,11 @@ def _observation() -> Any:
     )()
 
 
-class _ActionsOnlyEnv:
-    def __init__(self, capability: Any) -> None:
-        self.provided_actions = capability.provided_actions
-
-
 def _browser_use_replies(descriptors: list[ActionDescriptor]) -> list[str]:
     scroll = next(d for d in descriptors if d.name == "browser.scroll")
     return [
         json.dumps({"memory": "Scrolling.", "action": [{scroll.name: minimal_params(scroll)}]}),
-        json.dumps(
-            {"memory": "Found it.", "action": [{"browser.done": {"extracted_content": "42"}}]}
-        ),
+        json.dumps({"memory": "Found it.", "action": [{"loop.done": {"extracted_content": "42"}}]}),
     ]
 
 
@@ -295,7 +281,7 @@ def _skyvern_replies(_descriptors: list[ActionDescriptor]) -> list[str]:
                 "actions": [
                     {
                         "reasoning": "There it is.",
-                        "action": {"browser.done": {"extracted_content": "42", "success": True}},
+                        "action": {"loop.done": {"extracted_content": "42", "success": True}},
                     }
                 ]
             }
@@ -321,13 +307,12 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
     agent_cls, replies_for = _AGENTS[agent_kind]
     agent = agent_cls()
     agent.memory = SimpleMemory(max_messages=100)  # wired by the Composer in a real run
-    capability = BrowserCapability()
-    negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
-    descriptors = [
-        a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
-    ]
+    loop = ReactLoop(max_steps=3)
+    negotiated, descriptors = negotiated_actions(agent, BrowserCapability(), loop=loop)
     env = _Env2(_observation())
-    space, act_fn = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
+    space, act_fn = build_guarded_act(
+        env.act, descriptors, bindings=negotiated.action_bindings, loop_act=loop.execute_action
+    )
     agent.memory.add_messages(
         agent.prepare(
             task="Find the answer",
@@ -339,7 +324,7 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
 
     endpoint = _Endpoint(replies_for(descriptors), reasoning=reasoning)
     llm = _Recording(endpoint.llm())
-    result = await ReactLoop(max_steps=3)._execute(
+    result = await loop._execute(
         agent,
         "Find the answer",
         ctx={
@@ -353,7 +338,8 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
         },
     )
     assert result.agent_done == AgentDoneStatus.DONE, result.error
-    assert env.acted == ["browser.scroll", "browser.done"]
+    # The environment executed the scroll; the Loop executed ``loop.done``.
+    assert env.acted == ["browser.scroll"]
     return endpoint, llm, agent.memory
 
 

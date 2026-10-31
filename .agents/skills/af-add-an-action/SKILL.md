@@ -5,7 +5,7 @@ description: Add or change a Spectragent action and its model-facing parameter c
 
 # Add an Action
 
-Actions are registered, fully qualified units owned and executed by a Capability. Agents declare relative requirements; negotiation and the guarded action boundary qualify them for the environment.
+Actions are registered, fully qualified units owned and executed by a Capability, or by the Loop when they never direct the environment (`loop.done`, the Loop's `__loop_actions__`). Agents declare relative requirements; negotiation and the guarded action boundary qualify them and hand each to its executor.
 
 Read [references/guide.md](references/guide.md) as follows:
 

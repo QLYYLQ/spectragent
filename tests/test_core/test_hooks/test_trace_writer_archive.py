@@ -1632,7 +1632,9 @@ class TestThroughTheRuntime:
             (1, "cycle_002.json"),
             (2, "cycle_003.json"),
         ]
-        assert [len(trace.archive_files(step, BLOBS_KEY)) for step in range(3)] == [1, 1, 1]
+        # A response body per environment action: the last step ends with the
+        # Loop's ``loop.done``, which never reaches the capability.
+        assert [len(trace.archive_files(step, BLOBS_KEY)) for step in range(3)] == [1, 1, 0]
         run = trace.archive_run_file(CAPABILITY_ID)
         assert run is not None and run.run_version == 0
         # Three step pulls and one close-out pull; nothing was left for the tail.

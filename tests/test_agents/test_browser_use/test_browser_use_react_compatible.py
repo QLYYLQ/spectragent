@@ -140,7 +140,7 @@ _DEFAULT_ACTIONS = (
     "browser.type",
     "browser.navigate",
     "browser.scroll",
-    "browser.done",
+    "loop.done",
 )
 
 
@@ -588,9 +588,9 @@ class TestParseReactOutput:
         agent = _prepared()
         (action,) = _read(
             agent,
-            _reply({"browser.done": {"extracted_content": "the final answer", "success": True}}),
+            _reply({"loop.done": {"extracted_content": "the final answer", "success": True}}),
         )
-        assert action.name == "browser.done"
+        assert action.name == "loop.done"
         assert action.params.get("extracted_content") == "the final answer"
         assert "text" not in action.params
 
@@ -600,9 +600,9 @@ class TestParseReactOutput:
         agent = _prepared()
         with pytest.raises(
             ParseError,
-            match="action 1, browser.done: extracted_content: Field required; text: Extra inputs",
+            match="action 1, loop.done: extracted_content: Field required; text: Extra inputs",
         ):
-            _read(agent, _reply({"browser.done": {"text": "answer"}}))
+            _read(agent, _reply({"loop.done": {"text": "answer"}}))
 
 
 class TestOutputModel:
@@ -615,7 +615,7 @@ class TestOutputModel:
         # negotiated descriptors rather than from the class.
         agent.prepare(
             task="t",
-            action_space=space_of(_descriptors("browser.done")),
+            action_space=space_of(_descriptors("loop.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )

@@ -120,15 +120,17 @@ def test_record_config_produces_full_env(tmp_path: Path, monkeypatch: pytest.Mon
     assert {"/oopif/page.html", "/oopif/frame.html"} <= served
 
     # When each action ran, on the wall clock the evidence above is stamped with.
+    # The Loop's ``loop.done`` never reaches the browser: its step has no span.
     steps = trace.step_records
     assert [[(s.action, s.outcome) for s in r.action_spans or []] for r in steps] == [
         [("browser.wait", "returned")],
-        [("browser.done", "returned")],
+        [],
     ]
-    for record in steps:
-        assert record.action_spans is not None
-        (span,) = record.action_spans
-        assert span.started_at <= span.ended_at <= record.timestamp
+    first = steps[0]
+    assert first.action_spans is not None
+    (span,) = first.action_spans
+    assert span.started_at <= span.ended_at <= first.timestamp
+    assert steps[1].action_spans == [] and steps[1].action_results[0].is_done
 
     fingerprint = trace.archive_run_file("browser")
     assert fingerprint is not None

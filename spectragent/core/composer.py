@@ -34,6 +34,7 @@ from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, w
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
 
+from spectragent.core.actions._registrar import ActionRegistrar, is_loop_action
 from spectragent.core.composition_evidence import (
     CompositionEvidence,
     CompositionIssue,
@@ -299,6 +300,21 @@ class ConfigComposer:
         layer, key = self._lookup_layer_key(cfg, path)
 
         registrar = self._registrars[layer]
+        if registrar is ActionRegistrar and is_loop_action(key):
+            # Nothing would receive it: a capability's ``actions`` holds its
+            # own keys only, and the Loop builds the actions it provides
+            # (``docs/architecture_design.md`` §4.5 "Loop 提供的动作").
+            raise UnresolvedWiringError(
+                f"{path}: {key!r} is an action the Loop provides and executes itself; it takes "
+                f"no configuration, so this entry would be silently dropped. Remove it: every "
+                f"Loop that provides {key!r} builds it on its own.",
+                issue=CompositionIssue(
+                    "loop_action",
+                    path,
+                    f"{key} is provided by the Loop and takes no configuration.",
+                    "Remove this entry; the Loop provides the action.",
+                ),
+            )
         cls = registrar.get(key)
         discriminators = _discriminator_names(registrar)
         init_params = set(init_param_names(cls))

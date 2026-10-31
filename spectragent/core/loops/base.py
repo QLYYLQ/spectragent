@@ -20,10 +20,14 @@ See docs/architecture_design.md §4.1 for the Agent-Loop separation design.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from collections.abc import Set as AbstractSet
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.loops.limits import ExecutionLimits
+
+if TYPE_CHECKING:
+    from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 
 
 @runtime_checkable
@@ -45,6 +49,7 @@ class AgentLoop(Protocol):
     __required_message_protocols__: ClassVar[frozenset[MessageProtocol]]
     __requires_env__: ClassVar[bool]
     __loop_fragments__: ClassVar[frozenset[str]]
+    __loop_actions__: ClassVar[frozenset[str]]
 
     def validate_slots(self, agent: Any) -> None:
         """Refuse an Agent missing one of this Loop's declared methods."""
@@ -52,6 +57,16 @@ class AgentLoop(Protocol):
 
     def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
         """Refuse unknown, missing or mistyped task inputs."""
+        ...
+
+    def get_action_space(
+        self, *, active_actions: AbstractSet[str], **context: Any
+    ) -> list[ActionDescriptor]:
+        """Describe the actions this Loop provides (``__loop_actions__``) that are active."""
+        ...
+
+    async def execute_action(self, action: Action) -> ActionResult:
+        """Execute one of this Loop's own ``loop.*`` actions (never ``env.act``)."""
         ...
 
     def execution_limits(self) -> ExecutionLimits:

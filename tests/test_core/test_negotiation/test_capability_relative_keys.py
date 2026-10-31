@@ -73,17 +73,6 @@ class DesktopClickCoordinateAction(ActionBase):
 
 
 @dataclass
-class DesktopDoneAction(ActionBase):
-    __registry_key__ = "desktop.done"
-
-    def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(name=self.action_id, description="Finish.")
-
-    async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
-        return ActionResult(success=True, is_done=True)
-
-
-@dataclass
 class DesktopTypeAction(ActionBase):
     """The index-native ``type`` — present so ``type_coordinate`` has to
     win on a *trailing-segment* match rather than a prefix one."""
@@ -173,7 +162,6 @@ class MockDesktopCapability(CapabilityBase):
                 "desktop.click_coordinate",
                 "desktop.type",
                 "desktop.type_coordinate",
-                "desktop.done",
                 "desktop.scroll",
             ],
         ),
@@ -182,14 +170,12 @@ class MockDesktopCapability(CapabilityBase):
     def __post_init__(self) -> None:
         self.click = DesktopClickCoordinateAction()
         self.type_coordinate = DesktopTypeCoordinateAction()
-        self.done = DesktopDoneAction()
         self._by_name = {
             a.action_id: a
             for a in (
                 self.click,
                 DesktopTypeAction(),
                 self.type_coordinate,
-                self.done,
                 DesktopScrollAction(),
             )
         }
@@ -244,8 +230,10 @@ class _ProvidesActions:
         self.provided_actions = frozenset(keys)
 
 
-_BROWSER_ACTIONS = _ProvidesActions("browser.click_coordinate", "browser.done", "browser.scroll")
-_DESKTOP_ACTIONS = _ProvidesActions("desktop.click_coordinate", "desktop.done")
+#: ``done`` is in neither: the Loop provides it (``loop.done``), whatever the
+#: environment holds.
+_BROWSER_ACTIONS = _ProvidesActions("browser.click_coordinate", "browser.scroll")
+_DESKTOP_ACTIONS = _ProvidesActions("desktop.click_coordinate")
 _COMPOSITE_ACTIONS = _ProvidesActions(
     *_BROWSER_ACTIONS.provided_actions, *_DESKTOP_ACTIONS.provided_actions
 )
@@ -254,7 +242,6 @@ _COMPOSITE_ACTIONS = _ProvidesActions(
 _ONE_COLLISION_ACTIONS = _ProvidesActions(
     "browser.click_coordinate",
     "desktop.click_coordinate",
-    "desktop.done",
 )
 
 
@@ -263,9 +250,9 @@ _ONE_COLLISION_ACTIONS = _ProvidesActions(
 
 class TestRelativeKeysResolveAgainstWhoeverIsPresent:
     def test_same_wiring_negotiates_against_browser(self) -> None:
-        result = negotiate_action(_RelativeAgent(), _BROWSER_ACTIONS)
+        result = negotiate_action(_RelativeAgent(), ReactLoop(), _BROWSER_ACTIONS)
         assert result.active_actions == frozenset(
-            {"browser.click_coordinate", "browser.done", "browser.scroll"}
+            {"browser.click_coordinate", "loop.done", "browser.scroll"}
         )
 
     def test_same_wiring_negotiates_against_desktop(self) -> None:
@@ -275,11 +262,11 @@ class TestRelativeKeysResolveAgainstWhoeverIsPresent:
         ``desktop.click_coordinate`` are two registry keys and set
         subtraction cannot see that they mean the same verb.
         """
-        result = negotiate_action(_RelativeAgent(), _DESKTOP_ACTIONS)
-        assert result.active_actions == frozenset({"desktop.click_coordinate", "desktop.done"})
+        result = negotiate_action(_RelativeAgent(), ReactLoop(), _DESKTOP_ACTIONS)
+        assert result.active_actions == frozenset({"desktop.click_coordinate", "loop.done"})
 
     def test_unprovided_optional_is_dropped_not_missing(self) -> None:
-        result = negotiate_action(_RelativeAgent(), _DESKTOP_ACTIONS)
+        result = negotiate_action(_RelativeAgent(), ReactLoop(), _DESKTOP_ACTIONS)
         assert not any(a.endswith(".scroll") for a in result.active_actions)
 
     def test_a_short_name_binds_on_the_whole_trailing_segment(self) -> None:
@@ -290,9 +277,9 @@ class TestRelativeKeysResolveAgainstWhoeverIsPresent:
         class of failure ``type`` shipped with.
         """
         provides = _ProvidesActions("desktop.type", "desktop.type_coordinate")
-        assert negotiate_action(_TypeCoordinateAgent(), provides).active_actions == frozenset(
-            {"desktop.type_coordinate"}
-        )
+        assert negotiate_action(
+            _TypeCoordinateAgent(), ReactLoop(), provides
+        ).active_actions == frozenset({"desktop.type_coordinate"})
 
     def test_a_relative_key_nobody_provides_is_reported_as_written(self) -> None:
         """The diagnosis must name the string in the wiring line."""
@@ -305,10 +292,10 @@ class TestRelativeKeysResolveAgainstWhoeverIsPresent:
         assert "'type'" in str(exc.value)
 
     def test_bindings_are_the_run_s_short_name_answer(self) -> None:
-        result = negotiate_action(_RelativeAgent(), _DESKTOP_ACTIONS)
+        result = negotiate_action(_RelativeAgent(), ReactLoop(), _DESKTOP_ACTIONS)
         assert result.action_bindings == {
             "click_coordinate": "desktop.click_coordinate",
-            "done": "desktop.done",
+            "done": "loop.done",
         }
 
 
@@ -319,23 +306,23 @@ class TestFullyQualifiedKeysPinTheirProvider:
     def test_pinned_key_selects_its_capability_in_a_composite(self) -> None:
         """Writing the full key is exactly what the ambiguity error asks for."""
         with pytest.raises(AmbiguousActionError):
-            negotiate_action(_RelativeAgent(), _ONE_COLLISION_ACTIONS)
+            negotiate_action(_RelativeAgent(), ReactLoop(), _ONE_COLLISION_ACTIONS)
 
-        result = negotiate_action(_PinnedAgent(), _ONE_COLLISION_ACTIONS)
+        result = negotiate_action(_PinnedAgent(), ReactLoop(), _ONE_COLLISION_ACTIONS)
         assert "desktop.click_coordinate" in result.active_actions
         assert "browser.click_coordinate" not in result.active_actions
         # The un-pinned key stayed relative and resolved on its own.
-        assert "desktop.done" in result.active_actions
+        assert "loop.done" in result.active_actions
 
     def test_pinned_key_does_not_fall_back_to_another_provider(self) -> None:
         """Pinning means pinning: browser-only cannot satisfy a desktop pin."""
         with pytest.raises(IncompatibleActionError) as exc:
-            negotiate_action(_PinnedAgent(), _BROWSER_ACTIONS)
+            negotiate_action(_PinnedAgent(), ReactLoop(), _BROWSER_ACTIONS)
         assert exc.value.missing == {"desktop.click_coordinate"}
 
     def test_pinning_one_key_leaves_the_others_relative(self) -> None:
-        result = negotiate_action(_PinnedAgent(), _DESKTOP_ACTIONS)
-        assert result.active_actions == frozenset({"desktop.click_coordinate", "desktop.done"})
+        result = negotiate_action(_PinnedAgent(), ReactLoop(), _DESKTOP_ACTIONS)
+        assert result.active_actions == frozenset({"desktop.click_coordinate", "loop.done"})
 
 
 # ── 3. Ambiguity is refused, with both candidates named ───────────────
@@ -344,7 +331,7 @@ class TestFullyQualifiedKeysPinTheirProvider:
 class TestAmbiguityIsRefused:
     def test_two_providers_of_one_relative_action_raise(self) -> None:
         with pytest.raises(AmbiguousActionError) as exc:
-            negotiate_action(_RelativeAgent(), _COMPOSITE_ACTIONS)
+            negotiate_action(_RelativeAgent(), ReactLoop(), _COMPOSITE_ACTIONS)
         assert exc.value.declared == "click_coordinate"
         assert exc.value.candidates == (
             "browser.click_coordinate",
@@ -353,7 +340,7 @@ class TestAmbiguityIsRefused:
 
     def test_the_message_names_both_candidates_and_the_remedy(self) -> None:
         with pytest.raises(AmbiguousActionError) as exc:
-            negotiate_action(_RelativeAgent(), _COMPOSITE_ACTIONS)
+            negotiate_action(_RelativeAgent(), ReactLoop(), _COMPOSITE_ACTIONS)
         message = str(exc.value)
         assert "browser.click_coordinate" in message
         assert "desktop.click_coordinate" in message
@@ -362,9 +349,10 @@ class TestAmbiguityIsRefused:
     def test_an_ambiguous_optional_action_also_raises(self) -> None:
         """Dropping it would be the silent degradation this rule exists for."""
         with pytest.raises(AmbiguousActionError) as exc:
+            # A capability's ``done`` beside the Loop's ``loop.done``.
             _action_rules(
                 agent=(set(), {"done"}),
-                env_provides={"browser.done", "desktop.done"},
+                env_provides={"desktop.done"},
             )
         assert exc.value.declared == "done"
 
@@ -402,7 +390,7 @@ class TestAmbiguityIsRefused:
         with caplog.at_level("WARNING"):
             _action_rules(
                 agent=({"click_coordinate", "done"}, set()),
-                env_provides={"browser.click_coordinate", "browser.done"},
+                env_provides={"browser.click_coordinate"},
             )
         assert caplog.text == ""
 
@@ -459,13 +447,29 @@ def _desktop_env() -> EnvironmentBase:
     return make_env(EnvironmentBase, {"desktop#0": MockDesktopCapability()})
 
 
+def _guarded(env: EnvironmentBase) -> tuple[Any, list[ActionDescriptor], Any]:
+    """``_RelativeAgent``'s actions over *env*, guarded as ``AgentRuntime.prepare`` guards them.
+
+    The environment's descriptors, then the Loop's (``loop.done``), which the
+    guard hands to the Loop.
+    """
+    loop = ReactLoop()
+    negotiated = negotiate_action(_RelativeAgent(), loop, env)
+    active = negotiated.active_actions
+    descriptors = [
+        *env.get_action_space(active_actions=active),
+        *loop.get_action_space(active_actions=active),
+    ]
+    _kept, guard = build_guarded_act(
+        env.act, descriptors, bindings=negotiated.action_bindings, loop_act=loop.execute_action
+    )
+    return negotiated, descriptors, guard
+
+
 class TestRoutingStillSpeaksFullyQualifiedNames:
     async def test_guard_rewrites_a_relative_name_before_the_router(self) -> None:
         env = _desktop_env()
-        agent = _RelativeAgent()
-        negotiated = negotiate_action(agent, env)
-        descriptors = env.get_action_space(active_actions=negotiated.active_actions)
-        _kept, guard = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
+        negotiated, descriptors, guard = _guarded(env)
 
         emitted = Action(
             name="click_coordinate",
@@ -493,22 +497,17 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
         assert "fully qualified" in (result.error or "")
 
     async def test_descriptors_advertise_the_fully_qualified_name(self) -> None:
-        env = _desktop_env()
-        negotiated = negotiate_action(_RelativeAgent(), env)
-        names = {d.name for d in env.get_action_space(active_actions=negotiated.active_actions)}
-        assert names == {
+        _negotiated, descriptors, _guard = _guarded(_desktop_env())
+        assert {d.name for d in descriptors} == {
             "desktop.click_coordinate",
-            "desktop.done",
             "desktop.scroll",
+            "loop.done",
         }
 
     async def test_a_relative_name_outside_the_active_set_is_still_rejected(
         self,
     ) -> None:
-        env = _desktop_env()
-        negotiated = negotiate_action(_RelativeAgent(), env)
-        descriptors = env.get_action_space(active_actions=negotiated.active_actions)
-        _kept, guard = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
+        _negotiated, _descriptors, guard = _guarded(_desktop_env())
 
         result = await guard(Action(name="type", params={"text": "hi"}))
 
@@ -518,13 +517,14 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
     async def test_an_ablation_revokes_the_relative_alias_too(self) -> None:
         """A binding whose target the filter dropped must not resolve."""
         env = _desktop_env()
-        negotiated = negotiate_action(_RelativeAgent(), env)
-        descriptors = env.get_action_space(active_actions=negotiated.active_actions)
+        negotiated, descriptors, _guard = _guarded(env)
+        loop = ReactLoop()
         _kept, guard = build_guarded_act(
             env.act,
             descriptors,
-            ["desktop.done"],
+            ["loop.done"],
             bindings=negotiated.action_bindings,
+            loop_act=loop.execute_action,
         )
 
         result = await guard(Action(name="click_coordinate", params={}))
@@ -543,7 +543,6 @@ class _BrowserActionsAndFragments:
         {
             "browser.click_coordinate",
             "browser.type_coordinate",
-            "browser.done",
             "browser.scroll",
             "browser.send_keys",
             "browser.drag",
@@ -580,12 +579,12 @@ class TestUITarsRunsWhereverItsVerbsExist:
                 assert all("." not in key for key in key_list), key_list
 
     def test_actions_negotiate_against_browser(self) -> None:
-        result = negotiate_action(UITarsAgent(), _BrowserActionsAndFragments())
-        assert result.active_actions == _BrowserActionsAndFragments.provided_actions
-        assert all(a.startswith("browser.") for a in result.active_actions)
+        result = negotiate_action(UITarsAgent(), ReactLoop(), _BrowserActionsAndFragments())
+        # ``done`` is the Loop's whatever the environment: ``loop.done``.
+        assert result.active_actions == _BrowserActionsAndFragments.provided_actions | {"loop.done"}
 
     def test_actions_negotiate_against_desktop_unchanged(self) -> None:
-        result = negotiate_action(UITarsAgent(), _DesktopActionsAndFragments())
+        result = negotiate_action(UITarsAgent(), ReactLoop(), _DesktopActionsAndFragments())
         # ``desktop.type`` exists too and is *not* picked: the agent asked
         # for ``type_coordinate``, and a short name binds on the whole
         # trailing segment.
@@ -593,11 +592,10 @@ class TestUITarsRunsWhereverItsVerbsExist:
             {
                 "desktop.click_coordinate",
                 "desktop.type_coordinate",
-                "desktop.done",
                 "desktop.scroll",
+                "loop.done",
             }
         )
-        assert all(a.startswith("desktop.") for a in result.active_actions)
 
     def test_observation_negotiates_against_both(self) -> None:
         for env, prefix in (
@@ -620,8 +618,8 @@ class TestUITarsRunsWhereverItsVerbsExist:
             *_DesktopActionsAndFragments.provided_actions,
         )
         with pytest.raises(AmbiguousActionError) as exc:
-            negotiate_action(UITarsAgent(), composite)
-        assert exc.value.declared in {"click_coordinate", "done", "type_coordinate"}
+            negotiate_action(UITarsAgent(), ReactLoop(), composite)
+        assert exc.value.declared in {"click_coordinate", "type_coordinate"}
         assert len(exc.value.candidates) == 2
         message = str(exc.value)
         assert all(candidate in message for candidate in exc.value.candidates)
@@ -648,7 +646,7 @@ class TestUITarsRunsWhereverItsVerbsExist:
                     [
                         "desktop.click_coordinate",
                         "desktop.type_coordinate",
-                        "desktop.done",
+                        "done",
                     ],
                     [],
                 ),
@@ -663,12 +661,12 @@ class TestUITarsRunsWhereverItsVerbsExist:
             *_BrowserActionsAndFragments.provided_actions,
             *_DesktopActionsAndFragments.provided_actions,
         )
-        result = negotiate_action(_PinnedUITars(), composite_actions)
+        result = negotiate_action(_PinnedUITars(), ReactLoop(), composite_actions)
         assert result.active_actions == frozenset(
             {
                 "desktop.click_coordinate",
                 "desktop.type_coordinate",
-                "desktop.done",
+                "loop.done",
             }
         )
 

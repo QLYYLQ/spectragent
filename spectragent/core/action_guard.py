@@ -3,8 +3,10 @@
 The ``build_guarded_act()`` factory produces a pair of
 (action_space, guarded_act_closure). The closure validates that
 every action emitted by the agent is in the active action set before
-delegating to ``env.act()``. This eliminates prompt/capability mismatch:
-what the prompt tells the LLM is available matches what actually executes.
+delegating it: a ``loop.*`` action to the Loop, which provides and executes
+it, every other to ``env.act()``. This eliminates prompt/capability
+mismatch: what the prompt tells the LLM is available matches what actually
+executes.
 
 Beside it, the refusals a Loop words before anything runs, all in one voice:
 an action name the guard would refuse (:func:`name_refusal`), params that do
@@ -23,7 +25,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ValidationError
 from pydantic_core import ErrorDetails
 
-from spectragent.core.actions._registrar import registered_params
+from spectragent.core.actions._registrar import is_loop_action, registered_params
 from spectragent.core.actions.action_union import (
     ACTION_PARAMS,
     ACTION_SHAPE,
@@ -121,8 +123,8 @@ def name_refusal(space: ActionSpace, name: str) -> str | None:
     (``ReactLoop.check_action_params``): a name the guard would refuse
     (:func:`executed_name` is ``None``), refused with the run's actions
     listed. ``None`` when the guard executes the name, and in a run that
-    advertises no actions (no environment): it told the model no names to
-    keep to, and its guard refuses whatever it is handed.
+    advertises no actions: it told the model no names to keep to, and its
+    guard refuses whatever it is handed.
     """
     if not space.descriptors or executed_name(space, name) is not None:
         return None
@@ -244,6 +246,7 @@ def build_guarded_act(
     action_filter: list[str] | None = None,
     *,
     bindings: Mapping[str, str] | None = None,
+    loop_act: Callable[[Action], Awaitable[ActionResult]] | None = None,
 ) -> tuple[ActionSpace, Callable[..., Awaitable[ActionResult]]]:
     """Build a guarded action executor with optional filtering.
 
@@ -254,9 +257,15 @@ def build_guarded_act(
     key and nothing else, so the collision-free routing the prefix exists
     for is untouched by agents that speak short names.
 
+    It is also where an action leaves for whoever executes it, by that
+    full key's prefix: a ``loop.*`` action to *loop_act*, the Loop that
+    provides it, every other to *act_fn*. A ``loop.*`` action never
+    reaches ``env.act`` (``docs/architecture_design.md`` §4.5, "Loop 提供的动作").
+
     Args:
         act_fn: The underlying ``env.act(action, **kwargs)`` callable.
-        descriptors: Full list of action descriptors from the environment.
+        descriptors: Full list of action descriptors: the environment's,
+            then the Loop's.
         action_filter: Optional allowlist of action names for ablation
             experiments. When provided, only descriptors whose name is
             in this list are retained.
@@ -265,14 +274,20 @@ def build_guarded_act(
             ``click`` gets it rewritten to the ``click`` this run actually
             has. Omitted (``None``) means the caller negotiated nothing,
             so only fully-qualified names are accepted.
+        loop_act: The Loop's ``execute_action``, which executes the
+            ``loop.*`` actions it provides. Required when a ``loop.*``
+            descriptor survives the filter.
 
     Returns:
         A tuple of ``(action_space, guarded_act)``:
         - ``action_space``: the original filter, final prompt descriptors,
           allowed names and bindings — one typed experiment contract.
         - ``guarded_act``: an async closure that resolves the action name
-          against *bindings* and validates it is in the active set before
-          delegating to *act_fn*.
+          against *bindings*, validates it is in the active set, and
+          delegates it to *loop_act* or *act_fn*.
+
+    Raises:
+        ValueError: A ``loop.*`` action is active and no *loop_act* executes it.
     """
     if action_filter is not None:
         allowed = set(action_filter)
@@ -281,6 +296,12 @@ def build_guarded_act(
         filtered = list(descriptors)
 
     active_names = frozenset(d.name for d in filtered)
+    unexecutable = sorted(name for name in active_names if is_loop_action(name))
+    if unexecutable and loop_act is None:
+        raise ValueError(
+            f"the active actions {unexecutable} are a Loop's to execute, and no loop_act "
+            f"was given to execute them"
+        )
     bound = dict(bindings or {})
     action_space = ActionSpace(
         action_filter=list(action_filter) if action_filter is not None else None,
@@ -304,6 +325,9 @@ def build_guarded_act(
             # specific capability executed — the provenance loss the
             # observation axis already refuses.
             action.name = full
+        if is_loop_action(full):
+            assert loop_act is not None  # refused above when the guard was built
+            return await loop_act(action)
         return await act_fn(action, **kwargs)
 
     return action_space, guarded_act

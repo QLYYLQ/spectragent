@@ -161,8 +161,8 @@ class ActionBoundary:
     ``BrowserCapability.execute_action`` — one that fails at once because the
     focused tab closed itself included — so ``action_index`` counts the calls
     since the observation cycle began: the same ordinal as that step's
-    ``StepRecord.action_spans``. An action ``guarded_act`` refused never
-    reaches the environment and is in neither.
+    ``StepRecord.action_spans``. An action ``guarded_act`` refused, and the
+    Loop's own ``loop.done``, never reach the environment and are in neither.
     """
 
     #: The tab's target id (``None`` when the capability knows none).

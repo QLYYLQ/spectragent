@@ -64,7 +64,7 @@ from spectragent.core.trace.secret_patterns import (
     iter_readable,
     readable_text,
 )
-from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action import Action
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -88,16 +88,8 @@ SECRETS = (API_KEY, GATEWAY_URL, PROXY_URL, PROFILE_DIR, START_URL)
 class _Cap(CapabilityBase):
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "secret_guard_cap"
-    __wiring__ = {
-        "action": ("action", ["secret_guard_cap.done"]),
-        "observation": ("observation", ["browser.browser_meta"]),
-    }
-
-    def get_action_descriptors(self, **ctx):
-        return [ActionDescriptor(name="secret_guard_cap.done", description="Done")]
-
-    async def execute_action(self, action, **kw):
-        return ActionResult(success=True, is_done=True, extracted_content="42")
+    # It offers no action: the agent ends the run with the Loop's ``loop.done``.
+    __wiring__ = {"observation": ("observation", ["browser.browser_meta"])}
 
     async def resolve_fragment(self, fragment_key, **kwargs):
         from spectragent.core.capabilities.browser.observations import BrowserMetaObs
@@ -183,7 +175,7 @@ class _Agent:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
-        return [Action(name="done", params={})]
+        return [Action(name="done", params={"extracted_content": "42"})]
 
     def get_react_output_model(self):
         return None

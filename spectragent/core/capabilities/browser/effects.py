@@ -24,7 +24,7 @@ Effect                      Actions
 :class:`WaitEffect`         ``wait``
 ==========================  ====================================================
 
-``done``, ``screenshot`` and ``extract_content`` report none.
+``screenshot`` and ``extract_content`` report none.
 
 Every fact is a value or one of the two gaps of
 :data:`~spectragent.schemas.action.Unmeasured`: ``"unknown"`` (the probe failed

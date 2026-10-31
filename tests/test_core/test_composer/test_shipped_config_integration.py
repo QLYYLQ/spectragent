@@ -40,6 +40,7 @@ from spectragent.core.composer import (
     ComposeError,
     ConfigComposer,
     DuplicateInstanceIdError,
+    UnresolvedWiringError,
 )
 from spectragent.core.loops.validation import (
     IncompatibleCheckpointError,
@@ -755,7 +756,7 @@ class TestDeclaredConfigSurfaceIsReachable:
                             _capability(
                                 actions=[
                                     {"action_id": "browser.click"},
-                                    {"action_id": "browser.done"},
+                                    {"action_id": "browser.navigate"},
                                 ]
                             )
                         ],
@@ -764,7 +765,7 @@ class TestDeclaredConfigSurfaceIsReachable:
             }
         )
         env = run.instances("environment")[0]
-        assert env.provided_actions == frozenset({"browser.click", "browser.done"})
+        assert env.provided_actions == frozenset({"browser.click", "browser.navigate"})
 
     def test_ablating_a_required_action_fails_negotiation_by_name(
         self,
@@ -788,7 +789,6 @@ class TestDeclaredConfigSurfaceIsReachable:
                             _capability(
                                 actions=[
                                     {"action_id": "browser.click"},
-                                    {"action_id": "browser.type"},
                                     {"action_id": "browser.navigate"},
                                 ]
                             )
@@ -803,8 +803,9 @@ class TestDeclaredConfigSurfaceIsReachable:
         message = str(exc_info.value)
         # Named the way the *agent* wrote it, which is the line the user
         # has to edit; the ablation list it is missing from is quoted
-        # alongside, fully qualified.
-        assert "'done'" in message
+        # alongside, fully qualified. (``done`` is the Loop's and cannot be
+        # ablated here.)
+        assert "'type'" in message
         assert "browser.click" in message
         assert "ablation" in message
 
@@ -857,19 +858,34 @@ class TestDeclaredConfigSurfaceIsReachable:
             {
                 "action": [
                     {"action_id": "browser.scroll", "default_amount": 900},
-                    {"action_id": "browser.done"},
+                    {"action_id": "browser.wait"},
                 ],
                 "environment": [{"env_type": "browser", "capabilities": [_CAPABILITY]}],
             }
         )
         cap = run.single("capability")
-        assert set(cap._actions_by_name) == {"browser.scroll", "browser.done"}
+        assert set(cap._actions_by_name) == {"browser.scroll", "browser.wait"}
         assert cap._actions_by_name["browser.scroll"] is run.instances("action")[0]
         assert cap._actions_by_name["browser.scroll"].default_amount == 900
 
+    def test_a_loop_action_in_the_top_level_action_section_is_refused(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """``loop.done`` is the Loop's: no configuration, and nothing would receive the instance."""
+        with pytest.raises(UnresolvedWiringError, match="the Loop provides") as info:
+            composer.compose(
+                {
+                    "action": [{"action_id": "loop.done"}],
+                    "environment": [{"env_type": "browser", "capabilities": [_CAPABILITY]}],
+                }
+            )
+        assert info.value.issue is not None
+        assert (info.value.issue.code, info.value.issue.path) == ("loop_action", "action[0]")
+
     @pytest.mark.parametrize(
         ("actions", "expected"),
-        [("omitted", 16), (None, 16), ([], 0), ([{"action_id": "browser.done"}], 1)],
+        [("omitted", 15), (None, 15), ([], 0), ([{"action_id": "browser.wait"}], 1)],
         ids=["omitted", "null", "empty-list", "one-action"],
     )
     def test_omitted_actions_mean_every_wired_action_and_an_empty_list_none(

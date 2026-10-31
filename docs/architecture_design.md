@@ -205,12 +205,19 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __loop_inputs__: ClassVar[Mapping[str, LoopInput]] = {}   # 每个任务交给 Loop 的输入（M31，见下文）
     __requires_env__: ClassVar[bool] = True                   # 没有环境的 run：prepare() 报 MissingEnvironmentError（见下）
     __loop_fragments__: ClassVar[frozenset[str]] = LOOP_FRAGMENT_KEYS  # 本 Loop 建得出的 loop 来源 fragment（§4.4）
+    __loop_actions__: ClassVar[frozenset[str]] = LOOP_ACTION_KEYS      # 本 Loop 提供并执行的动作：loop.done（§4.5）
 
     def validate_slots(self, agent: Any) -> None:
         """callable(getattr(agent, slot)) — 缺 slot 即 raise IncompatibleError"""
 
     def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
         """键与类型对照 __loop_inputs__ — 多的、缺的、类型不对的一次报全：IncompatibleLoopInputError"""
+
+    def get_action_space(self, *, active_actions, **context) -> list[ActionDescriptor]:
+        """__loop_actions__ 里协商激活了的那些的 descriptor，接在环境的之后进提示词（§4.5 "Loop 提供的动作"）"""
+
+    async def execute_action(self, action: Action) -> ActionResult:
+        """守卫把解析出的 loop.* 交到这里执行；loop.* 从不到达 env.act"""
 
     def weave(self, agent: Any, **deps: Any) -> Any:
         self.validate_slots(agent)
@@ -225,10 +232,11 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
 **weave 是无状态的。** deps 只活在 `agent.run` 闭包里，同一个 loop 实例可以织到 N 个 agent 上，第 N 次 weave 不会改写第 1 个 agent 的环境；loop 实例上没有 `ctx` 属性（`test_shipped_config_integration.py` 断言它不存在）。`ctx` 的内容由 `AgentRuntime.prepare()` 决定（§4.2）：`env`、`llm`、`memory`、`act_fn`、`negotiated_obs`、`negotiated_actions`（M31）、`active_descriptors`、`step_recorder`、`task_id`、`loop_inputs`（M31：只读映射，Loop 不声明输入时为空）。
 
-**Loop 的两条类级声明，`prepare()` 都查。**
+**Loop 的三条类级声明，`prepare()` 都查。**
 
-- `__requires_env__`（默认 `True`）：Loop 要不要环境。要而这个 run 没有环境（`AgentRuntime` 的 `env` 是 `None`）时，`prepare()` 在 loop 输入校验之后、任何协商之前抛 `MissingEnvironmentError`（`core/loops/validation.py`，点名这个 Loop）；以前是在观测协商里对 `None` 取 `provided_fragments` 的 `AttributeError`。声明 `False` 的 Loop 可以不带环境跑：缺席的环境什么都不提供，观测、动作协商照常进行，需要环境的 fragment 或动作的 agent 由协商点名拒绝；这样的 run 没有动作空间（`active_descriptors` 为空，守卫拒绝一切动作），给了 setup context 的键也被拒绝（没有可以 setup 的环境）。v1 里没有这样的 Loop：`react` 与 `branch` 都要环境。
+- `__requires_env__`（默认 `True`）：Loop 要不要环境。要而这个 run 没有环境（`AgentRuntime` 的 `env` 是 `None`）时，`prepare()` 在 loop 输入校验之后、任何协商之前抛 `MissingEnvironmentError`（`core/loops/validation.py`，点名这个 Loop）；以前是在观测协商里对 `None` 取 `provided_fragments` 的 `AttributeError`。声明 `False` 的 Loop 可以不带环境跑：缺席的环境什么都不提供，观测、动作协商照常进行，需要环境的 fragment 或动作的 agent 由协商点名拒绝；这样的 run 的动作空间只有 Loop 提供的动作（`loop.done`，见下），守卫拒绝其余一切，给了 setup context 的键也被拒绝（没有可以 setup 的环境）。v1 里没有这样的 Loop：`react` 与 `branch` 都要环境。
 - `__loop_fragments__`（默认是 `core/loops/_loop_fragments.py` 的 `LOOP_FRAGMENT_KEYS`，即共享的 `loop_fragment_builders` 建的四个 `loop.*`，直接从那个函数读出来，两者不会漂移）：本 Loop 在 `env.observe()` 之后填哪些 loop 来源 fragment。Loop 也是 fragment 的提供方：观测协商在 Loop 一侧只提供它声明的这些（§4.4 "协商规则"），agent 要求一个已注册、但这个 Loop 不建的 loop 来源 fragment 时，`prepare()` 抛 `IncompatibleFragmentError`，点名这个 fragment 与这个 Loop（`provider="loop '<loop_id>'"`）。以前协商的 universe 是全部已注册的 `loop.*`，不管选的是哪个 Loop，缺的 builder 要到第 0 步 `populate_loop_fragments` 的 `KeyError` 才暴露，run 被记成环境失败。建别的（或一个都不建）的 Loop 覆盖它；子类里写成普通 `set` 的，类创建时冻结成 `frozenset`，写成字符串的在 import 时报错。不继承 `AgentLoopBase` 的结构化 Loop 不声明就是什么都不建。
+- `__loop_actions__`（默认是 `core/loops/actions.py` 的 `LOOP_ACTION_KEYS`，即 `loop.done`）：本 Loop 自己提供并执行的动作（§4.5 "Loop 提供的动作"）。Loop 也是动作的提供方：动作协商在 Loop 一侧只提供它声明的这些，agent 要求一个已注册、但这个 Loop 不提供的 Loop 动作时，`prepare()` 抛 `IncompatibleActionError`，点名这个动作与这个 Loop（`provider="loop '<loop_id>'"`），不是环境。键都以 `loop.` 开头：守卫按这个前缀把动作交给 Loop，所以别的前缀、或写成字符串的，在 import 时报错；子类里写成普通 `set` 的冻结成 `frozenset`。不提供 `done` 的 Loop 覆盖它。不继承 `AgentLoopBase` 的结构化 Loop 不声明就是一个也不提供。
 
 具体 Loop 子类示例：
 
@@ -446,8 +454,9 @@ class ReactLoop(AgentLoopBase):
 | `llm.ainvoke` | after | 每次 LLM 成功返回后 | 可选成功通知；统一调用账由 around 单独负责 |
 | `llm.ainvoke` | around | 每次 LLM 调用：返回、抛异常或被取消 | TraceWriter 在 `proceed()` 之前登记这次调用，按结局记为 completed / failed / cancelled，并测量等待时间；失败回复携带的用量保留在同一本调用账 |
 | `loop.execute_step` / `loop.observe_terminal` | around | 进入实际步骤执行或终止观测 | 按稳定步骤身份开始计时；检查点与随后同编号策略步共享起点 |
+| `loop.execute_action` | before / after / around | Loop 执行自己的动作（`loop.done`，§4.5）：守卫经织过的 Loop 调它 | 可选；TraceWriter 不拦截（这一调用不经过 `env.act`，没有 `ActionSpan`） |
 | `loop.record_step` | around | Loop 交出完整 StepRecord | 截止步骤执行计时、封存本步调用与所选证据；有界后台任务经 WAL 持久化，manifest 是提交点 |
-| `env.act` | around | 每次 action 执行：返回、抛异常或被取消 | TraceWriter 记下这次调用的起止墙钟与结局，归到正在执行的步（`StepRecord.action_spans`，§5.4）；无环境的 run 不声明此拦截 |
+| `env.act` | around | 每次环境动作执行：返回、抛异常或被取消（Loop 自己执行的 `loop.done` 不经过它，§4.5） | TraceWriter 记下这次调用的起止墙钟与结局，归到正在执行的步（`StepRecord.action_spans`，§5.4）；无环境的 run 不声明此拦截 |
 | `agent.build_react_prompt` | around | prompt 构建时 | 异步提示贡献与审计；`await proceed()`，显式 `ReactPromptContext` 描述历史与策略阶段 |
 
 > **与 emitter.dispatch() 的权衡**：AOP 方案让 Loop 代码完全干净（零横切逻辑），但只能拦截实际存在的方法调用。如果某些 Loop（如 PlanExecuteLoop）需要发出不对应任何方法调用的语义事件（如 `plan_generated`），可以将其建模为 agent Protocol 方法（如 `agent.parse_plan()`），AOP 自然覆盖。
@@ -500,11 +509,11 @@ ReAct 的公开 `read_reply`、`cap_actions`、`remember_rejected`、`remember_r
 
 **步数只数策略步。** `AgentMetrics.steps` 数 `origin == "policy"` 的记录，恢复步和终止观测不占预算、不加入 Agent 的动作历史，也不继承源运行 token。完整轨迹的步级用量由统一记录组件汇总本步全部调用后填写。
 
-**agent 的任务结论：与结束动作的执行分开（用户 2026-10-23 的裁决）。** 结束 run 的动作（`browser.done`）的 `ActionResult.success` 与其他每个动作一样，只表示它执行了：run 因此结束，不表示任务完成了。agent 对任务说了什么是另一件事实，由结束动作的结果单独携带：`ActionResult.reported_success`，`true`（完成了）、`false`（没有完成）或 `null`（没有说）。只有 `is_done` 的结果能带它（`schemas/action.py` 校验）；没有结论时这个键不写，所以其余动作的记录与以前逐字节相同。Loop 把它照抄进 `AgentResult.agent_reported_success`（`react.py`）；没有调用结束动作的 run（超时、`max_steps`、出错）也是 `None`，这条约束不变。它是 agent 的自报，不是判定：判定只来自 Evaluator 的 `EvalResult.predicted_label`（§4.11）。结论从 agent 那里来，各 Agent 照同一个合同：
+**agent 的任务结论：与结束动作的执行分开（用户 2026-10-23 的裁决）。** 结束 run 的动作（`loop.done`：由 Loop 提供并执行，从不经过环境，§4.5 "Loop 提供的动作"）的 `ActionResult.success` 与其他每个动作一样，只表示它执行了：run 因此结束，不表示任务完成了。agent 对任务说了什么是另一件事实，由结束动作的结果单独携带：`ActionResult.reported_success`，`true`（完成了）、`false`（没有完成）或 `null`（没有说）。只有 `is_done` 的结果能带它（`schemas/action.py` 校验）；没有结论时这个键不写，所以其余动作的记录与以前逐字节相同。Loop 把它照抄进 `AgentResult.agent_reported_success`（`react.py`）；没有调用结束动作的 run（超时、`max_steps`、出错）也是 `None`，这条约束不变。它是 agent 的自报，不是判定：判定只来自 Evaluator 的 `EvalResult.predicted_label`（§4.11）。结论从 agent 那里来，各 Agent 照同一个合同：
 
 - **BrowserUse**：模型经 `done` 的 `success` 参数说。参数说明是 "whether the task was accomplished; leave it unset if you cannot tell"，以前只有类型；写 `null` 与不写一样（Agent 在建动作之前去掉 null），是没有结论。系统提示照同一个三分法教（`system_prompt.md`、`system_prompt_no_thinking.md`、`system_prompt_flash.md`，用户 2026-10-23 的裁决）：已知有要求没做到、或被没解决的阻断错误挡住，写 `false`；每条要求都核实做到了，写 `true`；确实说不准，不写。上游原文把"不确定、无法核实"也教成 `false`，那样说不准的结果读起来就成了已知的失败；其余上游原文与语气不变。三个 `is_browser_use_model` 模板不教 `success`，只有动作表里的参数说明。这三个模板在这次改动之前的录制同样不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。回归：`test_browser_use_prompt_action_vocabulary.py` 的 `test_teaches_done_s_success_as_the_action_reads_it`。
 - **Skyvern**：与 BrowserUse 相同，经 `done` 的 `success` 参数说（`done` 是闭合回复里的一个动作，上文"Skyvern 家族"）；不写或写 `null` 是没有结论。系统提示的 `<finishing>` 照三分法教：做到了 `true`，做不到 `false`，说不准不写。原来的顶层 `success`（默认 `null`）随顶层字段一起删除。
-- **UI-TARS**：`finished(content='...')` 没有表达结论的参数，模型也用它说做不到（一次 LexBench 录制的任务 18，答案以"无法完成"开头），所以结论是 `None`，不再硬写 `success=True`。动作空间与动词写法不变；系统提示里 `finished` 那一块的 `executes:` 行不再列出它设不了的 `success`（只差 `, success: bool (optional)`），所以这次改动之前的 UI-TARS 录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。训练导出里，UI-TARS 学生写不出任何结论：teacher 说完成了的结束步写成它的 `finished(...)`、样本注明结论没写出，说没完成的仍不可译（§4.15 round-trip 第 4 条）。结论参数由动作声明：`browser.done` 的 `success` 带 `TaskClaim` 标记（`core/actions/params.py::claim_params`），它是动作里唯一不指挥环境的参数，导出按它认出结论，不按参数名。
+- **UI-TARS**：`finished(content='...')` 没有表达结论的参数，模型也用它说做不到（一次 LexBench 录制的任务 18，答案以"无法完成"开头），所以结论是 `None`，不再硬写 `success=True`。动作空间与动词写法不变；系统提示里 `finished` 那一块的 `executes:` 行不再列出它设不了的 `success`（只差 `, success: bool (optional)`），所以这次改动之前的 UI-TARS 录制不能用 `history_source: source` 分叉（种子检查不符），用 `restored` 或重新录制。训练导出里，UI-TARS 学生写不出任何结论：teacher 说完成了的结束步写成它的 `finished(...)`、样本注明结论没写出，说没完成的仍不可译（§4.15 round-trip 第 4 条）。结论参数由动作声明：`loop.done` 的 `success` 带 `TaskClaim` 标记（`core/actions/params.py::claim_params`），它是动作里唯一不指挥环境的参数，导出按它认出结论，不按参数名。
 
 原因：以前结束动作的 `success` 同时承担"执行了"与"agent 说完成了"两层意思。UI-TARS 的每个 run 都"自报成功"，包括说自己做不到的；一个 `done(success=false)` 在 trace 里记成一次失败的动作：执行错误（`StepRecord.execution_errors` 的 "action reported failure"）、训练导出的 `labels.step_status: action_failed`、动作标记的"（没有成功）"。不用动作效果（§4.5）承载结论：效果是动作执行前后测得的事实，`describe()` 不含任务判断，而结论正是 agent 的任务判断；它与答案 `extracted_content` 一样，是结束动作交出的内容。`AgentResult.schema_version` 因此升为 `4.0`，3.0 的结果在读取时被拒绝（"predates AgentResult schema 4.0"），不做转换；trace 格式版本不变（缺少 `reported_success` 就是没有结论，与动作效果同一条规则），旧录制按测试数据可丢弃的裁决重新生成。
 
@@ -647,7 +656,7 @@ class AgentRuntime:
         loop.validate_slots(agent)
         # 1b. Loop 输入校验（M31，§4.1）：多的 / 缺的 / 类型不对 → IncompatibleLoopInputError
         loop.check_loop_inputs(loop_inputs or {})
-        # 1c. Loop 要环境而这个 run 没有（§4.1 "Loop 的两条类级声明"）→ MissingEnvironmentError；
+        # 1c. Loop 要环境而这个 run 没有（§4.1 "Loop 的三条类级声明"）→ MissingEnvironmentError；
         #     不要环境的 Loop：缺席的环境什么都不提供，下面的协商照常进行
         if env is None and type(loop).__requires_env__:
             raise MissingEnvironmentError(loop.loop_id)
@@ -659,8 +668,8 @@ class AgentRuntime:
         #     激活了而提供方不描述的 → FragmentFormatError。只读配置，交给 seed_messages
         self._fragment_formats = quoted_fragment_formats(agent, negotiated_obs, env)
 
-        # 3. Action 两方协商（见 §4.5）
-        negotiated_actions = negotiate_action(agent, env)
+        # 3. Action 协商（见 §4.5）：universe = 环境提供的 + 本 Loop 的 __loop_actions__（loop.done）
+        negotiated_actions = negotiate_action(agent, loop, env)
 
         # 3b. Memory 协议协商（Loop ⊆ Memory，见 §4.8）
         negotiate_memory(loop, memory)
@@ -685,20 +694,23 @@ class AgentRuntime:
         elif env_context:
             raise ValueError(...)                                    # 没有环境，就没有可以 setup 的
 
-        # 4. AOP 织入 — Weaver 包装四个角色：agent / env / llm，以及 StepRecorder（role="loop"）
+        # 4. AOP 织入 — Weaver 包装 agent / env / llm，以及 role="loop" 的 StepRecorder 与 Loop
         weaver = Weaver(self._hooks)
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
         wrapped_recorder = weaver.wrap(self._recorder, role="loop")  # record_step → 一次提交完整 step
+        wrapped_loop = weaver.wrap(loop, role="loop")  # execute_step / execute_action ……
         weaver.raise_for_unclaimed_roles()
 
-        # 5. 收窄 action space + guarded_act（不带环境的 run：没有 descriptor，守卫拒绝一切动作）
-        narrowed = wrapped_env.get_action_space(
-            active_actions=negotiated_actions.active_actions
+        # 5. 收窄 action space + guarded_act：环境的 descriptor 接上 Loop 的（不带环境的 run 只有 Loop 的）；
+        #    守卫把 loop.* 交给织过的 Loop 执行（hook 看得见），其余交给 env.act
+        active = negotiated_actions.active_actions
+        narrowed = wrapped_env.get_action_space(active_actions=active) + loop.get_action_space(
+            active_actions=active
         )
         action_space, act_fn = build_guarded_act(
-            wrapped_env.act, narrowed, action_filter,
+            wrapped_env.act, narrowed, action_filter, loop_act=wrapped_loop.execute_action,
         )
 
         # 6. Loop weave — patch wrapped_agent.run = closure(loop._execute)
@@ -934,6 +946,7 @@ class ConfigComposer:
 - 统一使用 conscribe 2.0 的公开 `introspect.wiring_slots` / `receptor_slots` / `init_param_names`。构造参数优先，随后读取 MRO 中的非 `ClassVar` 类级注解；继承的参数按 `**kwargs` 转发链读取，注解在声明它的模块中解析。
 - 受体的 `shape` 决定 single / list / dict 注入，识别 `Annotated`、`Optional` 和集合类型。只在 `__init__` 中注解的可选列表也按列表注入，不再要求额外的类级注解。
 - 纯协商声明（agent 的 `observation` / `action`，capability 的 `observation` / `archiver`）使用 dict wiring：`{"registry": "observation", "keys": [...], "optional_keys": [...], "declare_only": True}`。不产生描述符或存根，不内联成实例配置；仍生成可选 `Literal` 字段供校验。YAML 填入合法名称时 Composer 仍以 `UnresolvedWiringError`（"negotiation-only entry"）拒绝，因为该值没有运行时接收者。
+- 顶层 `action:` 段里写 Loop 自己的动作（`loop.*`，如 `loop.done`）时，Composer 同样以 `UnresolvedWiringError`（issue `loop_action`）拒绝：它由 Loop 提供并执行，没有配置，也没有受体会收下这个实例（capability 的 `actions` 只收自己的键），否则就是一个被悄悄丢掉的条目（§4.5 "Loop 提供的动作"）。
 - 普通 list / dict 受体省略或写 `null` 时，第二遍 `_resolve_deferred` 从目标层的实例池中取允许的实现；池为空时保留主人自己的默认值，主人没有默认值才设空容器。`[]` 永远是显式空，`capability.actions: []` 不构造任何动作。
 - **只能内联的层**由 `create_registrar(..., inline_only=True)` 声明：`ArchiverRegistrar` 是当前唯一用例。conscribe 在运行时模型、生成 Python 与 JSON Schema 中一致禁止顶层 `archiver:`，包括 `[]` 与 `null`；Pydantic 错误类型 `inline_only_layer`，位置 `archiver`，提示 `hook[trace_writer].archive`。Composer 使用 `result.top_level_layers` 遍历可写顶层段，内联层受体省略或 `null` 时保留主人的默认值，绝不从实例池中取别的 hook 的归档器。删除本地 `__inline_only__` 声明和重复的拒绝逻辑。归档仍只有 `trace_writer.archive` 一个开关。
 - **配置面的拼写规则**（用户 2026-10-13 的裁决；注册名、选项值与旋钮都遵守）：
@@ -1178,10 +1191,10 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 **但"声明"不用全限定键（capability-relative wiring）**：注册 key、`ActionDescriptor.name`、`act()` 路由、trace 文件名全部保持全限定——上面那段路由一个字都不改。唯一让出前缀的是 **agent / loop 的 `__wiring__` 声明面**：写 `"click_coordinate"` 而不是 `"browser.click_coordinate"`。理由是同一个字符串原本被要求同时承担三件互不相干的工作——(a) 注册表全局唯一、(b) 运行时分发路由、(c) agent 声明自己需要什么。(a)(b) 确实需要 capability 前缀，(c) 不需要："我会按坐标点击"这句领域知识天生与 capability 无关。让 (c) 继承前缀的后果是每个 agent 被焊死在一个 capability 上——UI-TARS 是 computer-use 模型，自己的 config 提供 COMPUTER_USE / MOBILE_USE / GROUNDING 三种模式，却只能对着 `browser` 协商。
 
 - **展开**：`ActionRegistrar` / `ObservationRegistrar` 用 `key_separator="."` 创建，conscribe（≥1.3.0）在 config 生成期把不带分隔符的 wiring key 展开成所有尾段匹配的全限定 key，于是生成的 `Literal[...]` 覆盖每个可能的 provider。conscribe 只做**加宽**，不做**裁决**——生成期它不可能知道某次装配持有哪些 capability。
-- **裁决**：协商期收窄。`negotiate_action` / `negotiate_observation` 在声明空间里跑集合运算，再把每个声明 key 绑定到本次 environment 里唯一提供它的全限定 key。绑定表（short → 全限定）只在协商期算一次，挂在协商结果上（`action_bindings` / `fragment_bindings`）；下游一律读表，不得自己再推一遍。
-- **消歧靠拒绝**：一个 relative key 若被本 environment 里两个 capability 同时提供（`browser.screenshot` vs `desktop.screenshot`），抛错并把两个候选全限定名都报出来。按 wiring 列表顺序挑一个、或让 agent 声明 capability 亲和度，都被明确否掉：前者是静默降级，后者把 F10 刚拆掉的耦合又装回去。
+- **裁决**：协商期收窄。`negotiate_action` / `negotiate_observation` 在声明空间里跑集合运算，再把每个声明 key 绑定到本次 run 里唯一提供它的全限定 key（提供方是 environment 里的 capability，或 Loop：loop 来源 fragment 与 `loop.done`）。绑定表（short → 全限定）只在协商期算一次，挂在协商结果上（`action_bindings` / `fragment_bindings`）；下游一律读表，不得自己再推一遍。
+- **消歧靠拒绝**：一个 relative key 若被本 run 的两个提供方同时提供（`browser.screenshot` vs `desktop.screenshot`；一个 capability 的 `done` 与 Loop 的 `loop.done` 也一样），抛错并把两个候选全限定名都报出来。按 wiring 列表顺序挑一个、或让 agent 声明 capability 亲和度，都被明确否掉：前者是静默降级，后者把 F10 刚拆掉的耦合又装回去。
 - **逃生舱**：在 wiring 里直接写全限定 key 即钉死 provider（含消歧场景），这也是上面那条报错给出的修法。
-- **收窄发生在唯一一处**：`build_guarded_act`。它本来就包住了每一个 action，所以 agent 吐出的 relative name 在进 `env.act` 之前就已经变回全限定名；此后整条链路（路由 / descriptor / WAL）只见全限定键。规则本身只有一份：同模块的 `resolve_action_name(name, active_names, bindings)`，守卫对经手的每个动作应用它；需要知道守卫把一个动作叫成了什么的调用方（`BranchLoop` 重放时拿重新解析出的动作与录下的比较，§4.1）也问它，不自己再推一遍。
+- **收窄发生在唯一一处**：`build_guarded_act`。它本来就包住了每一个 action，所以 agent 吐出的 relative name 在交给 `env.act`（或 Loop：`loop.*`，§4.5）之前就已经变回全限定名；此后整条链路（路由 / descriptor / WAL）只见全限定键。规则本身只有一份：同模块的 `resolve_action_name(name, active_names, bindings)`，守卫对经手的每个动作应用它；需要知道守卫把一个动作叫成了什么的调用方（`BranchLoop` 重放时拿重新解析出的动作与录下的比较，§4.1）也问它，不自己再推一遍。
 
 **Agent 声明 capability 需求**（通过 `__wiring__`，替代 `required_capabilities` property）：
 
@@ -1450,7 +1463,7 @@ loop-sourced ∧ optional ∧ 本 Loop 建不出       → 不激活
 loop-sourced ∧ required ∧ 本 Loop 建不出       → IncompatibleFragmentError（点名这个 fragment 与这个 Loop）
 ```
 
-"本 Loop 建得出"读的是选中 Loop 的 `__loop_fragments__`（§4.1 "Loop 的两条类级声明"；`AgentLoopBase` 默认是共享 builder 建的四个 `loop.*`）：协商的 universe 是环境提供的 fragment 加上这个 Loop 声明的 loop 来源 fragment，而不是全部已注册的 `loop.*`。一个 required 的声明对不上 universe、却对得上一个已注册而本 Loop 不建的 loop 来源 fragment 时，报错的提供方是 Loop（`IncompatibleFragmentError.provider == "loop '<loop_id>'"`，`provided` 是这个 Loop 建的那些），不是环境。不带环境的 run（§4.1）里环境一侧的 universe 是空的。
+"本 Loop 建得出"读的是选中 Loop 的 `__loop_fragments__`（§4.1 "Loop 的三条类级声明"；`AgentLoopBase` 默认是共享 builder 建的四个 `loop.*`）：协商的 universe 是环境提供的 fragment 加上这个 Loop 声明的 loop 来源 fragment，而不是全部已注册的 `loop.*`。一个 required 的声明对不上 universe、却对得上一个已注册而本 Loop 不建的 loop 来源 fragment 时，报错的提供方是 Loop（`IncompatibleFragmentError.provider == "loop '<loop_id>'"`，`provided` 是这个 Loop 建的那些），不是环境。不带环境的 run（§4.1）里环境一侧的 universe 是空的。
 
 错误信息示例：
 ```
@@ -1574,7 +1587,7 @@ def build_observation_model(active_fragments: set[str]) -> type[BaseModel]:
 
 ### 4.5 Action 体系 + 对称协商 + 前缀路由
 
-**设计决策**：Action 与 Observation 完全对称。每个 action 是独立的 conscribe 注册单元（`ActionRegistrar` + `ActionBase`），agent 通过 `__wiring__` 声明 `(required, optional)` 的动作名，capability 通过 `__wiring__` 声明 `provides` 的动作名，AgentRuntime 协商出 `active set`。Action 的副作用/状态配置属于 capability 端——agent 只声明"我要 scroll 能力"，不关心 scroll 滚多少像素。多 capability 场景通过前缀路由消歧（`browser.click`）。`guarded_act()` 保证 prompt 与实际能力永远一致。
+**设计决策**：Action 与 Observation 完全对称。每个 action 是独立的 conscribe 注册单元（`ActionRegistrar` + `ActionBase`），agent 通过 `__wiring__` 声明 `(required, optional)` 的动作名，capability 通过 `__wiring__` 声明 `provides` 的动作名，Loop 通过 `__loop_actions__` 声明它自己提供并执行的动作（`loop.done`，下文"Loop 提供的动作"，与它用 `__loop_fragments__` 提供 loop 来源 fragment 同一个形状），AgentRuntime 协商出 `active set`。Action 的副作用/状态配置属于 capability 端——agent 只声明"我要 scroll 能力"，不关心 scroll 滚多少像素。多 capability 场景通过前缀路由消歧（`browser.click`）。`guarded_act()` 保证 prompt 与实际能力永远一致。
 
 #### 对称对照表
 
@@ -1583,18 +1596,19 @@ def build_observation_model(active_fragments: set[str]) -> type[BaseModel]:
 | 注册器 | `ObservationRegistrar` (`"observation"`) | `ActionRegistrar` (`"action"`) | `ArchiverRegistrar` (`"archiver"`, `discriminator_field="archiver_id"`, `key_separator="."`) |
 | 基类 | `FragmentBase` (pydantic bridge) | `ActionBase` (dataclass + conscribe metaclass) | `ArchiverBase`（普通类 + conscribe metaclass；框架层只有身份与声明：`archiver_id`、`source`、`privacy_markers`；旋钮是子类的 `Annotated` 构造参数；采集行为由所属 capability 自己的 archiver 基类定义，框架从不调用） |
 | 注册单元 | 每个 fragment 一个类 (`DOMObs` / `ScreenshotObs` / ...) | 每个 action 一个类 (`ClickAction` / `ScrollAction` / ...) | 每个归档器一个类（M29：`browser.network` / `browser.storage` / `browser.dom_raw`；只作标签的截图 `browser.frames`；回放日志 `browser.replay_log`，§4.14） |
-| 注册 key 命名空间 | `source.id` dotted key (`browser.dom` / `browser.screenshot` / `docker.terminal` / `loop.action_result`) | `source.id` dotted key (`browser.click` / `browser.scroll` / `sandbox.bash`) | `source.id` dotted key（`browser.network`） |
+| 注册 key 命名空间 | `source.id` dotted key (`browser.dom` / `browser.screenshot` / `docker.terminal` / `loop.action_result`) | `source.id` dotted key (`browser.click` / `browser.scroll` / `sandbox.bash` / `loop.done`) | `source.id` dotted key（`browser.network`） |
 | Agent wiring | `"observation": ("observation", [required], [optional])` — 默认写 capability-relative 短名（`screenshot`），写全限定键即钉死 provider | `"action": ("action", [required], [optional])` — 同左（`click_coordinate` / `browser.click_coordinate`） | 无。requires 不在任何类的 `__wiring__` 上，而是 `ArchiveConsumer.archive`——trace hook 实例的归档器列表（YAML `hook[].archive`，M29 起），**永远全限定**，没有 relative key |
 | Capability wiring | `"observation": ("observation", [provides])` | `"action": ("action", [provides])` | `"archiver": ("archiver", [provides])` |
+| Loop 提供 | `__loop_fragments__`（loop 来源 fragment，§4.1） | `__loop_actions__`（`loop.done`，Loop 自己执行，下文"Loop 提供的动作"） | 无 |
 | Environment 聚合 | `provided_fragments` (全限定键集合) | `provided_actions` (全限定键集合) | `provided_archivers`（全限定键集合） |
-| 协商函数 | `negotiate_observation(agent, loop, env)` → `ObservationNegotiationResult` | `negotiate_action(agent, env)` → `ActionNegotiationResult` (loop 不参与) | `negotiate_archive(consumers, env)` → `ArchiveNegotiationResult`（注册为 `archive`） |
+| 协商函数 | `negotiate_observation(agent, loop, env)` → `ObservationNegotiationResult` | `negotiate_action(agent, loop, env)` → `ActionNegotiationResult`（universe = 环境的 + 本 Loop 的 `__loop_actions__`） | `negotiate_archive(consumers, env)` → `ArchiveNegotiationResult`（注册为 `archive`） |
 | 协商失败 | `IncompatibleFragmentError` | `IncompatibleActionError` | `IncompatibleArchiveError` |
 | 绑定表 | `fragment_bindings`（短名 → 全限定键） | `action_bindings`（短名 → 全限定键） | `archive_bindings`（archiver key → `capability_id`） |
 | wiring 提取 | `extract_wiring(cls, "observation")` | `extract_wiring(cls, "action")` | 只有 provides 一侧：`_wiring_keys_for(cls, "archiver")` |
 | 统一入口 | `negotiate(target_class, wiring_name, rules, **kwargs)` — 见 `spectragent/core/negotiation/engine.py` | 同左 | 同左（`negotiate(ArchiveNegotiationResult, "archiver", _archive_rules, ...)`） |
 | 副作用/状态配置位置 | Capability 端 (e.g. `DOMWatchdog.cleaner_type` 是 profile 的一部分) | **Capability 端** (e.g. `ScrollAction.default_amount` 是 capability 持有的 action 实例的 conscribe 字段) | **记录器端**：旋钮在 trace hook 持有的归档器实例上（如 `max_inline_body_bytes`），绑定时把实例交给 capability |
-| 运行时使用 | `env.observe(negotiated, session_id)` 只解析 active fragment | `guarded_act` 拒绝 non-active action；`active_descriptors` 只暴露 active set | `prepare()` 末尾 `env.bind_archivers(...)`；归档消费者在自己的提交点拉取 `env.collect_archive()`（§4.6） |
-| Loop 参与协商 | 是（`ActionResultObs` 等 loop-sourced fragment） | **否**（action 都是 env-sourced，loop 只是驱动器） | **否** |
+| 运行时使用 | `env.observe(negotiated, session_id)` 只解析 active fragment | `guarded_act` 拒绝 non-active action，把 `loop.*` 交给 Loop 的 `execute_action`、其余交给 `env.act`；`active_descriptors` 只暴露 active set | `prepare()` 末尾 `env.bind_archivers(...)`；归档消费者在自己的提交点拉取 `env.collect_archive()`（§4.6） |
+| Loop 参与协商 | 是（`ActionResultObs` 等 loop-sourced fragment） | 是（Loop 提供的动作：`loop.done`；Loop 不要求动作） | **否** |
 
 #### 归档：第三条 provides 轴
 
@@ -1667,7 +1681,7 @@ class Params(BaseModel):
 - `AddressesElement(fragment)`：参数的值指名这个 fragment 里的一个元素（`browser.click` 的 `index` 是 `browser.dom` 的 selector map 的键）。它是 `RequiresFragment` 的子类：元素离开它的 fragment 没有意义，所以上面的两级依赖照旧从这一个标记得出。`element_params(Params)` 给出这些参数。
 - **经 descriptor 交给 Agent。** `ActionBase.describe` 把两者随 prose 与 schema 一起渲染进 `ActionDescriptor.point_params` / `element_params`，并与参数一起收窄（视觉 run 的 `scroll` 没有 `index`，也就没有元素地址）。Agent 从 `prepare` 交给它的 `ActionSpace` 里读本 run 的 descriptor；读录下动作的一方（恢复的 capability 读它自己的动作实例，导出、查看器标记、lookahead 读注册的 `Params`，`core/actions/_registrar.py::registered_params`）读同一个标记。
 - **动作的含义：只等待（2026-10-25）。** 一个动作只让时间过去、不碰环境（`browser.wait`），写在动作类上一次：`ActionBase.only_waits: ClassVar[bool]`（默认 `False`，`WaitAction` 为 `True`）。读录下动作的一方经 `core/actions/_registrar.py::is_wait_action(name)` 按全限定名读它，从不按名字或后缀认；训练导出的 `wait_actions: drop_when_capped` 靠它认出要去掉的等待（§4.15 "等待动作"）。
-- **Agent 的命名只问绑定。** `core/action_guard.py::executed_name(space, name)` 是 `resolve_action_name` 套在 `ActionSpace` 上：一个名字在本 run 被守卫执行成哪个全限定动作，拒绝的是 `None`；`executed_descriptor(space, name)` 给出那个动作的 descriptor。UI-TARS 编解码绑定动词、Skyvern 的 `done`、两个 Agent 的点参数查找都用它，不再按名字的最后一段去 descriptors 里对（两个 capability 都提供的短名不绑定任何一个，按后缀对会挑中一个守卫会拒绝的）。
+- **Agent 的命名只问绑定。** `core/action_guard.py::executed_name(space, name)` 是 `resolve_action_name` 套在 `ActionSpace` 上：一个名字在本 run 被守卫执行成哪个全限定动作，拒绝的是 `None`；`executed_descriptor(space, name)` 给出那个动作的 descriptor。UI-TARS 编解码绑定动词、Skyvern 的 `done`、两个 Agent 的点参数查找都用它，不再按名字的最后一段去 descriptors 里对（两个提供方都提供的短名不绑定任何一个，按后缀对会挑中一个守卫会拒绝的）。
 
 删除发生在 descriptor 的 `**context` 通道上：`AgentRuntime.prepare` Step 4 调用 `env.get_action_space(active_actions=..., fragments=negotiated_obs.active_fragments)`，环境把它转发给每个 capability、再转发给每个 `action.descriptor(**context)`——与 §4.9 里 `task_tools` 走的是同一条通道。协商规则不变；不读 `fragments` 的 capability 行为与从前完全一致。
 
@@ -1824,7 +1838,7 @@ class BrowserCapability(CapabilityBase):
         "action": ("action", ["click", "type", "navigate", "scroll",
                               "send_keys", "go_back", "go_forward",
                               "switch_tab", "select_dropdown",
-                              "extract_content", "done", "click_coordinate"]),
+                              "extract_content", "click_coordinate"]),
         "backend": "browser_provider",
     }
 
@@ -1872,12 +1886,22 @@ capability:
       - action_id: click        # 用默认参数
       - action_id: type
       - action_id: navigate
-      - action_id: done
     # 没列出的 action（如 send_keys、go_back）不会实例化，
-    # 等价于 ablation 收窄
+    # 等价于 ablation 收窄；done 是 Loop 的（loop.done），不在这里列
 ```
 
-不写 `actions`（或写 `null`）得到 wiring 提供的全部动作；`actions: []` 一个动作都不建（`[]` 永远是空，§4.2.1），任何要求动作的 agent 都在协商时失败。
+不写 `actions`（或写 `null`）得到 wiring 提供的全部动作；`actions: []` 一个动作都不建（`[]` 永远是空，§4.2.1），任何要求 capability 动作的 agent 都在协商时失败。
+
+#### Loop 提供的动作：`loop.done`（用户 2026-10-31 的裁决）
+
+`done` 结束 run，交出 agent 的答案（`extracted_content`）与它对任务的结论（`success`，§4.1"agent 的任务结论"）。它从不指挥环境，所以不是任何 capability 的动作，归 Loop，键是 `loop.done`：键的前缀说的是谁提供、谁执行这个动作（`browser.click` 由 browser capability 执行），loop 来源的 fragment 本来就用 `loop.`（§4.4），不另起一个前缀。
+
+- **声明**：Loop 用 `__loop_actions__` 声明它提供并执行的动作（§4.1 "Loop 的三条类级声明"），与 `__loop_fragments__` 同一个形状；`AgentLoopBase` 默认是 `core/loops/actions.py` 的 `LOOP_ACTION_KEYS`（`loop.done`），`react` 与 `branch` 都提供它。Loop 只提供动作，不要求动作：ReAct 看结果的 `is_done` 结束 run，不看动作名。
+- **动作类、参数与结果不变**：`DoneAction`（`core/loops/actions.py`，基类 `LoopActionBase`）照常在 `ActionRegistrar` 注册、照常声明 `Params`，descriptor 照常由 `describe` 渲染（它没有配置：YAML 顶层 `action:` 段写它被 Composer 拒绝，§4.2.1）：`extracted_content` 必填且可空，`success` 带 `TaskClaim` 标记（`core/actions/params.py::claim_params`）。结果仍是 `ActionResult(success=True, is_done=True, extracted_content=…, reported_success=…)`，没有 `Effect`。读录下动作的一方（导出、查看器标记）照常经 `registered_params` 读它的 `Params`。
+- **执行不经过环境**：`LoopActionBase.execute(params)` 只收参数，没有 capability 可注入。`AgentLoopBase.get_action_space(active_actions=..., **context)` 给出本 Loop 的动作里协商激活了的那些的 descriptor，`AgentRuntime.prepare` 把它们接在环境的 descriptor 之后交给守卫，所以提示词的动作表里有 `loop.done`；`build_guarded_act(env.act, descriptors, ..., loop_act=loop.execute_action)` 的闭包把解析出的 `loop.*` 交给 `AgentLoopBase.execute_action`，其余交给 `env.act`；`AgentRuntime` 交给守卫的是织过 hook 的 Loop 的 `execute_action`，所以 `loop` 角色上拦截 `execute_action` 的 hook 会在 `loop.done` 执行时触发（§4.1 拦截点表）。`loop.*` 从不到达 `EnvironmentBase.act`：它没有 `ActionSpan`（§5.4）；browser 不为它通知 `action_boundary`、不拍 `before_action` 帧、不开跟随窗口（§4.14）；焦点 tab 自己关掉之后也不拒绝它（§4.14 "自己关掉的 tab"）：agent 的答案不因为 tab 关了而被拒。done 之后的终止观测照旧。
+- **协商**：universe 是环境提供的动作加本 Loop 的 `__loop_actions__`。相对名的绑定与歧义规则不变：agent 写的 `done` 绑定到 `loop.done`；环境里也有一个本地名是 `done` 的动作时，相对的 `done` 报 `AmbiguousActionError`，在 `__wiring__` 里写全限定键钉住一个。agent 要求一个已注册、本 Loop 不提供的 Loop 动作时，`IncompatibleActionError` 的提供方是这个 Loop（`provider == "loop '<loop_id>'"`，`provided` 是它提供的那些），不是环境；两边都没有的动作照旧是环境没提供。不带环境的 run 里动作空间只有 Loop 提供的动作。
+- **`wait` 这次仍归 capability**（`browser.wait`，Android 的 `android.wait` 同样，§11.2）：训练导出去掉等待时按动作所属的 capability（键的第一段）对上被截断的采集（§4.15 "等待动作"）；做组合环境之前用同一套机制把它挪到 Loop，先要想清这条规则。
+- **没有别名**：这次改动之前录下的 run 里结束动作叫 `browser.done`。它们的协商与动作空间与现在的不同，不能分叉（`IncompatibleCheckpointError`）；`browser.done` 不是注册的动作，不能导出（`no_counterpart`）。不设别名、不做读时转换，重录（测试数据可丢弃）；trace 格式版本不变。
 
 #### 协商流程
 
@@ -1886,47 +1910,53 @@ AgentRuntime 在启动前运行对称的 action 协商：
 ```python
 def negotiate_actions(
     env_provides: set[str],
+    loop_provides: set[str],
     agent_required: set[str],
     agent_optional: set[str],
 ) -> ActionNegotiationResult:
-    missing = agent_required - env_provides
+    provides = env_provides | loop_provides
+    missing = agent_required - provides
     if missing:
         raise IncompatibleActionError(
             required=agent_required, provided=env_provides,
         )
-    active = agent_required | (agent_optional & env_provides)
+    active = agent_required | (agent_optional & provides)
     return ActionNegotiationResult(active_actions=frozenset(active))
 
 
 # AgentRuntime 里：
-def _negotiate_actions(self, agent, env):
-    env_provides = set(env.provided_actions)  # 聚合各 capability
+def _negotiate_actions(self, agent, loop, env):
+    env_provides = set(env.provided_actions)          # 聚合各 capability
+    loop_provides = set(type(loop).__loop_actions__)  # loop.done
     agent_req, agent_opt = extract_action_wiring(type(agent))
-    return negotiate_actions(env_provides, agent_req, agent_opt)
+    return negotiate_actions(env_provides, loop_provides, agent_req, agent_opt)
 ```
 
-**结果对比**：Loop 不参与 action 协商（action 都是 env-sourced），所以 `negotiate_actions` 签名只有 env + agent 两方。
+**结果对比**：与观测协商一样，Loop 也是提供方（它提供 `loop.done`，上文"Loop 提供的动作"），所以 `negotiate_action(agent, loop, env)` 有三方；Loop 只提供、不要求，缺失归哪一方的规则与 §4.4 的 loop 来源 fragment 相同。
 
 #### `guarded_act()` — Prompt 与能力一致性保证
 
 协商得到的 `active_actions` 用于收窄 `active_descriptors`，然后传给 `build_guarded_act`：
 
 ```python
-# AgentRuntime.execute() 中
-negotiated_actions = self._negotiate_actions(agent, env)
+# AgentRuntime.prepare() 中
+negotiated_actions = self._negotiate_actions(agent, loop, env)
 
-all_descriptors = env.get_action_space()
+all_descriptors = env.get_action_space() + loop.get_action_space(
+    active_actions=negotiated_actions.active_actions
+)
 active_descriptors = [
     d for d in all_descriptors
     if d.name in negotiated_actions.active_actions
 ]
 action_space, act_fn = build_guarded_act(
     wrapped_env.act, active_descriptors, action_filter=None,
+    loop_act=loop.execute_action,
 )
 # action_space.descriptors 的独立快照用于 prompt，act_fn 是 guarded 的执行闭包
 ```
 
-`build_guarded_act` 的闭包在每次调用时用 `resolve_action_name` 给 `action.name` 定名：在 active set 里就是它自己；短名经绑定表解析到仍在 active set 里的全限定名，就地改写；其余直接返回 `ActionResult(success=False, error=...)`，名字保持 agent 写的样子。
+`build_guarded_act` 的闭包在每次调用时用 `resolve_action_name` 给 `action.name` 定名：在 active set 里就是它自己；短名经绑定表解析到仍在 active set 里的全限定名，就地改写；其余直接返回 `ActionResult(success=False, error=...)`，名字保持 agent 写的样子。定了名的动作按前缀交出去：`loop.*` 交给 `loop_act`（Loop 的 `execute_action`），其余交给 `env.act`。active set 里有 `loop.*` 却没给 `loop_act` 是调用方的编程错误，`build_guarded_act` 当场抛 `ValueError`。
 
 **结果：prompt 说有什么 action，实际就能用什么 action。配置错误在 `AgentRuntime._negotiate_actions` 阶段就会 raise `IncompatibleActionError`，而不是等到 LLM 第一次输出之后才暴露。**
 
@@ -1961,14 +1991,16 @@ class FunctionCallingLoop(AgentLoopBase):
 
 ```
 GAIA 场景：
-  BrowserCapability actions: click, type, navigate, done
+  BrowserCapability actions: click, type, navigate
   ToolSandboxCapability actions: call_tool, get_user_msg
+  ReactLoop actions: done
 
-  CompositeEnvironment 聚合后 agent 看到:
-    browser.click, browser.type, browser.navigate, browser.done,
-    tool_sandbox.call_tool, tool_sandbox.get_user_msg
+  CompositeEnvironment 聚合、接上 Loop 的之后 agent 看到:
+    browser.click, browser.type, browser.navigate,
+    tool_sandbox.call_tool, tool_sandbox.get_user_msg, loop.done
 
   LLM 输出 browser.navigate → Env 拆前缀 → BrowserCapability.execute_action(navigate)
+  LLM 输出 loop.done → 守卫交给 Loop 的 execute_action，不经过 Env
 ```
 
 **单 capability 场景不加前缀**，不触发前缀逻辑。
@@ -2600,7 +2632,7 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | capability_id | 协议 | 核心 Actions | Observation Fragments | 典型 Benchmark |
 |--------------|------|-------------|----------------------|---------------|
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
-| `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
+| `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
 | `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`type_coordinate`、`scroll`（带一个可选的起点 `start`，§4.5）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`（`android.ui_tree`，一个键，生产方另记，§11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
@@ -2617,10 +2649,10 @@ class BrowserCapability(CapabilityBase):
     __wiring__ = {
         "observation": ("observation", ["dom", "screenshot", "browser_meta"]),
         # 对称 observation wiring：action provides 声明此 capability 能提供哪些动作
+        # （结束 run 的 done 不在这里：它是 Loop 的 loop.done，§4.5）
         "action": ("action", ["click", "click_coordinate", "type", "navigate",
                               "scroll", "send_keys", "go_back", "go_forward",
-                              "switch_tab", "select_dropdown", "extract_content",
-                              "done"]),
+                              "switch_tab", "select_dropdown", "extract_content"]),
         # 归档 provides（全限定键，M29 起）：没有 slot；requires 在 trace hook 的 archive 列表里
         "archiver": ("archiver", ["browser.network", "browser.storage", "browser.dom_raw",
                                   "browser.frames", "browser.replay_log"]),
@@ -3401,10 +3433,10 @@ Chrome 155 的 fixture 回归 `test_browser_storage_seed_live.py` 验证首请�
   - `before_action`：每次 `env.act` 碰页面之前（任何滚动到可见、指针移动、按键之前）拍一张。一步的第一张是"模型想完之后的画面"，后面的是动作之间的画面。
   - `after_observation`：每个提交了的观测 cycle 之后 `after_observation_delay_s`（默认 1.0 s，`null` 关掉）再拍一张。
 - **新通道 `action_boundary`**（`ArchiveNeed` 的第五个值，`browser.frames` 有它）。`BrowserCapability.execute_action` 一开始就调 `BrowserArchiveRun.action_boundary(tab=..., control_session_id=..., action=..., tab_open=...)`，**每一次调用都通知**，包括聚焦 tab 已经自己关掉、动作马上失败的那种（`tab_open=False`，帧记 `no_tab`）。归档侧按观测 cycle 给调用编号（`ActionBoundary.cycle` / `action_index`，不论有没有归档器要边界都计数），再在动作自己的 task 里把 `ActionBoundary` 依次直接交给每个 `wants_action_boundaries` 的会话（与 `commit_raw`、`cycle_committed`、`collect` 一样直接调用，不经 archive scope：排队的投递可能被悄悄取消、已关的 tab 没有 scope 可发，而且会话必须知道自己被放弃了才能把帧记下来）。会话超过自己的 `action_boundary_budget_s` 再加 0.5 s（`ACTION_BOUNDARY_GRACE_S`）就被取消；被取消（或整个 run 被取消）的会话照样把这一帧记成 `timeout`，`detail` 写动作等了多久。帧的事不会让收集失败、不会丢掉这一步，也不会让动作失败：`ArchiveChannel.errors` 不为帧计数。通知完成之后 capability 才再查一次 tab（等待期间 tab 自己关了，动作照样以"closed itself"失败），最后才开跟随窗口（§4.14 "页面新开的标签页"），所以拍帧期间页面自己开的 tab 不算 agent 的。setup 打开起始页走 `_run_action`，不通知。capability 不按归档器 id 分支，也从不知道步号。
-- **与动作记录对齐**：`action_index` 是这次 `env.act` 调用自本 cycle 以来的序号，在 ReAct 一步只观测一次的流程里，它就是那一步 `StepRecord.action_spans` 的下标（每次 `env.act` 一个 span，按调用顺序）。按序号与 `action_spans` 对齐，不要与 `StepRecord.actions` 对齐：被 `guarded_act` 拒绝的动作根本到不了 `env.act`，两边都没有它。
+- **与动作记录对齐**：`action_index` 是这次 `env.act` 调用自本 cycle 以来的序号，在 ReAct 一步只观测一次的流程里，它就是那一步 `StepRecord.action_spans` 的下标（每次 `env.act` 一个 span，按调用顺序）。按序号与 `action_spans` 对齐，不要与 `StepRecord.actions` 对齐：被 `guarded_act` 拒绝的动作与 Loop 自己执行的 `loop.done` 都到不了 `env.act`，两边都没有它们。
 - **提交的 cycle**：`_populate_cycle` 成功时，`BrowserArchiveRun.commit_raw` 之后紧接着 `cycle_committed(cycle, tab, control_session_id)`，同步告知每个会话（`on_cycle_committed(CommittedCycle)`，默认 no-op）；失败的 cycle 不告知。
 - **动作等多久，有上限**：拍帧的等待发生在 `env.act` 里面，所以算进 agent 的超时、`duration_ms`、`execution_ms` 和每个 `ActionSpan`（§5.4）。因此它有界：一个动作等它的帧（加上一张在它开始前已经到点的 `after_observation` 帧）合计最多 `max_action_wait_s`（默认 1.0 s，上限 5 s），会话被放弃时最多再加 0.5 s；`capture_timeout_s`（默认 3 s，上限 5 s）约束每一张截图。同一个 tab 在没有成功截图的情况下超时两次（`TIMEOUTS_BEFORE_NOT_WAITING`）之后，这个 tab 上的动作不再等：帧立刻记 `timeout`（`detail` 以 "not waited for" 开头），同时在后台发一次探测截图（同一时刻每个 tab 最多一次），第一次成功之后恢复等待。每条 `before_action` 记录都带 `released_at`：这个归档器放动作走的墙钟时间，所以录制给动作加的时间是 `released_at - requested_at`，消费者可以从 `ActionSpan` 的时长里减掉它。
-- **时序与作废规则**：`after_observation` 帧的请求时间是 cycle 提交时刻加延迟。到点之前开始了一个动作（动作开始时间早于请求时间），或者开始了新的观测 cycle，它就作废：取消，在索引里记 `superseded`，`superseded_by` 是 `action` 或 `observation`，没有图像。动作开始时已经到点的帧先拍完，动作才执行；在动作的等待额度内拍不完，就取消并记 `timeout`。收集时还在等的帧，收集先等它，最多剩余的延迟加 `capture_timeout_s`，所以第 *t* 步观测之后的那一帧落在第 *t* 步的批次里；只在一步没有任何动作、而且模型比延迟答得快时才真的要等（UI-TARS 的 `finished()` 也是一个动作，`browser.done`）。过了这个时间仍在途的帧恰好进后面某一个批次一次，`cycle` 说明它跟在哪次观测之后。teardown 取消还在等的帧与探测。
+- **时序与作废规则**：`after_observation` 帧的请求时间是 cycle 提交时刻加延迟。到点之前开始了一个动作（动作开始时间早于请求时间），或者开始了新的观测 cycle，它就作废：取消，在索引里记 `superseded`，`superseded_by` 是 `action` 或 `observation`，没有图像。动作开始时已经到点的帧先拍完，动作才执行；在动作的等待额度内拍不完，就取消并记 `timeout`。收集时还在等的帧，收集先等它，最多剩余的延迟加 `capture_timeout_s`，所以第 *t* 步观测之后的那一帧落在第 *t* 步的批次里；只在一步没有调用 `env.act`、而且模型比延迟答得快时才真的要等。结束动作 `loop.done`（UI-TARS 的 `finished()` 就是它）由 Loop 执行、不调用 `env.act`（§4.5 "Loop 提供的动作"），所以只有它的一步也算没有动作：它不作废这一帧，也没有 `before_action` 帧。过了这个时间仍在途的帧恰好进后面某一个批次一次，`cycle` 说明它跟在哪次观测之后。teardown 取消还在等的帧与探测。
 - **失败照实记**：tab 在 recorder 连接上没有 session、或者动作前 tab 已经自己关掉，记 `no_tab`；超时（截图超时、动作等待额度用完、不再等的 tab、被放弃的会话）记 `timeout`；其他失败（CDP 报错、回复里没有图像）记 `failed`；都带 `detail`，都不是悄悄少一帧，也都不让收集失败。recorder 连接丢了，收集照常以 `RecorderLostError` 报错（这是 recorder 的健康，不是某一帧的事）。
 - **落盘**：每次非空的收集交出每张拍到的 PNG（内容寻址，`media_type: image/png`，名字 `frame-<cycle>-before-<i>.png` / `frame-<cycle>-after.png`，在一个 run 里唯一；同样的画面只存一份）和一份步级索引 `frames.json`：
 
@@ -3520,7 +3552,7 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 
 - **选项**：`BrowserCapability.new_tabs: follow | stay`（默认 `follow`；封闭的集合，原样记进 `config.json`）。`stay` 就是这之前的行为：焦点留在原来的 tab，新 tab 列在 `browser_meta` 的 tab 列表里，只有 `switch_tab` 能过去。录制、回放与分叉要用同一个值（发布的配置都用默认值）；它不进环境指纹，两边不一致时，第一处该跟随的地方就以 `url_mismatch` 发散。焦点离开的 tab 照常运行还是冻结，由另一个选项 `background_tabs` 决定（下面"离开焦点的 tab"）。
 - **跟哪个 tab**（`core/capabilities/browser/tabs.py` 的 `tabs_to_follow`，纯函数）：从上一次观测之后 agent 的第一个动作开始、到下一次观测采集为止（"跟随窗口"），由窗口开始时焦点所在的 tab 打开的 page target（`Target.targetCreated` 的 `openerId` 是它），采集时还开着，Chrome 也没有报告它是在没有用户激活的情况下打开的（`Page.windowOpen{userGesture: false}`），里面最后打开的那一个：真实浏览器里每个前台新 tab 都盖在前一个上面。没有用户激活的那些（页面加载时自己弹的、计时器弹的、一次点击开的第二个窗口）真实浏览器的弹窗拦截会拦下；af 的 Chrome 关着拦截（`--disable-popup-blocking`），它们照样开着、列在 tab 列表里，焦点不过去。跨站 iframe 里的链接开的 tab 收不到 `Page.windowOpen`（它发在 iframe 自己的 session 上，控制连接不听），按"不知道"处理，照样跟。窗口里 `switch_tab` 成功之后，窗口从新焦点重新开始：agent 自己选了看哪里，之前开的 tab 不再跟，新焦点之后开的照样跟。不跟的：观测采集之后、下一个动作之前页面自己开的 tab（计时器、广告）；窗口开始时焦点所在 tab 之外的 tab 开的；setup 打开起始页时开的（起始页不是 agent 的动作，走内部的同一条执行路径 `_run_action`，不开窗口）。
-- **自己关掉的 tab**（`tabs_after_close`）：焦点所在的 tab 自己关掉（`window.close()`）时，焦点回到打开它的 tab（还开着的话），否则回到最近打开的、还开着的 tab。这比真实 Chrome 简单：Chrome 先去被关掉的 tab 自己打开的 tab，再去与它同一个 opener 打开的 tab，然后是 opener，最后是 tab 条上的邻居，并在无关的 tab 切换后忘掉 opener 关系；agent 的 run 通常只开一两个 tab，那时两条规则落到同一个 tab，所以照这条简单规则（用户 2026-10-24 的裁决）。这一条与选项无关：`stay` 下焦点也没有可以留的地方。一个 tab 都不剩时这次观测失败，错误点名那个 tab（整个 cycle 一个错误，同一个 cycle 的其余 fragment 拿到同一个异常）。焦点所在的 tab 已经关了、观测还没把焦点移走时执行的动作立即失败，错误说那个 tab 自己关了、下一次观测看到焦点移去的 tab。agent 用浏览器的关闭 tab 快捷键关掉焦点 tab 时（§4.13 "浏览器自己的快捷键"，`BrowserCapability.close_focused_tab`），焦点按同一条规则移动，在那个动作里就移，不记 `focus_moved`；只剩一个 tab 时拒绝关闭。
+- **自己关掉的 tab**（`tabs_after_close`）：焦点所在的 tab 自己关掉（`window.close()`）时，焦点回到打开它的 tab（还开着的话），否则回到最近打开的、还开着的 tab。这比真实 Chrome 简单：Chrome 先去被关掉的 tab 自己打开的 tab，再去与它同一个 opener 打开的 tab，然后是 opener，最后是 tab 条上的邻居，并在无关的 tab 切换后忘掉 opener 关系；agent 的 run 通常只开一两个 tab，那时两条规则落到同一个 tab，所以照这条简单规则（用户 2026-10-24 的裁决）。这一条与选项无关：`stay` 下焦点也没有可以留的地方。一个 tab 都不剩时这次观测失败，错误点名那个 tab（整个 cycle 一个错误，同一个 cycle 的其余 fragment 拿到同一个异常）。焦点所在的 tab 已经关了、观测还没把焦点移走时执行的动作立即失败，错误说那个 tab 自己关了、下一次观测看到焦点移去的 tab；结束动作 `loop.done` 不经过浏览器（§4.5 "Loop 提供的动作"），不受这一条限制：agent 的答案不因为 tab 关了而被拒。agent 用浏览器的关闭 tab 快捷键关掉焦点 tab 时（§4.13 "浏览器自己的快捷键"，`BrowserCapability.close_focused_tab`），焦点按同一条规则移动，在那个动作里就移，不记 `focus_moved`；只剩一个 tab 时拒绝关闭。
 - **怎么知道**：控制连接在 setup 时、接管初始 tab 之前开 `Target.setDiscoverTargets{discover: true, filter: [{type: "page"}]}`（已经开着的 tab 在它的回复之前就报上来），`TabRegistry` 按打开的先后记下每个 tab（`type: page`，没有 `subtype` 的 target）、它的 opener、URL、是否已关，以及与它配对的 `Page.windowOpen`：同一个 opener 的 session 上、它之前 2 s 之内到的那一条（实测先到约 10 ms；控制连接接管的每个 tab 都开着 `Page.enable`，所以收得到）。浏览器不接受 discovery 时记一条 WARNING，照这之前的样子跑：不跟随、不离开关掉的 tab、tab 列表按 `Target.getTargets` 的顺序。
 - **什么时候移**：`execute_action`（agent 的动作）在没有窗口时开一个；观测的第一个 fragment 先决定焦点（`_settle_focus`）：窗口开着、或者已知焦点 tab 关了时，先发一次 `Target.getTargets`（屏障：此刻开着的 tab 的 `targetCreated` 都在它的回复之前到；它也说出哪些 tab 还开着），再按上面两条规则移；之后才是等在途的导航与等页面落定（上面两节），所以两样都在跟过去的 tab 上做。等完、采集之前再按同一规则查一次（只读事件，不发命令）：等待期间才开的 tab（点击的处理函数先发请求、回来再 `window.open` 的页面）或刚关掉的焦点 tab 也照规则处理，然后在新焦点上重新等，不算一次重发。一次观测最多移 3 次焦点（页面每被跟一次就再开一个 tab 时，不让观测一直等下去）。采集完窗口关闭，无论这次采集成败。
 - **怎么移**：与 `switch_tab` 同一段代码（`_move_focus`）：懒接管（`_attach_tab`）、`Target.activateTarget`（实测：新 tab 变 `visible`，原来的变 `hidden`，与真实浏览器一样）、丢掉它旧的 cycle 缓存；`background_tabs: freeze` 时，要去的 tab 若是焦点离开它时冻结的，先设回运行，再 `Target.activateTarget`，之后冻结离开的 tab（下面"离开焦点的 tab"）。跟随的接管有上限（`_FOLLOW_ADOPT_TIMEOUT_S`，10 s，与等在途导航同一个上限）：第一个导航还在途的 tab，第一条页面一侧的命令（`Page.enable`）要等那个导航提交才应答（实测：文档 2 s 才回，`Page.enable` 2.0 s 后才应答，不论 tab 能不能够到 opener），所以接管本身就等到了第一次提交；之后 `Page.setLifecycleEventsEnabled` 让 Chrome 把当前文档的生命周期事件再报一遍，落定等待由此知道它加载完没有。接管不了的（超时、tab 已经没了）这次运行里不再试，换更早的候选，都不行就留在原处并记 WARNING。接管过、又被页面关掉的 tab，它的 bridge、导航跟踪、watchdog 与各张映射在下一次决定焦点之后释放（与 `close_tab` 同一段代码 `_release_tab`，只是不再关 target）；它的两个 scope 空着留到 teardown 一起关：agent-cdp 关一个 scope 实测约 250 ms，不该算在发现 tab 已关的那次观测上。
@@ -3774,7 +3806,7 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 |---|---|
 | 带元素 index 的动作：`Params` 上带 `AddressesElement("browser.dom")` 的参数给了值的那些（`core/actions/params.py::element_params`，读本 capability 持有的动作实例的 `Params`，恢复不另列名单，也不查注册表）。今天是 `browser.click`、`browser.type`、`browser.select_dropdown`，以及带了 `index` 的 `browser.scroll` / `browser.extract_content` | 几何再签名（`method="geometry_signature"`），见下 |
 | `browser.switch_tab`（`target_id` 是每个浏览器新生成的 CDP targetId） | 按 tab 顺序与 URL（`method="tab_order_url"`）：在录下观测的 `browser_meta.tabs`（按 tab 打开的先后排，上面"页面新开的标签页"）里找到这个 `target_id` 的位置，恢复出的 `tabs` 同一位置的 tab URL 相同就换成它的 id；`target_id` 为空（"最近打开的 tab"）原样 |
-| 坐标动作、导航（`navigate` / `go_back` / `go_forward`）、`send_keys`、`wait`、`done`，以及不带 `index` 的 `scroll` / `extract_content` | 恒等（`method="identity"`）：pinned 回放下布局确定，截图哈希兜底 |
+| 坐标动作、导航（`navigate` / `go_back` / `go_forward`）、`send_keys`、`wait`，以及不带 `index` 的 `scroll` / `extract_content` | 恒等（`method="identity"`）：pinned 回放下布局确定，截图哈希兜底 |
 
 几何再签名：(1) 取录下观测 `selector_map[index]` 的条目：它的 `bounds`（页面坐标的 border box，已计入 iframe 偏移）、`tag_name`、`attributes` 与子树文本；(2) 在恢复出的 `selector_map` 里找 `bounds` 的四个量都在 `retarget_tolerance_px`（`BrowserCapability` 的旋钮，默认 2.0 CSS px）之内的候选；(3) 用签名确认：`tag_name`，`id` / `name` / `aria-label` / `role`（属性，或 AX role）各自相等，子树文本规范化（空白折叠）后的 sha256 相等；(4) 恰好一个候选时把这个参数（`params["index"]`）改写成它的 handle（可以在别的 OOPIF 命名空间里），其余参数不动；(5) 没有候选是 `failure="not_found"`，多于一个是 `failure="ambiguous"`，`detail` 写候选数。录下的条目缺 `bounds`、本 run 没有激活 `browser.dom`（或这一次的 `browser.dom` 采集失败），或者录下的 `selector_map` 里根本没有这个 index（源 run 的这个动作当时就找不到目标），都是 `not_found`（`detail` 说明原因）。子树文本只读到条目根以下 64 层（`TEXT_DEPTH_LIMIT`）：trace 的编码大约在第 100 层截断条目的子树，活的节点没有截断，两边读到同样的层数，同一个元素的签名才相同；实测的页面最深约 40 层。
 
@@ -4208,9 +4240,9 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 条目图片按 `source.kind` 解析，且只服务队列条目引用的图片，不提供任意文件接口：`observation` 走既有截图读取（Browser state 原图）；`archive` 只经 `RunTrace.archive_files(step, archiver)` 按 `name` 找到已提交文件（`step: null` 表示 trailing 证据，经 `iter_archive`），声明的 media type 与文件头都必须是 PNG/JPEG/GIF/WEBP。run 键与查看器的其它路径一样必须在根目录之内，并在输入时规范化为仓库的唯一写法（`./run`、`run/.`、`run/` 都是 `run`），同一个 run 只有一个身份。随手标注可附在任何 run 的任一步（已提交的步不会改变，因此随手标注不需要版本；只写备注时不读取截图）：备注和画在该步 Browser state 截图上的框（类别固定为 needed information / problem / other），写入 `_adhoc.jsonl`，带 `run`、`step`、`queue_id: "_adhoc"`，无 `item_id`，当前值按 `(run, step, annotator)`。
 
-**动作标记（2026-10-22）。** 用户要求截图上画出动作的鼠标位置：点击的点、拖动的起点到终点、输入的点和文字、滚动的位置和方向，否则“拖动只能靠猜”。唯一来源是 `spectragent/inspection/marks.py`：它经 `RunTrace` 读取一步已记录的动作与结果，把每个动作变成一个标记（编号即它在该步动作列表中的序号，从 1 起）和一行中文描述；查看器的运行页（`GET /api/marks?key&index`，该步动作画在该步截图上）与审阅页（`GET /api/review/marks?queue_id&item_id&role&queue_sha256`，只服务队列条目引用的图片）都只转发它的结果，lookahead 的队列构建也用它写条目里的动作文字。动作的中文措辞也只有这一份：`ACTION_VERBS`（按全限定名，每个浏览器动作一个动词）既是每行描述的开头，也是查看器步骤列表的标签，运行接口（`GET /api/run`）以 `action_verbs`（本 run 各步执行过的动作名 → 动词）转发；网页不另存措辞表，表里没有的动作照录下的名字显示。动作参数与测得效果是 CSS viewport 像素（§4.1），标记按所画图片自己的几何换算为图片像素：观测用截图 fragment 记录的图片尺寸与视口（`point_grid("screenshot_pixels", …)`，即 §4.1 的同一条换算），`browser.frames` 画面帧用帧自身的 PNG 尺寸与提交它的那一步观测的视口；任一尺寸未知时只列出动作、不画，并说明原因，绝不假设设备缩放为 1。点位优先取动作效果测得的点（实际派发输入的位置），否则取参数：哪些参数是点、哪个参数指名元素，读录下动作注册的 `Params` 上的标记（§4.5“参数的含义”；拖动按在第一个点、松开在第二个点），动作名按全限定名分派，fragment 按全限定键读，不按名字的最后一段；给了点的滚动画在那个点；不给点的页面滚动在鼠标所在处派发，因此画在该步观测记录的鼠标位置，并随同一步里此前的指针动作移动，未知就是未知；敏感字段的输入文字不显示。没有位置的动作（按键、等待、完成等）只进图例。Loop 因同一步更早的动作失败而没执行的动作（`StepRecord.skipped_actions`，§4.1）照样列出，描述后面写“（没有执行：第 N 个动作失败）”，不画在图上，也不移动推算的指针；运行页的步详情在动作数量超限的提示旁另有一行，说第几个动作失败、最后几个动作没有执行。浏览器能力目前没有双击、右键和悬停动作，因此没有对应标记；拖动的移动轨迹没有被记录，只画起点到终点的箭头。
+**动作标记（2026-10-22）。** 用户要求截图上画出动作的鼠标位置：点击的点、拖动的起点到终点、输入的点和文字、滚动的位置和方向，否则“拖动只能靠猜”。唯一来源是 `spectragent/inspection/marks.py`：它经 `RunTrace` 读取一步已记录的动作与结果，把每个动作变成一个标记（编号即它在该步动作列表中的序号，从 1 起）和一行中文描述；查看器的运行页（`GET /api/marks?key&index`，该步动作画在该步截图上）与审阅页（`GET /api/review/marks?queue_id&item_id&role&queue_sha256`，只服务队列条目引用的图片）都只转发它的结果，lookahead 的队列构建也用它写条目里的动作文字。动作的中文措辞也只有这一份：`ACTION_VERBS`（按全限定名，每个浏览器动作与 `loop.done` 各一个动词）既是每行描述的开头，也是查看器步骤列表的标签，运行接口（`GET /api/run`）以 `action_verbs`（本 run 各步执行过的动作名 → 动词）转发；网页不另存措辞表，表里没有的动作照录下的名字显示。动作参数与测得效果是 CSS viewport 像素（§4.1），标记按所画图片自己的几何换算为图片像素：观测用截图 fragment 记录的图片尺寸与视口（`point_grid("screenshot_pixels", …)`，即 §4.1 的同一条换算），`browser.frames` 画面帧用帧自身的 PNG 尺寸与提交它的那一步观测的视口；任一尺寸未知时只列出动作、不画，并说明原因，绝不假设设备缩放为 1。点位优先取动作效果测得的点（实际派发输入的位置），否则取参数：哪些参数是点、哪个参数指名元素，读录下动作注册的 `Params` 上的标记（§4.5“参数的含义”；拖动按在第一个点、松开在第二个点），动作名按全限定名分派，fragment 按全限定键读，不按名字的最后一段；给了点的滚动画在那个点；不给点的页面滚动在鼠标所在处派发，因此画在该步观测记录的鼠标位置，并随同一步里此前的指针动作移动，未知就是未知；敏感字段的输入文字不显示。没有位置的动作（按键、等待、完成等）只进图例。Loop 因同一步更早的动作失败而没执行的动作（`StepRecord.skipped_actions`，§4.1）照样列出，描述后面写“（没有执行：第 N 个动作失败）”，不画在图上，也不移动推算的指针；运行页的步详情在动作数量超限的提示旁另有一行，说第几个动作失败、最后几个动作没有执行。浏览器能力目前没有双击、右键和悬停动作，因此没有对应标记；拖动的移动轨迹没有被记录，只画起点到终点的箭头。
 
-哪张图画谁的动作：`QueueImage.marks_from` 为 `null`（省略）时跟随图片来源——观测画该步在这一屏上决定的动作，before-action 画面帧只画它之前的那个动作（帧按 `env.act` 调用编号，与 `StepRecord.actions` 按名字顺序对齐，跳过被动作守卫拒绝、从未到达环境的动作），其它图片不画；`[]` 不画；列表 `[{run, step, label}]` 按顺序画每个指定步骤的全部动作，每项一种颜色，图例用 `label`，坐标一律换算到这张图的像素。同一位置附近的多个点在屏幕上错开显示，标记可以整体隐藏。
+哪张图画谁的动作：`QueueImage.marks_from` 为 `null`（省略）时跟随图片来源——观测画该步在这一屏上决定的动作，before-action 画面帧只画它之前的那个动作（帧按 `env.act` 调用编号，与 `StepRecord.actions` 按名字顺序对齐，跳过从未到达环境的动作：被动作守卫拒绝的，与 Loop 自己执行的 `loop.*`（`loop.done`，§4.5）），其它图片不画；`[]` 不画；列表 `[{run, step, label}]` 按顺序画每个指定步骤的全部动作，每项一种颜色，图例用 `label`，坐标一律换算到这张图的像素。同一位置附近的多个点在屏幕上错开显示，标记可以整体隐藏。
 
 **给外包标注者用的界面（2026-10-22）。** 用户要把标注交给其他人做，他们“不知道三个审阅里要标什么、每个选项是什么意思”。查看器的全部界面文字（运行页、审阅页、快捷键表、按钮、提示、空状态，以及网页原样显示的标注错误）是简体中文；代码标识符、存储值（如 `still_loading`）、API 参数与运行记录本身保持英文，不引入 i18n 框架。审阅页能自我说明：`LabelChoice.help`、`Question.help`、`RegionKind.help` 写在选项旁；`ReviewQueue.guide`（`[{title, text}]`，`- ` 开头的行是列表项）连同说明、每个选项的含义与框规则组成“标注说明”面板，首次打开队列时自动展开，按 I 或按钮随时打开；`ItemField.technical: true` 的字段收进默认折叠的“技术细节”。`ReviewQueue.suggestion_display` 的 `title` 是建议的标题（如“模型的判断（仅供参考）”），`shown: on_request` 时建议默认隐藏、不在选项上做记号，标注者按 V 或按钮查看后才能接受，避免先入为主；`always` 为默认。标题之外，模型给出的英文理由原样显示并标明是原文。
 
@@ -4311,7 +4343,8 @@ next_actions 里的答案文字不是信息存在的证据。这些点名参考�
 上限 `max_text_chars`、链接与几何条目上限 `max_links`、是否附原始截图
 `include_screenshots`，以及 `done_answer`。出厂预算为每侧 6000 字符、20 条，即阈值拟合
 所用的预算；更大的预算在 DMX 路线上多数页面超出输入上限（用户 2026-10-20 决定）。
-`done_answer: withhold` 从请求中去掉源 `done` 动作的答案文本：动作参数中的
+`done_answer: withhold` 从请求中去掉源 `loop.done` 动作的答案文本（按全限定键认，不按
+名字的最后一段：capability 自己叫 `done` 的动作不算）：动作参数中的
 `extracted_content`，以及恢复对应关系里 done 动作参数和其结果中的同一文本；动作类型保留。
 `keep` 原样发送。出厂值为 withhold：审查判断的是观测是否相同，不应参考被测 Agent 自己的
 结论。回放服务事实不进请求，确定性规则放在模型之外。恢复对应关系里每条实际结果的动作效果
@@ -4972,7 +5005,7 @@ class StepRecord(BaseModel):
     action_spans: list[ActionSpan] | None = None
 ```
 
-- 由 `TraceWriter` 对 `env.act` 的 around 通知测得，像模型调用一样归到 `execute_step` 打开的那一步（分叉检查点与随后同编号的策略步合在一起），从不由 Loop 填写。普通异常（含 `RunAbort`）记 `raised`，取消及其他 `BaseException` 记 `cancelled`；返回值、异常与取消都原样传播，记录故障只丢这一条 span 并进记录健康。挂在 `env.act` 上的守卫（before 通知）在这次调用之内执行，它的否决因此是一条 `raised` 的 span，底层动作并没有执行；`guarded_act` 拒绝的协商外动作不调用 `env.act`，没有 span。
+- 由 `TraceWriter` 对 `env.act` 的 around 通知测得，像模型调用一样归到 `execute_step` 打开的那一步（分叉检查点与随后同编号的策略步合在一起），从不由 Loop 填写。普通异常（含 `RunAbort`）记 `raised`，取消及其他 `BaseException` 记 `cancelled`；返回值、异常与取消都原样传播，记录故障只丢这一条 span 并进记录健康。挂在 `env.act` 上的守卫（before 通知）在这次调用之内执行，它的否决因此是一条 `raised` 的 span，底层动作并没有执行；`guarded_act` 拒绝的协商外动作与 Loop 自己执行的 `loop.done`（§4.5 "Loop 提供的动作"）不调用 `env.act`，有结果、没有 span。
 - 与 `duration_ms` 同一规则：`metrics` 关闭、或这一步没经过计时边界时为 `None`；只选 `metrics`、不选 `trajectory` 时照样保留。旧 trace 没有这个键，读回来是 `None`，不升 `format_version`。`[]` 是测过而这一步没调用 `env.act`（终止观测、解析失败的步、无环境的 run）。抛出或取消的调用有 span 却没有 `action_results` 条目，所以列表可以比 `action_results` 长；交接时仍在执行的调用没有终点，不写。
 - 用墙钟是为了与环境证据对时：网络归档每条记录的 `started_at`（Chrome wallTime）、每份 `ArchiveProvenance.captured_at`。离线工具据此把一步里多个动作之间的网络往来和归档证据归到具体动作；collection 批次仍只说明证据归哪一步（§4.6），span 也只给时间，不断言因果。
 - 不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_action_spans_do_not_reach_the_prompt`）。

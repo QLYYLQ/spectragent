@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from lookahead.extract import step_rows
-from lookahead.forks import FILLER, action_type
+from lookahead.forks import FILLER, action_type, is_done_action
 from lookahead.output import write_json
 from lookahead.queues import frame_image, item_title, observation_image
 from lookahead.rows import StepRow
@@ -161,7 +161,7 @@ def main_action(row: StepRow) -> str:
 
 def is_done(row: StepRow) -> bool:
     """Whether the step finished the task (it issued ``done``): nothing follows it."""
-    return any(action_type(action.name) == "done" for action in row.actions)
+    return any(is_done_action(action.name) for action in row.actions)
 
 
 def candidates(runs: RunSet) -> list[tuple[Run, StepRow]]:

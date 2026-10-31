@@ -15,7 +15,6 @@ from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.coordinate_frames import step_frame
@@ -25,7 +24,7 @@ from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import space_for
+from tests._helpers.action_spaces import browser_run_descriptors, space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 
@@ -63,12 +62,10 @@ def observation() -> Any:
 
 
 def _space(agent: Any) -> ActionSpace:
-    keys = {"browser.click", "browser.click_coordinate", "browser.wait", "browser.done"}
-    descriptors = [
-        action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
-        for action in BrowserCapability().actions
-        if action.action_id in keys
-    ]
+    keys = {"browser.click", "browser.click_coordinate", "browser.wait", "loop.done"}
+    descriptors = browser_run_descriptors(
+        keys, fragments=frozenset({"browser.dom", "browser.screenshot"})
+    )
     return space_for(agent, descriptors)
 
 

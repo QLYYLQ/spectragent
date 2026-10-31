@@ -32,16 +32,15 @@ from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import ClickCoordinateEvent
-from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.image import image_size
 from spectragent.schemas.prompt import ReactPromptContext
-from tests._helpers.action_spaces import space_for
-from tests._helpers.assembly import make_agent, make_env
+from tests._helpers.action_spaces import negotiated_actions, space_for
+from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.frames import decided, step_context
 from tests._helpers.replies import read_reply
@@ -81,9 +80,8 @@ def _observation(*, image: tuple[int, int], viewport: tuple[int, int] = (1280, 7
 def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
     """Negotiate *this agent instance* against a real BrowserCapability."""
     capability = BrowserCapability()
-    env = make_env(BrowserEnvironment, {"browser": capability})
-    negotiated = negotiate_action(agent, env)
-    descriptors = env.get_action_space(active_actions=negotiated.active_actions)
+    loop = ReactLoop()
+    negotiated, descriptors = negotiated_actions(agent, capability, loop=loop)
 
     fake = FakeCapability()
     fake._scopes["sid_main"] = FakeScope()
@@ -95,7 +93,9 @@ def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
         assert impl is not None, f"{action.name} did not route to a capability action"
         return await impl.execute(action.params, capability=fake)  # type: ignore[arg-type]
 
-    _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
+    _kept, guard = build_guarded_act(
+        _execute, descriptors, bindings=negotiated.action_bindings, loop_act=loop.execute_action
+    )
     space = space_for(agent, descriptors)
     agent.prepare(
         task="t",

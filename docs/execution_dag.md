@@ -539,7 +539,7 @@ Resolver 模式使 Capability 内部按需提供 fragment。以 Browser 为例�
 **prepare() 装配、execute() 驱动的主流程**：
 1. **兼容性验证** — 检查 Agent 是否提供 Loop 要求的 callable slots（如 ReactLoop 要求 `build_react_prompt` 和 `parse_react_output`）
 2. **Observation 协商** — 调用 `spectragent.core.negotiation.negotiate_observation(agent, loop, env)`，综合 Capability provides / Agent requires / Loop requires，输出 `ObservationNegotiationResult`
-3. **Action 协商** — 调用 `negotiate_action(agent, env)` → `ActionNegotiationResult`，生成 active_descriptors + guarded_act 闭包
+3. **Action 协商** — 调用 `negotiate_action(agent, loop, env)` → `ActionNegotiationResult`（Capability 与 Loop provides：Loop 提供 `loop.done` / Agent requires），生成 active_descriptors + guarded_act 闭包（守卫把 `loop.*` 交给 Loop 执行）
 4. **AOP 织入** — Weaver 读取所有 hook 的 `__intercepts__` 声明，为 agent/env/llm 构建 AOPProxy 包装对象
 5. **Lifecycle 通知** — 直接调用 hook.on_run_start()（区别于 AOP：lifecycle 是结构边界事件，不是方法拦截）
 6. **Loop 驱动** — `asyncio.wait_for(loop.run(wrapped_agent, wrapped_env, task, llm=wrapped_llm, memory=memory, active_descriptors=..., act_fn=guarded_act, negotiated_obs=...), timeout=timeout)`

@@ -72,7 +72,7 @@ class TestGeometry:
             Action(name="browser.scroll", params={"direction": "down"}),
             Action(name="browser.navigate", params={"url": "http://shop.example.test/"}),
             _click("clear"),
-            Action(name="browser.done", params={"extracted_content": "ok", "success": True}),
+            Action(name="loop.done", params={"extracted_content": "ok", "success": True}),
         ]
         sample, trace = recorded(actions)
         translation = IndexToCoordinateTranslator().translate(sample, trace)
@@ -81,7 +81,7 @@ class TestGeometry:
             "browser.scroll",
             "browser.navigate",
             "browser.click_coordinate",
-            "browser.done",
+            "loop.done",
         ]
         assert translation.actions[0] == actions[0]
         assert translation.actions[3] == actions[3]

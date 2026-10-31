@@ -222,9 +222,11 @@ environment:
         #
         # It is also an *ablation* switch: only the actions named here are
         # instantiated, advertised to the model and executable. Omit the
-        # block entirely — as this file does — to get all sixteen actions
-        # the capability's __wiring__ offers. Narrow it and any agent that
-        # requires a dropped action fails action negotiation, by design.
+        # block entirely — as this file does — to get all fifteen actions
+        # the capability's __wiring__ offers. ``done`` is not one of them:
+        # the Loop provides it, as ``loop.done``, so it needs no entry here.
+        # Narrow it and any agent that requires a dropped action fails
+        # action negotiation, by design.
         # ``actions: []`` builds no action at all; it is not "the default".
         #
         # actions:
@@ -235,7 +237,6 @@ environment:
         #     default_amount: 600
         #   - action_id: browser.click
         #   - action_id: browser.type
-        #   - action_id: browser.done
 
         # Execution-layer backend (IoC injection). Switch backend by
         # editing this block only — every other section stays identical.

@@ -147,7 +147,7 @@ def click(x: int, y: int) -> Action:
 
 def done(text: str = "done") -> Action:
     """A recorded UI-TARS ``finished``: an answer and no claim about the task."""
-    return Action(name="browser.done", params={"extracted_content": text})
+    return Action(name="loop.done", params={"extracted_content": text})
 
 
 def check(
@@ -277,7 +277,7 @@ def config(
         resolved=resolved if resolved is not None else PINNED,
         negotiation=TraceNegotiation(
             active_fragments=["browser.screenshot"],
-            active_actions=["browser.click_coordinate", "browser.done"],
+            active_actions=["browser.click_coordinate", "loop.done"],
             active_archivers=[archiver] if archived else [],
             archive_bindings={archiver: "browser"} if archived else {},
         ),

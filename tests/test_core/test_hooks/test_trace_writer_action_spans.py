@@ -102,8 +102,10 @@ class TestPolicySteps:
         ]
         assert _spans(first)[0].started_at >= started
         _in_call_order(_spans(first), before=first.timestamp)
-        assert [(s.action, s.outcome) for s in _spans(second)] == [(DONE, "returned")]
-        assert _spans(second)[0].started_at >= _spans(first)[-1].ended_at
+        # ``done`` is the Loop's (arch §4.5): it never reaches ``env.act``, so
+        # its step has the result and no span.
+        assert [a.name for a in second.actions] == [DONE] and second.action_results[0].is_done
+        assert second.action_spans == []
         assert terminal.origin == "terminal" and terminal.action_spans == []
 
     async def test_the_call_that_raised_has_the_last_span(self, tmp_path: Path) -> None:
@@ -164,7 +166,8 @@ class TestPolicySteps:
         trace, _ = await _react_run(tmp_path, ["hmm", "done ok"])
         unparsed, done = trace.step_records
         assert unparsed.error_phase == "parse" and unparsed.action_spans == []
-        assert [s.action for s in _spans(done)] == [DONE]
+        # Nor does the Loop's own ``loop.done`` call ``env.act``.
+        assert [a.name for a in done.actions] == [DONE] and done.action_spans == []
 
 
 class TestWhatTheRecordingPlanSelects:
@@ -184,7 +187,7 @@ class TestWhatTheRecordingPlanSelects:
         first, second = trace.step_records
         assert first.actions == [] and first.duration_ms is not None
         assert [s.action for s in _spans(first)] == [CLICK, CLICK]
-        assert [s.action for s in _spans(second)] == [DONE]
+        assert second.action_spans == []  # ``loop.done``: no ``env.act`` call
 
 
 @pytest.mark.parametrize("history_source", ["source", "restored"])
@@ -209,7 +212,7 @@ async def test_restored_steps_carry_the_calls_restoration_made(
         (CLICK, "returned"),
     ]
     _in_call_order(_spans(restored), before=restored.timestamp)
-    assert policy.origin == "policy" and [s.action for s in _spans(policy)] == [DONE]
+    assert policy.origin == "policy" and policy.action_spans == []  # ``loop.done``
     assert terminal.origin == "terminal" and terminal.action_spans == []
 
 

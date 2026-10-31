@@ -75,7 +75,7 @@ def click_at(x: int, y: int) -> str:
 
 
 def done(text: str = "done") -> str:
-    return reply({"browser.done": {"extracted_content": text, "success": True}})
+    return reply({"loop.done": {"extracted_content": text, "success": True}})
 
 
 def record_config(

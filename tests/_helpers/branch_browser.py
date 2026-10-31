@@ -174,12 +174,6 @@ class FakeBrowserCap(CapabilityBase):
     async def execute_action(self, action: Action) -> ActionResult:
         self.log.append(f"{action.name}({action.params})")
         name = action.name
-        if name == "browser.done":
-            return ActionResult(
-                success=True,
-                is_done=True,
-                extracted_content=str(action.params.get("extracted_content", "")),
-            )
         if name == "browser.click":
             index = action.params.get("index")
             if not isinstance(index, int) or not 1 <= index - self.id_offset <= 3:

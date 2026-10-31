@@ -36,7 +36,7 @@ from tests._helpers.scripted_llm import ScriptedLLMServer
 BAD = json.dumps(
     {"memory": 3, "action": [{"browser.click": {"index": 1}}, {"browser.type": {"index": 2}}]}
 )
-GOOD = json.dumps({"memory": "done", "action": [{"browser.done": {"extracted_content": "42"}}]})
+GOOD = json.dumps({"memory": "done", "action": [{"loop.done": {"extracted_content": "42"}}]})
 
 
 class _Memory:
@@ -96,12 +96,15 @@ async def _run(replies: list[str], *, retries: int) -> _Run:
     out = _Run()
 
     async def execute(action: Action, **_kw: Any) -> ActionResult:
-        done = action.name == "browser.done"
-        return ActionResult(success=True, is_done=done, extracted_content="42" if done else None)
+        return ActionResult(success=True)
 
+    loop = ReactLoop(max_steps=3, parse_retries_per_step=retries, max_consecutive_parse_errors=2)
     descriptors = browser_descriptors("click", "type", "done")
     out.space, act_fn = build_guarded_act(
-        execute, descriptors, bindings=space_of(descriptors).action_bindings
+        execute,
+        descriptors,
+        bindings=space_of(descriptors).action_bindings,
+        loop_act=loop.execute_action,
     )
     agent = BrowserUseDomAgent(flash_mode=True)
     agent.prepare(
@@ -118,7 +121,6 @@ async def _run(replies: list[str], *, retries: int) -> _Run:
         return parse(reply)
 
     agent.parse_react_output = spy  # type: ignore[method-assign]
-    loop = ReactLoop(max_steps=3, parse_retries_per_step=retries, max_consecutive_parse_errors=2)
     with ScriptedLLMServer(replies) as server:
         llm = ChatOpenAI(model=server.model, api_key="scripted", base_url=server.base_url)
         try:

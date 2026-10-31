@@ -53,7 +53,7 @@ class FixtureAgent:
     agent_id = "seeded_shared_fixture"
     __execution_limit_fields__ = frozenset()
     __wiring__ = {
-        "action": ("action", ["browser.done"]),
+        "action": ("action", ["loop.done"]),
         "observation": ("observation", ["browser.browser_meta"]),
     }
 
@@ -64,7 +64,7 @@ class FixtureAgent:
         return None
 
     def parse_react_output(self, output: Any) -> list[Action]:
-        return [Action(name="browser.done", params={"extracted_content": "authenticated"})]
+        return [Action(name="loop.done", params={"extracted_content": "authenticated"})]
 
 
 def seed_for(origin: str, label: str) -> BrowserStorageState:

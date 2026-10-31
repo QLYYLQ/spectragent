@@ -1,8 +1,8 @@
 """Unified negotiation module.
 
 Hosts the shared negotiation engine, result types, and wiring-extraction
-helper used by the observation (three-party), action (two-party) and
-archive (consumer ↔ environment) negotiation flows. See
+helper used by the observation and action (both three-party: agent, Loop,
+environment) and archive (consumer ↔ environment) negotiation flows. See
 docs/architecture_design.md §4.4 and §4.5.
 """
 

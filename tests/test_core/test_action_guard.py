@@ -112,11 +112,53 @@ class TestGuardedAct:
             ActionSpace(descriptors=_DESCRIPTORS, allowed_actions=frozenset())
 
 
+class TestTheLoopsActions:
+    """A ``loop.*`` action goes to the Loop that provides it, never to ``env.act`` (arch §4.5)."""
+
+    async def test_done_goes_to_the_loop_and_never_to_the_environment(self) -> None:
+        env_calls: list[str] = []
+        loop_calls: list[str] = []
+
+        async def env_act(action: Action, **kwargs: object) -> ActionResult:
+            env_calls.append(action.name)
+            return ActionResult(success=True)
+
+        async def loop_act(action: Action) -> ActionResult:
+            loop_calls.append(action.name)
+            return ActionResult(success=True, is_done=True, extracted_content="42")
+
+        _, guard = build_guarded_act(
+            env_act,
+            browser_descriptors("click", "done"),
+            bindings={"click": "browser.click", "done": "loop.done"},
+            loop_act=loop_act,
+        )
+        done = Action(name="done", params={"extracted_content": "42"})
+        result = await guard(Action(name="click", params={"index": 1}))
+        assert result.success
+        result = await guard(done)
+        # Qualified in place like any other action, so the record names the Loop's.
+        assert done.name == "loop.done"
+        assert result.is_done and result.extracted_content == "42"
+        assert loop_calls == ["loop.done"]
+        assert env_calls == ["browser.click"]
+
+    def test_an_active_loop_action_needs_the_loop_to_execute_it(self) -> None:
+        with pytest.raises(ValueError, match=r"\['loop.done'\] are a Loop's to execute"):
+            build_guarded_act(_mock_act, browser_descriptors("click", "done"))
+
+    def test_a_filter_that_drops_it_needs_no_loop(self) -> None:
+        space, _ = build_guarded_act(
+            _mock_act, browser_descriptors("click", "done"), ["browser.click"]
+        )
+        assert space.allowed_actions == {"browser.click"}
+
+
 class TestResolveActionName:
     """The qualification rule ``guarded_act`` applies — its one copy."""
 
-    _ACTIVE = frozenset({"browser.click", "browser.done"})
-    _BINDINGS = {"click": "browser.click", "done": "browser.done", "scroll": "browser.scroll"}
+    _ACTIVE = frozenset({"browser.click", "loop.done"})
+    _BINDINGS = {"click": "browser.click", "done": "loop.done", "scroll": "browser.scroll"}
 
     def test_an_active_name_is_itself(self) -> None:
         assert resolve_action_name("browser.click", self._ACTIVE, self._BINDINGS) == (
@@ -135,7 +177,7 @@ class TestResolveActionName:
 
     def test_without_bindings_only_full_names_pass(self) -> None:
         assert resolve_action_name("click", self._ACTIVE) is None
-        assert resolve_action_name("browser.done", self._ACTIVE) == "browser.done"
+        assert resolve_action_name("loop.done", self._ACTIVE) == "loop.done"
 
     async def test_the_guard_applies_it(self) -> None:
         descriptors = [
@@ -243,7 +285,7 @@ class TestReplyRefusal:
         refusal = self._refuse(self._flat(), {"next_goal": "x", "action": [{"browser.fly": {}}]})
         same = name_refusal(self._SPACE, "browser.fly")
         assert refusal == f"the reply does not fit the output schema: action 1, {same}"
-        assert "(its actions: browser.click, browser.done, browser.type)" in refusal
+        assert "(its actions: browser.click, browser.type, loop.done)" in refusal
 
     @pytest.mark.parametrize(
         ("item", "written"),
@@ -251,8 +293,8 @@ class TestReplyRefusal:
             ("click 3", "a string"),
             ({}, "an empty object"),
             (
-                {"browser.click": {"index": 1}, "browser.done": {}},
-                "an object naming 'browser.click', 'browser.done'",
+                {"browser.click": {"index": 1}, "loop.done": {}},
+                "an object naming 'browser.click', 'loop.done'",
             ),
             ({"browser.click": 3}, "'browser.click' given a number for its parameters"),
         ],
@@ -262,14 +304,14 @@ class TestReplyRefusal:
         assert refusal == (
             f"the reply does not fit the output schema: action 1, {written}: each action is an "
             "object with exactly one key, the action's name, whose value is the object of its "
-            "parameters (its actions: browser.click, browser.done, browser.type)"
+            "parameters (its actions: browser.click, browser.type, loop.done)"
         )
 
     def test_every_mistake_is_located_in_reply_order(self) -> None:
         reply = {
             "action": [
                 {"browser.click": {"index": "the cart", "x": 1}},
-                {"browser.done": {"extracted_content": None}},
+                {"loop.done": {"extracted_content": None}},
                 {"browser.fly": {}},
             ]
         }

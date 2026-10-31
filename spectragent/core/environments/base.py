@@ -237,8 +237,9 @@ class Environment(Protocol):
 
         Args:
             active_actions: Optional set of fully-qualified action names
-                from two-party action negotiation. Only descriptors in
-                that set are included; ``None`` disables narrowing.
+                from action negotiation. Only descriptors in that set are
+                included (the Loop's own ``loop.*`` actions are never an
+                environment's); ``None`` disables narrowing.
             **context: Forwarded to each capability.
         """
         ...

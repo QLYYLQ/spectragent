@@ -284,7 +284,7 @@ def _the_claimed_done_is_a_plain_ending(report: Any, out: Path) -> None:
     ending = [line for line in lines if "finished(" in line["render"]["target"]]
     assert [line["render"]["claim_not_written"] for line in ending] == [True]
     (teacher,) = ending[0]["sample"]["teacher_actions"]
-    assert teacher["name"] == "browser.done" and teacher["params"]["success"] is True
+    assert teacher["name"] == "loop.done" and teacher["params"]["success"] is True
 
 
 def test_browser_use_run_exports_with_dom_raw_occlusion(

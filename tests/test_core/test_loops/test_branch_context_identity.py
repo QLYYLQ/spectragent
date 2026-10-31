@@ -66,7 +66,7 @@ SCRIPTS: dict[str, Callable[[], list[Any]]] = {
         {"memory": "checkout", "action": [{"browser.click": {"index": 103}}]},
         {
             "memory": "done",
-            "action": [{"browser.done": {"extracted_content": "bought", "success": True}}],
+            "action": [{"loop.done": {"extracted_content": "bought", "success": True}}],
         },
     ],
     "skyvern": lambda: [
@@ -79,11 +79,7 @@ SCRIPTS: dict[str, Callable[[], list[Any]]] = {
             ]
         },
         {"actions": [{"reasoning": "", "action": {"browser.click": {"index": 103}}}]},
-        {
-            "actions": [
-                {"reasoning": "", "action": {"browser.done": {"extracted_content": "bought"}}}
-            ]
-        },
+        {"actions": [{"reasoning": "", "action": {"loop.done": {"extracted_content": "bought"}}}]},
     ],
     "ui_tars": lambda: [
         "I will just describe the page instead.",

@@ -493,11 +493,17 @@ async def _react(
 
     async def execute(action: Action, **_kw: Any) -> ActionResult:
         ran.append(action)
-        return ActionResult(success=True, is_done=action.name == "browser.done")
+        return ActionResult(success=True)
 
-    _, act_fn = build_guarded_act(execute, list(space.descriptors), bindings=space.action_bindings)
+    loop = ReactLoop(max_steps=len(replies))
+    _, act_fn = build_guarded_act(
+        execute,
+        list(space.descriptors),
+        bindings=space.action_bindings,
+        loop_act=loop.execute_action,
+    )
     agent, recorder = _Agent(), StepRecorder()
-    await ReactLoop(max_steps=len(replies))._execute(
+    await loop._execute(
         agent,
         "t",
         ctx={

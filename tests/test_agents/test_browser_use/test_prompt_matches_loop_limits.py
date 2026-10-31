@@ -143,7 +143,7 @@ def test_agent_renders_whatever_limit_it_is_handed() -> None:
     # schema and refuses a run that could emit nothing at all.
     from spectragent.core.actions._registrar import ActionRegistrar
 
-    descriptors = [ActionRegistrar.get("browser.done")().descriptor()]
+    descriptors = [ActionRegistrar.get("loop.done")().descriptor()]
     seed = agent.prepare(
         task="t",
         action_space=space_of(descriptors),

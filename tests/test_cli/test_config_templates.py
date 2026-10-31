@@ -55,7 +55,7 @@ def test_new_template_is_explicit_and_prepares_without_launch(composer, monkeypa
     assert browser["network_source"] == {"source_id": "live"}
     assert browser["replayability"] == {"replayability_id": "none"}
     assert "archiver" not in browser and "archiver" not in raw
-    assert len(browser["actions"]) == 16
+    assert len(browser["actions"]) == 15
     writer = raw["hook"][0]
     assert writer["recording"] == {
         "metrics": True,
@@ -129,7 +129,7 @@ def test_unrelated_action_pool_does_not_hide_browser_default_actions():
     raw["action"] = [{"action_id": "other.wait"}]
     before = composer.compose(raw)
     expanded = yaml.safe_load(render_config_template(TemplateChoices(), raw, composer=composer))
-    assert len(_browser(expanded)["actions"]) == 16
+    assert len(_browser(expanded)["actions"]) == 15
     assert _action_state(before) == _action_state(composer.compose(expanded))
 
 

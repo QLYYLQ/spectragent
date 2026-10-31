@@ -109,7 +109,7 @@ class TestClosedUnion:
         decoder emit ``[{}]``; a plain union then reported it once per
         branch, so eleven actions meant eleven lines of feedback.
         """
-        model = self._model("browser.click", "browser.navigate", "browser.done")
+        model = self._model("browser.click", "browser.navigate", "loop.done")
         with pytest.raises(ValidationError) as exc:
             model.model_validate({"memory": "", "action": [{}]})
         assert len(exc.value.errors()) == 1, _errors(exc.value)
@@ -171,7 +171,7 @@ class TestClosedUnion:
         assert "browser.click:" in str(exc.value)
 
     def test_an_empty_action_list_is_refused(self) -> None:
-        model = self._model("browser.done")
+        model = self._model("loop.done")
         with pytest.raises(ValidationError):
             model.model_validate({"memory": "", "action": []})
 
@@ -224,7 +224,7 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseDomAgent(flash_mode=True)
         agent.prepare(
             task="t",
-            action_space=space_of(_descriptors("browser.done")),
+            action_space=space_of(_descriptors("loop.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )
@@ -234,7 +234,7 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseDomAgent(flash_mode=False, use_thinking=True)
         agent.prepare(
             task="t",
-            action_space=space_of(_descriptors("browser.done")),
+            action_space=space_of(_descriptors("loop.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )
@@ -252,7 +252,7 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseDomAgent(flash_mode=False, use_thinking=False)
         agent.prepare(
             task="t",
-            action_space=space_of(_descriptors("browser.done")),
+            action_space=space_of(_descriptors("loop.done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )
@@ -289,7 +289,7 @@ class TestRenderActionList:
     def test_the_advertised_set_is_a_field_on_the_snapshot(self) -> None:
         """Not something to regex out of 200 lines of prose."""
         agent = BrowserUseDomAgent(flash_mode=True)
-        self._render(agent, "browser.wait", "browser.done")
+        self._render(agent, "browser.wait", "loop.done")
         snapshot = agent.system_prompt
         assert snapshot is not None
         assert snapshot.kind == "template"  # type: ignore[union-attr]

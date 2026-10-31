@@ -318,7 +318,7 @@ class TestWhatReachesAGeminiRoute:
         schema = await self._response_schema("gemini-2.5-flash")
         branches = schema["properties"]["action"]["items"]["anyOf"]
         verbs = {next(iter(b["properties"])) for b in branches}
-        assert "browser.click" in verbs and "browser.done" in verbs
+        assert "browser.click" in verbs and "loop.done" in verbs
 
     def test_gemini_tool_declarations_are_stripped_too(self) -> None:
         """The other thing this provider puts a schema in."""

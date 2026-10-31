@@ -1,7 +1,7 @@
 """Shared fakes for the archive axis: one archiving capability and its world.
 
 One fake capability that provides archivers (``contract_archive``), its
-archivers, a fragment and two actions, an environment class, a minimal
+archivers, a fragment and one action, an environment class, a minimal
 archive consumer hook, and :func:`make_archive_run` to drive the lot through
 a real ``AgentRuntime``. Used by every M28 test area — the archive package,
 environment routing, negotiation, the runtime, the trace hook and the shared
@@ -95,7 +95,6 @@ PEER_B_KEY = f"{PEER_B}.events"
 ENV_TYPE = "contract_archive_env"
 CONSUMER_HOOK_ID = "contract_archive_consumer"
 PAGE_KEY = "contract_archive.page"
-DONE_KEY = "contract_archive.done"
 KEEP_GOING_KEY = "contract_archive.keep_going"
 
 #: Name of the run record the fake capability emits.
@@ -213,21 +212,6 @@ class _NoParams(BaseModel):
 
 with FAKES:
 
-    class ContractArchiveDoneAction(ActionBase):
-        """``contract_archive.done`` — ends the run."""
-
-        __registry_key__ = DONE_KEY
-        Params = _NoParams
-
-        def descriptor(self, **context: Any) -> ActionDescriptor:
-            return self.describe("Finish the task.", **context)
-
-        async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
-            return await capability.execute_action(Action(name=self.action_id, params=dict(params)))
-
-
-with FAKES:
-
     class ContractArchiveKeepGoingAction(ActionBase):
         """``contract_archive.keep_going`` — a step that does not end the run."""
 
@@ -277,7 +261,7 @@ with FAKES:
 
         __registry_key__ = CAPABILITY_ID
         __wiring__ = {
-            "action": ("action", [DONE_KEY, KEEP_GOING_KEY]),
+            "action": ("action", [KEEP_GOING_KEY]),
             "observation": ("observation", [PAGE_KEY]),
             "archiver": ("archiver", [STEPS_KEY, BLOBS_KEY]),
         }
@@ -395,7 +379,6 @@ with FAKES:
 
         def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
             return [
-                ContractArchiveDoneAction().descriptor(**context),
                 ContractArchiveKeepGoingAction().descriptor(**context),
             ]
 
@@ -437,10 +420,7 @@ with FAKES:
                         content_addressed=True,
                     )
                 )
-            done = action.name == DONE_KEY
-            return ActionResult(
-                success=True, is_done=done, extracted_content="42" if done else None
-            )
+            return ActionResult(success=True)
 
         async def setup(self, *, negotiation: Any = None, start_url: str | None = None) -> None:
             await super().setup(negotiation=negotiation)
@@ -706,7 +686,7 @@ with FAKES:
 
 
 class ContractArchiveAgent:
-    """Takes ``keep_going_steps`` steps of ``keep_going``, then ``done``."""
+    """Takes ``keep_going_steps`` steps of ``keep_going``, then ``done`` (the Loop's ``loop.done``)."""
 
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset()
 
@@ -726,8 +706,9 @@ class ContractArchiveAgent:
 
     def parse_react_output(self, out: Any) -> list[Action]:
         self.parsed += 1
-        name = "keep_going" if self.parsed <= self.keep_going_steps else "done"
-        return [Action(name=name, params={})]
+        if self.parsed <= self.keep_going_steps:
+            return [Action(name="keep_going", params={})]
+        return [Action(name="done", params={"extracted_content": "42"})]
 
     def get_react_output_model(self) -> None:
         return None

@@ -50,7 +50,7 @@ from tests._helpers.trace_builder import as_chat
 
 def _descriptors(*keys: str) -> list[ActionDescriptor]:
     """Real descriptors — the closed union is compiled from ``params_schema``."""
-    keys = keys or ("browser.click", "browser.navigate", "browser.done")
+    keys = keys or ("browser.click", "browser.navigate", "loop.done")
     return [ActionRegistrar.get(key)().descriptor() for key in keys]
 
 
@@ -136,15 +136,13 @@ class TestPerRunModelRoundTrip:
         model = agent.get_react_output_model()
 
         out = model.model_validate(
-            {"memory": "m", "action": [{"browser.done": {"extracted_content": "the answer"}}]}
+            {"memory": "m", "action": [{"loop.done": {"extracted_content": "the answer"}}]}
         )
         assert agent.parse_react_output(out) == [
-            Action(name="browser.done", params={"extracted_content": "the answer"})
+            Action(name="loop.done", params={"extracted_content": "the answer"})
         ]
         with pytest.raises(ValidationError):
-            model.model_validate(
-                {"memory": "m", "action": [{"browser.done": {"text": "the answer"}}]}
-            )
+            model.model_validate({"memory": "m", "action": [{"loop.done": {"text": "the answer"}}]})
 
 
 # ── 2. Hallucinated verbs die at parse time, not at guarded_act ───
@@ -268,7 +266,7 @@ class _StubAgent:
         return [UserMessage(content="go")]
 
     def parse_react_output(self, _llm_output: Any) -> list[Action]:
-        return [Action(name="browser.done", params={})]
+        return [Action(name="loop.done", params={})]
 
     def get_react_output_model(self) -> type[BaseModel] | None:
         return self._output_model
@@ -298,7 +296,7 @@ class TestReactLoopRoutesOutputFormat:
         model = agent.get_react_output_model()
         llm = _RecordingLLM(
             model.model_validate(  # type: ignore[union-attr]
-                {"memory": "m", "action": [{"browser.done": {"extracted_content": "ok"}}]}
+                {"memory": "m", "action": [{"loop.done": {"extracted_content": "ok"}}]}
             )
         )
 
@@ -322,7 +320,7 @@ class TestReactLoopRoutesOutputFormat:
                 return [UserMessage(content="go")]
 
             def parse_react_output(self, _o: Any) -> list[Action]:
-                return [Action(name="browser.done", params={})]
+                return [Action(name="loop.done", params={})]
 
         llm = _RecordingLLM("free text")
         _run_loop(_NoSlotAgent(), llm)
@@ -613,7 +611,7 @@ class TestBedrockToolSchemaRoundTrip:
         assert {next(iter(b["properties"])) for b in branches} == {
             "browser.click",
             "browser.navigate",
-            "browser.done",
+            "loop.done",
         }
         assert "$defs" not in schema
 
@@ -673,7 +671,7 @@ class TestOpenAIStrictModeGap:
         assert {next(iter(b["properties"])) for b in branches} == {
             "browser.click",
             "browser.navigate",
-            "browser.done",
+            "loop.done",
         }
         # Exactly one required property per branch — that is what makes the
         # verb the *key* rather than a value the model has to get right.
@@ -1082,7 +1080,7 @@ class TestStructuredValidationIsFedBack:
         # action; the agent's parser never saw the refused reply.
         assert (
             "action 1, nope is not an action this run executes "
-            "(its actions: browser.click, browser.done, browser.navigate)"
+            "(its actions: browser.click, browser.navigate, loop.done)"
         ) in str(feedback[-1])
         assert parsed == []
 

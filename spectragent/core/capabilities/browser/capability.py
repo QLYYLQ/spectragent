@@ -68,7 +68,6 @@ from spectragent.core.capabilities.base import CaptureComparison, PreparedSetupC
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
     ClickCoordinateAction,
-    DoneAction,
     DragAction,
     ExtractContentAction,
     GoBackAction,
@@ -522,7 +521,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 "browser.select_dropdown",
                 "browser.extract_content",
                 "browser.wait",
-                "browser.done",
             ],
         ),
         # ``mouse_trajectory`` is a receptor, not a scalar: the chosen

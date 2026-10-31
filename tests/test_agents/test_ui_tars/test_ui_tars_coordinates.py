@@ -56,6 +56,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.llm.messages import ContentPartTextParam
+from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.coordinate_frames import step_frame
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
@@ -391,11 +392,17 @@ def seam() -> dict[str, Any]:
     capability = BrowserCapability()
     capability._actions_by_name["browser.wait"] = WaitAction(default_seconds=0.0)
     env = make_env(BrowserEnvironment, {"browser": capability})
+    loop = ReactLoop()
     negotiated = _action_rules(
         agent=extract_wiring(UITarsAgent, "action"),
         env_provides=set(capability.provided_actions),
+        loop_provides=loop.__loop_actions__,
     )
-    descriptors = env.get_action_space(active_actions=negotiated.active_actions)
+    active = negotiated.active_actions
+    descriptors = [
+        *env.get_action_space(active_actions=active),
+        *loop.get_action_space(active_actions=active),
+    ]
 
     fake = FakeCapability()
     fake._scopes["sid_main"] = FakeScope()
@@ -407,7 +414,9 @@ def seam() -> dict[str, Any]:
         assert impl is not None, f"{action.name} did not route to a capability action"
         return await impl.execute(action.params, capability=fake)  # type: ignore[arg-type]
 
-    _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
+    _kept, guard = build_guarded_act(
+        _execute, descriptors, bindings=negotiated.action_bindings, loop_act=loop.execute_action
+    )
     return {"descriptors": descriptors, "guard": guard, "scope": fake._scopes["sid_main"]}
 
 

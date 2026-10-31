@@ -516,9 +516,7 @@ class TestTheDoneClaim:
     """
 
     def _trace(self, tmp_path: Path, claim: bool) -> RunTrace:
-        claimed = Action(
-            name="browser.done", params={"extracted_content": "added", "success": claim}
-        )
+        claimed = Action(name="loop.done", params={"extracted_content": "added", "success": claim})
         return RunTrace(
             write_ui_tars_run(
                 tmp_path,
@@ -537,7 +535,7 @@ class TestTheDoneClaim:
         last = (await renderer.render(_trajectory(_three_steps(tmp_path))))[-1]
         assert last.target == "Thought: done\nAction: finished(content='added')"
         (executed,) = last.target_actions
-        assert executed == Action(name="browser.done", params={"extracted_content": "added"})
+        assert executed == Action(name="loop.done", params={"extracted_content": "added"})
         assert not last.claim_not_written
         assert renderer.stats.untranslatable == {}
 
@@ -548,7 +546,7 @@ class TestTheDoneClaim:
         _first, last = await renderer.render(_trajectory(self._trace(tmp_path, True)))
         assert last.target == "Thought: done\nAction: finished(content='added')"
         (executed,) = last.target_actions
-        assert executed == Action(name="browser.done", params={"extracted_content": "added"})
+        assert executed == Action(name="loop.done", params={"extracted_content": "added"})
         assert last.claim_not_written
         # The teacher's claim stays on record in the sample itself.
         (teacher,) = last.sample.teacher_actions
@@ -564,7 +562,7 @@ class TestTheDoneClaim:
         error = excinfo.value
         assert (error.sample_id, error.reason) == ("run-claim/s1", "unrepresentable")
         assert error.detail == (
-            "cannot write browser.done(success): finished(content='answer if applicable') "
+            "cannot write loop.done(success): finished(content='answer if applicable') "
             "has no argument that carries it"
         )
 
@@ -815,7 +813,7 @@ class TestRoundTrip:
         def forgets_the_answer(self: UITarsAgent, actions: Any, *, thought: Any = None) -> str:
             stripped = [
                 a.model_copy(update={"params": {**a.params, "extracted_content": None}})
-                if a.name == "browser.done"
+                if a.name == "loop.done"
                 else a
                 for a in actions
             ]

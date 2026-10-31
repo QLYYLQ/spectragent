@@ -132,12 +132,14 @@ def _run(
     agent = make_agent(member, memory=SimpleMemory(max_messages=10), **config)
     loop = ReactLoop(max_actions_per_step=1)
     obs = negotiate_observation(agent, loop, env)
-    actions = negotiate_action(agent, env)
-    descriptors = env.get_action_space(
-        active_actions=actions.active_actions, fragments=obs.active_fragments
-    )
+    actions = negotiate_action(agent, loop, env)
+    active, fragments = actions.active_actions, obs.active_fragments
+    descriptors = [
+        *env.get_action_space(active_actions=active, fragments=fragments),
+        *loop.get_action_space(active_actions=active, fragments=fragments),
+    ]
     action_space, guard = build_guarded_act(
-        env.act, descriptors, None, bindings=actions.action_bindings
+        env.act, descriptors, None, bindings=actions.action_bindings, loop_act=loop.execute_action
     )
     agent.prepare(
         task="t",

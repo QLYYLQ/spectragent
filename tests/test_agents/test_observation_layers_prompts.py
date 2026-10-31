@@ -26,7 +26,6 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.rendering.capture_state import CAN_WAIT, NOT_LOADED
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
 from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam
 from spectragent.core.loops.limits import ExecutionLimits
@@ -52,7 +51,7 @@ from spectragent.schemas.observation.fragments import HistoryObs, StepInfoObs, T
 from spectragent.schemas.prompt import RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import space_for
+from tests._helpers.action_spaces import browser_run_descriptors, space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import step_context
@@ -186,13 +185,12 @@ def _prepared(
         "browser.click_coordinate",
         "browser.scroll",
         "browser.wait",
-        "browser.done",
+        "loop.done",
     } - without
-    descriptors = [
-        action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
-        for action in BrowserCapability().actions
-        if action.action_id in keys and action.action_id.split(".")[-1] in required | optional
-    ]
+    descriptors = browser_run_descriptors(
+        {key for key in keys if key.split(".")[-1] in required | optional},
+        fragments=frozenset({"browser.dom", "browser.screenshot"}),
+    )
     space = space_for(agent, descriptors)
     agent.prepare(
         task="Open",

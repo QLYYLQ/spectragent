@@ -24,6 +24,7 @@ from spectragent.core.llm.decision_errors import (
     DecisionTransportError,
 )
 from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic, close_models
+from spectragent.core.loops.actions import DoneAction
 from spectragent.replay_review._registrar import ReplayReviewerBase
 from spectragent.replay_review.models import (
     MachineFacts,
@@ -108,7 +109,8 @@ def route_result(
 
 
 def _is_done(action: dict[str, Any]) -> bool:
-    return str(action.get("name", "")).rpartition(".")[2] == "done"
+    """Whether *action* is the Loop's ``loop.done``, by its exact key, never a name's ending."""
+    return action.get("name") == DoneAction.__registry_key__
 
 
 def strip_action_effects(correspondence: list[dict[str, Any]]) -> None:

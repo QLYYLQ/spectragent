@@ -1,9 +1,10 @@
 """Generic negotiation engine.
 
-Unifies observation (three-party) and action (two-party) negotiation
-under a single signature. Downstream callers stay thin: they pick the
-``target_class`` and ``rules`` function, pass wiring-bearing classes as
-kwargs, and the engine does the wiring extraction + dispatch.
+Unifies observation and action negotiation (both three-party: the agent,
+the Loop and the environment) under a single signature. Downstream callers
+stay thin: they pick the ``target_class`` and ``rules`` function, pass
+wiring-bearing classes as kwargs, and the engine does the wiring extraction
++ dispatch.
 """
 
 from __future__ import annotations
