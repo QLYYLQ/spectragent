@@ -920,9 +920,9 @@ class ConfigComposer:
 
     @classmethod
     def for_config(cls, raw) -> ConfigComposer:             # 组装一份运行配置的入口
-        capabilities, families = _named_packages(raw)       # 0) 读配置点名的包；没有包的名字在这里被拒
-        discover_run_implementations(                       # 1) 框架自己的包 + 点名的包
-            capabilities=capabilities, families=families
+        capabilities, families = _named_packages(raw)       # 0) 读配置点名的包；没有包的名字、没有 capability 的 agent 在这里被拒
+        discover_implementations(                           # 1) 框架自己的包 + 点名的包
+            *FRAMEWORK_PACKAGES, capabilities=capabilities, families=families
         )
         return cls(registrars=collect_registrars(capabilities))
 
@@ -963,7 +963,7 @@ class ConfigComposer:
 
 **一个顺序，所有消费者共用。** 先框架轴，按列出的顺序；再按 `capability_id` 排序的各包，各包按声明的顺序。生成器、指纹、`config explain` 与 `tests/test_generated/test_in_sync_with_registries.py` 都经 `collect_registrars()` 取这个顺序。生成的配置不依赖顺序，唯一的例外是数值界 `0` / `0.0` 的打印会随构建顺序移动指纹，所以消费者不能各自排序。
 
-**实现发现**（`core/registries.py`）是 conscribe 的严格 `discover`，再加上各包声明的 `OPTIONAL_EXTRA_MODULES` 作为排除项。这些模块不注册任何类，由用到它们的实现在构造时导入，所以没装可选 extra 的机器上组装、生成与 trace 读取照常工作（browser 的 `input/_mouse_gan_v2.py` 在顶层导入 numpy，§4.13）。发现只有两种范围：一次组装导入框架自己的包与配置点名的包（`discover_run_implementations`，下一段）；整份目录导入 `spectragent` 下的一切，只排除 `spectragent.generated` 与 `spectragent.scripts`（`discover_every_implementation`）。`ConfigComposer(registrars=...)` 本身不发现，它的 schema 只描述调用方已经导入的实现。trace reader 照旧只在注册表落空时懒执行 `discover_implementations`（§5.5）；导出取源 run 的 teacher 类时同样在落空时导入记录的家族（`registered_agent`，§4.1）。
+**实现发现**（`core/registries.py`）是 conscribe 的严格 `discover`，再加上各包声明的 `OPTIONAL_EXTRA_MODULES` 作为排除项。这些模块不注册任何类，由用到它们的实现在构造时导入，所以没装可选 extra 的机器上组装、生成与 trace 读取照常工作（browser 的 `input/_mouse_gan_v2.py` 在顶层导入 numpy，§4.13）。发现只有两种范围：一次组装导入框架自己的包与配置点名的包（`discover_implementations` 带上 `capabilities` 与 `families`，下一段）；整份目录导入 `spectragent` 下的一切，只排除 `spectragent.generated` 与 `spectragent.scripts`（`discover_every_implementation`）。`ConfigComposer(registrars=...)` 本身不发现，它的 schema 只描述调用方已经导入的实现。trace reader 照旧只在注册表落空时懒执行 `discover_implementations`（§5.5）；导出取源 run 的 teacher 类时同样在落空时导入记录的家族（`registered_agent`，§4.1）。
 
 **一次组装只导入它的配置点名的包（用户 2026-10-31 的裁决）。** 每个组装一份配置的入口（`spectragent run`、`spectragent bench`、独立评测、导出与它的学生配置、独立 replay 审查、`config check` / `config explain`、lookahead 的 judge）都经 `ConfigComposer.for_config(raw)` 取 Composer。它导入三样：
 
@@ -971,11 +971,18 @@ class ConfigComposer:
 - **配置点名的 capability 包**：配置里每个 `capability_id` 的值点名一个，包名就是 `capability_id`（`spectragent/core/capabilities/<capability_id>/`，上面的约定）；
 - **配置点名的 agent 家族**：每个 `agent_id` 的值点名它的家族，即第一个点之前的部分（§4.1 "Agent 家族"）：`browser_use.dom` 点名 `spectragent/agents/browser_use/`，不带点的键（`ui_tars`）自成一族。`spectragent/agents/` 下的每个子包都是一个家族，框架自己的两个子包除外：`memory`（memory 轴）与 `rendering`（各家族共用的 prompt 呈现），这份名单在 `core/registries.py`。`spectragent/agents/__init__.py` 因此不导入任何家族。
 
-名字在任何导入之前读：遍历 YAML 读出的原始配置，收集每个映射里 `capability_id` 与 `agent_id`（两个注册表的判别字段）的字符串值，用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。没点名的包整个不导入，连它的 `declarations.py` 也不读：发现时它们是排除项，`collect_registrars(capabilities)` 只读点名的包的声明。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
+名字在任何导入之前读，而且只从 schema 放 capability 块与 agent 块的位置读：顶层 `capability` 段与 `agent` 段的每一项，以及每个 environment 的 `capabilities` 受体（`EnvironmentBase` 声明的；environment 自己的类在它的 capability 包里，这时还没导入）。只读这些块的判别字段 `capability_id` 与 `agent_id`，从不读自由字段：hook 的 `parameters`、provider 的 `extra_body` 里写的同名键不点名任何包。读到的名字用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。点名了 agent 家族却没点名任何 capability 时，抛 `ComposeError`（issue `agent_without_capability`），点名这个 agent 与现有的 capability 包，让人加一个带 capability 的 environment 块：agent 的观测与动作都来自 capability，v1 也没有不要环境的 Loop（§4.1）。没点名的包是发现的排除项：发现不遍历它们，也不读它们的 `declarations.py`，`collect_registrars(capabilities)` 只读点名的包的声明；框架代码直接导入的模块照旧随那段代码进来（下面"仍会导入 browser 模块的框架代码"）。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
 
-这次组装的目录是框架轴加上点名的 capability 声明的轴；没有已导入实现的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。conscribe 对进了目录的每个类都解析 `__wiring__`，指向空注册表或没注册的键都是错误，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。agent 家族的声明同样要能解析：`browser_use.dom` 声明的 `click` 等动作只由 browser 包注册，所以只写 agent、不写 browser capability 的配置在建目录时就被 conscribe 拒绝（`unknown keys 'navigate', 'click', 'type' in registry 'action'`）；一份能跑的配置总会在 environment 里写出它的 capability。
+这次组装的目录是框架轴加上点名的 capability 声明的轴；没有已导入实现的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`compose()` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`。conscribe 对进了目录的每个类都解析 `__wiring__`，`declare_only` 条目也一样，键对照的是整个进程的注册表，指向空注册表或没注册的键都是错误，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
 
-**仍会导入 browser 模块的框架代码。** 框架自己的几个模块直接导入 browser 包的模块：导出的 `index_to_coordinate` 翻译器与 `export/filters.py`、replay 审查的 `evidence.py`、`lexbench_browser` 任务加载器。框架的包照旧导入，所以没点名 browser 的组装也会经它们导入 browser 包的一部分（归档器、DOM 模型、观测 fragment、tab 管理，连带 agent-cdp），但不导入 `BrowserCapability`、它的动作与 `BrowserEnvironment`。trace_writer 的 `archive` 受体指向 archiver 注册表，现在只有 browser 注册归档器，这个注册表是经上面的导入才不为空的；否则每个目录都会因为这个受体指向空注册表而建不出来。另外，任务加载器按 §4.10 查 setup 类时读每个 capability 包的声明（只读声明，不导入实现）。
+**没解决：agent 的声明与归档受体在只导入点名的包时可能解析不了（等用户对 conscribe 的裁决）。** 同一条检查也落在 agent 的声明和 trace_writer 上，挪文件解决不了：
+
+- agent 声明的动作里，点名的 capability 没注册的那些（可选的也算）在组装时就报错。例如一个只提供 `click_coordinate`、`type_coordinate` 的 capability 配 `ui_tars`，得到 `WiringResolutionError … unknown optional keys 'scroll', 'send_keys', 'drag', 'wait'`；导入全部包时这份配置能组装，协商把这些可选动作去掉。
+- trace_writer 的 `archive` 受体指向 archiver 注册表，而只有 capability 包注册归档器：注册表为空时每次建目录都失败（`TraceWriter … registry 'archiver' is empty`）。现在看不出这一条：每次组装都经下一段列出的框架模块导入了 browser 的归档器。
+
+怎么补等用户对 conscribe 的裁决，在那之前不绕开它。
+
+**仍会导入 browser 模块的框架代码。** 框架自己的几个模块直接导入 browser 包的模块：导出的 `index_to_coordinate` 翻译器与 `export/filters.py`、replay 审查的 `evidence.py`、`lexbench_browser` 任务加载器。框架的包照旧导入，所以没点名 browser 的组装也会经它们导入 browser 包的一部分（归档器、DOM 模型、观测 fragment、tab 管理，连带 agent-cdp），但不导入 `BrowserCapability`、它的动作与 `BrowserEnvironment`。archiver 注册表是经这些导入才不为空的（上面"没解决"的第二条）。另外，任务加载器按 §4.10 查 setup 类时，已注册的 setup 里没有才读每个 capability 包的声明（只读声明，不导入实现）。
 
 **整份目录的工具导入一切。** `spectragent config generate` 为每一层的每个实现生成配置；指纹探针（`cli/fingerprints.py`，在干净的子进程里跑）与 `tests/test_generated/test_in_sync_with_registries.py` 拿生成时的同一份目录比对；`spectragent components list` 列出每一层的全部实现；`spectragent config template` 按用户挑的任意组件拼 YAML、拼错时列出全部可选的实现。后两者经 `ConfigComposer.for_every_package()`。`config check` / `config explain` 按一次组装的方式组装（`for_config`：同样的拒绝、同样的目录、同样的 resolved 配置与摘要），只有"生成产物是否过期"这一项要整份目录，由指纹探针在它自己的子进程里算。
 
@@ -2856,7 +2863,7 @@ context 在实际 capability owner 准备出的 `recordable` projection 上按�
 
 - 每个 setup 类声明三样东西：`__env_types__`（哪些 `TaskDefinition.env_type` 选它，加载器据此从自己的 `env_type` 推出 setup 类，不写死）、`__raw_keys__`（加载器从原始记录顶层挪进 setup 的键，browser 的是 `start_url`、`storage_state`）与 `to_context()`（交给 `Capability.setup()` 的 env 部分）。`setup_type` 是数据里的真字段，取自注册键；数据里写了别的值，校验时被拒。
 - `TaskDefinition.setup` 按 `setup_type` 在已注册的 setup 类里分派校验：没写 `setup_type`、或它不是已注册的 setup，都报错并列出已注册的。任务没有 setup 时是 `None`，`get_task_context` 的 env 部分为空。序列化保留子类的全部字段（`SerializeAsAny`），所以 dump 出来的任务能原样校验回来。
-- `core/registries.py::setup_class_for_env(env_type)` 返回声明了这个 env 类型的已注册 setup 类。它每次都先读一遍每个 capability 包的声明（导入 `declarations.py` 就注册了包的 setup），再在已注册的 setup 类里找：直接构造加载器的调用方（包括测试）不必先导入哪个 capability，两个包的 setup 声明同一个 env 类型时也总能发现。查不到就报错，点名已知的 env 类型；两个 setup 类声明同一个 env 类型也报错。任务加载器（`TaskLoaderBase.normalize_raw`）与 `trace_branches` 都经它取 setup 类。
+- `core/registries.py::setup_class_for_env(env_type)` 返回声明了这个 env 类型的已注册 setup 类。它先在已注册的 setup 类里找；找不到才读一遍每个 capability 包的声明（导入 `declarations.py` 就注册了包的 setup）再找。所以直接构造加载器的调用方（包括测试）不必先导入哪个 capability，而一个还在写的包的 `declarations.py` 导入失败，只影响要读它才找得到的查找，不影响 browser 的。查不到就报错，点名已知的 env 类型。两个包的 setup 声明同一个 env 类型，由 `tests/test_core/test_capabilities/test_capability_declarations.py` 对每个包检查，确定地发现，不靠运行时读到了哪些包。任务加载器（`TaskLoaderBase.normalize_raw`）与 `trace_branches` 都经它取 setup 类。
 - `BrowserSetup` 在 `core/capabilities/browser/task_setup.py`，字段、`__env_types__ = ("browser",)`、`__raw_keys__` 与 `to_context()` 不变。`DockerSetup` 与 `VMSetup` 删除：它们没有对应的 capability，docker / desktop_vm 包落地时由各自的包注册（M19 / M26）。trace 只记 setup 的 context（`TaskSetupRecord`），不记 `setup_type`，已有的录制不受影响。
 
 **登录的两条路径。** 预置登录态沿上面的 `storage_state` 输入，或在 `none` 档位显式选择 provider 的持久 profile；需要操作网页登录时，把账号、密码和登录步骤放进现有 `task_text`，Agent 用自己的 prompt 和既有 type / click 动作执行。框架不自动登录，不新增 credential store、加密机制或 `TaskContext.agent` / `agent_inputs` 通道。`BrowserSetup.login_required` / `login_type` 只保留 benchmark 元数据，不路由 setup、不触发自动登录；无实现的 `credentials_ref` 现在明确拒绝，旧 `LoginSnapshot` 删除，不能再拿它声称保存了分区登录态。
