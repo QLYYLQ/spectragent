@@ -513,6 +513,13 @@ class TestErrors:
         for block in ({}, {"items": None}, {"items": []}):
             run = composer.compose({"cmp_writer": [{"key": "writer", **block}]})
             assert run.single("cmp_writer").items == []
+        # Anything else names an implementation this run does not hold.
+        with pytest.raises(ComposeError, match="leave 'items' out") as refused:
+            composer.compose({"cmp_writer": [{"key": "writer", "items": [{"key": "x"}]}]})
+        issue = refused.value.issue
+        assert issue is not None
+        assert (issue.code, issue.path) == ("no_implementation", "cmp_writer[0].items")
+        assert "'cmp_unbuilt'" in issue.message
 
     def test_invalid_yaml_rejected_by_pydantic(
         self,

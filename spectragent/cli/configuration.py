@@ -38,7 +38,7 @@ def explain_config(
     with inspection_stage("schema"):
         composer = ConfigComposer.for_config(raw)
     with inspection_stage("validation"):
-        config = composer.top_level_type.model_validate(raw)
+        config = composer.validate(raw)
     with inspection_stage("composition"):
         run = composer.compose(config)
     agents = run.ids("agent")

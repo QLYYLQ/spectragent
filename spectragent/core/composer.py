@@ -31,10 +31,10 @@ from functools import cached_property
 from types import MappingProxyType
 from typing import Any, Literal, get_origin
 
-from conscribe import Coverage
+from conscribe import NO_IMPLEMENTATION_ERROR_TYPE, Coverage
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.agents.prompts import agent_family
@@ -335,9 +335,7 @@ class ConfigComposer:
 
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         """Validate, instantiate (leaves-first), inject, assemble."""
-        if isinstance(raw, Mapping):
-            self._refuse_a_layer_left_out(raw)
-        cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
+        cfg = raw if isinstance(raw, BaseModel) else self.validate(raw)
         inputs = configured_inputs(cfg)
         state = _State(by_layer={layer: {} for layer in self._registrars})
 
@@ -367,10 +365,7 @@ class ConfigComposer:
         written = sorted(self._left_out.intersection(raw))
         if written:
             layer = written[0]
-            known = (
-                f"capability packages: {', '.join(capability_ids()) or 'none'}; "
-                f"agent families: {', '.join(agent_families()) or 'none'}"
-            )
+            known = _known_packages()
             raise ComposeError(
                 f"{layer}: the configuration writes the {layer!r} section, and none of the "
                 f"packages it names implements that layer. Environments, actions and archivers "
@@ -383,6 +378,40 @@ class ConfigComposer:
                     f"Name the capability or agent family that provides it ({known}).",
                 ),
             )
+
+    def validate(self, raw: object) -> BaseModel:
+        """*raw* validated against this Composer's schema.
+
+        What this build holds no implementation for is refused in plain words
+        rather than pydantic's: a written section whose layer was left out,
+        and a value in a field a partial build accepts only "nothing" in,
+        which pydantic reports as ``no_implementation`` (``trace_writer.archive``
+        in a run naming no capability that provides an archiver).
+        """
+        if isinstance(raw, Mapping):
+            self._refuse_a_layer_left_out(raw)
+        try:
+            return self.top_level_type.model_validate(raw)
+        except ValidationError as exc:
+            for error in exc.errors():
+                if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
+                    continue
+                path = _location(error["loc"])
+                context = error.get("ctx") or {}
+                layer, name = context.get("layer"), context.get("field")
+                known = _known_packages()
+                raise ComposeError(
+                    f"{path}: no package this configuration names provides any {layer!r}; "
+                    f"leave {name!r} out, or name the capability or agent family that does "
+                    f"({known}).",
+                    issue=CompositionIssue(
+                        "no_implementation",
+                        path,
+                        f"No package the configuration names provides any {layer!r}.",
+                        f"Leave {name!r} out, or name the package that provides it ({known}).",
+                    ),
+                ) from exc
+            raise
 
     # -- Per-instance assembly ---------------------------------------
 
@@ -872,6 +901,22 @@ def _named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
                     ),
                 )
     return capabilities, agents
+
+
+def _known_packages() -> str:
+    """The capability packages and agent families there are, for a refusal to list."""
+    return (
+        f"capability packages: {', '.join(capability_ids()) or 'none'}; "
+        f"agent families: {', '.join(agent_families()) or 'none'}"
+    )
+
+
+def _location(loc: tuple[int | str, ...]) -> str:
+    """A pydantic error location written as a config path: ``hook[0].archive``."""
+    path = ""
+    for part in loc:
+        path += f"[{part}]" if isinstance(part, int) else f".{part}" if path else str(part)
+    return path
 
 
 def _blocks(value: object, path: str) -> list[tuple[Mapping[object, object], str]]:

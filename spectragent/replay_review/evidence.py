@@ -225,7 +225,7 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
             raise ReviewEvidenceError("missing_source", "Source run configuration is missing")
         raw = yaml.safe_load(config_path.read_text())
         composer = ConfigComposer.for_config(raw)
-        source_config = composer.top_level_type.model_validate(raw)
+        source_config = composer.validate(raw)
         configured = _browser_config(source_config.model_dump(mode="json"))
         # Instantiate the recorded browser recipe once, without constructing the
         # source Agent's model, hooks or loaders. Offline evidence needs none of
