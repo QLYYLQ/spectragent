@@ -37,8 +37,8 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.capabilities.browser.settle import watch_page
 from spectragent.schemas.action import Action

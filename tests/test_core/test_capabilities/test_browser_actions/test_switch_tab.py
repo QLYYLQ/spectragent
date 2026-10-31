@@ -18,7 +18,7 @@ from typing import Any
 
 from agent_cdp import ScopeGroup
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import Location, TabFacts, TabSwitchEffect
 from spectragent.core.capabilities.browser.profiles import resolve_profile
 from spectragent.schemas.action import Action, ActionResult

@@ -8,8 +8,8 @@ from typing import Any, cast
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.commands import BrowserConnection
 from spectragent.core.capabilities.browser.storage_seed import (
     StorageSeed,
@@ -123,8 +123,8 @@ def test_session_state_requires_unique_tabs_and_storage_keys() -> None:
 
 
 def test_explicit_seed_refuses_external_or_persistent_state_before_launch(tmp_path: Path) -> None:
-    from spectragent.core.capabilities.browser import BrowserCapability
     from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
     from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 
     external = BrowserCapability(cdp_url="ws://localhost:9222/devtools/browser/external")

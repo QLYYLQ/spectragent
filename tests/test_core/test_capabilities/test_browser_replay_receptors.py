@@ -16,23 +16,27 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 
-from spectragent.core.capabilities.browser import BrowserCapability
-from spectragent.core.capabilities.browser.replay import (
+from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+from spectragent.core.capabilities.browser.replay.archive_source import (
+    MAX_FULFILL_BODY_BYTES,
     ArchiveNetworkSource,
-    LiveNetworkSource,
+)
+from spectragent.core.capabilities.browser.replay.live import LiveNetworkSource
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.miss_policy import (
     MissPolicyBase,
     MissPolicyProtocol,
     MissPolicyRegistrar,
+    ReplayMiss,
+    default_miss_policy,
+)
+from spectragent.core.capabilities.browser.replay.network_source import (
     NetworkSourceProtocol,
     NetworkSourceRegistrar,
-    ReplayMiss,
-    StrictMissPolicy,
-    default_miss_policy,
     default_network_source,
 )
-from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
-from spectragent.core.capabilities.browser.replay.archive_source import MAX_FULFILL_BODY_BYTES
-from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.strict import StrictMissPolicy
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.registries import collect_registrars
 from tests._helpers.trace_builder import new_wal

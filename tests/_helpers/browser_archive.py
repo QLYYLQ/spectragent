@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any, ClassVar
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import (
     BrowserArchiverBase,
     DomRawArchiver,
@@ -47,6 +46,7 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     NETWORK_CAPTURE,
     NETWORK_ISOLATION,
 )
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.provider_session import ProviderSession
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient

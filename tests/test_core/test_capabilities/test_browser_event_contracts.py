@@ -10,8 +10,8 @@ from typing import Any, cast
 import pytest
 from agent_cdp import BaseEvent, ConnectionType, Participation, ScopeGroup, expect
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.actions.click_coordinate import ClickCoordinateAction
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog

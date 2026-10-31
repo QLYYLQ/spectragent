@@ -13,9 +13,9 @@ import statistics
 
 import pytest
 
-from spectragent.core.capabilities.browser.input import (
-    HumanRhythm,
-    InstantRhythm,
+from spectragent.core.capabilities.browser.input.human_rhythm import HumanRhythm
+from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
+from spectragent.core.capabilities.browser.input.rhythm import (
     Keystroke,
     TypingRhythmProtocol,
     TypingRhythmRegistrar,

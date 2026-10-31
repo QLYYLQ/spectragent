@@ -18,15 +18,21 @@ browser starts — the source run directory arrives as the task context's
 ``replay_archive`` and is opened through ``core/archive``'s ``open_archive``)
 and building the run's replay server (:meth:`NetworkSourceProtocol.serve`, a
 recorder participant). The configured instance holds knobs only.
+
+The browser's ``declarations.py`` imports this module, so the replay machinery it
+names (the recorded archive, the server) is imported for annotations only.
 """
 
-from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from conscribe import create_registrar
 
-from spectragent.core.archive.source import ArchiveReader
-from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
-from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
+if TYPE_CHECKING:
+    from spectragent.core.archive.source import ArchiveReader
+    from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+    from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
 
 #: Whether an intercepting source needs the browser cut off from the network:
 #: ``required`` (the default) or ``none_acknowledged`` (written out: run with

@@ -24,8 +24,8 @@ from spectragent.core.capabilities.browser.recorder import (
     RecorderConnection,
     RecorderTarget,
 )
-from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.canonical import (
     BODY_SHA256_PARAM,
     MAX_BODY_KEY_CHARS,

@@ -150,11 +150,21 @@ from spectragent.core.capabilities.browser.dom.serializers.html_serializer impor
 from spectragent.core.capabilities.browser.dom.serializers.text_serializer import (  # noqa: F401 — registration
     TextSerializer,
 )
-from spectragent.core.capabilities.browser.input import (
-    InstantRhythm,
-    InstantTrajectory,
-    MouseTrajectoryProtocol,
-    TypingRhythmProtocol,
+from spectragent.core.capabilities.browser.input.bezier import (  # noqa: F401 — registration
+    BezierTrajectory,
+)
+from spectragent.core.capabilities.browser.input.human_rhythm import (  # noqa: F401 — registration
+    HumanRhythm,
+)
+from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
+from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
+from spectragent.core.capabilities.browser.input.learned import (  # noqa: F401 — registration
+    LearnedTrajectory,
+)
+from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmProtocol
+from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryProtocol
+from spectragent.core.capabilities.browser.input.windmouse import (  # noqa: F401 — registration
+    WindMouseTrajectory,
 )
 from spectragent.core.capabilities.browser.media import (
     PendingAlignment,
@@ -178,21 +188,12 @@ from spectragent.core.capabilities.browser.recorder import (
     RecorderLostError,
     RecorderParticipant,
 )
-from spectragent.core.capabilities.browser.replay import (  # noqa: F401 — registration
-    ArchiveNetworkSource,
-    LiveNetworkSource,
-    NetworkSourceProtocol,
-    NoneReplayability,
-    PinnedReplayability,
-    ReplayabilityPlan,
-    ReplayabilityProtocol,
-    StrictMissPolicy,
-    default_network_source,
-    default_replayability,
-)
 from spectragent.core.capabilities.browser.replay.archive_index import (
     RecordedArchive,
     load_fingerprint,
+)
+from spectragent.core.capabilities.browser.replay.archive_source import (  # noqa: F401 — registration
+    ArchiveNetworkSource,
 )
 from spectragent.core.capabilities.browser.replay.consistency import (
     browser_default_problems,
@@ -204,7 +205,28 @@ from spectragent.core.capabilities.browser.replay.consistency import (
     replay_t0,
     version_warnings,
 )
+from spectragent.core.capabilities.browser.replay.live import (  # noqa: F401 — registration
+    LiveNetworkSource,
+)
+from spectragent.core.capabilities.browser.replay.network_source import (
+    NetworkSourceProtocol,
+    default_network_source,
+)
+from spectragent.core.capabilities.browser.replay.none import (  # noqa: F401 — registration
+    NoneReplayability,
+)
+from spectragent.core.capabilities.browser.replay.pinned import (  # noqa: F401 — registration
+    PinnedReplayability,
+)
+from spectragent.core.capabilities.browser.replay.replayability import (
+    ReplayabilityProtocol,
+    default_replayability,
+)
+from spectragent.core.capabilities.browser.replay.replayability_plan import ReplayabilityPlan
 from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
+from spectragent.core.capabilities.browser.replay.strict import (  # noqa: F401 — registration
+    StrictMissPolicy,
+)
 from spectragent.core.capabilities.browser.restoration import (
     measure,
     media_measure,

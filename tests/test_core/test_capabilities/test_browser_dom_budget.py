@@ -30,7 +30,7 @@ import pytest
 import spectragent.core.capabilities.browser.dom.cleaning.browser_use  # noqa: F401
 import spectragent.core.capabilities.browser.dom.serializers.html_serializer  # noqa: F401
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget, DOMBudgetPass
 from spectragent.core.capabilities.browser.dom.models import DOMState
 from spectragent.core.capabilities.browser.dom.serializers.html_serializer import (

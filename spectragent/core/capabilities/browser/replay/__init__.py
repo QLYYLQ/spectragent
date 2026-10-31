@@ -7,81 +7,14 @@
 - ``miss_policy`` (``MissPolicyRegistrar``: ``strict``) — how an ``archive``
   source answers what the recording does not hold.
 
-Importing this package registers every strategy of all three (conscribe
-metaclass), which is what ``BrowserCapability`` relies on before its
-``__wiring__`` is evaluated.
+This file imports nothing: the browser's ``declarations.py`` imports the three
+registrar modules (``replayability.py``, ``network_source.py``,
+``miss_policy.py``) without loading the replay machinery. A strategy registers
+when its module is imported, which discovery and ``capability.py`` do.
 
-A replaying run's moving parts (M30): ``archive_index.py`` loads the source
+A replaying run's moving parts: ``archive_index.py`` loads the source
 run, ``canonical.py`` / ``matcher.py`` / ``site_rules.py`` match, ``server.py``
 answers paused requests (``responder.py`` shapes the answers), ``replay_log.py``
 records every decision and reads them back, ``consistency.py`` checks the
 source run against the configuration before anything launches.
 """
-
-from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
-from spectragent.core.capabilities.browser.replay.live import LiveNetworkSource
-from spectragent.core.capabilities.browser.replay.miss_policy import (
-    MissDecision,
-    MissPolicyBase,
-    MissPolicyProtocol,
-    MissPolicyRegistrar,
-    ReplayMiss,
-    default_miss_policy,
-)
-from spectragent.core.capabilities.browser.replay.network_source import (
-    NetworkSourceBase,
-    NetworkSourceProtocol,
-    NetworkSourceRegistrar,
-    default_network_source,
-)
-from spectragent.core.capabilities.browser.replay.none import NoneReplayability
-from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
-from spectragent.core.capabilities.browser.replay.replay_log import (
-    ReplayLog,
-    ReplayLogEntry,
-    diverged_steps,
-    iter_replay_log,
-    replay_log,
-)
-from spectragent.core.capabilities.browser.replay.replayability import (
-    ReplayabilityBase,
-    ReplayabilityPlan,
-    ReplayabilityProtocol,
-    ReplayabilityRegistrar,
-    default_replayability,
-)
-from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
-from spectragent.core.capabilities.browser.replay.shims import SHIM_SHA256, render_shim
-from spectragent.core.capabilities.browser.replay.strict import StrictMissPolicy
-
-__all__ = [
-    "SHIM_SHA256",
-    "ArchiveNetworkSource",
-    "LiveNetworkSource",
-    "MissDecision",
-    "MissPolicyBase",
-    "MissPolicyProtocol",
-    "MissPolicyRegistrar",
-    "NetworkSourceBase",
-    "NetworkSourceProtocol",
-    "NetworkSourceRegistrar",
-    "NoneReplayability",
-    "PinnedReplayability",
-    "ReplayContext",
-    "ReplayLog",
-    "ReplayLogEntry",
-    "ReplayMiss",
-    "ReplayServer",
-    "ReplayabilityBase",
-    "ReplayabilityPlan",
-    "ReplayabilityProtocol",
-    "ReplayabilityRegistrar",
-    "StrictMissPolicy",
-    "default_miss_policy",
-    "default_network_source",
-    "default_replayability",
-    "diverged_steps",
-    "iter_replay_log",
-    "render_shim",
-    "replay_log",
-]

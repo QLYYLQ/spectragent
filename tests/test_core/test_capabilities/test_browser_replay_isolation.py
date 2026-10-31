@@ -24,18 +24,16 @@ from typing import Any, Literal
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import ReplayLogArchiver, StorageArchiver
 from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_NAME
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
-from spectragent.core.capabilities.browser.replay import (
-    ArchiveNetworkSource,
-    PinnedReplayability,
-)
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.responder import format_http_date, parse_http_date
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser, settle
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient

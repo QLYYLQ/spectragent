@@ -34,8 +34,8 @@ from typing import Any
 import pytest
 from agent_cdp import PausedTarget
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.recorder import (
     AUTO_ATTACH_PARAMS,
@@ -44,7 +44,7 @@ from spectragent.core.capabilities.browser.recorder import (
     RecorderParticipantBase,
     RecorderTarget,
 )
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.schemas.action import Action
 from tests._helpers.fixture_site import FixtureSite
 

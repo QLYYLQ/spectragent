@@ -30,8 +30,8 @@ from typing import Any
 import pytest
 from agent_cdp import EventScope, ScopeGroup
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.actions.screenshot import ScreenshotAction
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs import ScreenshotWatchdog
 from spectragent.schemas.observation.image import (

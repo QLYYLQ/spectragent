@@ -9,9 +9,9 @@ from typing import Any, cast
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import StorageArchiver
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.storage_seed import StorageSeed
 from spectragent.core.composer import ComposedRun
 from spectragent.core.experiment import ExperimentScope

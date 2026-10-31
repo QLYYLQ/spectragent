@@ -30,7 +30,7 @@ from agent_cdp import EventScope, ScopeGroup
 import spectragent.core.capabilities.browser.dom.cleaning.skyvern  # noqa: F401
 import spectragent.core.capabilities.browser.dom.serializers.html_serializer  # noqa: F401
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.profiles import (
     BUILTIN_PROFILES,
     resolve_profile,

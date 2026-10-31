@@ -193,8 +193,8 @@ def test_the_browser_harness_binds_every_recording_archiver() -> None:
     contract never checks. Only the replay's own log is left out: it needs a
     replay, and a recording refuses it.
     """
-    from spectragent.core.capabilities.browser import BrowserCapability
     from spectragent.core.capabilities.browser.archive import BrowserArchiverBase
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
     from tests._helpers.archive_contract import browser_archive_harness
 
     harness = browser_archive_harness()

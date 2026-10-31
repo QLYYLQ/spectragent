@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from agent_cdp import ScopeGroup
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.schemas.action import Action
 
 

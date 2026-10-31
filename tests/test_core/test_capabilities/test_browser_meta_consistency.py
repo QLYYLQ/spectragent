@@ -19,9 +19,11 @@ from typing import Any
 import pytest
 from agent_cdp import ConnectionType, ScopeGroup
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
-from spectragent.core.capabilities.browser.capability import _OBSERVE_MAX_ATTEMPTS
+from spectragent.core.capabilities.browser.capability import (
+    _OBSERVE_MAX_ATTEMPTS,
+    BrowserCapability,
+)
 from spectragent.core.capabilities.browser.dom.capture import capture_target
 from spectragent.core.capabilities.browser.dom.cleaning.browser_use import REQUIRED_COMPUTED_STYLES
 from spectragent.core.capabilities.browser.dom.models import DOMState, TargetCapture

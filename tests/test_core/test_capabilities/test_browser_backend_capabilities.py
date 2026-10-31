@@ -523,9 +523,9 @@ def test_cloud_providers_refuse(provider_id: str, monkeypatch: pytest.MonkeyPatc
     both are reported at once, and nothing is opened — the refusal comes
     before ``backend.open()``, so no cloud session is ever allocated.
     """
-    from spectragent.core.capabilities.browser import BrowserCapability
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
     from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
-    from spectragent.core.capabilities.browser.replay import PinnedReplayability
+    from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 
     cls = _shipped_providers()[provider_id]
     opened: list[dict[str, Any]] = []

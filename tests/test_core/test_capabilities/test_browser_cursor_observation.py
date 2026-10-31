@@ -14,7 +14,7 @@ from PIL import Image
 from spectragent.agents.browser_use import BrowserUseDomVisionAgent
 from spectragent.agents.skyvern import SkyvernDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.capabilities.browser.input.mouse import HumanMouse, PointerPosition
 from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint

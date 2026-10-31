@@ -96,19 +96,16 @@ from spectragent.core.capabilities.browser.geometry import (
     bounding_box,
     corners,
 )
-from spectragent.core.capabilities.browser.input import (
-    HumanKeyboard,
-    HumanMouse,
-    MouseTrajectoryProtocol,
-    TypingRhythmProtocol,
-)
 from spectragent.core.capabilities.browser.input.chords import KeyChord, parse_key_chord
-from spectragent.core.capabilities.browser.input.mouse import PointerPosition
+from spectragent.core.capabilities.browser.input.keyboard import HumanKeyboard
+from spectragent.core.capabilities.browser.input.mouse import HumanMouse, PointerPosition
+from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmProtocol
 from spectragent.core.capabilities.browser.input.shortcuts import (
     OtherPlatform,
     WithoutUi,
     browser_shortcut,
 )
+from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryProtocol
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.scroll_probe import ScrollProbe
 from spectragent.core.capabilities.browser.sessions import TabSessions

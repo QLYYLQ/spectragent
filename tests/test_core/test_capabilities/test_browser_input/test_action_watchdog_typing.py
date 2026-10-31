@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.actions.type_action import TypeAction
 from spectragent.core.capabilities.browser.actions.type_coordinate import (
     TypeCoordinateAction,
 )
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import DOMRect
-from spectragent.core.capabilities.browser.input import HumanRhythm, InstantRhythm
+from spectragent.core.capabilities.browser.input.human_rhythm import HumanRhythm
+from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import (
     TypeAtCoordinateEvent,
@@ -151,7 +152,7 @@ class TestTheStrategyReachesTheWatchdog:
         They are separate receptors on purpose — one shared "humanization
         level" would make the pair inseparable.
         """
-        from spectragent.core.capabilities.browser.input import WindMouseTrajectory
+        from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 
         cdp = FakeCDP()
         watchdog = ActionWatchdog(

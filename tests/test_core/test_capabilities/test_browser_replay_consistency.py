@@ -21,7 +21,6 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
 )
 from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
-from spectragent.core.capabilities.browser.replay import NoneReplayability, PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import (
     ArchiveIndex,
     RecordedArchive,
@@ -34,6 +33,8 @@ from spectragent.core.capabilities.browser.replay.consistency import (
     replay_t0,
     version_warnings,
 )
+from spectragent.core.capabilities.browser.replay.none import NoneReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from tests._helpers.archive_recorder import ScriptedRecorder
 from tests._helpers.fake_cdp import FAKE_CLIENT_HINTS
 

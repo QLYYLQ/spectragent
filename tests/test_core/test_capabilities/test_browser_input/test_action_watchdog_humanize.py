@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from spectragent.core.capabilities.browser.dom.models import DOMRect
-from spectragent.core.capabilities.browser.input import InstantTrajectory, WindMouseTrajectory
+from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     ActionWatchdog,
 )

@@ -33,9 +33,9 @@ from spectragent.core.capabilities.browser.backends.browser_defaults import Brow
 from spectragent.core.capabilities.browser.color_scheme import ColorScheme
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 from spectragent.core.capabilities.browser.storage_seed import StorageSeed
 from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file

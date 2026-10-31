@@ -8,7 +8,7 @@ import pytest
 from agent_cdp import BaseEvent, ConnectionType, ScopeGroup
 from agent_cdp.events.aggregation import HandlerError, event_result
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.watchdogs.events import ExecuteJavaScriptEvent
 from spectragent.core.capabilities.browser.watchdogs.js_execution import (
     JavaScriptExecutionWatchdog,

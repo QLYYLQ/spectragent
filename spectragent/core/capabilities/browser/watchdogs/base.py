@@ -46,10 +46,8 @@ if TYPE_CHECKING:
     from spectragent.core.capabilities.browser.dom.serializers import (
         DOMSerializerProtocol,
     )
-    from spectragent.core.capabilities.browser.input import (
-        MouseTrajectoryProtocol,
-        TypingRhythmProtocol,
-    )
+    from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmProtocol
+    from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryProtocol
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
     from spectragent.core.capabilities.browser.recorder import ArchiveChannel
 

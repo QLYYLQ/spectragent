@@ -9,10 +9,10 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import NetworkArchiver, StorageArchiver
 from spectragent.core.capabilities.browser.backends.base import SharedBrowserProvider
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.composer import ComposedRun
 from spectragent.core.experiment import ExperimentScope

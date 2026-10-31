@@ -18,13 +18,14 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import NetworkArchiver, ReplayLogArchiver
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.color_scheme import measure_color_scheme
-from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource, PinnedReplayability
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.trace.encoding import encode_archive_file
 from spectragent.core.trace.models import TraceStatus
 from spectragent.core.trace.reader import RunTrace

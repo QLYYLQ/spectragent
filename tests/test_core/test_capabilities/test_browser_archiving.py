@@ -21,7 +21,6 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser import capability as capability_module
 from spectragent.core.capabilities.browser.archive import (
     DomRawArchiver,
@@ -29,10 +28,11 @@ from spectragent.core.capabilities.browser.archive import (
     StorageArchiver,
 )
 from spectragent.core.capabilities.browser.backends.browser_defaults import DEFAULTS_WORLD
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES, BrowserProfileConfig
 from spectragent.core.capabilities.browser.recorder import RecorderLostError
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive
 from spectragent.core.trace.models import TraceStatus

@@ -20,7 +20,6 @@ from typing import Any, ClassVar
 import pytest
 from agent_cdp import EventScope, ScopeGroup
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser import recorder as recorder_module
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
@@ -28,6 +27,7 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
 )
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.recorder import (
     PAUSE_OWNER_GRACE_S,
     RESUMED_REPLY_MARGIN_S,
@@ -42,7 +42,7 @@ from spectragent.core.capabilities.browser.recorder import (
     RecorderParticipantBase,
     RecorderTarget,
 )
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.schemas.action import Action
 from spectragent.schemas.provider_session import ProviderSession
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient

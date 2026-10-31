@@ -40,14 +40,14 @@ from typing import Any
 import pytest
 
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import (
     FRAME_HANDLE_BASE,
     DOMElementNode,
     DOMState,
 )
-from spectragent.core.capabilities.browser.input import WindMouseTrajectory
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 from spectragent.core.capabilities.browser.watchdogs.dom_watchdog import DOMWatchdog
 from spectragent.schemas.action import Action, ActionResult
 

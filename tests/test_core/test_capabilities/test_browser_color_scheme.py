@@ -9,20 +9,18 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import ReplayLogArchiver, StorageArchiver
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.color_scheme import (
     COLOR_SCHEME_WORLD,
     measure_color_scheme,
 )
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
-from spectragent.core.capabilities.browser.replay import (
-    ArchiveNetworkSource,
-    NoneReplayability,
-    PinnedReplayability,
-)
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.none import NoneReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
 from tests._helpers.replay_archive import RecordingScript

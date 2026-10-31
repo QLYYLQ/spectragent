@@ -27,15 +27,11 @@ def collect_registrars() -> dict[str, type]:
     from spectragent.core.capabilities.browser.dom.serializers import (
         DOMSerializerRegistrar,
     )
-    from spectragent.core.capabilities.browser.input import (
-        MouseTrajectoryRegistrar,
-        TypingRhythmRegistrar,
-    )
-    from spectragent.core.capabilities.browser.replay import (
-        MissPolicyRegistrar,
-        NetworkSourceRegistrar,
-        ReplayabilityRegistrar,
-    )
+    from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmRegistrar
+    from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryRegistrar
+    from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyRegistrar
+    from spectragent.core.capabilities.browser.replay.network_source import NetworkSourceRegistrar
+    from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityRegistrar
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
     from spectragent.core.data_loader.task.step_selector import StepSelectorRegistrar

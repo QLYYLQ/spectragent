@@ -20,8 +20,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
-from spectragent.core.capabilities.browser.capability import CAPTURE_PROBE_ROOM_S
+from spectragent.core.capabilities.browser.capability import CAPTURE_PROBE_ROOM_S, BrowserCapability
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, DOMObs
 from spectragent.core.capabilities.browser.watchdogs import base as watchdog_base
 from spectragent.core.capabilities.browser.watchdogs import dom_watchdog, screenshot_watchdog

@@ -36,7 +36,7 @@ class TestRegistrar:
         assert "local_chrome" in keys
 
     def test_browser_capability_wiring_matches_registrar(self) -> None:
-        from spectragent.core.capabilities.browser import BrowserCapability
+        from spectragent.core.capabilities.browser.capability import BrowserCapability
 
         wiring = BrowserCapability.__wiring__
         backend_wiring = wiring.get("backend")
@@ -98,13 +98,13 @@ class TestComposerInjectsBackend:
         from spectragent.core.capabilities.browser.dom.serializers import (
             DOMSerializerRegistrar,
         )
-        from spectragent.core.capabilities.browser.input import (
-            MouseTrajectoryRegistrar,
-            TypingRhythmRegistrar,
-        )
-        from spectragent.core.capabilities.browser.replay import (
-            MissPolicyRegistrar,
+        from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmRegistrar
+        from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryRegistrar
+        from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyRegistrar
+        from spectragent.core.capabilities.browser.replay.network_source import (
             NetworkSourceRegistrar,
+        )
+        from spectragent.core.capabilities.browser.replay.replayability import (
             ReplayabilityRegistrar,
         )
         from spectragent.core.composer import ConfigComposer
@@ -190,13 +190,13 @@ class TestComposerInjectsBackend:
         from spectragent.core.capabilities.browser.dom.serializers import (
             DOMSerializerRegistrar,
         )
-        from spectragent.core.capabilities.browser.input import (
-            MouseTrajectoryRegistrar,
-            TypingRhythmRegistrar,
-        )
-        from spectragent.core.capabilities.browser.replay import (
-            MissPolicyRegistrar,
+        from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmRegistrar
+        from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryRegistrar
+        from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyRegistrar
+        from spectragent.core.capabilities.browser.replay.network_source import (
             NetworkSourceRegistrar,
+        )
+        from spectragent.core.capabilities.browser.replay.replayability import (
             ReplayabilityRegistrar,
         )
         from spectragent.core.composer import ConfigComposer

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.capability import (
+    BrowserCapability,
     _ObserveCycleCache,
 )
 from spectragent.core.capabilities.browser.observations import (

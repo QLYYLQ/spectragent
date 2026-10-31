@@ -42,7 +42,8 @@ import pytest
 
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.capability import BrowserCapability
-from spectragent.core.capabilities.browser.input import HumanRhythm, InstantRhythm
+from spectragent.core.capabilities.browser.input.human_rhythm import HumanRhythm
+from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.schemas.action import Action, ActionResult
 from tests._helpers.archive_bench import FIXTURE_SETTLE_QUIET_MS
 from tests._helpers.fixture_site import FixtureSite, keys_point
