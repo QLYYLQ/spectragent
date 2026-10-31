@@ -619,6 +619,22 @@ except ComposeError as exc:
     assert "capability packages: browser" in refused["message"]
 
 
+def test_an_archiver_section_says_where_archivers_are_written() -> None:
+    # Naming the capability that provides archivers would only meet the
+    # inline_only_layer refusal, so this refusal says where they go instead.
+    raw = {
+        "llm": [{"model_type": "openai", "model": "m", "provider": {"name": "direct"}}],
+        "archiver": [],
+    }
+    with pytest.raises(
+        ComposeError, match=r"written under hook\[trace_writer\]\.archive"
+    ) as refused:
+        ConfigComposer.for_config(raw).compose(raw)
+    issue = refused.value.issue
+    assert issue is not None and (issue.code, issue.path) == ("no_implementation", "archiver")
+    assert issue.remedy.startswith("Leave it out, or write its instances under hook[trace_writer]")
+
+
 _GENERATE = """
 import json
 

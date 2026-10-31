@@ -318,7 +318,11 @@ class ConfigComposer:
             for layer, registrar in registrars.items()
             if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
         }
-        self._left_out = frozenset(registrars) - frozenset(self._registrars)
+        self._left_out = {
+            layer: registrar
+            for layer, registrar in registrars.items()
+            if layer not in self._registrars
+        }
         if not self._registrars:
             raise ComposeError("ConfigComposer requires a registrar with an implementation.")
         self._catalog = build_configuration_catalog(self._registrars, coverage=coverage)
@@ -387,7 +391,7 @@ class ConfigComposer:
         sections = raw
         if isinstance(raw, Mapping):
             problems = [
-                _Problem(str(layer), self._left_out_problem(str(layer)), True)
+                self._left_out_problem(str(layer))
                 for layer in sorted(raw, key=str)
                 if layer in self._left_out
             ]
@@ -404,13 +408,40 @@ class ConfigComposer:
             raise _refusal(problems)
         return cfg
 
-    def _left_out_problem(self, layer: str) -> str:
+    def _left_out_problem(self, layer: str) -> _Problem:
         """Why a written section of *layer*, which this run left out, has nowhere to go."""
-        return (
+        if self._left_out[layer].inline_only:
+            # Naming a capability that provides it would only meet the
+            # inline_only_layer refusal: say where its instances are written.
+            where = self._receptors_of(layer) or "the receptors that hold it"
+            return _Problem(
+                layer,
+                f"the {layer!r} layer takes no top-level section: its instances are written "
+                f"under {where}, and come from the package of a capability the configuration "
+                f"names",
+                True,
+                f"Leave it out, or write its instances under {where} and name the capability "
+                f"that provides them",
+            )
+        return _Problem(
+            layer,
             f"the configuration writes the {layer!r} section, and none of the packages it "
             f"names implements that layer. Environments, actions and archivers come from the "
             f"package of a capability the configuration names, agents from their family's "
-            f"package: name the one this section needs"
+            f"package: name the one this section needs",
+            True,
+        )
+
+    def _receptors_of(self, layer: str) -> str:
+        """Where this schema's components hold instances of *layer*: ``hook[trace_writer].archive``."""
+        return ", ".join(
+            f"{owner}[{key}].{name}"
+            for owner, entries in self._catalog.components.items()
+            for key, definition in entries.items()
+            for name, entry in wiring_slots(definition.implementation).items()
+            if entry.slot is not None
+            and not entry.declare_only
+            and entry.spec.registry_name == layer
         )
 
     # -- Per-instance assembly ---------------------------------------
@@ -932,6 +963,7 @@ class _Problem:
     message: str
     #: Whether it is an implementation this run does not hold.
     unimplemented: bool
+    remedy: str = "Leave it out, or name the package that provides it"
 
     @classmethod
     def of(cls, error: ErrorDetails, raw: object) -> _Problem:
@@ -957,7 +989,7 @@ def _refusal(problems: list[_Problem]) -> ComposeError:
             "no_implementation",
             first.path,
             f"{first.message[0].upper()}{first.message[1:]}.",
-            f"Leave it out, or name the package that provides it ({known}).",
+            f"{first.remedy} ({known}).",
         ),
     )
 
