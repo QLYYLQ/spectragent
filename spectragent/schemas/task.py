@@ -65,7 +65,7 @@ class SetupBase(TaskSetupRegistrar.bridge(BaseModel)):  # type: ignore[misc]
     silently dropped.
     """
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    model_config = ConfigDict(extra="allow")
 
     __abstract__ = True
     #: The ``setup_type`` this setup registers under.
