@@ -314,6 +314,26 @@ def test_an_action_without_a_verb_keeps_its_recorded_name() -> None:
     )
 
 
+def test_a_scroll_with_a_start_is_drawn_there_and_leaves_the_pointer_there() -> None:
+    """The pointer moves to the start before the wheel: a page scroll after it turns there too."""
+    record = StepRecord(
+        step=0,
+        actions=[
+            Action(
+                name="browser.scroll", params={"direction": "down", "start_x": 20, "start_y": 10}
+            ),
+            Action(name="browser.scroll", params={"direction": "up"}),
+        ],
+        action_results=[ActionResult(success=True), ActionResult(success=True)],
+    )
+    grid = PointGrid("screenshot_pixels", SIZE[0], SIZE[1], *VIEWPORT)
+    started, after = step_marks(record, Geometry(grid, SIZE[0], SIZE[1]), pointer=(6, 7))
+    # (20, 10) CSS px at device scale 2
+    assert (started.kind, started.x, started.y, started.direction) == ("scroll", 40, 20, "down")
+    assert started.text == "在 (20, 10) 向下滚动"
+    assert (after.kind, after.x, after.y, after.text) == ("scroll", 40, 20, "向上滚动")
+
+
 def test_an_action_the_step_skipped_is_listed_but_not_drawn() -> None:
     """The Loop stopped the step at the failed click; the second click never ran."""
 

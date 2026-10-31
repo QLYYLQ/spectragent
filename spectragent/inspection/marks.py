@@ -20,9 +20,11 @@ input was actually dispatched) when there is one, else the point its
 parameters named. Which params are a point, and which name an element, is
 what the recorded action's registered ``Params`` declare
 (``core/actions/params.py``: ``point_params``, ``element_params``); a drag
-presses at its first point and releases at its second. A page scroll is dispatched where the pointer was, so its
-mark sits at the pointer position the step's observation recorded, moved by
-the pointer actions before it in the same step; unknown is left unknown.
+presses at its first point and releases at its second. A scroll given a start
+point is drawn there, where the pointer moved before the wheel turned. A page
+scroll without one is dispatched where the pointer was, so its mark sits at
+the pointer position the step's observation recorded, moved by the pointer
+actions before it in the same step; unknown is left unknown.
 """
 
 from __future__ import annotations
@@ -542,6 +544,8 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             direction = effect.direction
         word = _DIRECTIONS.get(str(direction), "")
         line = f"向{word}{verb}" if word else verb
+        if first is not None:
+            line = f"在 {_xy(first)} {line}"
         amount = _number(params.get("amount"))
         delta = effect.delta if isinstance(effect, ScrollEffect) else None
         if delta is not None and isinstance(effect, ScrollEffect):
@@ -552,6 +556,10 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             line += f" {amount} 像素"
         if isinstance(effect, ScrollEffect) and effect.at_boundary is True:
             line += f"，已到{_EDGES.get(effect.direction, '边缘')}"
+        shown = direction if direction in _DIRECTIONS else None
+        if first is not None:
+            # The pointer moved to the start and the wheel turned there.
+            return _Css("scroll", line, point=first, direction=shown, pointer_after=first)
         by_element = element is not None
         point = None if by_element else pointer
         unplaced = (
@@ -565,7 +573,7 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             "scroll",
             line,
             point=point,
-            direction=direction if direction in _DIRECTIONS else None,
+            direction=shown,
             unplaced=unplaced,
             pointer_after=None if by_element else ...,
         )

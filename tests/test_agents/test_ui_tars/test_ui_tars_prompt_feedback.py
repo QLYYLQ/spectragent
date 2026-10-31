@@ -52,7 +52,7 @@ def observation(*, platform: str = "macos", history: list[StepRecord] | None = N
 def seed(agent: UITarsAgent, task: str = TASK):
     return agent.prepare(
         task=task,
-        action_space=wired_space(UITarsAgent),
+        action_space=wired_space(UITarsAgent, coordinate_space=agent.coordinate_space),
         execution_limits=ExecutionLimits(max_actions_per_step=4),
     )
 

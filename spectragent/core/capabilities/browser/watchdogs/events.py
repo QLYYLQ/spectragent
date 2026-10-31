@@ -220,9 +220,13 @@ class ScrollEvent(BaseEvent[dict[str, Any] | None]):
 
     direction: str  # "up" | "down" | "left" | "right"
     amount: int = 300  # pixels
-    backend_node_id: int | None = None  # None = scroll viewport
+    backend_node_id: int | None = None  # None = no element: at the start point, else the pointer
     #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
     session_id: str | None = None
+    #: Where the pointer moves before the wheel turns, CSS px of the viewport;
+    #: ``None``: the wheel turns where the pointer is.
+    start_x: int | None = None
+    start_y: int | None = None
     event_timeout: float = 8.0
     execution_timeout: float = 8.0
 

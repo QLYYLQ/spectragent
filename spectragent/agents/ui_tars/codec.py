@@ -86,6 +86,9 @@ class Argument:
             says. Two spellings of one argument in one call are refused.
         required: A call without it is refused. An optional text reads as
             ``''`` when absent and is left out of a written call when empty.
+            An optional point fills one of the optional points its action
+            declares: absent, the action has no such point; and a written call
+            leaves it out when the action states none.
         choices: The values a ``choice`` takes.
     """
 
@@ -136,8 +139,8 @@ def _verb(name: str, action: str, *arguments: Argument) -> Verb:
     return Verb(name, action, arguments)
 
 
-def _point(name: str, example: str, *spellings: str) -> Argument:
-    return Argument(name, "point", example, spellings=spellings)
+def _point(name: str, example: str, *spellings: str, required: bool = True) -> Argument:
+    return Argument(name, "point", example, spellings=spellings, required=required)
 
 
 def _text(name: str, example: str, param: str, *, required: bool = True) -> Argument:
@@ -161,11 +164,15 @@ def _keys(name: str, example: str, param: str, *spellings: str) -> Argument:
 #: - ``type``: UI-TARS says ``content``, the action reads ``text``. Required:
 #:   with ``clear_by_default`` a missing text would clear the field and type
 #:   nothing, reported as a success.
-#: - ``scroll``: a direction and nothing else. Not a point (ScrollAction
-#:   scrolls under the pointer or a selector-map element, and a vision-only run
-#:   has none), not an amount (``ScrollAction.default_amount`` is the
-#:   capability's; the agent declares that it can scroll). Likewise ``wait``'s
-#:   length is ``WaitAction.default_seconds``.
+#: - ``scroll``: a direction, and the point the scroll starts at, ``start_box``
+#:   as UI-TARS writes it on desktop and mobile alike. ``point`` reads too: the
+#:   prompt spells every other point that way, and UI-TARS-1.5 writes
+#:   ``scroll(point=...)``. The point is optional, as the action's ``start``
+#:   is: a call without it scrolls where the pointer is, and an action without
+#:   one is written without it. Not an amount
+#:   (``ScrollAction.default_amount`` is the capability's; the agent declares
+#:   that it can scroll). Likewise ``wait``'s length is
+#:   ``WaitAction.default_seconds``.
 #: - ``finished``: ``done`` reads ``extracted_content``. The task claim:
 #:   ``finished`` has no argument that says whether the task was accomplished
 #:   (a model ends with ``finished(content='无法完成…')`` too), so it reads back
@@ -182,7 +189,12 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
                 _text("content", "'text to type'", "text"),
                 _point("point", "'(x, y)'", "start_box"),
             ),
-            _verb("scroll", "scroll", _choice("direction", "direction", DIRECTIONS)),
+            _verb(
+                "scroll",
+                "scroll",
+                _point("start_box", "'(x, y)'", "point", required=False),
+                _choice("direction", "direction", DIRECTIONS),
+            ),
             _verb("hotkey", "send_keys", _keys("key", "'ctrl+a'", "keys", "keys")),
             _verb(
                 "drag",
@@ -230,21 +242,38 @@ class BoundVerb:
     def bind(cls, verb: Verb, descriptor: ActionDescriptor) -> BoundVerb:
         """*verb* on *descriptor*: its point arguments matched, in order, to the points the action declares.
 
+        Required and optional are counted apart: a required point argument
+        fills a point the action requires, an optional one a point it can be
+        given without (``ActionDescriptor.optional_points``).
+
         Raises:
-            ValueError: The verb writes a different number of points than the
-                action declares (``PointAxis`` on its ``Params``): its points
-                would have no params to fill, or a point the action takes
-                could never be written.
+            ValueError: The verb writes a different number of required or of
+                optional points than the action declares (``PointAxis`` on its
+                ``Params``): its points would have no params to fill, a point
+                the action takes could never be written, or one it requires
+                could be left out.
         """
-        arguments = [a for a in verb.arguments if a.kind == "point"]
-        if len(arguments) != len(descriptor.point_params):
+        optional = descriptor.optional_points
+        required = [pair for pair in descriptor.point_params if pair not in optional]
+        points = [a for a in verb.arguments if a.kind == "point"]
+        required_args = [a for a in points if a.required]
+        optional_args = [a for a in points if not a.required]
+        if len(required_args) != len(required) or len(optional_args) != len(optional):
             raise ValueError(
-                f"UI-TARS's {verb.name}() writes {len(arguments)} point(s), and "
-                f"{descriptor.name}, the action it runs as here, declares "
-                f"{len(descriptor.point_params)} (PointAxis on its Params). A verb's points "
-                f"fill the points its action declares, so the two have to agree."
+                f"UI-TARS's {verb.name}() writes {len(required_args)} point(s) and "
+                f"{len(optional_args)} optional point(s), and {descriptor.name}, the action it "
+                f"runs as here, declares {len(required)} and {len(optional)} optional (PointAxis "
+                f"on its Params). A verb's points fill the points its action declares, required "
+                f"with required and optional with optional, so the two have to agree."
             )
-        return cls(verb, descriptor, tuple(zip(arguments, descriptor.point_params, strict=True)))
+        return cls(
+            verb,
+            descriptor,
+            (
+                *zip(required_args, required, strict=True),
+                *zip(optional_args, optional, strict=True),
+            ),
+        )
 
     @property
     def params(self) -> tuple[str, ...]:
@@ -258,14 +287,16 @@ class BoundVerb:
         """The action params a call's arguments say, its points as written.
 
         Points are read first, so a call missing both a point and its text
-        says the point is missing.
+        says the point is missing. An optional point the call leaves out
+        fills no param.
 
         Raises:
-            _VerbError: A required argument is missing or malformed.
+            _VerbError: A required argument is missing, or an argument is malformed.
         """
         params: dict[str, Any] = {}
         for argument, (x_key, y_key) in self.points:
-            params[x_key], params[y_key] = _read_point(kwargs, argument)
+            if argument.required or _written(kwargs, argument):
+                params[x_key], params[y_key] = _read_point(kwargs, argument)
         for argument in self.verb.arguments:
             if argument.param is not None:
                 params[argument.param] = _READ[argument.kind](kwargs, argument, self.verb)
@@ -274,6 +305,8 @@ class BoundVerb:
     def write(self, params: Mapping[str, Any]) -> str:
         """The call text for *params*, the inverse of :meth:`read`.
 
+        An optional point *params* does not state (neither param set) is left out.
+
         Raises:
             _Unwritable: A value the call syntax cannot carry.
         """
@@ -281,7 +314,11 @@ class BoundVerb:
         written: list[str] = []
         for argument in self.verb.arguments:
             if argument.kind == "point":
-                text: str | None = _point_text(params, *pairs[argument])
+                x_key, y_key = pairs[argument]
+                stated = params.get(x_key) is not None or params.get(y_key) is not None
+                text: str | None = (
+                    _point_text(params, x_key, y_key) if argument.required or stated else None
+                )
             else:
                 text = _WRITE[argument.kind](params, argument, self.verb)
             if text is not None:

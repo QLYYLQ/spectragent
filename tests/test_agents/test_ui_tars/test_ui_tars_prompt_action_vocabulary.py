@@ -175,6 +175,13 @@ async def _rendered(agent: UITarsAgent, space: Any, variant: Any) -> str:
 
 
 class TestPromptVocabulary:
+    async def test_every_variant_teaches_scroll_with_its_start(self, harness) -> None:
+        """Desktop and mobile alike: UI-TARS writes a scroll from the point it starts at."""
+        agent, _guard, extra = harness
+        for variant in _VARIANTS:
+            prompt = await _rendered(agent, extra["space"], variant)
+            assert "- scroll(start_box='(x, y)', direction='up|down|left|right')" in prompt, variant
+
     async def test_every_variant_teaches_a_non_empty_vocabulary(self, harness) -> None:
         """Guards the guard: an empty scrape makes everything below vacuous.
 

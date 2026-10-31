@@ -153,6 +153,23 @@ CLICK = "browser.click_coordinate"
             [_action("browser.scroll", direction="up")],
             "different",
         ),
+        # a scroll from a start: the same way from nearby starts is the same scroll
+        (
+            [_action("browser.scroll", direction="down", start_x=100, start_y=300)],
+            [_action("browser.scroll", direction="down", start_x=110, start_y=310)],
+            "same",
+        ),
+        # a sidebar and the page: possibly different containers
+        (
+            [_action("browser.scroll", direction="down", start_x=100, start_y=300)],
+            [_action("browser.scroll", direction="down", start_x=900, start_y=300)],
+            "unknown",
+        ),
+        (
+            [_action("browser.scroll", direction="down", start_x=100, start_y=300)],
+            [_action("browser.scroll", direction="down")],
+            "same",
+        ),
         ([_action("browser.wait")], [_action("browser.wait")], "same"),
         ([_action("browser.wait")], [_action("browser.click", hit=BUTTON)], "different"),
         (

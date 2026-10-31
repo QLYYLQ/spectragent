@@ -46,6 +46,7 @@ from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops.coordinate_frames import declared_space, framed_action_space
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import (
@@ -53,7 +54,6 @@ from spectragent.core.negotiation import (
     negotiate_observation,
     quoted_fragment_formats,
 )
-from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 
 MEMBERS: tuple[type[BrowserUseAgent], ...] = (BrowserUseDomAgent, BrowserUseDomVisionAgent)
@@ -138,12 +138,14 @@ def _run(
         *env.get_action_space(active_actions=active, fragments=fragments),
         *loop.get_action_space(active_actions=active, fragments=fragments),
     ]
-    action_space, guard = build_guarded_act(
+    guarded, _guard = build_guarded_act(
         env.act, descriptors, None, bindings=actions.action_bindings, loop_act=loop.execute_action
     )
+    # Framed on the agent's declared grid, as ``AgentRuntime.prepare`` frames it.
+    action_space = framed_action_space(guarded, declared_space(agent))
     agent.prepare(
         task="t",
-        action_space=space_for(agent, action_space.descriptors),
+        action_space=action_space,
         execution_limits=ExecutionLimits(max_actions_per_step=1),
         fragment_formats=quoted_fragment_formats(agent, obs, env) or {},
     )

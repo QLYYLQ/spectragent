@@ -341,7 +341,7 @@ class TestAgentToCapabilityActionVocabulary:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         agent.prepare(
             task="t",
-            action_space=wired_space(UITarsAgent),
+            action_space=wired_space(UITarsAgent, coordinate_space=agent.coordinate_space),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             **formats_for(agent),
         )
@@ -430,7 +430,7 @@ class TestAgentToCapabilityActionVocabulary:
         ut = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         ut.prepare(
             task="t",
-            action_space=wired_space(UITarsAgent),
+            action_space=wired_space(UITarsAgent, coordinate_space=ut.coordinate_space),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             **formats_for(ut),
         )

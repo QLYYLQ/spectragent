@@ -188,11 +188,16 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
 
         Args:
             description: What the action does, in the prompt's words.
-            hints: Param name → the current value of the capability-side
-                knob governing it (``{"clear": "default=true"}``). YAML
-                knobs reach the model through the param's description;
-                they are never emitted as a schema ``default``, because
-                the default is the capability's to apply.
+            hints: Param name → what the param's parenthesis says after
+                ``optional``: the current value of the capability-side knob
+                governing it (``{"clear": "default=true"}``), or what the
+                param does where its description cannot say it. A point
+                param's description is its unit, which framing rewrites into
+                the model's grid while keeping the parenthesis
+                (``core/loops/coordinate_frames.py``), so ``scroll``'s start
+                says what it does here. YAML knobs reach the model through
+                the param's description; they are never emitted as a schema
+                ``default``, because the default is the capability's to apply.
             fragments: The run's active observation fragments. Optional
                 params whose fragment is missing are dropped from the
                 descriptor, so the prompt cannot teach a parameter this

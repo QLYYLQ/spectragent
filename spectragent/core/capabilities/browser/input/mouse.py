@@ -342,7 +342,9 @@ class HumanMouse:
         """Scroll at (x, y) by (dx, dy).
 
         Off: a single ``mouseWheel`` at (x, y) — legacy behavior. On: move the
-        cursor to (x, y) first, then split the delta into ease-out increments
+        cursor to (x, y) first, unless it is confirmed there already (a
+        started scroll's own move put it there, timed for the box under it),
+        then split the delta into ease-out increments
         (humans scroll in segments, decelerating into a stop) played on the
         same absolute-deadline schedule as :meth:`move_to`: the first step is
         due immediately and each later one ``wheel_step_delay_ms`` after the
@@ -369,7 +371,8 @@ class HumanMouse:
             self._x, self._y = x, y
             return
 
-        await self.move_to(x, y)
+        if self.observed_position != (x, y):
+            await self.move_to(x, y)
         steps = self._wheel_steps
         # The ease-out split, resolved up front so that merging two steps is
         # adding two increments rather than re-deriving the curve.

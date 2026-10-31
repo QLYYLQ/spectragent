@@ -447,6 +447,8 @@ class TestSwitchTab:
         Action(name="browser.send_keys", params={"keys": "Enter"}),
         Action(name="browser.wait", params={"seconds": 1}),
         Action(name="browser.drag", params={"start_x": 1, "start_y": 2, "end_x": 3, "end_y": 4}),
+        # A started scroll is a coordinate action: it names no element.
+        Action(name="browser.scroll", params={"direction": "down", "start_x": 1, "start_y": 2}),
     ],
     ids=lambda action: action.name,
 )

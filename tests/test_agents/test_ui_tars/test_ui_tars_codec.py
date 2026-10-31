@@ -6,7 +6,8 @@ run's action space and reads only its arguments and itself, so:
 - every verb writes an action and reads the text back into the same action,
   and the written text is a fixed point;
 - a verb's point arguments fill the points its action declares, under the
-  action's own param names (never names this module restates);
+  action's own param names (never names this module restates), required with
+  required and optional with optional;
 - a malformed reply or an unwritable action is refused with the same words
   as before the codec existed (the agent's tests pin the rest of them);
 - two codecs for one space say the same thing, in any call order.
@@ -16,12 +17,21 @@ from __future__ import annotations
 
 import dataclasses
 from types import SimpleNamespace
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.agents.ui_tars.codec import VERBS, UITarsCodec, read_thought
+from spectragent.agents.ui_tars.codec import (
+    VERBS,
+    Argument,
+    BoundVerb,
+    UITarsCodec,
+    Verb,
+    read_thought,
+)
+from spectragent.core.actions.params import PointAxis, params_view, point_params
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.loops.coordinate_frames import (
     actions_in_capability_units,
@@ -57,7 +67,40 @@ _SCREENSHOT = ScreenshotObs(
 
 
 def _codec(**kwargs: Any) -> UITarsCodec:
-    return UITarsCodec(wired_space(UITarsAgent), **kwargs)
+    """A codec for UI-TARS's space, framed on its grid as a run frames it."""
+    return UITarsCodec(wired_space(UITarsAgent, coordinate_space="screenshot_pixels"), **kwargs)
+
+
+class _PanParams(BaseModel):
+    """An action with an optional point: given, the action happens there."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["up", "down"]
+    at_x: Annotated[int | None, PointAxis("at", "x")] = None
+    at_y: Annotated[int | None, PointAxis("at", "y")] = None
+
+
+def _pan() -> ActionDescriptor:
+    prose, schema = params_view(_PanParams)
+    return ActionDescriptor(
+        name="desktop.pan",
+        description="Pan.",
+        params=prose,
+        params_schema=schema,
+        point_params=tuple(point_params(_PanParams)),
+    )
+
+
+#: A verb whose point is optional, as UI-TARS writes a scroll's start.
+_PAN_VERB = Verb(
+    "pan",
+    "pan",
+    (
+        Argument("start_box", "point", "'(x, y)'", required=False),
+        Argument("direction", "choice", "'up|down'", param="direction", choices=("up", "down")),
+    ),
+)
 
 
 def _action(codec: UITarsCodec, verb: str) -> Action:
@@ -105,7 +148,7 @@ class TestEveryVerbRoundTrips:
         assert written == {
             "click": "click(point='(640, 360)')",
             "type": "type(content='it\\'s \"done\"\\n東京 \\\\ x', point='(640, 360)')",
-            "scroll": "scroll(direction='left')",
+            "scroll": "scroll(start_box='(1, 2)', direction='left')",
             "hotkey": "hotkey(key='Control+Shift+t')",
             "drag": "drag(start_point='(1, 2)', end_point='(999, 700)')",
             "wait": "wait()",
@@ -121,6 +164,10 @@ class TestEveryVerbRoundTrips:
                 {"start_x": 1, "start_y": 2, "end_x": 999, "end_y": 1000},
             ),
             ("hotkey(keys='Control+Shift+t')", {"keys": "Control+Shift+t"}),
+            (
+                "scroll(point='(5, 6)', direction='down')",
+                {"start_x": 5, "start_y": 6, "direction": "down"},
+            ),
         ],
     )
     def test_the_other_spellings_read_as_the_taught_one(
@@ -128,6 +175,14 @@ class TestEveryVerbRoundTrips:
     ) -> None:
         (action,) = _codec().read_actions(f"Action: {reply}")
         assert action.params == params
+
+    def test_a_scroll_without_a_start_is_written_without_one(self) -> None:
+        """The start is optional both ways: an action without one has no start_box."""
+        codec = _codec()
+        text = codec.write_call(Action(name="browser.scroll", params={"direction": "down"}))
+        assert text == "scroll(direction='down')"
+        (back,) = codec.read_actions(f"Action: {text}")
+        assert back.params == {"direction": "down"}
 
     def test_the_grounding_template_writes_no_thought(self) -> None:
         codec = _codec(writes_thought=False)
@@ -157,6 +212,34 @@ class TestPointsAreTheActionsOwn:
             UITarsCodec(space_of([bare]))
         assert "browser.click_coordinate" in str(excinfo.value)
         assert "declares 0" in str(excinfo.value)
+
+    def test_an_optional_point_is_read_and_written_only_when_given(self) -> None:
+        bound = BoundVerb.bind(_PAN_VERB, _pan())
+        assert bound.read({"start_box": "(3, 4)", "direction": "up"}) == {
+            "at_x": 3,
+            "at_y": 4,
+            "direction": "up",
+        }
+        assert bound.read({"direction": "up"}) == {"direction": "up"}
+        assert bound.write({"at_x": 3, "at_y": 4, "direction": "up"}) == (
+            "pan(start_box='(3, 4)', direction='up')"
+        )
+        assert bound.write({"direction": "up"}) == "pan(direction='up')"
+
+    def test_required_and_optional_points_are_counted_apart(self) -> None:
+        """A required point the verb may leave out, or an optional one it must write, is refused."""
+        required = _pan().model_copy(
+            update={"params_schema": {**(_pan().params_schema or {}), "required": ["at_x", "at_y"]}}
+        )
+        with pytest.raises(ValueError, match=r"pan\(\) writes 0 point\(s\) and 1 optional") as info:
+            BoundVerb.bind(_PAN_VERB, required)
+        assert "declares 1 and 0 optional" in str(info.value)
+        writes_one = dataclasses.replace(
+            _PAN_VERB,
+            arguments=(dataclasses.replace(_PAN_VERB.arguments[0], required=True),),
+        )
+        with pytest.raises(ValueError, match=r"writes 1 point\(s\) and 0 optional"):
+            BoundVerb.bind(writes_one, _pan())
 
     def test_a_verb_whose_action_the_run_lacks_is_not_offered(self) -> None:
         narrow = UITarsCodec(space_of(browser_descriptors("wait")))
@@ -271,7 +354,8 @@ class TestUnwritableActionsAreNamed:
             (
                 Action(name="browser.scroll", params={"direction": "down", "amount": 300}),
                 ["amount"],
-                "scroll(direction='up|down|left|right') has no argument that carries it",
+                "scroll(start_box='(x, y)', direction='up|down|left|right') has no argument "
+                "that carries it",
             ),
             (
                 Action(

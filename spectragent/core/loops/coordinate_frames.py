@@ -15,7 +15,8 @@ declared grid laid over the screenshot that step showed the model.
   (:func:`framed_action_space`): when the space holds a point action it carries
   the declared grid, and each point param's descriptor text says what the
   model writes on it. A run without a point action never asks its model for a
-  point, so it is taught no grid and keeps the capability's units. A framed
+  point, so it is taught no grid and keeps the capability's units; an agent
+  that declares no grid is not offered an optional point at all. A framed
   run whose negotiated screenshot cannot report its geometry, or that
   negotiates none, could never place a point; ``prepare`` refuses it there
   (:func:`check_frame_geometry`), before a trace is opened.
@@ -160,21 +161,53 @@ def _framed_descriptor(descriptor: ActionDescriptor, space: CoordinateSpace) -> 
     return descriptor.model_copy(update={"params": params, "params_schema": schema})
 
 
+def _without_optional_points(descriptor: ActionDescriptor) -> ActionDescriptor:
+    """*descriptor* without its optional points, in the prose, the schema and ``point_params``."""
+    optional = descriptor.optional_points
+    schema = descriptor.params_schema
+    if not optional or schema is None:
+        return descriptor
+    dropped = {key for pair in optional for key in pair}
+    properties = {
+        key: node for key, node in (schema.get("properties") or {}).items() if key not in dropped
+    }
+    return descriptor.model_copy(
+        update={
+            "params": {key: text for key, text in descriptor.params.items() if key not in dropped},
+            "params_schema": {**schema, "properties": properties},
+            "point_params": tuple(p for p in descriptor.point_params if p not in optional),
+        }
+    )
+
+
 def framed_action_space(
     space: ActionSpace, coordinate_space: CoordinateSpace | None
 ) -> ActionSpace:
-    """*space* as the run's model is taught it: framed on *coordinate_space* when it has a point action.
+    """*space* as the run's model is taught it, on the grid its agent declares (*coordinate_space*).
 
-    The space then carries the grid (``ActionSpace.coordinate_space``) and each
-    point param's descriptor text — the prompt's and the schema's, one line —
-    says what the model writes on it, so every Agent and every error that
-    quotes a descriptor speaks the model's units. Names, bindings and which
-    params are points do not change, and the guard executes the capability's
-    units as before: the Loop converts on the way in. Unchanged when
-    *coordinate_space* is ``None`` or the space holds no point action — a run
-    whose model writes no point is taught no grid.
+    Framed when the space has a point action: it then carries the grid
+    (``ActionSpace.coordinate_space``) and each point param's descriptor text —
+    the prompt's and the schema's, one line — says what the model writes on
+    it, so every Agent and every error that quotes a descriptor speaks the
+    model's units. Names, bindings and which params are points do not change,
+    and the guard executes the capability's units as before: the Loop converts
+    on the way in. Unchanged when the space holds no point action — a run whose
+    model writes no point is taught no grid.
+
+    Without a grid (*coordinate_space* ``None``) the model is shown no
+    screenshot it could write a point on, so each optional point
+    (``ActionDescriptor.optional_points``, ``scroll``'s ``start``) is dropped
+    from its descriptor, as an optional param whose fragment is not active is
+    (``docs/architecture_design.md`` §4.5, "参数的含义"); the action stays, and
+    a required point stays in the capability's units.
     """
-    if coordinate_space is None or not any(d.point_params for d in space.descriptors):
+    if coordinate_space is None:
+        if not any(d.optional_points for d in space.descriptors):
+            return space
+        return space.model_copy(
+            update={"descriptors": [_without_optional_points(d) for d in space.descriptors]}
+        )
+    if not any(d.point_params for d in space.descriptors):
         return space
     return space.model_copy(
         update={

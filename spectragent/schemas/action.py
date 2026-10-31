@@ -196,6 +196,20 @@ class ActionDescriptor(BaseModel):
     point_params: tuple[tuple[str, str], ...] = ()
     element_params: tuple[str, ...] = ()
 
+    @property
+    def optional_points(self) -> tuple[tuple[str, str], ...]:
+        """The points of :attr:`point_params` the action can be given without (``scroll``'s ``start``).
+
+        Neither param of such a point is in :attr:`params_schema`'s
+        ``required``, which is rendered from the same ``Params``; a descriptor
+        without a schema states no optional point. A run whose agent declares
+        no grid drops them (``core/loops/coordinate_frames.py::framed_action_space``).
+        """
+        if self.params_schema is None:
+            return ()
+        required = set(self.params_schema.get("required") or ())
+        return tuple(pair for pair in self.point_params if required.isdisjoint(pair))
+
 
 class Action(BaseModel):
     """Parsed action from LLM output."""

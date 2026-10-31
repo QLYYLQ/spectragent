@@ -134,7 +134,11 @@ async def _agent(descriptors: list[ActionDescriptor] | None = None) -> UITarsAge
     agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
     agent.prepare(
         task="t",
-        action_space=space_of(descriptors) if descriptors is not None else wired_space(UITarsAgent),
+        action_space=(
+            space_of(descriptors, coordinate_space=agent.coordinate_space)
+            if descriptors is not None
+            else wired_space(UITarsAgent, coordinate_space=agent.coordinate_space)
+        ),
         execution_limits=ExecutionLimits(max_actions_per_step=6),
     )
     (

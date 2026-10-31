@@ -6,9 +6,10 @@ the screenshot reaches what an index cannot (a cross-origin iframe widget).
 The two click verbs stay distinct, so neither carries half-inapplicable
 params; typing and dragging stay index-addressed, where an index exists.
 
-A run that negotiates ``click_coordinate`` teaches its model a grid
-(``coordinate_space``) over the screenshot it is shown; the declaration is
-this member's whole part in coordinates (``core/loops/coordinate_frames.py``).
+A run with a point action (``click_coordinate``, or ``scroll`` and its
+optional start point) teaches its model a grid (``coordinate_space``) over the
+screenshot it is shown; the declaration is this member's whole part in
+coordinates (``core/loops/coordinate_frames.py``).
 """
 
 from __future__ import annotations
@@ -150,7 +151,8 @@ class BrowserUseDomVisionAgent(BrowserUseAgent):
         """The family's surface, then the grid paragraph when this run writes points.
 
         A run teaches a grid only when the framework framed its action space
-        on one: it negotiated ``click_coordinate``.
+        on one: it has a point action (``click_coordinate``, or ``scroll`` with
+        its optional start point).
         """
         surface = super()._render_surface(variant, fragment_formats)
         space = self._action_space.coordinate_space

@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Any, get_type_hints
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.core.actions._registrar import ActionRegistrar
@@ -86,10 +86,16 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "format": "png|jpeg|webp (optional)",
         "quality": "int (optional) -- jpeg/webp quality 0-100",
     },
+    # ``start_x`` / ``start_y`` added on purpose (user ruling 2026-10-31): an
+    # optional start point, which a run whose agent declares no grid never sees.
     "browser.scroll": {
         "direction": "up|down|left|right",
         "amount": "int (optional)",
         "index": "int (optional) -- scroll inside specific element",
+        "start_x": "int (optional, the pointer moves there, then the wheel turns; never "
+        "with index) -- CSS px from the viewport's left edge",
+        "start_y": "int (optional, the pointer moves there, then the wheel turns; never "
+        "with index) -- CSS px from the viewport's top edge",
     },
     "browser.select_dropdown": {
         "index": "int -- element index of the <select>",
@@ -353,6 +359,7 @@ _GOLDEN_POINTS: dict[str, tuple[tuple[str, str], ...]] = {
     "browser.click_coordinate": (("coordinate_x", "coordinate_y"),),
     "browser.type_coordinate": (("coordinate_x", "coordinate_y"),),
     "browser.drag": (("start_x", "start_y"), ("end_x", "end_y")),
+    "browser.scroll": (("start_x", "start_y"),),
 }
 _GOLDEN_ELEMENTS: dict[str, tuple[str, ...]] = {
     "browser.click": ("index",),
@@ -376,7 +383,8 @@ def test_a_point_is_a_pair_of_ints_and_an_address_requires_its_fragment(key: str
     params = ActionRegistrar.get(key).Params
     hints = get_type_hints(params)
     for x, y in point_params(params):
-        assert hints[x] is int and hints[y] is int, (key, x, y)
+        # An optional point (``scroll``'s start) is two optional ints.
+        assert hints[x] == hints[y] and hints[x] in (int, int | None), (key, x, y)
     fragments = param_fragments(params)
     for name in element_params(params):
         assert fragments.get(name), (key, name)
@@ -410,6 +418,49 @@ def test_a_point_declares_both_of_its_axes_once() -> None:
         point_params(OneAxis)
     with pytest.raises(TypeError, match="declares the x of point 'at' twice"):
         point_params(Twice)
+
+
+# ── A scroll's optional start point ───────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"direction": "down"},
+        {"direction": "down", "index": 3},
+        {"direction": "down", "start_x": 10, "start_y": 20},
+        {"direction": "down", "amount": 600, "start_x": 0, "start_y": 0},
+    ],
+)
+def test_a_scroll_takes_the_pointer_an_element_or_a_start_point(params: dict[str, Any]) -> None:
+    assert ActionRegistrar.get("browser.scroll").Params.model_validate(params)
+
+
+@pytest.mark.parametrize(
+    ("params", "said"),
+    [
+        ({"direction": "down", "start_x": 10}, "a scroll start needs both start_x and start_y"),
+        ({"direction": "down", "start_y": 20}, "a scroll start needs both start_x and start_y"),
+        (
+            {"direction": "down", "index": 3, "start_x": 10, "start_y": 20},
+            "scroll takes an element index or a start point, not both",
+        ),
+    ],
+)
+def test_a_scroll_start_is_both_axes_and_never_beside_an_index(
+    params: dict[str, Any], said: str
+) -> None:
+    with pytest.raises(ValidationError, match=said):
+        ActionRegistrar.get("browser.scroll").Params.model_validate(params)
+
+
+def test_the_start_is_the_scrolls_one_optional_point() -> None:
+    """Optional both ways: it is dropped when its agent declares no grid, never by fragment."""
+    scroll = _action("browser.scroll")
+    descriptor = scroll.descriptor(fragments=frozenset({"browser.screenshot"}))
+    assert descriptor.optional_points == (("start_x", "start_y"),)
+    assert "start_x" in descriptor.params and "index" not in descriptor.params
+    assert scroll.requires_fragments() == frozenset()
 
 
 @pytest.mark.parametrize("key", _KEYS)

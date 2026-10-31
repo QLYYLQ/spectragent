@@ -301,12 +301,15 @@ def params_view(
 
     Args:
         params: The action's ``Params`` model.
-        hints: Param name → the current value of the capability-side knob
-            that governs it (``"default=true"``). It lands in the prose
-            *and* in the JSON Schema's ``description`` — deliberately not
-            as a schema ``default``, because the default belongs to the
-            capability: a model that omits the param gets the knob's
-            value, whatever a schema default claimed.
+        hints: Param name → what the param's parenthesis says after
+            ``optional``: the current value of the capability-side knob that
+            governs it (``"default=true"``), or what the param does where its
+            description cannot say it (a point param's description is its
+            unit, which framing rewrites; the parenthesis stays). It lands in
+            the prose *and* in the JSON Schema's ``description`` —
+            deliberately not as a schema ``default``, because the default
+            belongs to the capability: a model that omits the param gets the
+            knob's value, whatever a schema default claimed.
         fragments: The run's active observation fragments, fully
             qualified. ``None`` means "no context" — nothing is dropped,
             which is what an introspection caller wants. Given a set,

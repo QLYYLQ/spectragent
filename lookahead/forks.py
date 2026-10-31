@@ -13,7 +13,8 @@ waits are ignored); the element a pointer hit (``same`` only for the same role
 and readable name at nearby points; ``different`` only when both hits are
 named interactive targets, since a click on a card's image and one on its
 title may be the same choice); typed text together with the field it went
-into; a scroll's direction, a navigation's URL; and the next observation's URL
+into; a scroll's direction, and its start when both have one (``same`` only at
+nearby starts); a navigation's URL; and the next observation's URL
 (a different page decides; a difference only in volatile query parameters is
 neutral; any other query difference leaves it ``unknown``). ``no_decision``
 when either side ended in an error without an action.
@@ -438,9 +439,12 @@ def compare_actions(branch: ActionRow, source: ActionRow) -> tuple[RuleVerdictVa
         value, other_value = branch.params.get(key), source.params.get(key)
         if value is None or other_value is None:
             return "unknown", f"{kind}: {key} is not recorded on both sides"
-        if _norm(value) == _norm(other_value):
-            return "same", f"{kind} with the same {key}"
-        return "different", f"{kind} with different {key}: {value!r} vs {other_value!r}"
+        if _norm(value) != _norm(other_value):
+            return "different", f"{kind} with different {key}: {value!r} vs {other_value!r}"
+        if kind == "scroll" and _near(branch, source) is False:
+            # Both scrolled from a start: the point decides what the wheel moved.
+            return "unknown", f"scroll {value} from starts far apart: possibly another container"
+        return "same", f"{kind} with the same {key}"
     if kind == "select_dropdown":
         chosen = branch.facts.get("selected")
         other_chosen = source.facts.get("selected")

@@ -86,7 +86,7 @@ def _make_agent(**overrides: Any) -> UITarsAgent:
     )
     agent.prepare(
         task="t",
-        action_space=wired_space(UITarsAgent),
+        action_space=wired_space(UITarsAgent, coordinate_space=agent.coordinate_space),
         execution_limits=ExecutionLimits(max_actions_per_step=6),
     )
     return agent
@@ -218,11 +218,15 @@ class TestVerbTableAndWiringAgree:
             assert taught <= set(verb.accepts), (name, taught - set(verb.accepts))
 
     def test_every_ui_tars_spelling_of_a_taught_point_is_accepted(self) -> None:
-        """``start_box`` / ``end_box`` are what fine-tuned UI-TARS weights write."""
+        """``start_box`` / ``end_box`` are what fine-tuned UI-TARS weights write.
+
+        A scroll's start is taught as they write it, and read as UI-TARS-1.5 writes it.
+        """
         written_by_ui_tars = {
             "point": {"start_box"},
             "start_point": {"start_box"},
             "end_point": {"end_box"},
+            "start_box": {"point"},
         }
         for name, verb in VERBS.items():
             for argument in verb.arguments:
@@ -467,33 +471,39 @@ class TestParseReactOutput:
         assert actions[0].name == "wait"
         assert actions[0].params == {}
 
-    def test_scroll_takes_a_direction_and_nothing_else(self) -> None:
+    def test_scroll_takes_a_direction_and_an_optional_start(self) -> None:
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
         actions = agent.parse_react_output("Action: scroll(direction='Down')")
         assert actions[0].name == "scroll"
         assert actions[0].params == {"direction": "down"}
+        (started,) = agent.parse_react_output(
+            "Action: scroll(start_box='<|box_start|>(640,360)<|box_end|>', direction='up')"
+        )
+        assert started.params == {"start_x": 640, "start_y": 360, "direction": "up"}
         with pytest.raises(ParseError, match="needs direction"):
             agent.parse_react_output("Action: scroll()")
         with pytest.raises(ParseError, match="needs direction"):
+            agent.parse_react_output("Action: scroll(start_box='(5, 5)')")
+        with pytest.raises(ParseError, match="needs direction"):
             agent.parse_react_output("Action: scroll(direction='sideways')")
 
-    def test_scroll_refuses_the_point_ui_tars_weights_write(self) -> None:
-        """Was silently dropped, so the model believed it scrolled at its point.
+    def test_scroll_reads_a_start_spelled_as_a_click_point(self) -> None:
+        """``point`` is a scroll's start too: the prompt spells points so, as UI-TARS-1.5 does.
 
-        ``ScrollAction`` has nowhere to put a point: it scrolls under the mouse
-        pointer or a selector-map element, and a vision-only run has no
-        selector map. The refusal names the argument and the taught form.
+        It was once silently dropped, so the model believed it scrolled at its
+        point. Two spellings of the one start are refused, naming the taught one.
         """
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
-        with pytest.raises(ParseError) as excinfo:
-            agent.parse_react_output("Action: scroll(point='(5, 5)', direction='down')")
-        assert excinfo.value.detail.endswith(
-            "scroll() does not take point; write it as scroll(direction='up|down|left|right')"
-        )
+        (action,) = agent.parse_react_output("Action: scroll(point='(5, 6)', direction='down')")
+        assert action.params == {"start_x": 5, "start_y": 6, "direction": "down"}
+        with pytest.raises(ParseError, match="start_box and point say the same thing"):
+            agent.parse_react_output(
+                "Action: scroll(start_box='(1, 2)', point='(3, 4)', direction='down')"
+            )
         with pytest.raises(ParseError, match="does not take amount"):
             agent.parse_react_output("Action: scroll(direction='down', amount=600)")
 
