@@ -6,7 +6,7 @@ import base64
 import hashlib
 import io
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urldefrag, urlsplit
 
 import yaml
@@ -27,6 +27,9 @@ from spectragent.replay_review.models import (
     TaskIdentity,
     ViewportImageReadings,
 )
+
+if TYPE_CHECKING:
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
 
 
 def _digest(data: bytes) -> str:
@@ -55,7 +58,7 @@ def _browser_config(value: dict[str, Any]) -> dict[str, Any]:
     return candidates[0]
 
 
-def _source_browser(config_path: Path) -> tuple[Any, dict[str, Any]]:
+def _source_browser(config_path: Path) -> tuple[BrowserCapability, dict[str, Any]]:
     """The source run's browser capability and recipe, built from its configuration file.
 
     Composed for the packages that file names. Only the browser block is
