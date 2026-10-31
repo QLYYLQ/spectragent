@@ -517,7 +517,7 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 **UI-TARS：胶水 agent 与无状态编解码**（用户 2026-10-23 的裁决：agent 是胶水；导出与分叉调用无状态的模型编解码）。UI-TARS 分成两个模块：
 
 - **Agent**（`agents/ui_tars/agent.py::UITarsAgent`）：`__wiring__` 声明观测与动词对应的动作（相对名），`coordinate_space` 声明模型写点的网格，`prepare` 构建系统提示（模板 `computer_use` / `grounding` / `mobile_use`；Available Actions 由编解码绑定到本 run 的动词生成，签名取动词的、说明与参数类型取 descriptor 的；输出合同按 Loop 的 `max_actions_per_step`；Coordinates 段按 `coordinate_space`），`build_react_prompt` / `build_restored_history` 构建每步消息。四个 ReAct slot（`parse_react_output`、`parse_react_thought`、`format_react_output`、`format_action_fact`）各一行，调编解码。Agent 的状态只剩本 run 的编解码、系统提示快照，以及本次执行第一次观测声明的平台。
-- **编解码**（`agents/ui_tars/codec.py`）：UI-TARS 模型训练时的文本协议，回复文本 ↔（thought，模型网格上的框架动作列表），以及动作 → 模型文本。**每个动词一条声明**（`VERBS`）：动词名、它执行的动作（相对 id，经本 run 的绑定解析，`executed_descriptor`）、按提示教的顺序列出的关键字参数（教的写法、UI-TARS 模型的其他写法如 `start_box` / `end_box`、值的种类 `point` / `text` / `choice` / `keys`、提示里的示例值、填哪个动作参数、是否必填）。同一条声明驱动读（回复 → 动作）、写（动作 → 调用）与提示里的签名，取代原来十四个手写的读写函数。**点参数不写参数名**：一个点参数按顺序填它的动作声明的点（`ActionDescriptor.point_params`，§4.5"参数的含义"），所以哪些参数是点只在动作上写一次；动词写的点数与动作声明的点数不同时，编解码在建的时候（`prepare`）就拒绝（`ValueError`，点名动词与动作），否则这个 run 会把网格上的点当成 capability 的单位执行。**任务结论**：`finished` 没有表达结论的参数，读出的动作没有结论（`reported_success` 为 `None`），带结论（true 或 false）的动作写不出来；说完成了的结论由导出层去掉（§4.15 round-trip 第 4 条）。动作参数里没有任何参数填的（`type` 的 `clear`、`scroll` 的 `amount`、`wait` 的 `seconds`）同样写不出来，抛 `UnrepresentableActionError`。
+- **编解码**（`agents/ui_tars/codec.py`）：UI-TARS 模型训练时的文本协议，回复文本 ↔（thought，模型网格上的框架动作列表），以及动作 → 模型文本。**每个动词一条声明**（`VERBS`）：动词名、它执行的动作（相对 id，经本 run 的绑定解析，`executed_descriptor`）、按提示教的顺序列出的关键字参数（教的写法、UI-TARS 模型的其他写法如 `start_box` / `end_box`、值的种类 `point` / `text` / `choice` / `keys`、提示里的示例值、填哪个动作参数、是否必填）。同一条声明驱动读（回复 → 动作）、写（动作 → 调用）与提示里的签名，取代原来十四个手写的读写函数。**点参数不写参数名**：一个点参数按顺序填它的动作声明的点（`ActionDescriptor.point_params`，§4.5"参数的含义"），所以哪些参数是点只在动作上写一次；动词写的点数与动作声明的点数不同时，编解码在建的时候（`prepare`）就拒绝（`ValueError`，点名动词与动作），否则这个 run 会把网格上的点当成 capability 的单位执行；必填的点与可选的点分开对数。可选的点在动词里也是可选的：`scroll` 动词带一个可选的 `start_box`（桌面与移动端的 UI-TARS 都写 `scroll(start_box, direction)`），写了就填动作的坐标点，没写就不填（用户 2026-10-31 的裁决，§4.5）。**任务结论**：`finished` 没有表达结论的参数，读出的动作没有结论（`reported_success` 为 `None`），带结论（true 或 false）的动作写不出来；说完成了的结论由导出层去掉（§4.15 round-trip 第 4 条）。动作参数里没有任何参数填的（`type` 的 `clear`、`scroll` 的 `amount`、`wait` 的 `seconds`）同样写不出来，抛 `UnrepresentableActionError`。
 - **无状态。** `UITarsCodec(space, writes_thought=...)` 是不可变对象，Agent 在 `prepare` 里按本 run 的有效 `ActionSpace` 建一次（`grounding` 模板不教 thought，所以不写 thought）：`read_actions(text)`、`write(actions, thought=...)`、`write_call(action)`、`write_fact(action)` 只读参数与这个对象，任何顺序、任何人调用都一样；`read_thought(text)` 是模块函数，不需要 run（导出在 teacher 的类上调 `parse_react_thought`）。`prepare` 之前的编解码不绑定任何动词（每个动词都是 unknown verb）。点始终是模型网格上的数，换算是框架的（上文"坐标系归框架"）。
 - **谁调用。** 实时 Loop、`BranchLoop` 重放源回复（经 Agent 的 `parse_react_output` slot，与实时步同一个入口、同一个 AOP 边界）、训练导出（学生的 `format_react_output` / `parse_react_output` / `format_action_fact`）都经 slot 调到这同一个编解码。导出与分叉不直接 import 编解码模块：它们对任何 agent 都成立（BrowserUse、Skyvern 用各自的格式解析），slot 已经只是一行调用，绕过 slot 只会把 UI-TARS 写进框架；导出包冻结（§4.15）。
 
@@ -1663,7 +1663,7 @@ class Params(BaseModel):
 
 **参数的含义：点与元素地址（2026-10-23）。** 哪些参数合起来是一个点、哪个参数指名一个元素，也只在参数上声明一次（`core/actions/params.py`），读的人一律读这一处，不再各自按参数名或动词另写一份（以前 `_x` / `_y` 的命名约定、BrowserUse 的坐标动作表、UI-TARS 动词的点参数、恢复校验的 index 动作名单、查看器标记里写死的参数名各写一遍）：
 
-- `PointAxis(point, axis)`：一个点的一条轴，写在两个参数上（`coordinate_x: Annotated[int, PointAxis("coordinate", "x")]`、`coordinate_y` 同理；`drag` 有 `start` 与 `end` 两个点）。`point_params(Params)` 按每个点第一条轴的声明顺序给出 `(x, y)` 参数对；一个点缺一条轴或同一条轴写两次是 `TypeError`。没有这个标记的参数不是点，名字像也不是。
+- `PointAxis(point, axis)`：一个点的一条轴，写在两个参数上（`coordinate_x: Annotated[int, PointAxis("coordinate", "x")]`、`coordinate_y` 同理；`drag` 有 `start` 与 `end` 两个点）。`point_params(Params)` 按每个点第一条轴的声明顺序给出 `(x, y)` 参数对；一个点缺一条轴或同一条轴写两次是 `TypeError`。没有这个标记的参数不是点，名字像也不是。可选的点（`scroll` 的坐标点）两条轴都是可选参数，`Params` 的校验器要求它们要么都给、要么都不给，只给一条轴是参数校验错误；同一个动作不能既指名元素又给点（`scroll` 的 `index` 与坐标点二选一）。本 run 没有坐标系（agent 没声明 `coordinate_space`）时，可选的点从 descriptor 里删掉，与上面"optional 参数依赖 F"同一做法：只看 DOM 的 `browser_use.dom`、`skyvern.dom` 看不到截图，它们的 `scroll` 照旧没有点（从 2026-10-31 的裁决按这条规则推出）。
 - `AddressesElement(fragment)`：参数的值指名这个 fragment 里的一个元素（`browser.click` 的 `index` 是 `browser.dom` 的 selector map 的键）。它是 `RequiresFragment` 的子类：元素离开它的 fragment 没有意义，所以上面的两级依赖照旧从这一个标记得出。`element_params(Params)` 给出这些参数。
 - **经 descriptor 交给 Agent。** `ActionBase.describe` 把两者随 prose 与 schema 一起渲染进 `ActionDescriptor.point_params` / `element_params`，并与参数一起收窄（视觉 run 的 `scroll` 没有 `index`，也就没有元素地址）。Agent 从 `prepare` 交给它的 `ActionSpace` 里读本 run 的 descriptor；读录下动作的一方（恢复的 capability 读它自己的动作实例，导出、查看器标记、lookahead 读注册的 `Params`，`core/actions/_registrar.py::registered_params`）读同一个标记。
 - **动作的含义：只等待（2026-10-25）。** 一个动作只让时间过去、不碰环境（`browser.wait`），写在动作类上一次：`ActionBase.only_waits: ClassVar[bool]`（默认 `False`，`WaitAction` 为 `True`）。读录下动作的一方经 `core/actions/_registrar.py::is_wait_action(name)` 按全限定名读它，从不按名字或后缀认；训练导出的 `wait_actions: drop_when_capped` 靠它认出要去掉的等待（§4.15 "等待动作"）。
@@ -1741,6 +1741,19 @@ class ScrollAction(ActionBase):
             AddressesElement("browser.dom"),
             Field(description="scroll inside specific element"),
         ] = None
+        # 可选的一个点（用户 2026-10-31 的裁决，浏览器与 Android 同一份参数）：两条轴要么都给、
+        # 要么都不给。浏览器先把指针移到这一点再滚轮，Android 从这一点开始滑；不给时浏览器在
+        # 当前指针处滚，Android 在屏幕中央滑。点照常经坐标系换算（§4.1 "坐标系归框架"）。
+        coordinate_x: Annotated[int | None, PointAxis("coordinate", "x")] = None
+        coordinate_y: Annotated[int | None, PointAxis("coordinate", "y")] = None
+
+        @model_validator(mode="after")
+        def _one_target(self) -> Self:
+            if (self.coordinate_x is None) != (self.coordinate_y is None):
+                raise ValueError("a scroll point needs both coordinate_x and coordinate_y")
+            if self.index is not None and self.coordinate_x is not None:
+                raise ValueError("scroll takes an element index or a point, not both")
+            return self
 
     # ⭐ capability 端可配置的副作用参数
     default_amount: Annotated[int, Field(description="Default scroll px")] = 300
@@ -2588,11 +2601,11 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
 | `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
-| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`type_coordinate`；`scroll` 落在哪里待定（见 §11.2）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、界面树（键的设计待定，见 §11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
+| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`type_coordinate`、`scroll`（带一个可选的坐标点，§4.5）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`（`android.ui_tree`，一个键，生产方另记，§11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
 | `tool_sandbox` | HTTP / in-process | `call_tool(name, params)`, `get_user_msg()`, `get_policy()` | `tool_result` | τ-bench, ToolBench, AppWorld |
 
-**相对名就是参数契约（用户 2026-10-31 的裁决）。** 协商只按名字绑定、不看参数（§4.3 的 capability-relative wiring），同名不同参要到协商通过之后的参数校验才报错。所以不同 capability 用同一个相对名，就必须是同一份语义与参数：Android 与浏览器语义、参数都相同的动作沿用浏览器的相对名，不同的另起名。UI-TARS 这类坐标 agent 的必需动作因此不改 `__wiring__` 就能协商；它的移动端动词要在 wiring 里把 `long_press`、`open_app`、`press_key` 加为可选动作。往焦点框里输入叫 `type_text`，因为浏览器的 `type` 按 DOM 索引寻址；系统键叫 `press_key`，因为返回键、主页键不是 `send_keys` 那种组合键。手势的时长（`drag`、`long_press`）照 §4.5 "YAML 驱动的行为调参" 是动作实例上的设置（与 `ScrollAction.default_amount` 一样），不是给模型的参数，所以 `drag` 与浏览器同参。`scroll` 落在哪里还没定（§14.5）。截图片段同理：Android 的截图是 `android.screenshot`，本地名 `screenshot`，坐标帧与 `RunTrace.screenshots` 都按这个本地名找截图（§4.1 "坐标系归框架"）。
+**相对名就是参数契约（用户 2026-10-31 的裁决）。** 协商只按名字绑定、不看参数（§4.3 的 capability-relative wiring），同名不同参要到协商通过之后的参数校验才报错。所以不同 capability 用同一个相对名，就必须是同一份语义与参数：Android 与浏览器语义、参数都相同的动作沿用浏览器的相对名，不同的另起名。UI-TARS 这类坐标 agent 的必需动作因此不改 `__wiring__` 就能协商；它的移动端动词要在 wiring 里把 `long_press`、`open_app`、`press_key` 加为可选动作。往焦点框里输入叫 `type_text`，因为浏览器的 `type` 按 DOM 索引寻址；系统键叫 `press_key`，因为返回键、主页键不是 `send_keys` 那种组合键。手势的时长（`drag`、`long_press`）照 §4.5 "YAML 驱动的行为调参" 是动作实例上的设置（与 `ScrollAction.default_amount` 一样），不是给模型的参数，所以 `drag` 与浏览器同参。`scroll` 也与浏览器同参，两边都带一个可选的坐标点（§4.5、§14.5）。截图片段同理：Android 的截图是 `android.screenshot`，本地名 `screenshot`，坐标帧与 `RunTrace.screenshots` 都按这个本地名找截图（§4.1 "坐标系归框架"）。
 
 **Capability 通过 `__wiring__` 声明 observation provides**：
 
@@ -4194,7 +4207,7 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 条目图片按 `source.kind` 解析，且只服务队列条目引用的图片，不提供任意文件接口：`observation` 走既有截图读取（Browser state 原图）；`archive` 只经 `RunTrace.archive_files(step, archiver)` 按 `name` 找到已提交文件（`step: null` 表示 trailing 证据，经 `iter_archive`），声明的 media type 与文件头都必须是 PNG/JPEG/GIF/WEBP。run 键与查看器的其它路径一样必须在根目录之内，并在输入时规范化为仓库的唯一写法（`./run`、`run/.`、`run/` 都是 `run`），同一个 run 只有一个身份。随手标注可附在任何 run 的任一步（已提交的步不会改变，因此随手标注不需要版本；只写备注时不读取截图）：备注和画在该步 Browser state 截图上的框（类别固定为 needed information / problem / other），写入 `_adhoc.jsonl`，带 `run`、`step`、`queue_id: "_adhoc"`，无 `item_id`，当前值按 `(run, step, annotator)`。
 
-**动作标记（2026-10-22）。** 用户要求截图上画出动作的鼠标位置：点击的点、拖动的起点到终点、输入的点和文字、滚动的位置和方向，否则“拖动只能靠猜”。唯一来源是 `spectragent/inspection/marks.py`：它经 `RunTrace` 读取一步已记录的动作与结果，把每个动作变成一个标记（编号即它在该步动作列表中的序号，从 1 起）和一行中文描述；查看器的运行页（`GET /api/marks?key&index`，该步动作画在该步截图上）与审阅页（`GET /api/review/marks?queue_id&item_id&role&queue_sha256`，只服务队列条目引用的图片）都只转发它的结果，lookahead 的队列构建也用它写条目里的动作文字。动作的中文措辞也只有这一份：`ACTION_VERBS`（按全限定名，每个浏览器动作一个动词）既是每行描述的开头，也是查看器步骤列表的标签，运行接口（`GET /api/run`）以 `action_verbs`（本 run 各步执行过的动作名 → 动词）转发；网页不另存措辞表，表里没有的动作照录下的名字显示。动作参数与测得效果是 CSS viewport 像素（§4.1），标记按所画图片自己的几何换算为图片像素：观测用截图 fragment 记录的图片尺寸与视口（`point_grid("screenshot_pixels", …)`，即 §4.1 的同一条换算），`browser.frames` 画面帧用帧自身的 PNG 尺寸与提交它的那一步观测的视口；任一尺寸未知时只列出动作、不画，并说明原因，绝不假设设备缩放为 1。点位优先取动作效果测得的点（实际派发输入的位置），否则取参数：哪些参数是点、哪个参数指名元素，读录下动作注册的 `Params` 上的标记（§4.5“参数的含义”；拖动按在第一个点、松开在第二个点），动作名按全限定名分派，fragment 按全限定键读，不按名字的最后一段；页面滚动在鼠标所在处派发，因此画在该步观测记录的鼠标位置，并随同一步里此前的指针动作移动，未知就是未知；敏感字段的输入文字不显示。没有位置的动作（按键、等待、完成等）只进图例。Loop 因同一步更早的动作失败而没执行的动作（`StepRecord.skipped_actions`，§4.1）照样列出，描述后面写“（没有执行：第 N 个动作失败）”，不画在图上，也不移动推算的指针；运行页的步详情在动作数量超限的提示旁另有一行，说第几个动作失败、最后几个动作没有执行。浏览器能力目前没有双击、右键和悬停动作，因此没有对应标记；拖动的移动轨迹没有被记录，只画起点到终点的箭头。
+**动作标记（2026-10-22）。** 用户要求截图上画出动作的鼠标位置：点击的点、拖动的起点到终点、输入的点和文字、滚动的位置和方向，否则“拖动只能靠猜”。唯一来源是 `spectragent/inspection/marks.py`：它经 `RunTrace` 读取一步已记录的动作与结果，把每个动作变成一个标记（编号即它在该步动作列表中的序号，从 1 起）和一行中文描述；查看器的运行页（`GET /api/marks?key&index`，该步动作画在该步截图上）与审阅页（`GET /api/review/marks?queue_id&item_id&role&queue_sha256`，只服务队列条目引用的图片）都只转发它的结果，lookahead 的队列构建也用它写条目里的动作文字。动作的中文措辞也只有这一份：`ACTION_VERBS`（按全限定名，每个浏览器动作一个动词）既是每行描述的开头，也是查看器步骤列表的标签，运行接口（`GET /api/run`）以 `action_verbs`（本 run 各步执行过的动作名 → 动词）转发；网页不另存措辞表，表里没有的动作照录下的名字显示。动作参数与测得效果是 CSS viewport 像素（§4.1），标记按所画图片自己的几何换算为图片像素：观测用截图 fragment 记录的图片尺寸与视口（`point_grid("screenshot_pixels", …)`，即 §4.1 的同一条换算），`browser.frames` 画面帧用帧自身的 PNG 尺寸与提交它的那一步观测的视口；任一尺寸未知时只列出动作、不画，并说明原因，绝不假设设备缩放为 1。点位优先取动作效果测得的点（实际派发输入的位置），否则取参数：哪些参数是点、哪个参数指名元素，读录下动作注册的 `Params` 上的标记（§4.5“参数的含义”；拖动按在第一个点、松开在第二个点），动作名按全限定名分派，fragment 按全限定键读，不按名字的最后一段；给了点的滚动画在那个点；不给点的页面滚动在鼠标所在处派发，因此画在该步观测记录的鼠标位置，并随同一步里此前的指针动作移动，未知就是未知；敏感字段的输入文字不显示。没有位置的动作（按键、等待、完成等）只进图例。Loop 因同一步更早的动作失败而没执行的动作（`StepRecord.skipped_actions`，§4.1）照样列出，描述后面写“（没有执行：第 N 个动作失败）”，不画在图上，也不移动推算的指针；运行页的步详情在动作数量超限的提示旁另有一行，说第几个动作失败、最后几个动作没有执行。浏览器能力目前没有双击、右键和悬停动作，因此没有对应标记；拖动的移动轨迹没有被记录，只画起点到终点的箭头。
 
 哪张图画谁的动作：`QueueImage.marks_from` 为 `null`（省略）时跟随图片来源——观测画该步在这一屏上决定的动作，before-action 画面帧只画它之前的那个动作（帧按 `env.act` 调用编号，与 `StepRecord.actions` 按名字顺序对齐，跳过被动作守卫拒绝、从未到达环境的动作），其它图片不画；`[]` 不画；列表 `[{run, step, label}]` 按顺序画每个指定步骤的全部动作，每项一种颜色，图例用 `label`，坐标一律换算到这张图的像素。同一位置附近的多个点在屏幕上错开显示，标记可以整体隐藏。
 
@@ -5366,7 +5379,7 @@ environment:
 | **新增 Memory** | 继承 `MemoryBase` | RAG-based memory |
 | **新增 Benchmark Loader** | 继承 `TaskLoaderBase` / `EvalLoaderBase` | SWE-bench, WebArena |
 | **新增 DOM Cleaner/Serializer** | 继承对应 Base | Markdown 序列化 |
-| **新增 Archiver（环境证据归档器）** | 继承所属 capability 的 archiver 基类（框架基类 `ArchiverBase`；browser 是 `BrowserArchiverBase`：声明 `needs`、实现 `open(ctx)` 返回运行期会话，§4.14），`__registry_key__ = "<capability>.<id>"`，旋钮写成 `Annotated` 构造参数（模块里不用 `from __future__ import annotations`），按需声明 `privacy_markers`；把键加进该 capability 的 `__wiring__["archiver"]`；capability 实现 `bind_archivers` / `collect_archive`（§4.9 归档契约）；把 capability 接入 `tests/_helpers/archive_contract.py` | `browser.network`、`browser.storage`、`browser.dom_raw`（M29）、`browser.replay_log`；以后的 `browser.rrweb`、`docker.fs_diff`、`android.ui_dump` |
+| **新增 Archiver（环境证据归档器）** | 继承所属 capability 的 archiver 基类（框架基类 `ArchiverBase`；browser 是 `BrowserArchiverBase`：声明 `needs`、实现 `open(ctx)` 返回运行期会话，§4.14），`__registry_key__ = "<capability>.<id>"`，旋钮写成 `Annotated` 构造参数（模块里不用 `from __future__ import annotations`），按需声明 `privacy_markers`；把键加进该 capability 的 `__wiring__["archiver"]`；capability 实现 `bind_archivers` / `collect_archive`（§4.9 归档契约）；把 capability 接入 `tests/_helpers/archive_contract.py` | `browser.network`、`browser.storage`、`browser.dom_raw`（M29）、`browser.replay_log`；以后的 `browser.rrweb`、`docker.fs_diff`、`android.state_dump` |
 | **新增回放档位** | 继承 `ReplayabilityBase`，实现 `ReplayabilityProtocol` 全部成员（`replayable`、`launch_args`、`launch_env`、`device_scale_factor`、`plan`），旋钮写成 `__init__` 关键字参数；启动开关与启动环境只从自己的设置生成，经 `LAUNCH_ARGS` 进浏览器（§4.14） | 以后的 `realistic` |
 | **新增网络来源 / miss 策略** | 继承 `NetworkSourceBase` / `MissPolicyBase`，设 `__registry_key__`，实现 Protocol 全部成员；网络来源是不是在拦截（`intercepts`）、要不要隔离是策略自己的属性，旁边不加布尔；带受体的策略不是 dataclass、手写 `__init__`（§4.14 "回放"） | 以后的 `har`（从 HAR 回放）、`lenient`（miss 时放宽到 L2 再试） |
 | **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
@@ -5602,7 +5615,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 **策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；包在自己的声明模块里列出这些注册表（§4.2.1），开局要求类的登记见 §4.10；注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
 
 - **provider**：见上一段。
-- **UI 树来源**：策略受体，也是实验身份的一项；阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务。每次观测实际跑的是哪个生产方要记下。片段键怎么设计还没定（§14.4）。
+- **UI 树来源**：策略受体，也是实验身份的一项；阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务。每次观测实际跑的是哪个生产方要记下：片段是一个键 `android.ui_tree`，生产方记在 run 的身份与每次观测的 `producer` 字段里（§14.4）。
 - **键入后端**：`input text` 只认键位表里的字符，中文要靠别的后端（例如服务里的输入法提交、`ACTION_SET_TEXT`）。当前输入法会改变截图内容，所以它与键入后端一起进实验身份。
 - **点按注入器**：取值至少有无障碍手势、shell 注入（助手的 `injectInputEvent`）和 provider 原生（模拟器 gRPC 的触摸）。选哪个只看保真度与稳定性，不看哪个更难被认出：无障碍手势与 shell 注入，app 都认得出来。每个动作实际用了哪个记进 trace。
 - **任务裁判**：`none` 或 `androidworld`，见下一段。
@@ -5612,18 +5625,17 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 **片段。**
 
 - `android.screenshot`：本地名 `screenshot`（§4.9 "相对名就是参数契约"），报告截图几何（`ScreenshotGeometry`）；手机上 viewport 通常就是点按用的物理分辨率。每一步记下截屏的生产方（`screencap`、助手、服务、模拟器 gRPC……）。
-- 界面树：字段对齐 `AndroidAccessibilityForest`；片段键的设计还没定（§14.4）。只看截图的 agent 不协商树，就不触发树的采集。
+- 界面树：一个键 `android.ui_tree`（本地名 `ui_tree`），字段对齐 `AndroidAccessibilityForest`（用户 2026-10-31 的裁决）。生产方（我们的无障碍服务或 `uiautomator dump`）是 UI 树来源这个策略受体的取值，进 run 的身份；每次观测另带一个 `producer` 字段，以防它在 run 中途变化（现在没有设计中途换来源：服务开着时不能调 `uiautomator dump`）。这与 `browser.dom` 跨 DOM cleaner 的做法相同：agent 不关心生产方，换来源不改 capability 提供什么。只看截图的 agent 不协商树，就不触发树的采集。
 - `android.capture_state`：继承 `CaptureStateFragment`（§4.4）；手机没有指针，`pointer` 是 `unavailable`；界面"静止"由 capability 定义。
 - `android.platform`：`operating_system` 加一个 `android` 取值，`InputPlatform` 从浏览器包挪到中立位置，渲染器补上触屏的键盘规则（没有 Control / Meta 那种全选，要考虑输入法）。实测的设备事实也随它走（下面"实验身份"）。
 - 前台 app 元数据：前台包名与 Activity 等，片段名随阶段 1 定。
 
-**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 落在哪里还没定（§14.5）；沿用 `scroll` 这个名字时，方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词，wiring 把对应的动作加为可选（§4.9）。
+**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`、`scroll`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 带一个可选的坐标点，与浏览器同一份参数（用户 2026-10-31 的裁决，§4.5）：给了点，Android 从那一点开始滑，不给时在屏幕中央滑；方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来；UI-TARS 写的 `scroll(start_box, direction)`（桌面与移动端都这么写）就落在这个点上，它的 `scroll` 动词随之加一个可选的 `start_box`（§4.1 UI-TARS 编解码）。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词，wiring 把对应的动作加为可选（§4.9）。
 
-**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定（界面树见 §14.4）。
+**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。
 
 **以后，或还没定的。**
 
-- 阶段 1 之前要用户定的两件：界面树的片段键（§14.4）、`scroll` 落在哪里（§14.5）。
 - 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。
 - 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
 - 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
@@ -5700,20 +5712,10 @@ DD 1.4 提到走独立的 A2A 通讯协议设计，不属于 agent loop 范畴�
 `model_session`，不属于 AgentLoop 策略，也不通过 YAML wire id 建立共享池。云浏览器 lite SDK 的
 生命周期审计仍延期；不因模型客户端改动扩大到浏览器后端。
 
-### 14.4 Android 界面树的片段键（阶段 1 之前要用户定）
+### 14.4 Android 界面树的片段键（已决定）
 
-UI 树来源是 Android capability 的一个策略受体，也是实验身份的一项；每次观测实际跑的是哪个生产方要记下（§11.2）。没定的是片段键：
+用户 2026-10-31 选了一个键：`android.ui_tree`，生产方进 run 的身份，每次观测另带 `producer` 字段（§11.2）。这改掉了调研第二、三轮"片段键标明生产方"的写法：生产方的信息一点不丢，只是从键挪进了片段字段和实验身份，agent 因此不关心生产方，换来源也不改 capability 提供什么，与 `browser.dom` 跨 DOM cleaner 相同。
 
-- **(a)** 一个键 `android.ui_tree`：生产方进 run 的身份；每次观测另带一个 `producer` 字段，以防中途退回别的来源时它变了。这与 `browser.dom` 跨 DOM cleaner 的做法相同：agent 不关心生产方，换来源不改 capability 提供什么。
-- **(b)** 每个生产方一个键（无障碍树、uiautomator 树各一个）。调研第二轮的设备端建议（2026-10-31 按建议裁决）写的就是"片段键标明生产方"，第三轮"trace 要记什么"一表沿用。代价是 agent 要声明自己读哪几个生产方的键。
+### 14.5 Android 的 `scroll` 落在哪里（已决定）
 
-建议 (a)。它偏离了调研里已经同意的写法，所以要用户回答。
-
-### 14.5 Android 的 `scroll` 落在哪里（阶段 1 之前要用户定）
-
-浏览器的 `scroll` 参数是 `direction`、`amount` 和只在有 DOM 时才有的 `index`，在指针所在处滚动；Android 没有指针，UI-TARS 移动端写的是 `scroll(start_box, direction)`。
-
-- **(a)** 给 `scroll` 加一个可选的坐标点，浏览器与 Android 一起加，两边仍是一份参数契约：浏览器先把指针移到那一点再滚轮，Android 从那一点开始滑；不给点时，浏览器在当前指针处滚，Android 在屏幕中央滑。
-- **(b)** Android 的这个动作另起名字。
-
-建议 (a)。要用户回答之后才能开始阶段 1。
+用户 2026-10-31 选了给 `scroll` 加一个可选的坐标点，浏览器与 Android 一起加，两边仍是一份参数契约（§4.5 的 `ScrollAction`、§11.2）：浏览器先把指针移到那一点再滚轮，Android 从那一点开始滑；不给点时，浏览器在当前指针处滚，Android 在屏幕中央滑。UI-TARS 写的 `scroll(start_box, direction)`（桌面与移动端都这么写）落在这个点上，它的 `scroll` 动词随之加一个可选的 `start_box`（§4.1）。两条轴要么都给、要么都不给，`index` 与点二选一；没有坐标系的 run（只看 DOM 的 `browser_use.dom`、`skyvern.dom`）不提供这个点（§4.5 "参数的含义"）。浏览器这一侧在 Android 阶段 1 之前实施（`docs/execution_dag.md` M26）。
