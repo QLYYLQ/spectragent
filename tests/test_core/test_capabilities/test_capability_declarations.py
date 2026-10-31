@@ -172,6 +172,18 @@ def test_declarations_reach_no_implementation(capability: CapabilityDeclarations
     )
 
 
+@pytest.mark.parametrize("capability", DECLARED, ids=lambda capability: capability.capability_id)
+def test_an_optional_extra_module_registers_nothing(capability: CapabilityDeclarations) -> None:
+    # Discovery never imports these modules, so a class they registered would
+    # never be registered at all.
+    for module in capability.optional_extra_modules:
+        assert _source(module) is not None, f"{module} names no module"
+        assert _registered_classes(module) == set(), (
+            f"{module} is in OPTIONAL_EXTRA_MODULES, so discovery never imports it, yet it "
+            f"defines registered classes"
+        )
+
+
 def test_the_scan_sees_what_the_browser_implementation_imports() -> None:
     # Positive control: the walk does reach the heavy packages it must keep out.
     _, third_party = _closure(f"{CAPABILITIES_PACKAGE}.browser.capability")
