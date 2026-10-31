@@ -23,7 +23,7 @@ import pytest
 import spectragent.core.composer as composer_module
 from spectragent import REPO_ROOT
 from spectragent.core.capabilities.browser.declarations import STRATEGY_AXES as BROWSER_AXES
-from spectragent.core.composer import ConfigComposer, UnknownPackageError
+from spectragent.core.composer import ComposeError, ConfigComposer, UnknownPackageError
 
 #: A second capability, complete enough to compose: its declarations, its
 #: capability and its own single-capability environment.
@@ -167,6 +167,10 @@ def test_a_configuration_naming_no_capability_composes_without_their_layers(
     assert facts["browser_capability"] is False and facts["families"] == []
 
 
+def _no_discovery(*packages: str, **names: object) -> None:
+    pytest.fail(f"discovery ran before the refusal: {packages} {names}")
+
+
 @pytest.mark.parametrize(
     ("raw", "code", "path"),
     [
@@ -188,15 +192,27 @@ def test_a_configuration_naming_no_capability_composes_without_their_layers(
 def test_a_name_with_no_package_is_refused_before_anything_is_imported(
     monkeypatch: pytest.MonkeyPatch, raw: dict[str, object], code: str, path: str
 ) -> None:
-    def discovered(*packages: str, **names: object) -> None:
-        pytest.fail(f"discovery ran before the refusal: {packages} {names}")
-
-    monkeypatch.setattr(composer_module, "discover_implementations", discovered)
+    monkeypatch.setattr(composer_module, "discover_implementations", _no_discovery)
     with pytest.raises(UnknownPackageError) as refused:
         ConfigComposer.for_config(raw)
     issue = refused.value.issue
     assert issue is not None and (issue.code, issue.path) == (code, path)
     assert path in str(refused.value)
+
+
+def test_an_agent_without_a_capability_is_refused_in_plain_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Its declarations name the capability's actions, which conscribe would
+    # report in its own terms ("registered: ['loop.done']").
+    monkeypatch.setattr(composer_module, "discover_implementations", _no_discovery)
+    raw = {"agent": [{"agent_id": "browser_use.dom", "agent_loop": {"loop_id": "react"}}]}
+    with pytest.raises(ComposeError, match="add an environment block") as refused:
+        ConfigComposer.for_config(raw)
+    issue = refused.value.issue
+    assert issue is not None
+    assert (issue.code, issue.path) == ("agent_without_capability", "agent[0].agent_id")
+    assert "capability packages: browser" in str(refused.value)
 
 
 def test_a_free_form_field_names_no_package() -> None:

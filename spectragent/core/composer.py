@@ -257,8 +257,24 @@ class ConfigComposer:
         Raises:
             UnknownPackageError: *raw* names a capability or a family that has
                 no package. No capability package or family is imported yet.
+            ComposeError: *raw* names an agent and no capability (issue
+                ``agent_without_capability``); nothing is imported yet either.
         """
         capabilities, agents = _named_packages(raw)
+        if agents and not capabilities:
+            agent_id, path = next(iter(agents.items()))
+            known = ", ".join(capability_ids()) or "none"
+            raise ComposeError(
+                f"{path}: the agent {agent_id!r} observes and acts through a capability, and "
+                f"the configuration names none: add an environment block holding one "
+                f"(capability packages: {known}).",
+                issue=CompositionIssue(
+                    "agent_without_capability",
+                    path,
+                    f"The agent {agent_id!r} has no capability to observe and act through.",
+                    f"Add an environment block holding a capability ({known}).",
+                ),
+            )
         discover_implementations(
             *FRAMEWORK_PACKAGES,
             capabilities=capabilities,
