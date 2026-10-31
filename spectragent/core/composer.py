@@ -49,6 +49,7 @@ from spectragent.core.composition_evidence import (
     WiringSource,
     configured_inputs,
     implementation_name,
+    safe_error_message,
 )
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
 from spectragent.core.registries import (
@@ -971,7 +972,7 @@ class _Problem:
     def of(cls, error: ErrorDetails, raw: object) -> _Problem:
         path = _location(error["loc"], raw)
         if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
-            return cls(path, error["msg"], False)
+            return cls(path, safe_error_message(error), False)
         context = error.get("ctx") or {}
         return cls(path, _unimplemented(context.get("layer"), context.get("field")), True)
 
