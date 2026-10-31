@@ -25,7 +25,7 @@ case: archiving has one switch).
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from types import MappingProxyType
@@ -59,6 +59,7 @@ from spectragent.core.registries import (
     collect_registrars,
     discover_every_implementation,
     discover_implementations,
+    unnamed_packages,
 )
 
 
@@ -277,12 +278,13 @@ class ConfigComposer:
                     f"Add an environment block holding a capability ({known}).",
                 ),
             )
-        discover_implementations(
-            *FRAMEWORK_PACKAGES,
-            capabilities=capabilities,
-            families={agent_family(agent_id) for agent_id in agents},
+        families = {agent_family(agent_id) for agent_id in agents}
+        discover_implementations(*FRAMEWORK_PACKAGES, capabilities=capabilities, families=families)
+        return cls(
+            registrars=collect_registrars(capabilities),
+            coverage="partial",
+            unnamed=unnamed_packages(capabilities, families),
         )
-        return cls(registrars=collect_registrars(capabilities), coverage="partial")
 
     @classmethod
     def for_every_package(cls) -> ConfigComposer:
@@ -290,7 +292,13 @@ class ConfigComposer:
         discover_every_implementation()
         return cls(registrars=collect_registrars())
 
-    def __init__(self, *, registrars: Mapping[str, Any], coverage: Coverage = "complete") -> None:
+    def __init__(
+        self,
+        *,
+        registrars: Mapping[str, Any],
+        coverage: Coverage = "complete",
+        unnamed: Collection[str] = (),
+    ) -> None:
         """Build the schema over the layers of *registrars* that have an implementation.
 
         Discovers nothing: which modules are imported is the caller's choice
@@ -298,10 +306,16 @@ class ConfigComposer:
         imported implementation is left out instead of refused, so a
         configuration that names no capability composes without one.
         *coverage* is conscribe's: ``"partial"`` when the imported
-        implementations are deliberately part of the catalog.
+        implementations are deliberately part of the catalog. An
+        implementation defined in one of the *unnamed* packages (a run's
+        other capability packages and agent families, which an earlier import
+        may have left registered) does not keep a layer in: which layers a run
+        holds, and so its resolved config and hash, follows what it names.
         """
         self._registrars = {
-            layer: registrar for layer, registrar in registrars.items() if registrar.get_all()
+            layer: registrar
+            for layer, registrar in registrars.items()
+            if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
         }
         self._left_out = frozenset(registrars) - frozenset(self._registrars)
         if not self._registrars:
@@ -396,20 +410,11 @@ class ConfigComposer:
             for error in exc.errors():
                 if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
                     continue
-                path = _location(error["loc"], raw)
                 context = error.get("ctx") or {}
-                layer, name = context.get("layer"), context.get("field")
-                known = _known_packages()
-                raise ComposeError(
-                    f"{path}: no package this configuration names provides any {layer!r}; "
-                    f"leave {name!r} out, or name the capability or agent family that does "
-                    f"({known}).",
-                    issue=CompositionIssue(
-                        "no_implementation",
-                        path,
-                        f"No package the configuration names provides any {layer!r}.",
-                        f"Leave {name!r} out, or name the package that provides it ({known}).",
-                    ),
+                raise _no_implementation(
+                    _location(error["loc"], raw),
+                    str(context.get("layer")),
+                    str(context.get("field")),
                 ) from exc
             raise
 
@@ -489,10 +494,14 @@ class ConfigComposer:
                 state.record_wiring(f"{path}.{name}", entry, "declaration_only")
                 continue
             value = getattr(cfg, name, None) if name in model_fields else None
-            if spec.registry_name in self._left_out and not _is_populated(value):
+            if spec.registry_name in self._left_out:
                 # Its layer has no implementation in this run (no named
-                # capability provides an archiver), and the value selects
-                # nothing: nothing could fill it, so the owner's default stands.
+                # capability provides an archiver). A value that selects
+                # nothing leaves the owner's default; one that names an
+                # implementation an earlier import left registered is refused
+                # as a fresh process refuses it at validation.
+                if _is_populated(value):
+                    raise _no_implementation(f"{path}.{name}", spec.registry_name, name)
                 retained.append((name, entry))
                 continue
             if spec.registry_name not in self._registrars:
@@ -901,6 +910,26 @@ def _named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
                     ),
                 )
     return capabilities, agents
+
+
+def _inside(module: str, packages: Collection[str]) -> bool:
+    """Whether *module* is one of *packages* or lies below one."""
+    return any(module == package or module.startswith(f"{package}.") for package in packages)
+
+
+def _no_implementation(path: str, layer: str, name: str) -> ComposeError:
+    """The refusal of a value in a field whose layer this run holds no implementation of."""
+    known = _known_packages()
+    return ComposeError(
+        f"{path}: no package this configuration names provides any {layer!r}; leave "
+        f"{name!r} out, or name the capability or agent family that does ({known}).",
+        issue=CompositionIssue(
+            "no_implementation",
+            path,
+            f"No package the configuration names provides any {layer!r}.",
+            f"Leave {name!r} out, or name the package that provides it ({known}).",
+        ),
+    )
 
 
 def _known_packages() -> str:

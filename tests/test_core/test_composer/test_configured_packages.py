@@ -379,6 +379,59 @@ def test_explain_says_what_a_run_cannot_provide(probe_root: Path) -> None:
     ]
 
 
+_DIGESTS = """
+import hashlib
+import json
+from pathlib import Path
+
+import yaml
+
+import spectragent.core.capabilities as capabilities
+
+capabilities.__path__.append({root!r})
+
+from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import discover_every_implementation
+from spectragent.core.trace.redaction import redact_config
+
+configs = {{name: yaml.safe_load(Path(name).read_text()) for name in {shipped!r}}}
+configs["ui_tars_on_probe"] = {raw}
+
+
+def digest(raw):
+    run = ConfigComposer.for_config(raw).compose(raw)
+    dump = redact_config(run.top_level_cfg, record_secrets=True)
+    text = json.dumps(dump, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+before = {{name: digest(raw) for name, raw in configs.items()}}
+discover_every_implementation()
+after = {{name: digest(raw) for name, raw in configs.items()}}
+print(json.dumps({{"before": before, "after": after}}))
+"""
+
+#: Shipped configurations that name no agent and no capability.
+_AGENT_LESS = (
+    "configs/flywheel/export_sft.yaml",
+    "configs/lookahead/judge_deepseek.yaml",
+    "configs/replay_review/jev_direct.yaml",
+    "configs/replay_review/jev_dmx.yaml",
+    "configs/replay_review/jev_openrouter.yaml",
+)
+
+
+def test_a_runs_configuration_hash_does_not_follow_import_history(probe_root: Path) -> None:
+    # Which layers a run holds follows the packages it names. Implementations an
+    # earlier import left registered (the browser's archivers, other families)
+    # must not add an empty section to the resolved config its hash covers, or
+    # one experiment becomes two groups in the viewer.
+    code = _DIGESTS.format(root=str(probe_root), shipped=_AGENT_LESS, raw=repr(_UI_TARS_ON_PROBE))
+    digests = cast(dict[str, dict[str, str]], _run(code))
+    assert set(digests["before"]) == {*_AGENT_LESS, "ui_tars_on_probe"}
+    assert digests["before"] == digests["after"]
+
+
 def test_a_misspelled_declared_key_fails_the_complete_builds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -129,20 +129,35 @@ def discover_implementations(
     an excluded package can still be partly imported.
     """
     walked = capability_ids() if capabilities is None else capabilities
-    skipped = [
-        *(f"{CAPABILITIES_PACKAGE}.{name}" for name in capability_ids() if name not in walked),
-        *(
-            f"{AGENTS_PACKAGE}.{name}"
-            for name in agent_families()
-            if families is not None and name not in families
-        ),
-    ]
     optional = [
         module
         for capability in capability_declarations(walked)
         for module in capability.optional_extra_modules
     ]
-    discover(*packages, exclude=[*exclude, *skipped, *optional])
+    discover(*packages, exclude=[*exclude, *unnamed_packages(capabilities, families), *optional])
+
+
+def unnamed_packages(
+    capabilities: Collection[str] | None = None, families: Collection[str] | None = None
+) -> tuple[str, ...]:
+    """The capability packages and agent families outside *capabilities* and *families*.
+
+    ``None`` names every one. What a run does not walk, and what may not decide
+    which layers its schema holds: an earlier import can have left one of
+    them registered.
+    """
+    return (
+        *(
+            f"{CAPABILITIES_PACKAGE}.{name}"
+            for name in capability_ids()
+            if capabilities is not None and name not in capabilities
+        ),
+        *(
+            f"{AGENTS_PACKAGE}.{name}"
+            for name in agent_families()
+            if families is not None and name not in families
+        ),
+    )
 
 
 def discover_every_implementation() -> None:
