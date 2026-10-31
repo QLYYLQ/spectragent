@@ -29,7 +29,7 @@ from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord, TokenUsage
-from tests._helpers.action_spaces import negotiated_actions, space_of
+from tests._helpers.action_spaces import negotiated_actions, space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 
@@ -97,7 +97,7 @@ def _prepared(agent_id: str) -> Any:
     _negotiated, descriptors = negotiated_actions(agent, BrowserCapability())
     agent.prepare(
         task="log in",
-        action_space=space_of(descriptors),
+        action_space=space_for(agent, descriptors),
         execution_limits=ExecutionLimits(max_actions_per_step=1),
         **formats_for(agent),
     )

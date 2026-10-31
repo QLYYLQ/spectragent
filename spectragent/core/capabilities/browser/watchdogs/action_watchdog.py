@@ -1160,8 +1160,11 @@ class ActionWatchdog(BrowserWatchdog):
         """Scroll the viewport or a specific element, and measure what moved.
 
         The wheel is dispatched at the pointer's current position for a page
-        scroll, or at an aimed point inside the element for an element
-        scroll. Around it, a :class:`ScrollProbe` holds the containers the
+        scroll, at an aimed point inside the element for an element scroll,
+        or at the start point for a scroll given one: the pointer moves there
+        first, along the trajectory like any pointer action, and the point is
+        the model's own, so it is not scattered (as for a coordinate click).
+        Around the wheel, a :class:`ScrollProbe` holds the containers the
         wheel could move at that point and reports the one that did, with its
         offsets before and after and whether it reached its edge
         (``effects.ScrollEffect``). Measuring is bounded by the action's
@@ -1211,6 +1214,9 @@ class ActionWatchdog(BrowserWatchdog):
                 if not self._in_viewport(cx, cy):
                     # A wheel outside the viewport scrolls nothing; same rule as a click.
                     raise RuntimeError(_OUTSIDE_VIEWPORT)
+            elif event.start_x is not None and event.start_y is not None:
+                cx, cy = event.start_x, event.start_y
+                await self._mouse.move_to(cx, cy)
             else:
                 cx, cy = self._mouse.position
 

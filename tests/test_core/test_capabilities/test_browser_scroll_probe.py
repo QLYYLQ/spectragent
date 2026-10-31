@@ -19,6 +19,7 @@ import pytest
 from spectragent.core.capabilities.browser.actions.scroll import ScrollAction
 from spectragent.core.capabilities.browser.effect_probes import ProbeBudget
 from spectragent.core.capabilities.browser.effects import ElementFacts, ScrollEffect, ScrollOffset
+from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint
 from spectragent.core.capabilities.browser.scroll_probe import ScrollProbe
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import ScrollEvent
@@ -181,6 +182,88 @@ async def test_the_executor_measures_around_the_wheel_at_the_pointer() -> None:
     assert answer["scrolled"] is True
     effect = ScrollEffect(effect_id="browser.scroll", **answer["effect_facts"])
     assert effect.delta == ScrollOffset(x=0, y=300)
+
+
+class _RecordingPage(ScriptedPage):
+    """A scripted page that also keeps every mouse event and every evaluated expression."""
+
+    def __init__(self, reads: list[list[dict[str, Any]]]) -> None:
+        super().__init__(reads)
+        self.mouse: list[tuple[str, int, int]] = []
+        self.evaluated: list[str] = []
+
+    async def send(self, method: str, params: dict[str, Any] | None = None, **kw: Any) -> Any:
+        if method == "Input.dispatchMouseEvent" and params is not None:
+            self.mouse.append((params["type"], params["x"], params["y"]))
+        if method == "Runtime.evaluate" and params is not None:
+            self.evaluated.append(params["expression"])
+        return await super().send(method, params, **kw)
+
+
+class _StraightPath:
+    """Humanized, one waypoint per move; keeps every aim offset it is asked for."""
+
+    humanized = True
+
+    def __init__(self) -> None:
+        self.aims: list[tuple[float, float]] = []
+
+    def generate(
+        self,
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        *,
+        target_w: float = 0.0,
+        target_h: float = 0.0,
+    ) -> list[TrajectoryPoint]:
+        return [TrajectoryPoint(round(end_x), round(end_y), 0.0)]
+
+    def click_hold_ms(self) -> float:
+        return 0.0
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        self.aims.append((width, height))
+        return 0.0, 0.0
+
+
+def _box_scrolled() -> _RecordingPage:
+    """A box under the start point that the wheel moves by 300 px."""
+    box = [_item(0, 1000, page=False, name="Results"), _item(0, 2280, page=True)]
+    moved = [_item(300, 1000, page=False, name="Results"), _item(0, 2280, page=True)]
+    return _RecordingPage([box, moved, moved])
+
+
+async def test_a_started_scroll_moves_the_pointer_to_its_start_then_wheels_there() -> None:
+    """Under ``instant`` too: the pointer goes to the start, so the next observation reports it there."""
+    page = _box_scrolled()
+    watchdog = ActionWatchdog(page, input_platform="linux", selector_map_getter=dict)  # type: ignore[arg-type]
+    answer = await watchdog._on_scroll(
+        ScrollEvent(direction="down", amount=300, start_x=300, start_y=200)
+    )
+    assert page.mouse == [("mouseMoved", 300, 200), ("mouseWheel", 300, 200)]
+    assert watchdog._mouse.observed_position == (300, 200)
+    # Measured where the wheel turned: the containers under the start point.
+    assert page.evaluated[0].rstrip().endswith("(300, 200)")
+    effect = ScrollEffect(effect_id="browser.scroll", **answer["effect_facts"])
+    assert effect.container == "element" and effect.delta == ScrollOffset(x=0, y=300)
+
+
+async def test_a_humanized_start_is_reached_along_the_path_and_never_scattered() -> None:
+    """The start is the model's own point, as a coordinate click's is: no aim offset."""
+    page, path = _box_scrolled(), _StraightPath()
+    watchdog = ActionWatchdog(
+        page,  # type: ignore[arg-type]
+        input_platform="linux",
+        selector_map_getter=dict,
+        mouse_trajectory=path,  # type: ignore[arg-type]
+    )
+    await watchdog._on_scroll(ScrollEvent(direction="down", amount=300, start_x=300, start_y=200))
+    assert path.aims == []
+    moves = [(x, y) for kind, x, y in page.mouse if kind == "mouseMoved"]
+    wheels = {(x, y) for kind, x, y in page.mouse if kind == "mouseWheel"}
+    assert moves[-1] == (300, 200) and wheels == {(300, 200)}
 
 
 @pytest.mark.parametrize("facts", [None, {"direction": "down"}])

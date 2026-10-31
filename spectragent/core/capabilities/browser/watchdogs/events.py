@@ -223,6 +223,10 @@ class ScrollEvent(BaseEvent[dict[str, Any] | None]):
     backend_node_id: int | None = None  # None = scroll viewport
     #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
     session_id: str | None = None
+    #: Where the pointer moves before the wheel turns, CSS px of the viewport;
+    #: ``None``: the wheel turns where the pointer is.
+    start_x: int | None = None
+    start_y: int | None = None
     event_timeout: float = 8.0
     execution_timeout: float = 8.0
 

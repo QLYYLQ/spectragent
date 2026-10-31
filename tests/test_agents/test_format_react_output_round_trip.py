@@ -25,8 +25,8 @@ checked the day it is registered, under the same real assembly as a run:
 composed with ``react`` and a browser environment (never set up),
 ``prepare()``-d, seeded, then shown a real PNG screenshot at device scale
 factor 1 and 2. Params come from the negotiated descriptors themselves
-(``variant_params``); an integer ``<name>_x`` / ``<name>_y`` pair is a
-point. An agent whose points are written on a grid declares it as
+(``variant_params``), and so does which params are a point
+(``point_params``). An agent whose points are written on a grid declares it as
 ``coordinate_space`` (``schemas/observation/geometry.py``), the runtime frames
 its action space on it, and every value that field allows is checked.
 """
@@ -241,8 +241,12 @@ def _check(
     assert resolve_action_name(parsed.name, guarded, bindings) == action.name, (action, text)
     # 2. fixed point, thought included
     assert write([parsed]) == text, (action, text)
-    # 3. points, within the student grid's quantum
+    # 3. points, within the student grid's quantum; an optional point the action
+    # leaves out stays out
     for x_key, y_key in pairs:
+        if action.params.get(x_key) is None:
+            assert parsed.params.get(x_key) is None, (action, parsed)
+            continue
         for key in (x_key, y_key):
             assert abs(parsed.params[key] - action.params[key]) <= quantum, (action, parsed)
     # 4. every other param the action sets comes back unchanged

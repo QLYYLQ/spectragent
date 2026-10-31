@@ -55,6 +55,7 @@ from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.llm.messages import ContentPartImageParam, ContentPartTextParam
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+from spectragent.core.loops.coordinate_frames import declared_space, framed_action_space
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import (
@@ -70,7 +71,6 @@ from spectragent.schemas.observation.fragments import HistoryObs
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.action_params import minimal_params
-from tests._helpers.action_spaces import space_for
 from tests._helpers.assembly import make_agent, make_env
 from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.replies import read_reply
@@ -196,17 +196,18 @@ class _Run:
             *self.env.get_action_space(active_actions=active, fragments=fragments),
             *self.loop.get_action_space(active_actions=active, fragments=fragments),
         ]
-        self.action_space, self.guard = build_guarded_act(
+        guarded, self.guard = build_guarded_act(
             self.env.act,
             descriptors,
             None,
             bindings=self.actions.action_bindings,
             loop_act=self.loop.execute_action,
         )
+        self.action_space = framed_action_space(guarded, declared_space(self.agent))
         self.descriptors = self.action_space.descriptors
         self.agent.prepare(
             task="t",
-            action_space=space_for(self.agent, self.descriptors),
+            action_space=self.action_space,
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             fragment_formats=dom_formats(),
         )

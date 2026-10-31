@@ -55,3 +55,24 @@ class TestScrollConfig:
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.direction == "up"
+
+
+class TestScrollStart:
+    """A start point reaches the executor; without one the wheel turns where the pointer is."""
+
+    async def test_the_start_point_rides_the_event(self, fake_capability: FakeCapability) -> None:
+        await ScrollAction().execute(
+            {"direction": "down", "start_x": 300, "start_y": 200},
+            capability=fake_capability,  # type: ignore[arg-type]
+        )
+        event = fake_capability._scopes["sid_main"].emitted[0]
+        assert isinstance(event, ScrollEvent)
+        assert (event.start_x, event.start_y, event.backend_node_id) == (300, 200, None)
+
+    async def test_no_start_point_is_the_pointer(self, fake_capability: FakeCapability) -> None:
+        await ScrollAction().execute(
+            {"direction": "down"},
+            capability=fake_capability,  # type: ignore[arg-type]
+        )
+        event = fake_capability._scopes["sid_main"].emitted[0]
+        assert (event.start_x, event.start_y) == (None, None)

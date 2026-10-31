@@ -158,20 +158,25 @@ class TestTheFramedActionSpace:
         assert {drag.params[key] for key in ("start_x", "end_x")} == {x_line}
 
     def test_only_the_units_change(self) -> None:
+        """And the scroll's optional start, which only a run with a grid is offered."""
         plain, framed = _pointing(None), _pointing()
         assert plain.coordinate_space is None
         assert framed.allowed_actions == plain.allowed_actions
         assert framed.action_bindings == plain.action_bindings
         for before, after in zip(plain.descriptors, framed.descriptors, strict=True):
             assert after.name == before.name
-            assert after.point_params == before.point_params
             assert after.description == before.description
-            points = {key for pair in before.point_params for key in pair}
+            points = {key for pair in after.point_params for key in pair}
             assert {k: v for k, v in after.params.items() if k not in points} == {
                 k: v for k, v in before.params.items() if k not in points
             }
+            if after.name != "browser.scroll":
+                assert after.point_params == before.point_params
+        scroll = next(d for d in plain.descriptors if d.name == "browser.scroll")
+        assert scroll.point_params == () and "start_x" not in scroll.params
         scroll = next(d for d in framed.descriptors if d.name == "browser.scroll")
-        assert scroll == next(d for d in plain.descriptors if d.name == "browser.scroll")
+        assert scroll.point_params == (("start_x", "start_y"),)
+        assert "0-1000 grid" in scroll.params["start_x"]
 
     def test_a_space_without_a_point_action_is_taught_no_grid(self) -> None:
         plain = browser_space("click", "scroll", "done")
@@ -622,7 +627,7 @@ _BROWSER = {
 }
 
 
-def _assembled(agent: dict[str, Any]) -> Any:
+def _assembled(agent: dict[str, Any], *, browser: dict[str, Any] = _BROWSER) -> Any:
     root = {
         "agent": [
             {
@@ -633,7 +638,7 @@ def _assembled(agent: dict[str, Any]) -> Any:
                 **agent,
             }
         ],
-        "environment": [{"env_type": "browser", "id": "env", "capabilities": [_BROWSER]}],
+        "environment": [{"env_type": "browser", "id": "env", "capabilities": [browser]}],
     }
     runtime = AgentRuntime.for_agent(
         ConfigComposer(registrars=collect_registrars()).compose(root), "a"
@@ -677,6 +682,44 @@ def test_the_runtime_frames_the_space_on_the_agents_declared_grid(
     for descriptor in pointing:
         (x_key, _y_key), *_ = descriptor.point_params
         assert ("0-1000 grid" in descriptor.params[x_key]) is (framed is not None)
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "has_start"),
+    [
+        ("ui_tars", True),
+        ("browser_use.dom_vision", True),
+        ("skyvern.dom_vision", True),
+        ("browser_use.dom", False),
+        ("skyvern.dom", False),
+    ],
+)
+def test_a_scroll_start_reaches_only_an_agent_that_declares_a_grid(
+    agent_id: str, has_start: bool
+) -> None:
+    """A model shown no screenshot to point at is never taught the scroll's start."""
+    space = _assembled({"agent_id": agent_id}).action_space
+    scroll = next(d for d in space.descriptors if d.name == "browser.scroll")
+    assert scroll.params_schema is not None
+    assert ("start_x" in scroll.params) is has_start
+    assert ("start_y" in scroll.params_schema["properties"]) is has_start
+    assert scroll.point_params == ((("start_x", "start_y"),) if has_start else ())
+    if has_start:
+        assert (
+            "grid" in scroll.params["start_x"]
+            or "pixels of the screenshot" in (scroll.params["start_x"])
+        )
+
+
+@pytest.mark.parametrize("agent_id", ["browser_use.dom_vision", "skyvern.dom_vision"])
+def test_a_kept_scroll_start_frames_a_run_without_click_coordinate(agent_id: str) -> None:
+    """The start is a point action of its own: the run is taught a grid for it."""
+    names = ("navigate", "click", "type", "scroll")
+    browser = {**_BROWSER, "actions": [{"action_id": f"browser.{name}"} for name in names]}
+    space = _assembled({"agent_id": agent_id}, browser=browser).action_space
+    assert "browser.click_coordinate" not in space.allowed_actions
+    assert space.coordinate_space == "screenshot_pixels"
+    assert [d.name for d in space.descriptors if d.point_params] == ["browser.scroll"]
 
 
 async def test_react_executes_a_replys_points_in_css_px_and_records_them_so() -> None:
@@ -760,8 +803,9 @@ class TestTheRunsScreenshotCanCarryItsFrame:
         message = str(excinfo.value)
         assert message.startswith(
             "ui_tars writes points on the normalized_1000 grid and this run's "
-            "browser.click_coordinate, browser.drag take points, but the screenshot it "
-            "negotiates, frame_check.screenshot (_BareShot), reports no screenshot geometry"
+            "browser.click_coordinate, browser.drag, browser.scroll take points, but the "
+            "screenshot it negotiates, frame_check.screenshot (_BareShot), reports no "
+            "screenshot geometry"
         )
         assert "ScreenshotGeometry" in message
         assert isinstance(excinfo.value, TypeError)

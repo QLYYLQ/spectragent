@@ -3,8 +3,8 @@
 Against the local effects site only (``tests/_helpers/effects_site.py``),
 headless, through the capability's own actions: a page scroll from the
 pointer's resting place, scrolls to and past the bottom edge, a scroll inside
-a scroll box under the pointer, the same box addressed by its index, and a
-page that cannot scroll. Each effect is the measured fact, never a guess from
+a scroll box under the pointer, the same box from a start point the pointer
+moves to, the same box addressed by its index, and a page that cannot scroll. Each effect is the measured fact, never a guess from
 the request: a scroll that moved nothing says ``0 px`` and the edge.
 """
 
@@ -20,7 +20,9 @@ import pytest
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ScrollEffect, ScrollOffset
+from spectragent.core.capabilities.browser.observations import BrowserCaptureStateObs
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation.capture_state import PointerState
 from tests._helpers.effects_site import (
     SCROLL_PAGE_HEIGHT,
     EffectsSite,
@@ -108,6 +110,32 @@ async def test_a_scroll_box_under_the_pointer_is_the_container_that_moves(
             session_id=cap.default_session_id,
         )
         assert page["result"]["value"] == 0  # the page itself did not move
+
+
+async def test_a_scroll_started_at_a_point_moves_the_box_there_and_leaves_the_pointer_on_it(
+    site: EffectsSite,
+) -> None:
+    """The pointer moves to the start, then the wheel turns there, wherever it rested before."""
+    async with _browser(
+        {"browser.browser_meta", "browser.screenshot", "browser.capture_state"}
+    ) as cap:
+        assert (await _act(cap, "navigate", url=site.url("scroll.html"))).success
+        x, y = centre("inner")
+        started = _effect(
+            await _act(cap, "scroll", direction="down", amount=300, start_x=x, start_y=y)
+        )
+        assert started.container == "element"
+        assert started.delta == ScrollOffset(x=0, y=300)
+        page = await cap.cdp.send(
+            "Runtime.evaluate",
+            {"expression": "document.scrollingElement.scrollTop", "returnByValue": True},
+            session_id=cap.default_session_id,
+        )
+        assert page["result"]["value"] == 0  # the page itself did not move
+        await cap.begin_observation(1)
+        state = await cap.resolve_fragment("browser.capture_state")
+        assert isinstance(state, BrowserCaptureStateObs)
+        assert state.pointer == PointerState(status="known", x=x, y=y)
 
 
 async def test_a_scroll_box_addressed_by_its_index(site: EffectsSite) -> None:

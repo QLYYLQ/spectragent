@@ -164,11 +164,13 @@ def _keys(name: str, example: str, param: str, *spellings: str) -> Argument:
 #: - ``type``: UI-TARS says ``content``, the action reads ``text``. Required:
 #:   with ``clear_by_default`` a missing text would clear the field and type
 #:   nothing, reported as a success.
-#: - ``scroll``: a direction and nothing else. Not a point (ScrollAction
-#:   scrolls under the pointer or a selector-map element, and a vision-only run
-#:   has none), not an amount (``ScrollAction.default_amount`` is the
-#:   capability's; the agent declares that it can scroll). Likewise ``wait``'s
-#:   length is ``WaitAction.default_seconds``.
+#: - ``scroll``: a direction, and the point the scroll starts at, ``start_box``
+#:   as UI-TARS writes it on desktop and mobile alike. The point is optional,
+#:   as the action's ``start`` is: a call without it scrolls where the pointer
+#:   is, and an action without one is written without it. Not an amount
+#:   (``ScrollAction.default_amount`` is the capability's; the agent declares
+#:   that it can scroll). Likewise ``wait``'s length is
+#:   ``WaitAction.default_seconds``.
 #: - ``finished``: ``done`` reads ``extracted_content``. The task claim:
 #:   ``finished`` has no argument that says whether the task was accomplished
 #:   (a model ends with ``finished(content='无法完成…')`` too), so it reads back
@@ -185,7 +187,12 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
                 _text("content", "'text to type'", "text"),
                 _point("point", "'(x, y)'", "start_box"),
             ),
-            _verb("scroll", "scroll", _choice("direction", "direction", DIRECTIONS)),
+            _verb(
+                "scroll",
+                "scroll",
+                _point("start_box", "'(x, y)'", required=False),
+                _choice("direction", "direction", DIRECTIONS),
+            ),
             _verb("hotkey", "send_keys", _keys("key", "'ctrl+a'", "keys", "keys")),
             _verb(
                 "drag",

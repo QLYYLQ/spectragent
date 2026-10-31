@@ -56,14 +56,20 @@ def minimal_params(descriptor: Any) -> dict[str, Any]:
 def variant_params(descriptor: Any) -> list[dict[str, Any]]:
     """The minimal payload, then one variant per optional param, set to a sample value.
 
-    Optional params are visited in name order, so the list is deterministic.
+    An optional point (``ActionDescriptor.optional_points``) is one variant with
+    both of its params set: a point is one value, and half of one is not a legal
+    payload. Optional params are visited in name order, so the list is
+    deterministic.
     """
     schema = descriptor.params_schema or {}
     properties: Mapping[str, Any] = schema.get("properties") or {}
     required = set(schema.get("required") or ())
     minimal = minimal_params(descriptor)
-    return [minimal] + [
-        {**minimal, name: _sample(properties[name])}
-        for name in sorted(properties)
-        if name not in required
-    ]
+    point_of = {key: pair for pair in descriptor.optional_points for key in pair}
+    variants = [minimal]
+    for name in sorted(properties):
+        names = point_of.get(name, (name,))
+        if name in required or name != names[0]:
+            continue
+        variants.append({**minimal, **{key: _sample(properties[key]) for key in names}})
+    return variants

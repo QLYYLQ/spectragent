@@ -67,7 +67,8 @@ _SCREENSHOT = ScreenshotObs(
 
 
 def _codec(**kwargs: Any) -> UITarsCodec:
-    return UITarsCodec(wired_space(UITarsAgent), **kwargs)
+    """A codec for UI-TARS's space, framed on its grid as a run frames it."""
+    return UITarsCodec(wired_space(UITarsAgent, coordinate_space="screenshot_pixels"), **kwargs)
 
 
 class _PanParams(BaseModel):
@@ -147,7 +148,7 @@ class TestEveryVerbRoundTrips:
         assert written == {
             "click": "click(point='(640, 360)')",
             "type": "type(content='it\\'s \"done\"\\n東京 \\\\ x', point='(640, 360)')",
-            "scroll": "scroll(direction='left')",
+            "scroll": "scroll(start_box='(1, 2)', direction='left')",
             "hotkey": "hotkey(key='Control+Shift+t')",
             "drag": "drag(start_point='(1, 2)', end_point='(999, 700)')",
             "wait": "wait()",
@@ -170,6 +171,14 @@ class TestEveryVerbRoundTrips:
     ) -> None:
         (action,) = _codec().read_actions(f"Action: {reply}")
         assert action.params == params
+
+    def test_a_scroll_without_a_start_is_written_without_one(self) -> None:
+        """The start is optional both ways: an action without one has no start_box."""
+        codec = _codec()
+        text = codec.write_call(Action(name="browser.scroll", params={"direction": "down"}))
+        assert text == "scroll(direction='down')"
+        (back,) = codec.read_actions(f"Action: {text}")
+        assert back.params == {"direction": "down"}
 
     def test_the_grounding_template_writes_no_thought(self) -> None:
         codec = _codec(writes_thought=False)
@@ -341,7 +350,8 @@ class TestUnwritableActionsAreNamed:
             (
                 Action(name="browser.scroll", params={"direction": "down", "amount": 300}),
                 ["amount"],
-                "scroll(direction='up|down|left|right') has no argument that carries it",
+                "scroll(start_box='(x, y)', direction='up|down|left|right') has no argument "
+                "that carries it",
             ),
             (
                 Action(
