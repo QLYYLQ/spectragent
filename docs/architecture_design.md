@@ -4340,7 +4340,8 @@ next_actions 里的答案文字不是信息存在的证据。这些点名参考�
 上限 `max_text_chars`、链接与几何条目上限 `max_links`、是否附原始截图
 `include_screenshots`，以及 `done_answer`。出厂预算为每侧 6000 字符、20 条，即阈值拟合
 所用的预算；更大的预算在 DMX 路线上多数页面超出输入上限（用户 2026-10-20 决定）。
-`done_answer: withhold` 从请求中去掉源 `done` 动作的答案文本：动作参数中的
+`done_answer: withhold` 从请求中去掉源 `loop.done` 动作的答案文本（按全限定键认，不按
+名字的最后一段：capability 自己叫 `done` 的动作不算）：动作参数中的
 `extracted_content`，以及恢复对应关系里 done 动作参数和其结果中的同一文本；动作类型保留。
 `keep` 原样发送。出厂值为 withhold：审查判断的是观测是否相同，不应参考被测 Agent 自己的
 结论。回放服务事实不进请求，确定性规则放在模型之外。恢复对应关系里每条实际结果的动作效果

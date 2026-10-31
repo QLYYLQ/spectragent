@@ -591,6 +591,12 @@ def test_done_only_has_no_execution_effect_question(world: World) -> None:
         update={"actions": [_action("browser.click"), _action("loop.done")]}
     )
     assert quality_questions(mixed) == ("reasonable", "executed_as_intended")
+    # Finishing is the Loop's ``loop.done``, by its key: a capability's own
+    # action that happens to be called ``done`` is an operation to judge.
+    elsewhere = fork.branch_row.model_copy(
+        update={"actions": [_action("desktop.done", extracted_content="Answer")]}
+    )
+    assert quality_questions(elsewhere) == ("reasonable", "executed_as_intended")
 
 
 @pytest.mark.parametrize("reuse", [False, True])

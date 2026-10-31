@@ -41,7 +41,11 @@ from spectragent.core.trace.redaction import redact_config
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection.repository import open_repository
 from spectragent.replay_review.evidence import prepare_case
-from spectragent.replay_review.jev import JevReplayReviewer, route_result
+from spectragent.replay_review.jev import (
+    JevReplayReviewer,
+    route_result,
+    withhold_done_answers,
+)
 from spectragent.replay_review.models import (
     EvidenceRef,
     MachineFacts,
@@ -530,6 +534,17 @@ def test_old_question_and_policy_versions_are_gone():
             if path.suffix in {".py", ".yaml", ".json"} and "generated" not in path.parts:
                 text = path.read_text(encoding="utf-8", errors="replace")
                 assert "replay-relevance-1" not in text and "replay-triage-1" not in text, path
+
+
+def test_only_the_loops_done_has_its_answer_withheld():
+    """``done`` is the Loop's ``loop.done``, matched by its key, never by a name's ending."""
+    actions = [
+        {"name": "loop.done", "params": {"extracted_content": "four eggs"}},
+        {"name": "desktop.done", "params": {"extracted_content": "kept"}},
+    ]
+    withhold_done_answers(actions, [])
+    assert actions[0]["params"] == {}
+    assert actions[1]["params"] == {"extracted_content": "kept"}
 
 
 def test_request_asks_three_independent_noul_questions_and_withholds_done_answers():
