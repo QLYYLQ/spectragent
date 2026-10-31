@@ -136,11 +136,8 @@ def _capability_classes() -> list[type]:
     throwaway capabilities into the same global registrar (``_AuditCap``,
     ``_Cap``, ...); they are fixtures, they own no config model, and
     walking their package would import the whole test tree for its side
-    effects. The rule under test is about framework capabilities. A run
-    imports only the capabilities it names, so every package is imported
-    first.
+    effects. The rule under test is about framework capabilities.
     """
-    discover_every_implementation()
     classes = [
         cls
         for key in sorted(CapabilityRegistrar.keys())

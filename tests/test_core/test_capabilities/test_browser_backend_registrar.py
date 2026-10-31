@@ -83,8 +83,6 @@ class TestComposerInjectsBackend:
     """ConfigComposer end-to-end: YAML-shaped dict → cap.backend is real."""
 
     def test_compose_injects_local_chrome_backend(self) -> None:
-        # Trigger registration of every concrete provider.
-        import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
         from spectragent.agents._registrar import AgentRegistrar
         from spectragent.agents.memory._registrar import MemoryRegistrar
         from spectragent.core.actions._registrar import ActionRegistrar
@@ -178,11 +176,6 @@ class TestComposerInjectsBackend:
         to every wiring entry alike, which is why descriptor presence
         cannot be the test for receptor-ness.
         """
-        # A hand-built registrar map: the Composer discovers nothing, so import
-        # every implementation the wired layers reach first.
-        from spectragent.core.registries import discover_every_implementation
-
-        discover_every_implementation()
         from spectragent.agents._registrar import AgentRegistrar
         from spectragent.agents.memory._registrar import MemoryRegistrar
         from spectragent.core.actions._registrar import ActionRegistrar
