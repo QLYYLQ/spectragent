@@ -124,9 +124,11 @@ def discover_implementations(
     narrow the walk to those capability packages and agent families (``None``:
     every one), as a run narrows it to what its configuration names: the walk
     excludes the others and reads no excluded capability's declarations. It
-    does not stop framework code that imports such a module directly (the
-    export's ``index_to_coordinate`` translator imports browser modules), so
-    an excluded package can still be partly imported.
+    does not stop a walked module from importing an excluded one itself, so
+    framework code imports a capability's modules only inside the functions
+    that use them; ``tests/test_core/test_composer/test_configured_packages.py``
+    checks in fresh interpreters that a run imports no package it does not
+    name.
     """
     walked = capability_ids() if capabilities is None else capabilities
     optional = [
