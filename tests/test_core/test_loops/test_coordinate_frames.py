@@ -340,13 +340,15 @@ class TestIn:
             name="drag", params={"start_x": 100, "start_y": 200, "end_x": 2000, "end_y": 1000}
         )
         scroll = Action(name="scroll", params={"direction": "down"})
+        started = Action(name="scroll", params={"direction": "up", "start_x": 640, "start_y": 360})
         zoom = Action(name="browser.zoom", params={"scale_x": 640, "scale_y": 618})
         moved = actions_in_capability_units(
-            [drag, scroll, zoom], _frame("screenshot_pixels", (2560, 1440)), space
+            [drag, scroll, started, zoom], _frame("screenshot_pixels", (2560, 1440)), space
         )
         assert [a.params for a in moved] == [
             {"start_x": 50, "start_y": 100, "end_x": 1000, "end_y": 500},
             {"direction": "down"},
+            {"direction": "up", "start_x": 320, "start_y": 180},
             {"scale_x": 640, "scale_y": 618},  # no declared point: a number, not moved
         ]
         assert drag.params["start_x"] == 100  # the parsed action is not edited in place
@@ -704,11 +706,8 @@ def test_a_scroll_start_reaches_only_an_agent_that_declares_a_grid(
     assert ("start_x" in scroll.params) is has_start
     assert ("start_y" in scroll.params_schema["properties"]) is has_start
     assert scroll.point_params == ((("start_x", "start_y"),) if has_start else ())
-    if has_start:
-        assert (
-            "grid" in scroll.params["start_x"]
-            or "pixels of the screenshot" in (scroll.params["start_x"])
-        )
+    if has_start:  # framed on the agent's default grid
+        assert "pixels of the screenshot" in scroll.params["start_x"]
 
 
 @pytest.mark.parametrize("agent_id", ["browser_use.dom_vision", "skyvern.dom_vision"])
