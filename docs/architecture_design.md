@@ -920,9 +920,13 @@ class ConfigComposer:
 
     @classmethod
     def for_config(cls, raw) -> ConfigComposer:             # 组装一份运行配置的入口
-        capabilities, families = _named_packages(raw)       # 0) 读配置点名的包；没有包的名字、没有 capability 的 agent 在这里被拒
+        capabilities, agents = _named_packages(raw)         # 0) 读配置点名的包；没有包的名字在这里被拒
+        if agents and not capabilities:                     #    没有 capability 的 agent 也在这里被拒
+            raise ComposeError(...)                         #    （issue agent_without_capability）
         discover_implementations(                           # 1) 框架自己的包 + 点名的包
-            *FRAMEWORK_PACKAGES, capabilities=capabilities, families=families
+            *FRAMEWORK_PACKAGES,
+            capabilities=capabilities,
+            families={agent_family(agent_id) for agent_id in agents},
         )
         return cls(registrars=collect_registrars(capabilities))
 
