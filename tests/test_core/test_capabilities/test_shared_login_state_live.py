@@ -18,12 +18,12 @@ from spectragent.core.capabilities.browser.archive import (
 from spectragent.core.capabilities.browser.backends.base import SharedBrowserProvider
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.storage_seed import StorageSeed, read_initial_seed
 from spectragent.core.capabilities.browser.task_setup import BrowserSetup
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import UserMessage

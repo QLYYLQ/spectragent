@@ -46,12 +46,12 @@ from spectragent.core.action_guard import build_guarded_act, params_refusal
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
 )
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.llm.messages import ContentPartImageParam, ContentPartTextParam
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer

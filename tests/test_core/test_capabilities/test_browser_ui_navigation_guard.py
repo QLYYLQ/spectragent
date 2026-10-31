@@ -19,12 +19,12 @@ from spectragent.core.capabilities.browser.actions import (
     TypeCoordinateAction,
 )
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.hooks.ui_navigation import (
     UiNavigationGuard,
     navigation_violation,
 )
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops.errors import RunAbort

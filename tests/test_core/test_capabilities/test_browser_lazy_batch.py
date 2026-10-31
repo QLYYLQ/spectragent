@@ -436,7 +436,7 @@ class TestEveryObservationSeesThePageAsItIsNow:
     def test_through_the_environment_two_observes_are_two_captures(self) -> None:
         import asyncio
 
-        from spectragent.core.environments.browser import BrowserEnvironment
+        from spectragent.core.capabilities.browser.environment import BrowserEnvironment
         from spectragent.core.negotiation import ObservationNegotiationResult
 
         cap, scope = self._cap(

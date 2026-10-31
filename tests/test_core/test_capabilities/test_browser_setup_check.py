@@ -31,6 +31,7 @@ from spectragent.core.capabilities.browser.archive import ReplayLogArchiver, Sto
 from spectragent.core.capabilities.browser.backends.capabilities import CDP
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.replay.archive_index import (
     load_archive,
     load_fingerprint,
@@ -39,7 +40,6 @@ from spectragent.core.capabilities.browser.replay.archive_source import ArchiveN
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRuleError
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import AGENT_ID, make_env, make_run

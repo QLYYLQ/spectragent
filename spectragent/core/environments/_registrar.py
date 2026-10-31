@@ -4,8 +4,10 @@ EnvironmentBase implements prefix routing for action dispatch and
 observation delegation. Concrete subclasses declare capabilities
 via ``__wiring__`` and set ``__registry_key__``.
 
-Registration is import-driven. Use ``discover("spectragent.core.environments")``
-to scan and register all concrete Environment implementations.
+Registration is import-driven. A single-capability environment lives in
+its capability's package (``BrowserEnvironment`` in
+``core/capabilities/browser/environment.py``) and registers when a run
+imports that package (``docs/architecture_design.md`` §4.2.1, §4.3).
 
 See docs/execution_dag.md M07 for the registrar design.
 """

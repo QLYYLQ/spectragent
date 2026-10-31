@@ -45,8 +45,8 @@ from spectragent.agents.ui_tars.codec import BoundVerb, UITarsCodec
 from spectragent.core.action_guard import build_guarded_act, executed_name
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules

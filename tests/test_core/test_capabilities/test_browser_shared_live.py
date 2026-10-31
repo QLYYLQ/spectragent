@@ -215,7 +215,7 @@ async def test_failed_or_cancelled_setup_releases_only_its_lease(monkeypatch, ca
 
 async def test_concurrent_runtimes_commit_independent_complete_traces(tmp_path):
     from spectragent.agents.memory.simple import SimpleMemory
-    from spectragent.core.environments.browser import BrowserEnvironment
+    from spectragent.core.capabilities.browser.environment import BrowserEnvironment
     from spectragent.core.hooks.trace_writer import TraceWriter
     from spectragent.core.llm.messages import UserMessage
     from spectragent.core.llm.views import ChatInvokeCompletion

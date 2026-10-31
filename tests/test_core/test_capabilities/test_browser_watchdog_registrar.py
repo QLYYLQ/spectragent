@@ -38,6 +38,7 @@ import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # 
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES
 from spectragent.core.capabilities.browser.watchdogs import (
     BrowserWatchdog,
@@ -52,7 +53,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
 )
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation.observation import (
     ObservationNegotiationResult,

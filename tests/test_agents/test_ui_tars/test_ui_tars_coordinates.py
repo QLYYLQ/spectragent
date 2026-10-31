@@ -46,6 +46,7 @@ from spectragent.agents.ui_tars.agent import _COORDINATE_PROMPTS, UITarsAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickCoordinateEvent,
@@ -54,7 +55,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     SendKeysEvent,
     TypeAtCoordinateEvent,
 )
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.llm.messages import ContentPartTextParam
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.coordinate_frames import step_frame

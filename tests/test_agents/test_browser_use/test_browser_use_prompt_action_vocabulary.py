@@ -45,7 +45,7 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.capability import BrowserCapability
-from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.loops.coordinate_frames import declared_space, framed_action_space
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
