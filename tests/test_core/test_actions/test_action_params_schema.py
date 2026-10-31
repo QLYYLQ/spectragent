@@ -306,7 +306,18 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
     a runtime symptom of a wiring mistake that is visible from the
     declarations alone.
     """
-    from spectragent.agents import AgentRegistrar
+    from spectragent.agents._registrar import AgentRegistrar
+    from spectragent.agents.prompts import agent_family
+    from spectragent.core.registries import (
+        AGENTS_PACKAGE,
+        agent_families,
+        discover_implementations,
+    )
+
+    # A run imports only the families its configuration names, so import them
+    # all here: scanning whatever happens to be registered scanned nothing
+    # when this test ran alone.
+    discover_implementations(*(f"{AGENTS_PACKAGE}.{family}" for family in agent_families()))
 
     # Declarations are capability-relative, so a declared key matches every
     # registered action whose trailing segment is the same.
@@ -314,10 +325,12 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
     for full in _KEYS:
         by_local.setdefault(full.rsplit(".", 1)[-1], []).append(full)
 
-    scanned = 0
+    scanned: set[str] = set()
     for agent_id, cls in sorted(AgentRegistrar.get_all().items()):
+        if not cls.__module__.startswith(f"{AGENTS_PACKAGE}."):
+            continue  # another test's fake, not a shipped agent
         agent = cls()
-        scanned += 1
+        scanned.add(agent_family(agent_id))
         actions, _optional = agent.negotiation_demand("action")
         fragments, _ = agent.negotiation_demand("observation")
         for declared in sorted(actions):
@@ -331,7 +344,7 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
                     f"{agent_id} requires action {declared!r}, which "
                     f"reads {sorted(missing)} — a fragment it does not require"
                 )
-    assert scanned >= len(AgentRegistrar.get_all())
+    assert sorted(scanned) == list(agent_families())
 
 
 def test_a_required_dependent_param_would_be_caught() -> None:
