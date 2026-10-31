@@ -507,9 +507,10 @@ class AgentRuntime:
         # (architecture_design.md §4.9); the negotiation rules are
         # untouched, and a capability that ignores ``fragments`` behaves
         # exactly as before. The Loop's own actions (``loop.done``) follow the
-        # environment's, and the guard hands them to the Loop, never to
-        # ``env.act``. An env-less run's action space is the Loop's alone, so
-        # its environment executor is never reached.
+        # environment's, and the guard hands them to the woven Loop, never to
+        # ``env.act``, so a hook on the ``loop`` role sees them executed. An
+        # env-less run's action space is the Loop's alone, so its environment
+        # executor is never reached.
         active_actions = negotiated_actions.active_actions
         fragments = negotiated_obs.active_fragments
         if env is None:
@@ -530,7 +531,7 @@ class AgentRuntime:
             [*narrowed_descriptors, *loop_descriptors],
             action_filter,
             bindings=negotiated_actions.action_bindings,
-            loop_act=loop.execute_action if loop_descriptors else None,
+            loop_act=wrapped_loop.execute_action if loop_descriptors else None,
         )
         # Step 4b: The run's coordinate frame. An agent whose model writes
         # points on a grid of its own declares which (its

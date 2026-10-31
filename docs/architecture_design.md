@@ -454,6 +454,7 @@ class ReactLoop(AgentLoopBase):
 | `llm.ainvoke` | after | 每次 LLM 成功返回后 | 可选成功通知；统一调用账由 around 单独负责 |
 | `llm.ainvoke` | around | 每次 LLM 调用：返回、抛异常或被取消 | TraceWriter 在 `proceed()` 之前登记这次调用，按结局记为 completed / failed / cancelled，并测量等待时间；失败回复携带的用量保留在同一本调用账 |
 | `loop.execute_step` / `loop.observe_terminal` | around | 进入实际步骤执行或终止观测 | 按稳定步骤身份开始计时；检查点与随后同编号策略步共享起点 |
+| `loop.execute_action` | before / after / around | Loop 执行自己的动作（`loop.done`，§4.5）：守卫经织过的 Loop 调它 | 可选；TraceWriter 不拦截（这一调用不经过 `env.act`，没有 `ActionSpan`） |
 | `loop.record_step` | around | Loop 交出完整 StepRecord | 截止步骤执行计时、封存本步调用与所选证据；有界后台任务经 WAL 持久化，manifest 是提交点 |
 | `env.act` | around | 每次环境动作执行：返回、抛异常或被取消（Loop 自己执行的 `loop.done` 不经过它，§4.5） | TraceWriter 记下这次调用的起止墙钟与结局，归到正在执行的步（`StepRecord.action_spans`，§5.4）；无环境的 run 不声明此拦截 |
 | `agent.build_react_prompt` | around | prompt 构建时 | 异步提示贡献与审计；`await proceed()`，显式 `ReactPromptContext` 描述历史与策略阶段 |
@@ -693,22 +694,23 @@ class AgentRuntime:
         elif env_context:
             raise ValueError(...)                                    # 没有环境，就没有可以 setup 的
 
-        # 4. AOP 织入 — Weaver 包装四个角色：agent / env / llm，以及 StepRecorder（role="loop"）
+        # 4. AOP 织入 — Weaver 包装 agent / env / llm，以及 role="loop" 的 StepRecorder 与 Loop
         weaver = Weaver(self._hooks)
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
         wrapped_recorder = weaver.wrap(self._recorder, role="loop")  # record_step → 一次提交完整 step
+        wrapped_loop = weaver.wrap(loop, role="loop")  # execute_step / execute_action ……
         weaver.raise_for_unclaimed_roles()
 
         # 5. 收窄 action space + guarded_act：环境的 descriptor 接上 Loop 的（不带环境的 run 只有 Loop 的）；
-        #    守卫把 loop.* 交给 Loop 执行，其余交给 env.act
+        #    守卫把 loop.* 交给织过的 Loop 执行（hook 看得见），其余交给 env.act
         active = negotiated_actions.active_actions
         narrowed = wrapped_env.get_action_space(active_actions=active) + loop.get_action_space(
             active_actions=active
         )
         action_space, act_fn = build_guarded_act(
-            wrapped_env.act, narrowed, action_filter, loop_act=loop.execute_action,
+            wrapped_env.act, narrowed, action_filter, loop_act=wrapped_loop.execute_action,
         )
 
         # 6. Loop weave — patch wrapped_agent.run = closure(loop._execute)
@@ -1896,7 +1898,7 @@ capability:
 
 - **声明**：Loop 用 `__loop_actions__` 声明它提供并执行的动作（§4.1 "Loop 的三条类级声明"），与 `__loop_fragments__` 同一个形状；`AgentLoopBase` 默认是 `core/loops/actions.py` 的 `LOOP_ACTION_KEYS`（`loop.done`），`react` 与 `branch` 都提供它。Loop 只提供动作，不要求动作：ReAct 看结果的 `is_done` 结束 run，不看动作名。
 - **动作类、参数与结果不变**：`DoneAction`（`core/loops/actions.py`，基类 `LoopActionBase`）照常在 `ActionRegistrar` 注册、照常声明 `Params`，descriptor 照常由 `describe` 渲染（它没有配置：YAML 顶层 `action:` 段写它被 Composer 拒绝，§4.2.1）：`extracted_content` 必填且可空，`success` 带 `TaskClaim` 标记（`core/actions/params.py::claim_params`）。结果仍是 `ActionResult(success=True, is_done=True, extracted_content=…, reported_success=…)`，没有 `Effect`。读录下动作的一方（导出、查看器标记）照常经 `registered_params` 读它的 `Params`。
-- **执行不经过环境**：`LoopActionBase.execute(params)` 只收参数，没有 capability 可注入。`AgentLoopBase.get_action_space(active_actions=..., **context)` 给出本 Loop 的动作里协商激活了的那些的 descriptor，`AgentRuntime.prepare` 把它们接在环境的 descriptor 之后交给守卫，所以提示词的动作表里有 `loop.done`；`build_guarded_act(env.act, descriptors, ..., loop_act=loop.execute_action)` 的闭包把解析出的 `loop.*` 交给 `AgentLoopBase.execute_action`，其余交给 `env.act`。`loop.*` 从不到达 `EnvironmentBase.act`：它没有 `ActionSpan`（§5.4）；browser 不为它通知 `action_boundary`、不拍 `before_action` 帧、不开跟随窗口（§4.14）；焦点 tab 自己关掉之后也不拒绝它（§4.14 "自己关掉的 tab"）：agent 的答案不因为 tab 关了而被拒。done 之后的终止观测照旧。
+- **执行不经过环境**：`LoopActionBase.execute(params)` 只收参数，没有 capability 可注入。`AgentLoopBase.get_action_space(active_actions=..., **context)` 给出本 Loop 的动作里协商激活了的那些的 descriptor，`AgentRuntime.prepare` 把它们接在环境的 descriptor 之后交给守卫，所以提示词的动作表里有 `loop.done`；`build_guarded_act(env.act, descriptors, ..., loop_act=loop.execute_action)` 的闭包把解析出的 `loop.*` 交给 `AgentLoopBase.execute_action`，其余交给 `env.act`；`AgentRuntime` 交给守卫的是织过 hook 的 Loop 的 `execute_action`，所以 `loop` 角色上拦截 `execute_action` 的 hook 会在 `loop.done` 执行时触发（§4.1 拦截点表）。`loop.*` 从不到达 `EnvironmentBase.act`：它没有 `ActionSpan`（§5.4）；browser 不为它通知 `action_boundary`、不拍 `before_action` 帧、不开跟随窗口（§4.14）；焦点 tab 自己关掉之后也不拒绝它（§4.14 "自己关掉的 tab"）：agent 的答案不因为 tab 关了而被拒。done 之后的终止观测照旧。
 - **协商**：universe 是环境提供的动作加本 Loop 的 `__loop_actions__`。相对名的绑定与歧义规则不变：agent 写的 `done` 绑定到 `loop.done`；环境里也有一个本地名是 `done` 的动作时，相对的 `done` 报 `AmbiguousActionError`，在 `__wiring__` 里写全限定键钉住一个。agent 要求一个已注册、本 Loop 不提供的 Loop 动作时，`IncompatibleActionError` 的提供方是这个 Loop（`provider == "loop '<loop_id>'"`，`provided` 是它提供的那些），不是环境；两边都没有的动作照旧是环境没提供。不带环境的 run 里动作空间只有 Loop 提供的动作。
 - **`wait` 仍归 capability**（`browser.wait`）：等待让这个 capability 的页面有时间落定，训练导出去掉等待时按动作所属的 capability（键的第一段）对上被截断的采集（§4.15 "等待动作"）。
 - **没有别名**：这次改动之前录下的 run 里结束动作叫 `browser.done`。它们的协商与动作空间与现在的不同，不能分叉（`IncompatibleCheckpointError`）；`browser.done` 不是注册的动作，不能导出（`no_counterpart`）。不设别名、不做读时转换，重录（测试数据可丢弃）；trace 格式版本不变。

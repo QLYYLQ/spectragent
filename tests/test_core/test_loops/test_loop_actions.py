@@ -12,14 +12,21 @@ The action's params and result are what ``browser.done``'s were: its
 
 from __future__ import annotations
 
+from typing import Any, ClassVar
+
 import pytest
 
 from spectragent.core.actions._registrar import is_loop_action, registered_params
 from spectragent.core.actions.params import claim_params
+from spectragent.core.aop.advice import Intercept
+from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.loops import AgentLoopBase, BranchLoop, ReactLoop
 from spectragent.core.loops.actions import LOOP_ACTION_KEYS, DoneAction, loop_action
 from spectragent.core.negotiation.action import loop_actions
-from spectragent.schemas.action import Action
+from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.action import Action, ActionResult
+from tests._helpers.archive_fakes import make_archive_run
+from tests._helpers.assembly import AGENT_ID
 
 # ── the action ────────────────────────────────────────────────────────
 
@@ -148,3 +155,30 @@ class TestTheLoopExecutesThem:
         assert result.error == (
             "loop 'react' does not execute 'browser.click' (its actions: ['loop.done'])"
         )
+
+
+@pytest.mark.usefixtures("archive_fakes")
+async def test_a_hook_on_the_loop_sees_done_executed() -> None:
+    """The guard hands ``loop.done`` to the woven Loop, so a ``loop`` hook on it fires."""
+
+    class _SeesLoopActions(HookBase):
+        __registry_key__ = "test_sees_loop_actions"
+        __intercepts__: ClassVar[list[Intercept]] = [
+            Intercept("execute_action", role="loop", advice="after")
+        ]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[tuple[str, bool]] = []
+
+        async def after_execute_action(
+            self, result: ActionResult, *, args: tuple[Any, ...], **_: Any
+        ) -> None:
+            self.seen.append((args[0].name, result.is_done))
+
+    hook = _SeesLoopActions()
+    result = await AgentRuntime.for_agent(make_archive_run(hooks=[hook]), AGENT_ID).execute(
+        "t", timeout=10
+    )
+    assert result.agent_done.value == "done" and result.answer == "42"
+    assert hook.seen == [("loop.done", True)]
