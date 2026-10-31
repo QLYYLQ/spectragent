@@ -119,6 +119,7 @@ def _output(ctx: typer.Context, json_output: bool = False) -> Output:
 
 def _validation_error(exc: Exception) -> dict[str, Any]:
     from spectragent.cli.configuration_errors import ConfigInspectionError, contract_details
+    from spectragent.core.composition_evidence import safe_error_message
 
     if isinstance(exc, ConfigInspectionError):
         return {
@@ -142,9 +143,7 @@ def _validation_error(exc: Exception) -> dict[str, Any]:
                 {
                     "location": list(issue["loc"]),
                     "type": issue["type"],
-                    "message": issue["msg"]
-                    if issue["type"] not in ("value_error", "assertion_error", "union_tag_invalid")
-                    else "The value does not satisfy the declared configuration contract",
+                    "message": safe_error_message(issue),
                 }
                 for issue in exc.errors(
                     include_input=False, include_context=False, include_url=False

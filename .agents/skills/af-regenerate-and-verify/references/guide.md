@@ -7,10 +7,13 @@ It writes `spectragent/generated/_composed.py`, `_composed.schema.json` and
 `.fingerprint.json`, then reports the stubs still needed by the source.
 Never edit generated files by hand.
 
-Discovery (`core/registries.py::discover_implementations`) is strict and excludes
-`spectragent.generated`, `spectragent.scripts` and every module a capability package
-lists in its `declarations.py` under `OPTIONAL_EXTRA_MODULES` (they import an optional
-extra such as numpy at top level and register nothing).
+Discovery (`core/registries.py::discover_every_implementation`) imports every package,
+is strict, and excludes `spectragent.generated`, `spectragent.scripts` and every module a
+capability package lists in its `declarations.py` under `OPTIONAL_EXTRA_MODULES` (they
+import an optional extra such as numpy at top level and register nothing). A run imports
+less: `ConfigComposer.for_config` imports the framework plus the capability packages and
+agent families its configuration names, and leaves out any layer with no imported
+implementation (design doc §4.2.1).
 It does not delete the old config before discovery. Every collected registrar must
 have an implementation; an empty one fails generation. Source and schema are rendered
 before replacing files, each through a temporary file and atomic rename; the fingerprint
@@ -51,7 +54,7 @@ The test bootstrap generates only missing output; it must not silently refresh s
 conscribe 2.0 fingerprints its version, registrar settings, generated layer source and
 schema. Capture these before rendering the composed schema: Pydantic may normalize
 numeric constraint metadata from `0` to `0.0` during rendering. The generator and drift
-probe use the same discovery (`discover_implementations`) and the same layer order
+probe use the same discovery (`discover_every_implementation`) and the same layer order
 (`collect_registrars()`). Fingerprints do not cover stubs; regenerate and
 prune stubs separately. A failed layer can still have an error fingerprint, so a fingerprint
 alone is never proof that generation succeeded.

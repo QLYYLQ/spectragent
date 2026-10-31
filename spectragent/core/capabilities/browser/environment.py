@@ -1,8 +1,11 @@
 """BrowserEnvironment — single-capability browser environment.
 
-Delegates everything to the injected ``BrowserCapability``. Serves as the
-canonical single-cap env for browser benchmarks and the fixture that
-populates ``EnvironmentRegistrar`` for composed-config generation.
+Delegates everything to the injected ``BrowserCapability``: the canonical
+environment of browser benchmarks. It lives in the browser package, not in
+the framework's ``core/environments/``: a framework class wired to the
+``browser`` capability key would break the catalog of every run that names
+no browser, since a run imports only the capability packages its
+configuration names (``docs/architecture_design.md`` §4.2.1, §4.3).
 """
 
 from __future__ import annotations

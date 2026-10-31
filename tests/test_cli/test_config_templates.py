@@ -4,6 +4,7 @@ import copy
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Protocol, runtime_checkable
 
 import pytest
@@ -14,13 +15,13 @@ from pydantic import BaseModel, Field, ValidationError
 from spectragent.cli import main
 from spectragent.cli.config_templates import TemplateChoices, render_config_template
 from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 
 
 @pytest.fixture(scope="module")
 def composer():
-    return ConfigComposer(registrars=collect_registrars())
+    """The Composer ``config template`` builds: the whole catalog."""
+    return ConfigComposer.for_every_package()
 
 
 def _browser(raw):
@@ -124,7 +125,7 @@ def test_unrelated_action_pool_does_not_hide_browser_default_actions():
     class ForeignWait(WaitAction):
         __registry_key__ = "other.wait"
 
-    composer = ConfigComposer(registrars=collect_registrars())
+    composer = ConfigComposer.for_every_package()
     raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
     raw["action"] = [{"action_id": "other.wait"}]
     before = composer.compose(raw)
@@ -274,7 +275,7 @@ def test_schema_drives_new_component_fields_aliases_and_comments():
             self.limit = limit
             self.settings = settings
 
-    composer = ConfigComposer(registrars={"template_probe": registrar}, discover_roots=())
+    composer = ConfigComposer(registrars={"template_probe": registrar})
     text = render_config_template(
         TemplateChoices(),
         {"template_probe": [{"component": "probe"}]},
@@ -372,7 +373,9 @@ def test_help_does_not_discover_or_construct(monkeypatch, capsys):
     from spectragent.cli import config_templates
 
     monkeypatch.setattr(
-        config_templates, "ConfigComposer", lambda **kwargs: pytest.fail("help composed")
+        config_templates,
+        "ConfigComposer",
+        SimpleNamespace(for_every_package=lambda: pytest.fail("help composed")),
     )
     assert main(["config", "template", "--help"]) == 0
     help_text = capsys.readouterr().out

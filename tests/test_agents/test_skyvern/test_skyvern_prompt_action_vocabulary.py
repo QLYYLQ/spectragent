@@ -37,7 +37,7 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
-from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.coordinate_frames import declared_space
 from spectragent.core.loops.limits import ExecutionLimits

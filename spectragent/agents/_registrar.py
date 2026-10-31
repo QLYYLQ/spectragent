@@ -17,6 +17,7 @@ from spectragent.agents.base import BaseAgent
 from spectragent.agents.prompts import (
     AGENT_KEY_SEPARATOR,
     PromptEngine,
+    agent_family,
     load_prompt,
     render_template,
 )
@@ -183,6 +184,29 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         template, ref = self.prompt(name)
         text = render_template(self.__prompt_engine__, template, params)
         return text, template_snapshot(template, ref, params)
+
+
+def registered_agent(agent_id: str) -> type | None:
+    """The agent class registered under *agent_id*, importing its family on a miss.
+
+    A reader of recorded runs (the training export's teacher) has not composed
+    the configuration that recorded them, and a run imports only the families
+    its configuration names (``docs/architecture_design.md`` §4.2.1). ``None``
+    when no family package registers the key.
+    """
+    agent = AgentRegistrar.get_or_none(agent_id)
+    if agent is None:
+        from spectragent.core.registries import (
+            AGENTS_PACKAGE,
+            agent_families,
+            discover_implementations,
+        )
+
+        family = agent_family(agent_id)
+        if family in agent_families():
+            discover_implementations(f"{AGENTS_PACKAGE}.{family}")
+            agent = AgentRegistrar.get_or_none(agent_id)
+    return agent
 
 
 def _abstract_agent_refusal(cls: type) -> str:

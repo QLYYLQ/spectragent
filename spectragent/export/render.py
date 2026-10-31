@@ -299,12 +299,16 @@ class StudentRenderer:
         cls,
         path: Path,
         *,
-        composer: ConfigComposer,
         untranslatable: UntranslatablePolicy,
         thought_source: ThoughtSource,
         thought_index_refs: ThoughtIndexRefs,
     ) -> StudentRenderer:
-        """Compose the student's run YAML at *path* and assemble it."""
+        """Compose the student's run YAML at *path* and assemble it.
+
+        Composed for the packages the student's YAML names: the export
+        document's own Composer imported none of them
+        (``docs/architecture_design.md`` §4.2.1).
+        """
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         except OSError as exc:
@@ -312,7 +316,7 @@ class StudentRenderer:
         if not isinstance(raw, dict):
             raise ExportConfigError(f"student_run_config {path} is not a YAML mapping")
         return cls(
-            composer.compose(raw),
+            ConfigComposer.for_config(raw).compose(raw),
             untranslatable=untranslatable,
             thought_source=thought_source,
             thought_index_refs=thought_index_refs,

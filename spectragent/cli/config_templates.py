@@ -19,7 +19,6 @@ from pydantic import BaseModel
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.configuration_catalog import ComponentDefinition, ConfigurationCatalog
-from spectragent.core.registries import collect_registrars
 from spectragent.schemas.recording import RecordingPlan
 
 TemplatePath = tuple[str | int, ...]
@@ -51,7 +50,7 @@ def render_config_template(
     preparation still belongs to ``config check`` / ``run --dry-run``. An input
     skeleton keeps all its values except the explicitly selected component blocks.
     """
-    composer = composer or ConfigComposer(registrars=collect_registrars())
+    composer = composer or ConfigComposer.for_every_package()
     catalog = composer.catalog
     raw = copy.deepcopy(dict(source)) if source is not None else _browser_recipe(catalog)
     origins: dict[TemplatePath, str] = {}

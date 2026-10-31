@@ -153,7 +153,7 @@ def _export(
     if model is not None:
         assert len(exporter.thought_rewrite_llms) == 1
         exporter.thought_rewrite_llms = [model]
-    return ExportRunner.from_run(run, composer=composer, origin="the test document").run()
+    return ExportRunner.from_run(run, origin="the test document").run()
 
 
 def _lines(out: Path) -> dict[str, dict[str, Any]]:
@@ -573,7 +573,7 @@ class TestConfiguration:
         run = composer.compose({"exporter": [entry]})
         run.single("exporter").thought_rewrite_llms = []
         with pytest.raises(ExportConfigError, match="needs thought_rewrite_llms"):
-            ExportRunner.from_run(run, composer=composer, origin="the test document").run()
+            ExportRunner.from_run(run, origin="the test document").run()
         assert not (tmp_path / "out").exists()
 
 

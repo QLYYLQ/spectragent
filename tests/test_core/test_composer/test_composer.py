@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 import pytest
-from conscribe import EmptyLayerError, create_registrar
+from conscribe import create_registrar
 from conscribe.introspect import init_param_names
 from pydantic import BaseModel, Field
 
@@ -178,7 +178,7 @@ def registrars() -> dict[str, Any]:
 def composer(registrars: dict[str, Any]) -> ConfigComposer:
     # Discover root doesn't matter for these tests; registries are already
     # populated via metaclass at import time.
-    return ConfigComposer(registrars=registrars, discover_roots=())
+    return ConfigComposer(registrars=registrars)
 
 
 # ── Tests ──────────────────────────────────────────────────────────
@@ -451,7 +451,7 @@ class TestErrors:
             def __init__(self, **kwargs):
                 raise ValueError("constructor-secret-sentinel")
 
-        composer = ConfigComposer(registrars=registrars, discover_roots=())
+        composer = ConfigComposer(registrars=registrars)
         with pytest.raises(InstantiationError) as refused:
             composer.compose({"cmp_backend": [{"name": "refusing"}]})
         issue = refused.value.issue
@@ -461,18 +461,102 @@ class TestErrors:
         assert "constructor-secret-sentinel" not in issue.message
         assert isinstance(refused.value.__cause__, ValueError)
 
-    def test_empty_layer_raises_on_construction(self) -> None:
-        # conscribe reports the empty layer by name before constructing instances.
+    def test_a_layer_with_no_implementation_is_left_out(self, registrars: dict[str, Any]) -> None:
+        # A run composes against the layers whose implementations it imported:
+        # an empty one is no section of the schema, not a refusal
+        # (docs/architecture_design.md §4.2.1). conscribe's EmptyLayerError is
+        # generation's. Writing its section names the missing implementation
+        # instead of failing validation with "Extra inputs are not permitted".
         @runtime_checkable
         class _EmptyP(Protocol):
             key: str
 
         EmptyReg = create_registrar("cmp_empty", _EmptyP, discriminator_field="key")
-        with pytest.raises(EmptyLayerError, match="cmp_empty"):
-            ConfigComposer(
-                registrars={"cmp_empty": EmptyReg},
-                discover_roots=(),
-            )
+        composer = ConfigComposer(registrars={**registrars, "cmp_empty": EmptyReg})
+        assert "cmp_empty" not in composer.registrars
+        with pytest.raises(ComposeError, match="none of the packages it names") as refused:
+            composer.compose({"cmp_empty": []})
+        issue = refused.value.issue
+        assert issue is not None and (issue.code, issue.path) == ("no_implementation", "cmp_empty")
+        with pytest.raises(ComposeError, match="registrar with an implementation"):
+            ConfigComposer(registrars={"cmp_empty": EmptyReg})
+
+    @pytest.fixture
+    def unbuilt(self) -> ConfigComposer:
+        """A partial build whose 'cmp_writer' owners wire to the empty 'cmp_unbuilt' layer.
+
+        It stands for a run naming no capability that provides an archiver:
+        trace_writer's archive wires to a layer this run left out.
+        """
+
+        @runtime_checkable
+        class _ItemP(Protocol):
+            key: str
+
+        @runtime_checkable
+        class _OwnerP(Protocol):
+            key: str
+
+        ItemReg = create_registrar("cmp_unbuilt", _ItemP, discriminator_field="key")
+        OwnerReg = create_registrar("cmp_writer", _OwnerP, discriminator_field="key")
+
+        class _WriterBase(metaclass=OwnerReg.Meta):
+            __abstract__ = True
+
+        class _Writer(_WriterBase):
+            __registry_key__: ClassVar[str] = "writer"
+            __wiring__: ClassVar[dict[str, Any]] = {"items": "cmp_unbuilt"}
+
+            def __init__(self, items: list[_ItemP] | None = None) -> None:
+                self.items = list(items or [])
+
+        class _Reader(_WriterBase):
+            # A second implementation: pydantic now puts the union's tag in
+            # error locations, which the refusal's path leaves out.
+            __registry_key__: ClassVar[str] = "reader"
+
+        return ConfigComposer(
+            registrars={"cmp_writer": OwnerReg, "cmp_unbuilt": ItemReg}, coverage="partial"
+        )
+
+    def test_a_receptor_whose_layer_was_left_out_keeps_the_owners_default(
+        self, unbuilt: ConfigComposer
+    ) -> None:
+        # Omitted, null or [] selects nothing, so the owner's default stands
+        # instead of uncollected_registry (docs/architecture_design.md §4.2.1).
+        for block in ({}, {"items": None}, {"items": []}):
+            run = unbuilt.compose({"cmp_writer": [{"key": "writer", **block}]})
+            assert run.single("cmp_writer").items == []
+        # Anything else names an implementation this run does not hold.
+        with pytest.raises(ComposeError, match="leave 'items' out") as refused:
+            unbuilt.compose({"cmp_writer": [{"key": "writer", "items": [{"key": "x"}]}]})
+        issue = refused.value.issue
+        assert issue is not None
+        assert (issue.code, issue.path) == ("no_implementation", "cmp_writer[0].items")
+        assert "'cmp_unbuilt'" in issue.message
+
+    def test_one_refusal_reports_every_problem_of_the_file(self, unbuilt: ConfigComposer) -> None:
+        # A section of the left-out layer, a value it cannot hold and an
+        # ordinary typo: all three in the one refusal, so one attempt shows them.
+        raw = {
+            "cmp_unbuilt": [],
+            "cmp_writer": [{"key": "writer", "items": [{"key": "x"}]}, {"key": "writr"}],
+        }
+        with pytest.raises(ComposeError) as refused:
+            unbuilt.compose(raw)
+        issue = refused.value.issue
+        assert issue is not None and (issue.code, issue.path) == (
+            "no_implementation",
+            "cmp_unbuilt",
+        )
+        # config check shows the issue, so it lists them too.
+        for message in (str(refused.value), issue.message):
+            assert message.startswith("3 problems in the configuration")
+            for path in ("cmp_unbuilt", "cmp_writer[0].items", "cmp_writer[1]"):
+                assert f"\n  {path}: " in message, path
+            # pydantic's own text for the unknown tag quotes it; config check
+            # never shows input values, so neither does the refusal.
+            assert "writr" not in message
 
     def test_invalid_yaml_rejected_by_pydantic(
         self,
@@ -573,9 +657,7 @@ def test_user_model_reaches_its_constructor_as_a_model(composer: ConfigComposer)
         def __init__(self, settings: Annotated[_Settings, Field(description="Settings")]):
             self.settings = settings
 
-    fresh = ConfigComposer(
-        registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg}, discover_roots=()
-    )
+    fresh = ConfigComposer(registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg})
     run = fresh.compose(
         {"cmp_cap": [{"capability_id": "typed_settings", "settings": {"retries": 7}}]}
     )
@@ -591,9 +673,7 @@ def test_constructor_only_optional_list_is_injected_as_a_list() -> None:
         def __init__(self, backends: list[_BackendP] | None = None):
             self.backends = list(backends or [])
 
-    fresh = ConfigComposer(
-        registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg}, discover_roots=()
-    )
+    fresh = ConfigComposer(registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg})
     run = fresh.compose(
         {
             "cmp_cap": [
@@ -621,6 +701,6 @@ def test_forwarded_constructor_fields_reach_the_base() -> None:
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
-    fresh = ConfigComposer(registrars={"cmp_backend": BackendReg}, discover_roots=())
+    fresh = ConfigComposer(registrars={"cmp_backend": BackendReg})
     run = fresh.compose({"cmp_backend": [{"name": "forwarded", "port": 1234}]})
     assert run.single("cmp_backend").port == 1234

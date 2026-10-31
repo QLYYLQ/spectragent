@@ -31,7 +31,6 @@ from spectragent.core.capabilities.browser.archive import (
 from spectragent.core.capabilities.browser.archive.fingerprint import FINGERPRINT_NAME
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.action import Action, ActionResult
 from tests._helpers.browser_archive import OwnedBrowser, archiving_capability, settle
@@ -401,7 +400,7 @@ class TestTheOption:
     def _compose(**block: Any) -> tuple[Any, BrowserCapability]:
         raw = yaml.safe_load(CONFIG.read_text("utf-8"))
         raw["environment"][0]["capabilities"][0].update(block)
-        run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+        run = ConfigComposer.for_config(raw).compose(raw)
         (capability,) = run.instances("environment")[0].capabilities.values()
         assert isinstance(capability, BrowserCapability)
         return run, capability
@@ -425,7 +424,7 @@ class TestTheOption:
         raw = yaml.safe_load(CONFIG.read_text("utf-8"))
         block = raw["environment"][0]["capabilities"][0]
         block["backend"] = {**block["backend"], "background_throttling": True}
-        run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+        run = ConfigComposer.for_config(raw).compose(raw)
         (capability,) = run.instances("environment")[0].capabilities.values()
         assert capability.backend.background_throttling is True  # type: ignore[union-attr]
         recorded = redact_config(run.top_level_cfg)["environment"][0]["capabilities"][0]

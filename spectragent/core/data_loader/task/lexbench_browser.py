@@ -6,7 +6,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader._lexbench_legacy import normalize_legacy_record
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
 from spectragent.schemas.task import TaskDefinition
@@ -75,6 +74,10 @@ class LexBenchBrowserTaskLoader(TaskLoaderBase):
         ``id``, ``query``, ``target_website``, flat login flags). Either
         shape's start page goes through :func:`complete_start_page`.
         """
+        # Imported here, not at the top: every run imports this loader with the
+        # framework, and a run that names no browser imports no browser module.
+        from spectragent.core.capabilities.browser.task_setup import BrowserSetup
+
         task = super().normalize_raw(normalize_legacy_record(raw))
         setup = task.setup
         if isinstance(setup, BrowserSetup) and setup.start_url:

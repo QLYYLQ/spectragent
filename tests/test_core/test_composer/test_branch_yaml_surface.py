@@ -29,7 +29,6 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.prompt_contribution import PromptContributionHook
 from spectragent.core.loops import BranchLoop
 from spectragent.core.loops.restore import PrefixReplayRestorer
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.prompt import PromptContribution, PromptRequest
@@ -45,7 +44,8 @@ def configured_prompt_hint(*, request: PromptRequest) -> PromptContribution:
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=collect_registrars())
+    """The whole catalog: this module reads the branch loop's YAML surface."""
+    return ConfigComposer.for_every_package()
 
 
 def _branch(**loop: Any) -> dict[str, Any]:

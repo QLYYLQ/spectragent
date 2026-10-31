@@ -600,12 +600,11 @@ def test_the_media_read_budget_is_a_capability_knob(value: float, valid: bool) -
     from pydantic import ValidationError
 
     from spectragent.core.composer import ConfigComposer
-    from spectragent.core.registries import collect_registrars
 
     path = Path(__file__).resolve().parents[3] / "configs/ui_tars_local.yaml"
     raw = yaml.safe_load(path.read_text())
     raw["environment"][0]["capabilities"][0]["media_state_timeout_s"] = value
-    composer = ConfigComposer(registrars=collect_registrars())
+    composer = ConfigComposer.for_config(raw)
     if not valid:
         with pytest.raises(ValidationError):
             composer.compose(raw)
@@ -621,7 +620,6 @@ def test_show_media_state_is_an_agent_knob(agent_id: str) -> None:
     import yaml
 
     from spectragent.core.composer import ConfigComposer
-    from spectragent.core.registries import collect_registrars
 
     path = Path(__file__).resolve().parents[3] / "configs/ui_tars_local.yaml"
     raw = yaml.safe_load(path.read_text())
@@ -634,7 +632,7 @@ def test_show_media_state_is_an_agent_knob(agent_id: str) -> None:
         "llm": block["llm"],
         "memory": block["memory"],
     }
-    agent = ConfigComposer(registrars=collect_registrars()).compose(raw).single("agent")
+    agent = ConfigComposer.for_config(raw).compose(raw).single("agent")
     assert agent.show_media_state is True
 
 

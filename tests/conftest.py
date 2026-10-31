@@ -52,6 +52,23 @@ def _isolate_registries(conscribe_isolated):
     yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _every_implementation_imported() -> None:
+    """Import every implementation once, before the first test.
+
+    A run imports only the packages its configuration names
+    (``docs/architecture_design.md`` §4.2.1), but this interpreter is shared by
+    every test, and test modules import implementations directly
+    (``BrowserCapability`` without its providers), so what a test composed would
+    depend on which tests ran before it. Importing everything up front gives
+    every test the same registries. What a run imports is tested in a fresh
+    interpreter (``tests/test_core/test_composer/test_configured_packages.py``).
+    """
+    from spectragent.core.registries import discover_every_implementation
+
+    discover_every_implementation()
+
+
 # ── Tests signal only the processes they started ─────────────────────
 #
 # A fake process handle carries a made-up PID. Once code under test passed

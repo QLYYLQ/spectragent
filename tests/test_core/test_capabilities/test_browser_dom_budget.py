@@ -57,25 +57,23 @@ def _compose(**capability_block: Any) -> BrowserCapability:
     """Build a BrowserCapability the real way — through the Composer."""
     import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
     from spectragent.core.composer import ConfigComposer
-    from spectragent.core.registries import collect_registrars
 
-    run = ConfigComposer(registrars=collect_registrars()).compose(
-        {
-            "capability": [
-                {
-                    "capability_id": "browser",
-                    "mouse_trajectory": {"trajectory_type": "instant"},
-                    "typing_rhythm": {"rhythm_type": "instant"},
-                    "replayability": {"replayability_id": "none"},
-                    "network_source": {"source_id": "live"},
-                    "dom_cleaner": {"cleaner_type": "browser_use"},
-                    "dom_serializer": {"serializer_type": "text"},
-                    "backend": {"provider_id": "local_chrome"},
-                    **capability_block,
-                }
-            ]
-        }
-    )
+    raw = {
+        "capability": [
+            {
+                "capability_id": "browser",
+                "mouse_trajectory": {"trajectory_type": "instant"},
+                "typing_rhythm": {"rhythm_type": "instant"},
+                "replayability": {"replayability_id": "none"},
+                "network_source": {"source_id": "live"},
+                "dom_cleaner": {"cleaner_type": "browser_use"},
+                "dom_serializer": {"serializer_type": "text"},
+                "backend": {"provider_id": "local_chrome"},
+                **capability_block,
+            }
+        ]
+    }
+    run = ConfigComposer.for_config(raw).compose(raw)
     return run.single("capability")
 
 

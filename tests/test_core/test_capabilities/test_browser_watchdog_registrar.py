@@ -38,6 +38,7 @@ import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # 
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES
 from spectragent.core.capabilities.browser.watchdogs import (
     BrowserWatchdog,
@@ -52,7 +53,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
 )
-from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation.observation import (
     ObservationNegotiationResult,
@@ -607,24 +607,22 @@ class TestDomCleanerIsAWiredReceptor:
     @staticmethod
     def _compose(cleaner_block: dict[str, Any]) -> BrowserCapability:
         from spectragent.core.composer import ConfigComposer
-        from spectragent.core.registries import collect_registrars
 
-        run = ConfigComposer(registrars=collect_registrars()).compose(
-            {
-                "capability": [
-                    {
-                        "capability_id": "browser",
-                        "mouse_trajectory": {"trajectory_type": "instant"},
-                        "typing_rhythm": {"rhythm_type": "instant"},
-                        "replayability": {"replayability_id": "none"},
-                        "network_source": {"source_id": "live"},
-                        "dom_cleaner": cleaner_block,
-                        "dom_serializer": {"serializer_type": "text"},
-                        "backend": {"provider_id": "local_chrome"},
-                    }
-                ]
-            }
-        )
+        raw = {
+            "capability": [
+                {
+                    "capability_id": "browser",
+                    "mouse_trajectory": {"trajectory_type": "instant"},
+                    "typing_rhythm": {"rhythm_type": "instant"},
+                    "replayability": {"replayability_id": "none"},
+                    "network_source": {"source_id": "live"},
+                    "dom_cleaner": cleaner_block,
+                    "dom_serializer": {"serializer_type": "text"},
+                    "backend": {"provider_id": "local_chrome"},
+                }
+            ]
+        }
+        run = ConfigComposer.for_config(raw).compose(raw)
         return run.single("capability")
 
     @staticmethod

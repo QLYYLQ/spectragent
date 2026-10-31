@@ -24,9 +24,8 @@ sys.modules["numpy"] = None  # from here on, importing numpy raises ModuleNotFou
 from pathlib import Path
 import yaml
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
-composer = ConfigComposer(registrars=collect_registrars())
+composer = ConfigComposer.for_config(raw)
 """
 
 

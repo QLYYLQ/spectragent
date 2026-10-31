@@ -56,7 +56,6 @@ from spectragent.core.loops.coordinate_frames import (
     step_frame,
 )
 from spectragent.core.loops.errors import UnrepresentableActionError
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
@@ -124,7 +123,7 @@ def _runtime(cls: type, space: CoordinateSpace | None) -> AgentRuntime:
         "agent": [agent],
         "environment": [{"env_type": "browser", "id": "env", "capabilities": [_BROWSER]}],
     }
-    run = ConfigComposer(registrars=collect_registrars()).compose(root)
+    run = ConfigComposer.for_config(root).compose(root)
     return AgentRuntime.for_agent(run, "student")
 
 

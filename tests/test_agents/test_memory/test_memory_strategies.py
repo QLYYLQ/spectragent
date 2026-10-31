@@ -24,7 +24,6 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from spectragent.core.registries import collect_registrars
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
@@ -192,5 +191,5 @@ def _composed_memory(**fields: Any) -> Any:
     """The shipped run config with a token-budget memory, composed for real."""
     raw = yaml.safe_load(SHIPPED_CONFIG.read_text())
     raw["agent"][0]["memory"] = {"memory_id": "token_budget", **fields}
-    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     return run.instance("agent", run.ids("agent")[0]).memory

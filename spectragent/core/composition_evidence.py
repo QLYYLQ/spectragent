@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel
+from pydantic_core import ErrorDetails
 
 InputSource = Literal["explicit", "default"]
 WiringSource = Literal["inline", "pool", "owner_default", "empty", "declaration_only"]
@@ -56,6 +57,17 @@ class CompositionEvidence:
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "components", tuple(self.components))
         object.__setattr__(self, "wiring", tuple(self.wiring))
+
+
+#: pydantic error types whose message can quote the configuration's input.
+_INPUT_QUOTING_ERRORS = frozenset({"value_error", "assertion_error", "union_tag_invalid"})
+
+
+def safe_error_message(error: ErrorDetails) -> str:
+    """pydantic's message for *error*, or a fixed one where pydantic's can quote the input."""
+    if error["type"] in _INPUT_QUOTING_ERRORS:
+        return "The value does not satisfy the declared configuration contract"
+    return error["msg"]
 
 
 @dataclass(frozen=True)

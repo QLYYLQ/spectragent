@@ -34,17 +34,12 @@ from typing import Any, get_args, get_type_hints
 
 import pytest
 
-from spectragent.agents import (
-    AgentRegistrar,
+from spectragent.agents._registrar import AgentBase, AgentRegistrar
+from spectragent.agents.browser_use import (
     BrowserUseAgent,
     BrowserUseDomAgent,
     BrowserUseDomVisionAgent,
-    SkyvernAgent,
-    SkyvernDomAgent,
-    SkyvernDomVisionAgent,
-    UITarsAgent,
 )
-from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompts import (
     AGENT_PROMPT_ROOT,
     PROMPT_SUFFIX,
@@ -54,6 +49,8 @@ from spectragent.agents.prompts import (
     load_prompt,
     template_variables,
 )
+from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDomVisionAgent
+from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
 from tests._helpers.action_spaces import space_of

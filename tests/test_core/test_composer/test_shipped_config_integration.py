@@ -47,7 +47,6 @@ from spectragent.core.loops.validation import (
     IncompatibleLoopInputError,
 )
 from spectragent.core.negotiation import IncompatibleActionError
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceConfig, TraceNegotiation, TraceStatus
 from spectragent.core.trace.reader import RunTrace
@@ -93,7 +92,8 @@ _DIRECT_LLM: dict[str, Any] = {
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=collect_registrars())
+    """The whole catalog, for the hand-written browser configurations below."""
+    return ConfigComposer.for_every_package()
 
 
 def _agent_entry(
@@ -129,14 +129,15 @@ class TestShippedConfigs:
     @pytest.mark.parametrize("config_path", SHIPPED_CONFIGS, ids=lambda p: p.name)
     def test_compose_then_prepare_without_patching(
         self,
-        composer: ConfigComposer,
         config_path: Path,
         tmp_path: Path,
     ) -> None:
         root = yaml.safe_load(config_path.read_text())
+        # As every entry point composes it: only the packages the file names.
+        composer = ConfigComposer.for_config(root)
         run = composer.compose(copy.deepcopy(root))
         if "exporter" in root:
-            _check_export_config(composer, run, root)
+            _check_export_config(run)
             return
         if "replay_reviewer" in root:
             from spectragent.core.llm.base import require_inference_protocol
@@ -210,9 +211,10 @@ class TestShippedConfigs:
         "name", ["branch_ui_tars_archive.yaml", "same_path_ui_tars_archive.yaml"]
     )
     def test_branch_prepare_refuses_a_source_without_effective_action_identity(
-        self, composer: ConfigComposer, tmp_path: Path, name: str
+        self, tmp_path: Path, name: str
     ) -> None:
         root = yaml.safe_load((CONFIG_DIR / "flywheel" / name).read_text())
+        composer = ConfigComposer.for_config(root)
         run = composer.compose(copy.deepcopy(root))
         agent_id = run.ids("agent")[0]
         source = _recorded_run_of(composer, root, agent_id, tmp_path)
@@ -230,7 +232,7 @@ class TestShippedConfigs:
             )
 
 
-def _check_export_config(composer: ConfigComposer, run: Any, root: dict[str, Any]) -> None:
+def _check_export_config(run: Any) -> None:
     """An export-only config (§4.15) has nothing to prepare: no agent, no environment.
 
     It composes to exactly one exporter whose knobs arrive (the walk below
@@ -245,7 +247,8 @@ def _check_export_config(composer: ConfigComposer, run: Any, root: dict[str, Any
     assert exporter.translator is run.single("action_translator")
     student_path = CONFIG_DIR.parent / exporter.student_run_config
     assert student_path.is_file(), f"student_run_config {exporter.student_run_config} is missing"
-    student = composer.compose(yaml.safe_load(student_path.read_text()))
+    student_root = yaml.safe_load(student_path.read_text())
+    student = ConfigComposer.for_config(student_root).compose(student_root)
     assert len(student.ids("agent")) == 1
     assert not student.hooks, "a student configuration is assembled, never run: no hooks"
 

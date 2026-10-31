@@ -25,15 +25,22 @@ case: archiving has one switch).
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
+from types import MappingProxyType
 from typing import Any, Literal, get_origin
 
+from conscribe import NO_IMPLEMENTATION_ERROR_TYPE, Coverage
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from pydantic_core import ErrorDetails
 
+from spectragent.agents._registrar import AgentRegistrar
+from spectragent.agents.prompts import agent_family
 from spectragent.core.actions._registrar import ActionRegistrar, is_loop_action
+from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.core.composition_evidence import (
     CompositionEvidence,
     CompositionIssue,
@@ -42,9 +49,20 @@ from spectragent.core.composition_evidence import (
     WiringSource,
     configured_inputs,
     implementation_name,
+    safe_error_message,
 )
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
-from spectragent.core.registries import discover_implementations
+from spectragent.core.registries import (
+    AGENTS_PACKAGE,
+    CAPABILITIES_PACKAGE,
+    FRAMEWORK_PACKAGES,
+    agent_families,
+    capability_ids,
+    collect_registrars,
+    discover_every_implementation,
+    discover_implementations,
+    unnamed_packages,
+)
 
 
 class ComposeError(Exception):
@@ -65,6 +83,10 @@ class UnresolvedWiringError(ComposeError):
 
 class DuplicateInstanceIdError(ComposeError):
     """Two config entries in one layer claimed the same instance id."""
+
+
+class UnknownPackageError(ComposeError):
+    """A configuration names a capability or an agent family that has no package."""
 
 
 @dataclass(frozen=True)
@@ -220,36 +242,85 @@ class ConfigComposer:
 
     Example::
 
-        composer = ConfigComposer(registrars=collect_registrars())
-        run = composer.compose(yaml.safe_load(Path("cfg.yaml").read_text()))
+        raw = yaml.safe_load(Path("cfg.yaml").read_text())
+        run = ConfigComposer.for_config(raw).compose(raw)
         result = await AgentRuntime.for_agent(run, "main").execute(task="...")
     """
+
+    @classmethod
+    def for_config(cls, raw: object) -> ConfigComposer:
+        """The Composer for one configuration, importing only what *raw* names.
+
+        Each capability block's ``capability_id`` names a capability package
+        and each agent block's ``agent_id`` an agent family
+        (``browser_use.dom``: the ``browser_use`` family). The framework's own
+        packages and those packages are imported; the schema holds the
+        framework axes and the named capabilities' axes, built as conscribe's
+        partial build: a declared key with no implementation here is left out,
+        for negotiation to decide (``docs/architecture_design.md`` §4.2.1).
+
+        Raises:
+            UnknownPackageError, ComposeError: what :func:`named_packages`
+                refuses, before any capability package or family is imported.
+        """
+        capabilities, agents = named_packages(raw)
+        families = {agent_family(agent_id) for agent_id in agents}
+        discover_implementations(*FRAMEWORK_PACKAGES, capabilities=capabilities, families=families)
+        return cls(
+            registrars=collect_registrars(capabilities),
+            coverage="partial",
+            unnamed=unnamed_packages(capabilities, families),
+        )
+
+    @classmethod
+    def for_every_package(cls) -> ConfigComposer:
+        """The Composer over the whole catalog: every package imported, every layer collected."""
+        discover_every_implementation()
+        return cls(registrars=collect_registrars())
 
     def __init__(
         self,
         *,
-        registrars: dict[str, Any],
-        discover_roots: tuple[str, ...] = (
-            "spectragent.agents",
-            "spectragent.core",
-            "spectragent.schemas",
-        ),
+        registrars: Mapping[str, Any],
+        coverage: Coverage = "complete",
+        unnamed: Collection[str] = (),
     ) -> None:
-        # Discover concrete implementation modules to populate registries,
-        # minus the modules a capability declares as needing an optional
-        # extra. ``spectragent.generated`` is intentionally not a root: its
-        # ``_composed.py`` is a codegen artefact that re-declares conscribe
-        # models and can fail to import mid-regeneration.
-        discover_implementations(*discover_roots)
-        if not registrars:
-            raise ComposeError("ConfigComposer requires at least one registrar.")
-        self._registrars = registrars
-        self._catalog = build_configuration_catalog(registrars)
+        """Build the schema over the layers of *registrars* that have an implementation.
+
+        Discovers nothing: which modules are imported is the caller's choice
+        (:meth:`for_config`, :meth:`for_every_package`). A layer with no
+        imported implementation is left out instead of refused, so a
+        configuration that names no capability composes without one.
+        *coverage* is conscribe's: ``"partial"`` when the imported
+        implementations are deliberately part of the catalog. An
+        implementation defined in one of the *unnamed* packages (a run's
+        other capability packages and agent families, which an earlier import
+        may have left registered) does not keep a layer in: which layers a run
+        holds, and so its resolved config and hash, follows what it names.
+        """
+        self._registrars = {
+            layer: registrar
+            for layer, registrar in registrars.items()
+            if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
+        }
+        self._left_out = {
+            layer: registrar
+            for layer, registrar in registrars.items()
+            if layer not in self._registrars
+        }
+        if not self._registrars:
+            raise ComposeError("ConfigComposer requires a registrar with an implementation.")
+        self._catalog = build_configuration_catalog(self._registrars, coverage=coverage)
         # Reverse index: per-key Pydantic model → (layer_name, registry_key).
         self._model_to_lk: dict[type[BaseModel], tuple[str, str]] = {}
         for layer, entries in self._catalog.components.items():
             for key, definition in entries.items():
                 self._model_to_lk[definition.config_model] = (layer, key)
+
+    @property
+    def registrars(self) -> Mapping[str, Any]:
+        """The layers this Composer composes against: each one with an implementation."""
+        return MappingProxyType(self._registrars)
 
     @property
     def catalog(self) -> ConfigurationCatalog:
@@ -268,7 +339,7 @@ class ConfigComposer:
 
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         """Validate, instantiate (leaves-first), inject, assemble."""
-        cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
+        cfg = raw if isinstance(raw, BaseModel) else self.validate(raw)
         inputs = configured_inputs(cfg)
         state = _State(by_layer={layer: {} for layer in self._registrars})
 
@@ -286,6 +357,76 @@ class ConfigComposer:
                 components=tuple(state.identity.values()),
                 wiring=tuple(state.wiring),
             ),
+        )
+
+    def validate(self, raw: object) -> BaseModel:
+        """*raw* validated against this Composer's schema.
+
+        What this build holds no implementation for is refused in plain words
+        rather than pydantic's: a written section whose layer was left out
+        (``environment`` with no capability: validation would only say
+        ``Extra inputs are not permitted``), and a value in a field a partial
+        build accepts only "nothing" in, which pydantic reports as
+        ``no_implementation`` (``trace_writer.archive`` in a run naming no
+        capability that provides an archiver). Such a refusal also lists every
+        other problem of the configuration, so one attempt shows them all; a
+        configuration with only ordinary problems gets pydantic's own error.
+        """
+        problems: list[_Problem] = []
+        sections = raw
+        if isinstance(raw, Mapping):
+            problems = [
+                self._left_out_problem(str(layer))
+                for layer in sorted(raw, key=str)
+                if layer in self._left_out
+            ]
+            sections = {key: value for key, value in raw.items() if key not in self._left_out}
+        try:
+            cfg = self.top_level_type.model_validate(sections)
+        except ValidationError as exc:
+            errors = exc.errors()
+            if not problems and all(e["type"] != NO_IMPLEMENTATION_ERROR_TYPE for e in errors):
+                raise
+            problems += [_Problem.of(error, raw) for error in errors]
+            raise _refusal(problems) from exc
+        if problems:
+            raise _refusal(problems)
+        return cfg
+
+    def _left_out_problem(self, layer: str) -> _Problem:
+        """Why a written section of *layer*, which this run left out, has nowhere to go."""
+        if self._left_out[layer].inline_only:
+            # Naming a capability that provides it would only meet the
+            # inline_only_layer refusal: say where its instances are written.
+            where = self._receptors_of(layer) or "the receptors that hold it"
+            return _Problem(
+                layer,
+                f"the {layer!r} layer takes no top-level section: its instances are written "
+                f"under {where}, and come from the package of a capability the configuration "
+                f"names",
+                True,
+                f"Leave it out, or write its instances under {where} and name the capability "
+                f"that provides them",
+            )
+        return _Problem(
+            layer,
+            f"the configuration writes the {layer!r} section, and none of the packages it "
+            f"names implements that layer. Environments, actions and archivers come from the "
+            f"package of a capability the configuration names, agents from their family's "
+            f"package: name the one this section needs",
+            True,
+        )
+
+    def _receptors_of(self, layer: str) -> str:
+        """Where this schema's components hold instances of *layer*: ``hook[trace_writer].archive``."""
+        return ", ".join(
+            f"{owner}[{key}].{name}"
+            for owner, entries in self._catalog.components.items()
+            for key, definition in entries.items()
+            for name, entry in wiring_slots(definition.implementation).items()
+            if entry.slot is not None
+            and not entry.declare_only
+            and entry.spec.registry_name == layer
         )
 
     # -- Per-instance assembly ---------------------------------------
@@ -363,6 +504,19 @@ class ConfigComposer:
                     )
                 state.record_wiring(f"{path}.{name}", entry, "declaration_only")
                 continue
+            value = getattr(cfg, name, None) if name in model_fields else None
+            if spec.registry_name in self._left_out:
+                # Its layer has no implementation in this run (no named
+                # capability provides an archiver). A value that selects
+                # nothing leaves the owner's default. After an earlier import
+                # left implementations registered, the field takes their bare
+                # keys; a value naming one is refused as a fresh process
+                # refuses it at validation.
+                if _is_populated(value):
+                    unimplemented = _unimplemented(spec.registry_name, name)
+                    raise _refusal([_Problem(f"{path}.{name}", unimplemented, True)])
+                retained.append((name, entry))
+                continue
             if spec.registry_name not in self._registrars:
                 raise UnresolvedWiringError(
                     f"{path}.{name}: {cls.__name__} declares a receptor slot wired to "
@@ -375,7 +529,6 @@ class ConfigComposer:
                         "Add the registrar to the configuration catalog's input registrars.",
                     ),
                 )
-            value = getattr(cfg, name, None) if name in model_fields else None
             if value is None:
                 if self._registrars[spec.registry_name].inline_only:
                     # Filled from its own block or not at all: omitted or
@@ -707,6 +860,194 @@ class ConfigComposer:
 # -- Module-level helpers --------------------------------------------
 
 
+#: The receptor every environment inherits from ``EnvironmentBase``. An
+#: environment's own class lives in its capability's package, which is not
+#: imported yet when names are read, so its capability blocks are found here.
+_ENVIRONMENT_CAPABILITIES = "capabilities"
+
+
+def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
+    """The capability ids and agent ids *raw* names, each with the first place it is written.
+
+    Read before anything is imported, and only where the schema puts those
+    blocks: the entries of the top-level ``capability`` and ``agent``
+    sections and each environment's ``capabilities``. Only those blocks'
+    discriminator fields are read, never a free-form field: an ``agent_id``
+    in a hook's ``parameters`` or a provider's ``extra_body`` names nothing.
+    Its refusals are the configuration's errors, not the schema's: ``config
+    check`` reports them at its validation stage.
+
+    Raises:
+        UnknownPackageError: a capability, or the family of an agent
+            (``browser_use.dom``: ``browser_use``), that has no package.
+        ComposeError: an agent and no capability (issue
+            ``agent_without_capability``).
+    """
+    sections = raw if isinstance(raw, Mapping) else {}
+    capabilities = _ids(
+        [
+            *_blocks(sections.get("capability"), "capability"),
+            *(
+                held
+                for environment, path in _blocks(sections.get("environment"), "environment")
+                for held in _blocks(
+                    environment.get(_ENVIRONMENT_CAPABILITIES),
+                    f"{path}.{_ENVIRONMENT_CAPABILITIES}",
+                )
+            ),
+        ],
+        CapabilityRegistrar.discriminator_field,
+    )
+    agents = _ids(_blocks(sections.get("agent"), "agent"), AgentRegistrar.discriminator_field)
+    families: dict[str, str] = {}
+    for agent_id, path in agents.items():
+        families.setdefault(agent_family(agent_id), path)
+    for named, kind, parent, known, code in (
+        (
+            capabilities,
+            "capability",
+            CAPABILITIES_PACKAGE,
+            capability_ids(),
+            "unknown_capability_package",
+        ),
+        (families, "agent family", AGENTS_PACKAGE, agent_families(), "unknown_agent_family"),
+    ):
+        for name, path in named.items():
+            if name not in known:
+                package = f"{parent}.{name}"
+                available = ", ".join(known) or "none"
+                raise UnknownPackageError(
+                    f"{path}: names the {kind} {name!r}, which has no package {package} "
+                    f"(known: {available}).",
+                    issue=CompositionIssue(
+                        code,
+                        path,
+                        f"The {kind} {name!r} has no package {package}.",
+                        f"Name one that exists ({available}), or add the package.",
+                    ),
+                )
+    if agents and not capabilities:
+        agent_id, path = next(iter(agents.items()))
+        known = ", ".join(capability_ids()) or "none"
+        raise ComposeError(
+            f"{path}: the agent {agent_id!r} observes and acts through a capability, and "
+            f"the configuration names none: add an environment block holding one "
+            f"(capability packages: {known}).",
+            issue=CompositionIssue(
+                "agent_without_capability",
+                path,
+                f"The agent {agent_id!r} has no capability to observe and act through.",
+                f"Add an environment block holding a capability ({known}).",
+            ),
+        )
+    return capabilities, agents
+
+
+def _inside(module: str, packages: Collection[str]) -> bool:
+    """Whether *module* is one of *packages* or lies below one."""
+    return any(module == package or module.startswith(f"{package}.") for package in packages)
+
+
+def _unimplemented(layer: object, name: object) -> str:
+    return (
+        f"no package this configuration names provides any {layer!r}; leave {name!r} out, "
+        f"or name the capability or agent family that does"
+    )
+
+
+@dataclass(frozen=True)
+class _Problem:
+    """One problem of a configuration, at the path its author wrote."""
+
+    path: str
+    message: str
+    #: Whether it is an implementation this run does not hold.
+    unimplemented: bool
+    remedy: str = "Leave it out, or name the package that provides it"
+
+    @classmethod
+    def of(cls, error: ErrorDetails, raw: object) -> _Problem:
+        path = _location(error["loc"], raw)
+        if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
+            return cls(path, safe_error_message(error), False)
+        context = error.get("ctx") or {}
+        return cls(path, _unimplemented(context.get("layer"), context.get("field")), True)
+
+
+def _refusal(problems: list[_Problem]) -> ComposeError:
+    """One refusal listing every problem, in its text and in its issue.
+
+    ``config check`` shows the issue, not the text. The issue's path and
+    remedy are the first unimplemented problem's.
+    """
+    known = _known_packages()
+    first = next(problem for problem in problems if problem.unimplemented)
+    if len(problems) == 1:
+        message = f"{first.path}: {first.message} ({known})."
+        summary = f"{first.message[0].upper()}{first.message[1:]}."
+    else:
+        listed = "\n".join(f"  {problem.path}: {problem.message}" for problem in problems)
+        message = f"{len(problems)} problems in the configuration ({known}):\n{listed}"
+        summary = f"{len(problems)} problems in the configuration:\n{listed}"
+    return ComposeError(
+        message,
+        issue=CompositionIssue(
+            "no_implementation", first.path, summary, f"{first.remedy} ({known})."
+        ),
+    )
+
+
+def _known_packages() -> str:
+    """The capability packages and agent families there are, for a refusal to list."""
+    return (
+        f"capability packages: {', '.join(capability_ids()) or 'none'}; "
+        f"agent families: {', '.join(agent_families()) or 'none'}"
+    )
+
+
+def _location(loc: tuple[int | str, ...], raw: object) -> str:
+    """A pydantic error location as the configuration wrote it: ``hook[0].archive``.
+
+    pydantic puts a discriminated union's tag in the location
+    (``hook[0].trace_writer.archive``); no block has a key of that name, so
+    walking *raw* along the location leaves the tag out.
+    """
+    path, node = "", raw
+    for part in loc:
+        if isinstance(part, int):
+            path += f"[{part}]"
+            node = node[part] if isinstance(node, list | tuple) and part < len(node) else None
+        elif isinstance(node, Mapping) and part not in node:
+            continue
+        else:
+            path += f".{part}" if path else part
+            node = node.get(part) if isinstance(node, Mapping) else None
+    return path
+
+
+def _blocks(value: object, path: str) -> list[tuple[Mapping[object, object], str]]:
+    """The component blocks written at *path*: one inline block, or each block of a list."""
+    if isinstance(value, Mapping):
+        return [(value, path)]
+    if isinstance(value, list | tuple):
+        return [
+            (item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+            if isinstance(item, Mapping)
+        ]
+    return []
+
+
+def _ids(blocks: list[tuple[Mapping[object, object], str]], field: str) -> dict[str, str]:
+    """Each string value of *field* in *blocks*, with the first place it is written."""
+    ids: dict[str, str] = {}
+    for block, path in blocks:
+        value = block.get(field)
+        if isinstance(value, str):
+            ids.setdefault(value, f"{path}.{field}")
+    return ids
+
+
 def _discriminator_names(registrar: Any) -> frozenset[str]:
     """Every field a registrar uses as a discriminator tag.
 
@@ -758,5 +1099,7 @@ __all__ = [
     "ConfigComposer",
     "DuplicateInstanceIdError",
     "InstantiationError",
+    "UnknownPackageError",
     "UnresolvedWiringError",
+    "named_packages",
 ]

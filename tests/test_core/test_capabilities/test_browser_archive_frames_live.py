@@ -50,7 +50,6 @@ from spectragent.core.capabilities.browser.archive.frames import (
 )
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action
@@ -144,7 +143,7 @@ async def test_a_recorded_run_keeps_the_screens_between_actions(
     ]
     with FixtureSite() as site, ScriptedLLMServer(script) as llm:
         _overrides(raw, site=site, llm=llm, trace_dir=tmp_path)
-        run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+        run = ConfigComposer.for_config(raw).compose(raw)
         (writer,) = [hook for hook in run.instances("hook") if isinstance(hook, TraceWriter)]
         (frames_archiver,) = [a for a in writer.archive if isinstance(a, FramesArchiver)]
         assert frames_archiver.after_observation_delay_s == DELAY_S

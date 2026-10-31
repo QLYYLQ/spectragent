@@ -6,26 +6,14 @@ import base64
 import hashlib
 import io
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urldefrag, urlsplit
 
 import yaml
 from PIL import Image
 
-from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
-from spectragent.core.capabilities.browser.review_evidence import (
-    CAPTURE_STATE_FRAGMENT,
-    BrowserEvidenceUnavailable,
-    BrowserEvidenceUnsupported,
-    capture_state_failed_images,
-    capture_state_new_failures,
-    clean_recorded_dom,
-    recorded_replay_facts,
-    replay_images_not_served_in_viewport,
-)
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.decision import DecisionImage, ImageProvenance
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.replay_review.base import BaseReplayReviewer
@@ -39,6 +27,9 @@ from spectragent.replay_review.models import (
     TaskIdentity,
     ViewportImageReadings,
 )
+
+if TYPE_CHECKING:
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
 
 
 def _digest(data: bytes) -> str:
@@ -67,6 +58,19 @@ def _browser_config(value: dict[str, Any]) -> dict[str, Any]:
     return candidates[0]
 
 
+def _source_browser(config_path: Path) -> tuple[BrowserCapability, dict[str, Any]]:
+    """The source run's browser capability and recipe, built from its configuration file.
+
+    Composed for the packages that file names. Only the browser block is
+    instantiated, never the source Agent's model, hooks or loaders: offline
+    evidence needs none of their credentials or runtime resources.
+    """
+    raw = yaml.safe_load(config_path.read_text())
+    composer = ConfigComposer.for_config(raw)
+    configured = _browser_config(composer.validate(raw).model_dump(mode="json"))
+    return composer.compose({"capability": [configured]}).single("capability"), configured
+
+
 def _ref(trace: RunTrace, step: int) -> EvidenceRef:
     return EvidenceRef(
         run_id=trace.run_id,
@@ -79,6 +83,11 @@ def _ref(trace: RunTrace, step: int) -> EvidenceRef:
 
 def _capture_state_images(trace: RunTrace, step: int) -> dict[str, Any]:
     """The step's capture_state reading of failed visible images, or why there is none."""
+    from spectragent.core.capabilities.browser.review_evidence import (
+        CAPTURE_STATE_FRAGMENT,
+        capture_state_failed_images,
+    )
+
     negotiation = trace.config.negotiation
     return capture_state_failed_images(
         trace.observation_fragment(step, CAPTURE_STATE_FRAGMENT),
@@ -105,6 +114,13 @@ def _image(data: bytes) -> DecisionImage:
 async def _observation(
     trace: RunTrace, step: int, capability: Any, reviewer: BaseReplayReviewer
 ) -> tuple[ReviewObservation, EvidenceRef]:
+    from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
+    from spectragent.core.capabilities.browser.review_evidence import (
+        BrowserEvidenceUnavailable,
+        BrowserEvidenceUnsupported,
+        clean_recorded_dom,
+    )
+
     if not trace.config.recording.observations:
         raise ReviewEvidenceError(
             "scope_unrecorded", "Source observations were not selected for recording"
@@ -193,6 +209,13 @@ async def _observation(
 
 async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> ReviewCase:
     """No browser, current website, model invocation, or write to either trace."""
+    from spectragent.core.capabilities.browser.review_evidence import (
+        BrowserEvidenceUnavailable,
+        capture_state_new_failures,
+        recorded_replay_facts,
+        replay_images_not_served_in_viewport,
+    )
+
     if any(not (Path(path) / "manifest.json").is_file() for path in (pair.source, pair.replay)):
         raise ReviewEvidenceError("missing_source", "A source or replay trace directory is missing")
     try:
@@ -224,15 +247,7 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
         config_path = Path(pair.source_config)
         if not config_path.is_file():
             raise ReviewEvidenceError("missing_source", "Source run configuration is missing")
-        composer = ConfigComposer(registrars=collect_registrars())
-        source_config = composer.top_level_type.model_validate(
-            yaml.safe_load(config_path.read_text())
-        )
-        configured = _browser_config(source_config.model_dump(mode="json"))
-        # Instantiate the recorded browser recipe once, without constructing the
-        # source Agent's model, hooks or loaders. Offline evidence needs none of
-        # their credentials or runtime resources.
-        cap = composer.compose({"capability": [configured]}).single("capability")
+        cap, configured = _source_browser(config_path)
         recorded = _browser_config(source.config.resolved)
         recipe_keys = (
             "dom_cleaner",

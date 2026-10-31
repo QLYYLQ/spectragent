@@ -37,7 +37,6 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.action_space import ActionSpace
@@ -189,7 +188,8 @@ async def test_runtime_carries_the_loops_limit_into_the_ui_tars_prompt(probe: in
     the runtime hand-off removed the prompt would advertise one action while
     the loop runs nine. 1 pins the wording at the boundary.
     """
-    run = ConfigComposer(registrars=collect_registrars()).compose(_ui_tars_config(probe))
+    raw = _ui_tars_config(probe)
+    run = ConfigComposer.for_config(raw).compose(raw)
     agent_id = run.ids("agent")[0]
     agent = run.instance("agent", agent_id)
     assert isinstance(agent, UITarsAgent)

@@ -51,7 +51,6 @@ from spectragent.core.loops.coordinate_frames import (
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -654,9 +653,7 @@ def _assembled(agent: dict[str, Any], *, browser: dict[str, Any] = _BROWSER) -> 
         ],
         "environment": [{"env_type": "browser", "id": "env", "capabilities": [browser]}],
     }
-    runtime = AgentRuntime.for_agent(
-        ConfigComposer(registrars=collect_registrars()).compose(root), "a"
-    )
+    runtime = AgentRuntime.for_agent(ConfigComposer.for_config(root).compose(root), "a")
     runtime.prepare()
     return runtime
 

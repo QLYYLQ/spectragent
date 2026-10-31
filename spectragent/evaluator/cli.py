@@ -14,7 +14,6 @@ import yaml
 
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.redaction import redact_config
@@ -44,7 +43,7 @@ def compose_evaluation(config: Path):
     unexpected = set(raw) - {"evaluator", "eval_loader", "llm"}
     if unexpected:
         raise ValueError(f"Independent evaluation does not accept layers {sorted(unexpected)}")
-    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     return run, run.single("evaluator"), run.single("eval_loader")
 
 

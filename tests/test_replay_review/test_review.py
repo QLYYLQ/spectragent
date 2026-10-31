@@ -28,7 +28,6 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.decision import DecisionRequest, DecisionResult
 from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.llm.providers.typesafe import TypeSafeDirect
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.encoding import (
     PendingLLMCall,
     encode_archive_file,
@@ -414,7 +413,6 @@ def test_policy_shape_is_refused_when_incomplete_or_inconsistent(mutate):
     ],
 )
 def test_thresholds_fitted_on_other_questions_or_evidence_are_refused(change):
-    composer = ConfigComposer(registrars=collect_registrars())
     root = yaml.safe_load(SHIPPED_DMX.read_text())
     block = root["replay_reviewer"][0]
     fitted = block["policy"]["thresholds"]["fit"]
@@ -422,14 +420,21 @@ def test_thresholds_fitted_on_other_questions_or_evidence_are_refused(change):
     questions = ReviewQuestionSet.model_validate(block["questions"]).sha256()
     evidence = ReviewEvidenceOptions.model_validate(block["evidence"]).sha256()
     with pytest.raises(Exception) as refused:
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
     message = str(refused.value)
     for digest in (fitted["questions_sha256"], fitted["evidence_sha256"], questions, evidence):
         assert digest in message
     assert "Re-fit" in message
     # A new fit entry for the changed questions and evidence options is accepted.
     refit(block)
-    assert composer.compose(root).single("replay_reviewer").settings().evidence_sha256 == evidence
+    assert (
+        ConfigComposer.for_config(root)
+        .compose(root)
+        .single("replay_reviewer")
+        .settings()
+        .evidence_sha256
+        == evidence
+    )
 
 
 def test_a_site_override_fitted_elsewhere_is_refused_by_name():
@@ -494,11 +499,10 @@ async def test_missing_visuals_with_an_image_miss_go_to_investigation():
 
 @pytest.mark.parametrize("field", ["questions", "policy", "evidence"])
 def test_required_yaml_fields_have_no_code_defaults(field):
-    composer = ConfigComposer(registrars=collect_registrars())
     root = yaml.safe_load(SHIPPED_DMX.read_text())
     del root["replay_reviewer"][0][field]
     with pytest.raises(ValidationError, match=field):
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
     block = reviewer_block()
     typed = {
         "questions": ReviewQuestionSet.model_validate(block["questions"]),
@@ -515,7 +519,6 @@ def test_required_yaml_fields_have_no_code_defaults(field):
     [("missing_question", "information_question"), ("verdict", "information_question")],
 )
 def test_routing_question_must_be_a_configured_noul(question, message):
-    composer = ConfigComposer(registrars=collect_registrars())
     root = yaml.safe_load(SHIPPED_DMX.read_text())
     block = root["replay_reviewer"][0]
     block["questions"]["items"]["verdict"] = {
@@ -525,7 +528,7 @@ def test_routing_question_must_be_a_configured_noul(question, message):
     }
     block["policy"]["information_question"] = question
     with pytest.raises(Exception, match=message):
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
 
 
 def test_old_question_and_policy_versions_are_gone():
@@ -637,9 +640,8 @@ def test_request_carries_no_action_effect_from_the_restoration():
 
 @pytest.mark.parametrize("path", sorted(Path("configs/replay_review").glob("*.yaml")))
 def test_shipped_reviewer_config_and_wrong_chat_model(path):
-    composer = ConfigComposer(registrars=collect_registrars())
     root = yaml.safe_load(path.read_text())
-    composed = composer.compose(root)
+    composed = ConfigComposer.for_config(root).compose(root)
     reviewer = composed.single("replay_reviewer")
     assert reviewer.decision_model is composed.single("decision_model")
     assert reviewer.decision_model.timeout == 35
@@ -649,11 +651,10 @@ def test_shipped_reviewer_config_and_wrong_chat_model(path):
         "model": "test",
     }
     with pytest.raises(ValidationError):
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
 
 
 def test_top_level_adoption_is_per_axis_and_missing_receptor_is_refused():
-    composer = ConfigComposer(registrars=collect_registrars())
     root = {
         "llm": [{"model_type": "openai", "provider": {"name": "direct"}, "model": "chat"}],
         "decision_model": [
@@ -670,9 +671,9 @@ def test_top_level_adoption_is_per_axis_and_missing_receptor_is_refused():
     # A required single receptor must be inline, even when a top-level
     # instance exists. Collection receptors adopt only their own axis.
     with pytest.raises(ValidationError, match="decision_model"):
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
     root["replay_reviewer"][0]["decision_model"] = root["decision_model"].pop()
-    run = composer.compose(root)
+    run = ConfigComposer.for_config(root).compose(root)
     reviewer = run.single("replay_reviewer")
     assert reviewer.decision_model is run.single("decision_model")
     assert reviewer.decision_model is not run.single("llm")
@@ -680,7 +681,7 @@ def test_top_level_adoption_is_per_axis_and_missing_receptor_is_refused():
     assert reviewer.policy.thresholds.accept_information_min == 0.93
     del root["replay_reviewer"][0]["decision_model"]
     with pytest.raises(Exception, match="decision_model"):
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
 
 
 async def test_direct_python_protocol_check_and_missing_visuals():
@@ -886,7 +887,7 @@ async def _recorded_pair(
     raw = replace(raw, data=gzip_json(document))
     url = document["url"]
     config = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
-    composed = ConfigComposer(registrars=collect_registrars()).compose(config)
+    composed = ConfigComposer.for_config(config).compose(config)
     source_yaml = tmp_path / "source.yaml"
     source_yaml.write_text(yaml.safe_dump(config))
     provenance = BranchProvenance(
@@ -1188,7 +1189,6 @@ async def test_missing_scope_corruption_and_source_are_distinct(tmp_path):
 
 
 def test_chat_list_rejects_decision_and_empty_list_retains_its_meaning():
-    composer = ConfigComposer(registrars=collect_registrars())
     root = {
         "hook": [
             {
@@ -1199,10 +1199,10 @@ def test_chat_list_rejects_decision_and_empty_list_retains_its_meaning():
         ],
         "decision_model": [{"model_type": "typesafe", "provider": {"name": "direct"}}],
     }
-    assert composer.compose(root).single("hook").helper_llms == []
+    assert ConfigComposer.for_config(root).compose(root).single("hook").helper_llms == []
     root["hook"][0]["helper_llms"] = root["decision_model"]
     with pytest.raises(ValidationError):
-        composer.compose(root)
+        ConfigComposer.for_config(root).compose(root)
 
 
 def test_unknown_kind_and_absent_discriminator_are_rejected(tmp_path):

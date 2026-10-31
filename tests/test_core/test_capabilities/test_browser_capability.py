@@ -922,7 +922,7 @@ class TestFailedSetupReleasesResources:
         )
 
     async def test_start_url_failure_still_releases_the_backend_session(self, monkeypatch) -> None:
-        from spectragent.core.environments.browser import BrowserEnvironment
+        from spectragent.core.capabilities.browser.environment import BrowserEnvironment
         from spectragent.core.runtime import AgentRuntime
         from tests._helpers.assembly import AGENT_ID, make_env
 

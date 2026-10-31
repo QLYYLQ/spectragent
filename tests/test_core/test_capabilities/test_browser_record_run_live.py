@@ -27,7 +27,6 @@ import yaml
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.fixture_site import FixtureSite
@@ -67,7 +66,7 @@ def test_record_config_produces_full_env(tmp_path: Path, monkeypatch: pytest.Mon
 
     with FixtureSite(mapped=True) as site, ScriptedLLMServer(SCRIPT) as llm:
         _overrides(raw, site=site, llm=llm, trace_dir=tmp_path)
-        run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+        run = ConfigComposer.for_config(raw).compose(raw)
         (writer,) = [hook for hook in run.instances("hook") if isinstance(hook, TraceWriter)]
 
         async def execute() -> Any:

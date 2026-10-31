@@ -346,7 +346,7 @@ def test_the_runner_reaches_strategies_only_through_the_exporter(
         filters=None,
     )
     exporter.translator = IndexToCoordinateTranslator(occlusion="none")
-    report = ExportRunner(exporter, composer=composer, benchmarks=BenchmarkLoaders()).run()
+    report = ExportRunner(exporter, benchmarks=BenchmarkLoaders()).run()
     assert report.manifest.translator == {
         "occlusion": "none",
         "occlusion_unknown": "raise",

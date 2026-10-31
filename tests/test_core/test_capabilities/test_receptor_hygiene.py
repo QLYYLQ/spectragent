@@ -99,7 +99,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
-from conscribe import discover
 from conscribe.wiring import WiredField, inject_wired_descriptors, parse_wiring
 from pydantic import BaseModel
 
@@ -107,7 +106,7 @@ import spectragent.core.archive as archive_pkg
 import spectragent.core.capabilities as capabilities_pkg
 import spectragent.core.hooks as hooks_pkg
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
-from spectragent.core.registries import collect_registrars
+from spectragent.core.registries import collect_registrars, discover_every_implementation
 
 # Importing the concrete capability packages is what populates the
 # registrar; without it this file would assert over an empty set and pass
@@ -707,7 +706,7 @@ def receptor_trap(cls: type) -> list[str]:
 
 
 def test_no_receptor_defaults_to_a_wired_placeholder() -> None:
-    discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
+    discover_every_implementation()
     checked = {
         cls
         for registrar in collect_registrars().values()
