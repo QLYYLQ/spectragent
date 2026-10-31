@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import struct
 
 import pytest
@@ -172,3 +173,21 @@ async def test_a_held_answer_ends_with_the_server() -> None:
     assert cancelled.is_set()
     writer.close()
     await writer.wait_closed()
+
+
+async def test_clients_that_stay_connected_do_not_hold_the_exit() -> None:
+    """One client stopped reading a long answer, one is silent since it connected: both are dropped."""
+    device = scripted({"screencap": ShellResult(stdout=bytes(32 * 1024 * 1024))})
+    async with asyncio.timeout(_WAIT_S):
+        async with FakeAdbServer({SERIAL: device}) as adb:
+            reader, stalled = await asyncio.open_connection(adb.host, adb.port)
+            for request in (f"host:transport:{SERIAL}", "exec:screencap"):
+                stalled.write(b"%04x" % len(request) + request.encode())
+            await reader.readexactly(8 + 1024)
+            # Last, so the block is left before the server has even seen it.
+            _, silent = await asyncio.open_connection(adb.host, adb.port)
+
+    for writer in (stalled, silent):
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()

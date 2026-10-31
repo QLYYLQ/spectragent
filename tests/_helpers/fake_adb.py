@@ -96,8 +96,11 @@ class FakeAdbServer:
     """A loopback ADB server for *devices*, serial → :data:`Device`; an async context manager.
 
     Inside the ``async with`` block, :attr:`host` and :attr:`port` are where a
-    client connects. Leaving it stops listening and cancels every service
-    still being answered, so a held answer cannot outlive the test.
+    client connects. Leaving it stops listening and drops every connection at
+    once, so neither a held answer nor a client that stays connected, or that
+    stopped reading, can keep the test waiting. Then it raises the first error
+    a connection hit, so a fault in a device script or in this fake fails the
+    test instead of only cutting an answer short.
     """
 
     def __init__(self, devices: Mapping[str, Device]) -> None:
@@ -107,30 +110,43 @@ class FakeAdbServer:
         self.requests: list[DeviceRequest] = []
         self._devices = dict(devices)
         self._server: asyncio.Server | None = None
-        self._connections: set[asyncio.Task[None]] = set()
+        self._connections: dict[asyncio.Task[None], asyncio.StreamWriter] = {}
+        self._closing = False
 
     def round_trips(self, serial: str) -> int:
         """How many services were sent to *serial*."""
         return sum(1 for request in self.requests if request.serial == serial)
 
     async def __aenter__(self) -> FakeAdbServer:
-        self._server = await asyncio.start_server(self._serve, self.host, 0)
+        self._server = await asyncio.start_server(self._accept, self.host, 0)
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 
-    async def __aexit__(self, *_exc: object) -> None:
-        if self._server is not None:
-            self._server.close()
-        for task in list(self._connections):
+    async def __aexit__(self, exc_type: object, *_rest: object) -> None:
+        assert self._server is not None
+        self._closing = True
+        self._server.close()
+        for task, writer in self._connections.items():
+            # Abort, not close: a graceful close waits for a client that may never read.
+            writer.transport.abort()
             task.cancel()
-        await asyncio.gather(*self._connections, return_exceptions=True)
-        if self._server is not None:
-            await self._server.wait_closed()
+        results = await asyncio.gather(*self._connections, return_exceptions=True)
+        await self._server.wait_closed()
+        errors = [result for result in results if isinstance(result, Exception)]
+        if errors and exc_type is None:
+            raise errors[0]
+
+    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # A plain function, so a connection is recorded the moment it is made,
+        # before its task first runs. The server counts a connection a loop turn
+        # before this runs, so one that arrives while the block is being left is
+        # dropped here, or the server would wait for it forever.
+        if self._closing:
+            writer.transport.abort()
+            return
+        self._connections[asyncio.create_task(self._serve(reader, writer))] = writer
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        task = asyncio.current_task()
-        assert task is not None
-        self._connections.add(task)
         try:
             serial: str | None = None
             while (request := await _read_request(reader)) is not None:
@@ -150,7 +166,6 @@ class FakeAdbServer:
                     await self._answer(self._devices[serial], request, reader, writer)
                 return
         finally:
-            self._connections.discard(task)
             writer.close()
             with contextlib.suppress(ConnectionError):
                 await writer.wait_closed()
