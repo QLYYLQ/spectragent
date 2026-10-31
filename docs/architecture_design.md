@@ -984,7 +984,7 @@ class ConfigComposer:
 - `declare_only` 条目里没注册的键从它的 `Literal` 里拿掉，不报错。例如一个只提供 `click_coordinate`、`type_coordinate` 的 capability 配 `ui_tars`：`ui_tars` 声明的 `scroll`、`send_keys`、`drag`、`wait` 这次没有实现，照样组装；该用哪些仍由 `prepare()` 的协商决定，它激活 `loop.done` 与那两个动作。
 - 目标注册表为空时，`declare_only` 或没有受体的条目、以及默认什么都不选的受体（`None`；多实例受体还可以是空列表或 `default_factory`）照样保留。trace_writer 的 `archive` 就是这样：没点名任何提供归档器的 capability 时 archiver 注册表为空，`archive` 只接受"什么都不选"（省略、`null`、`[]`）。
 
-这样的字段写了别的值，pydantic 报错误类型 `no_implementation`；Composer 把它换成 `ComposeError`（issue `no_implementation`），用白话说这一层这次没有实现（"no imported capability provides any archiver; leave `archive` out or name a capability that does"）。其余照完整构建检查：未知的注册表、非 `declare_only` 条目里未知的键、默认值、矛盾的声明。
+这样的字段写了别的值，pydantic 报错误类型 `no_implementation`；Composer 把它换成 `ComposeError`（issue `no_implementation`，`compose()` 与 `config explain` 共用的 `ConfigComposer.validate`），用白话说这一层这次没有实现：`hook[0].archive: no package this configuration names provides any 'archiver'; leave 'archive' out, or name the capability or agent family that does (capability packages: …; agent families: …)`。其余照完整构建检查：未知的注册表、非 `declare_only` 条目里未知的键、默认值、矛盾的声明。
 
 整份目录仍用完整构建（默认的 `coverage="complete"`）：`spectragent config generate`、指纹探针、`tests/test_generated/test_in_sync_with_registries.py` 与 `ConfigComposer.for_every_package()`。所以声明里拼错的键在生成与静态测试里照样失败，部分构建不会把它悄悄放过。
 
