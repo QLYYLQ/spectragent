@@ -34,7 +34,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from spectragent.core.capabilities.browser.replay.replay_log import document_miss_total
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
@@ -177,6 +176,8 @@ def filtered_out(
             )
     limit = limit_value(filters.max_document_misses)
     if limit is not None:
+        from spectragent.core.capabilities.browser.replay.replay_log import document_miss_total
+
         misses = document_miss_total(source.trace)
         if misses > limit:
             return f"{misses} main-frame document miss(es) in replay (max_document_misses: {limit})"

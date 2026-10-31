@@ -8,25 +8,27 @@ locates on the step's recorded screenshot (a click a coordinate click, a
 scroll inside an element a scroll from that point); every other action
 passes unchanged. The browser knowledge (geometry, occlusion evidence) lives in
 ``index_points``; this module fetches what it needs from the trace and
-organises the calls.
+organises the calls. It imports the browser's modules only where it uses
+them: every run imports this module with the export package, and a run that
+names no browser imports no browser module (``docs/architecture_design.md``
+§4.2.1).
 """
 
 from functools import cached_property
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
 
 from spectragent.core.actions._registrar import registered_params
 from spectragent.core.actions.params import element_params
-from spectragent.core.capabilities.browser import index_points
-from spectragent.core.capabilities.browser.archive.dom_raw import read_dom_document
-from spectragent.core.capabilities.browser.dom.models import DOMState
-from spectragent.core.capabilities.browser.observations import BrowserMetaObs, DOMObs
 from spectragent.core.trace.reader import RunTrace
 from spectragent.export.errors import OcclusionEvidenceMissingError
 from spectragent.export.translate._registrar import ActionTranslatorBase, Translation
 from spectragent.schemas.action import Action
 from spectragent.schemas.sample import CanonicalStepSample, TranslationRecord
+
+if TYPE_CHECKING:
+    from spectragent.core.capabilities.browser.observations import DOMObs
 
 
 class _StepEvidence:
@@ -37,7 +39,11 @@ class _StepEvidence:
         self._step = step
 
     @cached_property
-    def dom(self) -> DOMObs | None:
+    def dom(self) -> "DOMObs | None":
+        from spectragent.core.capabilities.browser import index_points
+        from spectragent.core.capabilities.browser.dom.models import DOMState
+        from spectragent.core.capabilities.browser.observations import DOMObs
+
         fragment = self._trace.observation_fragment(self._step, index_points.DOM_FRAGMENT)
         if isinstance(fragment, DOMObs) and isinstance(fragment.element_tree, DOMState):
             return fragment
@@ -45,11 +51,17 @@ class _StepEvidence:
 
     @cached_property
     def loader_id(self) -> str | None:
+        from spectragent.core.capabilities.browser import index_points
+        from spectragent.core.capabilities.browser.observations import BrowserMetaObs
+
         meta = self._trace.observation_fragment(self._step, index_points.META_FRAGMENT)
         return meta.loader_id if isinstance(meta, BrowserMetaObs) else None
 
     @cached_property
     def documents(self) -> list[dict[str, Any]]:
+        from spectragent.core.capabilities.browser import index_points
+        from spectragent.core.capabilities.browser.archive.dom_raw import read_dom_document
+
         return [
             read_dom_document(self._trace.read_extra(record.path))
             for record in self._trace.archive_files(self._step, index_points.DOM_RAW_ARCHIVER)
@@ -103,6 +115,8 @@ class IndexToCoordinateTranslator(ActionTranslatorBase):
         self.occlusion_unknown = occlusion_unknown
 
     def translate(self, sample: CanonicalStepSample, trace: RunTrace) -> Translation:
+        from spectragent.core.capabilities.browser import index_points
+
         evidence = _StepEvidence(trace, sample.step)
         viewport = (
             (sample.image.viewport_width, sample.image.viewport_height)

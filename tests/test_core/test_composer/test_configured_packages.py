@@ -143,6 +143,9 @@ _PROBE_PACKAGE = {
     """,
 }
 
+#: Every module of the browser capability package starts with this.
+_BROWSER = "spectragent.core.capabilities.browser"
+
 #: UI-TARS on the probe capability, which provides two of its required actions
 #: and none of its optional ones (scroll, send_keys, drag, wait).
 _UI_TARS_ON_PROBE = {
@@ -160,6 +163,7 @@ _UI_TARS_ON_PROBE = {
 
 _PREPARE = """
 import json
+import sys
 
 import spectragent.core.capabilities as capabilities
 
@@ -171,7 +175,11 @@ from spectragent.core.runtime import AgentRuntime
 raw = {raw}
 runtime = AgentRuntime.for_agent(ConfigComposer.for_config(raw).compose(raw), "main")
 runtime.prepare()
-print(json.dumps({{"actions": sorted(runtime.action_space.allowed_actions)}}))
+print(json.dumps({{
+    "actions": sorted(runtime.action_space.allowed_actions),
+    "browser_modules": sorted(m for m in sys.modules if m.startswith({browser!r})),
+    "agent_cdp": "agent_cdp" in sys.modules,
+}}))
 """
 
 _COMPOSE = """
@@ -195,7 +203,8 @@ print(json.dumps({{
     "families": [f for f in agent_families() if f"spectragent.agents.{{f}}" in sys.modules],
     "probe": any(m.split(".")[:4] == ["spectragent", "core", "capabilities", "probe"]
                  for m in sys.modules),
-    "browser_capability": "spectragent.core.capabilities.browser.capability" in sys.modules,
+    "browser_modules": sorted(m for m in sys.modules if m.startswith({browser!r})),
+    "agent_cdp": "agent_cdp" in sys.modules,
     "layers": sorted(composer.registrars),
     "environments": [type(env).__name__ for env in run.instances("environment")],
 }}))
@@ -207,9 +216,18 @@ class _Composed(TypedDict):
 
     families: list[str]
     probe: bool
-    browser_capability: bool
+    browser_modules: list[str]
+    agent_cdp: bool
     layers: list[str]
     environments: list[str]
+
+
+class _Prepared(TypedDict):
+    """What ``_PREPARE`` reports: the run's actions and what it imported."""
+
+    actions: list[str]
+    browser_modules: list[str]
+    agent_cdp: bool
 
 
 class _Generated(TypedDict):
@@ -241,7 +259,7 @@ def probe_root(tmp_path: Path) -> Path:
 
 
 def _compose(root: Path, raw: str) -> _Composed:
-    return cast(_Composed, _run(_COMPOSE.format(root=str(root), raw=raw)))
+    return cast(_Composed, _run(_COMPOSE.format(root=str(root), raw=raw, browser=_BROWSER)))
 
 
 def _shipped(name: str) -> str:
@@ -272,18 +290,19 @@ def test_a_run_of_another_capability_imports_neither_the_browser_capability_nor_
     raw = {"environment": [{"env_type": "probe", "capabilities": [{"capability_id": "probe"}]}]}
     facts = _compose(probe_root, repr(raw))
     assert facts["probe"] is True, "the probe is a capability package a run can name"
-    assert facts["browser_capability"] is False
+    assert facts["browser_modules"] == [] and facts["agent_cdp"] is False
     assert facts["families"] == []
     assert facts["environments"] == ["ProbeEnvironment"]
 
 
-def test_a_configuration_naming_no_capability_composes_without_their_layers(
-    probe_root: Path,
-) -> None:
+def test_a_judge_configuration_imports_no_browser_module(probe_root: Path) -> None:
+    # An LLM-only configuration names no capability: no browser module comes in,
+    # not even through the framework's export and replay review modules.
     facts = _compose(probe_root, _shipped("lookahead/judge_deepseek.yaml"))
     assert not {"agent", "capability", "environment"} & set(facts["layers"])
     assert not set(BROWSER_AXES) & set(facts["layers"]), "no axis of a capability it never named"
-    assert facts["browser_capability"] is False and facts["families"] == []
+    assert facts["browser_modules"] == [] and facts["agent_cdp"] is False
+    assert facts["families"] == []
 
 
 def test_an_agent_composes_with_a_capability_lacking_some_of_its_actions(
@@ -292,9 +311,10 @@ def test_an_agent_composes_with_a_capability_lacking_some_of_its_actions(
     # A run's schema is conscribe's partial build: UI-TARS's optional actions
     # the probe does not provide are left out, and negotiation in prepare()
     # decides what the run uses.
-    code = _PREPARE.format(root=str(probe_root), raw=repr(_UI_TARS_ON_PROBE))
-    prepared = cast(dict[str, list[str]], _run(code))
+    code = _PREPARE.format(root=str(probe_root), raw=repr(_UI_TARS_ON_PROBE), browser=_BROWSER)
+    prepared = cast(_Prepared, _run(code))
     assert prepared["actions"] == ["loop.done", "probe.click_coordinate", "probe.type_coordinate"]
+    assert prepared["browser_modules"] == [] and prepared["agent_cdp"] is False
 
 
 _EXPLAIN = """
@@ -322,14 +342,40 @@ print(json.dumps({{
 """
 
 
+_TRACE_WRITER = """
+import json
+
+from spectragent.core.composer import ComposeError, ConfigComposer
+
+llm = [{{"model_type": "openai", "model": "m", "provider": {{"name": "direct"}}}}]
+plain = {{"llm": llm, "hook": [{{"hook_id": "trace_writer"}}]}}
+archive = ConfigComposer.for_config(plain).compose(plain).single("hook").archive
+named = {{"llm": llm, "hook": [{{"hook_id": "trace_writer", "archive": [{{"archiver_id": "browser.network"}}]}}]}}
+try:
+    ConfigComposer.for_config(named).compose(named)
+except ComposeError as exc:
+    print(json.dumps({{"archive": archive, "code": exc.issue.code, "path": exc.issue.path}}))
+"""
+
+
+def test_a_trace_writer_composes_in_a_run_with_no_archiver() -> None:
+    # No named capability provides an archiver, so the archiver layer is left
+    # out: archive left out keeps its default, and an archiver named anyway is
+    # refused in plain words rather than as a wiring or validation error.
+    refused = cast(dict[str, object], _run(_TRACE_WRITER.format()))
+    assert refused == {"archive": [], "code": "no_implementation", "path": "hook[0].archive"}
+
+
 def test_explain_says_what_a_run_cannot_provide(probe_root: Path) -> None:
     # Explained with the run's partial build: the complete one would refuse
-    # UI-TARS's declarations in this run, where no capability offers scroll.
+    # UI-TARS's declarations in this run, where no capability offers scroll or
+    # a capture state.
     code = _EXPLAIN.format(root=str(probe_root), raw=repr(_UI_TARS_ON_PROBE))
     explained = cast(dict[str, list[object]], _run(code))
     assert "agent/ui_tars" in explained["declared"]
     assert explained["unresolved"] == [
-        ["ui_tars", "action", ["scroll", "send_keys", "drag", "wait"]]
+        ["ui_tars", "observation", ["capture_state"]],
+        ["ui_tars", "action", ["scroll", "send_keys", "drag", "wait"]],
     ]
 
 

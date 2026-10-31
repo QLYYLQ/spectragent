@@ -12,17 +12,6 @@ from urllib.parse import urldefrag, urlsplit
 import yaml
 from PIL import Image
 
-from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
-from spectragent.core.capabilities.browser.review_evidence import (
-    CAPTURE_STATE_FRAGMENT,
-    BrowserEvidenceUnavailable,
-    BrowserEvidenceUnsupported,
-    capture_state_failed_images,
-    capture_state_new_failures,
-    clean_recorded_dom,
-    recorded_replay_facts,
-    replay_images_not_served_in_viewport,
-)
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.decision import DecisionImage, ImageProvenance
 from spectragent.core.trace.errors import TraceSchemaError
@@ -78,6 +67,11 @@ def _ref(trace: RunTrace, step: int) -> EvidenceRef:
 
 def _capture_state_images(trace: RunTrace, step: int) -> dict[str, Any]:
     """The step's capture_state reading of failed visible images, or why there is none."""
+    from spectragent.core.capabilities.browser.review_evidence import (
+        CAPTURE_STATE_FRAGMENT,
+        capture_state_failed_images,
+    )
+
     negotiation = trace.config.negotiation
     return capture_state_failed_images(
         trace.observation_fragment(step, CAPTURE_STATE_FRAGMENT),
@@ -104,6 +98,13 @@ def _image(data: bytes) -> DecisionImage:
 async def _observation(
     trace: RunTrace, step: int, capability: Any, reviewer: BaseReplayReviewer
 ) -> tuple[ReviewObservation, EvidenceRef]:
+    from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
+    from spectragent.core.capabilities.browser.review_evidence import (
+        BrowserEvidenceUnavailable,
+        BrowserEvidenceUnsupported,
+        clean_recorded_dom,
+    )
+
     if not trace.config.recording.observations:
         raise ReviewEvidenceError(
             "scope_unrecorded", "Source observations were not selected for recording"
@@ -192,6 +193,13 @@ async def _observation(
 
 async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> ReviewCase:
     """No browser, current website, model invocation, or write to either trace."""
+    from spectragent.core.capabilities.browser.review_evidence import (
+        BrowserEvidenceUnavailable,
+        capture_state_new_failures,
+        recorded_replay_facts,
+        replay_images_not_served_in_viewport,
+    )
+
     if any(not (Path(path) / "manifest.json").is_file() for path in (pair.source, pair.replay)):
         raise ReviewEvidenceError("missing_source", "A source or replay trace directory is missing")
     try:
