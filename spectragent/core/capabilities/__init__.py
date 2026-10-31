@@ -9,7 +9,7 @@ Every subpackage of this package is one capability, named by its
 optional-extra modules in its own ``declarations.py``, which
 ``core/registries.py`` reads. Registration is import-driven: a run imports
 only the capability packages its configuration names
-(``core.registries.discover_run_implementations``), and every module that
+(``core.registries.discover_implementations``), and every module that
 needs an optional extra is skipped.
 
 See docs/architecture_design.md §4.2.1, §4.9 and docs/execution_dag.md M06.

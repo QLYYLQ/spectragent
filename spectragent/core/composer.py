@@ -52,11 +52,12 @@ from spectragent.core.configuration_catalog import ConfigurationCatalog, build_c
 from spectragent.core.registries import (
     AGENTS_PACKAGE,
     CAPABILITIES_PACKAGE,
+    FRAMEWORK_PACKAGES,
     agent_families,
     capability_ids,
     collect_registrars,
     discover_every_implementation,
-    discover_run_implementations,
+    discover_implementations,
 )
 
 
@@ -257,7 +258,7 @@ class ConfigComposer:
                 no package. No capability package or family is imported yet.
         """
         capabilities, families = _named_packages(raw)
-        discover_run_implementations(capabilities=capabilities, families=families)
+        discover_implementations(*FRAMEWORK_PACKAGES, capabilities=capabilities, families=families)
         return cls(registrars=collect_registrars(capabilities))
 
     @classmethod

@@ -16,7 +16,7 @@ So adding a capability edits no file here. Every subpackage of
 ``agent_id`` before its first ``.``, except the framework's own packages
 listed below. A run imports the framework's own packages and only the
 capability packages and agent families its configuration names
-(:func:`discover_run_implementations`); generation and the other
+(:func:`discover_implementations` narrowed to them); generation and the other
 whole-catalog tools import everything (:func:`discover_every_implementation`).
 Nothing is cached: every call reads the declarations afresh and returns new
 objects.
@@ -109,49 +109,40 @@ def collect_registrars(capabilities: Iterable[str] | None = None) -> dict[str, t
     return registrars
 
 
-def discover_implementations(*packages: str, exclude: Iterable[str] = ()) -> None:
+def discover_implementations(
+    *packages: str,
+    exclude: Iterable[str] = (),
+    capabilities: Collection[str] | None = None,
+    families: Collection[str] | None = None,
+) -> None:
     """Import every module under *packages* so that its classes register.
 
     conscribe's strict ``discover``, minus *exclude* and every module a
     capability lists in ``OPTIONAL_EXTRA_MODULES``: those import an optional
     extra at top level and register nothing, so a machine without the extra
-    still composes, generates and reads traces.
+    still composes, generates and reads traces. *capabilities* and *families*
+    narrow the walk to those capability packages and agent families (``None``:
+    every one), as a run narrows it to what its configuration names: the walk
+    excludes the others and reads no excluded capability's declarations. It
+    does not stop framework code that imports such a module directly (the
+    export's ``index_to_coordinate`` translator imports browser modules), so
+    an excluded package can still be partly imported.
     """
+    walked = capability_ids() if capabilities is None else capabilities
+    skipped = [
+        *(f"{CAPABILITIES_PACKAGE}.{name}" for name in capability_ids() if name not in walked),
+        *(
+            f"{AGENTS_PACKAGE}.{name}"
+            for name in agent_families()
+            if families is not None and name not in families
+        ),
+    ]
     optional = [
         module
-        for capability in capability_declarations()
+        for capability in capability_declarations(walked)
         for module in capability.optional_extra_modules
     ]
-    discover(*packages, exclude=[*exclude, *optional])
-
-
-def discover_run_implementations(
-    *, capabilities: Collection[str], families: Collection[str]
-) -> None:
-    """Import the framework's own packages, the named capability packages and agent families.
-
-    What one run's configuration names, and nothing else: every other
-    capability package and family is excluded from the walk, so neither it nor
-    its ``declarations`` module is imported. The caller checks that every name
-    has a package.
-    """
-    optional = [
-        module
-        for capability in capability_declarations(capabilities)
-        for module in capability.optional_extra_modules
-    ]
-    discover(
-        *FRAMEWORK_PACKAGES,
-        exclude=[
-            *(
-                f"{CAPABILITIES_PACKAGE}.{name}"
-                for name in capability_ids()
-                if name not in capabilities
-            ),
-            *(f"{AGENTS_PACKAGE}.{name}" for name in agent_families() if name not in families),
-            *optional,
-        ],
-    )
+    discover(*packages, exclude=[*exclude, *skipped, *optional])
 
 
 def discover_every_implementation() -> None:

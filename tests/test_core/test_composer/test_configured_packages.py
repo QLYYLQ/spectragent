@@ -188,10 +188,10 @@ def test_a_configuration_naming_no_capability_composes_without_their_layers(
 def test_a_name_with_no_package_is_refused_before_anything_is_imported(
     monkeypatch: pytest.MonkeyPatch, raw: dict[str, object], code: str, path: str
 ) -> None:
-    def discovered(**names: object) -> None:
-        pytest.fail(f"discovery ran before the refusal: {names}")
+    def discovered(*packages: str, **names: object) -> None:
+        pytest.fail(f"discovery ran before the refusal: {packages} {names}")
 
-    monkeypatch.setattr(composer_module, "discover_run_implementations", discovered)
+    monkeypatch.setattr(composer_module, "discover_implementations", discovered)
     with pytest.raises(UnknownPackageError) as refused:
         ConfigComposer.for_config(raw)
     issue = refused.value.issue
