@@ -1,4 +1,4 @@
-"""Tests for the generic TaskDefinition + TaskSetup discriminated union."""
+"""Tests for the generic TaskDefinition and the browser's registered setup."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.schemas.task import (
-    BrowserSetup,
     ScoringItem,
     ScoringRubric,
     TaskDefinition,
@@ -46,7 +46,7 @@ class TestTaskDefinition:
         assert task.env_type == "browser"  # default
         assert task.task_text == ""
         assert task.language == "en"
-        assert isinstance(task.setup, BrowserSetup)
+        assert task.setup is None
         assert task.tags == []
         assert task.metadata == {}
 
@@ -97,10 +97,9 @@ class TestTaskDefinition:
         assert isinstance(task.setup, BrowserSetup)
         assert task.setup.start_url == "https://x.example.com"
 
-    def test_setup_default_is_browser(self) -> None:
-        task = TaskDefinition(task_id="t1", benchmark="bench")
-        assert isinstance(task.setup, BrowserSetup)
-        assert task.setup.setup_type == "browser"
+    def test_a_task_without_setup_has_none(self) -> None:
+        # The schema names no capability, so it has no setup to default to.
+        assert TaskDefinition(task_id="t1", benchmark="bench").setup is None
 
     def test_invalid_setup_type_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -155,7 +154,9 @@ class TestSchemasInitExports:
 
         assert hasattr(schemas, "TaskDefinition")
         assert hasattr(schemas, "TaskSetup")
-        assert hasattr(schemas, "BrowserSetup")
+        assert hasattr(schemas, "TaskSetupRegistrar")
         assert hasattr(schemas, "TaskReference")
+        # The browser's setup lives in its capability package.
+        assert not hasattr(schemas, "BrowserSetup")
         # Legacy symbol is gone
         assert not hasattr(schemas, "BrowserTask")

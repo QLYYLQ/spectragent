@@ -1,51 +1,41 @@
-"""The loader's ``env_type`` drives both data path and setup variant.
+"""The loader's ``env_type`` drives both data path and setup class.
 
 Regression cover for the BLOCKER where every loader produced a
-``BrowserSetup`` regardless of ``env_type``, so a SWE-bench record's
-image / checkout commit / scoring test node-ids never reached the
-capability.
+``BrowserSetup`` regardless of ``env_type``, so a container record's image
+and checkout never reached the capability. The setup classes are the ones
+capability packages register (``docs/architecture_design.md`` §4.10); a
+second capability's setup is stood in for by a test-registered one.
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
+from conscribe.testing import isolated_registries
 
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
-from spectragent.schemas.task import BrowserSetup, DockerSetup, VMSetup
+from spectragent.core.registries import setup_class_for_env
+from spectragent.schemas.task import SetupBase
 
 # ── Loaders registered once at import (conscribe rejects duplicate keys) ──
 
 
 @dataclass
-class _DockerLoader(TaskLoaderBase):
-    """Stand-in for a future SWE-bench loader."""
+class _ContainerLoader(TaskLoaderBase):
+    """Stand-in for a loader of a capability that does not exist yet."""
 
-    __registry_key__ = "_test_docker_loader"
+    __registry_key__ = "_test_container_loader"
 
-    env_type: str = "docker"
-
-    def _load(self) -> None:  # type: ignore[override]
-        return
-
-    def seed(self, raws: list[dict[str, Any]]) -> None:
-        for raw in raws:
-            task = self.normalize_raw(raw)
-            self._tasks[task.task_id] = task
-
-
-@dataclass
-class _VMLoader(TaskLoaderBase):
-    """Stand-in for a future OSWorld loader."""
-
-    __registry_key__ = "_test_vm_loader"
-
-    env_type: str = "desktop"
+    env_type: str = "container_for_tests"
 
     def _load(self) -> None:  # type: ignore[override]
         return
@@ -76,103 +66,77 @@ class _DiskLoader(TaskLoaderBase):
     __registry_key__ = "_test_disk_loader"
 
 
-# A real SWE-bench_Verified record, trimmed. ``FAIL_TO_PASS`` /
-# ``PASS_TO_PASS`` ship JSON-encoded as strings in the HF dataset.
-SWEBENCH_RECORD: dict[str, Any] = {
+#: The setup a second capability package would register, activated per test.
+FAKES = isolated_registries()
+
+with FAKES:
+
+    class _ContainerSetup(SetupBase):
+        __registry_key__ = "container_for_tests"
+        __env_types__: ClassVar[tuple[str, ...]] = ("container_for_tests",)
+        __raw_keys__: ClassVar[tuple[str, ...]] = ("image", "base_commit")
+
+        image: str | None = None
+        base_commit: str | None = None
+
+        def to_context(self) -> dict[str, Any]:
+            return {key: value for key, value in self.model_dump().items() if key != "setup_type"}
+
+
+@pytest.fixture
+def container_setup() -> Iterator[None]:
+    with FAKES.activate():
+        yield
+
+
+CONTAINER_RECORD: dict[str, Any] = {
     "instance_id": "django__django-11333",
-    "repo": "django/django",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-11333",
     "base_commit": "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc",
-    "environment_setup_commit": "419a78300f7cd27611196e1e464d50fd0385ff27",
-    "version": "3.0",
     "problem_statement": "Optimize URLResolver.",
-    "FAIL_TO_PASS": json.dumps(["test_a (tests.X)", "test_b (tests.X)"]),
-    "PASS_TO_PASS": json.dumps(["test_c (tests.X)"]),
-    "patch": "diff --git a/x b/x",
-    "test_patch": "diff --git a/y b/y",
-}
-
-# A real OSWorld task record, trimmed.
-OSWORLD_RECORD: dict[str, Any] = {
-    "id": "94d95f96-9699-4208-98ba-3c3119edf9c2",
-    "snapshot": "chrome",
-    "task_text": "Make Bing the default search engine",
-    "config": [{"type": "launch", "parameters": {"command": ["google-chrome"]}}],
-    "related_apps": ["chrome"],
 }
 
 
-class TestDockerRouting:
-    def test_docker_env_yields_docker_setup(self) -> None:
-        loader = _DockerLoader()
-        loader.seed([SWEBENCH_RECORD])
+@pytest.mark.usefixtures("container_setup")
+class TestRoutingToARegisteredSetup:
+    def test_the_env_type_selects_the_registered_setup(self) -> None:
+        loader = _ContainerLoader()
+        loader.seed([CONTAINER_RECORD])
         task = loader["django__django-11333"]
-        assert task.env_type == "docker"
-        assert isinstance(task.setup, DockerSetup)
-        assert task.setup.setup_type == "docker"
+        assert task.env_type == "container_for_tests"
+        assert isinstance(task.setup, _ContainerSetup)
+        assert task.setup.setup_type == "container_for_tests"
 
-    def test_scoring_fields_land_typed_not_in_extras(self) -> None:
-        loader = _DockerLoader()
-        loader.seed([SWEBENCH_RECORD])
-        setup = loader["django__django-11333"].setup
-        assert isinstance(setup, DockerSetup)
-        assert setup.repo == "django/django"
-        assert setup.base_commit == "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc"
-        assert setup.environment_setup_commit == ("419a78300f7cd27611196e1e464d50fd0385ff27")
-        assert setup.version == "3.0"
-        assert setup.instance_id == "django__django-11333"
+    def test_raw_keys_land_typed_not_in_extras(self) -> None:
+        loader = _ContainerLoader()
+        loader.seed([CONTAINER_RECORD])
+        task = loader["django__django-11333"]
+        assert isinstance(task.setup, _ContainerSetup)
+        assert task.setup.base_commit == "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc"
+        assert "base_commit" not in (task.model_extra or {})
+        assert (task.model_extra or {})["problem_statement"] == "Optimize URLResolver."
 
-    def test_uppercase_json_encoded_test_lists_decode(self) -> None:
-        loader = _DockerLoader()
-        loader.seed([SWEBENCH_RECORD])
-        setup = loader["django__django-11333"].setup
-        assert isinstance(setup, DockerSetup)
-        assert setup.fail_to_pass == ["test_a (tests.X)", "test_b (tests.X)"]
-        assert setup.pass_to_pass == ["test_c (tests.X)"]
+    def test_get_task_context_carries_the_setup_context(self) -> None:
+        loader = _ContainerLoader()
+        loader.seed([CONTAINER_RECORD])
+        context = loader.get_task_context("django__django-11333").env
+        assert context["image"].startswith("swebench/")
+        assert context["base_commit"] == "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc"
 
-    def test_plain_list_test_lists_also_accepted(self) -> None:
-        loader = _DockerLoader()
-        loader.seed([{"instance_id": "x", "FAIL_TO_PASS": ["a"], "PASS_TO_PASS": ["b"]}])
-        setup = loader["x"].setup
-        assert isinstance(setup, DockerSetup)
-        assert setup.fail_to_pass == ["a"]
-        assert setup.pass_to_pass == ["b"]
+    def test_records_never_need_to_declare_setup_type(self) -> None:
+        # No shipped data file carries ``setup_type``; it is derived.
+        loader = _ContainerLoader()
+        loader.seed([{"instance_id": "x"}])
+        assert loader["x"].setup is not None
+        assert loader["x"].setup.setup_type == "container_for_tests"
 
-    def test_get_task_context_carries_the_container_facts(self) -> None:
-        loader = _DockerLoader()
-        loader.seed([SWEBENCH_RECORD])
-        ctx = loader.get_task_context("django__django-11333").env
-        assert ctx["repo"] == "django/django"
-        assert ctx["base_commit"] == "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc"
-        assert ctx["fail_to_pass"] == ["test_a (tests.X)", "test_b (tests.X)"]
-        assert ctx["pass_to_pass"] == ["test_c (tests.X)"]
-
-    def test_instance_id_is_the_task_identity(self) -> None:
-        loader = _DockerLoader()
-        loader.seed([SWEBENCH_RECORD])
-        assert loader.task_ids() == ["django__django-11333"]
+    def test_conflicting_declared_setup_type_raises(self) -> None:
+        loader = _ContainerLoader()
+        with pytest.raises(BenchmarkDataError, match="setup_type"):
+            loader.seed([{"instance_id": "x", "setup": {"setup_type": "browser"}}])
 
 
-class TestVMRouting:
-    def test_desktop_env_yields_vm_setup(self) -> None:
-        loader = _VMLoader()
-        loader.seed([OSWORLD_RECORD])
-        task = loader["94d95f96-9699-4208-98ba-3c3119edf9c2"]
-        assert task.env_type == "desktop"
-        assert isinstance(task.setup, VMSetup)
-        assert task.setup.snapshot == "chrome"
-        assert task.setup.related_apps == ["chrome"]
-        assert len(task.setup.config) == 1
-
-    def test_get_task_context_carries_the_vm_facts(self) -> None:
-        loader = _VMLoader()
-        loader.seed([OSWORLD_RECORD])
-        ctx = loader.get_task_context("94d95f96-9699-4208-98ba-3c3119edf9c2").env
-        assert ctx["snapshot"] == "chrome"
-        assert ctx["related_apps"] == ["chrome"]
-        assert ctx["config"][0]["type"] == "launch"
-
-
-class TestBrowserRoutingUnchanged:
+class TestBrowserRouting:
     def test_browser_default_still_produces_browser_setup(self) -> None:
         loader = _BrowserLoader()
         loader.seed([{"task_id": "t1", "start_url": "https://example.com"}])
@@ -181,24 +145,48 @@ class TestBrowserRoutingUnchanged:
         assert task.setup.start_url == "https://example.com"
         assert loader.get_task_context("t1").env["start_url"] == "https://example.com"
 
-
-class TestSetupTypeDerivation:
-    def test_records_never_need_to_declare_setup_type(self) -> None:
-        # No shipped data file carries ``setup_type``; it is derived.
-        loader = _DockerLoader()
-        loader.seed([{"instance_id": "x"}])
-        assert loader["x"].setup.setup_type == "docker"
-
-    def test_conflicting_declared_setup_type_raises(self) -> None:
-        loader = _DockerLoader()
-        with pytest.raises(BenchmarkDataError, match="setup_type"):
-            loader.seed([{"instance_id": "x", "setup": {"setup_type": "browser"}}])
-
     def test_unknown_env_type_raises_instead_of_defaulting_to_browser(self) -> None:
         loader = _BrowserLoader()
         loader.env_type = "quantum_annealer"
-        with pytest.raises(ValueError, match="No TaskSetup variant"):
+        with pytest.raises(ValueError, match="No registered task setup claims"):
             loader.seed([{"task_id": "t1"}])
+
+
+class TestSetupClassForEnv:
+    def test_the_browser_env_selects_the_browser_setup(self) -> None:
+        assert setup_class_for_env("browser") is BrowserSetup
+
+    def test_an_unknown_env_type_names_the_known_ones(self) -> None:
+        with pytest.raises(ValueError, match=r"env_type='mobile'.*known: browser"):
+            setup_class_for_env("mobile")
+
+    def test_two_setups_claiming_one_env_type_are_refused(self) -> None:
+        with isolated_registries():
+
+            class _AnotherBrowserSetup(SetupBase):
+                __registry_key__ = "another_browser_for_tests"
+                __env_types__: ClassVar[tuple[str, ...]] = ("browser",)
+
+                def to_context(self) -> dict[str, Any]:
+                    return {}
+
+            with pytest.raises(ValueError, match="all claim env_type='browser'"):
+                setup_class_for_env("browser")
+
+    def test_a_loader_finds_the_setup_without_importing_the_capability(self) -> None:
+        # In a fresh interpreter nothing has imported the browser package: the
+        # lookup reads the capabilities' declarations, which registers the setup.
+        probe = """
+import sys
+from spectragent.core.registries import setup_class_for_env
+assert "spectragent.core.capabilities.browser" not in sys.modules
+setup = setup_class_for_env("browser")
+assert setup.__module__ == "spectragent.core.capabilities.browser.task_setup", setup
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class TestHardErrorsOnEmptyLoad:

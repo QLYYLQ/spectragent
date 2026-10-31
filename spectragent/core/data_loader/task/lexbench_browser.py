@@ -6,9 +6,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader._lexbench_legacy import normalize_legacy_record
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
-from spectragent.schemas.task import BrowserSetup, TaskDefinition
+from spectragent.schemas.task import TaskDefinition
 
 #: A start page as LexBench writes it: a bare host — dotted labels of ASCII
 #: letters, digits and hyphens — with an optional port, then optionally a path,

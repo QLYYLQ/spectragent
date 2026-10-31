@@ -2,8 +2,8 @@
 
 ``core/registries.py`` reads the ``declarations`` module of every capability
 package (``docs/architecture_design.md`` §4.2.1). This one imports only
-registrar definitions, never the implementation, so reading it loads no
-agent-cdp, websockets or numpy
+registrar definitions and the setup schema, never the implementation, so
+reading it loads no agent-cdp, websockets or numpy
 (``tests/test_core/test_capabilities/test_capability_declarations.py``).
 """
 
@@ -15,6 +15,7 @@ from spectragent.core.capabilities.browser.input.trajectory import MouseTrajecto
 from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyRegistrar
 from spectragent.core.capabilities.browser.replay.network_source import NetworkSourceRegistrar
 from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityRegistrar
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 
 #: The browser's internal strategy axes, layer name → registrar. An axis left
 #: out is not collected: its YAML field degrades to a ``Literal`` of its keys
@@ -30,3 +31,7 @@ STRATEGY_AXES = {
     "miss_policy": MissPolicyRegistrar,
     "network_source": NetworkSourceRegistrar,
 }
+
+#: The browser task's setup (``start_url``, ``storage_state``, ...); importing
+#: it here registers it, so a loader finds it without importing the browser.
+TASK_SETUP = BrowserSetup

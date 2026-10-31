@@ -16,6 +16,7 @@ from spectragent.core.capabilities.browser.storage_seed import (
     _Hydration,
     read_initial_seed,
 )
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.schemas.browser_storage import (
     BrowserStorageState,
@@ -23,7 +24,6 @@ from spectragent.schemas.browser_storage import (
     StorageArea,
     StorageTab,
 )
-from spectragent.schemas.task import BrowserSetup
 from tests._helpers.assembly import make_env
 
 

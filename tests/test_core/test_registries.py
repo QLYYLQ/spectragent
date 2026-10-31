@@ -28,7 +28,7 @@ from spectragent.core.registries import (
 )
 
 #: Registrars YAML never selects: registered by import, never a config layer.
-NOT_CONFIG_LAYERS = frozenset({"observation", "negotiation_result"})
+NOT_CONFIG_LAYERS = frozenset({"observation", "negotiation_result", "task_setup"})
 
 CAPABILITIES_DIR = PACKAGE_ROOT / "core" / "capabilities"
 
@@ -63,7 +63,7 @@ DEFINED = _defined_registrars()
 
 def test_the_scan_found_registrars() -> None:
     # Positive control: an empty scan would let every check below pass.
-    assert {"agent", "capability", "mouse_trajectory"} <= set(DEFINED)
+    assert {"agent", "capability", "mouse_trajectory", "task_setup"} <= set(DEFINED)
 
 
 def test_the_catalog_is_the_framework_axes_then_each_capability_packages_axes() -> None:
@@ -125,7 +125,13 @@ def test_a_layer_two_owners_declare_is_refused(monkeypatch: pytest.MonkeyPatch) 
         collect_registrars()
 
 
-def test_a_malformed_declaration_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(browser_declarations, "STRATEGY_AXES", ["mouse_trajectory"])
-    with pytest.raises(TypeError, match="STRATEGY_AXES"):
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("STRATEGY_AXES", ["mouse_trajectory"]), ("TASK_SETUP", None)],
+)
+def test_a_malformed_declaration_is_refused(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: object
+) -> None:
+    monkeypatch.setattr(browser_declarations, name, value)
+    with pytest.raises(TypeError, match=name):
         capability_declarations()

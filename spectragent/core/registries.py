@@ -2,11 +2,15 @@
 
 The framework lists its own axes here. Every subpackage of
 ``spectragent/core/capabilities/`` is a capability, named by its
-``capability_id``, and declares its internal strategy axes in its own
-``declarations`` module (``STRATEGY_AXES``, layer name → registrar), so
-adding a capability edits no file here (``docs/architecture_design.md``
-§4.2.1). Nothing is cached: every call reads the declarations afresh and
-returns new objects.
+``capability_id``, and declares in its own ``declarations`` module what the
+framework needs before importing it (``docs/architecture_design.md``
+§4.2.1):
+
+``STRATEGY_AXES``  its internal strategy axes, layer name → registrar;
+``TASK_SETUP``     its task setup class (§4.10).
+
+So adding a capability edits no file here. Nothing is cached: every call
+reads the declarations afresh and returns new objects.
 """
 
 from __future__ import annotations
@@ -15,8 +19,12 @@ import importlib
 import pkgutil
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from conscribe import LayerRegistrar, get_registry
+
+if TYPE_CHECKING:
+    from spectragent.schemas.task import SetupBase
 
 #: The package whose every subpackage is one capability.
 CAPABILITIES_PACKAGE = "spectragent.core.capabilities"
@@ -31,6 +39,7 @@ class CapabilityDeclarations:
     capability_id: str
     #: Layer name → registrar, in declared order.
     strategy_axes: Mapping[str, type]
+    task_setup: type[SetupBase]
 
 
 def capability_declarations() -> tuple[CapabilityDeclarations, ...]:
@@ -67,6 +76,44 @@ def collect_registrars() -> dict[str, type]:
                 )
             registrars[layer] = registrar
     return registrars
+
+
+def setup_class_for_env(env_type: str) -> type[SetupBase]:
+    """The registered task setup class whose ``__env_types__`` claims *env_type*.
+
+    On a miss it reads every capability package's declarations, which
+    registers each package's setup, and looks again: a caller (a loader built
+    directly, a test) need not have imported the capability first.
+
+    Raises:
+        ValueError: no registered setup claims *env_type*, or more than one does.
+    """
+    from spectragent.schemas.task import SetupBase, TaskSetupRegistrar
+
+    def claims() -> list[type[SetupBase]]:
+        return [
+            setup
+            for _, setup in sorted(TaskSetupRegistrar.get_all().items())
+            if issubclass(setup, SetupBase) and env_type in setup.__env_types__
+        ]
+
+    found = claims()
+    if not found:
+        capability_declarations()
+        found = claims()
+    if len(found) > 1:
+        names = ", ".join(setup.__name__ for setup in found)
+        raise ValueError(f"task setups {names} all claim env_type={env_type!r}; one may")
+    if not found:
+        known = sorted(
+            {env for setup in TaskSetupRegistrar.get_all().values() for env in setup.__env_types__}
+        )
+        raise ValueError(
+            f"No registered task setup claims env_type={env_type!r} (known: "
+            f"{', '.join(known) or 'none'}). A capability package registers its task setup "
+            f"and names it TASK_SETUP in its {DECLARATIONS_MODULE}.py."
+        )
+    return found[0]
 
 
 def _framework_axes() -> dict[str, type]:
@@ -123,14 +170,21 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         raise ImportError(
             f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
             f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
-            f"axes there (docs/architecture_design.md §4.2.1)."
+            f"axes and task setup there (docs/architecture_design.md §4.2.1)."
         ) from exc
+    from spectragent.schemas.task import SetupBase
+
     axes = getattr(module, "STRATEGY_AXES", None)
     if not isinstance(axes, Mapping):
         raise TypeError(f"{name}.STRATEGY_AXES must map layer names to registrars, not {axes!r}")
     for layer, registrar in axes.items():
         _check_layer(name, layer, registrar)
-    return CapabilityDeclarations(capability_id=capability_id, strategy_axes=dict(axes))
+    setup = getattr(module, "TASK_SETUP", None)
+    if not (isinstance(setup, type) and issubclass(setup, SetupBase)):
+        raise TypeError(f"{name}.TASK_SETUP must be a SetupBase subclass, not {setup!r}")
+    return CapabilityDeclarations(
+        capability_id=capability_id, strategy_axes=dict(axes), task_setup=setup
+    )
 
 
 def _check_layer(where: str, layer: object, registrar: object) -> None:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader.task._registrar import (
     TaskLoaderBase,
     TaskLoaderRegistrar,
 )
 from spectragent.core.data_loader.task.base import BaseTaskLoader
-from spectragent.schemas.task import BrowserSetup, TaskContext, TaskDefinition
+from spectragent.schemas.task import TaskContext, TaskDefinition
 
 # ── Hand-rolled in-memory loader for tests ─────────────────────────────
 

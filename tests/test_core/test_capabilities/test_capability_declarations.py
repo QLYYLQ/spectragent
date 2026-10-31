@@ -163,9 +163,10 @@ def test_declarations_reach_no_heavy_package(capability: CapabilityDeclarations)
 def test_declarations_reach_no_implementation(capability: CapabilityDeclarations) -> None:
     modules, _ = _closure(_declarations_of(capability))
     implementations = {name for module in modules for name in _registered_classes(module)}
-    assert not implementations, (
+    setup = capability.task_setup
+    assert implementations == {f"{setup.__module__}.{setup.__qualname__}"}, (
         f"importing {_declarations_of(capability)} defines registered implementations "
-        f"{sorted(implementations)}"
+        f"{sorted(implementations)}; only its task setup may be one."
     )
 
 
