@@ -8,11 +8,11 @@ a program that composes no browser run pays for no browser, and a missing
 optional extra blocks nothing it does not use.
 
 Imports are read statically and followed the way Python runs them when the
-module is imported: every module-level import (inside ``try`` and ordinary
-``if`` blocks too) and the ``__init__.py`` of every package on the way,
-transitively through ``spectragent``. An import inside a function or under
-``if TYPE_CHECKING:`` does not run at import time and is not followed. The
-precedent is ``test_agent_cdp_boundary.py``.
+module is imported: every module-level import (inside ``try``, ``with``, class
+bodies and ordinary ``if`` blocks too) and the ``__init__.py`` of every package
+on the way, transitively through ``spectragent``. An import inside a function or
+under ``if TYPE_CHECKING:`` does not run at import time and is not followed.
+The precedent is ``test_agent_cdp_boundary.py``.
 """
 
 from __future__ import annotations
@@ -80,6 +80,8 @@ def _imports_run_on_import(module: str, path: Path) -> set[str]:
                     visit(handler.body)
                 visit(node.orelse)
                 visit(node.finalbody)
+            elif isinstance(node, (ast.With, ast.AsyncWith, ast.ClassDef)):
+                visit(node.body)  # runs at import time, unlike a function body
 
     visit(ast.parse(path.read_text(encoding="utf-8")).body)
     return found
