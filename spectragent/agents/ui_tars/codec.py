@@ -165,9 +165,11 @@ def _keys(name: str, example: str, param: str, *spellings: str) -> Argument:
 #:   with ``clear_by_default`` a missing text would clear the field and type
 #:   nothing, reported as a success.
 #: - ``scroll``: a direction, and the point the scroll starts at, ``start_box``
-#:   as UI-TARS writes it on desktop and mobile alike. The point is optional,
-#:   as the action's ``start`` is: a call without it scrolls where the pointer
-#:   is, and an action without one is written without it. Not an amount
+#:   as UI-TARS writes it on desktop and mobile alike. ``point`` reads too: the
+#:   prompt spells every other point that way, and UI-TARS-1.5 writes
+#:   ``scroll(point=...)``. The point is optional, as the action's ``start``
+#:   is: a call without it scrolls where the pointer is, and an action without
+#:   one is written without it. Not an amount
 #:   (``ScrollAction.default_amount`` is the capability's; the agent declares
 #:   that it can scroll). Likewise ``wait``'s length is
 #:   ``WaitAction.default_seconds``.
@@ -190,7 +192,7 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
             _verb(
                 "scroll",
                 "scroll",
-                _point("start_box", "'(x, y)'", required=False),
+                _point("start_box", "'(x, y)'", "point", required=False),
                 _choice("direction", "direction", DIRECTIONS),
             ),
             _verb("hotkey", "send_keys", _keys("key", "'ctrl+a'", "keys", "keys")),

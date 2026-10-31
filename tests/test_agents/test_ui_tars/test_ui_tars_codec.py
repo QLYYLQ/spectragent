@@ -164,6 +164,10 @@ class TestEveryVerbRoundTrips:
                 {"start_x": 1, "start_y": 2, "end_x": 999, "end_y": 1000},
             ),
             ("hotkey(keys='Control+Shift+t')", {"keys": "Control+Shift+t"}),
+            (
+                "scroll(point='(5, 6)', direction='down')",
+                {"start_x": 5, "start_y": 6, "direction": "down"},
+            ),
         ],
     )
     def test_the_other_spellings_read_as_the_taught_one(

@@ -220,13 +220,13 @@ class TestVerbTableAndWiringAgree:
     def test_every_ui_tars_spelling_of_a_taught_point_is_accepted(self) -> None:
         """``start_box`` / ``end_box`` are what fine-tuned UI-TARS weights write.
 
-        A scroll's start is taught as they write it.
+        A scroll's start is taught as they write it, and read as UI-TARS-1.5 writes it.
         """
         written_by_ui_tars = {
             "point": {"start_box"},
             "start_point": {"start_box"},
             "end_point": {"end_box"},
-            "start_box": {"start_box"},
+            "start_box": {"point"},
         }
         for name, verb in VERBS.items():
             for argument in verb.arguments:
@@ -489,21 +489,21 @@ class TestParseReactOutput:
         with pytest.raises(ParseError, match="needs direction"):
             agent.parse_react_output("Action: scroll(direction='sideways')")
 
-    def test_scroll_refuses_a_start_spelled_as_a_click_point(self) -> None:
-        """A scroll's start is ``start_box``, as UI-TARS writes it; ``point`` is refused by name.
+    def test_scroll_reads_a_start_spelled_as_a_click_point(self) -> None:
+        """``point`` is a scroll's start too: the prompt spells points so, as UI-TARS-1.5 does.
 
         It was once silently dropped, so the model believed it scrolled at its
-        point. The refusal names the argument and the taught form.
+        point. Two spellings of the one start are refused, naming the taught one.
         """
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
-        with pytest.raises(ParseError) as excinfo:
-            agent.parse_react_output("Action: scroll(point='(5, 5)', direction='down')")
-        assert excinfo.value.detail.endswith(
-            "scroll() does not take point; write it as "
-            "scroll(start_box='(x, y)', direction='up|down|left|right')"
-        )
+        (action,) = agent.parse_react_output("Action: scroll(point='(5, 6)', direction='down')")
+        assert action.params == {"start_x": 5, "start_y": 6, "direction": "down"}
+        with pytest.raises(ParseError, match="start_box and point say the same thing"):
+            agent.parse_react_output(
+                "Action: scroll(start_box='(1, 2)', point='(3, 4)', direction='down')"
+            )
         with pytest.raises(ParseError, match="does not take amount"):
             agent.parse_react_output("Action: scroll(direction='down', amount=600)")
 
