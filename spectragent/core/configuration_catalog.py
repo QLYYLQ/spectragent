@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from conscribe import build_composed_config
+from conscribe import Coverage, UnresolvedWiring, build_composed_config
 from pydantic import BaseModel
 
 
@@ -40,6 +40,12 @@ class ConfigurationCatalog:
     top_level_layers: tuple[str, ...]
     dependency_order: tuple[str, ...]
     components: Mapping[str, Mapping[str, ComponentDefinition]]
+    #: ``"partial"`` for a run's catalog, which holds only what its configuration
+    #: names; ``"complete"`` for the whole catalog.
+    coverage: Coverage = "complete"
+    #: What a partial build resolved incompletely: declared keys with no
+    #: implementation in this catalog, and receptors whose registry is empty.
+    unresolved_wiring: tuple[UnresolvedWiring, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "top_level_layers", tuple(self.top_level_layers))
@@ -56,9 +62,17 @@ class ConfigurationCatalog:
         )
 
 
-def build_configuration_catalog(registrars: Mapping[str, Any]) -> ConfigurationCatalog:
-    """Build the one run schema from already discovered registrars."""
-    composed = build_composed_config(dict(registrars), inline_wiring=True, top_level_extra="forbid")
+def build_configuration_catalog(
+    registrars: Mapping[str, Any], *, coverage: Coverage = "complete"
+) -> ConfigurationCatalog:
+    """Build the one run schema from already discovered registrars.
+
+    *coverage* is conscribe's: ``"partial"`` for a catalog that deliberately
+    holds part of the implementations (``docs/architecture_design.md`` §4.2.1).
+    """
+    composed = build_composed_config(
+        dict(registrars), inline_wiring=True, top_level_extra="forbid", coverage=coverage
+    )
     return ConfigurationCatalog(
         top_level_type=composed.top_level_type,
         top_level_layers=tuple(composed.top_level_layers),
@@ -70,4 +84,6 @@ def build_configuration_catalog(registrars: Mapping[str, Any]) -> ConfigurationC
             }
             for layer, result in composed.layer_results.items()
         },
+        coverage=coverage,
+        unresolved_wiring=tuple(composed.unresolved_wiring),
     )

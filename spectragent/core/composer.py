@@ -31,6 +31,7 @@ from functools import cached_property
 from types import MappingProxyType
 from typing import Any, Literal, get_origin
 
+from conscribe import Coverage
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
@@ -251,8 +252,9 @@ class ConfigComposer:
         and each agent block's ``agent_id`` an agent family
         (``browser_use.dom``: the ``browser_use`` family). The framework's own
         packages and those packages are imported; the schema holds the
-        framework axes and the named capabilities' axes
-        (``docs/architecture_design.md`` §4.2.1).
+        framework axes and the named capabilities' axes, built as conscribe's
+        partial build: a declared key with no implementation here is left out,
+        for negotiation to decide (``docs/architecture_design.md`` §4.2.1).
 
         Raises:
             UnknownPackageError: *raw* names a capability or a family that has
@@ -280,7 +282,7 @@ class ConfigComposer:
             capabilities=capabilities,
             families={agent_family(agent_id) for agent_id in agents},
         )
-        return cls(registrars=collect_registrars(capabilities))
+        return cls(registrars=collect_registrars(capabilities), coverage="partial")
 
     @classmethod
     def for_every_package(cls) -> ConfigComposer:
@@ -288,13 +290,15 @@ class ConfigComposer:
         discover_every_implementation()
         return cls(registrars=collect_registrars())
 
-    def __init__(self, *, registrars: Mapping[str, Any]) -> None:
+    def __init__(self, *, registrars: Mapping[str, Any], coverage: Coverage = "complete") -> None:
         """Build the schema over the layers of *registrars* that have an implementation.
 
         Discovers nothing: which modules are imported is the caller's choice
         (:meth:`for_config`, :meth:`for_every_package`). A layer with no
         imported implementation is left out instead of refused, so a
         configuration that names no capability composes without one.
+        *coverage* is conscribe's: ``"partial"`` when the imported
+        implementations are deliberately part of the catalog.
         """
         self._registrars = {
             layer: registrar for layer, registrar in registrars.items() if registrar.get_all()
@@ -302,7 +306,7 @@ class ConfigComposer:
         self._left_out = frozenset(registrars) - frozenset(self._registrars)
         if not self._registrars:
             raise ComposeError("ConfigComposer requires a registrar with an implementation.")
-        self._catalog = build_configuration_catalog(self._registrars)
+        self._catalog = build_configuration_catalog(self._registrars, coverage=coverage)
         # Reverse index: per-key Pydantic model → (layer_name, registry_key).
         self._model_to_lk: dict[type[BaseModel], tuple[str, str]] = {}
         for layer, entries in self._catalog.components.items():

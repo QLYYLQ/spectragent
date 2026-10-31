@@ -15,17 +15,23 @@ import json
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
 
 import pytest
+from conscribe import WiringResolutionError
 
 import spectragent.core.composer as composer_module
 from spectragent import REPO_ROOT
+from spectragent.agents._registrar import AgentBase
 from spectragent.core.capabilities.browser.declarations import STRATEGY_AXES as BROWSER_AXES
 from spectragent.core.composer import ComposeError, ConfigComposer, UnknownPackageError
+from spectragent.scripts import generate_all
 
-#: A second capability, complete enough to compose: its declarations, its
+#: A second capability, complete enough to compose and prepare a UI-TARS run:
+#: its declarations, a screenshot that reports geometry, a platform fragment,
+#: two of the actions UI-TARS declares (none of its optional ones), the
 #: capability and its own single-capability environment.
 _PROBE_PACKAGE = {
     "__init__.py": "",
@@ -40,11 +46,93 @@ _PROBE_PACKAGE = {
         TASK_SETUP = ProbeSetup
         OPTIONAL_EXTRA_MODULES = ()
     """,
+    "observations.py": """
+        from spectragent.schemas.observation._registrar import FragmentBase
+
+        class ProbeScreenshot(FragmentBase):
+            __registry_key__ = "probe.screenshot"
+            image_width: int = 0
+            image_height: int = 0
+            viewport_width: int = 0
+            viewport_height: int = 0
+
+        class ProbePlatform(FragmentBase):
+            __registry_key__ = "probe.platform"
+            name: str = "probe"
+    """,
+    "actions.py": """
+        from dataclasses import dataclass
+        from typing import Annotated, Any
+
+        from pydantic import BaseModel, ConfigDict
+
+        from spectragent.core.actions._registrar import ActionBase
+        from spectragent.core.actions.params import PointAxis
+        from spectragent.schemas.action import ActionDescriptor, ActionResult
+
+        @dataclass
+        class ProbeClickCoordinate(ActionBase):
+            __registry_key__ = "probe.click_coordinate"
+
+            class Params(BaseModel):
+                model_config = ConfigDict(extra="forbid")
+                coordinate_x: Annotated[int, PointAxis("coordinate", "x")]
+                coordinate_y: Annotated[int, PointAxis("coordinate", "y")]
+
+            def descriptor(self, **context: Any) -> ActionDescriptor:
+                return self.describe("Click a point.", **context)
+
+            async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
+                return ActionResult(success=True)
+
+        @dataclass
+        class ProbeTypeCoordinate(ActionBase):
+            __registry_key__ = "probe.type_coordinate"
+
+            class Params(BaseModel):
+                model_config = ConfigDict(extra="forbid")
+                coordinate_x: Annotated[int, PointAxis("coordinate", "x")]
+                coordinate_y: Annotated[int, PointAxis("coordinate", "y")]
+                text: str
+
+            def descriptor(self, **context: Any) -> ActionDescriptor:
+                return self.describe("Click a point, then type.", **context)
+
+            async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
+                return ActionResult(success=True)
+    """,
     "capability.py": """
+        from typing import Any
+
         from spectragent.core.capabilities._registrar import CapabilityBase
+        from spectragent.core.capabilities.probe import observations  # noqa: F401
+        from spectragent.core.capabilities.probe.actions import (
+            ProbeClickCoordinate,
+            ProbeTypeCoordinate,
+        )
+        from spectragent.schemas.action import ActionResult
 
         class ProbeCapability(CapabilityBase):
             __registry_key__ = "probe"
+            __wiring__ = {
+                "observation": {
+                    "registry": "observation",
+                    "keys": ["probe.screenshot", "probe.platform"],
+                    "declare_only": True,
+                },
+                "action": {
+                    "registry": "action",
+                    "keys": ["probe.click_coordinate", "probe.type_coordinate"],
+                    "declare_only": True,
+                },
+            }
+
+            def get_action_descriptors(self, **context: Any) -> list[Any]:
+                actions = (ProbeClickCoordinate(), ProbeTypeCoordinate())
+                return [action.descriptor(**context) for action in actions]
+
+            async def execute_action(self, action: Any) -> ActionResult:
+                return ActionResult(success=True)
     """,
     "environment.py": """
         from spectragent.core.environments._registrar import EnvironmentBase
@@ -54,6 +142,37 @@ _PROBE_PACKAGE = {
             __wiring__ = {"capabilities": ("capability", ["probe"])}
     """,
 }
+
+#: UI-TARS on the probe capability, which provides two of its required actions
+#: and none of its optional ones (scroll, send_keys, drag, wait).
+_UI_TARS_ON_PROBE = {
+    "agent": [
+        {
+            "agent_id": "ui_tars",
+            "id": "main",
+            "agent_loop": {"loop_id": "react"},
+            "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+            "memory": {"memory_id": "simple"},
+        }
+    ],
+    "environment": [{"env_type": "probe", "capabilities": [{"capability_id": "probe"}]}],
+}
+
+_PREPARE = """
+import json
+
+import spectragent.core.capabilities as capabilities
+
+capabilities.__path__.append({root!r})
+
+from spectragent.core.composer import ConfigComposer
+from spectragent.core.runtime import AgentRuntime
+
+raw = {raw}
+runtime = AgentRuntime.for_agent(ConfigComposer.for_config(raw).compose(raw), "main")
+runtime.prepare()
+print(json.dumps({{"actions": sorted(runtime.action_space.allowed_actions)}}))
+"""
 
 _COMPOSE = """
 import json
@@ -165,6 +284,42 @@ def test_a_configuration_naming_no_capability_composes_without_their_layers(
     assert not {"agent", "capability", "environment"} & set(facts["layers"])
     assert not set(BROWSER_AXES) & set(facts["layers"]), "no axis of a capability it never named"
     assert facts["browser_capability"] is False and facts["families"] == []
+
+
+def test_an_agent_composes_with_a_capability_lacking_some_of_its_actions(
+    probe_root: Path,
+) -> None:
+    # A run's schema is conscribe's partial build: UI-TARS's optional actions
+    # the probe does not provide are left out, and negotiation in prepare()
+    # decides what the run uses.
+    code = _PREPARE.format(root=str(probe_root), raw=repr(_UI_TARS_ON_PROBE))
+    prepared = cast(dict[str, list[str]], _run(code))
+    assert prepared["actions"] == ["loop.done", "probe.click_coordinate", "probe.type_coordinate"]
+
+
+def test_a_misspelled_declared_key_fails_the_complete_builds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A run's partial build leaves a declared key with no implementation out,
+    # so generation and the whole-catalog Composer are what catch a typo.
+    @dataclass
+    class _Misspelled(AgentBase):
+        __registry_key__ = "misspelled_probe"
+        __wiring__ = {
+            "action": {
+                "registry": "action",
+                "keys": ["click"],
+                "optional_keys": ["scrol"],
+                "declare_only": True,
+            }
+        }
+
+    with pytest.raises(WiringResolutionError, match="scrol"):
+        ConfigComposer.for_every_package()
+    monkeypatch.setattr(generate_all, "GENERATED_DIR", tmp_path)
+    with pytest.raises(WiringResolutionError, match="scrol"):
+        generate_all.main([])
+    assert list(tmp_path.iterdir()) == []
 
 
 def _no_discovery(*packages: str, **names: object) -> None:
