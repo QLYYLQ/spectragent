@@ -20,6 +20,7 @@ from typing import Any, ClassVar
 import pytest
 from conscribe.testing import isolated_registries
 
+from spectragent.core import registries
 from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
@@ -160,18 +161,16 @@ class TestSetupClassForEnv:
         with pytest.raises(ValueError, match=r"env_type='mobile'.*known: browser"):
             setup_class_for_env("mobile")
 
-    def test_two_setups_claiming_one_env_type_are_refused(self) -> None:
-        with isolated_registries():
+    def test_a_registered_setup_is_found_without_reading_every_package(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A package still being written, whose declarations fail to import,
+        # must not break the lookup of a setup that is already registered.
+        def unreadable(*args: object, **kwargs: object) -> None:
+            raise ImportError("a capability package's declarations failed to import")
 
-            class _AnotherBrowserSetup(SetupBase):
-                __registry_key__ = "another_browser_for_tests"
-                __env_types__: ClassVar[tuple[str, ...]] = ("browser",)
-
-                def to_context(self) -> dict[str, Any]:
-                    return {}
-
-            with pytest.raises(ValueError, match="all claim env_type='browser'"):
-                setup_class_for_env("browser")
+        monkeypatch.setattr(registries, "capability_declarations", unreadable)
+        assert setup_class_for_env("browser") is BrowserSetup
 
     def test_a_loader_finds_the_setup_without_importing_the_capability(self) -> None:
         # In a fresh interpreter nothing has imported the browser package: the

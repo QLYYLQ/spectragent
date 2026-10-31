@@ -18,7 +18,9 @@ The precedent is ``test_agent_cdp_boundary.py``.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -182,6 +184,27 @@ def test_an_optional_extra_module_registers_nothing(capability: CapabilityDeclar
             f"{module} is in OPTIONAL_EXTRA_MODULES, so discovery never imports it, yet it "
             f"defines registered classes"
         )
+
+
+def _shared_env_types(declared: Iterable[CapabilityDeclarations]) -> dict[str, list[str]]:
+    """Each env type more than one package's task setup claims, with the claimants."""
+    claims: dict[str, list[str]] = {}
+    for capability in declared:
+        for env_type in capability.task_setup.__env_types__:
+            claims.setdefault(env_type, []).append(capability.capability_id)
+    return {env_type: ids for env_type, ids in claims.items() if len(ids) > 1}
+
+
+def test_no_two_packages_claim_one_env_type() -> None:
+    # The task setup lookup (core/registries.py::setup_class_for_env) picks the
+    # one setup claiming an env type; here every package is read, every time.
+    assert _shared_env_types(DECLARED) == {}
+
+
+def test_two_packages_claiming_one_env_type_are_caught() -> None:
+    (browser,) = (capability for capability in DECLARED if capability.capability_id == "browser")
+    twin = dataclasses.replace(browser, capability_id="twin")
+    assert _shared_env_types([browser, twin]) == {"browser": ["browser", "twin"]}
 
 
 def test_the_scan_sees_what_the_browser_implementation_imports() -> None:

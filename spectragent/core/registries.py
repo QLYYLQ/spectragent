@@ -159,26 +159,34 @@ def discover_every_implementation() -> None:
 def setup_class_for_env(env_type: str) -> type[SetupBase]:
     """The registered task setup class whose ``__env_types__`` claims *env_type*.
 
-    It first reads every capability package's declarations, which registers
-    each package's setup: a caller (a loader built directly, a test) need not
-    have imported the capability, and two packages claiming one env type are
-    always caught.
+    The setups already registered come first. Only on a miss is every
+    capability package's declarations read, which registers each package's
+    setup, and the lookup runs again: a caller that never imported the
+    capability (a loader built directly, a test) still finds it, and a package
+    whose declarations fail to import breaks only a lookup that needs them.
+    That no two packages claim one env type is checked over every package by
+    ``tests/test_core/test_capabilities/test_capability_declarations.py``.
 
     Raises:
-        ValueError: no registered setup claims *env_type*, or more than one does.
+        ValueError: no setup claims *env_type*, even after reading every package.
     """
     from spectragent.schemas.task import SetupBase, TaskSetupRegistrar
 
-    capability_declarations()
-    found = [
-        setup
-        for _, setup in sorted(TaskSetupRegistrar.get_all().items())
-        if issubclass(setup, SetupBase) and env_type in setup.__env_types__
-    ]
-    if len(found) > 1:
-        names = ", ".join(setup.__name__ for setup in found)
-        raise ValueError(f"task setups {names} all claim env_type={env_type!r}; one may")
-    if not found:
+    def claimant() -> type[SetupBase] | None:
+        return next(
+            (
+                setup
+                for _, setup in sorted(TaskSetupRegistrar.get_all().items())
+                if issubclass(setup, SetupBase) and env_type in setup.__env_types__
+            ),
+            None,
+        )
+
+    found = claimant()
+    if found is None:
+        capability_declarations()
+        found = claimant()
+    if found is None:
         known = sorted(
             {env for setup in TaskSetupRegistrar.get_all().values() for env in setup.__env_types__}
         )
@@ -187,7 +195,7 @@ def setup_class_for_env(env_type: str) -> type[SetupBase]:
             f"{', '.join(known) or 'none'}). A capability package registers its task setup "
             f"and names it TASK_SETUP in its {DECLARATIONS_MODULE}.py."
         )
-    return found[0]
+    return found
 
 
 def _framework_axes() -> dict[str, type]:
