@@ -180,8 +180,9 @@ of DOM per step.
 imported. The browser fragments are imported by the watchdogs that produce them
 (`dom_watchdog.py:49`, `screenshot_watchdog.py:39`,
 `browser_meta_watchdog.py:22`) — the resolver importing its own fragment is the
-natural registration point. Config generation runs `discover("spectragent")`
-(`spectragent/scripts/generate_all.py:113`), which walks the package.
+natural registration point. A run imports the capability's package when its
+configuration names the capability, and config generation imports every package
+(`core/registries.py::discover_every_implementation`); both walk the package.
 
 ## 2. The Resolver pattern
 

@@ -339,7 +339,9 @@ yours.
 Layout mirrors the browser (`spectragent/core/capabilities/browser/`). Every subpackage
 of `spectragent/core/capabilities/` is a capability, and its package name is its
 `capability_id`; the framework finds it with `pkgutil` and reads only its
-`declarations.py` (design doc §4.2.1). Adding the package edits no framework file.
+`declarations.py` (design doc §4.2.1). Adding the package edits no framework file. A run
+imports the package only when its configuration names the `capability_id`, so nothing
+outside the package may wire to the package's own keys (Step 6, the environment).
 
 ```
 spectragent/core/capabilities/docker/
@@ -347,6 +349,7 @@ spectragent/core/capabilities/docker/
 ├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES
 ├── task_setup.py        # DockerSetup(SetupBase), registered by subclassing
 ├── capability.py        # the DockerCapability class
+├── environment.py       # DockerEnvironment, its single-capability environment
 ├── observations.py      # its FragmentBase subclasses — NOT schemas/observation/
 ├── actions/             # its ActionBase subclasses, one file each
 └── backends/
@@ -717,16 +720,21 @@ qualified keys — it is stating a registry fact, not a domain need (design doc 
 This is what makes an agent portable: `UITarsAgent` declares `["screenshot"]` and the same
 wiring holds for browser, desktop_vm and android.
 
-Register your capability in an environment — that is all a single-capability env is:
+Register your capability in an environment — that is all a single-capability env is.
+It lives in your package, never in the framework's `core/environments/`: conscribe
+resolves the wiring of every class in a run's catalog, and a run imports only the
+capability packages its configuration names, so a framework class wired to `docker`
+would break every run that names no docker (design doc §4.2.1, §4.3):
 
 ```python
-# spectragent/core/environments/docker.py
+# spectragent/core/capabilities/docker/environment.py
 class DockerEnvironment(EnvironmentBase):
     __registry_key__: ClassVar[str] = "docker"
     __wiring__: ClassVar[dict[str, Any]] = {"capabilities": ("capability", ["docker"])}
 ```
 
-Compare `environments/browser.py:15-21`. A multi-capability env just lists more keys.
+Compare `core/capabilities/browser/environment.py`. Where a multi-capability environment
+lives is not decided yet (design doc §4.3).
 
 ---
 
@@ -749,9 +757,10 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
    typo). The order is the catalog's, not yours to tune: framework axes, then each
    package's axes in capability_id order, then in declared order.
 4. **Regenerate**: `uv run spectragent config generate`. A collected layer with **zero**
-   registered classes is an error, in the generator and in the Composer alike (design doc
-   §9, "新增注册表"): register the first implementation in the change that declares the
-   axis.
+   registered classes is an error in the generator (design doc §9, "新增注册表"): register
+   the first implementation in the change that declares the axis. A run's Composer
+   (`ConfigComposer.for_config`) instead leaves out a layer it imported no implementation
+   of, so a configuration that does not name your capability never sees your axes.
 5. **Provides entries are optional fields you must not fill.** `__wiring__["observation"]`
    and `__wiring__["archiver"]` have no slot on the capability, so conscribe emits them as
    optional fields that default to `None`: `observation: Optional[Literal[...]]`, and
