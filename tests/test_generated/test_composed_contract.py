@@ -15,14 +15,14 @@ import json
 from pathlib import Path
 
 import yaml
-from conscribe import build_composed_config, discover, validate_wiring, wired_fields
+from conscribe import build_composed_config, validate_wiring, wired_fields
 from conscribe.introspect import wiring_slots
 from conscribe.stubs import collect_class_stub_info
 from pydantic import ValidationError
 
-from spectragent.core.registries import collect_registrars
+from spectragent.core.registries import collect_registrars, discover_implementations
 
-discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
+discover_implementations("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
 registrars = collect_registrars()
 validate_wiring(registrars)
 result = build_composed_config(registrars, inline_wiring=True, top_level_extra="forbid")

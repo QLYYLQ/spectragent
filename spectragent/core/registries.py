@@ -6,8 +6,10 @@ The framework lists its own axes here. Every subpackage of
 framework needs before importing it (``docs/architecture_design.md``
 §4.2.1):
 
-``STRATEGY_AXES``  its internal strategy axes, layer name → registrar;
-``TASK_SETUP``     its task setup class (§4.10).
+``STRATEGY_AXES``           its internal strategy axes, layer name → registrar;
+``TASK_SETUP``              its task setup class (§4.10);
+``OPTIONAL_EXTRA_MODULES``  modules whose top-level imports need an optional
+                            extra, which discovery never imports.
 
 So adding a capability edits no file here. Nothing is cached: every call
 reads the declarations afresh and returns new objects.
@@ -17,11 +19,11 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from conscribe import LayerRegistrar, get_registry
+from conscribe import LayerRegistrar, discover, get_registry
 
 if TYPE_CHECKING:
     from spectragent.schemas.task import SetupBase
@@ -40,6 +42,8 @@ class CapabilityDeclarations:
     #: Layer name → registrar, in declared order.
     strategy_axes: Mapping[str, type]
     task_setup: type[SetupBase]
+    #: Fully qualified names, all inside the package.
+    optional_extra_modules: tuple[str, ...]
 
 
 def capability_declarations() -> tuple[CapabilityDeclarations, ...]:
@@ -76,6 +80,22 @@ def collect_registrars() -> dict[str, type]:
                 )
             registrars[layer] = registrar
     return registrars
+
+
+def discover_implementations(*packages: str, exclude: Iterable[str] = ()) -> None:
+    """Import every module under *packages* so that its classes register.
+
+    conscribe's strict ``discover``, minus *exclude* and every module a
+    capability lists in ``OPTIONAL_EXTRA_MODULES``: those import an optional
+    extra at top level and register nothing, so a machine without the extra
+    still composes, generates and reads traces.
+    """
+    optional = [
+        module
+        for capability in capability_declarations()
+        for module in capability.optional_extra_modules
+    ]
+    discover(*packages, exclude=[*exclude, *optional])
 
 
 def setup_class_for_env(env_type: str) -> type[SetupBase]:
@@ -170,7 +190,8 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         raise ImportError(
             f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
             f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
-            f"axes and task setup there (docs/architecture_design.md §4.2.1)."
+            f"axes, task setup and optional-extra modules there "
+            f"(docs/architecture_design.md §4.2.1)."
         ) from exc
     from spectragent.schemas.task import SetupBase
 
@@ -182,8 +203,20 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
     setup = getattr(module, "TASK_SETUP", None)
     if not (isinstance(setup, type) and issubclass(setup, SetupBase)):
         raise TypeError(f"{name}.TASK_SETUP must be a SetupBase subclass, not {setup!r}")
+    optional = getattr(module, "OPTIONAL_EXTRA_MODULES", None)
+    if not (
+        isinstance(optional, tuple)
+        and all(isinstance(item, str) and item.startswith(f"{package}.") for item in optional)
+    ):
+        raise TypeError(
+            f"{name}.OPTIONAL_EXTRA_MODULES must be a tuple of module names inside {package}, "
+            f"not {optional!r}"
+        )
     return CapabilityDeclarations(
-        capability_id=capability_id, strategy_axes=dict(axes), task_setup=setup
+        capability_id=capability_id,
+        strategy_axes=dict(axes),
+        task_setup=setup,
+        optional_extra_modules=optional,
     )
 
 

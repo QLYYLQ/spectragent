@@ -30,14 +30,13 @@ from pathlib import Path
 from conscribe import (
     build_composed_config,
     compute_registry_fingerprint,
-    discover,
     generate_composed_config_source,
     generate_composed_json_schema,
 )
 from conscribe.stubs import write_layer_stubs
 
 from spectragent import GENERATED_DIR, PACKAGE_ROOT
-from spectragent.core.registries import collect_registrars
+from spectragent.core.registries import collect_registrars, discover_implementations
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,7 +45,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Regenerate composed configuration, schema and registry fingerprints.",
     )
     parser.parse_args(argv)
-    discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
+    discover_implementations(
+        "spectragent", exclude=["spectragent.generated", "spectragent.scripts"]
+    )
     registrars = collect_registrars()
     # Snapshot declarations before rendering: pydantic can normalize numeric
     # constraint metadata (0 to 0.0) while building the composed schema.

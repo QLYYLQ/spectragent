@@ -35,3 +35,8 @@ STRATEGY_AXES = {
 #: The browser task's setup (``start_url``, ``storage_state``, ...); importing
 #: it here registers it, so a loader finds it without importing the browser.
 TASK_SETUP = BrowserSetup
+
+#: Modules whose top-level imports need an optional extra, which discovery
+#: never imports. The numpy sampler (the ``learned-mouse`` extra) registers
+#: nothing; the ``learned`` trajectory imports it when it is constructed.
+OPTIONAL_EXTRA_MODULES = ("spectragent.core.capabilities.browser.input._mouse_gan_v2",)

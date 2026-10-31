@@ -127,7 +127,12 @@ def test_a_layer_two_owners_declare_is_refused(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.parametrize(
     ("name", "value"),
-    [("STRATEGY_AXES", ["mouse_trajectory"]), ("TASK_SETUP", None)],
+    [
+        ("STRATEGY_AXES", ["mouse_trajectory"]),
+        ("TASK_SETUP", None),
+        # A capability may only keep its own modules out of discovery.
+        ("OPTIONAL_EXTRA_MODULES", ("spectragent.core.registries",)),
+    ],
 )
 def test_a_malformed_declaration_is_refused(
     monkeypatch: pytest.MonkeyPatch, name: str, value: object
