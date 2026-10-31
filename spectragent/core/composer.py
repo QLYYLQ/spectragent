@@ -35,6 +35,7 @@ from conscribe import NO_IMPLEMENTATION_ERROR_TYPE, Coverage
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel, ValidationError
+from pydantic_core import ErrorDetails
 
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.agents.prompts import agent_family
@@ -369,54 +370,48 @@ class ConfigComposer:
             ),
         )
 
-    def _refuse_a_layer_left_out(self, raw: Mapping[object, object]) -> None:
-        """Name the section whose layer no imported package implements.
-
-        Validation would only say ``Extra inputs are not permitted``: the layer
-        is left out of the schema because none of the packages the
-        configuration names implements it (``environment`` with no capability).
-        """
-        written = sorted(self._left_out.intersection(raw))
-        if written:
-            layer = written[0]
-            known = _known_packages()
-            raise ComposeError(
-                f"{layer}: the configuration writes the {layer!r} section, and none of the "
-                f"packages it names implements that layer. Environments, actions and archivers "
-                f"come from the package of a capability the configuration names, agents from "
-                f"their family's package: name the one this section needs ({known}).",
-                issue=CompositionIssue(
-                    "no_implementation",
-                    layer,
-                    f"None of the packages the configuration names implements {layer!r}.",
-                    f"Name the capability or agent family that provides it ({known}).",
-                ),
-            )
-
     def validate(self, raw: object) -> BaseModel:
         """*raw* validated against this Composer's schema.
 
         What this build holds no implementation for is refused in plain words
-        rather than pydantic's: a written section whose layer was left out,
-        and a value in a field a partial build accepts only "nothing" in,
-        which pydantic reports as ``no_implementation`` (``trace_writer.archive``
-        in a run naming no capability that provides an archiver).
+        rather than pydantic's: a written section whose layer was left out
+        (``environment`` with no capability: validation would only say
+        ``Extra inputs are not permitted``), and a value in a field a partial
+        build accepts only "nothing" in, which pydantic reports as
+        ``no_implementation`` (``trace_writer.archive`` in a run naming no
+        capability that provides an archiver). Such a refusal also lists every
+        other problem of the configuration, so one attempt shows them all; a
+        configuration with only ordinary problems gets pydantic's own error.
         """
+        problems: list[_Problem] = []
+        sections = raw
         if isinstance(raw, Mapping):
-            self._refuse_a_layer_left_out(raw)
+            problems = [
+                _Problem(str(layer), self._left_out_problem(str(layer)), True)
+                for layer in sorted(raw, key=str)
+                if layer in self._left_out
+            ]
+            sections = {key: value for key, value in raw.items() if key not in self._left_out}
         try:
-            return self.top_level_type.model_validate(raw)
+            cfg = self.top_level_type.model_validate(sections)
         except ValidationError as exc:
-            for error in exc.errors():
-                if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
-                    continue
-                context = error.get("ctx") or {}
-                raise _no_implementation(
-                    _location(error["loc"], raw),
-                    str(context.get("layer")),
-                    str(context.get("field")),
-                ) from exc
-            raise
+            errors = exc.errors()
+            if not problems and all(e["type"] != NO_IMPLEMENTATION_ERROR_TYPE for e in errors):
+                raise
+            problems += [_Problem.of(error, raw) for error in errors]
+            raise _refusal(problems) from exc
+        if problems:
+            raise _refusal(problems)
+        return cfg
+
+    def _left_out_problem(self, layer: str) -> str:
+        """Why a written section of *layer*, which this run left out, has nowhere to go."""
+        return (
+            f"the configuration writes the {layer!r} section, and none of the packages it "
+            f"names implements that layer. Environments, actions and archivers come from the "
+            f"package of a capability the configuration names, agents from their family's "
+            f"package: name the one this section needs"
+        )
 
     # -- Per-instance assembly ---------------------------------------
 
@@ -919,15 +914,50 @@ def _inside(module: str, packages: Collection[str]) -> bool:
 
 def _no_implementation(path: str, layer: str, name: str) -> ComposeError:
     """The refusal of a value in a field whose layer this run holds no implementation of."""
+    return _refusal([_Problem(path, _unimplemented(layer, name), True)])
+
+
+def _unimplemented(layer: object, name: object) -> str:
+    return (
+        f"no package this configuration names provides any {layer!r}; leave {name!r} out, "
+        f"or name the capability or agent family that does"
+    )
+
+
+@dataclass(frozen=True)
+class _Problem:
+    """One problem of a configuration, at the path its author wrote."""
+
+    path: str
+    message: str
+    #: Whether it is an implementation this run does not hold.
+    unimplemented: bool
+
+    @classmethod
+    def of(cls, error: ErrorDetails, raw: object) -> _Problem:
+        path = _location(error["loc"], raw)
+        if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
+            return cls(path, error["msg"], False)
+        context = error.get("ctx") or {}
+        return cls(path, _unimplemented(context.get("layer"), context.get("field")), True)
+
+
+def _refusal(problems: list[_Problem]) -> ComposeError:
+    """One refusal listing every problem; its issue is the first unimplemented one."""
     known = _known_packages()
+    first = next(problem for problem in problems if problem.unimplemented)
+    if len(problems) == 1:
+        message = f"{first.path}: {first.message} ({known})."
+    else:
+        listed = "\n".join(f"  {problem.path}: {problem.message}" for problem in problems)
+        message = f"{len(problems)} problems in the configuration ({known}):\n{listed}"
     return ComposeError(
-        f"{path}: no package this configuration names provides any {layer!r}; leave "
-        f"{name!r} out, or name the capability or agent family that does ({known}).",
+        message,
         issue=CompositionIssue(
             "no_implementation",
-            path,
-            f"No package the configuration names provides any {layer!r}.",
-            f"Leave {name!r} out, or name the package that provides it ({known}).",
+            first.path,
+            f"{first.message[0].upper()}{first.message[1:]}.",
+            f"Leave it out, or name the package that provides it ({known}).",
         ),
     )
 

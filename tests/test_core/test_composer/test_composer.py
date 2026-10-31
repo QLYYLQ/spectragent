@@ -481,11 +481,14 @@ class TestErrors:
         with pytest.raises(ComposeError, match="registrar with an implementation"):
             ConfigComposer(registrars={"cmp_empty": EmptyReg})
 
-    def test_a_receptor_whose_layer_was_left_out_keeps_the_owners_default(self) -> None:
-        # A run naming no capability that provides an archiver leaves the
-        # archiver layer out; trace_writer's archive, omitted, null or [],
-        # selects nothing, so the owner's default stands instead of
-        # uncollected_registry (docs/architecture_design.md §4.2.1).
+    @pytest.fixture
+    def unbuilt(self) -> ConfigComposer:
+        """A partial build whose 'cmp_writer' owners wire to the empty 'cmp_unbuilt' layer.
+
+        It stands for a run naming no capability that provides an archiver:
+        trace_writer's archive wires to a layer this run left out.
+        """
+
         @runtime_checkable
         class _ItemP(Protocol):
             key: str
@@ -512,19 +515,44 @@ class TestErrors:
             # error locations, which the refusal's path leaves out.
             __registry_key__: ClassVar[str] = "reader"
 
-        composer = ConfigComposer(
+        return ConfigComposer(
             registrars={"cmp_writer": OwnerReg, "cmp_unbuilt": ItemReg}, coverage="partial"
         )
+
+    def test_a_receptor_whose_layer_was_left_out_keeps_the_owners_default(
+        self, unbuilt: ConfigComposer
+    ) -> None:
+        # Omitted, null or [] selects nothing, so the owner's default stands
+        # instead of uncollected_registry (docs/architecture_design.md §4.2.1).
         for block in ({}, {"items": None}, {"items": []}):
-            run = composer.compose({"cmp_writer": [{"key": "writer", **block}]})
+            run = unbuilt.compose({"cmp_writer": [{"key": "writer", **block}]})
             assert run.single("cmp_writer").items == []
         # Anything else names an implementation this run does not hold.
         with pytest.raises(ComposeError, match="leave 'items' out") as refused:
-            composer.compose({"cmp_writer": [{"key": "writer", "items": [{"key": "x"}]}]})
+            unbuilt.compose({"cmp_writer": [{"key": "writer", "items": [{"key": "x"}]}]})
         issue = refused.value.issue
         assert issue is not None
         assert (issue.code, issue.path) == ("no_implementation", "cmp_writer[0].items")
         assert "'cmp_unbuilt'" in issue.message
+
+    def test_one_refusal_reports_every_problem_of_the_file(self, unbuilt: ConfigComposer) -> None:
+        # A section of the left-out layer, a value it cannot hold and an
+        # ordinary typo: all three in the one refusal, so one attempt shows them.
+        raw = {
+            "cmp_unbuilt": [],
+            "cmp_writer": [{"key": "writer", "items": [{"key": "x"}]}, {"key": "writr"}],
+        }
+        with pytest.raises(ComposeError) as refused:
+            unbuilt.compose(raw)
+        message = str(refused.value)
+        assert message.startswith("3 problems in the configuration")
+        for path in ("cmp_unbuilt", "cmp_writer[0].items", "cmp_writer[1]"):
+            assert f"\n  {path}: " in message, path
+        issue = refused.value.issue
+        assert issue is not None and (issue.code, issue.path) == (
+            "no_implementation",
+            "cmp_unbuilt",
+        )
 
     def test_invalid_yaml_rejected_by_pydantic(
         self,
