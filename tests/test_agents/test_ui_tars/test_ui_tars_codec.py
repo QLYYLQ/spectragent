@@ -6,7 +6,8 @@ run's action space and reads only its arguments and itself, so:
 - every verb writes an action and reads the text back into the same action,
   and the written text is a fixed point;
 - a verb's point arguments fill the points its action declares, under the
-  action's own param names (never names this module restates);
+  action's own param names (never names this module restates), required with
+  required and optional with optional;
 - a malformed reply or an unwritable action is refused with the same words
   as before the codec existed (the agent's tests pin the rest of them);
 - two codecs for one space say the same thing, in any call order.
@@ -16,12 +17,21 @@ from __future__ import annotations
 
 import dataclasses
 from types import SimpleNamespace
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.agents.ui_tars.codec import VERBS, UITarsCodec, read_thought
+from spectragent.agents.ui_tars.codec import (
+    VERBS,
+    Argument,
+    BoundVerb,
+    UITarsCodec,
+    Verb,
+    read_thought,
+)
+from spectragent.core.actions.params import PointAxis, params_view, point_params
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.loops.coordinate_frames import (
     actions_in_capability_units,
@@ -58,6 +68,38 @@ _SCREENSHOT = ScreenshotObs(
 
 def _codec(**kwargs: Any) -> UITarsCodec:
     return UITarsCodec(wired_space(UITarsAgent), **kwargs)
+
+
+class _PanParams(BaseModel):
+    """An action with an optional point: given, the action happens there."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["up", "down"]
+    at_x: Annotated[int | None, PointAxis("at", "x")] = None
+    at_y: Annotated[int | None, PointAxis("at", "y")] = None
+
+
+def _pan() -> ActionDescriptor:
+    prose, schema = params_view(_PanParams)
+    return ActionDescriptor(
+        name="desktop.pan",
+        description="Pan.",
+        params=prose,
+        params_schema=schema,
+        point_params=tuple(point_params(_PanParams)),
+    )
+
+
+#: A verb whose point is optional, as UI-TARS writes a scroll's start.
+_PAN_VERB = Verb(
+    "pan",
+    "pan",
+    (
+        Argument("start_box", "point", "'(x, y)'", required=False),
+        Argument("direction", "choice", "'up|down'", param="direction", choices=("up", "down")),
+    ),
+)
 
 
 def _action(codec: UITarsCodec, verb: str) -> Action:
@@ -157,6 +199,34 @@ class TestPointsAreTheActionsOwn:
             UITarsCodec(space_of([bare]))
         assert "browser.click_coordinate" in str(excinfo.value)
         assert "declares 0" in str(excinfo.value)
+
+    def test_an_optional_point_is_read_and_written_only_when_given(self) -> None:
+        bound = BoundVerb.bind(_PAN_VERB, _pan())
+        assert bound.read({"start_box": "(3, 4)", "direction": "up"}) == {
+            "at_x": 3,
+            "at_y": 4,
+            "direction": "up",
+        }
+        assert bound.read({"direction": "up"}) == {"direction": "up"}
+        assert bound.write({"at_x": 3, "at_y": 4, "direction": "up"}) == (
+            "pan(start_box='(3, 4)', direction='up')"
+        )
+        assert bound.write({"direction": "up"}) == "pan(direction='up')"
+
+    def test_required_and_optional_points_are_counted_apart(self) -> None:
+        """A required point the verb may leave out, or an optional one it must write, is refused."""
+        required = _pan().model_copy(
+            update={"params_schema": {**(_pan().params_schema or {}), "required": ["at_x", "at_y"]}}
+        )
+        with pytest.raises(ValueError, match=r"pan\(\) writes 0 point\(s\) and 1 optional") as info:
+            BoundVerb.bind(_PAN_VERB, required)
+        assert "declares 1 and 0 optional" in str(info.value)
+        writes_one = dataclasses.replace(
+            _PAN_VERB,
+            arguments=(dataclasses.replace(_PAN_VERB.arguments[0], required=True),),
+        )
+        with pytest.raises(ValueError, match=r"writes 1 point\(s\) and 0 optional"):
+            BoundVerb.bind(writes_one, _pan())
 
     def test_a_verb_whose_action_the_run_lacks_is_not_offered(self) -> None:
         narrow = UITarsCodec(space_of(browser_descriptors("wait")))
