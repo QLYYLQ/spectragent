@@ -34,10 +34,10 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, Self
 
 from conscribe.testing import isolated_registries
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
@@ -177,6 +177,24 @@ with ANDROID_STUB:
                 AddressesElement("android.ui_tree"),
                 PydanticField(description="scroll inside specific element"),
             ] = None
+            start_x: Annotated[
+                int | None,
+                PointAxis("start", "x"),
+                PydanticField(description="Physical px from the screen's left edge"),
+            ] = None
+            start_y: Annotated[
+                int | None,
+                PointAxis("start", "y"),
+                PydanticField(description="Physical px from the screen's top edge"),
+            ] = None
+
+            @model_validator(mode="after")
+            def _one_target(self) -> Self:
+                if (self.start_x is None) != (self.start_y is None):
+                    raise ValueError("a scroll start needs both start_x and start_y")
+                if self.index is not None and self.start_x is not None:
+                    raise ValueError("scroll takes an element index or a start point, not both")
+                return self
 
         def descriptor(self, **context: Any) -> ActionDescriptor:
             return self.describe("Swipe the screen or an element.", **context)

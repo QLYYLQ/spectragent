@@ -19,13 +19,21 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.actions.params import point_params
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
-from tests._helpers.android_stub import ANDROID_STUB, StubAndroidCapability, android_stub_harness
+from tests._helpers.android_stub import (
+    ACTIONS,
+    ANDROID_STUB,
+    StubAndroidCapability,
+    android_stub_harness,
+)
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 from tests._helpers.capability_contract import CaptureHarness
 from tests.test_core.test_capabilities import test_capability_contract as contract
@@ -92,3 +100,26 @@ def test_ui_tars_assembles_against_the_stub_with_its_wiring_unchanged() -> None:
     }
     scroll = next(d for d in runtime.action_space.descriptors if d.name == "android.scroll")
     assert "index" not in scroll.params, "no android.ui_tree in this run, so no element to name"
+    # The codec binds each verb's points to its action's here, after prepare().
+    assert runtime.seed_messages("open the settings app")
+
+
+def _schema_without_descriptions(params: type[BaseModel]) -> object:
+    def strip(node: object) -> object:
+        if isinstance(node, dict):
+            return {key: strip(value) for key, value in node.items() if key != "description"}
+        if isinstance(node, list):
+            return [strip(value) for value in node]
+        return node
+
+    return strip(params.model_json_schema())
+
+
+@pytest.mark.parametrize("key", ACTIONS)
+def test_each_stub_action_takes_the_params_of_the_browser_action_of_its_name(key: str) -> None:
+    """Negotiation binds names, not params, so one relative name is one param contract (AGENTS.md §2.5)."""
+    stub = ActionRegistrar.get(key)
+    browser = ActionRegistrar.get(key.replace("android.", "browser.", 1))
+
+    assert _schema_without_descriptions(stub.Params) == _schema_without_descriptions(browser.Params)
+    assert point_params(stub.Params) == point_params(browser.Params)
