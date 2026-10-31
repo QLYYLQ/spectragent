@@ -40,6 +40,7 @@ from spectragent.core.composer import (
     ComposeError,
     ConfigComposer,
     DuplicateInstanceIdError,
+    UnresolvedWiringError,
 )
 from spectragent.core.loops.validation import (
     IncompatibleCheckpointError,
@@ -866,6 +867,21 @@ class TestDeclaredConfigSurfaceIsReachable:
         assert set(cap._actions_by_name) == {"browser.scroll", "browser.wait"}
         assert cap._actions_by_name["browser.scroll"] is run.instances("action")[0]
         assert cap._actions_by_name["browser.scroll"].default_amount == 900
+
+    def test_a_loop_action_in_the_top_level_action_section_is_refused(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """``loop.done`` is the Loop's: no configuration, and nothing would receive the instance."""
+        with pytest.raises(UnresolvedWiringError, match="the Loop provides") as info:
+            composer.compose(
+                {
+                    "action": [{"action_id": "loop.done"}],
+                    "environment": [{"env_type": "browser", "capabilities": [_CAPABILITY]}],
+                }
+            )
+        assert info.value.issue is not None
+        assert (info.value.issue.code, info.value.issue.path) == ("loop_action", "action[0]")
 
     @pytest.mark.parametrize(
         ("actions", "expected"),
