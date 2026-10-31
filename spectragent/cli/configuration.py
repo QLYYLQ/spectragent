@@ -100,7 +100,7 @@ def explain_config(
     )
     generated_status = "missing" if missing_files else "stale" if stale_layers else "current"
     with inspection_stage("provenance"):
-        provenance = explain_provenance(run, composer.registrars)
+        provenance = explain_provenance(run, composer)
     return {
         "checked": checked,
         "launched": False,

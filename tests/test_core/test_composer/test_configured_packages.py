@@ -297,6 +297,42 @@ def test_an_agent_composes_with_a_capability_lacking_some_of_its_actions(
     assert prepared["actions"] == ["loop.done", "probe.click_coordinate", "probe.type_coordinate"]
 
 
+_EXPLAIN = """
+import json
+from pathlib import Path
+
+import yaml
+
+import spectragent.core.capabilities as capabilities
+
+capabilities.__path__.append({root!r})
+
+from spectragent.cli.configuration import explain_config
+
+path = Path({root!r}) / "run.yaml"
+path.write_text(yaml.safe_dump({raw}))
+provenance = explain_config(path)["provenance"]
+print(json.dumps({{
+    "declared": sorted(provenance["declarations"]),
+    "unresolved": [
+        [item["owner_key"], item["name"], item["missing_optional_keys"]]
+        for item in provenance["unresolved_wiring"]
+    ],
+}}))
+"""
+
+
+def test_explain_says_what_a_run_cannot_provide(probe_root: Path) -> None:
+    # Explained with the run's partial build: the complete one would refuse
+    # UI-TARS's declarations in this run, where no capability offers scroll.
+    code = _EXPLAIN.format(root=str(probe_root), raw=repr(_UI_TARS_ON_PROBE))
+    explained = cast(dict[str, list[object]], _run(code))
+    assert "agent/ui_tars" in explained["declared"]
+    assert explained["unresolved"] == [
+        ["ui_tars", "action", ["scroll", "send_keys", "drag", "wait"]]
+    ]
+
+
 def test_a_misspelled_declared_key_fails_the_complete_builds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

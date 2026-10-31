@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from spectragent.core.composer import ComposedRun
+from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.composition_evidence import implementation_name
 
 
@@ -32,16 +32,31 @@ def declaration_document(value: Any) -> Any:
     raise TypeError(f"Unsupported declaration evidence: {type(value).__name__}")
 
 
-def explain_provenance(run: ComposedRun, registrars: Mapping[str, Any]) -> dict[str, Any]:
-    """Join Composer evidence with Conscribe's public declaration extraction."""
+def explain_provenance(run: ComposedRun, composer: ConfigComposer) -> dict[str, Any]:
+    """Join Composer evidence with Conscribe's public declaration extraction.
+
+    Declarations are explained with the Composer's own coverage: a run's partial
+    build resolves a class's wiring against only what the run imported. Its
+    unresolved wiring, for the components this run built, says what they declare
+    and this run cannot provide (an agent's optional actions no named capability
+    offers); negotiation in ``prepare()`` decides the rest.
+    """
     evidence = run.composition
     if evidence is None:
         return {"available": False, "reason": "This run was assembled without Composer evidence."}
     definitions = {(component.layer, component.key) for component in evidence.components}
+    catalog = composer.catalog
     declarations = {
-        f"{layer}/{key}": declaration_document(registrars[layer].get_config_provenance(key))
+        f"{layer}/{key}": declaration_document(
+            composer.registrars[layer].get_config_provenance(key, coverage=catalog.coverage)
+        )
         for layer, key in sorted(definitions)
     }
+    unresolved = [
+        declaration_document(item)
+        for item in catalog.unresolved_wiring
+        if (item.owner_layer, item.owner_key) in definitions
+    ]
     return {
         "available": True,
         "declaration_scope": "declared_fields_before_schema_composition",
@@ -55,6 +70,7 @@ def explain_provenance(run: ComposedRun, registrars: Mapping[str, Any]) -> dict[
         ],
         "wiring": declaration_document(evidence.wiring),
         "declarations": declarations,
+        "unresolved_wiring": unresolved,
     }
 
 
@@ -99,3 +115,12 @@ def render_provenance(console: Console, provenance: dict[str, Any]) -> None:
                 Text(f"Constructor chain stopped: {chain['stop_reason']} at {chain['stopped_at']}")
             )
     console.print(tree)
+    for item in provenance.get("unresolved_wiring", []):
+        missing = [*item["missing_keys"], *item["missing_optional_keys"]]
+        console.print(
+            Text(
+                f"Not provided in this run: {item['owner_layer']}/{item['owner_key']} "
+                f"{item['name']} ({item['registry_name']}): "
+                + (", ".join(missing) if missing else "nothing registered")
+            )
+        )
