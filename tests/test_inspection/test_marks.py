@@ -226,10 +226,17 @@ def test_sensitive_text_is_withheld_and_done_reads_as_an_answer(run: RunTrace) -
 
 def test_a_reader_that_composed_nothing_still_reads_the_params() -> None:
     # ``spectragent view`` and the lookahead labels compose no configuration,
-    # so in a fresh process nothing has imported the browser's actions yet.
+    # so in a fresh process nothing has imported the actions yet. A Loop
+    # action is read from the Loop's own module, without any capability.
     probe = (
+        "import sys\n"
+        "from spectragent.core.actions._registrar import registered_params\n"
         "from spectragent.inspection.marks import action_text\n"
         "from spectragent.schemas.action import Action\n"
+        "assert registered_params('loop.done') is not None\n"
+        "done = Action(name='loop.done', params={'answer': 'ok', 'task_claim': 'completed'})\n"
+        "print(action_text(done, None))\n"
+        "assert 'spectragent.core.capabilities.browser.actions.click' not in sys.modules\n"
         "print(action_text(Action(name='browser.click', params={'index': 7}), None))\n"
     )
     result = subprocess.run(  # noqa: S603
@@ -240,7 +247,7 @@ def test_a_reader_that_composed_nothing_still_reads_the_params() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "点击元素 #7"
+    assert result.stdout.split() == ["完成并回答", "点击元素", "#7"]
 
 
 def test_a_done_that_reports_failure_executed_and_says_so() -> None:

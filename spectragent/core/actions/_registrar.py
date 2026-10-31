@@ -249,18 +249,22 @@ def is_wait_action(name: str) -> bool:
 
 
 def _registered_action(name: str) -> type | None:
-    """The action class registered under *name*, discovering the capabilities on a miss.
+    """The action class registered under *name*, importing who defines it on a miss.
 
     A reader that never composed a configuration (``spectragent view``, the
     lookahead labels) may not have imported the module that registers the
     action: importing one module of a capability package does not import the
-    rest of it. So a miss imports every capability implementation and looks
-    again, as ``RunTrace`` does for fragments and effects.
+    rest of it. So a miss imports the definitions and looks again, as
+    ``RunTrace`` does for fragments and effects: a Loop action (``loop.*``)
+    from ``core/loops/actions.py``, any other from every capability.
     """
     action = ActionRegistrar.get_or_none(name)
     if action is None:
-        from spectragent.core.registries import CAPABILITIES_PACKAGE, discover_implementations
+        if is_loop_action(name):
+            import spectragent.core.loops.actions  # noqa: F401 — registers the Loop's actions
+        else:
+            from spectragent.core.registries import CAPABILITIES_PACKAGE, discover_implementations
 
-        discover_implementations(CAPABILITIES_PACKAGE)
+            discover_implementations(CAPABILITIES_PACKAGE)
         action = ActionRegistrar.get_or_none(name)
     return action
