@@ -1216,7 +1216,9 @@ class ActionWatchdog(BrowserWatchdog):
                     raise RuntimeError(_OUTSIDE_VIEWPORT)
             elif event.start_x is not None and event.start_y is not None:
                 cx, cy = event.start_x, event.start_y
-                await self._mouse.move_to(cx, cy)
+                # Timed for the box under the start, as a coordinate click's move is.
+                target_w, target_h = await self._target_box_at(cx, cy)
+                await self._mouse.move_to(cx, cy, target_w=target_w, target_h=target_h)
             else:
                 cx, cy = self._mouse.position
 

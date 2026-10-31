@@ -197,16 +197,22 @@ class _RecordingPage(ScriptedPage):
             self.mouse.append((params["type"], params["x"], params["y"]))
         if method == "Runtime.evaluate" and params is not None:
             self.evaluated.append(params["expression"])
+        if method == "DOM.getNodeForLocation":
+            return {"backendNodeId": 7}
+        if method == "DOM.getBoxModel":
+            # A 200 x 100 box centred on (300, 200), the start the tests scroll from.
+            return {"model": {"border": [200, 150, 400, 150, 400, 250, 200, 250]}}
         return await super().send(method, params, **kw)
 
 
 class _StraightPath:
-    """Humanized, one waypoint per move; keeps every aim offset it is asked for."""
+    """Humanized, one waypoint per move; keeps each move's end and target box, and each aim."""
 
     humanized = True
 
     def __init__(self) -> None:
         self.aims: list[tuple[float, float]] = []
+        self.moves: list[tuple[int, int, float, float]] = []
 
     def generate(
         self,
@@ -218,6 +224,7 @@ class _StraightPath:
         target_w: float = 0.0,
         target_h: float = 0.0,
     ) -> list[TrajectoryPoint]:
+        self.moves.append((round(end_x), round(end_y), target_w, target_h))
         return [TrajectoryPoint(round(end_x), round(end_y), 0.0)]
 
     def click_hold_ms(self) -> float:
@@ -250,8 +257,12 @@ async def test_a_started_scroll_moves_the_pointer_to_its_start_then_wheels_there
     assert effect.container == "element" and effect.delta == ScrollOffset(x=0, y=300)
 
 
-async def test_a_humanized_start_is_reached_along_the_path_and_never_scattered() -> None:
-    """The start is the model's own point, as a coordinate click's is: no aim offset."""
+async def test_a_humanized_start_is_reached_once_timed_for_its_box_never_scattered() -> None:
+    """One move along the path, timed for the box under the start; the wheel turns there.
+
+    The start is the model's own point, as a coordinate click's is: no aim
+    offset, and the box is measured for the move's timing only.
+    """
     page, path = _box_scrolled(), _StraightPath()
     watchdog = ActionWatchdog(
         page,  # type: ignore[arg-type]
@@ -261,9 +272,11 @@ async def test_a_humanized_start_is_reached_along_the_path_and_never_scattered()
     )
     await watchdog._on_scroll(ScrollEvent(direction="down", amount=300, start_x=300, start_y=200))
     assert path.aims == []
+    assert path.moves == [(300, 200, 200.0, 100.0)]
     moves = [(x, y) for kind, x, y in page.mouse if kind == "mouseMoved"]
     wheels = {(x, y) for kind, x, y in page.mouse if kind == "mouseWheel"}
-    assert moves[-1] == (300, 200) and wheels == {(300, 200)}
+    assert moves.count((300, 200)) == 1 and moves[-1] == (300, 200)
+    assert wheels == {(300, 200)}
 
 
 @pytest.mark.parametrize("facts", [None, {"direction": "down"}])

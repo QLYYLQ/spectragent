@@ -104,6 +104,19 @@ class TestHumanizedMode:
         assert sum(w["deltaY"] for w in wheels) == 480
         assert sum(w["deltaX"] for w in wheels) == 0
 
+    async def test_wheel_does_not_move_again_where_the_pointer_already_is(
+        self, no_sleep: list[float]
+    ) -> None:
+        """A started scroll moves first; its wheel then turns there without a second move."""
+        cdp = RecordCDP()
+        mouse = HumanMouse(
+            cdp, session_id_getter=lambda: "sid", trajectory=WindMouseTrajectory(seed=1)
+        )
+        await mouse.move_to(300, 300)
+        moved = len(cdp.mouse_events())
+        await mouse.wheel(300, 300, 0, 480)
+        assert {e["type"] for e in cdp.mouse_events()[moved:]} == {"mouseWheel"}
+
     async def test_humanized_cold_start_is_center(self) -> None:
         cdp = RecordCDP()
         mouse = HumanMouse(
