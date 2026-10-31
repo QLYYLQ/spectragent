@@ -508,9 +508,10 @@ class ConfigComposer:
             if spec.registry_name in self._left_out:
                 # Its layer has no implementation in this run (no named
                 # capability provides an archiver). A value that selects
-                # nothing leaves the owner's default; one that names an
-                # implementation an earlier import left registered is refused
-                # as a fresh process refuses it at validation.
+                # nothing leaves the owner's default. After an earlier import
+                # left implementations registered, the field takes their bare
+                # keys; a value naming one is refused as a fresh process
+                # refuses it at validation.
                 if _is_populated(value):
                     raise _no_implementation(f"{path}.{name}", spec.registry_name, name)
                 retained.append((name, entry))

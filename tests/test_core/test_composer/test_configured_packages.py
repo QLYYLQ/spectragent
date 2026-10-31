@@ -27,6 +27,7 @@ from spectragent import REPO_ROOT
 from spectragent.agents._registrar import AgentBase
 from spectragent.core.capabilities.browser.declarations import STRATEGY_AXES as BROWSER_AXES
 from spectragent.core.composer import ComposeError, ConfigComposer, UnknownPackageError
+from spectragent.core.registries import discover_every_implementation
 from spectragent.scripts import generate_all
 
 #: A second capability, complete enough to compose and prepare a UI-TARS run:
@@ -368,6 +369,22 @@ def test_a_trace_writer_composes_in_a_run_with_no_archiver() -> None:
     # refused in plain words rather than as a wiring or validation error.
     refused = cast(dict[str, object], _run(_TRACE_WRITER.format()))
     assert refused == {"archive": [], "code": "no_implementation", "path": "hook[0].archive"}
+
+
+def test_an_archiver_an_earlier_import_registered_is_still_refused() -> None:
+    # After the browser package was imported, its archivers stay registered and
+    # trace_writer's archive takes their bare keys. A run naming no capability
+    # holds no archiver layer, so naming one is refused as in a fresh process.
+    discover_every_implementation()
+    raw = {
+        "llm": [{"model_type": "openai", "model": "m", "provider": {"name": "direct"}}],
+        "hook": [{"hook_id": "trace_writer", "archive": ["browser.network"]}],
+    }
+    with pytest.raises(ComposeError) as refused:
+        ConfigComposer.for_config(raw).compose(raw)
+    issue = refused.value.issue
+    assert issue is not None
+    assert (issue.code, issue.path) == ("no_implementation", "hook[0].archive")
 
 
 def test_explain_says_what_a_run_cannot_provide(probe_root: Path) -> None:
