@@ -28,7 +28,7 @@
 | Spring 概念 | Spectragent 对应 |
 |------------|-------------|
 | `@Component` / `@Service` | `metaclass=XRegistrar.Meta` + `__registry_key__` |
-| Component Scanning | `discover("module.path")` 导入所有子模块触发注册 |
+| Component Scanning | `discover("module.path")` 导入所有子模块触发注册；一次组装只扫描框架自己的包与配置点名的 capability 包、agent 家族（§4.2.1） |
 | `@Qualifier` | `__registry_key__` 字符串标识（如 `"swe_agent"`、`"openai.direct"`） |
 | `@Autowired` interface | Agent 与 Loop 的装配边界；Loop 用 `__required_slots__` 检查 Agent 的实际方法 |
 | `@Qualifier` / 跨 Bean 依赖 | `__wiring__` 跨注册表依赖声明（如 Agent 限定可配置的 Loop） |
@@ -274,7 +274,7 @@ class ReactLoop(AgentLoopBase):
 
 - **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它交到的动作已经在模型的网格上：导出器先用本步的坐标系把录下动作的点放上去（`core/loops/coordinate_frames.py::actions_in_model_frame`，§4.1"坐标系归框架"），读回时再由框架换回 capability 的单位，所以它不读任何 Agent 状态，也没有调用顺序的规定。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它：它的这个 slot 只有一行，调它的无状态编解码（`agents/ui_tars/codec.py::UITarsCodec.write`，下文"UI-TARS：胶水 agent 与无状态编解码"）；执行反馈与 restored 历史用同一个编解码写已执行的动作，点由框架放在那批动作所在步记录的坐标系上（§4.1"模型看到的每个点都写在它写点的那个网格上"）。
 - **`format_action_fact`** 把一个动作写成本 agent 当作事实展示它的样子。交到的动作的点已经由框架放在它所在那一步的坐标系上（`fact_in_model_frame`）；在那里没有位置的点是说明它为什么没有位置的那句话（§4.1"坐标系归框架"）。UI-TARS 的执行反馈、restored 历史与训练导出的 `keep_as_text` 文本轮共用它（2026-10-22；编解码的 `write_fact`），所以文本轮与下一步反馈里的同一个动作写法相同，都不是 trace 的 CSS px。它不读 Agent 状态，任何时候、任何顺序调用都一样（原来的 `step` 参数与"在第 `step` 步的 `build_react_prompt` 之后调用"的规定删除）。没有这个 slot 的学生，导出写动作自己的 JSON。
-- **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止；编解码模块的 `read_thought`，不需要 run）；`skyvern.dom` / `skyvern.dom_vision`（根上的同一个 staticmethod）：回复 `actions` 里每个条目的 `reasoning` 按顺序以换行连接。
+- **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例；注册表里没有时先导入记录的那个家族（`agents/_registrar.py::registered_agent`），因为一次组装只导入它的配置点名的家族（§4.2.1）。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止；编解码模块的 `read_thought`，不需要 run）；`skyvern.dom` / `skyvern.dom_vision`（根上的同一个 staticmethod）：回复 `actions` 里每个条目的 `reasoning` 按顺序以换行连接。
 - **校验**：导出器组装学生之后先照常 `loop.validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`。`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
 
 #### Loop 实现现状与规划
@@ -918,12 +918,24 @@ class ComposedRun:
 class ConfigComposer:
     """4 步 pipeline：discover → schema → validate → instantiate-and-inject。"""
 
-    def __init__(self, *, registrars, discover_roots=("spectragent.agents",
-                                                       "spectragent.core",
-                                                       "spectragent.schemas")):
-        discover_implementations(*discover_roots)           # 1) 触发自动注册（跳过 OPTIONAL_EXTRA_MODULES）
+    @classmethod
+    def for_config(cls, raw) -> ConfigComposer:             # 组装一份运行配置的入口
+        capabilities, families = _named_packages(raw)       # 0) 读配置点名的包；没有包的名字在这里被拒
+        discover_run_implementations(                       # 1) 框架自己的包 + 点名的包
+            capabilities=capabilities, families=families
+        )
+        return cls(registrars=collect_registrars(capabilities))
+
+    @classmethod
+    def for_every_package(cls) -> ConfigComposer:          # 整份目录（components list、config template）
+        discover_every_implementation()
+        return cls(registrars=collect_registrars())
+
+    def __init__(self, *, registrars):
+        # 不发现：调用方先导入（上面两个工厂）。没有已导入实现的层不进 schema。
+        self._registrars = {layer: r for layer, r in registrars.items() if r.get_all()}
         self._composed = build_composed_config(             # 2) 生成 schema
-            registrars, inline_wiring=True
+            self._registrars, inline_wiring=True
         )
 
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
@@ -939,7 +951,7 @@ class ConfigComposer:
 
 `by_layer` 使用配置中的实例 `id`，省略时用 `<registry_key>#<ordinal>`；同一实现的多个实例保持独立。没有单数的 `agent/loop/env/llm/memory` 便利属性。调用方用 `AgentRuntime.for_agent(run, agent_id, env_id=...)` 选定一个 Agent，Loop、模型与 Memory 来自该 Agent 自己的受体。
 
-所有运行、评测、导出、配置检查和生成入口共用 `core/registries.py::collect_registrars()`。它每次返回一份新的注册表映射，不持有组件实例或跨 run 缓存：先是框架自己的 18 根轴（agent、agent_loop、llm、decision_model、environment、capability、action、archiver、hook、memory、task_loader、eval_loader、step_selector、restorer、evaluator、exporter、action_translator、replay_reviewer，在 `core/registries.py` 里显式列出），再是每个 capability 包自己声明的内部策略轴。`scripts/generate_all.py` 只负责生成产物，不再承载其他运行入口依赖的私有目录函数。
+所有运行、评测、导出、配置检查和生成入口共用 `core/registries.py::collect_registrars()`。它每次返回一份新的注册表映射，不持有组件实例或跨 run 缓存：先是框架自己的 18 根轴（agent、agent_loop、llm、decision_model、environment、capability、action、archiver、hook、memory、task_loader、eval_loader、step_selector、restorer、evaluator、exporter、action_translator、replay_reviewer，在 `core/registries.py` 里显式列出），再是 capability 包自己声明的内部策略轴：不带参数时是每个包的，`collect_registrars(capabilities)` 只读点名的那几个包的声明（一次组装就这样取，下文"一次组装只导入它的配置点名的包"）。`scripts/generate_all.py` 只负责生成产物，不再承载其他运行入口依赖的私有目录函数。
 
 **Capability 包向框架声明自己（用户 2026-10-31 的裁决）。** 新增一个 capability（下一个是 Android）不改任何框架文件——M26："如果新增 Capability 需要修改 framework 代码，说明 Capability 抽象有泄漏"。约定：`spectragent/core/capabilities/` 的每个子包都是一个 capability，包名就是它的 `capability_id`；框架用 `pkgutil` 列出这些子包，不导入它们的实现。每个包在自己的 `declarations.py` 里声明三样东西：
 
@@ -951,7 +963,21 @@ class ConfigComposer:
 
 **一个顺序，所有消费者共用。** 先框架轴，按列出的顺序；再按 `capability_id` 排序的各包，各包按声明的顺序。生成器、指纹、`config explain` 与 `tests/test_generated/test_in_sync_with_registries.py` 都经 `collect_registrars()` 取这个顺序。生成的配置不依赖顺序，唯一的例外是数值界 `0` / `0.0` 的打印会随构建顺序移动指纹，所以消费者不能各自排序。
 
-**实现发现**（`core/registries.py::discover_implementations`）是 conscribe 的严格 `discover`，再加上各包声明的 `OPTIONAL_EXTRA_MODULES` 作为排除项。这些模块不注册任何类，由用到它们的实现在构造时导入，所以没装可选 extra 的机器上组装、生成与 trace 读取照常工作（browser 的 `input/_mouse_gan_v2.py` 在顶层导入 numpy，§4.13）。Composer、生成入口、指纹探针与 trace reader 都经它发现实现。现在每次组装仍然发现 `spectragent.agents`、`spectragent.core`、`spectragent.schemas` 下的全部实现；只导入配置点名的 capability 包是下一步。
+**实现发现**（`core/registries.py`）是 conscribe 的严格 `discover`，再加上各包声明的 `OPTIONAL_EXTRA_MODULES` 作为排除项。这些模块不注册任何类，由用到它们的实现在构造时导入，所以没装可选 extra 的机器上组装、生成与 trace 读取照常工作（browser 的 `input/_mouse_gan_v2.py` 在顶层导入 numpy，§4.13）。发现只有两种范围：一次组装导入框架自己的包与配置点名的包（`discover_run_implementations`，下一段）；整份目录导入 `spectragent` 下的一切，只排除 `spectragent.generated` 与 `spectragent.scripts`（`discover_every_implementation`）。`ConfigComposer(registrars=...)` 本身不发现，它的 schema 只描述调用方已经导入的实现。trace reader 照旧只在注册表落空时懒执行 `discover_implementations`（§5.5）；导出取源 run 的 teacher 类时同样在落空时导入记录的家族（`registered_agent`，§4.1）。
+
+**一次组装只导入它的配置点名的包（用户 2026-10-31 的裁决）。** 每个组装一份配置的入口（`spectragent run`、`spectragent bench`、独立评测、导出与它的学生配置、独立 replay 审查、`config check` / `config explain`、lookahead 的 judge）都经 `ConfigComposer.for_config(raw)` 取 Composer。它导入三样：
+
+- **框架自己的包**，与以前一样：`spectragent.agents`、`spectragent.core`、`spectragent.schemas` 下除 capability 包与 agent 家族包以外的一切（loops、LLM providers、hooks、memory、环境基类、加载器……），以及框架轴的注册表连带导入的 evaluator、export、replay_review 包；
+- **配置点名的 capability 包**：配置里每个 `capability_id` 的值点名一个，包名就是 `capability_id`（`spectragent/core/capabilities/<capability_id>/`，上面的约定）；
+- **配置点名的 agent 家族**：每个 `agent_id` 的值点名它的家族，即第一个点之前的部分（§4.1 "Agent 家族"）：`browser_use.dom` 点名 `spectragent/agents/browser_use/`，不带点的键（`ui_tars`）自成一族。`spectragent/agents/` 下的每个子包都是一个家族，框架自己的两个子包除外：`memory`（memory 轴）与 `rendering`（各家族共用的 prompt 呈现），这份名单在 `core/registries.py`。`spectragent/agents/__init__.py` 因此不导入任何家族。
+
+名字在任何导入之前读：遍历 YAML 读出的原始配置，收集每个映射里 `capability_id` 与 `agent_id`（两个注册表的判别字段）的字符串值，用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。没点名的包整个不导入，连它的 `declarations.py` 也不读：发现时它们是排除项，`collect_registrars(capabilities)` 只读点名的包的声明。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
+
+这次组装的目录是框架轴加上点名的 capability 声明的轴；没有已导入实现的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。conscribe 对进了目录的每个类都解析 `__wiring__`，指向空注册表或没注册的键都是错误，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。agent 家族的声明同样要能解析：`browser_use.dom` 声明的 `click` 等动作只由 browser 包注册，所以只写 agent、不写 browser capability 的配置在建目录时就被 conscribe 拒绝（`unknown keys 'navigate', 'click', 'type' in registry 'action'`）；一份能跑的配置总会在 environment 里写出它的 capability。
+
+**仍会导入 browser 模块的框架代码。** 框架自己的几个模块直接导入 browser 包的模块：导出的 `index_to_coordinate` 翻译器与 `export/filters.py`、replay 审查的 `evidence.py`、`lexbench_browser` 任务加载器。框架的包照旧导入，所以没点名 browser 的组装也会经它们导入 browser 包的一部分（归档器、DOM 模型、观测 fragment、tab 管理，连带 agent-cdp），但不导入 `BrowserCapability`、它的动作与 `BrowserEnvironment`。trace_writer 的 `archive` 受体指向 archiver 注册表，现在只有 browser 注册归档器，这个注册表是经上面的导入才不为空的；否则每个目录都会因为这个受体指向空注册表而建不出来。另外，任务加载器按 §4.10 查 setup 类时读每个 capability 包的声明（只读声明，不导入实现）。
+
+**整份目录的工具导入一切。** `spectragent config generate` 为每一层的每个实现生成配置；指纹探针（`cli/fingerprints.py`，在干净的子进程里跑）与 `tests/test_generated/test_in_sync_with_registries.py` 拿生成时的同一份目录比对；`spectragent components list` 列出每一层的全部实现；`spectragent config template` 按用户挑的任意组件拼 YAML、拼错时列出全部可选的实现。后两者经 `ConfigComposer.for_every_package()`。`config check` / `config explain` 按一次组装的方式组装（`for_config`：同样的拒绝、同样的目录、同样的 resolved 配置与摘要），只有"生成产物是否过期"这一项要整份目录，由指纹探针在它自己的子进程里算。
 
 **Wired receptor 的判定与注入**：
 - 统一使用 conscribe 2.0 的公开 `introspect.wiring_slots` / `receptor_slots` / `init_param_names`。构造参数优先，随后读取 MRO 中的非 `ClassVar` 类级注解；继承的参数按 `**kwargs` 转发链读取，注解在声明它的模块中解析。
@@ -969,7 +995,7 @@ class ConfigComposer:
 
 **与 AgentRuntime 的边界**：`AgentRuntime` 只接收 `ComposedRun`，**不**直接看 conscribe schema、**不**自己解析 YAML。`ConfigComposer` 通过 conscribe 的公开反射接口读取受体和容器形态，不复制上游的反射规则。普通用户 `BaseModel` 子配置保持已校验的模型实例传入构造函数；只有嵌套判别器块按字段展开。增删 wiring grammar、调整 discover 路径只动 Composer 与 `core/registries.py`；加一根框架轴只动 `core/registries.py` 的框架列表，capability 内部的新策略轴只动这个包自己的 `declarations.py`。
 
-**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer(registrars=collect_registrars())` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器再组装一次。
+**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer.for_config(raw)` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器按它自己点名的包再组装一次（`for_config`）。
 
 **生成与验证（conscribe 2.0）。** 唯一入口仍为 `spectragent config generate`。严格 discover 排除 `spectragent.generated` 与 `spectragent.scripts`，无需先删除旧产物；所有已收集层必须非空。先记录注册表指纹，再构建、渲染完整源代码和 schema（Pydantic 渲染可能规范化数值约束），渲染成功后逐文件原子替换，最后写指纹。存根调用 `write_layer_stubs(prune=True)`，只清理上游识别的过期生成存根；所有现有受体均在源码中声明，所以当前不需要 `.pyi`。测试将 conscribe 警告视作错误，用公开 `isolated_registries` 隔离假实现，并在干净进程中比较运行时模型、生成 Python、JSON Schema 及所有发布 YAML 的校验结果。
 
@@ -1055,13 +1081,13 @@ class Environment(Protocol):
 **Environment 通过 `__wiring__` 注入 capabilities**：
 
 ```python
-class BrowserEnvironment(EnvironmentBase):
+class BrowserEnvironment(EnvironmentBase):          # core/capabilities/browser/environment.py
     __registry_key__ = "browser"
     __wiring__ = {
         "capabilities": ("capability", ["browser"]),
     }
 
-class DockerTerminalEnvironment(EnvironmentBase):
+class DockerTerminalEnvironment(EnvironmentBase):   # 在 docker 包里
     __registry_key__ = "docker_terminal"
     __wiring__ = {
         "capabilities": ("capability", ["docker"]),
@@ -1073,6 +1099,8 @@ class CompositeEnvironment(EnvironmentBase):
         "capabilities": ("capability", ["browser", "docker", "tool_sandbox"]),
     }
 ```
+
+**单 capability 的环境放在它的 capability 包里。** 框架的 `core/environments/` 只有基类、路由与错误类型。框架包里的类若连向某个 capability 自己的键，每个没点名这个 capability 的组装都建不出目录（conscribe 解析每个进了目录的类的 `__wiring__`，§4.2.1 "一次组装只导入它的配置点名的包"），所以 `BrowserEnvironment` 在 browser 包里，加一个 capability 也就不改框架文件。跨几个 capability 的组合环境（`CompositeEnvironment`）放在哪里还没定。
 
 > **wiring key 与字段名同名**：`__wiring__["capabilities"]` 配合 `EnvironmentBase` 上的 `capabilities: dict[str, BaseCapability]` class annotation——`ConfigComposer._resolve_wired` 通过 `get_type_hints` 看到 dict 注解，走 multi-instance 分支，注入 `{capability_id: instance, ...}`。同样的模式用在 `agent.llm`（single）和 `capability.backend`（single）。
 
@@ -3957,7 +3985,7 @@ exporter:
 - **`ExporterBase`**（不是 dataclass，手写关键字 `__init__`，与 `trace_branches` 同一写法）：上面每个任务字段都是 `__init__` 的 `Annotated` 参数：`sources_root: str | None`、`sources: list[str] | None`、`filters: ExportFilters | None`、`split: SplitSettings | None`、`decontamination: Decontamination | None`、`student_run_config: str`（必填）、`thought_source: Literal["teacher", "none"]`、`thought_index_refs: Literal["drop", "keep"]`、`wait_actions: Literal["keep", "drop_when_capped"]`（默认 `keep`，类型 `settings.py::WaitActions`）、`thought_rewrite_cache: str | None`、`length: LengthBudget | None`、`output_dir: str`（必填），以及 v1 所有导出器共有的 `sample: Literal["per_step"]`、`image_store: Literal["files"]`。`sources` 使用不可变元组默认值，生成配置直接显示真实的数组默认值。嵌套旋钮是 pydantic dataclass，各在 `spectragent/export/settings.py`（`ExportFilters`、`SplitSettings`、`Decontamination`、`BenchmarkRef`、`LengthBudget`）。conscribe 2.0 直接导入这些类型，已注解的受体不再生成遮蔽模块的存根；`require_eval` 复用 `core/data_loader/task/require_eval.py::RequireEval`（M31 的同一个类型、同一个语义）。`translator` 是单实例受体：`__wiring__ = {"translator": "action_translator"}`、类级注解、Python 默认 `default_translator()`（`identity`）。`thought_rewrite_llms` 是第二个受体：`__wiring__` 接 `llm` 注册表，`__init__` 的参数 `Annotated[list[BaseChatModel] | None, Field(max_length=1)]`，与 `prompt_contribution` 的 `helper_llms` 同一形状（至多一个的列表：单实例受体不能省略），只服务等待动作的 thought 改写；它与 `thought_rewrite_cache` 在 `wait_actions: drop_when_capped` 且 `thought_source: teacher` 时必填，其余时候写了就拒绝，构造时检查（组装即失败，`settings.py::thought_rewrite_problem` 一处规则，`ExportRunner` 对注入后的值再查一遍）。自己没有旋钮的导出器不写 `__init__`（conscribe 读到的就是基类的签名）；有自己旋钮的导出器要写出完整签名。`af-regenerate-and-verify` 的检查 1 证明任务字段与 `translator: Union[...]` 都在生成的每键配置上（`tests/test_export/test_registrar.py`）。
 - **`Exporter` Protocol**（`_registrar.py`）：`exporter_id`、只读的 `translator`、上面的任务字段、`root()`（sources 根的绝对路径）与 `format(rendered: RenderedSample, images: ImageStore) -> ExportRecord`。`ImageStore.put(data, media_type) -> <数据集里的相对路径>`、`ExportRecord{sample_id, record, images}` 也在 `_registrar.py`，`RenderedSample` 在 `render.py`（它不 import `_registrar`）。Protocol 里的 `translator` 写成只读 property：生成的存根把受体类型写成 `ActionTranslatorBase`，可变属性在 Protocol 里是不变型的。
 - **翻译器旋钮**：`ActionTranslatorBase.untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"] = "drop_step"`；`index_to_coordinate` 另有 `occlusion: Literal["none", "check"] = "check"`、`occlusion_unknown: Literal["raise", "untranslatable"] = "raise"`。翻译器没有受体，旋钮是手写 `__init__` 的关键字参数。
-- **CLI**：`spectragent export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer(registrars=collect_registrars())` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
+- **CLI**：`spectragent export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer.for_config(raw)` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
 
 #### 流水线（`ExportRunner`，`spectragent/export/runner.py`）
 
@@ -4018,7 +4046,7 @@ class ActionTranslator(Protocol):
 
 #### 学生渲染（`spectragent/export/render.py`）
 
-- **组装**：`ConfigComposer` 组装 `student_run_config`（一份普通运行 YAML，不带 hook）；它必须恰好有一个 agent，`AgentRuntime.for_agent(run, <它>).prepare()`，用同一套协商、带 `fragments=` 收窄的 descriptors、绑定表与 weave（§4.2）；学生的 Loop 必须是 `ReactLoop`（含子类），学生配置不得带 hook（学生只装配、从不运行），否则 `ExportConfigError`。然后查导出用的可选 slot（§4.1）：学生没有 `format_react_output`、或 `thought_source: teacher` 而某个源的 teacher 类没有 `parse_react_thought`，抛 `IncompatibleError(..., needed_for="needed for training export ...")`。种子消息只经 `runtime.seed_messages(task)`。从不调 `execute()`、`setup_environment()` 或 LLM。
+- **组装**：`ConfigComposer.for_config` 按学生配置自己点名的 capability 与 agent 家族组装 `student_run_config`（一份普通运行 YAML，不带 hook；导出文档的 Composer 不认识它们，§4.2.1）；它必须恰好有一个 agent，`AgentRuntime.for_agent(run, <它>).prepare()`，用同一套协商、带 `fragments=` 收窄的 descriptors、绑定表与 weave（§4.2）；学生的 Loop 必须是 `ReactLoop`（含子类），学生配置不得带 hook（学生只装配、从不运行），否则 `ExportConfigError`。然后查导出用的可选 slot（§4.1）：学生没有 `format_react_output`、或 `thought_source: teacher` 而某个源的 teacher 类没有 `parse_react_thought`，抛 `IncompatibleError(..., needed_for="needed for training export ...")`。种子消息只经 `runtime.seed_messages(task)`。从不调 `execute()`、`setup_environment()` 或 LLM。
 - **片段与采集检查**：学生协商出的 env 来源 fragment 必须 ⊆ 源 run 录下的（`TraceConfig.negotiation.env_sourced_fragments`），否则 `IncompatibleFragmentError`（`provider=` 措辞参数写成源 run，点名缺的 fragment，比如学生要 DOM 而源 run 是纯视觉，或学生协商 `capture_state` 而源 run 没录；从原始归档重渲染是以后的事）。所以 `show_capture_state`（§4.4）这类改变协商的开关属于导出身份。每个取样的步把录下的 env 来源 fragment 交给学生环境的 `compare_capture`（§4.3、§4.9）：有 `mismatches` 抛 `StudentCaptureMismatchError(source, mismatches)`，`unchecked` 记进 manifest。
 - **一个轨迹、若干段**：轨迹是一个源 run（分叉 run：源 run 的 0..t-1 加分叉自己的策略步）。段从一个可渲染的步开始：学生的 memory（学生自己的策略实例）清空、写入 `seed_messages(task)`。段内每一步 k：观测 = 学生协商出的 `NegotiatedObservation`，env 来源 fragment 取 `RunTrace.observation_fragment(k, key)`，loop 来源 fragment 由 `loop_fragment_builders(...)`（§4.1）建：`loop.step_info` 的 `step` 是 k+1，`max_steps` / `today` 取源 run 第 k 步录下的 `loop.step_info`（学生 Loop 的 `today_override` 优先；源 run 没录 step_info 时 `today` 取源 manifest 的 `created_at` 的 UTC 日期、`max_steps` 取学生 Loop 的，manifest 记下用了哪个来源），`loop.history` 是这一段里之前的步（源 `StepRecord` 的副本，`actions` 换成翻译后的，跳过的动作照旧在最后、`skipped_actions` 不变，所以学生下一步同样被告知哪几个没执行；`keep_as_text` 的步换成它记成文本的那些动作；`frame` 换成学生在那一步的坐标系），`loop.action_result` 取这一段里的上一步（段首没有上一步）；env 来源 fragment 经 `core/trace/reconstruction.py::recorded_observation` 读（与 `BranchLoop` 的 `SourceRun.observation` 同一个读法），录下的 step_info 经 `recorded_step_info` 读、按 `_loop_fragments.py::pinned_step_info` 钉住（与 `BranchLoop` 同一条规则）；学生在第 k 步的坐标系由框架建：学生声明的网格铺在录下的截图上（`core/loops/coordinate_frames.py::step_frame`，与实时 run 同一个函数；teacher 记下的 `StepRecord.frame` 是 teacher 的网格，不用），放进 `ReactPromptContext.frame`；`await build_react_prompt(obs, context=...)` 写进 memory；k 是样本时此刻的 `memory.get_context_messages()` 就是它的上下文；然后框架把 k 的翻译后动作的点放到这个坐标系上（`actions_in_model_frame`），`format_react_output(<放好的动作>, thought=<k 的 thought>)` 写出目标轮，立即 `parse_react_output` 那段文本并由框架换回 capability 的单位（`actions_in_capability_units`，round-trip；Skyvern 的动作历史窗口不靠这一步：它从 `loop.history` 读实际执行的动作、结果与效果行），文本经 `ReactLoop.remember_reply(memory, text, [])` 写进 memory。学生不做任何坐标换算。UI-TARS 学生的这两个 slot 都是它的编解码（`UITarsCodec.write` / `read_actions`）：编解码在每段开头的 `seed_messages` → `prepare` 里按学生的动作空间建一次，只读交给它的动作与文本，所以写目标轮与读回不依赖学生渲染过哪些步、以什么顺序；导出经 slot 调它，不 import UI-TARS 的模块（导出对任何学生都成立）。较早的 assistant 轮 weight 0，目标轮 weight 1。
 - **缺学生要的 fragment 的步**：某一步没录下学生要的 env 来源 fragment，或在学生必需（`required_fragments`）的 fragment 上录下的是采集失败（teacher 那边它是可选的）：这一步不渲染、结束当前段，manifest 记 `steps.skipped.fragment_unavailable`。
@@ -5610,7 +5638,7 @@ scope（§4.14）。
 
 ### 11.2 Android
 
-Android 的中间层同样是 Android 包自己的代码（`core/capabilities/android/`）。`AndroidEnvironment` 也放在这个包里，不照 `BrowserEnvironment` 放进框架的 `core/environments/`，否则加 Android 就要改框架文件。与浏览器有两处不同。第一，服务端要自己写：Chrome 自带 CDP 服务端，ADB 却只提供管道，所以设备上要装我们自己的无障碍服务 APK 和一个 shell 身份的助手，并随 Android 版本维护。第二，不导入 agent-cdp：传输、流和设备发现它都不做，能帮上的只有每台设备上的调度（`tests/test_core/test_capabilities/test_agent_cdp_boundary.py` 禁止浏览器包以外的模块导入它）。桥接契约由 Android 包自己用 Protocol 定义，下面各层是这些 Protocol 的实现。本节是 2026-10-29 至 10-31 的调研里定下的设计；证据与被否决的选项在本地的调研报告里（`tmp/reports/android_capability_research.html`，不入库），阶段划分见 `docs/execution_dag.md`。
+Android 的中间层同样是 Android 包自己的代码（`core/capabilities/android/`）。`AndroidEnvironment` 也放在这个包里，与 `BrowserEnvironment` 在 browser 包里一样（§4.3），加 Android 不改框架文件。与浏览器有两处不同。第一，服务端要自己写：Chrome 自带 CDP 服务端，ADB 却只提供管道，所以设备上要装我们自己的无障碍服务 APK 和一个 shell 身份的助手，并随 Android 版本维护。第二，不导入 agent-cdp：传输、流和设备发现它都不做，能帮上的只有每台设备上的调度（`tests/test_core/test_capabilities/test_agent_cdp_boundary.py` 禁止浏览器包以外的模块导入它）。桥接契约由 Android 包自己用 Protocol 定义，下面各层是这些 Protocol 的实现。本节是 2026-10-29 至 10-31 的调研里定下的设计；证据与被否决的选项在本地的调研报告里（`tmp/reports/android_capability_research.html`，不入库），阶段划分见 `docs/execution_dag.md`。
 
 ```
 Android Capability（core/capabilities/android/）
