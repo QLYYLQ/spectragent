@@ -1,4 +1,4 @@
-"""The Android-shaped stub capability passes the shared contract, and UI-TARS assembles against it.
+"""The Android-shaped stub passes the shared contract, takes the browser's params, and seats UI-TARS.
 
 The stub (``tests/_helpers/android_stub.py``) stands in for the capability
 ``docs/architecture_design.md`` §11.2 designs until the real one exists. Its
@@ -107,7 +107,12 @@ def test_ui_tars_assembles_against_the_stub_with_its_wiring_unchanged() -> None:
 def _schema_without_descriptions(params: type[BaseModel]) -> object:
     def strip(node: object) -> object:
         if isinstance(node, dict):
-            return {key: strip(value) for key, value in node.items() if key != "description"}
+            # A description is a string; a param named "description" is a schema.
+            return {
+                key: strip(value)
+                for key, value in node.items()
+                if not (key == "description" and isinstance(value, str))
+            }
         if isinstance(node, list):
             return [strip(value) for value in node]
         return node
