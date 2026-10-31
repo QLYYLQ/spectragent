@@ -98,12 +98,6 @@ class TestRegistries:
             assert isinstance(source, NetworkSourceProtocol)
         assert isinstance(StrictMissPolicy(), MissPolicyProtocol)
 
-    def test_both_registrars_are_composer_layers_leaves_first(self) -> None:
-        layers = list(collect_registrars())
-        assert layers.index("miss_policy") < layers.index("network_source")
-        assert layers.index("replayability") < layers.index("miss_policy")
-        assert layers.index("network_source") < layers.index("capability")
-
 
 class TestTheStrategies:
     def test_live_intercepts_nothing_and_opens_nothing(self) -> None:

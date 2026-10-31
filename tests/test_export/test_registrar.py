@@ -18,7 +18,6 @@ from pydantic import ValidationError
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.data_loader.task.require_eval import RequireEval
-from spectragent.core.registries import collect_registrars
 from spectragent.export import (
     Exporter,
     ExporterBase,
@@ -92,14 +91,8 @@ def _compose(composer: ConfigComposer, entry: dict[str, Any]) -> Any:
     return composer.compose({"exporter": [copy.deepcopy(entry)]})
 
 
-def test_registered_and_collected() -> None:
-    registrars = collect_registrars()
-    assert registrars["exporter"] is ExporterRegistrar
+def test_registered() -> None:
     assert sorted(ExporterRegistrar.keys()) == ["openai_messages"]
-    order = list(registrars)
-    assert order.index("action_translator") < order.index("exporter"), (
-        "the translator layer is collected first, so the exporter block nests its union"
-    )
 
 
 def test_the_generated_config_carries_the_job_and_the_translator_union() -> None:

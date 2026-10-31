@@ -1,37 +1,80 @@
-"""Public registrar catalog shared by composition, inspection, and generation.
+"""The registrar catalog shared by composition, inspection and generation.
 
-This is the one collection point for YAML-configurable framework layers.
-It does not instantiate components or hold run-owned mutable state.
+The framework lists its own axes here. Every subpackage of
+``spectragent/core/capabilities/`` is a capability, named by its
+``capability_id``, and declares its internal strategy axes in its own
+``declarations`` module (``STRATEGY_AXES``, layer name → registrar), so
+adding a capability edits no file here (``docs/architecture_design.md``
+§4.2.1). Nothing is cached: every call reads the declarations afresh and
+returns new objects.
 """
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from conscribe import LayerRegistrar, get_registry
+
+#: The package whose every subpackage is one capability.
+CAPABILITIES_PACKAGE = "spectragent.core.capabilities"
+#: The module each capability package declares itself in.
+DECLARATIONS_MODULE = "declarations"
+
+
+@dataclass(frozen=True)
+class CapabilityDeclarations:
+    """What one capability package declares in its ``declarations`` module."""
+
+    capability_id: str
+    #: Layer name → registrar, in declared order.
+    strategy_axes: Mapping[str, type]
+
+
+def capability_declarations() -> tuple[CapabilityDeclarations, ...]:
+    """Every capability package's declarations, in ``capability_id`` order.
+
+    ``pkgutil`` lists the packages without importing them; only each
+    package's ``declarations`` module is imported, and it imports no
+    implementation.
+    """
+    package = importlib.import_module(CAPABILITIES_PACKAGE)
+    capability_ids = sorted(
+        module.name for module in pkgutil.iter_modules(package.__path__) if module.ispkg
+    )
+    return tuple(_read_declarations(capability_id) for capability_id in capability_ids)
+
 
 def collect_registrars() -> dict[str, type]:
-    """Return the YAML-configurable framework registrars in their stable order.
+    """Every YAML-configurable registrar by layer name, in the one shared order.
 
-    The explicit layer order keeps generated configurations deterministic.
-    Each call returns a fresh mapping; callers may select a subset without
-    changing another Composer or the generator. Concrete implementations
-    are discovered by the caller's normal Composer/build preparation.
+    The framework axes in the order listed below, then each capability
+    package's axes in ``capability_id`` order and declared order. The
+    generator, the fingerprints and ``config explain`` all take this order:
+    generated output does not depend on it, but a ``0`` / ``0.0`` bound
+    prints with the build order and moves the fingerprints. Each call returns
+    a fresh mapping; a caller may select a subset without affecting another.
     """
+    registrars = _framework_axes()
+    for capability in capability_declarations():
+        for layer, registrar in capability.strategy_axes.items():
+            if layer in registrars:
+                raise ValueError(
+                    f"capability {capability.capability_id!r} declares the layer {layer!r}, "
+                    f"which the framework or another capability already declares"
+                )
+            registrars[layer] = registrar
+    return registrars
+
+
+def _framework_axes() -> dict[str, type]:
     from spectragent.agents._registrar import AgentRegistrar
     from spectragent.agents.memory._registrar import MemoryRegistrar
     from spectragent.core.actions._registrar import ActionRegistrar
     from spectragent.core.archive._registrar import ArchiverRegistrar
     from spectragent.core.capabilities._registrar import CapabilityRegistrar
-    from spectragent.core.capabilities.browser.backends._registrar import (
-        BrowserProviderRegistrar,
-    )
-    from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerRegistrar
-    from spectragent.core.capabilities.browser.dom.serializers import (
-        DOMSerializerRegistrar,
-    )
-    from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmRegistrar
-    from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryRegistrar
-    from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyRegistrar
-    from spectragent.core.capabilities.browser.replay.network_source import NetworkSourceRegistrar
-    from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityRegistrar
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
     from spectragent.core.data_loader.task.step_selector import StepSelectorRegistrar
@@ -47,37 +90,9 @@ def collect_registrars() -> dict[str, type]:
     from spectragent.replay_review._registrar import ReplayReviewerRegistrar
 
     return {
-        # Leaves of the wiring DAG first — not load-bearing but keeps
-        # the generated union ordering stable under rename.
-        "browser_provider": BrowserProviderRegistrar,
-        # Browser-internal strategy axes. Excluding them left their
-        # config surface untyped — most visibly ``mouse_trajectory``,
-        # which was emitted as a bare ``str`` so a typo was silently
-        # downgraded to the instant (non-humanized) strategy.
-        "mouse_trajectory": MouseTrajectoryRegistrar,
-        "typing_rhythm": TypingRhythmRegistrar,
-        "dom_cleaner": DOMCleanerRegistrar,
-        "dom_serializer": DOMSerializerRegistrar,
-        # How far a run is pinned for replay (``none`` / ``pinned``, §4.14):
-        # collected so ``pinned``'s seed / time zone / locale / DPR knobs are
-        # typed in the generated union rather than lost behind a Literal.
-        "replayability": ReplayabilityRegistrar,
-        # Offline replay (§4.14 "回放"): the network source and, nested in its
-        # ``archive`` block, the miss policy — leaves before their owners, so
-        # the generated union nests capability → network_source → miss_policy
-        # with every knob (matcher, isolation, shift_dates, …) typed.
-        "miss_policy": MissPolicyRegistrar,
-        "network_source": NetworkSourceRegistrar,
-        # Environment evidence (§4.5, §4.14): the trace hook's ``archive``
-        # receptor draws from it, so each archiver's knobs are typed in YAML
-        # and a mistyped archiver_id is refused.
         "archiver": ArchiverRegistrar,
         "action": ActionRegistrar,
         "capability": CapabilityRegistrar,
-        # How a branch run restores its checkpoint (§4.1 ``BranchLoop``): a
-        # receptor of the ``branch`` loop, collected before ``agent_loop``
-        # so the loop's block nests the restorer union with every knob
-        # (verify, screenshot_max_distance, pace) typed.
         "restorer": RestorerRegistrar,
         "agent_loop": AgentLoopRegistrar,
         "llm": LLMRegistrar,
@@ -86,27 +101,45 @@ def collect_registrars() -> dict[str, type]:
         "memory": MemoryRegistrar,
         "environment": EnvironmentRegistrar,
         "hook": HookRegistrar,
-        # Where a branch sweep forks (§4.10 ``trace_branches``): a receptor of
-        # that task loader, collected before ``task_loader`` so the loader's
-        # block nests the selector union (``explicit`` steps, ``every_k``'s k
-        # and offset) typed.
         "step_selector": StepSelectorRegistrar,
         "task_loader": TaskLoaderRegistrar,
         "eval_loader": EvalLoaderRegistrar,
-        # Scoring. An optional layer — a config that only runs an agent
-        # omits it — but a *layer*, so the judge model, its prompts and
-        # its thresholds are chosen in YAML like everything else instead
-        # of living in a per-benchmark script outside the package.
         "evaluator": EvaluatorRegistrar,
-        # Training export (§4.15): how a teacher's actions become a student's.
-        # An optional top-level layer, and the exporter's ``translator``
-        # receptor — collected before the exporter so its block nests the
-        # translator union with every knob (occlusion, untranslatable) typed.
         "action_translator": ActionTranslatorRegistrar,
-        # The export job itself (§4.15): sources, filters, split, the student's
-        # run config and the record format. An optional top-level layer — an
-        # export YAML has only this block — whose ``translator`` receptor nests
-        # the union collected just above.
         "exporter": ExporterRegistrar,
         "agent": AgentRegistrar,
     }
+
+
+def _read_declarations(capability_id: str) -> CapabilityDeclarations:
+    """Import and check one capability package's ``declarations`` module."""
+    package = f"{CAPABILITIES_PACKAGE}.{capability_id}"
+    name = f"{package}.{DECLARATIONS_MODULE}"
+    try:
+        module = importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        if exc.name != name:
+            raise
+        raise ImportError(
+            f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
+            f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
+            f"axes there (docs/architecture_design.md §4.2.1)."
+        ) from exc
+    axes = getattr(module, "STRATEGY_AXES", None)
+    if not isinstance(axes, Mapping):
+        raise TypeError(f"{name}.STRATEGY_AXES must map layer names to registrars, not {axes!r}")
+    for layer, registrar in axes.items():
+        _check_layer(name, layer, registrar)
+    return CapabilityDeclarations(capability_id=capability_id, strategy_axes=dict(axes))
+
+
+def _check_layer(where: str, layer: object, registrar: object) -> None:
+    """*registrar* is a conscribe registrar whose ``create_registrar`` name is *layer*."""
+    if not (isinstance(registrar, type) and issubclass(registrar, LayerRegistrar)):
+        raise TypeError(f"{where}.STRATEGY_AXES[{layer!r}] is {registrar!r}, not a registrar")
+    registry = get_registry(layer) if isinstance(layer, str) else None
+    if registry is None or registry.protocol is not registrar.protocol:
+        raise ValueError(
+            f"{where}.STRATEGY_AXES[{layer!r}] is the registrar of "
+            f"{registrar.protocol.__name__}, and {layer!r} is not its create_registrar name"
+        )
