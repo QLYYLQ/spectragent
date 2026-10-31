@@ -187,6 +187,18 @@ class TestTheFramedActionSpace:
         plain = _pointing(None)
         assert framed_action_space(plain, None) is plain
 
+    def test_what_the_scroll_start_does_survives_framing(self) -> None:
+        """Framing rewrites a point param's unit; the parenthesis saying what it does stays."""
+        scroll = next(d for d in _pointing().descriptors if d.name == "browser.scroll")
+        line = scroll.params["start_x"]
+        assert line == (
+            "int (optional, the pointer moves there, then the wheel turns; never with index) "
+            "-- x on a 0-1000 grid laid over the screenshot whatever its pixel size, from its "
+            "left edge"
+        )
+        assert scroll.params_schema is not None
+        assert scroll.params_schema["properties"]["start_x"]["description"] == line
+
     def test_an_agent_that_declares_no_grid_is_offered_no_optional_point(self) -> None:
         """Dropped like an optional param whose fragment is not active: prose, schema, points."""
         space = space_of([_pan(), *browser_descriptors("click_coordinate")])

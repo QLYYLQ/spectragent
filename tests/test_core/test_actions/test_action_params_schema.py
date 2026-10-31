@@ -92,8 +92,10 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "direction": "up|down|left|right",
         "amount": "int (optional)",
         "index": "int (optional) -- scroll inside specific element",
-        "start_x": "int (optional) -- CSS px from the viewport's left edge",
-        "start_y": "int (optional) -- CSS px from the viewport's top edge",
+        "start_x": "int (optional, the pointer moves there, then the wheel turns; never "
+        "with index) -- CSS px from the viewport's left edge",
+        "start_y": "int (optional, the pointer moves there, then the wheel turns; never "
+        "with index) -- CSS px from the viewport's top edge",
     },
     "browser.select_dropdown": {
         "index": "int -- element index of the <select>",

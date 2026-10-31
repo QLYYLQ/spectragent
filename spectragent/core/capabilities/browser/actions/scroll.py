@@ -26,6 +26,11 @@ from spectragent.schemas.action import ActionDescriptor, ActionResult
 if TYPE_CHECKING:
     from spectragent.core.capabilities.browser.capability import BrowserCapability
 
+#: What a scroll's start does, in the parenthesis of its two params: framing
+#: rewrites a point param's description into the model's grid and keeps its
+#: parenthesis, so the meaning reaches every model that is offered the start.
+_START_HINT = "the pointer moves there, then the wheel turns; never with index"
+
 
 @dataclass
 class ScrollAction(SettleableAction, ActionBase):
@@ -104,6 +109,7 @@ class ScrollAction(SettleableAction, ActionBase):
                 f"Scroll the page or an element "
                 f"(default {self.default_amount}px {self.default_direction})."
             ),
+            hints={"start_x": _START_HINT, "start_y": _START_HINT},
             **context,
         )
 
