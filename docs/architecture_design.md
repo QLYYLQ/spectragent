@@ -2588,11 +2588,11 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
 | `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
-| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`scroll`、`type_coordinate`；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
+| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`type_coordinate`；`scroll` 落在哪里待定（见 §11.2）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、界面树（键的设计待定，见 §11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
 | `tool_sandbox` | HTTP / in-process | `call_tool(name, params)`, `get_user_msg()`, `get_policy()` | `tool_result` | τ-bench, ToolBench, AppWorld |
 
-**相对名就是参数契约（用户 2026-10-31 的裁决）。** 协商只按名字绑定、不看参数（§4.3 的 capability-relative wiring），同名不同参要到协商通过之后的参数校验才报错。所以不同 capability 用同一个相对名，就必须是同一份语义与参数：Android 与浏览器语义、参数都相同的动作沿用浏览器的相对名，UI-TARS 这类坐标 agent 不改 `__wiring__` 就能协商；不同的另起名。往焦点框里输入叫 `type_text`，因为浏览器的 `type` 按 DOM 索引寻址；系统键叫 `press_key`，因为返回键、主页键不是 `send_keys` 那种组合键。截图片段同理：Android 的截图是 `android.screenshot`，本地名 `screenshot`，坐标帧与 `RunTrace.screenshots` 都按这个本地名找截图（§4.1 "坐标系归框架"）。
+**相对名就是参数契约（用户 2026-10-31 的裁决）。** 协商只按名字绑定、不看参数（§4.3 的 capability-relative wiring），同名不同参要到协商通过之后的参数校验才报错。所以不同 capability 用同一个相对名，就必须是同一份语义与参数：Android 与浏览器语义、参数都相同的动作沿用浏览器的相对名，不同的另起名。UI-TARS 这类坐标 agent 的必需动作因此不改 `__wiring__` 就能协商；它的移动端动词要在 wiring 里把 `long_press`、`open_app`、`press_key` 加为可选动作。往焦点框里输入叫 `type_text`，因为浏览器的 `type` 按 DOM 索引寻址；系统键叫 `press_key`，因为返回键、主页键不是 `send_keys` 那种组合键。手势的时长（`drag`、`long_press`）照 §4.5 "YAML 驱动的行为调参" 是动作实例上的设置（与 `ScrollAction.default_amount` 一样），不是给模型的参数，所以 `drag` 与浏览器同参。`scroll` 落在哪里还没定（§14.5）。截图片段同理：Android 的截图是 `android.screenshot`，本地名 `screenshot`，坐标帧与 `RunTrace.screenshots` 都按这个本地名找截图（§4.1 "坐标系归框架"）。
 
 **Capability 通过 `__wiring__` 声明 observation provides**：
 
@@ -5539,7 +5539,7 @@ scope（§4.14）。
 
 ### 11.2 Android
 
-Android 的中间层同样是 Android 包自己的代码（`core/capabilities/android/`），与浏览器有两处不同。第一，服务端要自己写：Chrome 自带 CDP 服务端，ADB 却只提供管道，所以设备上要装我们自己的无障碍服务 APK 和一个 shell 身份的助手，并随 Android 版本维护。第二，不导入 agent-cdp：传输、流和设备发现它都不做，能帮上的只有每台设备上的调度（`tests/test_core/test_capabilities/test_agent_cdp_boundary.py` 禁止浏览器包以外的模块导入它）。桥接契约由 Android 包自己用 Protocol 定义，下面各层是这些 Protocol 的实现。本节是 2026-10-29 至 10-31 的调研里定下的设计；证据与被否决的选项在本地的调研报告里（`tmp/reports/android_capability_research.html`，不入库），阶段划分见 `docs/execution_dag.md`。
+Android 的中间层同样是 Android 包自己的代码（`core/capabilities/android/`）。`AndroidEnvironment` 也放在这个包里，不照 `BrowserEnvironment` 放进框架的 `core/environments/`，否则加 Android 就要改框架文件。与浏览器有两处不同。第一，服务端要自己写：Chrome 自带 CDP 服务端，ADB 却只提供管道，所以设备上要装我们自己的无障碍服务 APK 和一个 shell 身份的助手，并随 Android 版本维护。第二，不导入 agent-cdp：传输、流和设备发现它都不做，能帮上的只有每台设备上的调度（`tests/test_core/test_capabilities/test_agent_cdp_boundary.py` 禁止浏览器包以外的模块导入它）。桥接契约由 Android 包自己用 Protocol 定义，下面各层是这些 Protocol 的实现。本节是 2026-10-29 至 10-31 的调研里定下的设计；证据与被否决的选项在本地的调研报告里（`tmp/reports/android_capability_research.html`，不入库），阶段划分见 `docs/execution_dag.md`。
 
 ```
 Android Capability（core/capabilities/android/）
@@ -5595,14 +5595,14 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **主机与设备之间的通道。** APK 里的服务绑在一个 `localabstract` socket 上，主机经 `adb forward` 连它：不依赖设备自己的网络（不必为连主机关飞行模式、设 `no_proxy`，也就不与切换网络的任务冲突），也不占设备上每个 app 都看得见的 localhost TCP 端口。消息是长度前缀的帧，带请求 id，服务主动推送的事件走同一条 socket；连上先做版本握手，不匹配就拒绝；每个会话一个鉴权 token，经 adb shell 下发。另留一个 ContentProvider（`adb shell content`）负责启动引导与健康检查：它不需要 forward，服务的 socket 挂了它也还在；每次调用都要起一个 shell 进程，所以不传大块数据。默认不让设备主动连主机，那需要 `adb reverse` 或只在模拟器上有效的 `10.0.2.2`。界面树的线上格式对齐 android_env 的 `AndroidAccessibilityForest`，AndroidControl 数据集存的也是这个格式。
 
-**阶段 1 先用 adb 内建原语。** `screencap`、`input`、`uiautomator dump` 实现同一组桥接 Protocol，阶段 2 换成自有的 APK 与助手时 capability 不用改。这一阶段不开启无障碍服务，因为 `uiautomator dump` 会把它解绑。代价是延迟与动画屏上的失败率偏高，`input text` 也打不出中文；AndroidWorld 的任务几乎都是 ASCII 文本，足够打通端到端。
+**阶段 1 先用 adb 内建原语。** `screencap`、`input`、`uiautomator dump` 实现同一组桥接 Protocol，阶段 2 在这组 Protocol 之后换成自有的 APK 与助手。这一阶段不开启无障碍服务，因为 `uiautomator dump` 会把它解绑。代价是延迟与动画屏上的失败率偏高，`input text` 也打不出中文；AndroidWorld 的任务几乎都是 ASCII 文本，足够打通端到端。
 
 **Provider。** 每个 capability 一个 provider 注册表（§4.9.x），Android 用 `AndroidProviderRegistrar`；通用 schema 里同时带 `cdp_url`、`vnc_address`、`adb_device_id` 的 `ProviderSession` 挪回浏览器包，它从来只有浏览器在用。Android provider 的 `open()` 返回自己的会话对象，它带着一个回环地址形式的 `AdbEndpoint`（`host`、`port`、`kind`、`encrypted`、`needs_adb_key`、`expires_at`），任何 ADB 客户端都能直接连。云手机厂商那一段传输（WebSocket 或 SSH 隧道）在 lite SDK 里变成本地 `host:port`，ADB 本身与密钥归 Spectragent，与浏览器"SDK 交出一个 URL，协议归我们"是同一种分工。v1 只用官方模拟器（AndroidWorld、MobileWorld、AndroidLab 都只认它，能用快照秒级复位的也只有自托管的模拟器），provider 只有本地模拟器与按 adb 序列号接上的已连接设备两种；云手机和浏览器一样放到后面，国内云手机怎么接、cloud phone lite SDK 放在哪里叫什么，到那时再定。
 
-**策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；capability 包怎样声明自己的注册表见 §4.10 与 AGENTS.md §3.4，注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
+**策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；包在自己的声明模块里列出这些注册表（§4.2.1），开局要求类的登记见 §4.10；注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
 
 - **provider**：见上一段。
-- **UI 树来源**：阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务；不同来源的树不共用一个片段键（下面"片段"）。
+- **UI 树来源**：策略受体，也是实验身份的一项；阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务。每次观测实际跑的是哪个生产方要记下。片段键怎么设计还没定（§14.4）。
 - **键入后端**：`input text` 只认键位表里的字符，中文要靠别的后端（例如服务里的输入法提交、`ACTION_SET_TEXT`）。当前输入法会改变截图内容，所以它与键入后端一起进实验身份。
 - **点按注入器**：取值至少有无障碍手势、shell 注入（助手的 `injectInputEvent`）和 provider 原生（模拟器 gRPC 的触摸）。选哪个只看保真度与稳定性，不看哪个更难被认出：无障碍手势与 shell 注入，app 都认得出来。每个动作实际用了哪个记进 trace。
 - **任务裁判**：`none` 或 `androidworld`，见下一段。
@@ -5612,17 +5612,18 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 **片段。**
 
 - `android.screenshot`：本地名 `screenshot`（§4.9 "相对名就是参数契约"），报告截图几何（`ScreenshotGeometry`）；手机上 viewport 通常就是点按用的物理分辨率。每一步记下截屏的生产方（`screencap`、助手、服务、模拟器 gRPC……）。
-- 界面树：字段对齐 `AndroidAccessibilityForest`；片段键标明生产方，无障碍树与 uiautomator 树是两个键，键名随阶段 1 定。只看截图的 agent 不协商树，就不触发树的采集。
+- 界面树：字段对齐 `AndroidAccessibilityForest`；片段键的设计还没定（§14.4）。只看截图的 agent 不协商树，就不触发树的采集。
 - `android.capture_state`：继承 `CaptureStateFragment`（§4.4）；手机没有指针，`pointer` 是 `unavailable`；界面"静止"由 capability 定义。
-- `android.platform`：`operating_system` 加一个 `android` 取值，`InputPlatform` 从浏览器包挪到中立位置，渲染器补上触屏的键盘规则（没有 Control / Meta 那种全选，要考虑输入法）。
+- `android.platform`：`operating_system` 加一个 `android` 取值，`InputPlatform` 从浏览器包挪到中立位置，渲染器补上触屏的键盘规则（没有 Control / Meta 那种全选，要考虑输入法）。实测的设备事实也随它走（下面"实验身份"）。
 - 前台 app 元数据：前台包名与 Activity 等，片段名随阶段 1 定。
 
-**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`scroll`、`type_coordinate`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。`scroll` 的方向与浏览器同义，用测试钉住；模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作，它的编解码补上这几个动词。
+**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 落在哪里还没定（§14.5）；沿用 `scroll` 这个名字时，方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词，wiring 把对应的动作加为可选（§4.9）。
 
-**实验身份。** 下面这些全部进实验身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、设备指纹、当前输入法、键入后端、UI 树来源、配置选的点按注入器、无障碍服务 APK 的版本与 `isAccessibilityTool` 取值、`faketouch` 预检结果、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方；具体字段随动作与片段的实现定。
+**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定（界面树见 §14.4）。
 
 **以后，或还没定的。**
 
+- 阶段 1 之前要用户定的两件：界面树的片段键（§14.4）、`scroll` 落在哪里（§14.5）。
 - 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。
 - 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
 - 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
@@ -5698,3 +5699,21 @@ DD 1.4 提到走独立的 A2A 通讯协议设计，不属于 agent loop 范畴�
 已按 §4.7 实施执行内惰性复用与显式收尾。生命周期归一次任务、独立评测批次或显式 Python
 `model_session`，不属于 AgentLoop 策略，也不通过 YAML wire id 建立共享池。云浏览器 lite SDK 的
 生命周期审计仍延期；不因模型客户端改动扩大到浏览器后端。
+
+### 14.4 Android 界面树的片段键（阶段 1 之前要用户定）
+
+UI 树来源是 Android capability 的一个策略受体，也是实验身份的一项；每次观测实际跑的是哪个生产方要记下（§11.2）。没定的是片段键：
+
+- **(a)** 一个键 `android.ui_tree`：生产方进 run 的身份；每次观测另带一个 `producer` 字段，以防中途退回别的来源时它变了。这与 `browser.dom` 跨 DOM cleaner 的做法相同：agent 不关心生产方，换来源不改 capability 提供什么。
+- **(b)** 每个生产方一个键（无障碍树、uiautomator 树各一个）。调研第二轮的设备端建议（2026-10-31 按建议裁决）写的就是"片段键标明生产方"，第三轮"trace 要记什么"一表沿用。代价是 agent 要声明自己读哪几个生产方的键。
+
+建议 (a)。它偏离了调研里已经同意的写法，所以要用户回答。
+
+### 14.5 Android 的 `scroll` 落在哪里（阶段 1 之前要用户定）
+
+浏览器的 `scroll` 参数是 `direction`、`amount` 和只在有 DOM 时才有的 `index`，在指针所在处滚动；Android 没有指针，UI-TARS 移动端写的是 `scroll(start_box, direction)`。
+
+- **(a)** 给 `scroll` 加一个可选的坐标点，浏览器与 Android 一起加，两边仍是一份参数契约：浏览器先把指针移到那一点再滚轮，Android 从那一点开始滑；不给点时，浏览器在当前指针处滚，Android 在屏幕中央滑。
+- **(b)** Android 的这个动作另起名字。
+
+建议 (a)。要用户回答之后才能开始阶段 1。
