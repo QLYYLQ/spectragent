@@ -51,7 +51,7 @@
 | **Tool-Use Agent** (ToolBench, BFCL) | API 沙箱 | ReAct / function-calling | **动态的** — 每个 task 定义不同的可用 tools | 上一次 tool 调用的返回值 | 工具调用序列匹配 |
 | **多工具推理** (GAIA) | 浏览器 + 计算器 + 代码解释器 | Plan-Execute / ReAct | 混合：navigate + calculate + run_code | 混合：页面 + 计算结果 + 代码输出 | 最终答案精确匹配 |
 | **桌面 Agent** (OSWorld) | 桌面 VM (VNC) | ReAct (视觉) | click(x,y), type, hotkey | 桌面截图 | 最终状态检查 |
-| **移动 Agent** | 手机 (ADB/Appium) | ReAct (视觉) | tap(x,y), swipe, input | 屏幕截图, view hierarchy | UI 状态断言 |
+| **移动 Agent** (AndroidWorld) | Android 模拟器 / 手机 (ADB) | ReAct (视觉) | 点按(x,y), 滑动, 输入, 系统键 | 屏幕截图, view hierarchy | 设备状态检查（基准的任务裁判在活体设备上判，§4.2） |
 
 ---
 
@@ -142,7 +142,7 @@
 > **`backend` 是 capability 的执行层配置**：每个 capability 通过 `__wiring__["backend"] = "<provider_registry>"` 声明后端注册表（如 BrowserCapability 用 `"browser_provider"`）。Backend 文件物理上属于 `core/capabilities/{cap}/backends/`，与 capability 同目录，从属关系一目了然。
 
 > 完整的 Capability 架构示意图见 [`flat_capability_architecture.svg`](./flat_capability_architecture.svg)。
-> 每个 capability 各自管理自己的 lifecycle（启动/销毁/清理），通过 `setup()` 调 `backend.open()` 取得 transport 端点（cdp_url / vnc_address / adb_device_id ...），`teardown()` 调 `backend.close()` 释放 session。
+> 每个 capability 各自管理自己的 lifecycle（启动/销毁/清理），通过 `setup()` 调 `backend.open()` 取得 transport 端点（browser 的 `cdp_url`、Android 的回环 `AdbEndpoint`、desktop 的 VNC 地址……，各归各 capability 的包，§11），`teardown()` 调 `backend.close()` 释放 session。
 > Framework（AgentRuntime）负责：协商 observation/action → 织入 AOP → weave Loop → 评分。
 
 ---
@@ -2563,9 +2563,11 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
 | `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
-| `android` | ADB + gRPC | `tap()`, `swipe()`, `screenshot()`, `get_ui_tree()` | `mobile_screenshot`, `ui_tree` | AndroidWorld, MobileWorld |
+| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`scroll`、`type_coordinate`；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
 | `tool_sandbox` | HTTP / in-process | `call_tool(name, params)`, `get_user_msg()`, `get_policy()` | `tool_result` | τ-bench, ToolBench, AppWorld |
+
+**相对名就是参数契约（用户 2026-10-31 的裁决）。** 协商只按名字绑定、不看参数（§4.3 的 capability-relative wiring），同名不同参要到协商通过之后的参数校验才报错。所以不同 capability 用同一个相对名，就必须是同一份语义与参数：Android 与浏览器语义、参数都相同的动作沿用浏览器的相对名，UI-TARS 这类坐标 agent 不改 `__wiring__` 就能协商；不同的另起名。往焦点框里输入叫 `type_text`，因为浏览器的 `type` 按 DOM 索引寻址；系统键叫 `press_key`，因为返回键、主页键不是 `send_keys` 那种组合键。截图片段同理：Android 的截图是 `android.screenshot`，本地名 `screenshot`，坐标帧与 `RunTrace.screenshots` 都按这个本地名找截图（§4.1 "坐标系归框架"）。
 
 **Capability 通过 `__wiring__` 声明 observation provides**：
 
@@ -5427,7 +5429,9 @@ environment:
 
 ---
 
-## 11. Capability 内部中间层示例：Browser
+## 11. Capability 内部中间层示例
+
+### 11.1 Browser
 
 每个 capability 各自管理自己与 backend 之间的中间层协议。以 Browser Capability 为例，中间层是浏览器包自己的代码：CDP 客户端（`cdp_client.py`）、target 跟踪、recorder、DOM 流水线和输入层都在 `core/capabilities/browser/` 里。agent-cdp 只在其中做进程内的事件调度，也就是下面的 ScopeGroup / EventScope、watchdog 绑定，以及把少数 CDP 事件送进 scope 的 `CDPEventBridge`：
 
@@ -5489,7 +5493,99 @@ scope（§4.14）。
 
 **策略一律不在 profile 上**：`dom_cleaner`、`dom_serializer`、`mouse_trajectory`、`typing_rhythm`、`replayability`、`network_source` 全部是 `BrowserCapability` 上的 `__wiring__` 受体（§4.12 / §4.13 / §4.14）。profile 曾经用字符串名持有 cleaner 与 serializer，后果是消费者拿着名字去注册表里 `get(name)()` 现造一个默认实例，把 Composer 已经按 YAML 构造好的那个丢掉——策略的 knobs 生成在 config 里却无人可达。profile 也不支持 override 或增量修改：一个预设要么被整体选中，要么另起一个。区分规则是「谁为它买单」——改变一次 capture 花多少次 CDP 往返的，属于 profile；改变产出的 observation 让 prompt 花多少 token 的（`screenshot_quality`、`dom_max_elements`），是 capability 自己的 `Annotated` 标量。
 
-其他 capability 的中间层各不相同：Docker 用 Docker Engine API（`core/capabilities/docker/backends/` P2 占位），Android 用 ADB + gRPC，Desktop VM 用 VNC + AT-SPI，GPU Profiling 用 Unix socket IPC → bare-metal harness。这些都是 capability 的实现细节，framework 不感知。
+其他 capability 的中间层各不相同：Docker 用 Docker Engine API（`core/capabilities/docker/backends/` P2 占位），Android 用 ADB 加我们自己的设备端服务（§11.2），Desktop VM 用 VNC + AT-SPI，GPU Profiling 用 Unix socket IPC → bare-metal harness。这些都是 capability 的实现细节，framework 不感知。
+
+### 11.2 Android
+
+Android 的中间层同样是 Android 包自己的代码（`core/capabilities/android/`），与浏览器有两处不同。第一，服务端要自己写：Chrome 自带 CDP 服务端，ADB 却只提供管道，所以设备上要装我们自己的无障碍服务 APK 和一个 shell 身份的助手，并随 Android 版本维护。第二，不导入 agent-cdp：传输、流和设备发现它都不做，能帮上的只有每台设备上的调度（`tests/test_core/test_capabilities/test_agent_cdp_boundary.py` 禁止浏览器包以外的模块导入它）。桥接契约由 Android 包自己用 Protocol 定义，下面各层是这些 Protocol 的实现。本节是 2026-10-29 至 10-31 的调研里定下的设计；证据与被否决的选项在本地的调研报告里（`tmp/reports/android_capability_research.html`，不入库），阶段划分见 `docs/execution_dag.md`。
+
+```
+Android Capability（core/capabilities/android/）
+├── capability 自己：片段、动作、界面"静止"的定义、app 名称到包名的解析
+├── 策略轴：provider、UI 树来源、键入后端、点按注入器、任务裁判（none / androidworld）
+├── 设备会话层（每台设备一个；自写，不导入 agent-cdp）
+│   ├── 串行工作队列：采集与动作一个一个来，等待上限与执行上限分开
+│   ├── 采集扇出：一次采集同时问截图、界面树、前台 app，各带超时，等齐了再交出
+│   ├── 流读取：无障碍事件（一条不丢）、logcat（在读取端过滤）
+│   └── 热插拔、进程变化；系统弹窗、ANR、权限框
+├── 主机传输层（自写的 asyncio ADB host 协议客户端）
+│   ├── 每个 run 一个私有 adb server，起在私有端口上
+│   └── 一条连接只办一件事：track-devices、shell,v2:、exec:、sync:、tcp:、abb_exec:，以及到设备端服务的转发
+├── 状态查询：dumpsys、settings、content、root 下的 sqlite3
+├── 模拟器控制面（只在模拟器上）：grpc.aio 存根，端口从 pid_<PID>.ini 读
+│   └── 快照、setVmState、硬件路径触摸、无损截图
+└── Backend（core/capabilities/android/backends/，AndroidProviderRegistrar）
+    ├── v1：本地模拟器、按 adb 序列号接上的已连接设备；云手机以后
+    └── open() 返回的会话带着回环 AdbEndpoint（host、port、kind、encrypted、needs_adb_key、expires_at）
+
+设备端（我们自己写，随 Android 版本维护）
+├── 无障碍服务 APK（主力；adb install 安装，写 secure 设置开启；最低 Android 11）
+│   ├── UI 树与事件流、元素级动作、手势（点按、滑动、多指）、全局动作（返回、主页、最近任务）
+│   ├── 截图（API 30+，最快每 333 ms 一张）、文本输入（API 33+）
+│   └── isAccessibilityTool：构建期开关，默认 false
+├── shell 身份助手（app_process）：快速截图、任意按键；安装、开启服务，force-stop 之后重新开启；
+│   也是一种点按注入器（injectInputEvent）
+└── 与主机的通道：adb forward 到一个 localabstract socket；长度前缀消息，带请求 id；先做版本握手；
+    每个会话一个 token；ContentProvider 负责启动引导与健康检查
+```
+
+**主机传输层。** ADB 的 host 协议很小：每条请求是 4 位十六进制的长度加内容，一条连接只办一件事（跑 shell 命令、传文件、连到设备上我们自己的服务），并发就开多条。Python 里没有仍在维护的原生 asyncio ADB 客户端（2026-10 查过），所以自己写。每个 run 在私有端口上起自己的 adb server（`adb -P <port>` 或 `ADB_SERVER_SOCKET`）：`adb connect` 会把设备登记进一个按用户、所有运行共享的 server，那违反零全局状态。
+
+**两把钥匙。** ADB 密钥是 adb 自己的一对 RSA 钥匙，让设备信任"这台电脑"。每个实验生成一对，私钥不离开 Spectragent，也不碰本机的 `~/.android/adbkey`（那一把同时能连用户自己的手机），实验用完就作废。接云手机时只有公钥交给 lite SDK，由它经厂商接口装进云手机（真机上同一步是有人在屏幕上点"允许 USB 调试"）。厂商的 API key 是另一把：lite SDK 用它调厂商接口（开机、拿 ADB 地址、关机），账单记在它名下，照旧归 lite SDK 管，与浏览器 lite SDK 的 apikey 是同一个概念。本地模拟器与 USB 真机怎样配私有 adb server 和实验密钥，阶段 0 实测。
+
+**设备会话层（2026-10-31 定）。** 自己写，不导入 agent-cdp。agent-cdp 的行为按浏览器调过：队列满了就拒收最新的事件，而无障碍事件不能丢；事件类注册在整个进程共用的一张表里，Android 的事件类会与浏览器的撞名；Android 的每个新需要都会变成一次 agent-cdp 的发版。会话层的约定：
+
+- 每台设备一个串行工作队列，采集与动作排队一个一个来；等待上限与执行上限分开，没开始的任务可以撤回，被取消的任务要等它真正退出。agent-cdp 0.5 踩过的四个坑写成会话层的测试：任务不能等它自己；等待上限与执行上限分开；一个处理器被取消不能弄死整条队列；flush 要能确认之前收到的都已处理完。
+- 一次采集同时问几个来源（截图、界面树、前台 app），用 `asyncio.gather` 加每个来源各自的超时，等齐了再交出。
+- 服务推送的界面事件一条都不能丢：丢掉一个内容变化事件，主机镜像的界面树就会悄悄过期。logcat 是高量的行流，只有少数行有用（崩溃、ANR），在读取端过滤之后再交出。
+- 以后若长出很多"看到某个事件就反应"的组件（例如每个动作前查系统弹窗、崩溃后自动恢复），再考虑只借 agent-cdp 的调度器，那时把缺的"等待式发送"写进它的需求台账。
+
+**模拟器控制面。** 只有模拟器有：经 `grpc.aio` 存根连模拟器自己的 gRPC，端口从运行中的模拟器写下的 `pid_<PID>.ini` 发现文件读，不写死；提供快照、`setVmState`（暂停虚拟机）、硬件路径触摸和不经客体进程的无损截图。gRPC 自带超时、取消与流控。
+
+**设备端。** 主力是我们自己的无障碍服务 APK。只要拿得到 adb shell，它就能无人值守地开启（`adb install` 之后把服务追加进 `enabled_accessibility_services`，不覆盖已启用的别的服务），而且它是唯一能推送界面事件、不依赖 adb 连接存活的路线。shell 身份助手补上服务做不到的事：不受 333 ms 限制的截图、任意按键，以及服务被关掉之后的重新开启。四条硬约束，任何代码路径都不许违反：
+
+- 不开默认方式的 UiAutomation：它在连接期间解绑所有无障碍服务；确实需要时必须带 `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`；
+- 服务启用期间不调 `uiautomator dump`：它用的正是默认方式的 UiAutomation；
+- 复位时不 force-stop 我们自己的包：force-stop 会把服务从启用列表里永久移除，复位只停被测 app；
+- 开启之后用 ping 确认服务真的绑上了，不重读设置：Android 14 起被拒的服务会从设置里悄悄消失，不报错。
+
+setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有这个特性，系统会取消所有无障碍手势，节点动作却照常可用。`isAccessibilityTool` 做成 APK 的构建期开关，默认 `false`：这个声明告诉系统"这是给残障用户用的工具"，声明了限制与提醒会少一些，而它带来的好处是否真的挡住评测任务还没测过；它的两项影响（任务路径上有没有数据敏感视图，24 小时提醒会不会出现在截图里）阶段 2 写 APK 时实测。
+
+**主机与设备之间的通道。** APK 里的服务绑在一个 `localabstract` socket 上，主机经 `adb forward` 连它：不依赖设备自己的网络（不必为连主机关飞行模式、设 `no_proxy`，也就不与切换网络的任务冲突），也不占设备上每个 app 都看得见的 localhost TCP 端口。消息是长度前缀的帧，带请求 id，服务主动推送的事件走同一条 socket；连上先做版本握手，不匹配就拒绝；每个会话一个鉴权 token，经 adb shell 下发。另留一个 ContentProvider（`adb shell content`）负责启动引导与健康检查：它不需要 forward，服务的 socket 挂了它也还在；每次调用都要起一个 shell 进程，所以不传大块数据。默认不让设备主动连主机，那需要 `adb reverse` 或只在模拟器上有效的 `10.0.2.2`。界面树的线上格式对齐 android_env 的 `AndroidAccessibilityForest`，AndroidControl 数据集存的也是这个格式。
+
+**阶段 1 先用 adb 内建原语。** `screencap`、`input`、`uiautomator dump` 实现同一组桥接 Protocol，阶段 2 换成自有的 APK 与助手时 capability 不用改。这一阶段不开启无障碍服务，因为 `uiautomator dump` 会把它解绑。代价是延迟与动画屏上的失败率偏高，`input text` 也打不出中文；AndroidWorld 的任务几乎都是 ASCII 文本，足够打通端到端。
+
+**Provider。** 每个 capability 一个 provider 注册表（§4.9.x），Android 用 `AndroidProviderRegistrar`；通用 schema 里同时带 `cdp_url`、`vnc_address`、`adb_device_id` 的 `ProviderSession` 挪回浏览器包，它从来只有浏览器在用。Android provider 的 `open()` 返回自己的会话对象，它带着一个回环地址形式的 `AdbEndpoint`（`host`、`port`、`kind`、`encrypted`、`needs_adb_key`、`expires_at`），任何 ADB 客户端都能直接连。云手机厂商那一段传输（WebSocket 或 SSH 隧道）在 lite SDK 里变成本地 `host:port`，ADB 本身与密钥归 Spectragent，与浏览器"SDK 交出一个 URL，协议归我们"是同一种分工。v1 只用官方模拟器（AndroidWorld、MobileWorld、AndroidLab 都只认它，能用快照秒级复位的也只有自托管的模拟器），provider 只有本地模拟器与按 adb 序列号接上的已连接设备两种；云手机和浏览器一样放到后面，国内云手机怎么接、cloud phone lite SDK 放在哪里叫什么，到那时再定。
+
+**策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；capability 包怎样声明自己的注册表见 §4.10 与 AGENTS.md §3.4，注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
+
+- **provider**：见上一段。
+- **UI 树来源**：阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务；不同来源的树不共用一个片段键（下面"片段"）。
+- **键入后端**：`input text` 只认键位表里的字符，中文要靠别的后端（例如服务里的输入法提交、`ACTION_SET_TEXT`）。当前输入法会改变截图内容，所以它与键入后端一起进实验身份。
+- **点按注入器**：取值至少有无障碍手势、shell 注入（助手的 `injectInputEvent`）和 provider 原生（模拟器 gRPC 的触摸）。选哪个只看保真度与稳定性，不看哪个更难被认出：无障碍手势与 shell 注入，app 都认得出来。每个动作实际用了哪个记进 trace。
+- **任务裁判**：`none` 或 `androidworld`，见下一段。
+
+**任务裁判与 `AndroidSetup`。** `androidworld` 负责 AndroidWorld 每个任务的开局、判分与收尾，也管着 AndroidWorld 的服务进程：独立的 venv 或容器，钉住 AndroidWorld 的 commit（它钉死的依赖几乎肯定与 Spectragent 的锁文件冲突），teardown 时关掉。它在进程外：AndroidWorld 的 FastAPI 服务负责初始化、判分与拆除，观测与动作走我们自己的桥（这个服务没有界面树的端点，树由我们提供）。Android 的开局要求类 `AndroidSetup` 由 Android 包自己登记（§4.10）；选了 `androidworld` 时，AndroidWorld 的任务数据（任务类名与参数，含种子）对 capability 是不透明的，经 setup 原样交给裁判。判分要读设备上的数据库、文件与设置，所以裁判在 Runtime 的判分时间点读出它（§4.2），判分作为带来源的证据进 trace，评测器从 trace 读它（§4.11）。阶段 3 再加 `android.state_dump` 归档器，在 run 开头与结尾各转储一次设备状态，让离线重新实现的判定能对变体重评。AndroidWorld 的服务能不能不进 Docker、在独立 venv 里对接原生模拟器，还没有验证。
+
+**片段。**
+
+- `android.screenshot`：本地名 `screenshot`（§4.9 "相对名就是参数契约"），报告截图几何（`ScreenshotGeometry`）；手机上 viewport 通常就是点按用的物理分辨率。每一步记下截屏的生产方（`screencap`、助手、服务、模拟器 gRPC……）。
+- 界面树：字段对齐 `AndroidAccessibilityForest`；片段键标明生产方，无障碍树与 uiautomator 树是两个键，键名随阶段 1 定。只看截图的 agent 不协商树，就不触发树的采集。
+- `android.capture_state`：继承 `CaptureStateFragment`（§4.4）；手机没有指针，`pointer` 是 `unavailable`；界面"静止"由 capability 定义。
+- `android.platform`：`operating_system` 加一个 `android` 取值，`InputPlatform` 从浏览器包挪到中立位置，渲染器补上触屏的键盘规则（没有 Control / Meta 那种全选，要考虑输入法）。
+- 前台 app 元数据：前台包名与 Activity 等，片段名随阶段 1 定。
+
+**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`scroll`、`type_coordinate`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。`scroll` 的方向与浏览器同义，用测试钉住；模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作，它的编解码补上这几个动词。
+
+**实验身份。** 下面这些全部进实验身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、设备指纹、当前输入法、键入后端、UI 树来源、配置选的点按注入器、无障碍服务 APK 的版本与 `isAccessibilityTool` 取值、`faketouch` 预检结果、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方；具体字段随动作与片段的实现定。
+
+**以后，或还没定的。**
+
+- 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。
+- 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
+- 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
+- 云手机、真机、MobileWorld 与 AndroidLab、输入拟人化：阶段 4。
+- 真实国内 app 档（带反自动化检查的 app）暂缓，排在阶段 4 之后。届时按同意划定范围（金融 app 要机构授权；拒绝被自动化的 app 只做人执行或只读的步骤，或者排除；专用账号、钉住 app 版本、有人在场；被 app 拦下记为一种结局，不做任何规避），开跑前做法律审查；无障碍服务开不开是一项要记录的选择；人工交接放在 Loop；trace 只记事实（暴露快照、检测证据、交接步、账号状态），四类结局由评测器离线分类。设备端探针 app 在它开跑之前做。
 
 ---
 
