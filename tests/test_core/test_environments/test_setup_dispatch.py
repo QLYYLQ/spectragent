@@ -213,7 +213,7 @@ class TestReplayArchiveRouting:
     """M30: ``replay_archive`` is a task-context key the browser declares by name (§4.10)."""
 
     def test_replay_archive_routes_only_to_the_browser_capability(self) -> None:
-        from spectragent.core.capabilities.browser import BrowserCapability
+        from spectragent.core.capabilities.browser.capability import BrowserCapability
 
         browser = BrowserCapability()
         docker = Dockerish()

@@ -196,7 +196,7 @@ def test_generate_help_never_discovers_or_writes(tmp_path, monkeypatch, capsys):
     def forbidden(*args, **kwargs):
         pytest.fail("Help must not discover or generate")
 
-    monkeypatch.setattr(generate_all, "discover", forbidden)
+    monkeypatch.setattr(generate_all, "discover_implementations", forbidden)
     monkeypatch.setattr(generate_all, "GENERATED_DIR", tmp_path)
     assert main(["config", "generate", "--help"]) == 0
     with pytest.raises(SystemExit) as exc:

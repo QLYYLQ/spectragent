@@ -92,6 +92,12 @@ class DOMSerializerBase(metaclass=DOMSerializerRegistrar.Meta):   # :31
     def serializer_type(self) -> str: return self.__registry_key__
 ```
 
+Inside a capability package the module that defines the registrar must stay light, and
+so must every `__init__.py` above it: the package's `declarations.py` imports it, and
+reading declarations may not import an implementation, agent-cdp, websockets or numpy
+(design doc §4.2.1). Put an import used only in annotations under `TYPE_CHECKING`, and
+let the concrete strategies import the base, never the other way round.
+
 Registration is the metaclass — **subclassing the base registers the class**, there
 is no decorator. Concrete strategies set `__registry_key__` explicitly and take
 their knobs as `__init__` keyword params; *those become the generated config fields*.
@@ -107,11 +113,14 @@ their knobs as `__init__` keyword params; *those become the generated config fie
 Do **not** write `Registrar.get("text")()`; that is the shape step 7 forbids. This is
 the framework's answer when nothing configured anything, not a configuration surface.
 
-**3. Register the registrar with the Composer** — add it to `collect_registrars()`
-in `spectragent/core/registries.py`. **This is the step people skip.**
+**3. Let the Composer collect the registrar.** A capability's internal axis goes in
+that package's `declarations.py`, under `STRATEGY_AXES` (`dom_serializer` is in
+`core/capabilities/browser/declarations.py`); a framework axis goes in the framework
+list in `spectragent/core/registries.py`. `collect_registrars()` returns both.
+**This is the step people skip.**
 A registrar the Composer does not collect degrades the field from the nested
 discriminated union to a bare discriminator — verified by dropping
-`dom_serializer` from the dict and regenerating in memory:
+`dom_serializer` from the catalog and regenerating in memory:
 
 ```
 collected:     dom_serializer: Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig] = ...
@@ -119,14 +128,15 @@ not collected: dom_serializer: Literal['text', 'html'] = ...
 ```
 
 Every knob is gone from the schema. `mouse_trajectory` shipped uncollected for a
-round; `generate_all.py:74-78` keeps the note. For a *brand-new* axis this failure is
+round (design doc §4.13). For a *brand-new* axis this failure is
 silent — no YAML names it yet, so nothing goes red and you never learn the knobs
 existed. (Once a YAML block *does* name it, the degraded `Literal` rejects the block
 and `tests/test_core/test_composer/test_shipped_config_integration.py` goes red. The
-older "a typo silently falls back to the default" phrasing in
-`generate_all.py:74-78` and `docs/architecture_design.md:1996` describes the
-pre-receptor era, when the axis was a plain scalar; with a `__wiring__` entry the
-`Literal` does reject a typo. The knob loss is the part that is still true.)
+older "a typo silently falls back to the default" story describes the pre-receptor
+era, when the axis was a plain scalar; with a `__wiring__` entry the `Literal` does
+reject a typo. The knob loss is the part that is still true.)
+`tests/test_core/test_registries.py` fails when a capability package defines a
+registrar its `declarations.py` does not declare.
 
 **4. The `__wiring__` entry** on the owner
 (`core/capabilities/browser/capability.py:272` for the dict, `:357` for this entry):
@@ -221,7 +231,8 @@ Worked case: `ArchiverRegistrar` (`core/archive/_registrar.py`). M28 created it 
 test fakes registered; `TraceWriter(archive=[...])` is a plain parameter there. M29 adds
 `TraceWriter.__wiring__["archive"]`, the `Annotated[list[ArchiverBase] | None,
 Field(...)]` type, the class-level `archive: list[ArchiverBase]` annotation, and
-`archiver` in `collect_registrars()` in the same change as `browser.network` /
+`archiver` in the framework list of `collect_registrars()` (it is a framework axis) in
+the same change as `browser.network` /
 `browser.storage` / `browser.dom_raw`.
 
 ## 3. The strategy IS the switch

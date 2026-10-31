@@ -20,13 +20,15 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser.input import HumanKeyboard, InstantRhythm, Keystroke
 from spectragent.core.capabilities.browser.input.chords import KEY_INFO, parse_key_chord
+from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.core.capabilities.browser.input.keyboard import (
     CONTROL_MODIFIER,
     SHIFT_MODIFIER,
+    HumanKeyboard,
     key_event,
 )
+from spectragent.core.capabilities.browser.input.rhythm import Keystroke
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent

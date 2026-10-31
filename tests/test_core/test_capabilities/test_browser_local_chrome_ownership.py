@@ -700,7 +700,7 @@ async def test_live_concurrent_sessions_keep_process_endpoint_profile_and_cleanu
 async def test_live_external_endpoint_keeps_its_process_profile_and_existing_tabs(
     tmp_path: Path,
 ) -> None:
-    from spectragent.core.capabilities.browser import BrowserCapability
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
 
     profile = tmp_path / "external-profile"
     profile.mkdir()

@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget, DOMBudgetPass
 from spectragent.core.capabilities.browser.dom.cleaning import DOMCaptureSource
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import SkyvernCleaner

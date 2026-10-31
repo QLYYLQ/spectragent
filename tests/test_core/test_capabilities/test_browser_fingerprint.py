@@ -25,7 +25,7 @@ from spectragent.core.capabilities.browser.archive.fingerprint import (
     launch_flags_digest,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from tests._helpers.archive_recorder import ScriptedRecorder
 from tests._helpers.browser_archive import archiving_capability
 

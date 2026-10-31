@@ -58,7 +58,7 @@ from spectragent.core.capabilities.browser.recorder import (
     AUTO_ATTACH_PARAMS,
     RELEASE_AUTO_ATTACH_PARAMS,
 )
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.schemas.action import Action
 from tests._helpers.archive_bench import VISION_FRAGMENTS, LiveRecording
 from tests._helpers.fixture_site import FixtureSite, LoggedRequest, new_tab_point

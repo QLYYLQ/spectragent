@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -219,6 +222,32 @@ def test_sensitive_text_is_withheld_and_done_reads_as_an_answer(run: RunTrace) -
     assert action_lines(record) == (
         "1. 输入（敏感字段，内容不显示） → 搜索框“Search”\n2. 完成并回答：播放量 120 万"
     )
+
+
+def test_a_reader_that_composed_nothing_still_reads_the_params() -> None:
+    # ``spectragent view`` and the lookahead labels compose no configuration,
+    # so in a fresh process nothing has imported the actions yet. A Loop
+    # action is read from the Loop's own module, without any capability.
+    probe = (
+        "import sys\n"
+        "from spectragent.core.actions._registrar import registered_params\n"
+        "from spectragent.inspection.marks import action_text\n"
+        "from spectragent.schemas.action import Action\n"
+        "assert registered_params('loop.done') is not None\n"
+        "done = Action(name='loop.done', params={'answer': 'ok', 'task_claim': 'completed'})\n"
+        "print(action_text(done, None))\n"
+        "assert 'spectragent.core.capabilities.browser.actions.click' not in sys.modules\n"
+        "print(action_text(Action(name='browser.click', params={'index': 7}), None))\n"
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["完成并回答", "点击元素", "#7"]
 
 
 def test_a_done_that_reports_failure_executed_and_says_so() -> None:

@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from spectragent.core.benchmark_runner import BenchmarkRunner, PreflightError
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 from spectragent.core.capabilities.browser.start_page import start_page_problem
 from spectragent.core.data_loader.task.lexbench_browser import (

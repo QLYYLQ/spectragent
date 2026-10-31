@@ -23,9 +23,10 @@ from spectragent.core.capabilities.browser.archive.redaction import (
     browser_ledger,
 )
 from spectragent.core.capabilities.browser.storage_capture import BrowserStorageCapture
-from spectragent.core.capabilities.browser.storage_seed import INITIAL_STATE_NAME
 
 STORAGE_NAME = "storage.json"
+#: The run file holding the frozen initial seed, which ``storage_seed`` reads back.
+INITIAL_STATE_NAME = "initial_state.json"
 
 
 class StorageArchiver(BrowserArchiverBase):

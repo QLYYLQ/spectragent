@@ -47,8 +47,6 @@ from spectragent.schemas.restoration import (
 )
 from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
 from spectragent.schemas.task import (
-    BrowserSetup,
-    DockerSetup,
     ScoringItem,
     ScoringRubric,
     SetupBase,
@@ -56,8 +54,7 @@ from spectragent.schemas.task import (
     TaskDefinition,
     TaskReference,
     TaskSetup,
-    VMSetup,
-    setup_class_for_env,
+    TaskSetupRegistrar,
 )
 
 __all__ = [
@@ -91,11 +88,8 @@ __all__ = [
     "TaskDefinition",
     "TaskContext",
     "TaskSetup",
+    "TaskSetupRegistrar",
     "SetupBase",
-    "BrowserSetup",
-    "DockerSetup",
-    "VMSetup",
-    "setup_class_for_env",
     "TaskReference",
     "ScoringRubric",
     "ScoringItem",

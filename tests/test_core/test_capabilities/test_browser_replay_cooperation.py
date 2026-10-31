@@ -23,7 +23,6 @@ from typing import Any
 import pytest
 
 from spectragent.core.archive.source import ArchiveOpenError
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import (
     NetworkArchiver,
     ReplayLogArchiver,
@@ -34,6 +33,7 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
@@ -44,11 +44,9 @@ from spectragent.core.capabilities.browser.cooperation import (
     planned_launch_flags,
     recorder_needs,
 )
-from spectragent.core.capabilities.browser.replay import (
-    ArchiveNetworkSource,
-    PinnedReplayability,
-)
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
 from tests._helpers.replay_archive import RecordingScript

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState, HitTest
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.registries import collect_registrars

@@ -5,23 +5,30 @@ Three strategies registered via conscribe:
 - ``skyvern``:     original page-side JS extraction + server-side trim
 - ``skyvern_hit_test``: ``skyvern`` plus an in-page hit test per indexed element
   (``covered_elements: drop | keep``; arch §4.12)
+
+The browser's ``declarations.py`` imports this package, so the capture types
+(agent-cdp's command protocol, the frame registry) are imported for annotations
+only.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from agent_cdp import CDPCommandProtocol
 from conscribe import create_registrar
 
-from spectragent.core.capabilities.browser.dom.capture import FrameTargets
 from spectragent.core.capabilities.browser.dom.models import (
     DOMSelectorMap,
     DOMState,
     TargetCapture,
 )
+
+if TYPE_CHECKING:
+    from agent_cdp import CDPCommandProtocol
+
+    from spectragent.core.capabilities.browser.dom.capture import FrameTargets
 
 
 @dataclass(frozen=True, slots=True)

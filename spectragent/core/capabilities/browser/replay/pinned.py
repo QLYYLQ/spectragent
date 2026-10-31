@@ -68,10 +68,8 @@ from spectragent.core.capabilities.browser.client_hints import (
 )
 from spectragent.core.capabilities.browser.color_scheme import ColorScheme, color_scheme_from_record
 from spectragent.core.capabilities.browser.recorder import CDPCommand
-from spectragent.core.capabilities.browser.replay.replayability import (
-    ReplayabilityBase,
-    ReplayabilityPlan,
-)
+from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityBase
+from spectragent.core.capabilities.browser.replay.replayability_plan import ReplayabilityPlan
 from spectragent.core.capabilities.browser.replay.shims import SHIM_SHA256, Clock, render_shim
 
 #: A BCP 47 language tag, loosely: ``en``, ``en-US``, ``zh-Hans-CN``.

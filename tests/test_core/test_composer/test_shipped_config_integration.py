@@ -29,13 +29,13 @@ from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 import pytest
 import yaml
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     planned_browser_defaults,
     planned_launch_flags,
 )
-from spectragent.core.capabilities.browser.input import WindMouseTrajectory
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 from spectragent.core.composer import (
     ComposeError,
     ConfigComposer,

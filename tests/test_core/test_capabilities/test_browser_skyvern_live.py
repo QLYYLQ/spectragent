@@ -7,7 +7,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import SkyvernCleaner
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.registries import collect_registrars

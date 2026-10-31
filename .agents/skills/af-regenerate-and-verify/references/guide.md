@@ -7,7 +7,10 @@ It writes `spectragent/generated/_composed.py`, `_composed.schema.json` and
 `.fingerprint.json`, then reports the stubs still needed by the source.
 Never edit generated files by hand.
 
-Discovery is strict and excludes `spectragent.generated` and `spectragent.scripts`.
+Discovery (`core/registries.py::discover_implementations`) is strict and excludes
+`spectragent.generated`, `spectragent.scripts` and every module a capability package
+lists in its `declarations.py` under `OPTIONAL_EXTRA_MODULES` (they import an optional
+extra such as numpy at top level and register nothing).
 It does not delete the old config before discovery. Every collected registrar must
 have an implementation; an empty one fails generation. Source and schema are rendered
 before replacing files, each through a temporary file and atomic rename; the fingerprint
@@ -21,10 +24,14 @@ own stale generated stubs; it never cleans arbitrary source files or artwork.
 
 ## Collect the registrar
 
-`collect_registrars()` explicitly pins the registrars, in stable order. A strategy
-registrar missing from this mapping leaves a key-only field instead of the nested union,
-so its knobs are unreachable. Add it when its first implementation becomes configurable.
-`ObservationRegistrar` and `NegotiationResultRegistrar` are deliberately not config layers.
+`collect_registrars()` returns the framework axes listed in `core/registries.py`, then
+each capability package's internal axes, read from that package's `declarations.py`
+(`STRATEGY_AXES`) in capability_id order. Every consumer takes that one order from it. A
+strategy registrar missing from both leaves a key-only field instead of the nested union,
+so its knobs are unreachable. Declare a capability's axis in its own `declarations.py`
+(never in the framework list), a framework axis in the framework list, in the change that
+registers its first implementation. `ObservationRegistrar`, `NegotiationResultRegistrar`
+and `TaskSetupRegistrar` are deliberately not config layers.
 
 Also document a new registrar in `docs/architecture_design.md` §6 and `AGENTS.md` §2.2.
 The registrar coverage test checks names and discriminators against the source.
@@ -44,7 +51,8 @@ The test bootstrap generates only missing output; it must not silently refresh s
 conscribe 2.0 fingerprints its version, registrar settings, generated layer source and
 schema. Capture these before rendering the composed schema: Pydantic may normalize
 numeric constraint metadata from `0` to `0.0` during rendering. The generator and drift
-probe use the same discovery exclusions. Fingerprints do not cover stubs; regenerate and
+probe use the same discovery (`discover_implementations`) and the same layer order
+(`collect_registrars()`). Fingerprints do not cover stubs; regenerate and
 prune stubs separately. A failed layer can still have an error fingerprint, so a fingerprint
 alone is never proof that generation succeeded.
 

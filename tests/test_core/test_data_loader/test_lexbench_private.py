@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader._lexbench_legacy import (
     is_legacy_record,
     normalize_legacy_record,
@@ -24,7 +25,6 @@ from spectragent.core.data_loader.eval.lexbench_browser import (
 from spectragent.core.data_loader.task.lexbench_browser import (
     LexBenchBrowserTaskLoader,
 )
-from spectragent.schemas.task import BrowserSetup
 
 #: Fields that must agree between the upstream and normalized shapes.
 _GOLDEN_FIELDS = (

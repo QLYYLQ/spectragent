@@ -59,7 +59,7 @@ from spectragent.core.capabilities.browser.dom.sensitivity import (
     REDACTED_MARKUP,
     is_sensitive_control,
 )
-from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive

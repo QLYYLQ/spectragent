@@ -46,8 +46,8 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.media import MediaElementState, MediaReading
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.loops.restore.checks import judge

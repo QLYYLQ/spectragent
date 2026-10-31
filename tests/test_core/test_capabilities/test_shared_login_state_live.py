@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import (
     NetworkArchiver,
     ReplayLogArchiver,
@@ -18,10 +17,12 @@ from spectragent.core.capabilities.browser.archive import (
 )
 from spectragent.core.capabilities.browser.backends.base import SharedBrowserProvider
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.storage_seed import StorageSeed, read_initial_seed
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.hooks.trace_writer import TraceWriter
@@ -37,7 +38,6 @@ from spectragent.schemas.browser_storage import (
     StorageArea,
     StorageTab,
 )
-from spectragent.schemas.task import BrowserSetup
 from tests._helpers.assembly import AGENT_ID, make_run
 from tests.test_core.test_capabilities.test_browser_storage_seed_live import (
     auth_site as auth_site,

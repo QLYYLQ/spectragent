@@ -13,12 +13,12 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.aop.weaver import Weaver
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.actions import (
     SendKeysAction,
     TypeAction,
     TypeCoordinateAction,
 )
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.hooks.ui_navigation import (
     UiNavigationGuard,
     navigation_violation,

@@ -27,7 +27,6 @@ import pytest
 from PIL import Image
 
 from spectragent.core.archive import ArchiveBatch, ArchiveFile
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import (
     ActionBoundary,
     FramesArchiver,
@@ -45,15 +44,14 @@ from spectragent.core.capabilities.browser.archive.frames import (
     read_frames,
 )
 from spectragent.core.capabilities.browser.archive.redaction import MARKER_BROWSER_REDACTED
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
 )
-from spectragent.core.capabilities.browser.replay import (
-    ArchiveNetworkSource,
-    PinnedReplayability,
-)
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive
 from spectragent.core.trace.reader import RunTrace

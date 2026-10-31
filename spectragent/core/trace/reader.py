@@ -61,9 +61,9 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from conscribe import discover
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from spectragent.core.registries import discover_implementations
 from spectragent.core.trace.effects import registered_effect, restore_effects
 from spectragent.core.trace.encoding import (
     ARCHIVE_META_KEY,
@@ -1052,7 +1052,7 @@ class RunTrace:
             if self._discovered:
                 raise
         self._discovered = True
-        discover(*_FRAGMENT_PACKAGES)
+        discover_implementations(*_FRAGMENT_PACKAGES)
         return registered_effect(effect_id)
 
     def _fragment_class(self, key: str) -> type[FragmentBase]:
@@ -1060,7 +1060,7 @@ class RunTrace:
         cls = _registered(key)
         if cls is None and not self._discovered:
             self._discovered = True
-            discover(*_FRAGMENT_PACKAGES)
+            discover_implementations(*_FRAGMENT_PACKAGES)
             cls = _registered(key)
         if cls is None:
             raise TraceSchemaError(

@@ -102,6 +102,7 @@ from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — 
     default_step_selector,
 )
 from spectragent.core.data_loader.task.task_variants import TaskVariantEntry, read_task_variants
+from spectragent.core.registries import setup_class_for_env
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import TraceConfig, TraceManifest
 from spectragent.core.trace.reader import RunTrace
@@ -117,12 +118,7 @@ from spectragent.core.trace.sources import (
 )
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.step_record import StepRecord
-from spectragent.schemas.task import (
-    REPLAY_ARCHIVE_KEY,
-    TaskContext,
-    TaskDefinition,
-    setup_class_for_env,
-)
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY, SetupBase, TaskContext, TaskDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -737,10 +733,8 @@ class _Scan:
             "difficulty": config.extra.get("difficulty"),
             "domain": config.extra.get("domain"),
             "tags": list(config.extra.get("tags") or []),
+            "setup": _setup_for(env_type, env),
         }
-        setup = _setup_for(env_type, env)
-        if setup is not None:
-            fields["setup"] = setup
         self.tasks[task_id] = TaskDefinition(**fields)
         source_dir = str(source.directory)
         self.contexts[task_id] = TaskContext(
@@ -807,17 +801,17 @@ def _why_not_a_candidate(
     return f"step {step}'s observation was not recorded (error_phase {record.error_phase!r})"
 
 
-def _setup_for(env_type: str, env: Mapping[str, Any]) -> Any:
-    """``TaskDefinition.setup`` mirroring the env part, when the env type has a setup variant.
+def _setup_for(env_type: str, env: Mapping[str, Any]) -> SetupBase | None:
+    """``TaskDefinition.setup`` mirroring the env part, when the env type has a setup class.
 
     Decorative for this loader — what runs is ``get_task_context(...).env`` —
-    but it keeps a branch task's definition from claiming a default setup.
+    and ``None`` when no registered setup claims the env type.
     """
     try:
-        variant = setup_class_for_env(env_type)
+        setup = setup_class_for_env(env_type)
     except ValueError:
         return None
-    return variant.model_validate({**env, "setup_type": variant.setup_type_value()})
+    return setup.model_validate(dict(env))
 
 
 __all__ = ["TraceBranchesTaskLoader"]

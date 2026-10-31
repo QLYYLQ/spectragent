@@ -29,7 +29,6 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Literal, get_origin
 
-from conscribe import discover
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
@@ -45,6 +44,7 @@ from spectragent.core.composition_evidence import (
     implementation_name,
 )
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
+from spectragent.core.registries import discover_implementations
 
 
 class ComposeError(Exception):
@@ -235,12 +235,12 @@ class ConfigComposer:
             "spectragent.schemas",
         ),
     ) -> None:
-        # Discover concrete implementation modules to populate registries.
-        # ``spectragent.generated`` is intentionally excluded: its
+        # Discover concrete implementation modules to populate registries,
+        # minus the modules a capability declares as needing an optional
+        # extra. ``spectragent.generated`` is intentionally not a root: its
         # ``_composed.py`` is a codegen artefact that re-declares conscribe
         # models and can fail to import mid-regeneration.
-        for root in discover_roots:
-            discover(root)
+        discover_implementations(*discover_roots)
         if not registrars:
             raise ComposeError("ConfigComposer requires at least one registrar.")
         self._registrars = registrars

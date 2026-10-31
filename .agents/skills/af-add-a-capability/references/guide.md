@@ -336,11 +336,16 @@ yours.
 
 ## Step 2 — the skeleton
 
-Layout mirrors the browser (`spectragent/core/capabilities/browser/`):
+Layout mirrors the browser (`spectragent/core/capabilities/browser/`). Every subpackage
+of `spectragent/core/capabilities/` is a capability, and its package name is its
+`capability_id`; the framework finds it with `pkgutil` and reads only its
+`declarations.py` (design doc §4.2.1). Adding the package edits no framework file.
 
 ```
 spectragent/core/capabilities/docker/
-├── __init__.py          # exports DockerCapability (import-driven registration)
+├── __init__.py          # imports nothing: declarations.py must stay light
+├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES
+├── task_setup.py        # DockerSetup(SetupBase), registered by subclassing
 ├── capability.py        # the DockerCapability class
 ├── observations.py      # its FragmentBase subclasses — NOT schemas/observation/
 ├── actions/             # its ActionBase subclasses, one file each
@@ -350,6 +355,37 @@ spectragent/core/capabilities/docker/
     ├── local_docker.py
     └── ssh_docker.py
 ```
+
+`declarations.py` is the package's whole contract with the framework, and it imports only
+registrar definitions and the setup schema:
+
+```python
+# spectragent/core/capabilities/docker/declarations.py
+from spectragent.core.capabilities.docker.backends._registrar import DockerProviderRegistrar
+from spectragent.core.capabilities.docker.task_setup import DockerSetup
+
+STRATEGY_AXES = {"docker_provider": DockerProviderRegistrar}  # layer name -> registrar
+TASK_SETUP = DockerSetup
+OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()  # modules importing an optional extra at top level
+```
+
+- **`STRATEGY_AXES`** — every internal registrar YAML chooses from, keyed by the
+  registrar's own `create_registrar` name (checked with `conscribe.get_registry`). An axis
+  missing here is not collected, and its knobs never reach YAML (Step 7).
+- **`TASK_SETUP`** — a `SetupBase` subclass (`schemas/task.py`) with `__registry_key__`
+  (its `setup_type`), `__env_types__` (the `TaskDefinition.env_type` values that select
+  it), `__raw_keys__` (raw-record keys a loader moves into the setup) and `to_context()`
+  (the env part handed to `setup()`). Subclassing registers it in `TaskSetupRegistrar`;
+  `browser/task_setup.py` is the model.
+- **`OPTIONAL_EXTRA_MODULES`** — fully qualified names of modules whose top-level imports
+  need an optional extra; discovery never imports them, so the extra stays optional. They
+  must register nothing; the implementation that needs them imports them when it is
+  constructed (browser: `input._mouse_gan_v2`, numpy).
+
+Importing any module of the package runs every `__init__.py` on the way, so none of them
+imports an implementation; import from the defining module instead.
+`tests/test_core/test_capabilities/test_capability_declarations.py` follows the imports
+statically and fails on an implementation module, agent-cdp, websockets or numpy.
 
 Fragments live **with the capability that owns them**, not in
 `spectragent/schemas/observation/`. See the docstring at
@@ -704,18 +740,18 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
 2. **`Annotated[...]` constructor fields** — every YAML knob is a constructor parameter
    with a `pydantic.Field` description. See `browser/capability.py:415-460` for the shape.
    `CapabilityBase.id` (`_registrar.py:107-116`) is inherited this way.
-3. **A new registrar must be added to `collect_registrars()`**
-   (`spectragent/core/registries.py`). `CapabilityRegistrar` is already there
-   (`:83`) — so a new *capability* needs no edit. A new **backend registrar** does:
-   `DockerProviderRegistrar` must be pinned beside `BrowserProviderRegistrar` (`:73`), or
-   its config surface degrades to `Literal[<keys>]` and **every knob it declares becomes
-   unreachable from YAML**. (The comment at `:74-77` says "bare `str`" with a silently
-   downgraded typo — that describes `mouse_trajectory`'s *pre*-`__wiring__` shape, not
-   what an uncollected registrar does today; a `Literal` does reject a typo.) Put it
-   early, with the other leaves of the wiring DAG — the dict
-   order is deliberate, for deterministic output.
-4. **Regenerate**: `uv run spectragent config generate`. A layer with **zero** registered classes is
-   skipped (`:118`), so an empty new registrar silently produces nothing.
+3. **Every internal registrar goes in your package's `declarations.py`**, under
+   `STRATEGY_AXES` (Step 2). `collect_registrars()` (`spectragent/core/registries.py`)
+   reads it from there, so you never edit the framework list: `CapabilityRegistrar` is a
+   framework axis already. A **backend registrar** is an internal axis like any other:
+   `DockerProviderRegistrar` left out of `STRATEGY_AXES` degrades to `Literal[<keys>]` and
+   **every knob it declares becomes unreachable from YAML** (a `Literal` still rejects a
+   typo). The order is the catalog's, not yours to tune: framework axes, then each
+   package's axes in capability_id order, then in declared order.
+4. **Regenerate**: `uv run spectragent config generate`. A collected layer with **zero**
+   registered classes is an error, in the generator and in the Composer alike (design doc
+   §9, "新增注册表"): register the first implementation in the change that declares the
+   axis.
 5. **Provides entries are optional fields you must not fill.** `__wiring__["observation"]`
    and `__wiring__["archiver"]` have no slot on the capability, so conscribe emits them as
    optional fields that default to `None`: `observation: Optional[Literal[...]]`, and
@@ -743,8 +779,8 @@ Two reasons nothing else catches it: `tests/conftest.py:41` regenerates only whe
 registries in a **clean subprocess** (`:58-68`), because by the time it runs inside the
 full suite other modules have imported stub capabilities into those very registries.
 `test_generated_config_matches_the_live_registries` (`:96`) catches drift;
-`test_every_collected_registrar_is_fingerprinted` (`:116`) catches a registrar added to
-`collect_registrars` without regenerating. Run both.
+`test_every_collected_registrar_is_fingerprinted` (`:116`) catches a registrar newly
+collected (a new `STRATEGY_AXES` entry) without regenerating. Run both.
 
 See the sibling skill **`af-regenerate-and-verify`** for the full loop and for proving a
 knob actually reached YAML.
@@ -772,7 +808,8 @@ Before you call a capability done:
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] If a recorded run can resume here: `RestorationSupport` (and, for state that moves on its own clock, `RestorationAlignment`) implemented as pure measurements and requests; unknown values never decide
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
-- [ ] Backend registrar pinned in `collect_registrars()` if you added one
+- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`) and any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`); the package's `__init__.py` files import no implementation; no framework file edited
+- [ ] `uv run pytest tests/test_core/test_capabilities/test_capability_declarations.py` passes
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts
 - [ ] A test on the action seam: negotiation matches **names**, not parameter contracts. An agent may emit a verb the run holds and send params the action cannot read. `tests/_helpers/action_params.py::minimal_params` walks `descriptor().params_schema` and builds the smallest legal payload; use it.

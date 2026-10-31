@@ -921,8 +921,7 @@ class ConfigComposer:
     def __init__(self, *, registrars, discover_roots=("spectragent.agents",
                                                        "spectragent.core",
                                                        "spectragent.schemas")):
-        for root in discover_roots:
-            discover(root)                                  # 1) 触发自动注册
+        discover_implementations(*discover_roots)           # 1) 触发自动注册（跳过 OPTIONAL_EXTRA_MODULES）
         self._composed = build_composed_config(             # 2) 生成 schema
             registrars, inline_wiring=True
         )
@@ -940,7 +939,19 @@ class ConfigComposer:
 
 `by_layer` 使用配置中的实例 `id`，省略时用 `<registry_key>#<ordinal>`；同一实现的多个实例保持独立。没有单数的 `agent/loop/env/llm/memory` 便利属性。调用方用 `AgentRuntime.for_agent(run, agent_id, env_id=...)` 选定一个 Agent，Loop、模型与 Memory 来自该 Agent 自己的受体。
 
-所有运行、评测、导出、配置检查和生成入口共用 `core/registries.py::collect_registrars()`。它按稳定顺序返回新的注册表映射，不持有组件实例或跨 run 缓存；实现发现仍由 Composer 或生成入口执行。`scripts/generate_all.py` 只负责生成产物，不再承载其他运行入口依赖的私有目录函数。
+所有运行、评测、导出、配置检查和生成入口共用 `core/registries.py::collect_registrars()`。它每次返回一份新的注册表映射，不持有组件实例或跨 run 缓存：先是框架自己的 18 根轴（agent、agent_loop、llm、decision_model、environment、capability、action、archiver、hook、memory、task_loader、eval_loader、step_selector、restorer、evaluator、exporter、action_translator、replay_reviewer，在 `core/registries.py` 里显式列出），再是每个 capability 包自己声明的内部策略轴。`scripts/generate_all.py` 只负责生成产物，不再承载其他运行入口依赖的私有目录函数。
+
+**Capability 包向框架声明自己（用户 2026-10-31 的裁决）。** 新增一个 capability（下一个是 Android）不改任何框架文件——M26："如果新增 Capability 需要修改 framework 代码，说明 Capability 抽象有泄漏"。约定：`spectragent/core/capabilities/` 的每个子包都是一个 capability，包名就是它的 `capability_id`；框架用 `pkgutil` 列出这些子包，不导入它们的实现。每个包在自己的 `declarations.py` 里声明三样东西：
+
+- `STRATEGY_AXES`：包内部的策略轴，层名 → 注册表。browser 的是 `browser_provider`、`mouse_trajectory`、`typing_rhythm`、`dom_cleaner`、`dom_serializer`、`replayability`、`miss_policy`、`network_source`。层名必须是那个注册表自己的 `create_registrar` 名字，读声明时用 conscribe 公开的 `get_registry(name)` 核对；一个层名被两个包声明、或与框架轴重名，都直接报错。
+- `TASK_SETUP`：这个 capability 的任务 setup 类（§4.10）。
+- `OPTIONAL_EXTRA_MODULES`：顶层导入需要可选 extra 的模块（全限定名），实现发现从不导入它们（下面"实现发现"）；没有就写空元组。
+
+`declarations.py` 只导入注册表定义与 setup schema，从不导入实现：读一个 capability 的声明不会导入 agent-cdp、websockets 或 numpy。导入包里的任何模块都先执行包的 `__init__.py`，所以 capability 包里沿途的 `__init__.py` 都不导入实现；`tests/test_core/test_capabilities/test_capability_declarations.py` 沿导入链静态检查这一点。conscribe 刻意不提供"列出所有注册表"的 API：导入哪些模块由框架决定，小程序不必导入重的注册，无关的代码也挡不住启动，所以这层适配放在 Spectragent 里。
+
+**一个顺序，所有消费者共用。** 先框架轴，按列出的顺序；再按 `capability_id` 排序的各包，各包按声明的顺序。生成器、指纹、`config explain` 与 `tests/test_generated/test_in_sync_with_registries.py` 都经 `collect_registrars()` 取这个顺序。生成的配置不依赖顺序，唯一的例外是数值界 `0` / `0.0` 的打印会随构建顺序移动指纹，所以消费者不能各自排序。
+
+**实现发现**（`core/registries.py::discover_implementations`）是 conscribe 的严格 `discover`，再加上各包声明的 `OPTIONAL_EXTRA_MODULES` 作为排除项。这些模块不注册任何类，由用到它们的实现在构造时导入，所以没装可选 extra 的机器上组装、生成与 trace 读取照常工作（browser 的 `input/_mouse_gan_v2.py` 在顶层导入 numpy，§4.13）。Composer、生成入口、指纹探针与 trace reader 都经它发现实现。现在每次组装仍然发现 `spectragent.agents`、`spectragent.core`、`spectragent.schemas` 下的全部实现；只导入配置点名的 capability 包是下一步。
 
 **Wired receptor 的判定与注入**：
 - 统一使用 conscribe 2.0 的公开 `introspect.wiring_slots` / `receptor_slots` / `init_param_names`。构造参数优先，随后读取 MRO 中的非 `ClassVar` 类级注解；继承的参数按 `**kwargs` 转发链读取，注解在声明它的模块中解析。
@@ -956,7 +967,7 @@ class ConfigComposer:
 
 **注入方式**：init param → 进 `__init__` 的 kwargs；class_hints-only → 通过 `setattr(instance, name, value)` 注入（conscribe `WiredField` descriptor 接受这次写入并把值放到 instance dict，遮蔽自身）。
 
-**与 AgentRuntime 的边界**：`AgentRuntime` 只接收 `ComposedRun`，**不**直接看 conscribe schema、**不**自己解析 YAML。`ConfigComposer` 通过 conscribe 的公开反射接口读取受体和容器形态，不复制上游的反射规则。普通用户 `BaseModel` 子配置保持已校验的模型实例传入构造函数；只有嵌套判别器块按字段展开。增删 wiring grammar、调整 discover 路径、加新 layer 都只动 Composer。
+**与 AgentRuntime 的边界**：`AgentRuntime` 只接收 `ComposedRun`，**不**直接看 conscribe schema、**不**自己解析 YAML。`ConfigComposer` 通过 conscribe 的公开反射接口读取受体和容器形态，不复制上游的反射规则。普通用户 `BaseModel` 子配置保持已校验的模型实例传入构造函数；只有嵌套判别器块按字段展开。增删 wiring grammar、调整 discover 路径只动 Composer 与 `core/registries.py`；加一根框架轴只动 `core/registries.py` 的框架列表，capability 内部的新策略轴只动这个包自己的 `declarations.py`。
 
 **只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer(registrars=collect_registrars())` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器再组装一次。
 
@@ -2608,6 +2619,8 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 
 **Backend 文件归属**：所有 browser provider 文件物理上属于 `spectragent/core/capabilities/browser/backends/`，与 `BrowserCapability` 同目录；`BrowserProviderRegistrar` 也在 `backends/_registrar.py`。这让"backend 是 capability 的从属配置"在文件结构上一目了然。其他 capability 的 backend 同理：`spectragent/core/capabilities/docker/backends/`、`spectragent/core/capabilities/desktop_vm/backends/` 等。
 
+**Capability 包（2026-10-31）**：`spectragent/core/capabilities/` 的每个子包是一个 capability，包名即 `capability_id`。包的 `declarations.py` 向框架声明它的内部策略轴（backend 注册表也是其中一根）、任务 setup 类与需要可选 extra 的模块（§4.2.1）；它只导入注册表定义与 setup schema，包里沿途的 `__init__.py` 不导入实现。新增 capability 不改任何框架文件。
+
 **Provider 能力声明（`__capabilities__`）**：每个 provider 类用 `__capabilities__: ClassVar[set[str]]` 静态声明自己支持什么，常量在 `backends/capabilities.py`。这是 provider 对"支持什么"的**静态**声明，与"这次 run 打不打开"无关；后者永远由 capability 上的策略决定（`replayability`、`network_source`），provider 上没有与策略并列的开关。capability 只读这个集合决定能不能把某件事交给它，从不按 `provider_id` 分支、也不探测 provider 的字段；provider 一侧的事实（profile 是否新建、哪些旋钮与开关矛盾）由常量承诺的 Protocol 方法自己报。M29 新增两个、M30 新增一个，v1 只有 `local_chrome` 声明：
 
 | 常量 | 承诺 | 谁要求它 |
@@ -2810,6 +2823,13 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 
 context 在实际 capability owner 准备出的 `recordable` projection 上按值级规则脱敏记进 `TraceConfig.task_setup`（§5.6）；初态唯一恢复权威是 `browser.storage` 的 `initial_state.json`，指纹始终声明初态是否非空、digest 与覆盖范围，未选 storage 归档也不冒充空初态，所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
 
+**任务 setup：每个 capability 注册自己的 setup 类（用户 2026-10-31 的裁决）。** `TaskDefinition.setup` 不再是框架里写死的闭合联合（原来的 `BrowserSetup | DockerSetup | VMSetup`）。`schemas/task.py` 只定义契约：`TaskSetup` Protocol（`to_context()`）、`SetupBase` 与 `TaskSetupRegistrar`（`create_registrar("task_setup", TaskSetup, discriminator_field="setup_type")`；不是 YAML 配置层，`ObservationRegistrar` 是先例）。每个 capability 包注册自己的 setup 类（`SetupBase` 的子类，`__registry_key__` 就是 `setup_type`），并在 `declarations.py` 里把它声明为 `TASK_SETUP`（§4.2.1）。`schemas/` 不导入 `core/capabilities`。
+
+- 每个 setup 类声明三样东西：`__env_types__`（哪些 `TaskDefinition.env_type` 选它，加载器据此从自己的 `env_type` 推出 setup 类，不写死）、`__raw_keys__`（加载器从原始记录顶层挪进 setup 的键，browser 的是 `start_url`、`storage_state`）与 `to_context()`（交给 `Capability.setup()` 的 env 部分）。`setup_type` 是数据里的真字段，取自注册键；数据里写了别的值，校验时被拒。
+- `TaskDefinition.setup` 按 `setup_type` 在已注册的 setup 类里分派校验：没写 `setup_type`、或它不是已注册的 setup，都报错并列出已注册的。任务没有 setup 时是 `None`，`get_task_context` 的 env 部分为空。序列化保留子类的全部字段（`SerializeAsAny`），所以 dump 出来的任务能原样校验回来。
+- `core/registries.py::setup_class_for_env(env_type)` 返回声明了这个 env 类型的已注册 setup 类。它每次都先读一遍每个 capability 包的声明（导入 `declarations.py` 就注册了包的 setup），再在已注册的 setup 类里找：直接构造加载器的调用方（包括测试）不必先导入哪个 capability，两个包的 setup 声明同一个 env 类型时也总能发现。查不到就报错，点名已知的 env 类型；两个 setup 类声明同一个 env 类型也报错。任务加载器（`TaskLoaderBase.normalize_raw`）与 `trace_branches` 都经它取 setup 类。
+- `BrowserSetup` 在 `core/capabilities/browser/task_setup.py`，字段、`__env_types__ = ("browser",)`、`__raw_keys__` 与 `to_context()` 不变。`DockerSetup` 与 `VMSetup` 删除：它们没有对应的 capability，docker / desktop_vm 包落地时由各自的包注册（M19 / M26）。trace 只记 setup 的 context（`TaskSetupRecord`），不记 `setup_type`，已有的录制不受影响。
+
 **登录的两条路径。** 预置登录态沿上面的 `storage_state` 输入，或在 `none` 档位显式选择 provider 的持久 profile；需要操作网页登录时，把账号、密码和登录步骤放进现有 `task_text`，Agent 用自己的 prompt 和既有 type / click 动作执行。框架不自动登录，不新增 credential store、加密机制或 `TaskContext.agent` / `agent_inputs` 通道。`BrowserSetup.login_required` / `login_type` 只保留 benchmark 元数据，不路由 setup、不触发自动登录；无实现的 `credentials_ref` 现在明确拒绝，旧 `LoginSnapshot` 删除，不能再拿它声称保存了分区登录态。
 
 **起始页：加载器补全，浏览器只认完整的 URL（用户 2026-10-14 的裁决）。** 2026-10-14 零 token 筛选 LexBench L1 的中文站点（本地的 `tmp/flywheel/followup/live2/screening.md`）发现：`lexbench_browser` 的九个 split（包括它自己那份 Online-Mind2Web）没有一个起始页带协议头，几乎都是裸主机名（`www.bilibili.com`，少数带路径：`s.weibo.com/top/summary`）；全集有 10 个任务写的是文字或几个站点（L1 的 7 个与 L2 的 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）。加载器原样交出、setup 原样导航，SecurityWatchdog 把它当作"不安全的协议"拦下，每个 LexBench 任务都在 setup 以 `agent_done: error` 结束、一次模型调用都没有，sweep 的 pre-flight 也看不出来。规则：
@@ -2841,7 +2861,7 @@ class TaskContext(BaseModel):
 - **筛选与前提**：`exclude_runs` / `agent_outcome` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录、`result.json`（`agent_outcome` 设了时）或 `evals/` 坏了；比当前格式旧的 trace 也在此列，`RunTrace` 只读 format 5，§5.5）；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉，因为它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
 - **环境 setup context**：取源 `TraceConfig.task_setup.context`（M28 起记录）；没有这份记录、或它的脱敏台账不空（值被换成了 `<redacted>`，照它重建的环境不是源环境）时，按源 run 的 `(benchmark, subset, task_id)` 用源 benchmark 的 TaskLoader 重新解析（一次扫描里每个 `(benchmark, subset)` 只建一个加载器）；都不行就是不可分叉。分叉任务的 env 部分 = 这份 context，加上 `replay_archive = 源 run 目录的绝对路径`。
 - **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、trace 完整到第 t 步（`t ≤ complete_through`）、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、超出 trace 完整到的那一步、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查，因为生成的配置不带 `min_length`），由加载器判断哪些是候选；`last`（M33）只返回最后一个候选，每个源 run 恰好一步，长短不一的源也一样（`explicit` 写不出"每个源的最后一步"），度量闸门的原路径回放段用它（§4.16）。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
-- **展开**：每个选中的 t 展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/b<i>`，`branch_group_id = <source_run_id>/s<t>`（任务 id 去掉 `/b<i>`：输入完全相同的那组分叉）；`TaskDefinition.task_text` 是源 run 的任务文本，`env_type` 是源 run 的，`difficulty` / `domain` / `tags` 取自源 `TraceConfig.extra`（结果照样按它们切片），`setup` 在 env 类型有对应 setup 变体时照 env 部分写一份（只是描述；跑的始终是 `get_task_context` 的 env 部分）；`get_task_context` 给出 env（上面那份）、loop（`checkpoint`）与 branch（`BranchProvenance`），每次给一份副本。
+- **展开**：每个选中的 t 展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/b<i>`，`branch_group_id = <source_run_id>/s<t>`（任务 id 去掉 `/b<i>`：输入完全相同的那组分叉）；`TaskDefinition.task_text` 是源 run 的任务文本，`env_type` 是源 run 的，`difficulty` / `domain` / `tags` 取自源 `TraceConfig.extra`（结果照样按它们切片），`setup` 在 env 类型有注册的 setup 类时照 env 部分写一份，没有时为 `None`（只是描述；跑的始终是 `get_task_context` 的 env 部分）；`get_task_context` 给出 env（上面那份）、loop（`checkpoint`）与 branch（`BranchProvenance`），每次给一份副本。
 - **任务变体："同一页面，不同需求"（2026-10-21）**：前瞻观测的训练数据要同一屏配不同的需求，选区模型才学会看任务、不只看图。`task_variants` 指向一个 JSON 文件（由别处、通常是 LLM 生成）：`{"format": "task-variants-1", "variants": [{"source_run_id", "step", "variant_id", "task_text", "note"?}]}`，`source_run_id` 是加载器给源 run 用的那个 run id。设了它，**文件决定检查点**：一条变体的 `step` 必须是这个源的候选、且是 `step_selector` 选中的（`all` 时文件完全决定），否则这条变体跳过并记原因；每条可用的变体展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/v<variant_id>/b<i>`，`branch_group_id = <source_run_id>/s<t>/v<variant_id>`（同一变体的几个分叉输入相同；同一检查点的不同变体不是一组，重复分叉率与导出的 `duplicate_of` 都不拿它们互比），`TaskDefinition.task_text` 是变体文本，`checkpoint` 带 `task_variant`，provenance 带 `BranchTaskVariant`（变体 id、变体文本、源任务文本、`note`，写进 trace 的 `config.json` 的 `branch`）；env 部分（setup context、`replay_archive`）、loop 的其余部分、`env_type` 与切片字段都是源的。文件按格式严格读（`core/data_loader/task/task_variants.py`）：读不出、不是 JSON、`format` 不是 `task-variants-1`、缺字段、多字段、类型不对（`step` 必须是整数）、`variant_id` 不是一个由字母数字与 `. _ -` 组成的非空串（它进任务 id），都在第一次扫描时报 `BenchmarkDataError`，点名文件与问题，不发布任何任务。文件内容按条判断，不能用的跳过、记在 `loader.skipped`，键是 `<source_run_id>/s<t>/v<variant_id>`：同一 `(source_run_id, step, variant_id)` 列了不止一次（每一份都跳过，不知道该用哪一份）、`task_text` 为空、没有一个可读的源有这个 run id、它的源被筛掉或不可分叉（原因带上源自己的那条）、这一步不是候选（与 `explicit` 同样的原因）或选步策略没选它。变体从不触发 `on_unbranchable` 的抛错；文件里没提到的候选步不产生任务，也不记原因。变体分叉要求 `history_source: restored`（§4.1，source 历史在组装期被拒）。变体没有 benchmark 参考：独立评测不拿源任务的参考给它评分，按参考评分的 evaluator 把它记为评测失败，只有不读参考的 judge（WebJudge）用变体文本评它（§4.11）。导出时它的任务身份仍是源任务的（benchmark、task id、站点都是源的，切分随源任务），`TaskIdentity` 另记 `source_task`（源任务文本），`site_instruction` 去污染同时比对变体文本与源任务文本：变体文本是新的，但它的画面录自源任务，源任务是评测任务时变体一并排除（`core/trace/sources.py::TaskIdentity.instructions`，`export/split.py`，§4.15）。
 - **排除的录制（2026-10-23）**：有的录制不能当数据用：页面一直没渲染出来（整段只有骨架屏，agent 一直在等、刷新），或录制时内容请求就失败了，录下的是一个残缺的页面；从它们分叉，检查点恢复得"很成功"（画面本来就不变）却毫无意义，还污染分叉评判与标注队列。判断由别处做（通常是对录制的离线体检，例如仓库顶层 `lookahead/` 的 `health` 命令），加载器只执行：`exclude_runs` 指向一个 JSON 文件 `{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`run_id` 是加载器给源 run 用的那个 run id。文件列出的源被筛掉，`loader.skipped` 里的原因是 `filtered: the exclude_runs file lists its run id: <reason>`（同一个 run id 列了几次，原因依次用 `; ` 连起来）；被排除的源的任务变体照"任务变体"的规则跳过并带上这条原因；列了但没有一个源有的 run id 不起作用，也不记。文件按格式严格读（`core/data_loader/task/run_exclusions.py`）：读不出、不是 JSON、`format` 不是 `run-exclusions-1`、缺字段、多字段、类型不对、`run_id` 或 `reason` 为空，都在第一次扫描时报 `BenchmarkDataError`，点名文件与问题，不发布任何任务。
 - **没加载完的检查点（用户 2026-10-25 的裁决，§4.4 “初次加载是否完成”）**：`exclude_unloaded_checkpoints: true`（默认；发布的飞轮配置显式写出）时，选步之后对每个选中的候选（有任务变体时，文件点名且被选中的那一步也一样）读它录下的观测：`capture_state` 的 `settle_state.loaded` 是 `false`——采集时初次加载还没完成，浏览器上就是主文档还没到它的 `load` 事件，不论这次等待怎么结束——这一步就不当检查点。它记在 `loader.skipped`，键与其他不用的步相同（`<源路径>#s<t>`；变体是 `<source_run_id>/s<t>/v<variant_id>`），原因写明这一步在初次加载完成之前采集、附录下的等待结果与时长、点名 `exclude_unloaded_checkpoints`，并记 INFO。只是 DOM 没静下来的步照常是检查点。它作用在选步之后：`last` 选中的最后一步没加载完就不分叉这个源，不往前补一步；`every_k` 不因此重新数。没有证据就保留检查点、不拒绝：源 run 没协商 `capture_state`、这一步没录它、它的采集失败了、或者等待关着。读录下的 fragment 失败（`TraceSchemaError`）是这个源不可分叉，按 `on_unbranchable` 处理。`false` 时不读。源 trace 不变；判定经 `core/trace/sources.py::unloaded_capture_reason`，与导出的 `filters.exclude_unloaded_steps` 同一条规则（§4.15）。
@@ -3069,7 +3089,7 @@ af 发出的按键事件只到页面，Chrome 自己的快捷键从不执行（�
 
 同理，两者都是 `BrowserCapability.__wiring__` 上的**受体**（wired receptor），不是 `Literal` 字符串：策略以**构造好的实例**注入，它自己的 knobs（windmouse 的 gravity / wind、bezier 的控制点、`human` rhythm 的 median_iki / hold 分布、learned 的 weights_dir / num_candidates，以及下面两节的 click-hold 与 aim 分布参数）因此全部经 conscribe 进入生成的 config，YAML 可达且被校验。曾经的形状是 `Literal` 加一个未类型化的 overrides dict，conscribe 把后者整个从 schema 里丢掉——knobs 存在，没有任何东西能设置它们。这与 `dom_cleaner` / `dom_serializer` 是同一类 defect（见 §4.12），`tests/test_core/test_capabilities/test_receptor_hygiene.py` 是结构性守卫。
 
-但**受体身份是必要而非充分条件**：注册表还必须被 Composer 收集（`core/registries.py::collect_registrars`），否则 conscribe 无从知道这个字段是一个判别联合，只能把它发成裸 `str`——knobs 依然不可达，而且更坏：一个拼错的 `trajectory_type` 不会被校验挡住，会静默退回 `instant`（非拟人）。`mouse_trajectory` 正是这样漏过一轮的，`collect_registrars` 里现在留着记录此事的注释。新增任何一根策略轴都要同时做这两件事。
+但**受体身份是必要而非充分条件**：注册表还必须被 Composer 收集。browser 内部的轴写在 browser 包的 `declarations.py` 里（`STRATEGY_AXES`），`collect_registrars()` 从那里读到它（§4.2.1）。没被收集的注册表让字段退化成 `Literal[<keys>]`：拼错的键照样被拒，但策略的旋钮全部从 schema 里消失，YAML 到达不了（AGENTS.md §3.4 的实测）。`mouse_trajectory` 曾经这样漏过一轮；那时它还是 `__wiring__` 之前的裸标量，拼错的 `trajectory_type` 会静默退回 `instant`（非拟人）。新增任何一根策略轴都要同时做这两件事：写成受体，并在所属包的 `declarations.py` 里声明它。
 
 #### 两个 Protocol
 
@@ -3161,7 +3181,7 @@ af 发出的每一个 `Input.dispatchKeyEvent`——`browser.send_keys`（`Actio
 
 新训练出来的模型（比如一个 diffusion 导出）**不是一个新策略**，而是 `learned` 的一个 backend，按导出格式分派——这与 capability 的 backend 是同一个模式。真正的新策略是另一种运动模型：加一个类文件，加一个 wiring key，消费者零改动。
 
-numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时导入，绝不在模块导入时——所以没装 extra 的机器上注册与 config 生成照常工作。`input/_timing.py` 和 `input/_aim.py` 被 `learned` 导入，因此这两个模块必须保持 **numpy-free**。
+numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时导入，绝不在模块导入时——所以没装 extra 的机器上注册与 config 生成照常工作。`input/_timing.py` 和 `input/_aim.py` 被 `learned` 导入，因此这两个模块必须保持 **numpy-free**。推理模块 `input/_mouse_gan_v2.py` 在顶层导入 numpy、不注册任何类：它列在 browser 的 `declarations.py` 的 `OPTIONAL_EXTRA_MODULES` 里，实现发现从不导入它（§4.2.1），只有 `learned` 在构造时导入它。没装 numpy 时，`learned` 照样注册，配置照样校验；选了它的配置在组装时（构造这个策略时）报错，点名缺的 extra 与安装命令，run 不会开始。子进程测试屏蔽 numpy，检查 Composer 照常建起、默认的 browser 配置照常组装、选了 `learned` 的配置被拒。
 
 ### 4.14 回放与归档中间层（recorder 连接、`replayability`、browser 归档器）
 
@@ -3599,7 +3619,7 @@ iqiyi.com 的 tab 经 `localStorage` 互相同步，开到五个 tab（其中三
   - `live`（`live.py`，默认）：什么都不拦截，没有旋钮；`intercepts` 为 `False`。
   - `archive`（`archive_source.py`，`ArchiveNetworkSource`）：从一个已录制 run 的归档回放网络。**它从不把请求放到线上**：这是 `archive` 来源自己的规则，不是框架的定律（用户 2026-10-13 的裁决）。要"miss 时转去真实网络"，那是一个新的网络来源（`NetworkSourceRegistrar` 的新键），不是 `archive` 的旋钮，也不是 miss 策略：miss 策略的决定只有 fulfill 与 fail 两种应答。**不是 dataclass**、手写 `__init__`：它带一个受体 `miss_policy`（`__wiring__ = {"miss_policy": ("miss_policy", ["strict"])}`，类级注解 + `default_miss_policy()`）。旋钮：`matcher: MatcherConfig`（嵌套的 pydantic 子配置：`levels: tuple[Literal["exact", "normalized", "fuzzy"], ...] = ("exact", "normalized")`（至少一级、不重复）、`fuzzy_threshold: float = 0.5`（[0, 1]）、`site_rules: str | None = None`，即规则目录；使用 pydantic dataclass，生成代码导入原类型并保留校验；conscribe 2.0 同样支持用户的 `BaseModel` 类型，不再需要绕开它）、`isolation: Literal["required", "none_acknowledged"] = "required"`、`shift_dates: Literal["none", "all"] = "none"`、`max_fulfill_body_bytes`（默认 64 MiB，校验上限 72 MiB：Chrome 读入的一条 CDP 消息 ≤ 100 MiB，base64 之后约 75 MiB 的 body）、`fulfill_timeout_s`（默认 10 s）、`log_mode: full | summary`（默认 `full`，逐事件），`log_repeat_limit`（默认 3，仅 `summary` 模式使用）。
 - **`MissPolicyRegistrar`**（`miss_policy`，判别字段 `miss_policy_id`；`miss_policy.py`）：v1 只有 `strict`（`strict.py`），这根轴存在是因为用户要求留口子。`decide(miss) -> MissDecision`：请求类别（`document` / `benign` / `subresource`）、怎么应答、是否标 `diverged`。
-- 生成配置是三层嵌套的判别联合：capability → `network_source` → `miss_policy`（`archive` 块里必须写 `miss_policy: {miss_policy_id: strict}`）。`network_source` 与 `miss_policy` 都进 `collect_registrars()`。
+- 生成配置是三层嵌套的判别联合：capability → `network_source` → `miss_policy`（`archive` 块里必须写 `miss_policy: {miss_policy_id: strict}`）。`network_source` 与 `miss_policy` 都由 browser 的 `declarations.py` 声明，经它进 `collect_registrars()`（§4.2.1）。
 
 ```yaml
 network_source:
@@ -5212,6 +5232,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
+| `TaskSetupRegistrar` | `setup_type` (flat) | 任务 setup 类（`SetupBase` 子类），契约与注册表在 `schemas/task.py`；每个 capability 包注册自己的 setup 类，并在 `declarations.py` 里声明为 `TASK_SETUP`；`TaskDefinition.setup` 按 `setup_type` 在已注册的 setup 里分派（§4.10）。不是 YAML 配置层（与 `ObservationRegistrar` 同一先例） | ✅ `browser` |
 | `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，只作标签的截图 `browser.frames`，回放的 `browser.replay_log`（§4.14），进 `collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
 | `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
 | `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
@@ -5222,7 +5243,9 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `MouseTrajectoryRegistrar` | `trajectory_type` (flat) | 光标轨迹策略（`instant` / `windmouse` / `bezier` / `learned`）；同时是鼠标侧唯一的拟人化开关，见 §4.13 | ✅（browser 内部） |
 | `TypingRhythmRegistrar` | `rhythm_type` (flat) | 键入节奏策略（`instant` / `human`）；键盘侧的同一形状，独立于轨迹轴，见 §4.13 | ✅（browser 内部） |
 
-> **Provider 目录归属**：每个 capability 的 backend provider 文件物理上属于 `spectragent/core/capabilities/{cap}/backends/`，对应的 `*ProviderRegistrar` 也在该目录的 `_registrar.py` 里。Browser 已落地；Docker / Desktop / Android 等 P2/P3 时按同样模式增设。
+> **哪些注册表是配置层**：`collect_registrars()` 收集框架轴（`core/registries.py` 显式列出）与每个 capability 包在 `declarations.py` 里声明的内部策略轴（上表标"browser 内部"的那些与 `BrowserProviderRegistrar`，§4.2.1）。`ObservationRegistrar`、`NegotiationResultRegistrar` 与 `TaskSetupRegistrar` 不由 YAML 选择，不收集。
+
+> **Provider 目录归属**：每个 capability 的 backend provider 文件物理上属于 `spectragent/core/capabilities/{cap}/backends/`，对应的 `*ProviderRegistrar` 也在该目录的 `_registrar.py` 里，由该包的 `declarations.py` 声明。Browser 已落地；Docker / Desktop / Android 等 P2/P3 时按同样模式增设。
 
 > **Dotted-key flat vs nested discriminator（2026-04 订正）**：Action / Observation 原计划上 nested discriminator，实测 conscribe 在“所有 leaf 同一 source”时会命中 Pydantic 的单字段 discriminator 冲突（见 `conscribe.config.composed._build_subset_union`）。改用 *dotted-key flat*：discriminator 仍是单字段 `action_id` / `fragment_id`，但键内嵌 source 前缀（`browser.click`、`loop.action_result`），同时避免 registry 撞名和 conscribe 的 Pydantic 冲突。语义与 nested 等价，wiring 字符串、前缀路由、config 生成都不需要特殊处理。Agent 的家族键同理：`agent_id: browser_use.dom` 是单个判别值，不是嵌套块（§4.1 "Agent 家族"）。
 
@@ -5408,7 +5431,7 @@ environment:
 | **新增 Evaluator** | 继承 `EvaluatorBase`，实现 `evaluate()` | LLM-as-judge / 测试套件 |
 | **新增 Observation Fragment** | 继承 `ObservationFragment`，设 `__registry_key__`（dotted）+ `__source__` | `docker.filesystem`, `gpu.metrics` |
 | **新增 LLM Provider** | 继承 `OpenAICompatBase` / `AnthropicCompatBase` | 私有部署 LLM |
-| **新增 Capability** | 继承 `CapabilityBase`，实现 action / resolver 接口；`__wiring__["backend"] = "<provider_registry>"` | `DatabaseCapability` (NL2SQL bench) |
+| **新增 Capability** | 在 `core/capabilities/` 下新建一个子包，包名即 `capability_id`；继承 `CapabilityBase`，实现 action / resolver 接口；`__wiring__["backend"] = "<provider_registry>"`；包的 `declarations.py` 声明内部策略轴、任务 setup 类与需要可选 extra 的模块，只导入注册表定义与 setup schema，沿途的 `__init__.py` 不导入实现；不改任何框架文件（§4.2.1） | `DatabaseCapability` (NL2SQL bench) |
 | **新增 Capability Backend** | 在 `core/capabilities/{cap}/backends/` 下加 provider 类，继承 `<Cap>ProviderBase` | 自建浏览器集群、私有 GPU 集群、SSH Docker |
 | **新增 Memory** | 继承 `MemoryBase` | RAG-based memory |
 | **新增 Benchmark Loader** | 继承 `TaskLoaderBase` / `EvalLoaderBase` | SWE-bench, WebArena |
@@ -5427,7 +5450,7 @@ environment:
 | **新增度量 / 报告节（M33）** | 在 `spectragent/flywheel/metrics.py` 加一个只读 `RunTrace`（与数据集目录）的计算、在 `report.py` 加它的节模型与建议规则（阈值写成具名常量、进 `rule`）；分母为 0 时是 `null` 加原因；capability 证据的格式知识放进该 capability 的包（纯函数，只经 `ArchiveReader` 读），度量只组织调用（§4.16） | 每条数据线的 miss 成本；第二条数据线出现时每个 capability 的度量贡献成为一根轴 |
 | **新增 thought 来源（`relabel`）** | 今天是 `thought_source: Literal["teacher", "none"]`；`relabel`（固定动作、采样 K 个 thought、保留一致的）有了实现时成为新注册表（§6 与 AGENTS.md §2.2 同时加行） | OpenCUA、arXiv 2504.10127 的做法 |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
-| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `core/registries.py::collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 和 Composer 都拒绝空层，必须先注册实现）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
+| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须让 Composer 收集它：框架轴写进 `core/registries.py` 的框架列表，capability 内部的轴写进该包 `declarations.py` 的 `STRATEGY_AXES`（§4.2.1），否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 和 Composer 都拒绝空层，必须先注册实现）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 与 `TaskSetupRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
 
 ---

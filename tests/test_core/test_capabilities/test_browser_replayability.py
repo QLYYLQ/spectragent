@@ -18,7 +18,6 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
@@ -26,21 +25,24 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     NETWORK_CAPTURE,
 )
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     cooperation_problems,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
-from spectragent.core.capabilities.browser.replay import (
-    SHIM_SHA256,
-    NoneReplayability,
-    PinnedReplayability,
+from spectragent.core.capabilities.browser.replay.none import NoneReplayability
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.replayability import (
     ReplayabilityProtocol,
     ReplayabilityRegistrar,
     default_replayability,
+)
+from spectragent.core.capabilities.browser.replay.shims import (
+    SHIM_SHA256,
+    SHIM_TEMPLATE,
     render_shim,
 )
-from spectragent.core.capabilities.browser.replay.shims import SHIM_TEMPLATE
 from spectragent.schemas.provider_session import ProviderSession
 
 PINNED_DEFAULT_ARGS = (
@@ -536,7 +538,7 @@ class TestCooperation:
 
     def test_pinned_from_archive_with_an_archive_source_is_not_this_rows_problem(self) -> None:
         """The clock row names the live source only; an archive source answers it (M30)."""
-        from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
+        from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 
         cap = _pinned_capability(_Provider(), base_time="from_archive")
         cap.network_source = ArchiveNetworkSource(isolation="none_acknowledged")

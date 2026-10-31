@@ -24,13 +24,14 @@ from statistics import fmean, pstdev
 from typing import Any
 
 from spectragent.core.capabilities.browser.dom.models import DOMRect
-from spectragent.core.capabilities.browser.input import InstantTrajectory, WindMouseTrajectory
 from spectragent.core.capabilities.browser.input._aim import (
     DEFAULT_AIM_MARGIN_PX,
     DEFAULT_AIM_SIGMA_RATIO,
     sample_aim_offset_px,
 )
+from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
 from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickCoordinateEvent,

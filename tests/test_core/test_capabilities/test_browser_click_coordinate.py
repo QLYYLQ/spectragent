@@ -18,7 +18,7 @@ import pytest
 from spectragent.core.capabilities.browser.actions.click_coordinate import (
     ClickCoordinateAction,
 )
-from spectragent.core.capabilities.browser.input import WindMouseTrajectory
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,

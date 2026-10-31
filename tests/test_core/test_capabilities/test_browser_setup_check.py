@@ -27,19 +27,17 @@ from typing import Any, ClassVar
 import pytest
 
 from spectragent.core.archive.source import ArchiveOpenError, open_archive
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import ReplayLogArchiver, StorageArchiver
 from spectragent.core.capabilities.browser.backends.capabilities import CDP
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
-from spectragent.core.capabilities.browser.replay import (
-    ArchiveNetworkSource,
-    PinnedReplayability,
-)
 from spectragent.core.capabilities.browser.replay.archive_index import (
     load_archive,
     load_fingerprint,
 )
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRuleError
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.runtime import AgentRuntime

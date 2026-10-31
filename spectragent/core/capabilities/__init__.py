@@ -4,10 +4,15 @@ Capability = ActionGroup + Resolver. Each capability declares and
 executes actions within its scope, and provides observation fragments
 on demand.
 
-Registration is import-driven. Use ``discover("spectragent.core.capabilities")``
-to scan and register all concrete Capability implementations.
+Every subpackage of this package is one capability, named by its
+``capability_id``, and declares its strategy axes, task setup and
+optional-extra modules in its own ``declarations.py``, which
+``core/registries.py`` reads. Registration is import-driven:
+``core.registries.discover_implementations("spectragent.core.capabilities")``
+registers every concrete Capability implementation and skips the modules
+that need an optional extra.
 
-See docs/architecture_design.md §4.6 and docs/execution_dag.md M06.
+See docs/architecture_design.md §4.2.1, §4.9 and docs/execution_dag.md M06.
 """
 
 from spectragent.core.capabilities._registrar import CapabilityBase, CapabilityRegistrar

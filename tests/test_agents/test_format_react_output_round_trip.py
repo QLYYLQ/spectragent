@@ -37,6 +37,7 @@ import io
 from collections.abc import Mapping
 from typing import Any, get_args, get_type_hints
 
+from conscribe import discover
 from PIL import Image
 
 from spectragent.agents._registrar import AgentRegistrar
@@ -92,7 +93,7 @@ _BROWSER = {
 
 
 def _formatting_agents() -> list[type]:
-    collect_registrars()  # imports every implementation, so every agent is registered
+    discover("spectragent.agents")  # registers every shipped agent
     agents = [
         cls
         for cls in AgentRegistrar.get_all().values()

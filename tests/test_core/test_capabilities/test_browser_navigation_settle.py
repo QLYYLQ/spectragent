@@ -28,8 +28,8 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser import capability as capability_module
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.navigation import (
     MainFrameNavigation,
     NavigationFeed,

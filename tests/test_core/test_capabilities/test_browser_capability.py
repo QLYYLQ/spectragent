@@ -13,12 +13,12 @@ import pytest
 from agent_cdp import EventScope
 
 from spectragent.core.capabilities.base import BaseCapability
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.actions import (
     ClickAction,
     NavigateAction,
     ScrollAction,
 )
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.schemas.action import ActionDescriptor
 from spectragent.schemas.prompt import ReactPromptContext
 

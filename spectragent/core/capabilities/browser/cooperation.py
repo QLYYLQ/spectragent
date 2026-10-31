@@ -72,10 +72,8 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
 )
 from spectragent.core.capabilities.browser.backends.chrome_switches import NETWORK_ISOLATION_ARGS
 from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
-from spectragent.core.capabilities.browser.replay import (
-    NetworkSourceProtocol,
-    ReplayabilityProtocol,
-)
+from spectragent.core.capabilities.browser.replay.network_source import NetworkSourceProtocol
+from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityProtocol
 from spectragent.core.capabilities.browser.watchdogs.archive_watchdog import ArchiveWatchdog
 
 #: The archive need of the archiver that records a replay's decisions.

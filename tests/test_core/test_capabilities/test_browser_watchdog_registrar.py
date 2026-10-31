@@ -37,7 +37,7 @@ import spectragent.core.capabilities.browser.dom.cleaning.browser_use  # noqa: F
 import spectragent.core.capabilities.browser.dom.serializers.text_serializer  # noqa: F401
 from spectragent.agents.browser_use import BrowserUseDomAgent
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES
 from spectragent.core.capabilities.browser.watchdogs import (
     BrowserWatchdog,
@@ -458,9 +458,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
 
     def test_union_matches_the_registry(self) -> None:
         """Guards the union against registry drift."""
-        from spectragent.core.capabilities.browser.input import (
-            MouseTrajectoryRegistrar,
-        )
+        from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryRegistrar
 
         keys = sorted(c.model_fields["trajectory_type"].default for c in self._member_configs())
         assert keys == sorted(MouseTrajectoryRegistrar.keys())
@@ -523,7 +521,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
 
     def test_unset_receptor_defaults_to_instant_in_python(self) -> None:
         """Direct construction (no Composer) still has a working cursor."""
-        from spectragent.core.capabilities.browser.input import InstantTrajectory
+        from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
 
         assert isinstance(BrowserCapability().mouse_trajectory, InstantTrajectory)
 

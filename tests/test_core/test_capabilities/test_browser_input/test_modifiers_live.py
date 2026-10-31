@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.schemas.action import Action
 
 pytestmark = pytest.mark.requires_chrome

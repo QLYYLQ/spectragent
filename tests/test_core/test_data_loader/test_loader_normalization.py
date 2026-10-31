@@ -9,6 +9,7 @@ duplicate conscribe registry entries).
 
 from __future__ import annotations
 
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
 from spectragent.core.data_loader.task.browsecomp import BrowseCompTaskLoader
 from spectragent.core.data_loader.task.lexbench_browser import (
@@ -17,7 +18,7 @@ from spectragent.core.data_loader.task.lexbench_browser import (
 from spectragent.core.data_loader.task.online_mind2web import (
     OnlineMind2WebTaskLoader,
 )
-from spectragent.schemas.task import BrowserSetup, TaskContext, TaskDefinition
+from spectragent.schemas.task import TaskContext, TaskDefinition
 
 
 def _build_stub(cls: type[TaskLoaderBase], raws: list[dict]) -> TaskLoaderBase:

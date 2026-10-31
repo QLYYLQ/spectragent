@@ -977,13 +977,12 @@ class TestAnOfflineReaderFindsFragmentClasses:
                 raise KeyError(key)
             return real_get(key)
 
-        def discover(*packages: str) -> list[str]:
+        def discover(*packages: str) -> None:
             discovered.append(packages)
             unimported.clear()  # the import registered it
-            return list(packages)
 
         monkeypatch.setattr(ObservationRegistrar, "get", get)
-        monkeypatch.setattr(reader_module, "discover", discover)
+        monkeypatch.setattr(reader_module, "discover_implementations", discover)
 
         trace = RunTrace(wal.run_dir)
         meta = trace.observation_fragment(0, "browser.browser_meta")

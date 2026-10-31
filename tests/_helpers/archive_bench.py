@@ -37,10 +37,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from spectragent.core.archive import ArchiveBatch, ArchiveFile
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import BrowserArchiverBase
 from spectragent.core.capabilities.browser.archive_stats import revisit_saving
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexLine
 from spectragent.flywheel.metrics import DedupBytes
 from spectragent.schemas.action import Action

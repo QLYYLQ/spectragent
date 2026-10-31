@@ -52,7 +52,7 @@ from spectragent.core.capabilities.base import BaseCapability
 
 # Imported for its side effect of registering the capability, so
 # ``CapabilityRegistrar.get_all()`` sees it in the completeness guard.
-from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import BrowserStateSummary
 

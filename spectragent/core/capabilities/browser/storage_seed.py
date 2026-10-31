@@ -18,11 +18,10 @@ from typing import Any, Literal
 
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
+from spectragent.core.capabilities.browser.archive.storage import INITIAL_STATE_NAME
 from spectragent.core.capabilities.browser.commands import BrowserConnection, PendingCommand
 from spectragent.core.capabilities.browser.dom.capture import frame_tree_nodes
 from spectragent.schemas.browser_storage import BrowserStorageState, StorageArea
-
-INITIAL_STATE_NAME = "initial_state.json"
 
 
 @dataclass(frozen=True)

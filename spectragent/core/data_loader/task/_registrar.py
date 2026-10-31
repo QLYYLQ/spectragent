@@ -19,7 +19,8 @@ from spectragent.core.data_loader._common import (
     resolve_task_id,
 )
 from spectragent.core.data_loader.task.base import BaseTaskLoader
-from spectragent.schemas.task import TaskContext, TaskDefinition, setup_class_for_env
+from spectragent.core.registries import setup_class_for_env
+from spectragent.schemas.task import TaskContext, TaskDefinition
 
 TaskLoaderRegistrar = create_registrar(
     "task_loader",
@@ -37,8 +38,8 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
 
     Subclasses should override ``env_type`` if the loader produces tasks
     for a non-browser environment — it selects both the data directory
-    (``benchmark_data/<env_type>/<benchmark>``) and the ``TaskSetup``
-    variant. They may override ``normalize_raw()`` to control how raw
+    (``benchmark_data/<env_type>/<benchmark>``) and the registered task
+    setup class. They may override ``normalize_raw()`` to control how raw
     data is mapped into ``TaskDefinition``.
     """
 
@@ -87,14 +88,14 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     def get_task_context(self, task_id: str) -> TaskContext:
         """Return what this task hands to the run — here, its environment part only.
 
-        The ``env`` part delegates to the task's own setup variant, so each
-        domain carries its own context forward: a browser task surfaces
-        ``start_url``, a docker task surfaces its image / checkout commit /
-        test node-ids. A dataset task has no loop inputs and no branch
-        provenance. An unknown ``task_id`` yields an empty ``TaskContext()``.
+        The ``env`` part delegates to the task's own setup, so each domain
+        carries its own context forward: a browser task surfaces
+        ``start_url``. A dataset task has no loop inputs and no branch
+        provenance. An unknown ``task_id``, or a task without a setup,
+        yields an empty ``TaskContext()``.
         """
         task = self._tasks.get(task_id)
-        if task is None:
+        if task is None or task.setup is None:
             return TaskContext()
         return TaskContext(env=task.setup.to_context())
 
@@ -116,13 +117,12 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
         Extension point for loader authors. Return one task without
         adding it to the loader's index; loading owns that bookkeeping.
 
-        The setup variant is selected by ``self.env_type`` (never
-        hardcoded), and each variant declares via ``__raw_keys__`` which
-        top-level raw keys belong to it — ``start_url`` for browser,
-        ``base_commit`` / ``FAIL_TO_PASS`` / ... for docker. Those are
-        moved into ``setup`` so they arrive typed instead of landing in
-        ``TaskDefinition``'s ``extra="allow"`` catch-all. A nested
-        ``setup`` dict in the raw data is merged in and wins.
+        The registered setup class is selected by ``self.env_type`` (never
+        hardcoded), and each declares via ``__raw_keys__`` which top-level
+        raw keys belong to it — ``start_url`` and ``storage_state`` for
+        browser. Those are moved into ``setup`` so they arrive typed instead
+        of landing in ``TaskDefinition``'s ``extra="allow"`` catch-all. A
+        nested ``setup`` dict in the raw data is merged in and wins.
 
         Everything else passes through, so unknown fields are preserved.
         Subclasses targeting upstream record shapes should override.
@@ -131,8 +131,8 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
         setup_cls = setup_class_for_env(self.env_type)
 
         # Identity first: resolving it must see the raw keys before any
-        # of them are grafted onto the setup (SWE-bench's ``instance_id``
-        # is both the identity and a setup field).
+        # of them are grafted onto the setup (an ``instance_id`` may be both
+        # the identity and a setup field).
         task_id = resolve_task_id(raw_copy)
 
         setup_data: dict[str, Any] = dict(raw_copy.pop("setup", {}) or {})
@@ -141,7 +141,7 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
                 setup_data.setdefault(key, raw_copy.pop(key))
 
         declared = setup_data.get("setup_type")
-        expected = setup_cls.setup_type_value()
+        expected = setup_cls.__registry_key__
         if declared is not None and declared != expected:
             raise BenchmarkDataError(
                 f"Task {task_id!r}: record declares setup_type={declared!r} but "

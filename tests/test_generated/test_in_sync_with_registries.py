@@ -55,10 +55,9 @@ _REGENERATE = "Regenerate with `uv run spectragent config generate` (or `python 
 _PROBE = """
 import json
 from conscribe import compute_registry_fingerprint
-from conscribe import discover
-from spectragent.core.registries import collect_registrars
+from spectragent.core.registries import collect_registrars, discover_implementations
 
-discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
+discover_implementations("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
 print(json.dumps({
     layer: compute_registry_fingerprint(registrar)
     for layer, registrar in collect_registrars().items()

@@ -12,10 +12,8 @@ Spelled ``none``, the configuration surface's word for "not enabled": a bare
 
 from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.color_scheme import ColorScheme
-from spectragent.core.capabilities.browser.replay.replayability import (
-    ReplayabilityBase,
-    ReplayabilityPlan,
-)
+from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityBase
+from spectragent.core.capabilities.browser.replay.replayability_plan import ReplayabilityPlan
 
 
 class NoneReplayability(ReplayabilityBase):

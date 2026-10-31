@@ -7,14 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import NetworkArchiver, ReplayLogArchiver
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 from spectragent.core.capabilities.browser.platform import PLATFORM_URL, measure_input_platform
-from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource, PinnedReplayability
+from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.replay_archive import RecordingScript
 

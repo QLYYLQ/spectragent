@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser.settle import PageSettle
+from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.data_loader._common import BENCHMARK_DATA_ENV, BenchmarkDataError
 from spectragent.core.data_loader.task import TaskLoaderRegistrar, TraceBranchesTaskLoader
 from spectragent.core.data_loader.task.require_eval import RequireEval
@@ -20,7 +21,7 @@ from spectragent.core.data_loader.task.step_selector import EveryKSteps, Explici
 from spectragent.core.trace.models import TraceStatus
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
-from spectragent.schemas.task import BrowserSetup, TaskContext
+from spectragent.schemas.task import TaskContext
 from tests._helpers.branch_sources import (
     CAPTURE_FAILED,
     NEVER_QUIET,

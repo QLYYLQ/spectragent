@@ -63,10 +63,8 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     NETWORK_ARCHIVER,
     RecordedArchive,
 )
-from spectragent.core.capabilities.browser.replay.replayability import (
-    ReplayabilityPlan,
-    ReplayabilityProtocol,
-)
+from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityProtocol
+from spectragent.core.capabilities.browser.replay.replayability_plan import ReplayabilityPlan
 
 #: Tier parameters a replay may change: the clock's origin.
 REPLAY_MAY_CHANGE = frozenset({"base_time"})

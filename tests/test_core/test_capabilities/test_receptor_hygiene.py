@@ -486,7 +486,7 @@ def test_rule_one_reaches_the_capability_s_own_init() -> None:
     ``dom_*`` budget knobs live, so it is the surface the next strategy
     name is most likely to be added to.
     """
-    from spectragent.core.capabilities.browser import BrowserCapability
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
 
     names = {s.name for s in _init_surfaces(BrowserCapability)}
     assert {"screenshot_format", "dom_max_elements", "profile"} <= names
@@ -614,7 +614,7 @@ def test_the_profile_is_value_checked_not_just_name_checked() -> None:
     the guard would quietly weaken to a name comparison, which is what
     missed the first two defects.
     """
-    from spectragent.core.capabilities.browser import BrowserCapability
+    from spectragent.core.capabilities.browser.capability import BrowserCapability
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
 
     assert BrowserProfileConfig in _configuration_models(BrowserCapability)
