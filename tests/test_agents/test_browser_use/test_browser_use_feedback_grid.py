@@ -41,7 +41,6 @@ from spectragent.agents.browser_use import (
     BrowserUseDomVisionAgent,
 )
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.effects import ElementFacts, PointerEffect, ViewportPoint
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
 from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam
@@ -59,7 +58,7 @@ from spectragent.schemas.observation.geometry import CoordinateSpace, PointFrame
 from spectragent.schemas.prompt import RestoredHistory
 from spectragent.schemas.restoration import RestoredAction
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.action_spaces import space_for
+from tests._helpers.action_spaces import browser_run_descriptors, run_action_key, space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import dom_formats
 from tests._helpers.frames import decided, step_context
@@ -135,11 +134,10 @@ class _Run:
     ) -> None:
         self.agent = make_agent(member, memory=SimpleMemory(max_messages=20), **config)
         required, optional = self.agent.negotiation_demand("action")
-        descriptors = [
-            action.descriptor(fragments=frozenset({"browser.dom", "browser.screenshot"}))
-            for action in BrowserCapability().actions
-            if action.action_id.split(".")[-1] in required | optional
-        ]
+        descriptors = browser_run_descriptors(
+            {run_action_key(name) for name in required | optional},
+            fragments=frozenset({"browser.dom", "browser.screenshot"}),
+        )
         self.space: ActionSpace = space_for(self.agent, descriptors)
         self.seed: list[BaseMessage] = self.agent.prepare(
             task="Enter the amount",

@@ -548,15 +548,15 @@ class TestParseReactOutput:
     def test_done_keeps_its_required_null_answer(self, member: type[SkyvernAgent]) -> None:
         """``extracted_content`` is required and nullable; a written null is the answer."""
         (action,) = _read(
-            member, _reply({"browser.done": {"extracted_content": None, "success": None}})
+            member, _reply({"loop.done": {"extracted_content": None, "success": None}})
         )
-        assert action == Action(name="browser.done", params={"extracted_content": None})
+        assert action == Action(name="loop.done", params={"extracted_content": None})
 
     @member_param
     def test_done_carries_the_claim(self, member: type[SkyvernAgent]) -> None:
         (action,) = _read(
             member,
-            _reply({"browser.done": {"extracted_content": "hit a paywall", "success": False}}),
+            _reply({"loop.done": {"extracted_content": "hit a paywall", "success": False}}),
         )
         assert action.params == {"extracted_content": "hit a paywall", "success": False}
 

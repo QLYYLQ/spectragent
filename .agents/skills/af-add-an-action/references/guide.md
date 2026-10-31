@@ -11,6 +11,19 @@ negotiation. `AGENTS.md` §2.5: *do not restore an asymmetry between them.*
 An action is held by a **Capability**, never by an Agent. The agent only declares that
 it can scroll; the capability decides how far.
 
+The one exception is an action that never directs the environment: it belongs to the
+**Loop** (user ruling 2026-10-31, architecture §4.5 "Loop 提供的动作"). Today that is
+`loop.done`, which ends the run with the agent's answer and its claim
+(`spectragent/core/loops/actions.py`). Such an action subclasses `LoopActionBase`, takes a
+`loop.<name>` key, declares `Params` like any other, and its `execute(params)` receives
+no capability. A Loop lists it in `__loop_actions__` (the twin of `__loop_fragments__`;
+`AgentLoopBase` lists `loop.done`), negotiation offers it beside the environment's
+actions, and `build_guarded_act` hands every `loop.*` name to the Loop's
+`execute_action`, never to `env.act`: no `ActionSpan`, no browser action boundary, no
+closed-tab refusal. Do not put a run-ending or otherwise environment-free verb on a
+capability, and do not move `wait` to the Loop: it lets a capability's page settle, and
+the export's drop-waits rule pairs a wait with its capability by the key's first segment.
+
 Neighbouring skills: `af-add-an-observation-fragment` (the mirror axis),
 `af-add-a-capability` (if the owning capability does not exist yet),
 `af-add-an-llm-provider` (the far end of §4), `af-regenerate-and-verify` (§1.6).
@@ -138,7 +151,7 @@ do not raise.
 `Params` is what the action takes; a nested `Effect` is what it measurably did
 (`docs/architecture_design.md` §4.5 "动作效果"). `ActionBase.Effect`
 (`core/actions/_registrar.py`) defaults to `None`: the action reports no effect
-(`done`, `screenshot`, `extract_content`). The base class `ActionEffect` and the gap
+(`loop.done`, `screenshot`, `extract_content`). The base class `ActionEffect` and the gap
 type `Unmeasured` are in `schemas/action.py`.
 
 ```python
@@ -219,6 +232,11 @@ Two edits, both mandatory:
 A YAML `actions:` block **narrows** that list (ablation); it never widens it
 (`capability.py:288-290`).
 
+A Loop's action has the same two edits on the Loop side: define it in
+`spectragent/core/loops/actions.py` (imported by `core/loops/_registrar.py`, which is
+what registers it) and list its key in the Loop's `__loop_actions__`. No capability
+wiring names it.
+
 Then regenerate — you touched `Annotated[...]` class fields, so `_composed.py` is now
 stale: `uv run spectragent config generate`. See the `af-regenerate-and-verify` skill. (Editing
 only `Params` needs no regeneration — `Params` is not a config surface,
@@ -237,10 +255,10 @@ environment that offers it.
 | Step | Where |
 |---|---|
 | Agent declares `(required, optional)` relative keys | `agent.__wiring__["action"]` |
-| `negotiate_action(agent, env)` resolves them against `env.provided_actions` | `core/negotiation/action.py:159-174` |
+| `negotiate_action(agent, loop, env)` resolves them against `env.provided_actions` plus the Loop's `__loop_actions__` | `core/negotiation/action.py` |
 | Result: `active_actions` (qualified) + `action_bindings` (short → qualified) | `:87-103` |
-| `get_action_space(active_actions=..., fragments=...)` narrows descriptors | `core/runtime.py:337-341` |
-| `build_guarded_act(...)` returns `(descriptors, guarded_act)` | `core/action_guard.py:30` |
+| `env.get_action_space(active_actions=..., fragments=...)`, then the Loop's `get_action_space(...)`, narrow descriptors | `core/runtime.py` (`prepare`, step 4) |
+| `build_guarded_act(..., loop_act=loop.execute_action)` returns `(action_space, guarded_act)` | `core/action_guard.py` |
 
 `build_guarded_act` is **the only place a relative name becomes qualified**
 (`action_guard.py:39-43`). Its closure (`:81-94`) rejects anything outside
@@ -250,8 +268,10 @@ check, calls it too and never re-derives it), and rewrites `action.name` **in pl
 not onto a copy, because the caller writes that object into the `StepRecord`, and a copy would leave the trace naming a provider-less verb
 (`:87-93`).
 
-Downstream, `EnvironmentBase.act` (`core/environments/_registrar.py:255-289`) partitions
-on `.` and **refuses a bare name** outright:
+After qualifying it, the closure routes by the full key's prefix: `loop.*` to the Loop's
+`execute_action`, everything else to `env.act`. Downstream, `EnvironmentBase.act`
+(`core/environments/_registrar.py`) partitions on `.` and **refuses a bare name**
+outright:
 
 ```
 Action name must be fully qualified ('source.action_id'), got 'click'
@@ -259,8 +279,11 @@ Action name must be fully qualified ('source.action_id'), got 'click'
 
 Failure modes worth recognising:
 - Required action missing → `IncompatibleActionError` at negotiation, naming the YAML
-  `actions:` ablation as the likely cause (`negotiation/action.py:33-79`).
-- Two capabilities offering the same relative key → `AmbiguousActionError` naming both
+  `actions:` ablation as the likely cause (`negotiation/action.py`). A registered `loop.*`
+  action the selected Loop does not provide is refused naming the Loop as the provider
+  (`provider == "loop '<loop_id>'"`).
+- Two providers offering the same relative key (two capabilities, or a capability and the
+  Loop: `desktop.done` beside `loop.done`) → `AmbiguousActionError` naming both
   candidates; pin one by writing the qualified key in `__wiring__`. If both are merely
   *active*, both stay routable and only the bare form has no answer — that is a logged
   warning, not an error (`negotiation/action.py:143-152`).

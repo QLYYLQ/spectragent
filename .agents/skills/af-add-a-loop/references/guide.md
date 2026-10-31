@@ -38,6 +38,13 @@ by `prepare()` too; do not defer an already knowable error to the first step.
 - `__loop_fragments__` declares exactly the loop-source fragments this strategy can
   construct. The default is `LOOP_FRAGMENT_KEYS` from `core/loops/_loop_fragments.py`.
   Negotiation refuses a required fragment the Loop cannot build.
+- `__loop_actions__` declares the actions this Loop provides and executes itself, all
+  `loop.*` (architecture §4.5 "Loop 提供的动作"). The default is `LOOP_ACTION_KEYS` from
+  `core/loops/actions.py`: `loop.done`, which ends the run with the agent's answer and
+  claim. Negotiation offers them beside the environment's actions and refuses a required
+  one the Loop does not provide; `get_action_space` describes the active ones and the
+  guard hands each to `execute_action`, never to `env.act`. A Loop decides that a run
+  ended from a result's `is_done`, never from an action's name.
 - `__required_message_protocols__` participates in memory negotiation. Extending the
   protocol names also requires a concrete message and memory behavior contract.
 - An Agent can narrow its own fragment demands; it cannot remove the Loop's requirements.

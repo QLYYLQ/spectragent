@@ -30,9 +30,8 @@ from spectragent.core.capabilities.browser.observations import (
 from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.core.loops._loop_fragments import loop_fragment_builders
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.observation._registrar import fragment_field_name
-from tests._helpers.action_spaces import space_for
+from tests._helpers.action_spaces import negotiated_actions, space_for
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 from tests._helpers.frames import step_context
@@ -109,19 +108,10 @@ def _observation(move: FocusMove | None) -> Any:
     )
 
 
-class _ActionsOnlyEnv:
-    def __init__(self, capability: Any) -> None:
-        self.provided_actions = capability.provided_actions
-
-
 def _prepared(agent_id: str) -> Any:
     """A fresh agent, prepared with the actions a standard browser negotiates for it."""
     agent = make_agent(_AGENTS[agent_id], memory=SimpleMemory(max_messages=10))
-    capability = BrowserCapability()
-    negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
-    descriptors = [
-        a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
-    ]
+    _negotiated, descriptors = negotiated_actions(agent, BrowserCapability())
     space = space_for(agent, descriptors)
     seed = agent.prepare(
         task="read the article",

@@ -446,7 +446,6 @@ class TestSwitchTab:
         Action(name="browser.go_forward"),
         Action(name="browser.send_keys", params={"keys": "Enter"}),
         Action(name="browser.wait", params={"seconds": 1}),
-        Action(name="browser.done", params={"answer": "ok"}),
         Action(name="browser.drag", params={"start_x": 1, "start_y": 2, "end_x": 3, "end_y": 4}),
     ],
     ids=lambda action: action.name,

@@ -223,7 +223,7 @@ def test_sensitive_text_is_withheld_and_done_reads_as_an_answer(run: RunTrace) -
 
 def test_a_done_that_reports_failure_executed_and_says_so() -> None:
     """The claim is the agent's (``结束（报告没有完成任务）``); the done itself succeeded."""
-    done = Action(name="browser.done", params={"extracted_content": "没有找到", "success": False})
+    done = Action(name="loop.done", params={"extracted_content": "没有找到", "success": False})
     result = ActionResult(
         success=True, is_done=True, extracted_content="没有找到", reported_success=False
     )
@@ -272,7 +272,7 @@ def test_a_missing_step_is_a_set_problem(run: RunTrace) -> None:
     assert found.sets[0].problem == "这次运行没有已提交的第 9 步"
 
 
-@pytest.mark.parametrize("name", sorted(set(ACTION_VERBS) - {"browser.done"}))
+@pytest.mark.parametrize("name", sorted(set(ACTION_VERBS) - {"loop.done"}))
 def test_each_line_says_the_verb_the_viewer_labels_its_step_with(name: str) -> None:
     # One wording: the line and the step label (the run API's action_verbs) agree.
     assert action_verb(name) in action_text(Action(name=name), None)

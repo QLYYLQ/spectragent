@@ -72,18 +72,15 @@ class _Cap(CapabilityBase):
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "runcfg_cap"
     __wiring__ = {
-        "action": ("action", ["runcfg_cap.done", "runcfg_cap.click"]),
+        "action": ("action", ["runcfg_cap.click"]),
         "observation": ("observation", ["browser.browser_meta"]),
     }
 
     def get_action_descriptors(self, **ctx):
-        return [
-            ActionDescriptor(name="runcfg_cap.done", description="Done"),
-            ActionDescriptor(name="runcfg_cap.click", description="Click"),
-        ]
+        return [ActionDescriptor(name="runcfg_cap.click", description="Click")]
 
     async def execute_action(self, action, **kw):
-        return ActionResult(success=True, is_done=True, extracted_content="42")
+        return ActionResult(success=True)
 
     async def setup(self, *, negotiation=None, start_url=None):
         # Declared so a task context can carry a start URL here.
@@ -114,7 +111,7 @@ class _Agent:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
-        return [Action(name="done", params={})]
+        return [Action(name="done", params={"extracted_content": "42"})]
 
     def get_react_output_model(self):
         return None
@@ -290,12 +287,13 @@ class TestNegotiationIsRecorded:
     def test_bindings_say_what_a_relative_name_meant_here(self, trace):
         neg = trace.config.negotiation
         assert neg.fragment_bindings["browser_meta"] == "browser.browser_meta"
-        assert neg.action_bindings["done"] == "runcfg_cap.done"
+        # ``done`` is the Loop's, not the capability's (arch §4.5).
+        assert neg.action_bindings["done"] == "loop.done"
 
     def test_actions_the_model_was_allowed_to_emit(self, trace):
         """Not the actions it *did* emit — the step records carry those."""
         neg = trace.config.negotiation
-        assert neg.active_actions == ["runcfg_cap.click", "runcfg_cap.done"]
+        assert neg.active_actions == ["loop.done", "runcfg_cap.click"]
 
     def test_sorted_so_two_processes_agree(self, trace):
         neg = trace.config.negotiation

@@ -1025,10 +1025,9 @@ class TestTraceBranchesSweep:
         (outcome,) = summary.outcomes
         assert outcome.task_id == "src/s1/b0"
         assert caps[0].replay_archive == str(source), "the env part reached setup"
-        assert caps[0].log == [
-            "branchfake.click({'index': 500})",
-            "branchfake.done({'answer': 'branched'})",
-        ]
+        # The restored click reached the capability; the Loop executed ``loop.done``.
+        assert caps[0].log == ["branchfake.click({'index': 500})"]
+        assert outcome.result is not None and outcome.result.answer == "branched"
 
         assert outcome.trace_dir is not None
         trace = RunTrace(outcome.trace_dir)
@@ -1150,10 +1149,8 @@ class TestTaskVariantSweep:
         assert summary.completed == 1 and summary.failed == 0, summary.format_table()
         (outcome,) = summary.outcomes
         assert outcome.task_id == "src/s1/vwarranty/b0"
-        assert caps[-1].log == [
-            "branchfake.click({'index': 500})",
-            "branchfake.done({'answer': 'branched'})",
-        ]
+        assert caps[-1].log == ["branchfake.click({'index': 500})"]
+        assert outcome.result is not None and outcome.result.answer == "branched"
         assert outcome.trace_dir is not None
         trace = RunTrace(outcome.trace_dir)
         assert trace.config.task == VARIANT_TASK

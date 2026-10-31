@@ -89,7 +89,7 @@ def _click(index: int) -> Action:
     return Action(name="browser.click", params={"index": index})
 
 
-_DONE = Action(name="browser.done", params={"extracted_content": "the answer"})
+_DONE = Action(name="loop.done", params={"extracted_content": "the answer"})
 
 
 class _Page:
@@ -109,7 +109,7 @@ class _Page:
             raise RuntimeError(f"element {index} vanished mid-click")
         if index in self.failing:
             return ActionResult(success=False, error=f"element {index} is covered")
-        if action.name == "browser.done":
+        if action.name == "loop.done":
             return ActionResult(
                 success=True, is_done=True, extracted_content=action.params["extracted_content"]
             )
@@ -176,7 +176,7 @@ async def test_a_done_after_a_failed_action_does_not_end_the_run() -> None:
     result, recorder = await _run([[_click(1), _DONE], [_DONE]], page)
     first, second = recorder.records
     assert first.skipped() == [_DONE]
-    assert [a.name for a in page.ran] == ["browser.click", "browser.done"], (
+    assert [a.name for a in page.ran] == ["browser.click", "loop.done"], (
         "the skipped done never ran; the next step's done did"
     )
     assert second.action_results[0].is_done

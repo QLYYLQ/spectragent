@@ -45,7 +45,7 @@ class _Cap(CapabilityBase):
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "trace_e2e_cap"
     __wiring__ = {
-        "action": ("action", ["trace_e2e_cap.done", "trace_e2e_cap.click"]),
+        "action": ("action", ["trace_e2e_cap.click"]),
         "observation": (
             "observation",
             ["browser.screenshot", "browser.browser_meta"],
@@ -53,14 +53,9 @@ class _Cap(CapabilityBase):
     }
 
     def get_action_descriptors(self, **ctx):
-        return [
-            ActionDescriptor(name="trace_e2e_cap.done", description="Done"),
-            ActionDescriptor(name="trace_e2e_cap.click", description="Click"),
-        ]
+        return [ActionDescriptor(name="trace_e2e_cap.click", description="Click")]
 
     async def execute_action(self, action, **kw):
-        if action.name.endswith("done"):
-            return ActionResult(success=True, is_done=True, extracted_content="42 dollars")
         return ActionResult(success=True, extracted_content="clicked")
 
     async def resolve_fragment(self, fragment_key, **kwargs):
@@ -87,13 +82,21 @@ class _TeardownRecordingEnv(EnvironmentBase):
         await super().teardown()
 
 
-class _Agent:
-    """Declares and emits capability-relative names, like every shipped agent.
+#: The params each emitted verb carries: the click's element, done's answer.
+_PARAMS: dict[str, dict[str, Any]] = {
+    "click": {"index": 1},
+    "done": {"extracted_content": "42 dollars"},
+}
 
-    ``done``/``click``, not ``trace_e2e_cap.done`` — so the path this
-    file reads back off disk is the one ``build_guarded_act`` resolves.
-    A fixture that hands the guard an already-qualified name never
-    exercises the binding, and cannot see it drop the prefix.
+
+class _Agent:
+    """Declares and emits relative names, like every shipped agent.
+
+    ``done``/``click``, not ``loop.done`` / ``trace_e2e_cap.click`` — so the
+    path this file reads back off disk is the one ``build_guarded_act``
+    resolves: ``click`` to the capability's, ``done`` to the Loop's. A
+    fixture that hands the guard an already-qualified name never exercises
+    the binding, and cannot see it drop the prefix.
     """
 
     __execution_limit_fields__ = frozenset()
@@ -115,7 +118,7 @@ class _Agent:
     def parse_react_output(self, out):
         name = self._plan[min(self._i, len(self._plan) - 1)]
         self._i += 1
-        return [Action(name=name, params={"index": 1})]
+        return [Action(name=name, params=dict(_PARAMS[name]))]
 
     def get_react_output_model(self):
         return None
@@ -253,7 +256,7 @@ class TestCompletedRunTrace:
         assert t.manifest.status == TraceStatus.COMPLETE
         assert t.result is not None
         assert t.result.answer == "42 dollars"
-        # The fake capability's done states no claim about the task.
+        # The agent's done states no claim about the task.
         assert t.result.agent_reported_success is None
 
     async def test_step_records_are_complete(self, trace):
@@ -321,17 +324,22 @@ class TestCompletedRunTrace:
     async def test_recorded_actions_carry_their_producer(self, trace):
         """The action axis keeps provenance too — same rule, same trace.
 
-        The agent declares and emits ``click``; ``build_guarded_act`` is
-        the one place that becomes ``trace_e2e_cap.click``, and it has to
-        resolve the object the loop records, not a copy of it. Otherwise
-        a reader holding only the trace sees a provider-less verb for an
-        action some specific capability executed, while the observation
+        The agent declares and emits ``click`` and ``done``;
+        ``build_guarded_act`` is the one place they become
+        ``trace_e2e_cap.click`` and ``loop.done`` (the Loop executes it), and
+        it has to resolve the object the loop records, not a copy of it.
+        Otherwise a reader holding only the trace sees a provider-less verb
+        for an action some specific provider executed, while the observation
         files right next to it name theirs.
         """
         t, _ = trace
         recorded = [a.name for rec in t.step_records for a in rec.actions]
-        assert recorded == ["trace_e2e_cap.click", "trace_e2e_cap.done"]
+        assert recorded == ["trace_e2e_cap.click", "loop.done"]
         assert all("." in name for name in recorded), recorded
+        # The prompt's action table: the environment's actions, then the Loop's.
+        space = t.config.action_space
+        assert space is not None
+        assert [d.name for d in space.descriptors] == ["trace_e2e_cap.click", "loop.done"]
 
     async def test_tokens_recorded_despite_hook_order(self, trace):
         t, _ = trace
@@ -488,9 +496,9 @@ class _ParsingAgent(_Agent):
                 name = json.loads(out)["action"]
             except (TypeError, ValueError, KeyError):
                 raise ParseError(f"not a reply: {out!r}") from None
-        if name not in ("done", "click"):
+        if name not in _PARAMS:
             raise ParseError(f"unknown action {name!r}")
-        return [Action(name=name, params={"index": 1})]
+        return [Action(name=name, params=dict(_PARAMS[name]))]
 
 
 #: Script entry for :class:`_ScriptedLLM`: never answer, until cancelled.

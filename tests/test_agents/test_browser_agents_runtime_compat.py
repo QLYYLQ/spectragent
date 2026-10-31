@@ -41,7 +41,12 @@ from spectragent.schemas.observation.fragments import (
 )
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import minimal_params
-from tests._helpers.action_spaces import space_of, wired_space
+from tests._helpers.action_spaces import (
+    browser_descriptors,
+    negotiated_actions,
+    space_of,
+    wired_space,
+)
 from tests._helpers.assembly import make_agent
 from tests._helpers.fragment_formats import formats_for
 
@@ -228,14 +233,9 @@ class _MockEnv:
         return self._observation
 
     async def act(self, action: Any, *args: Any, **kwargs: Any) -> Any:
-        from spectragent.core.capabilities.browser.actions.done import DoneAction
         from spectragent.schemas.action import ActionResult
 
         self.acted.append(action)
-        if action.name == "browser.done":
-            # The real terminal action: it needs no browser, and its result
-            # is the contract under test (execution apart from the claim).
-            return await DoneAction().execute(dict(action.params), capability=None)  # type: ignore[arg-type]
         return ActionResult(success=True, extracted_content=action.params.get("extracted_content"))
 
     async def setup(self, **_: Any) -> None:
@@ -267,8 +267,8 @@ class _ActionsOnlyEnv:
 
 
 async def _resolve(agent: Any, action: Any, capability: Any) -> str:
-    """What ``build_guarded_act`` would send to ``env.act`` for *action*."""
-    negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
+    """What ``build_guarded_act`` hands its executor for *action*: ``env.act``, or the Loop's."""
+    negotiated = negotiate_action(agent, ReactLoop(), _ActionsOnlyEnv(capability))
     descriptors = [
         ActionDescriptor(name=name, description="") for name in sorted(negotiated.active_actions)
     ]
@@ -278,7 +278,9 @@ async def _resolve(agent: Any, action: Any, capability: Any) -> str:
         routed.append(executed)
         return ActionResult(success=True)
 
-    _kept, guard = build_guarded_act(_act, descriptors, bindings=negotiated.action_bindings)
+    _kept, guard = build_guarded_act(
+        _act, descriptors, bindings=negotiated.action_bindings, loop_act=_act
+    )
 
     result = await guard(action)
     assert result.success, result.error
@@ -299,8 +301,9 @@ class TestAgentToCapabilityActionVocabulary:
 
         browser_use compiles its output schema *from the negotiated
         descriptors*, so the verbs it can emit are the keys the capability
-        provides — there is no vocabulary map left to drift. The test walks
-        the whole negotiated set and puts each one through the guard.
+        provides, and the Loop's ``loop.done`` — there is no vocabulary map
+        left to drift. The test walks the whole negotiated set and puts each
+        one through the guard.
         """
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
@@ -308,12 +311,9 @@ class TestAgentToCapabilityActionVocabulary:
 
         agent = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
         capability = BrowserCapability()
-        provided = capability.provided_actions
+        provided = capability.provided_actions | ReactLoop.__loop_actions__
 
-        negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
-        descriptors = [
-            a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
-        ]
+        _negotiated, descriptors = negotiated_actions(agent, capability)
         agent.prepare(
             task="t",
             action_space=space_of(descriptors),
@@ -329,8 +329,8 @@ class TestAgentToCapabilityActionVocabulary:
                 routed = await _resolve(agent, action, capability)
                 assert routed in provided, (
                     f"BrowserUseDomAgent emitted {action.name!r}, which resolved "
-                    f"to {routed!r} — not in BrowserCapability."
-                    f"provided_actions {sorted(provided)}"
+                    f"to {routed!r} — neither a BrowserCapability action nor the "
+                    f"Loop's: {sorted(provided)}"
                 )
 
     async def test_ui_tars_click_produces_click_coordinate(self) -> None:
@@ -374,9 +374,9 @@ class TestAgentToCapabilityActionVocabulary:
         assert await _resolve(agent, actions[0], capability) == "browser.click_coordinate"
 
     async def test_all_three_agents_done_uses_extracted_content(self) -> None:
-        # Regression: every adapted agent must emit its done action
-        # with the ``extracted_content`` key so the answer survives the
-        # capability's DoneEvent translation.
+        # Regression: every adapted agent must emit its done action with
+        # the ``extracted_content`` key, the one the Loop's ``loop.done``
+        # carries out as the answer.
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
@@ -390,20 +390,18 @@ class TestAgentToCapabilityActionVocabulary:
         bu = make_agent(BrowserUseDomAgent, memory=SimpleMemory(max_messages=10))
         bu.prepare(
             task="t",
-            action_space=space_of(
-                [a.descriptor() for a in capability.actions if a.action_id == "browser.done"]
-            ),
+            action_space=space_of(browser_descriptors("done")),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
             **formats_for(bu),
         )
         bu_out = bu.get_react_output_model().model_validate(
             {
                 "memory": "",
-                "action": [{"browser.done": {"extracted_content": "answer bu", "success": True}}],
+                "action": [{"loop.done": {"extracted_content": "answer bu", "success": True}}],
             }
         )
         bu_actions = bu.parse_react_output(bu_out)
-        assert await _resolve(bu, bu_actions[0], capability) == "browser.done"
+        assert await _resolve(bu, bu_actions[0], capability) == "loop.done"
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
         # Skyvern — ``done`` is an action of its closed reply, like BrowserUse's.
@@ -419,13 +417,13 @@ class TestAgentToCapabilityActionVocabulary:
                 "actions": [
                     {
                         "reasoning": "",
-                        "action": {"browser.done": {"extracted_content": "answer sk"}},
+                        "action": {"loop.done": {"extracted_content": "answer sk"}},
                     }
                 ]
             }
         )
         sk_actions = sk.parse_react_output(sk_out)
-        assert await _resolve(sk, sk_actions[0], capability) == "browser.done"
+        assert await _resolve(sk, sk_actions[0], capability) == "loop.done"
         assert sk_actions[0].params["extracted_content"] == "answer sk"
 
         # UITarsAgent
@@ -437,12 +435,18 @@ class TestAgentToCapabilityActionVocabulary:
             **formats_for(ut),
         )
         ut_actions = ut.parse_react_output("Action: finished(content='answer ut')")
-        assert await _resolve(ut, ut_actions[0], capability) == "browser.done"
+        assert await _resolve(ut, ut_actions[0], capability) == "loop.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
 
-async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, Any]:
-    """Drive one BrowserUse step that emits ``done`` with *done_params* through ReactLoop."""
+async def _drive_one_done(
+    done_params: dict[str, Any],
+) -> tuple[Any, _MockEnv, Any, list[Any]]:
+    """Drive one BrowserUse step that emits ``done`` with *done_params* through ReactLoop.
+
+    Returns the result, the environment, the agent and the actions the Loop
+    itself executed (``loop.done``, which never reaches the environment).
+    """
     # Build a fake observation matching the fragment-based shape.
     # ``task`` mirrors what populate_loop_fragments would inject —
     # this driver test bypasses ReactLoop's loop-fragment path because
@@ -481,33 +485,32 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
 
     # Drive the loop directly (skip AgentRuntime to avoid AOP weaving),
     # but keep the guard: it is what turns the agent's ``done`` into
-    # the ``browser.done`` the environment routes on, and a loop
-    # driven without it would be testing a path production never
+    # ``loop.done`` and hands it to the Loop, never to the environment, and
+    # a loop driven without it would be testing a path production never
     # takes.
     from spectragent.core.capabilities.browser.capability import (
         BrowserCapability,
     )
 
-    negotiated_actions = negotiate_action(agent, _ActionsOnlyEnv(BrowserCapability()))
+    loop_acted: list[Any] = []
+
+    async def loop_act(action: Any) -> Any:
+        loop_acted.append(action)
+        return await loop.execute_action(action)
+
+    negotiated, descriptors = negotiated_actions(agent, BrowserCapability(), loop=loop)
     _kept, _act_fn = build_guarded_act(
         env.act,
-        [
-            ActionDescriptor(name=name, description="")
-            for name in sorted(negotiated_actions.active_actions)
-        ],
-        bindings=negotiated_actions.action_bindings,
+        [ActionDescriptor(name=name, description="") for name in sorted(negotiated.active_actions)],
+        bindings=negotiated.action_bindings,
+        loop_act=loop_act,
     )
 
-    # Post-M17: AgentRuntime owns the prepare → memory.add_messages
-    # handoff. Driving the loop without AgentRuntime requires the
-    # caller to replicate that step. The descriptors are the negotiated
-    # ones, because ``prepare`` compiles them into the output schema
-    # the stub LLM below has to satisfy.
-    descriptors = [
-        a.descriptor()
-        for a in BrowserCapability().actions
-        if a.action_id in negotiated_actions.active_actions
-    ]
+    # AgentRuntime owns the prepare → memory.add_messages handoff. Driving
+    # the loop without AgentRuntime requires the caller to replicate that
+    # step. The descriptors are the negotiated ones, because ``prepare``
+    # compiles them into the output schema the stub LLM below has to
+    # satisfy.
     seed = agent.prepare(
         task="Find the answer",
         action_space=space_of(descriptors),
@@ -517,7 +520,7 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
     agent.memory.add_messages(seed)
     llm = _MockLLM(
         agent.get_react_output_model().model_validate(
-            {"memory": "", "action": [{"browser.done": done_params}]}
+            {"memory": "", "action": [{"loop.done": done_params}]}
         )
     )
 
@@ -533,13 +536,13 @@ async def _drive_one_done(done_params: dict[str, Any]) -> tuple[Any, _MockEnv, A
         "identity": RunIdentity(task_id="t1"),
     }
     result = await loop._execute(agent, task="Find the answer", ctx={**ctx, "step_executor": loop})
-    return result, env, agent
+    return result, env, agent, loop_acted
 
 
 class TestReactLoopDriveBrowserUse:
     @pytest.mark.asyncio
     async def test_browser_use_one_step_done(self) -> None:
-        result, env, agent = await _drive_one_done({"extracted_content": "finished"})
+        result, env, agent, loop_acted = await _drive_one_done({"extracted_content": "finished"})
 
         # The agent emitted "done" → result should reflect that.
         assert result.task_id == "t1"
@@ -547,9 +550,9 @@ class TestReactLoopDriveBrowserUse:
         from spectragent.schemas._types import AgentDoneStatus
 
         assert result.agent_done == AgentDoneStatus.DONE
-        # Env recorded the action.
-        assert len(env.acted) == 1
-        assert env.acted[0].name == "browser.done"
+        # The Loop executed the done; the environment never saw it.
+        assert [action.name for action in loop_acted] == ["loop.done"]
+        assert env.acted == []
         # Agent state was populated by the explicit prepare() call above.
         # ``_task`` was deleted; task now lives on every observation as a
         # loop-source fragment.
@@ -558,7 +561,7 @@ class TestReactLoopDriveBrowserUse:
 
     async def test_a_done_that_says_the_task_failed_still_ends_the_run(self) -> None:
         """``success: false`` is the agent's claim; the done itself executed and closed the run."""
-        result, env, _agent = await _drive_one_done(
+        result, _env, _agent, loop_acted = await _drive_one_done(
             {"extracted_content": "the price is not listed", "success": False}
         )
         from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
@@ -568,11 +571,11 @@ class TestReactLoopDriveBrowserUse:
         assert result.error is None
         assert result.answer == "the price is not listed"
         assert result.agent_reported_success is False
-        assert [action.params.get("success") for action in env.acted] == [False]
+        assert [action.params.get("success") for action in loop_acted] == [False]
 
     async def test_a_done_without_a_claim_reports_none(self) -> None:
         """A null ``success`` is stripped before the action exists: no claim, not ``true``."""
-        result, _env, _agent = await _drive_one_done(
+        result, _env, _agent, _loop_acted = await _drive_one_done(
             {"extracted_content": "finished", "success": None}
         )
         assert result.agent_reported_success is None

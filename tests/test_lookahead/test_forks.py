@@ -156,8 +156,8 @@ CLICK = "browser.click_coordinate"
         ([_action("browser.wait")], [_action("browser.wait")], "same"),
         ([_action("browser.wait")], [_action("browser.click", hit=BUTTON)], "different"),
         (
-            [_action("browser.done", extracted_content="¥99")],
-            [_action("browser.done", extracted_content="99 yuan")],
+            [_action("loop.done", extracted_content="¥99")],
+            [_action("loop.done", extracted_content="99 yuan")],
             "unknown",
         ),
         (
@@ -566,7 +566,7 @@ def test_done_only_has_no_execution_effect_question(world: World) -> None:
     )
     assert fork.branch_row is not None
     fork.branch_row = fork.branch_row.model_copy(
-        update={"actions": [_action("browser.done", extracted_content="Answer")]}
+        update={"actions": [_action("loop.done", extracted_content="Answer")]}
     )
     assert quality_questions(fork.branch_row) == ("reasonable",)
     request = quality_request(fork)
@@ -588,7 +588,7 @@ def test_done_only_has_no_execution_effect_question(world: World) -> None:
     assert item.suggestion is not None
     assert set(item.suggestion.answers or {}) == {"reasonable", "same_intent"}
     mixed = fork.branch_row.model_copy(
-        update={"actions": [_action("browser.click"), _action("browser.done")]}
+        update={"actions": [_action("browser.click"), _action("loop.done")]}
     )
     assert quality_questions(mixed) == ("reasonable", "executed_as_intended")
 
@@ -602,7 +602,7 @@ def test_done_only_applicability_matches_record_report_and_queue(
     )
     assert fork.branch_row is not None
     fork.branch_row = fork.branch_row.model_copy(
-        update={"actions": [_action("browser.done", extracted_content="Answer")]}
+        update={"actions": [_action("loop.done", extracted_content="Answer")]}
     )
     answer = {"answer": "yes", "reason": "The answer is supported."}
     previous = (

@@ -258,8 +258,14 @@ class _TaskOnlyAgent:
         return []
 
 
-class _ActingAgent(_TaskOnlyAgent):
-    """Needs an action — something only an environment provides."""
+class _ClickingAgent(_TaskOnlyAgent):
+    """Needs an action only an environment provides."""
+
+    __wiring__ = {"observation": ("observation", ["loop.task"]), "action": ("action", ["click"])}
+
+
+class _FinishingAgent(_TaskOnlyAgent):
+    """Needs only ``done``, which the Loop provides (``loop.done``)."""
 
     __wiring__ = {"observation": ("observation", ["loop.task"]), "action": ("action", ["done"])}
 
@@ -311,11 +317,19 @@ class TestNoEnvironment:
         assert info.value.missing == {"page"}
         assert info.value.provided == set() and info.value.provider == "environment"
 
-    def test_an_agent_that_needs_an_action_is_refused_by_negotiation(self) -> None:
-        runtime = AgentRuntime.for_agent(_envless(_ActingAgent(), _EnvlessLoop()), AGENT_ID)
+    def test_an_agent_that_needs_an_environment_action_is_refused_by_negotiation(self) -> None:
+        runtime = AgentRuntime.for_agent(_envless(_ClickingAgent(), _EnvlessLoop()), AGENT_ID)
         with pytest.raises(IncompatibleActionError) as info:
             runtime.prepare()
-        assert info.value.missing == {"done"} and info.value.provided == set()
+        assert info.value.missing == {"click"} and info.value.provided == set()
+        assert info.value.provider == "environment"
+
+    def test_the_loops_own_actions_are_its_whole_action_space(self) -> None:
+        """``done`` needs no environment: the Loop provides and executes ``loop.done``."""
+        runtime = AgentRuntime.for_agent(_envless(_FinishingAgent(), _EnvlessLoop()), AGENT_ID)
+        runtime.prepare()
+        assert [d.name for d in runtime.active_descriptors] == ["loop.done"]
+        assert runtime.action_space.action_bindings == {"done": "loop.done"}
 
     def test_setup_keys_without_an_environment_are_refused(self) -> None:
         runtime = AgentRuntime.for_agent(_envless(_TaskOnlyAgent(), _EnvlessLoop()), AGENT_ID)

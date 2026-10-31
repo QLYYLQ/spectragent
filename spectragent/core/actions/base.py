@@ -87,5 +87,11 @@ class BaseAction(Protocol):
         that only one domain could ever fill; a capability that truly
         needs per-call routing takes an opaque mapping keyed by
         ``capability_id``, never a bare id.
+
+        The one exception is an action that directs no environment: a
+        ``loop.*`` action (``loop.done``) is the Loop's, a
+        ``core/loops/actions.py::LoopActionBase``, and
+        ``AgentLoopBase.execute_action`` runs it with its params alone
+        (``docs/architecture_design.md`` §4.5, "Loop 提供的动作").
         """
         ...

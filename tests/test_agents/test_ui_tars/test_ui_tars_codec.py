@@ -261,10 +261,10 @@ class TestUnwritableActionsAreNamed:
                 "this run does not execute it (click() runs as browser.click_coordinate; "
                 "type() runs as browser.type_coordinate; scroll() runs as browser.scroll; "
                 "hotkey() runs as browser.send_keys; drag() runs as browser.drag; wait() runs "
-                "as browser.wait; finished() runs as browser.done)",
+                "as browser.wait; finished() runs as loop.done)",
             ),
             (
-                Action(name="browser.done", params={"extracted_content": "y", "success": True}),
+                Action(name="loop.done", params={"extracted_content": "y", "success": True}),
                 ["success"],
                 "finished(content='answer if applicable') has no argument that carries it",
             ),
@@ -315,7 +315,7 @@ class TestUnwritableActionsAreNamed:
     def test_no_text_and_empty_text_are_both_written_as_no_argument(self) -> None:
         codec = _codec()
         for content in (None, ""):
-            done = Action(name="browser.done", params={"extracted_content": content})
+            done = Action(name="loop.done", params={"extracted_content": content})
             assert codec.write_call(done) == "finished()"
 
     def test_no_reply_carries_no_action(self) -> None:

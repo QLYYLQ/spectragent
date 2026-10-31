@@ -153,7 +153,7 @@ def case():
     )
     return ReviewCase(
         task="Read the results",
-        next_actions=[Action(name="browser.done", params={"extracted_content": "four eggs"})],
+        next_actions=[Action(name="loop.done", params={"extracted_content": "four eggs"})],
         reference=obs,
         replay=obs.model_copy(deep=True),
         source_ref=ref,
@@ -537,8 +537,8 @@ def test_request_asks_three_independent_noul_questions_and_withholds_done_answer
     subject.machine_evidence["restoration"] = {
         "actions": [
             {
-                "recorded": {"name": "browser.done", "params": {"extracted_content": "four eggs"}},
-                "executed": {"name": "browser.done", "params": {"extracted_content": "four eggs"}},
+                "recorded": {"name": "loop.done", "params": {"extracted_content": "four eggs"}},
+                "executed": {"name": "loop.done", "params": {"extracted_content": "four eggs"}},
                 "result": {"success": True, "is_done": True, "extracted_content": "four eggs"},
             }
         ]
@@ -547,7 +547,7 @@ def test_request_asks_three_independent_noul_questions_and_withholds_done_answer
     assert tuple(withheld.questions) == QUESTION_IDS
     assert {q.type for q in withheld.questions.values()} == {"noul"}
     state = json.dumps(withheld.state, ensure_ascii=False)
-    assert "four eggs" not in state and "browser.done" in state
+    assert "four eggs" not in state and "loop.done" in state
     assert '"is_done": true' in state
     kept = make_reviewer(
         evidence={**reviewer_block()["evidence"], "done_answer": "keep"}
@@ -917,7 +917,7 @@ async def _recorded_pair(
             fragments.append(encode_fragment(0, captured))
         record = StepRecord(
             step=0,
-            actions=[Action(name="browser.done")],
+            actions=[Action(name="loop.done")],
             origin="restored" if name == "replay" else "policy",
             restoration=RestorationCheck(step=0, verdict="ok") if name == "replay" else None,
         )

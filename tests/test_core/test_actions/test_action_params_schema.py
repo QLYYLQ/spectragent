@@ -58,7 +58,7 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "coordinate_x": "int -- CSS px from the viewport's left edge",
         "coordinate_y": "int -- CSS px from the viewport's top edge",
     },
-    "browser.done": {
+    "loop.done": {
         "extracted_content": "str | None -- final answer / result text",
         # Reworded on purpose: the done action's ``success`` is the agent's
         # claim about the task, and the bare type told no model what it meant.
@@ -415,5 +415,5 @@ def test_a_point_declares_both_of_its_axes_once() -> None:
 @pytest.mark.parametrize("key", _KEYS)
 def test_only_done_carries_the_agents_claim_about_the_task(key: str) -> None:
     """``done``'s ``success`` is the agent's statement, not an instruction to the page."""
-    expected = ("success",) if key == "browser.done" else ()
+    expected = ("success",) if key == "loop.done" else ()
     assert claim_params(ActionRegistrar.get(key).Params) == expected

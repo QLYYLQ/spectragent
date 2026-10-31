@@ -201,8 +201,9 @@ class AmbiguousKeyError(Exception):
     """Raised when a capability-relative key has more than one provider.
 
     Two capabilities in one environment can legitimately offer the same
-    local id (``browser.screenshot`` and ``desktop.screenshot``), and a
-    declaration of ``"screenshot"`` then names no provider. Every way of
+    local id (``browser.screenshot`` and ``desktop.screenshot``), and so can
+    a capability and the Loop (``desktop.done`` and ``loop.done``); a
+    declaration of the bare local id then names no provider. Every way of
     guessing one — first in the wiring list, registration order, a
     capability-affinity table — resolves it by silently binding the run
     to a provider nobody chose, which is the failure mode this codebase
@@ -218,8 +219,8 @@ class AmbiguousKeyError(Exception):
         ordered = sorted(candidates)
         super().__init__(
             f"Capability-relative {self.kind} key {declared!r} is provided by "
-            f"more than one capability in this environment: {ordered}. "
-            f"A relative key resolves only when exactly one capability offers "
+            f"more than one provider in this run: {ordered}. "
+            f"A relative key resolves only when exactly one provider offers "
             f"it — picking a winner here would bind the run to a provider "
             f"nobody chose. Name the one you mean by writing its "
             f"fully-qualified key in __wiring__ (one of {ordered})."

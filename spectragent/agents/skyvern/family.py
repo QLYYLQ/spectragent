@@ -447,8 +447,9 @@ class SkyvernAgent(AgentBase):
                 "action_space": _render_action_list(space.descriptors),
                 # Named from the run's bindings, never written into the
                 # template: the run's ``done`` and ``click`` are whichever
-                # capability provides them. The relative names are the
-                # fallback only a fixture without them reaches.
+                # provider offers them (the Loop's ``loop.done``, a
+                # capability's click). The relative names are the fallback
+                # only a fixture without them reaches.
                 "done_action": executed_name(space, "done") or "done",
                 "example_action": executed_name(space, "click") or "click",
                 "max_actions_per_step": max_actions_per_step,

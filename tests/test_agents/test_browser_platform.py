@@ -27,7 +27,6 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.negotiation import IncompatibleFragmentError, extract_wiring
 from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.core.runtime import AgentRuntime
-from spectragent.schemas.action import ActionResult
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
@@ -222,12 +221,12 @@ async def test_composed_runtime_delivers_platform_to_the_model(
             elif skyvern:
                 assert output_format is not None
                 completion = output_format.model_validate(
-                    {"actions": [{"action": {"browser.done": {"extracted_content": "ok"}}}]}
+                    {"actions": [{"action": {"loop.done": {"extracted_content": "ok"}}}]}
                 )
             else:
                 assert output_format is not None
                 completion = output_format.model_validate(
-                    {"memory": "", "action": [{"browser.done": {"extracted_content": "ok"}}]}
+                    {"memory": "", "action": [{"loop.done": {"extracted_content": "ok"}}]}
                 )
             return ChatInvokeCompletion(completion=completion, usage=None)
 
@@ -266,8 +265,9 @@ async def test_composed_runtime_delivers_platform_to_the_model(
         return observation
 
     async def act(action, *args, **kwargs):
-        assert action.name == "browser.done"
-        return ActionResult(success=True, is_done=True, extracted_content="ok")
+        # The run's one action is the Loop's ``loop.done``, which never
+        # reaches the environment.
+        raise AssertionError(f"{action.name} reached the environment")
 
     monkeypatch.setattr(env, "setup", no_io)
     monkeypatch.setattr(env, "teardown", no_io)

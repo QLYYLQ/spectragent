@@ -75,7 +75,7 @@ def _descriptors(*keys: str) -> list[Any]:
 
 _BROWSER_USE_PREPARE: dict[str, Any] = {
     "task": "t",
-    "action_space": space_of(_descriptors("browser.navigate", "browser.done")),
+    "action_space": space_of(_descriptors("browser.navigate", "loop.done")),
     "execution_limits": ExecutionLimits(max_actions_per_step=3),
     "fragment_formats": dom_formats(),
 }
@@ -90,14 +90,14 @@ _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
     # its closed reply schema and refuses a run with no action.
     "skyvern.dom": {
         "task": "t",
-        "action_space": space_of(_descriptors("browser.click", "browser.done")),
+        "action_space": space_of(_descriptors("browser.click", "loop.done")),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),
         "fragment_formats": dom_formats(),
     },
     "skyvern.dom_vision": {
         "task": "t",
         "action_space": space_of(
-            _descriptors("browser.click", "browser.click_coordinate", "browser.done"),
+            _descriptors("browser.click", "browser.click_coordinate", "loop.done"),
             coordinate_space="screenshot_pixels",
         ),
         "execution_limits": ExecutionLimits(max_actions_per_step=3),

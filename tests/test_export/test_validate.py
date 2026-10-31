@@ -116,7 +116,7 @@ class TestCoordinates:
             check_coordinates(replace(item, sample=blind), "normalized_1000")
 
     def test_actions_without_points_are_not_checked(self, item: RenderedSample) -> None:
-        done = Action(name="browser.done", params={"extracted_content": "x"})
+        done = Action(name="loop.done", params={"extracted_content": "x"})
         plain = item.sample.model_copy(update={"actions": [done], "image": None})
         check_coordinates(replace(item, sample=plain, target_actions=(done,)), "normalized_1000")
 

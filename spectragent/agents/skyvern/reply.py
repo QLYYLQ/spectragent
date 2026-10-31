@@ -14,7 +14,7 @@ and a reply that hands an action a parameter it does not take is refused at
 validation, with one line naming the verb, rather than reaching the action.
 
 Finishing is not a separate field. ``done`` is a negotiated action like any
-other and is written as one (``{"browser.done": {"extracted_content": ...,
+other and is written as one (``{"loop.done": {"extracted_content": ...,
 "success": ...}}``), so its parameters are the action's own.
 """
 

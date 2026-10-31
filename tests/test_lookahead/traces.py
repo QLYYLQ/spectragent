@@ -179,7 +179,7 @@ def wait() -> tuple[Action, ActionResult]:
 
 def done(answer: str) -> tuple[Action, ActionResult]:
     return (
-        Action(name="browser.done", params={"extracted_content": answer}),
+        Action(name="loop.done", params={"extracted_content": answer}),
         ActionResult(success=True, is_done=True, extracted_content=answer),
     )
 

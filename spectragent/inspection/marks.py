@@ -70,9 +70,10 @@ NAME_CHARS = 30
 TYPED_CHARS = 40
 ANSWER_CHARS = 80
 
-#: Each browser action as the verb a person reads, by its fully-qualified name:
-#: the head of the action's line (:func:`action_text`) and the viewer's step
-#: label (:func:`action_verb`). An action not here keeps its recorded name.
+#: Each action as the verb a person reads, by its fully-qualified name: the
+#: browser's actions and the Loop's ``loop.done``. The head of the action's line
+#: (:func:`action_text`) and the viewer's step label (:func:`action_verb`). An
+#: action not here keeps its recorded name.
 ACTION_VERBS: Mapping[str, str] = MappingProxyType(
     {
         "browser.click": "点击",
@@ -83,7 +84,6 @@ ACTION_VERBS: Mapping[str, str] = MappingProxyType(
         "browser.scroll": "滚动",
         "browser.drag": "拖动",
         "browser.wait": "等待",
-        "browser.done": "完成",
         "browser.navigate": "打开网址",
         "browser.go_back": "后退",
         "browser.go_forward": "前进",
@@ -91,6 +91,7 @@ ACTION_VERBS: Mapping[str, str] = MappingProxyType(
         "browser.select_dropdown": "在下拉框中选择",
         "browser.extract_content": "读取页面文字",
         "browser.screenshot": "截图",
+        "loop.done": "完成",
     }
 )
 
@@ -576,7 +577,7 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
         if isinstance(seconds, int | float) and not isinstance(seconds, bool):
             return _Css(None, f"{verb} {_seconds(float(seconds))} 秒")
         return _Css(None, verb)
-    if name == "browser.done":
+    if name == "loop.done":
         answer = params.get("extracted_content")
         head = "结束（报告没有完成任务）" if params.get("success") is False else "完成并回答"
         if isinstance(answer, str) and answer.strip():

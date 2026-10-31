@@ -91,7 +91,7 @@ async def test_restoration_and_checkpoint_capture_are_timed_once(
     records = trace.step_records
     assert [(record.origin, record.duration_ms) for record in records] == [
         ("restored", 5000),  # actual observation and action
-        ("policy", 10000),  # checkpoint observation + model + action
+        ("policy", 7000),  # checkpoint observation + model; done is the Loop's, no env call
         ("terminal", 2000),
     ]
     assert all((trace.recording_timing(record.step) or 0) >= 7000 for record in records)

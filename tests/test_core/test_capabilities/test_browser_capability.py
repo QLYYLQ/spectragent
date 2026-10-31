@@ -83,13 +83,12 @@ class TestActionDescriptors:
             "browser.type",
             "browser.scroll",
             "browser.navigate",
-            "browser.done",
         } <= names
 
-    def test_done_action_has_extracted_content_param(self) -> None:
-        cap = BrowserCapability()
-        done = next(d for d in cap.get_action_descriptors() if d.name == "browser.done")
-        assert "extracted_content" in done.params
+    def test_ending_the_run_is_not_a_browser_action(self) -> None:
+        """``done`` directs no environment: the Loop provides it, as ``loop.done`` (arch §4.5)."""
+        names = {d.name for d in BrowserCapability().get_action_descriptors()}
+        assert not any(name.rsplit(".", 1)[-1] == "done" for name in names)
 
     def test_descriptors_are_a_copy(self) -> None:
         # Mutating the returned list must not affect future calls.
@@ -176,7 +175,6 @@ class TestActionWiringAndProvidedActions:
                 "browser.select_dropdown",
                 "browser.extract_content",
                 "browser.wait",
-                "browser.done",
             }
         )
 
@@ -192,7 +190,7 @@ class TestDefaultActionInstantiation:
 
     def test_default_actions_instantiated_when_list_omitted(self) -> None:
         cap = BrowserCapability()
-        assert len(cap._actions_by_name) == 16
+        assert len(cap._actions_by_name) == 15
         assert set(cap._actions_by_name) == cap.provided_actions
 
     def test_per_action_config_lands_on_the_instance(self) -> None:
@@ -216,7 +214,7 @@ class TestDefaultActionInstantiation:
         cap.actions = []  # type: ignore[misc]
         assert cap._actions_by_name == {}
         cap.actions = None  # type: ignore[misc]
-        assert len(cap._actions_by_name) == 16
+        assert len(cap._actions_by_name) == 15
 
     def test_action_the_capability_does_not_provide_raises(self) -> None:
         import pytest
@@ -262,24 +260,6 @@ class TestExecuteActionDispatch:
         )
         assert result.success is False
         assert "Unknown action" in (result.error or "")
-
-    def test_done_flows_through_capability(self) -> None:
-        cap = BrowserCapability()
-        cap._default_session_id = "sid_x"
-        cap._scopes["sid_x"] = object()  # type: ignore[assignment]
-        cap._selector_maps["sid_x"] = {}
-
-        import asyncio
-
-        from spectragent.schemas.action import Action
-
-        result = asyncio.run(
-            cap.execute_action(
-                Action(name="browser.done", params={"extracted_content": "answer42"}),
-            )
-        )
-        assert result.is_done is True
-        assert result.extracted_content == "answer42"
 
 
 # ─── Backend IoC closure ──────────────────────────────────────────────
@@ -889,7 +869,7 @@ class TestFailedSetupReleasesResources:
 
         class _Agent:
             __execution_limit_fields__ = frozenset()
-            __wiring__ = {"action": ("action", ["browser.done"])}
+            __wiring__ = {"action": ("action", ["loop.done"])}
 
             def prepare(self, *, task, action_space):
                 return []
@@ -898,7 +878,7 @@ class TestFailedSetupReleasesResources:
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
-                return [Action(name="browser.done")]
+                return [Action(name="loop.done")]
 
             def get_react_output_model(self):
                 return None

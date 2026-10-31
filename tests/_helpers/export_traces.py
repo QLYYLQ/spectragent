@@ -296,7 +296,7 @@ UI_TARS_NEGOTIATION = TraceNegotiation(
     loop_sourced_fragments=["loop.step_info", "loop.task"],
     active_actions=[
         "browser.click_coordinate",
-        "browser.done",
+        "loop.done",
         "browser.drag",
         "browser.scroll",
         "browser.send_keys",
@@ -327,7 +327,7 @@ BROWSER_USE_NEGOTIATION = TraceNegotiation(
     loop_sourced_fragments=["loop.step_info", "loop.task"],
     active_actions=[
         "browser.click",
-        "browser.done",
+        "loop.done",
         "browser.navigate",
         "browser.scroll",
         "browser.type",
@@ -341,8 +341,8 @@ def click_at(x: int, y: int) -> Action:
 
 
 def finished(text: str = "done") -> Action:
-    """A recorded ``browser.done`` (UI-TARS ``finished``, which makes no claim about the task)."""
-    return Action(name="browser.done", params={"extracted_content": text})
+    """A recorded ``loop.done`` (UI-TARS ``finished``, which makes no claim about the task)."""
+    return Action(name="loop.done", params={"extracted_content": text})
 
 
 def ui_tars_step(

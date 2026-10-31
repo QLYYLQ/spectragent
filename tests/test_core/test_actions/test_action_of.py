@@ -35,11 +35,9 @@ def test_a_declined_optional_param_is_left_out() -> None:
 
 def test_a_required_null_is_kept_and_passes_the_params_check() -> None:
     """``done``'s ``extracted_content`` is required and nullable: null is the answer."""
-    space, member = _member(
-        ("done",), {"browser.done": {"extracted_content": None, "success": None}}
-    )
+    space, member = _member(("done",), {"loop.done": {"extracted_content": None, "success": None}})
     action = action_of(member)
-    assert action == Action(name="browser.done", params={"extracted_content": None})
+    assert action == Action(name="loop.done", params={"extracted_content": None})
     assert params_refusal(space, action) is None
 
 

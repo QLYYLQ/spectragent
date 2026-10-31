@@ -824,8 +824,10 @@ class TestRecordedReplies:
 
         out = await run_branch(tmp_path, source, 1, ["done fine"], action_filter=only_done)
         assert out.result is not None and out.result.agent_done.value == "done"
+        assert out.result.answer == "fine"
         assert _origins(out.run_dir) == [(0, "restored"), (1, "policy"), (2, "terminal")]
-        assert out.cap.log == [f"{DONE}({{'answer': 'fine'}})"]
+        # The Loop executed ``loop.done``; the capability executed nothing.
+        assert out.cap.log == []
         record = RunTrace(out.run_dir).step(0)  # type: ignore[arg-type]
         assert record is not None and record.restoration is not None
         assert record.restoration.verdict == "ok"
@@ -890,7 +892,9 @@ class TestRecordedReplies:
             as_chat(RunTrace(source).llm_messages(3)[0]).messages
         )
         assert out.result is not None and out.result.agent_done.value == "done"
-        assert DONE in out.cap.log[-1]
+        assert out.result.answer == "ok"
+        ended = RunTrace(out.run_dir).step(3)  # type: ignore[arg-type]
+        assert ended is not None and [a.name for a in ended.actions] == [DONE]
 
 
 async def test_warn_restoration_does_not_pair_a_later_result_with_a_failed_attempt(

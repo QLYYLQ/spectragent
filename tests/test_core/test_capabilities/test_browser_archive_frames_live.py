@@ -12,8 +12,10 @@ button paints the whole page at once. A loopback scripted model
    agent observed it, and the wait's ``before_action`` frame shows the painted
    page, an intermediate screen no observation captures;
 2. at once: wait — the ``after_observation`` frame is superseded by the action;
-3. at once: finished — UI-TARS's ``finished()`` runs ``browser.done``, an
-   action like any other, so it gets its ``before_action`` frame too.
+3. at once: finished — UI-TARS's ``finished()`` is the Loop's ``loop.done``,
+   which never reaches the browser: it has no ``before_action`` frame and
+   supersedes nothing, so the collection waits for the ``after_observation``
+   frame and captures it.
 
 Every frame has the observation screenshot's pixel size, and everything is
 read back through the pure readers over the committed trace.
@@ -203,12 +205,13 @@ async def test_a_recorded_run_keeps_the_screens_between_actions(
     ], second
     assert _probe(_image(read_frame_image(trace, 1, second[1][1]))) == FRAMES_PAINTED
 
-    # Step 2: UI-TARS's finished() is an action too (browser.done): it gets its frame.
+    # Step 2: UI-TARS's finished() is the Loop's loop.done, which never reaches
+    # the browser — no frame of its own, and the after-observation frame the
+    # collection waited for (§4.14 "时序与作废规则").
     assert [(step, f.kind, f.action, f.outcome) for step, f in third] == [
-        (2, "after_observation", None, "superseded"),
-        (2, "before_action", "browser.done", "captured"),
+        (2, "after_observation", None, "captured"),
     ], third
-    assert [f.kind for f in read_frames(trace, 2)] == ["after_observation", "before_action"]
+    assert [f.kind for f in read_frames(trace, 2)] == ["after_observation"]
 
     # Each before_action entry says when the action was let go; nothing else has one.
     for _, frame in everything:

@@ -54,7 +54,7 @@ _ACTIONS = (
     "browser.send_keys",
     "browser.drag",
     "browser.wait",
-    "browser.done",
+    "loop.done",
 )
 
 
@@ -171,7 +171,7 @@ class TestEveryVerb:
             (Action(name="browser.wait", params={}), {}),
             # No claim about the task: ``finished`` cannot state one, and reads back with none.
             (
-                Action(name="browser.done", params={"extracted_content": "42"}),
+                Action(name="loop.done", params={"extracted_content": "42"}),
                 {"extracted_content": "42"},
             ),
         ]
@@ -244,7 +244,7 @@ class TestTheWrittenText:
         text = student.write([action])
         assert text.count("\n") == 0, "a value must never start a new line"
         assert _round_trip(student, action).params["text"] == content
-        done = Action(name="browser.done", params={"extracted_content": content})
+        done = Action(name="loop.done", params={"extracted_content": content})
         assert _round_trip(student, done).params["extracted_content"] == content
 
     async def test_an_action_label_inside_a_thought_stays_a_thought(self) -> None:
@@ -277,7 +277,7 @@ class TestTheWrittenText:
         """Both read back as ``''``: one text for one reading keeps the fixed point."""
         student = await _student()
         for content in (None, ""):
-            action = Action(name="browser.done", params={"extracted_content": content})
+            action = Action(name="loop.done", params={"extracted_content": content})
             assert student.write([action]) == "Action: finished()"
             assert _round_trip(student, action).params["extracted_content"] == ""
 
@@ -307,8 +307,8 @@ class TestUnrepresentable:
             ("browser.wait", {"seconds": 2.0}, ("seconds",)),
             # Either claim about the task: ``finished()`` reads back with none, so
             # writing it as ``finished`` would train a reply that claims something else.
-            ("browser.done", {"extracted_content": "x", "success": False}, ("success",)),
-            ("browser.done", {"extracted_content": "x", "success": True}, ("success",)),
+            ("loop.done", {"extracted_content": "x", "success": False}, ("success",)),
+            ("loop.done", {"extracted_content": "x", "success": True}, ("success",)),
             ("browser.send_keys", {"keys": "ctrl c"}, ("keys",)),
             ("browser.send_keys", {"keys": ""}, ("keys",)),
             (
@@ -355,7 +355,7 @@ class TestUnrepresentable:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         student = await _prepared(
             agent,
-            ("browser.click_coordinate", "browser.type_coordinate", "browser.done"),
+            ("browser.click_coordinate", "browser.type_coordinate", "loop.done"),
             _observation(1),
         )
         with pytest.raises(UnrepresentableActionError, match="does not execute it"):

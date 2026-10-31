@@ -60,7 +60,8 @@ from tests._helpers.assembly import make_env, make_run
 CAP_ID = "branchfake"
 PAGE_KEY = f"{CAP_ID}.page"
 CLICK = f"{CAP_ID}.click"
-DONE = f"{CAP_ID}.done"
+#: How a run of the fake agent ends: the Loop's own action, never the capability's.
+DONE = "loop.done"
 FAKE_AGENT_ID = "branchfake_agent"
 TASK = "buy the blue kettle"
 
@@ -91,13 +92,13 @@ class BranchFakeCap(CapabilityBase):
     far), ``cycle``, ``id_offset`` (element ids are ``offset + 0..2``),
     ``urls`` (cycle → forced URL, to make a restored step diverge),
     ``veto_act_at`` (a ``RunAbort`` raised by the click on this position),
-    ``log`` (every action executed), ``setups``.
+    ``log`` (every action it executed: the Loop executes ``done``), ``setups``.
     """
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = CAP_ID
     __wiring__ = {
-        "action": ("action", [CLICK, DONE]),
+        "action": ("action", [CLICK]),
         "observation": ("observation", [PAGE_KEY]),
     }
 
@@ -140,15 +141,10 @@ class BranchFakeCap(CapabilityBase):
     def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
         return [
             ActionDescriptor(name=CLICK, description="Click an element", params={"index": "int"}),
-            ActionDescriptor(name=DONE, description="Finish", params={"answer": "str"}),
         ]
 
     async def execute_action(self, action: Action) -> ActionResult:
         self.log.append(f"{action.name}({action.params})")
-        if action.name == DONE:
-            return ActionResult(
-                success=True, is_done=True, extracted_content=str(action.params.get("answer", ""))
-            )
         index = action.params.get("index")
         position = index - self.id_offset if isinstance(index, int) else None
         if position is None or not 0 <= position < 3:
@@ -291,7 +287,7 @@ class BranchFakeAgent:
         if verb == "click" and args and all(arg.isdigit() for arg in args):
             actions = [Action(name="click", params={"index": int(arg)}) for arg in args]
         elif verb == "done":
-            actions = [Action(name="done", params={"answer": " ".join(args)})]
+            actions = [Action(name="done", params={"extracted_content": " ".join(args)})]
         else:
             raise ParseError(f"cannot read {text!r}")
         self.parsed_log.append(text)

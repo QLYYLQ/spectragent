@@ -29,7 +29,6 @@ _EXPECTED_BROWSER_ACTIONS = {
     "browser.switch_tab",
     "browser.select_dropdown",
     "browser.extract_content",
-    "browser.done",
 }
 
 

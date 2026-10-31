@@ -38,6 +38,12 @@ from spectragent.schemas.action import ActionDescriptor, ActionEffect
 #: registration, routing, descriptors, the trace.
 ACTION_KEY_SEPARATOR = "."
 
+#: The source segment of the actions a Loop provides and executes itself
+#: (``loop.done``), never a capability. The guard routes a name with it to
+#: the Loop and every other name to the environment
+#: (``docs/architecture_design.md`` §4.5, "Loop 提供的动作").
+LOOP_ACTION_SOURCE = "loop"
+
 ActionRegistrar = create_registrar(
     "action",
     BaseAction,
@@ -220,6 +226,16 @@ def registered_params(name: str) -> type[BaseModel] | None:
     """
     params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
     return params if isinstance(params, type) and issubclass(params, BaseModel) else None
+
+
+def is_loop_action(name: str) -> bool:
+    """Whether the fully-qualified *name* is an action a Loop provides and executes (``loop.*``).
+
+    The prefix names who executes an action, so this reads the name alone:
+    ``build_guarded_act`` hands such an action to the Loop, never to
+    ``env.act``.
+    """
+    return name.startswith(LOOP_ACTION_SOURCE + ACTION_KEY_SEPARATOR)
 
 
 def is_wait_action(name: str) -> bool:

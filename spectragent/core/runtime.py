@@ -60,6 +60,7 @@ from spectragent.core.negotiation import (
     negotiate_observation,
     quoted_fragment_formats,
 )
+from spectragent.core.negotiation.action import loop_actions
 from spectragent.core.step_recorder import StepRecorder, StepSink
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action_space import ActionSpace
@@ -76,7 +77,7 @@ _DEFAULT_HOOK_PRIORITY = 100
 
 
 async def _no_environment_act(action: Any, **_kwargs: Any) -> Any:
-    """The action executor of an env-less run: never reached, its guard advertises nothing."""
+    """The environment's executor in an env-less run: never reached, it offers no environment action."""
     raise RuntimeError(f"this run has no environment to execute {action!r} in")
 
 
@@ -414,8 +415,9 @@ class AgentRuntime:
         # (docs/architecture_design.md §4.4 "观测格式由提供方描述").
         self._fragment_formats = quoted_fragment_formats(agent, negotiated_obs, env)
 
-        # Step 2.5: Action two-party negotiation
-        negotiated_actions = negotiate_action(agent, env)
+        # Step 2.5: Action negotiation: the environment's actions and the
+        # Loop's own (``loop.done``) on offer, the agent's demand to meet.
+        negotiated_actions = negotiate_action(agent, loop, env)
         self._negotiated_actions = negotiated_actions
 
         # Step 2.75: Memory protocol negotiation (Loop ⊆ Memory)
@@ -504,22 +506,31 @@ class AgentRuntime:
         # same ``**context`` channel a per-task tool schema rides
         # (architecture_design.md §4.9); the negotiation rules are
         # untouched, and a capability that ignores ``fragments`` behaves
-        # exactly as before. An env-less run has no action space: the guard
-        # refuses every action, so its executor is never reached.
+        # exactly as before. The Loop's own actions (``loop.done``) follow the
+        # environment's, and the guard hands them to the Loop, never to
+        # ``env.act``. An env-less run's action space is the Loop's alone, so
+        # its environment executor is never reached.
+        active_actions = negotiated_actions.active_actions
+        fragments = negotiated_obs.active_fragments
         if env is None:
             narrowed_descriptors: list[Any] = []
             execute_action: Any = _no_environment_act
         else:
             narrowed_descriptors = wrapped_env.get_action_space(
-                active_actions=negotiated_actions.active_actions,
-                fragments=negotiated_obs.active_fragments,
+                active_actions=active_actions, fragments=fragments
             )
             execute_action = wrapped_env.act
+        loop_descriptors = (
+            loop.get_action_space(active_actions=active_actions, fragments=fragments)
+            if active_actions & loop_actions(loop)
+            else []
+        )
         action_space, act_fn = build_guarded_act(
             execute_action,
-            narrowed_descriptors,
+            [*narrowed_descriptors, *loop_descriptors],
             action_filter,
             bindings=negotiated_actions.action_bindings,
+            loop_act=loop.execute_action if loop_descriptors else None,
         )
         # Step 4b: The run's coordinate frame. An agent whose model writes
         # points on a grid of its own declares which (its

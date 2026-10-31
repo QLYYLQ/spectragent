@@ -42,7 +42,7 @@ SCRIPTS: dict[AgentKind, list[Any]] = {
             "action": [{"browser.click": {"index": 102}}, {"browser.click": {"index": 101}}],
         },
         {"memory": "blue", "action": [{"browser.click": {"index": 101}}]},
-        {"memory": "done", "action": [{"browser.done": {"extracted_content": "bought"}}]},
+        {"memory": "done", "action": [{"loop.done": {"extracted_content": "bought"}}]},
     ],
     "skyvern": [
         {
@@ -52,7 +52,7 @@ SCRIPTS: dict[AgentKind, list[Any]] = {
             ]
         },
         {"actions": [{"reasoning": "", "action": {"browser.click": {"index": 101}}}]},
-        {"actions": [{"reasoning": "", "action": {"browser.done": {"extracted_content": "b"}}}]},
+        {"actions": [{"reasoning": "", "action": {"loop.done": {"extracted_content": "b"}}}]},
     ],
     "ui_tars": [
         "Thought: two.\nAction: click(point='(30,10)')\nAction: click(point='(10,20)')",

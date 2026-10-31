@@ -11,7 +11,6 @@ from spectragent.core.capabilities.browser.actions.click import ClickAction
 from spectragent.core.capabilities.browser.actions.click_coordinate import (
     ClickCoordinateAction,
 )
-from spectragent.core.capabilities.browser.actions.done import DoneAction
 from spectragent.core.capabilities.browser.actions.drag import DragAction
 from spectragent.core.capabilities.browser.actions.extract_content import (
     ExtractContentAction,
@@ -35,7 +34,6 @@ from spectragent.core.capabilities.browser.actions.wait import WaitAction
 __all__ = [
     "ClickAction",
     "ClickCoordinateAction",
-    "DoneAction",
     "DragAction",
     "ExtractContentAction",
     "GoBackAction",
