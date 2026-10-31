@@ -861,9 +861,15 @@ class AgentRuntime:
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `writing`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
-**Loop 结束之后、teardown 之前的判分时间点（用户 2026-10-31 的裁决）。** 有的基准只能对着活体环境判分：AndroidWorld 读设备上的数据库、文件与设置，必须在 agent 停下之后、设备拆掉之前的一个确定时刻跑。所以 Runtime 在 Loop 结束（返回或抛出）之后有一个明确的判分时间点，环境还活着的每条结束路径都经过它：完成、步数用完、超时、Loop 抛错、否决、外部取消；setup 失败的 run 环境没有起来，不经过。判分要进 trace，而 trace 在 `on_run_end` 里收尾，所以这个时间点也在 `on_run_end` 之前。在这里，实现了任务裁判的 capability（Android 的任务裁判，§11.2）读出活体判分；判分作为带来源的证据写进 trace，评测器从 trace 读它（§4.11），它不改 run 的结局（`agent_done`）。Runtime 不认识 capability，经 environment 到达任务裁判；这是一次公开的方法调用，不是旁路（§4.6 "与 emitter.dispatch() 的权衡"）。
+**Loop 结束之后、teardown 之前的判分时间点（用户 2026-10-31 的裁决）。** 有的基准只能对着活体环境判分：AndroidWorld 读设备上的数据库、文件与设置，必须在 agent 停下之后、设备拆掉之前的一个确定时刻跑。所以 Runtime 在 Loop 结束（返回或抛出）之后、`_finish` 之前，调一次织过的环境的 `read_oracle_scores(timeout_s=...)`（§4.3）：判分要进 trace，trace 在 `on_run_end` 里收尾，teardown 又在 `on_run_end` 之后。环境还活着的结束路径都经过它：完成、步数用完、超时、Loop 抛错、否决；环境在 run 里已经坏了也照样调，裁判读不出来就记成没判。setup 失败的 run 走不到 Loop，不判。Runtime 不认识 capability，经 environment 到达裁判；这是一次公开的方法调用，不是旁路（§4.6 "与 emitter.dispatch() 的权衡"）。
 
-它不借 `collect_archive` 的时机，原因有两条：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，teardown 在它之后，§4.9 "最后一次收集"）；收集从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻驱动环境。方法的名字与签名、判分在 trace 里的记录形式、读判分的时限与失败怎样记、外部取消时怎样保证取消优先，在 Android 阶段 1（最小可跑，§11.2）实现时定，届时补进本节与 §4.3、§5.3。
+- **谁判**：实现了可选 Protocol `TaskOracle`（§4.9）的 capability，Android 的任务裁判就是它（§11.2）。environment 并发问每一个，各限时 `timeout_s`；本 run 没有裁判的 capability 返回 `None`，不进记录。
+- **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。
+- **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛。被取消的 run 没有判分记录，评测器记为没判。
+- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
+- **记录**：TraceWriter 经 AOP 拦截 `read_oracle_scores`（`after`，role `env`），把交回的列表写成 §5.3 的判分记录（`oracle_scores.json`）；评测器从这份记录读判分（§4.11），从不碰活体环境。
+
+它不借 `collect_archive` 的时机：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，§4.9 "最后一次收集"），收集也从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻对着环境跑。
 
 **收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（某个 hook 的 `on_run_end` 抛错；`TraceWriter` 自己收尾时从不抛错，它把写不进去的东西记进 trace 的 `incomplete_reason`，§4.6），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。被否决的 run 同理（下一段）。其余路径（完成、超时、其他异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
 
@@ -991,6 +997,9 @@ class Environment(Protocol):
     # setup 之前的检查 — prepare() 调：setup 会拒绝的，现在就拒绝（下文）；不获取任何资源
     def check_setup(self, context: Mapping[str, Any] | None = None, *,
                     negotiation: Any = None, archivers: Sequence[ArchiverBase] = ()) -> None: ...
+
+    # 判分（§4.2）— Runtime 在 Loop 结束之后、on_run_end 之前调一次；扇出给实现了 TaskOracle 的 capability
+    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]: ...
 
     # 生命周期 — setup 的 context 按 capability 路由，不广播（capability 自己内部调 backend.open/close）；
     # teardown 在 setup 半途失败、或根本没有 setup 之后调用也必须安全
@@ -1155,6 +1164,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - `verify_restoration(recorded, restored) -> list[RestorationEvidence]`：按 capability 顺序扇出到每个实现了 `RestorationSupport` 的 capability，各交回一份证据（带自己的 `capability_id`）；没有任何实现者时是空列表，即"没有可校验的"。`recorded` 与 `restored` 都是本次协商的整个 `NegotiatedObservation`，capability 按自己 fragment 的本地名读它要的那几个（协商保证本地名不撞）。
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
 - `align_next_observation(recorded, *, media_seek_timeout_s, media_end_lead_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
+
+**判分的路由（用户 2026-10-31 的裁决，§4.2）**（`core/environments/_registrar.py`）：`read_oracle_scores(*, timeout_s)` 给每个实现了 §4.9 `TaskOracle` 的 capability 一个任务，并发跑，每个限时 `timeout_s`；返回 `None` 的（本 run 没有裁判）不进列表，超时或抛 `Exception` 的换成一份 `status: not_scored` 的 `OracleScore`（`reason` 是 `timeout` 或 `error`，`detail` 是诊断）；全部跑完才按 capability 顺序返回，从不抛 `Exception`。`CancelledError` 原样传播：先取消还没结束的裁判、等它们收场，再重抛，不留孤儿任务（与 `collect_archive` 同一做法）。没有实现者时返回空列表。Protocol 上有这个方法，Runtime 对每个走到判分时间点的 run 都调它，所以结构化实现 `Environment` 的环境也要实现它。
 
 **fragment 的格式说明**（`core/environments/_registrar.py`，§4.4 "观测格式由提供方描述"）：`fragment_formats() -> dict[str, str]`：按 capability 顺序合并每个实现了 §4.9 `FragmentFormats` 的 capability 交出的说明（全限定键 → 文字）；没实现的 capability 什么都不描述。capability 只为自己的 fragment 说话：交出的键不在 `<capability_id>.` 前缀下时抛 `ValueError`，不让它替别的 capability 的 fragment 写说明。只读配置：`AgentRuntime.prepare()` 第 2b 步在 setup 之前调它，而且只在 Agent 引用的 fragment 这个 run 确实激活了时才调。
 
@@ -2030,7 +2041,7 @@ loop.weave(wrapped_agent, env=wrapped_env, llm=wrapped_llm,
 
 | hook_id | 状态 | blocking | `__intercepts__` | 职责 |
 |---------|------|----------|-------------------|------|
-| `trace_writer` | ✅ | True | `around_ainvoke(llm)`、`around_act(env，仅有环境时)`、`around_execute_step(loop)`、`around_observe_terminal(loop)`、`around_record_step(loop)` | 单一调用账与执行计时，含每个动作的起止时间；步骤交接时封存所选事实和原始 env 的归档批次，有界后台任务按原身份提交/重试。收尾只把未交出步骤的调用与真正尾部证据写为 trailing；错误进入记录健康，不控制执行。 |
+| `trace_writer` | ✅ | True | `around_ainvoke(llm)`、`around_act(env，仅有环境时)`、`after_read_oracle_scores(env，仅有环境时)`、`around_execute_step(loop)`、`around_observe_terminal(loop)`、`around_record_step(loop)` | 单一调用账与执行计时，含每个动作的起止时间；步骤交接时封存所选事实和原始 env 的归档批次，有界后台任务按原身份提交/重试；判分时间点交回的判分写成判分记录（§4.2、§5.3）。收尾只把未交出步骤的调用与真正尾部证据写为 trailing；错误进入记录健康，不控制执行。 |
 | `prompt_contribution` | ✅ | True | `around_build_react_prompt(agent)` | 以显式步骤/阶段生成并传递贡献，Agent 负责消息位置；helper 调用独立归因，由 Runtime 统一收尾。 |
 | `omit_source_replies` | ✅ | True | `around_build_restored_history(agent)` | restored 历史的对照臂：交给 Agent 的恢复历史不带源回复（thought），动作与实际恢复执行照常；trace 的 `source_history` 不变（§4.1）。 |
 | `live_monitor` | 本地终端监控 | True | `around_observe(env)`, `around_act(env)`, `around_ainvoke(llm)`，步骤记录与 lifecycle | 只在内存中捕获开始、完成、失败和取消；界面独立刷新，不在 handler 中做文件、网络或终端 I/O。无环境时不声明 env 拦截。见 §4.17。 |
@@ -2453,6 +2464,20 @@ class SetupCheck(Protocol):
 - Browser 的实现（`BrowserCapability.check_setup`）：profile 的 watchdog 解析不了的已协商 fragment（profile 当场重新解析），任务的起始页不是一个 http(s) URL（`start_page.py::start_page_problem`，§4.10 "起始页"），§4.14 "协作检查一览"的全部行（`cdp_url` 取路由来的 context，没有再取旋钮），回放时源 run 与本配置的一致性（只读源 run 的环境指纹）；一次报全，合成一个 `BrowserCooperationError`。`replay_archive` 指向的不是已提交的 run 目录时抛 `ArchiveOpenError`。
 - 与 `RestorationSupport`、`CaptureCheck` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。
 
+**活体判分也是单独的、可选的 Protocol**（`core/capabilities/base.py`，用户 2026-10-31 的裁决，§4.2 "判分时间点"）：
+
+```python
+@runtime_checkable
+class TaskOracle(Protocol):
+    # Loop 结束之后、on_run_end 与 teardown 之前，对着活体环境读出本任务的判分。
+    # 只判不改：不执行动作、不拆环境。本 run 没有裁判时返回 None；时限由 environment 执行
+    async def read_score(self) -> OracleScore | None: ...
+```
+
+- 为什么需要：有的基准只能对着活体环境判分（AndroidWorld 读设备上的数据库、文件与设置），只有 capability 够得着那个环境。判分作为证据进 trace（§5.3 的判分记录），评测器读它，不另开"活体评测器"。
+- 判了的 `OracleScore` 由裁判自己填（分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。
+- 与 `SetupCheck`、`RestorationAlignment` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。Android 的任务裁判实现它（§11.2）。
+
 #### 4.9.x Capability ↔ Backend 生命周期
 
 **设计决策**：`backend` 是 capability 的执行层配置——回答"这个 capability 通过什么 backend 提供 transport 端点"。Browser 选 `local_chrome` / `lexmount` / `skyvern` 等；Docker 选 `local_docker` / `ssh_docker`；Desktop VM 选不同的 VNC 后端。Backend 通过与 `agent.llm` / `env.capabilities` 完全同构的 IoC 路径注入。
@@ -2799,7 +2824,7 @@ class BaseEvaluator(Protocol):
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
 每个 evaluator（包括仅结构化满足 Protocol 的实现）公开 `config_signature()` 与稳定的 `verdict_slug`：无旋钮时签名显式返回 `{}`，有旋钮时写出影响判定的可复现设置，slug 随之变化。Runner 不猜测缺失身份，也不把读取签名的异常吞掉后记成空签名。落盘的 `EvalResult` 只接受当前 `schema_version: "2.1"`；构造新判定时 `verdict_source` 默认 `graded`，读回已存判定时该字段与 `evaluator_config` 必须实际存在，旧数据不能被默认值伪装成已评分。
 
-**活体环境的判分也从 trace 读（用户 2026-10-31 的裁决）。** 只能对着活体环境判的基准（AndroidWorld 读设备上的数据库、文件与设置）不开"活体评测器"这个例外，那会违反"录一次、评多次"：capability 的任务裁判在 Runtime 的判分时间点（§4.2）读出判分，作为带来源的证据写进 trace，评测器读这份证据，不碰活体环境。Android 阶段 3 加上状态转储归档器之后，一部分判分可以离线重算，用来对变体重评（换部分分规则、换比较字段）。
+**活体环境的判分也从 trace 读（用户 2026-10-31 的裁决）。** 只能对着活体环境判的基准（AndroidWorld 读设备上的数据库、文件与设置）不开"活体评测器"这个例外，那会违反"录一次、评多次"：capability 的任务裁判在 Runtime 的判分时间点（§4.2）读出判分，写成带来源的判分记录（§5.3），评测器经 `RunTrace.oracle_scores()` 读它，不碰活体环境；"没判"的记录与没有记录都不算判错。Android 阶段 3 加上状态转储归档器之后，一部分判分可以离线重算，用来对变体重评（换部分分规则、换比较字段）。
 
 **现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
@@ -4533,6 +4558,7 @@ traces/
       ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 7；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
+      ├── oracle_scores.json            # 判分记录（list[OracleScore]，§4.2）；没有任务裁判或没走到判分时间点就没有
       │
       ├── steps/
       │   ├── 000.json                  # StepRecord
@@ -4589,6 +4615,7 @@ traces/
 | 归档文件（trailing） | `env/trailing/{n:02d}/{archiver_id}/{name}` | `archive_trailing_path(n, archiver_id, name)`；`n` 同上，是该条目在 `manifest.trailing` 里的位置 |
 | 内容寻址的归档文件 | `env/blobs/sha256/{sha256[:2]}/{sha256[2:]}` | `archive_blob_path(sha256)`；run 内只写一次，`sha256` 是 `data` 的摘要 |
 | run 记录 | `env/run.{capability_id}.json`（第 0 版）、`env/run.{capability_id}.{k}.json`（第 k 版，k ≥ 1） | `archive_run_path(capability_id, version)`；JSON |
+| 判分记录 | `oracle_scores.json` | `list[OracleScore]`；Loop 结束之后、`result.json` 之前写一次（§4.2） |
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
@@ -4647,6 +4674,8 @@ traces/
 
 `complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
+**判分记录（`oracle_scores.json`，用户 2026-10-31 的裁决）。** TraceWriter 收到 `read_oracle_scores` 的返回（§4.2）就交给持久化，在 `on_run_end` 写 `result.json` 之前提交，manifest 的 `oracle_scores` 指向它；空列表不写文件。它不受 RecordingPlan 的通道选择影响：它很小，评测离不开它。写不进去是一条记录问题（`incomplete_reason` 点名 `oracle_scores`），与 agent 的结局无关。读侧是 `RunTrace.oracle_scores() -> list[OracleScore]`，没有记录时是空列表，评测器记为没判。
+
 **记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 7`）：
 
 ```python
@@ -4690,6 +4719,19 @@ class TraceManifest(BaseModel):
     trailing: list[TrailingEntry] = Field(default_factory=list)
     output_formats: list[str] = Field(default_factory=list)  # 已提交的 output schema 的 sha256
     prompt_images: list[str] = Field(default_factory=list)   # 已提交的 prompt 图片：messages/images/<sha256><后缀>，每张一次，按提交顺序
+    oracle_scores: str | None = None         # oracle_scores.json；没有判分记录为 None
+
+class OracleScore(BaseModel):          # oracle_scores.json 的一条：一个 capability 的任务裁判对本任务的判分（§4.2）
+    capability_id: str
+    status: Literal["scored", "not_scored"]
+    score: float | None = None         # 判了：基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；scored 时必有
+    oracle: str | None = None          # 裁判身份，如 "androidworld"；scored 时必有，裁判没交回时为 None
+    oracle_version: str | None = None  # 裁判版本，如钉住的 AndroidWorld commit
+    provenance: dict[str, str] = Field(default_factory=dict)   # 判的是什么：基准的任务 id、参数摘要……，裁判自己给
+    started_at: float                  # 墙钟 Unix 时间，与 StepRecord.timestamp 可比
+    duration_ms: int
+    reason: Literal["timeout", "error"] | None = None   # 恰在 not_scored 时有值
+    detail: str | None = None          # 没判的诊断：异常类名与消息
 
 class ExtraFileRecord(BaseModel):      # extra 文件索引里的一条
     path: str                          # run 目录下的相对路径
@@ -5565,7 +5607,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 - **点按注入器**：取值至少有无障碍手势、shell 注入（助手的 `injectInputEvent`）和 provider 原生（模拟器 gRPC 的触摸）。选哪个只看保真度与稳定性，不看哪个更难被认出：无障碍手势与 shell 注入，app 都认得出来。每个动作实际用了哪个记进 trace。
 - **任务裁判**：`none` 或 `androidworld`，见下一段。
 
-**任务裁判与 `AndroidSetup`。** `androidworld` 负责 AndroidWorld 每个任务的开局、判分与收尾，也管着 AndroidWorld 的服务进程：独立的 venv 或容器，钉住 AndroidWorld 的 commit（它钉死的依赖几乎肯定与 Spectragent 的锁文件冲突），teardown 时关掉。它在进程外：AndroidWorld 的 FastAPI 服务负责初始化、判分与拆除，观测与动作走我们自己的桥（这个服务没有界面树的端点，树由我们提供）。Android 的开局要求类 `AndroidSetup` 由 Android 包自己登记（§4.10）；选了 `androidworld` 时，AndroidWorld 的任务数据（任务类名与参数，含种子）对 capability 是不透明的，经 setup 原样交给裁判。判分要读设备上的数据库、文件与设置，所以裁判在 Runtime 的判分时间点读出它（§4.2），判分作为带来源的证据进 trace，评测器从 trace 读它（§4.11）。阶段 3 再加 `android.state_dump` 归档器，在 run 开头与结尾各转储一次设备状态，让离线重新实现的判定能对变体重评。AndroidWorld 的服务能不能不进 Docker、在独立 venv 里对接原生模拟器，还没有验证。
+**任务裁判与 `AndroidSetup`。** `androidworld` 负责 AndroidWorld 每个任务的开局、判分与收尾，也管着 AndroidWorld 的服务进程：独立的 venv 或容器，钉住 AndroidWorld 的 commit（它钉死的依赖几乎肯定与 Spectragent 的锁文件冲突），teardown 时关掉。它在进程外：AndroidWorld 的 FastAPI 服务负责初始化、判分与拆除，观测与动作走我们自己的桥（这个服务没有界面树的端点，树由我们提供）。Android 的开局要求类 `AndroidSetup` 由 Android 包自己登记（§4.10）；选了 `androidworld` 时，AndroidWorld 的任务数据（任务类名与参数，含种子）对 capability 是不透明的，经 setup 原样交给裁判。判分要读设备上的数据库、文件与设置，所以 `AndroidCapability` 实现 `TaskOracle`（§4.9）：Runtime 的判分时间点（§4.2）经它读出判分，写成判分记录（§5.3），评测器从记录读（§4.11）；选 `none` 时 `read_score` 返回 `None`，不留记录。阶段 3 再加 `android.state_dump` 归档器，在 run 开头与结尾各转储一次设备状态，让离线重新实现的判定能对变体重评。AndroidWorld 的服务能不能不进 Docker、在独立 venv 里对接原生模拟器，还没有验证。
 
 **片段。**
 
