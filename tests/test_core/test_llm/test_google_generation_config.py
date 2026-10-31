@@ -21,7 +21,6 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.model_families.gemini import ThinkingLevel
 from spectragent.core.llm.providers.google import ChatGoogle
-from spectragent.core.registries import collect_registrars
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
@@ -36,7 +35,7 @@ def _composed_google(model: str, **overrides: Any) -> ChatGoogle:
         "max_retries": 1,
         **overrides,
     }
-    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     return run.instance("agent", run.ids("agent")[0]).llm
 
 

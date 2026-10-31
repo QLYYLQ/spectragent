@@ -434,7 +434,6 @@ def test_configuration_keeps_helper_optional_and_nested_model_knobs():
 
     composer = ConfigComposer(
         registrars={"hook": HookRegistrar, "llm": LLMRegistrar, "archiver": ArchiverRegistrar},
-        discover_roots=(),
     )
     omitted = composer.compose(
         {

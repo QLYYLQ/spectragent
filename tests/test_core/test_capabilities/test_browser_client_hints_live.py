@@ -42,7 +42,6 @@ from spectragent.core.capabilities.browser.backends.local_chrome import LocalChr
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from spectragent.schemas.action import Action
 from tests._helpers import replay_driver as driver
 from tests._helpers.fixture_site import FixtureSite, LoggedRequest, new_tab_point
@@ -127,9 +126,8 @@ def _fingerprint(run_dir: Path) -> dict[str, Any]:
 async def _replay(raw: dict[str, Any], site: FixtureSite, source: Path, llm: Any) -> Replay:
     """The recording's configuration replaying it, at the capability, observed from the side."""
     replay_raw = driver.to_replay_config(raw, llm=llm, trace_dir=source.parent / "unused")
-    run = ConfigComposer(registrars=collect_registrars()).compose(
-        {"environment": replay_raw["environment"]}
-    )
+    config = {"environment": replay_raw["environment"]}
+    run = ConfigComposer.for_config(config).compose(config)
     env = run.single("environment")
     cap = next(iter(env.capabilities.values()))
     cap.bind_archivers([ReplayLogArchiver()])

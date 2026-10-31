@@ -3,10 +3,9 @@
 Each concrete Capability subclass sets ``__registry_key__`` and
 ``__wiring__`` to declare its identity and observation provides.
 
-Registration is import-driven:
-``core.registries.discover_implementations("spectragent.core.capabilities")``
-registers every concrete Capability implementation, skipping the modules a
-capability declares as needing an optional extra.
+Registration is import-driven: a run imports only the capability packages
+its configuration names (``core.registries.discover_run_implementations``),
+skipping the modules a capability declares as needing an optional extra.
 
 See docs/execution_dag.md M06 for the registrar design.
 

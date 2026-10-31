@@ -265,10 +265,9 @@ class TestAssembly:
         with pytest.raises(ExportConfigError, match="exactly one agent"):
             _renderer(composer, root=root)
 
-    def test_from_config_reads_the_file(self, composer: ConfigComposer) -> None:
+    def test_from_config_reads_the_file(self) -> None:
         renderer = StudentRenderer.from_config(
             STUDENT_CONFIG,
-            composer=composer,
             untranslatable="drop_step",
             thought_source="none",
             thought_index_refs="drop",

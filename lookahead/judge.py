@@ -61,7 +61,6 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.llm.views import ModelInvokeUsage
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.observation.image import image_media_type
 
@@ -117,7 +116,7 @@ def load_judge_model(path: Path) -> JudgeModel:
             f"{where} holds layers {others}; the judge configuration holds only {JUDGE_LAYER!r}"
         )
     try:
-        composed = ConfigComposer(registrars=collect_registrars()).compose(raw)
+        composed = ConfigComposer.for_config(raw).compose(raw)
         llm = composed.single(JUDGE_LAYER)
         require_inference_protocol(llm, "chat", consumer="the lookahead judge")
     except (ComposeError, ValidationError, TypeError) as exc:

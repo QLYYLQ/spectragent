@@ -15,7 +15,6 @@ from typing import Any
 import yaml
 
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from spectragent.export.runner import ExportReport, ExportRunner
 
 REPO = Path(__file__).resolve().parents[2]
@@ -24,7 +23,8 @@ STUDENT_CONFIG = REPO / "configs" / "flywheel" / "ui_tars_student.yaml"
 
 
 def new_composer() -> ConfigComposer:
-    return ConfigComposer(registrars=collect_registrars())
+    """A Composer over the whole catalog: export documents and student configs alike."""
+    return ConfigComposer.for_every_package()
 
 
 def student_root(**agent_overrides: Any) -> dict[str, Any]:
@@ -67,7 +67,7 @@ def run_export(
     """
     document = {"exporter": [copy.deepcopy(entry)], **copy.deepcopy(layers)}
     run = composer.compose(document)
-    return ExportRunner.from_run(run, composer=composer, origin="the test document").run()
+    return ExportRunner.from_run(run, origin="the test document").run()
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

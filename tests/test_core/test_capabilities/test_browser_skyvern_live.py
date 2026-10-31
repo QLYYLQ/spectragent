@@ -10,7 +10,6 @@ import pytest
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import SkyvernCleaner
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from spectragent.schemas.action import Action
 
 pytestmark = pytest.mark.requires_chrome
@@ -20,26 +19,25 @@ def configured_capability(
     *, max_text_length: int = 5000, serializer_type: str = "text"
 ) -> BrowserCapability:
     """Use the real YAML-shaped config path, including the cleaner receptor."""
-    run = ConfigComposer(registrars=collect_registrars()).compose(
-        {
-            "capability": [
-                {
-                    "capability_id": "browser",
-                    "profile": "skyvern",
-                    "mouse_trajectory": {"trajectory_type": "instant"},
-                    "typing_rhythm": {"rhythm_type": "instant"},
-                    "replayability": {"replayability_id": "none"},
-                    "network_source": {"source_id": "live"},
-                    "dom_cleaner": {
-                        "cleaner_type": "skyvern",
-                        "max_text_length": max_text_length,
-                    },
-                    "dom_serializer": {"serializer_type": serializer_type},
-                    "backend": {"provider_id": "local_chrome", "headless": True},
-                }
-            ]
-        }
-    )
+    raw = {
+        "capability": [
+            {
+                "capability_id": "browser",
+                "profile": "skyvern",
+                "mouse_trajectory": {"trajectory_type": "instant"},
+                "typing_rhythm": {"rhythm_type": "instant"},
+                "replayability": {"replayability_id": "none"},
+                "network_source": {"source_id": "live"},
+                "dom_cleaner": {
+                    "cleaner_type": "skyvern",
+                    "max_text_length": max_text_length,
+                },
+                "dom_serializer": {"serializer_type": serializer_type},
+                "backend": {"provider_id": "local_chrome", "headless": True},
+            }
+        ]
+    }
+    run = ConfigComposer.for_config(raw).compose(raw)
     cap = run.single("capability")
     assert isinstance(cap, BrowserCapability)
     assert isinstance(cap.dom_cleaner, SkyvernCleaner)

@@ -111,9 +111,7 @@ class _Pooler(_ItemReceptors, metaclass=PoolerReg.Meta):
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(
-        registrars={"inl_item": ItemReg, "inl_owner": OwnerReg}, discover_roots=()
-    )
+    return ConfigComposer(registrars={"inl_item": ItemReg, "inl_owner": OwnerReg})
 
 
 class TestAnInlineOnlyReceptor:
@@ -181,9 +179,7 @@ class TestAnOmittedReceptorWithNothingToAdopt:
 
     @pytest.fixture(scope="class")
     def pooling(self) -> ConfigComposer:
-        return ConfigComposer(
-            registrars={"pool_item": PoolItemReg, "inl_pooler": PoolerReg}, discover_roots=()
-        )
+        return ConfigComposer(registrars={"pool_item": PoolItemReg, "inl_pooler": PoolerReg})
 
     def test_adopts_the_top_level_section(self, pooling: ConfigComposer) -> None:
         run = pooling.compose(

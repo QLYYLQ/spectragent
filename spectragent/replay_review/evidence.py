@@ -25,7 +25,6 @@ from spectragent.core.capabilities.browser.review_evidence import (
 )
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.decision import DecisionImage, ImageProvenance
-from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.replay_review.base import BaseReplayReviewer
@@ -224,10 +223,9 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
         config_path = Path(pair.source_config)
         if not config_path.is_file():
             raise ReviewEvidenceError("missing_source", "Source run configuration is missing")
-        composer = ConfigComposer(registrars=collect_registrars())
-        source_config = composer.top_level_type.model_validate(
-            yaml.safe_load(config_path.read_text())
-        )
+        raw = yaml.safe_load(config_path.read_text())
+        composer = ConfigComposer.for_config(raw)
+        source_config = composer.top_level_type.model_validate(raw)
         configured = _browser_config(source_config.model_dump(mode="json"))
         # Instantiate the recorded browser recipe once, without constructing the
         # source Agent's model, hooks or loaders. Offline evidence needs none of

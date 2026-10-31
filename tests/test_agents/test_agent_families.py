@@ -13,6 +13,9 @@ agent changes shape.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -21,6 +24,7 @@ import yaml
 from conscribe import build_composed_config, generate_composed_config_source
 from pydantic import Field
 
+from spectragent import REPO_ROOT
 from spectragent.agents import AgentRegistrar
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.browser_use import BrowserUseAgent
@@ -239,7 +243,9 @@ def test_a_dotted_agent_id_stays_a_flat_discriminator_value():
     changes only the key's spelling.
     """
     _define_family()
-    composer = ConfigComposer(registrars=collect_registrars())
+    # The probe family is defined here, with no package under spectragent/agents/,
+    # so it composes against the whole catalog, not a run's.
+    composer = ConfigComposer.for_every_package()
 
     result = build_composed_config(
         collect_registrars(), inline_wiring=True, top_level_extra="forbid"
@@ -263,3 +269,38 @@ def test_a_dotted_agent_id_stays_a_flat_discriminator_value():
     assert agent.agent_id == "probe_family.dom"
     assert (agent.shared_knob, agent.member_knob) == (3, "y")
     assert agent_prompt_dir(agent.agent_id) == AGENT_PROMPT_ROOT / _ROOT
+
+
+def test_reading_a_recorded_agent_imports_its_family_on_a_miss() -> None:
+    """A recorded ``agent_id`` names one family; the reader imports only that one.
+
+    A run imports only the families its configuration names
+    (``docs/architecture_design.md`` §4.2.1), so a reader of recorded runs, the
+    training export's teacher lookup, cannot count on the recording's family
+    being imported. In a subprocess: the test interpreter has every family.
+    """
+    code = """
+import json
+import sys
+
+from spectragent.agents._registrar import registered_agent
+
+before = "spectragent.agents.skyvern" in sys.modules
+agent = registered_agent("skyvern.dom")
+print(json.dumps({
+    "before": before,
+    "agent": agent.__name__ if agent else None,
+    "no_family": registered_agent("nowhere.dom"),
+    "other_families": [f for f in ("browser_use", "ui_tars") if f"spectragent.agents.{f}" in sys.modules],
+}))
+"""
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "before": False,
+        "agent": "SkyvernDomAgent",
+        "no_family": None,
+        "other_families": [],
+    }

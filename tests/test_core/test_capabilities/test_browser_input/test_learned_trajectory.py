@@ -184,12 +184,11 @@ def test_shipped_yaml_with_a_learned_block_composes_the_exported_model(
     export_of: Callable[[str], Path], kind: str, label: str
 ) -> None:
     from spectragent.core.composer import ConfigComposer
-    from spectragent.core.registries import collect_registrars
 
     raw = _shipped_run_config(
         {"trajectory_type": "learned", "weights_dir": str(export_of(kind)), "seed": 1}
     )
-    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     (cap,) = run.instances("environment")[0].capabilities.values()
     assert isinstance(cap.mouse_trajectory, LearnedTrajectory)
     assert cap.mouse_trajectory._export.label == label
@@ -204,13 +203,12 @@ def test_compose_refuses_the_knobs_of_the_retired_format(
 ) -> None:
     # They cut the paths of format /1, which never stopped; no export read now needs them.
     from spectragent.core.composer import ConfigComposer
-    from spectragent.core.registries import collect_registrars
 
     raw = _shipped_run_config(
         {"trajectory_type": "learned", "weights_dir": str(mdn_export), knob: value}
     )
     with pytest.raises(ValidationError, match=knob):
-        ConfigComposer(registrars=collect_registrars()).compose(raw)
+        ConfigComposer.for_config(raw).compose(raw)
 
 
 # ── the model is read from meta.json ────────────────────────────────────

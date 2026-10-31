@@ -38,7 +38,6 @@ from spectragent.core.capabilities.browser.replay.network_source import (
 )
 from spectragent.core.capabilities.browser.replay.strict import StrictMissPolicy
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from tests._helpers.trace_builder import new_wal
 
 _CAPABILITY: dict[str, Any] = {
@@ -75,7 +74,8 @@ def _capability_config(network_source: Any) -> Any:
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=collect_registrars())
+    """The whole catalog: this module reads the replay receptors' YAML surface."""
+    return ConfigComposer.for_every_package()
 
 
 def _compose(composer: ConfigComposer, network_source: Any) -> BrowserCapability:

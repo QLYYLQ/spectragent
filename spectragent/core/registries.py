@@ -11,15 +11,22 @@ framework needs before importing it (``docs/architecture_design.md``
 ``OPTIONAL_EXTRA_MODULES``  modules whose top-level imports need an optional
                             extra, which discovery never imports.
 
-So adding a capability edits no file here. Nothing is cached: every call
-reads the declarations afresh and returns new objects.
+So adding a capability edits no file here. Every subpackage of
+``spectragent/agents/`` is an agent family, named by the part of an
+``agent_id`` before its first ``.``, except the framework's own packages
+listed below. A run imports the framework's own packages and only the
+capability packages and agent families its configuration names
+(:func:`discover_run_implementations`); generation and the other
+whole-catalog tools import everything (:func:`discover_every_implementation`).
+Nothing is cached: every call reads the declarations afresh and returns new
+objects.
 """
 
 from __future__ import annotations
 
 import importlib
 import pkgutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -30,6 +37,14 @@ if TYPE_CHECKING:
 
 #: The package whose every subpackage is one capability.
 CAPABILITIES_PACKAGE = "spectragent.core.capabilities"
+#: The package whose every subpackage is one agent family, except the framework's own.
+AGENTS_PACKAGE = "spectragent.agents"
+#: The subpackages of :data:`AGENTS_PACKAGE` that are the framework's, not families:
+#: the memory axis and the prompt rendering the families share.
+AGENT_FRAMEWORK_PACKAGES = frozenset({"memory", "rendering"})
+#: Where a run finds the framework's own implementations. The capability packages
+#: and agent families below them are walked only when a configuration names them.
+FRAMEWORK_PACKAGES = (AGENTS_PACKAGE, "spectragent.core", "spectragent.schemas")
 #: The module each capability package declares itself in.
 DECLARATIONS_MODULE = "declarations"
 
@@ -46,32 +61,44 @@ class CapabilityDeclarations:
     optional_extra_modules: tuple[str, ...]
 
 
-def capability_declarations() -> tuple[CapabilityDeclarations, ...]:
-    """Every capability package's declarations, in ``capability_id`` order.
+def capability_ids() -> tuple[str, ...]:
+    """Every capability package's ``capability_id``, sorted. Imports no capability package."""
+    return _subpackages(CAPABILITIES_PACKAGE)
 
-    ``pkgutil`` lists the packages without importing them; only each
-    package's ``declarations`` module is imported, and it imports no
+
+def agent_families() -> tuple[str, ...]:
+    """Every agent family's name, sorted. Imports no family package."""
+    return tuple(
+        name for name in _subpackages(AGENTS_PACKAGE) if name not in AGENT_FRAMEWORK_PACKAGES
+    )
+
+
+def capability_declarations(
+    capabilities: Iterable[str] | None = None,
+) -> tuple[CapabilityDeclarations, ...]:
+    """The declarations of *capabilities* (every capability package when ``None``), in ``capability_id`` order.
+
+    Only each package's ``declarations`` module is imported, and it imports no
     implementation.
     """
-    package = importlib.import_module(CAPABILITIES_PACKAGE)
-    capability_ids = sorted(
-        module.name for module in pkgutil.iter_modules(package.__path__) if module.ispkg
-    )
-    return tuple(_read_declarations(capability_id) for capability_id in capability_ids)
+    selected = capability_ids() if capabilities is None else sorted(set(capabilities))
+    return tuple(_read_declarations(capability_id) for capability_id in selected)
 
 
-def collect_registrars() -> dict[str, type]:
-    """Every YAML-configurable registrar by layer name, in the one shared order.
+def collect_registrars(capabilities: Iterable[str] | None = None) -> dict[str, type]:
+    """The YAML-configurable registrars by layer name, in the one shared order.
 
-    The framework axes in the order listed below, then each capability
-    package's axes in ``capability_id`` order and declared order. The
-    generator, the fingerprints and ``config explain`` all take this order:
-    generated output does not depend on it, but a ``0`` / ``0.0`` bound
-    prints with the build order and moves the fingerprints. Each call returns
-    a fresh mapping; a caller may select a subset without affecting another.
+    The framework axes in the order listed below, then the axes of
+    *capabilities* (every capability package when ``None``) in
+    ``capability_id`` order and declared order; a run passes the capabilities
+    its configuration names. The generator, the fingerprints and
+    ``config explain`` all take this order: generated output does not depend
+    on it, but a ``0`` / ``0.0`` bound prints with the build order and moves
+    the fingerprints. Each call returns a fresh mapping; a caller may select a
+    subset without affecting another.
     """
     registrars = _framework_axes()
-    for capability in capability_declarations():
+    for capability in capability_declarations(capabilities):
         for layer, registrar in capability.strategy_axes.items():
             if layer in registrars:
                 raise ValueError(
@@ -96,6 +123,46 @@ def discover_implementations(*packages: str, exclude: Iterable[str] = ()) -> Non
         for module in capability.optional_extra_modules
     ]
     discover(*packages, exclude=[*exclude, *optional])
+
+
+def discover_run_implementations(
+    *, capabilities: Collection[str], families: Collection[str]
+) -> None:
+    """Import the framework's own packages, the named capability packages and agent families.
+
+    What one run's configuration names, and nothing else: every other
+    capability package and family is excluded from the walk, so neither it nor
+    its ``declarations`` module is imported. The caller checks that every name
+    has a package.
+    """
+    optional = [
+        module
+        for capability in capability_declarations(capabilities)
+        for module in capability.optional_extra_modules
+    ]
+    discover(
+        *FRAMEWORK_PACKAGES,
+        exclude=[
+            *(
+                f"{CAPABILITIES_PACKAGE}.{name}"
+                for name in capability_ids()
+                if name not in capabilities
+            ),
+            *(f"{AGENTS_PACKAGE}.{name}" for name in agent_families() if name not in families),
+            *optional,
+        ],
+    )
+
+
+def discover_every_implementation() -> None:
+    """Import every package of ``spectragent`` except generated code and the generator itself.
+
+    The whole catalog: what ``spectragent config generate`` generates, the
+    fingerprints compare and ``components list`` lists.
+    """
+    discover_implementations(
+        "spectragent", exclude=["spectragent.generated", "spectragent.scripts"]
+    )
 
 
 def setup_class_for_env(env_type: str) -> type[SetupBase]:
@@ -172,6 +239,12 @@ def _framework_axes() -> dict[str, type]:
         "exporter": ExporterRegistrar,
         "agent": AgentRegistrar,
     }
+
+
+def _subpackages(package: str) -> tuple[str, ...]:
+    """The names of *package*'s subpackages, sorted; ``pkgutil`` imports none of them."""
+    path = importlib.import_module(package).__path__
+    return tuple(sorted(module.name for module in pkgutil.iter_modules(path) if module.ispkg))
 
 
 def _read_declarations(capability_id: str) -> CapabilityDeclarations:

@@ -196,7 +196,7 @@ def test_generate_help_never_discovers_or_writes(tmp_path, monkeypatch, capsys):
     def forbidden(*args, **kwargs):
         pytest.fail("Help must not discover or generate")
 
-    monkeypatch.setattr(generate_all, "discover_implementations", forbidden)
+    monkeypatch.setattr(generate_all, "discover_every_implementation", forbidden)
     monkeypatch.setattr(generate_all, "GENERATED_DIR", tmp_path)
     assert main(["config", "generate", "--help"]) == 0
     with pytest.raises(SystemExit) as exc:
@@ -311,7 +311,9 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
         hooks=[SimpleNamespace(run_dir=wal.run_dir)],
     )
     monkeypatch.setattr(
-        run_cli, "ConfigComposer", lambda **kwargs: SimpleNamespace(compose=lambda raw: run)
+        run_cli,
+        "ConfigComposer",
+        SimpleNamespace(for_config=lambda raw: SimpleNamespace(compose=lambda raw: run)),
     )
     monkeypatch.setattr(run_cli.AgentRuntime, "for_agent", lambda *args: Runtime())
     path = tmp_path / "run.yaml"

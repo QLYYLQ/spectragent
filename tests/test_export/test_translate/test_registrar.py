@@ -18,8 +18,8 @@ from spectragent.export import (
 
 
 def _compose(block: dict[str, object]) -> object:
-    run = ConfigComposer(registrars=collect_registrars()).compose({"action_translator": [block]})
-    return run.single("action_translator")
+    raw = {"action_translator": [block]}
+    return ConfigComposer.for_config(raw).compose(raw).single("action_translator")
 
 
 def test_the_shipped_translators() -> None:

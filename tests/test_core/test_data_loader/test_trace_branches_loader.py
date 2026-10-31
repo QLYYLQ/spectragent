@@ -14,6 +14,7 @@ import pytest
 
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.capabilities.browser.task_setup import BrowserSetup
+from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.data_loader._common import BENCHMARK_DATA_ENV, BenchmarkDataError
 from spectragent.core.data_loader.task import TaskLoaderRegistrar, TraceBranchesTaskLoader
 from spectragent.core.data_loader.task.require_eval import RequireEval
@@ -33,6 +34,11 @@ from tests._helpers.branch_sources import (
     write_source,
 )
 from tests._helpers.trace_builder import eval_result
+
+
+def _compose(raw: dict[str, Any]) -> ComposedRun:
+    """*raw* composed as a run composes it."""
+    return ConfigComposer.for_config(raw).compose(raw)
 
 
 def loader(root: Path, **knobs: Any) -> TraceBranchesTaskLoader:
@@ -157,7 +163,6 @@ class TestLaziness:
     def test_composing_the_yaml_block_reads_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from spectragent.core.benchmark_runner import build_composer
 
         write_source(tmp_path, "run-a", steps=2)
         scans: list[Any] = []
@@ -168,7 +173,7 @@ class TestLaziness:
             original(self)
 
         monkeypatch.setattr(TraceBranchesTaskLoader, "_scan_once", counting)
-        run = build_composer().compose(
+        run = _compose(
             {
                 "task_loader": [
                     {
@@ -968,26 +973,21 @@ class TestTaskVariants:
         assert tasks.task_ids() == ["run-a/s1/vv1/b0"]
 
     def test_the_yaml_surface(self, tmp_path: Path) -> None:
-        from spectragent.core.benchmark_runner import build_composer
 
         write_source(tmp_path / "src", "run-a", steps=2)
         path = variants_file(tmp_path, variant(step=0))
-        built = (
-            build_composer()
-            .compose(
-                {
-                    "task_loader": [
-                        {
-                            "benchmark_name": "trace_branches",
-                            "data_dir": str(tmp_path / "src"),
-                            "step_selector": {"selector_id": "all"},
-                            "task_variants": str(path),
-                        }
-                    ]
-                }
-            )
-            .optional_single("task_loader")
-        )
+        built = _compose(
+            {
+                "task_loader": [
+                    {
+                        "benchmark_name": "trace_branches",
+                        "data_dir": str(tmp_path / "src"),
+                        "step_selector": {"selector_id": "all"},
+                        "task_variants": str(path),
+                    }
+                ]
+            }
+        ).optional_single("task_loader")
         assert isinstance(built, TraceBranchesTaskLoader)
         assert built.task_ids() == ["run-a/s0/vv1/b0"]
 
@@ -1135,27 +1135,22 @@ class TestExcludeRuns:
         assert tasks.task_ids() == ["run-b/s0/b0"]
 
     def test_the_yaml_surface(self, tmp_path: Path) -> None:
-        from spectragent.core.benchmark_runner import build_composer
 
         write_source(tmp_path / "src", "run-a", steps=1)
         write_source(tmp_path / "src", "run-b", steps=1)
         path = exclusions_file(tmp_path, excluded("run-b"))
-        built = (
-            build_composer()
-            .compose(
-                {
-                    "task_loader": [
-                        {
-                            "benchmark_name": "trace_branches",
-                            "data_dir": str(tmp_path / "src"),
-                            "step_selector": {"selector_id": "all"},
-                            "exclude_runs": str(path),
-                        }
-                    ]
-                }
-            )
-            .optional_single("task_loader")
-        )
+        built = _compose(
+            {
+                "task_loader": [
+                    {
+                        "benchmark_name": "trace_branches",
+                        "data_dir": str(tmp_path / "src"),
+                        "step_selector": {"selector_id": "all"},
+                        "exclude_runs": str(path),
+                    }
+                ]
+            }
+        ).optional_single("task_loader")
         assert isinstance(built, TraceBranchesTaskLoader)
         assert built.task_ids() == ["run-a/s0/b0"]
 

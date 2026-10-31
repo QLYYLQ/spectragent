@@ -16,7 +16,6 @@ import pytest
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState, HitTest
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from spectragent.schemas.action import Action
 from tests._helpers.fixture_site import FixtureSite
 
@@ -30,23 +29,22 @@ def site() -> Iterator[FixtureSite]:
 
 
 def _capability(cleaner: dict[str, Any]) -> BrowserCapability:
-    run = ConfigComposer(registrars=collect_registrars()).compose(
-        {
-            "capability": [
-                {
-                    "capability_id": "browser",
-                    "profile": "skyvern",
-                    "mouse_trajectory": {"trajectory_type": "instant"},
-                    "typing_rhythm": {"rhythm_type": "instant"},
-                    "replayability": {"replayability_id": "none"},
-                    "network_source": {"source_id": "live"},
-                    "dom_cleaner": cleaner,
-                    "dom_serializer": {"serializer_type": "text"},
-                    "backend": {"provider_id": "local_chrome", "headless": True},
-                }
-            ]
-        }
-    )
+    raw = {
+        "capability": [
+            {
+                "capability_id": "browser",
+                "profile": "skyvern",
+                "mouse_trajectory": {"trajectory_type": "instant"},
+                "typing_rhythm": {"rhythm_type": "instant"},
+                "replayability": {"replayability_id": "none"},
+                "network_source": {"source_id": "live"},
+                "dom_cleaner": cleaner,
+                "dom_serializer": {"serializer_type": "text"},
+                "backend": {"provider_id": "local_chrome", "headless": True},
+            }
+        ]
+    }
+    run = ConfigComposer.for_config(raw).compose(raw)
     cap = run.single("capability")
     assert isinstance(cap, BrowserCapability)
     return cap

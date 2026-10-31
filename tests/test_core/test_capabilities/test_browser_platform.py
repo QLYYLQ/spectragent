@@ -25,7 +25,6 @@ from spectragent.core.capabilities.browser.replay.archive_source import ArchiveN
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.registries import collect_registrars
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
 from tests._helpers.replay_archive import RecordingScript
@@ -289,9 +288,9 @@ def test_expected_platform_config_composes_and_rejects_a_typo():
     raw = yaml.safe_load(path.read_text())
     cap = raw["environment"][0]["capabilities"][0]
     cap["expected_platform"] = "linux"
-    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     environment = run.single("environment")
     assert next(iter(environment.capabilities.values())).expected_platform == "linux"
     cap["expected_platform"] = "linuz"
     with pytest.raises(ValidationError):
-        ConfigComposer(registrars=collect_registrars()).compose(raw)
+        ConfigComposer.for_config(raw).compose(raw)

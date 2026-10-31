@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.base import require_inference_protocol
-from spectragent.core.registries import collect_registrars
 from spectragent.replay_review.models import ReviewInputs
 from spectragent.replay_review.runner import ReplayReviewRunner
 
@@ -28,9 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     load_dotenv()
-    composed = ConfigComposer(registrars=collect_registrars()).compose(
-        yaml.safe_load(args.config.read_text())
-    )
+    raw = yaml.safe_load(args.config.read_text())
+    composed = ConfigComposer.for_config(raw).compose(raw)
     reviewer = composed.single("replay_reviewer")
     require_inference_protocol(
         reviewer.decision_model, "decision", consumer="replay_reviewer.decision_model"

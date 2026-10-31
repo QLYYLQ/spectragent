@@ -178,8 +178,11 @@ class TestComposerInjectsBackend:
         to every wiring entry alike, which is why descriptor presence
         cannot be the test for receptor-ness.
         """
-        # Trigger discovery of every concrete impl across the layers we wire.
-        import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
+        # A hand-built registrar map: the Composer discovers nothing, so import
+        # every implementation the wired layers reach first.
+        from spectragent.core.registries import discover_every_implementation
+
+        discover_every_implementation()
         from spectragent.agents._registrar import AgentRegistrar
         from spectragent.agents.memory._registrar import MemoryRegistrar
         from spectragent.core.actions._registrar import ActionRegistrar
@@ -267,9 +270,7 @@ class TestComposerInjectsBackend:
         """
         import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
         from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
-        from spectragent.core.registries import collect_registrars
 
-        composer = ConfigComposer(registrars=collect_registrars())
         raw = {
             "capability": [
                 {
@@ -287,7 +288,7 @@ class TestComposerInjectsBackend:
         }
 
         with pytest.raises(UnresolvedWiringError) as exc_info:
-            composer.compose(raw)
+            ConfigComposer.for_config(raw).compose(raw)
 
         message = str(exc_info.value)
         assert "capability[0].observation" in message

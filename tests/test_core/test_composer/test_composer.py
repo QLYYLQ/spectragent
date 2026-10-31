@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 import pytest
-from conscribe import EmptyLayerError, create_registrar
+from conscribe import create_registrar
 from conscribe.introspect import init_param_names
 from pydantic import BaseModel, Field
 
@@ -178,7 +178,7 @@ def registrars() -> dict[str, Any]:
 def composer(registrars: dict[str, Any]) -> ConfigComposer:
     # Discover root doesn't matter for these tests; registries are already
     # populated via metaclass at import time.
-    return ConfigComposer(registrars=registrars, discover_roots=())
+    return ConfigComposer(registrars=registrars)
 
 
 # ── Tests ──────────────────────────────────────────────────────────
@@ -451,7 +451,7 @@ class TestErrors:
             def __init__(self, **kwargs):
                 raise ValueError("constructor-secret-sentinel")
 
-        composer = ConfigComposer(registrars=registrars, discover_roots=())
+        composer = ConfigComposer(registrars=registrars)
         with pytest.raises(InstantiationError) as refused:
             composer.compose({"cmp_backend": [{"name": "refusing"}]})
         issue = refused.value.issue
@@ -461,18 +461,24 @@ class TestErrors:
         assert "constructor-secret-sentinel" not in issue.message
         assert isinstance(refused.value.__cause__, ValueError)
 
-    def test_empty_layer_raises_on_construction(self) -> None:
-        # conscribe reports the empty layer by name before constructing instances.
+    def test_a_layer_with_no_implementation_is_left_out(self, registrars: dict[str, Any]) -> None:
+        # A run composes against the layers whose implementations it imported:
+        # an empty one is no section of the schema, not a refusal
+        # (docs/architecture_design.md §4.2.1). conscribe's EmptyLayerError is
+        # generation's.
+        from pydantic import ValidationError
+
         @runtime_checkable
         class _EmptyP(Protocol):
             key: str
 
         EmptyReg = create_registrar("cmp_empty", _EmptyP, discriminator_field="key")
-        with pytest.raises(EmptyLayerError, match="cmp_empty"):
-            ConfigComposer(
-                registrars={"cmp_empty": EmptyReg},
-                discover_roots=(),
-            )
+        composer = ConfigComposer(registrars={**registrars, "cmp_empty": EmptyReg})
+        assert "cmp_empty" not in composer.registrars
+        with pytest.raises(ValidationError, match="cmp_empty"):
+            composer.compose({"cmp_empty": []})
+        with pytest.raises(ComposeError, match="registrar with an implementation"):
+            ConfigComposer(registrars={"cmp_empty": EmptyReg})
 
     def test_invalid_yaml_rejected_by_pydantic(
         self,
@@ -573,9 +579,7 @@ def test_user_model_reaches_its_constructor_as_a_model(composer: ConfigComposer)
         def __init__(self, settings: Annotated[_Settings, Field(description="Settings")]):
             self.settings = settings
 
-    fresh = ConfigComposer(
-        registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg}, discover_roots=()
-    )
+    fresh = ConfigComposer(registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg})
     run = fresh.compose(
         {"cmp_cap": [{"capability_id": "typed_settings", "settings": {"retries": 7}}]}
     )
@@ -591,9 +595,7 @@ def test_constructor_only_optional_list_is_injected_as_a_list() -> None:
         def __init__(self, backends: list[_BackendP] | None = None):
             self.backends = list(backends or [])
 
-    fresh = ConfigComposer(
-        registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg}, discover_roots=()
-    )
+    fresh = ConfigComposer(registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg})
     run = fresh.compose(
         {
             "cmp_cap": [
@@ -621,6 +623,6 @@ def test_forwarded_constructor_fields_reach_the_base() -> None:
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
-    fresh = ConfigComposer(registrars={"cmp_backend": BackendReg}, discover_roots=())
+    fresh = ConfigComposer(registrars={"cmp_backend": BackendReg})
     run = fresh.compose({"cmp_backend": [{"name": "forwarded", "port": 1234}]})
     assert run.single("cmp_backend").port == 1234

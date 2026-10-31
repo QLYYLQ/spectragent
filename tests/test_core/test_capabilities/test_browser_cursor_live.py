@@ -15,7 +15,6 @@ from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import ContentPartImageParam
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action
@@ -107,7 +106,7 @@ async def test_runtime_trace_records_clean_original_and_actual_model_image(
         writer_config = raw["hook"][0]
         writer_config.pop("archive")
         writer_config.update(trace_dir=str(tmp_path), recording={"trajectory": trajectory})
-        run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+        run = ConfigComposer.for_config(raw).compose(raw)
         writer = next(hook for hook in run.instances("hook") if isinstance(hook, TraceWriter))
         result = await AgentRuntime.for_agent(run, "main").execute(
             "Look at the pointer.",

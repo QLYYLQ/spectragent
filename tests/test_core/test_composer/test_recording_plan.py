@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.registries import collect_registrars
 
 
 def test_selected_recording_scope_and_budgets_reach_the_hook():
@@ -23,7 +22,7 @@ def test_selected_recording_scope_and_budgets_reach_the_hook():
         close_timeout=0.75,
         closeout_collection_timeout=1.5,
     )
-    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     writer = next(hook for hook in run.instances("hook") if isinstance(hook, TraceWriter))
     assert writer.recording.metrics and writer.recording.errors
     assert not writer.recording.trajectory and not writer.recording.observations

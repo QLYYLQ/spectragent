@@ -85,7 +85,7 @@ def _record_ui_tars(
         )
         raw["environment"][0]["capabilities"][0]["backend"]["extra_args"] = site.chrome_args()
         raw["hook"] = [{"hook_id": "trace_writer", "trace_dir": str(traces)}]
-        run = ConfigComposer(registrars=_collect()).compose(raw)
+        run = ConfigComposer.for_config(raw).compose(raw)
         (writer,) = [hook for hook in run.instances("hook") if isinstance(hook, TraceWriter)]
 
         async def execute() -> Any:
@@ -101,12 +101,6 @@ def _record_ui_tars(
     assert result.answer == "done", result
     assert writer.run_dir is not None
     return RunTrace(writer.run_dir), traces
-
-
-def _collect() -> dict[str, Any]:
-    from spectragent.core.registries import collect_registrars
-
-    return collect_registrars()
 
 
 def _rendered(composer: ConfigComposer, trace: RunTrace) -> list[RenderedSample]:

@@ -18,7 +18,6 @@ from spectragent.agents.skyvern import SkyvernAgent, SkyvernDomAgent, SkyvernDom
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.coordinate_frames import declared_space
 from spectragent.core.negotiation._base import extract_wiring
-from spectragent.core.registries import collect_registrars
 
 _INDEX_ACTIONS = {"click", "type", "done"}
 _OPTIONAL_ACTIONS = {
@@ -104,7 +103,9 @@ agent:
     memory: {memory_id: sliding_window, window_size: 3}
 """
     )
-    agent = ConfigComposer(registrars=collect_registrars()).compose(raw).single("agent")
+    # An agent block alone names no capability, while the member declares the
+    # browser's actions, so its knobs are read against the whole catalog.
+    agent = ConfigComposer.for_every_package().compose(raw).single("agent")
     assert type(agent) is SkyvernDomVisionAgent
     assert (agent.coordinate_space, agent.vision_detail, agent.max_result_chars) == (
         "normalized_1000",

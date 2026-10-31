@@ -36,7 +36,7 @@ from conscribe import (
 from conscribe.stubs import write_layer_stubs
 
 from spectragent import GENERATED_DIR, PACKAGE_ROOT
-from spectragent.core.registries import collect_registrars, discover_implementations
+from spectragent.core.registries import collect_registrars, discover_every_implementation
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,9 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Regenerate composed configuration, schema and registry fingerprints.",
     )
     parser.parse_args(argv)
-    discover_implementations(
-        "spectragent", exclude=["spectragent.generated", "spectragent.scripts"]
-    )
+    discover_every_implementation()
     registrars = collect_registrars()
     # Snapshot declarations before rendering: pydantic can normalize numeric
     # constraint metadata (0 to 0.0) while building the composed schema.

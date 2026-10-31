@@ -10,5 +10,5 @@ from tests._helpers.export_runs import new_composer
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    """The CLI's composer: every collected registrar, the exporter layers included."""
+    """Every package imported, every layer collected: export documents and student configs alike."""
     return new_composer()

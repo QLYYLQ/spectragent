@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.observations import (
     BrowserCaptureStateObs,
     BrowserMetaObs,
@@ -21,6 +20,7 @@ from spectragent.core.capabilities.browser.observations import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import ContentPartTextParam
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
@@ -206,7 +206,7 @@ async def test_composed_runtime_delivers_platform_to_the_model(
     skyvern = agent_id.startswith("skyvern.")
     if agent_id == "ui_tars":
         raw["environment"][0]["capabilities"][0]["profile"] = "vision_only"
-    run = build_composer().compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     agent = run.instance("agent", "main")
     seen = []
 

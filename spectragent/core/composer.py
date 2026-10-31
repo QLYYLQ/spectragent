@@ -25,15 +25,20 @@ case: archiving has one switch).
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
+from types import MappingProxyType
 from typing import Any, Literal, get_origin
 
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
 
+from spectragent.agents._registrar import AgentRegistrar
+from spectragent.agents.prompts import agent_family
 from spectragent.core.actions._registrar import ActionRegistrar, is_loop_action
+from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.core.composition_evidence import (
     CompositionEvidence,
     CompositionIssue,
@@ -44,7 +49,15 @@ from spectragent.core.composition_evidence import (
     implementation_name,
 )
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
-from spectragent.core.registries import discover_implementations
+from spectragent.core.registries import (
+    AGENTS_PACKAGE,
+    CAPABILITIES_PACKAGE,
+    agent_families,
+    capability_ids,
+    collect_registrars,
+    discover_every_implementation,
+    discover_run_implementations,
+)
 
 
 class ComposeError(Exception):
@@ -65,6 +78,10 @@ class UnresolvedWiringError(ComposeError):
 
 class DuplicateInstanceIdError(ComposeError):
     """Two config entries in one layer claimed the same instance id."""
+
+
+class UnknownPackageError(ComposeError):
+    """A configuration names a capability or an agent family that has no package."""
 
 
 @dataclass(frozen=True)
@@ -220,36 +237,59 @@ class ConfigComposer:
 
     Example::
 
-        composer = ConfigComposer(registrars=collect_registrars())
-        run = composer.compose(yaml.safe_load(Path("cfg.yaml").read_text()))
+        raw = yaml.safe_load(Path("cfg.yaml").read_text())
+        run = ConfigComposer.for_config(raw).compose(raw)
         result = await AgentRuntime.for_agent(run, "main").execute(task="...")
     """
 
-    def __init__(
-        self,
-        *,
-        registrars: dict[str, Any],
-        discover_roots: tuple[str, ...] = (
-            "spectragent.agents",
-            "spectragent.core",
-            "spectragent.schemas",
-        ),
-    ) -> None:
-        # Discover concrete implementation modules to populate registries,
-        # minus the modules a capability declares as needing an optional
-        # extra. ``spectragent.generated`` is intentionally not a root: its
-        # ``_composed.py`` is a codegen artefact that re-declares conscribe
-        # models and can fail to import mid-regeneration.
-        discover_implementations(*discover_roots)
-        if not registrars:
-            raise ComposeError("ConfigComposer requires at least one registrar.")
-        self._registrars = registrars
-        self._catalog = build_configuration_catalog(registrars)
+    @classmethod
+    def for_config(cls, raw: object) -> ConfigComposer:
+        """The Composer for one configuration, importing only what *raw* names.
+
+        Every ``capability_id`` in *raw* names a capability package and every
+        ``agent_id`` names an agent family (``browser_use.dom``: the
+        ``browser_use`` family). The framework's own packages and those
+        packages are imported; the schema holds the framework axes and the
+        named capabilities' axes (``docs/architecture_design.md`` §4.2.1).
+
+        Raises:
+            UnknownPackageError: *raw* names a capability or a family that has
+                no package. No capability package or family is imported yet.
+        """
+        capabilities, families = _named_packages(raw)
+        discover_run_implementations(capabilities=capabilities, families=families)
+        return cls(registrars=collect_registrars(capabilities))
+
+    @classmethod
+    def for_every_package(cls) -> ConfigComposer:
+        """The Composer over the whole catalog: every package imported, every layer collected."""
+        discover_every_implementation()
+        return cls(registrars=collect_registrars())
+
+    def __init__(self, *, registrars: Mapping[str, Any]) -> None:
+        """Build the schema over the layers of *registrars* that have an implementation.
+
+        Discovers nothing: which modules are imported is the caller's choice
+        (:meth:`for_config`, :meth:`for_every_package`). A layer with no
+        imported implementation is left out instead of refused, so a
+        configuration that names no capability composes without one.
+        """
+        self._registrars = {
+            layer: registrar for layer, registrar in registrars.items() if registrar.get_all()
+        }
+        if not self._registrars:
+            raise ComposeError("ConfigComposer requires a registrar with an implementation.")
+        self._catalog = build_configuration_catalog(self._registrars)
         # Reverse index: per-key Pydantic model → (layer_name, registry_key).
         self._model_to_lk: dict[type[BaseModel], tuple[str, str]] = {}
         for layer, entries in self._catalog.components.items():
             for key, definition in entries.items():
                 self._model_to_lk[definition.config_model] = (layer, key)
+
+    @property
+    def registrars(self) -> Mapping[str, Any]:
+        """The layers this Composer composes against: each one with an implementation."""
+        return MappingProxyType(self._registrars)
 
     @property
     def catalog(self) -> ConfigurationCatalog:
@@ -707,6 +747,62 @@ class ConfigComposer:
 # -- Module-level helpers --------------------------------------------
 
 
+def _named_packages(raw: object) -> tuple[frozenset[str], frozenset[str]]:
+    """The capability ids and agent families *raw* names, each checked against its package.
+
+    Every mapping at any depth names a capability with a ``capability_id``
+    string and an agent family with an ``agent_id`` string, the part before
+    its first ``.``. Read before anything is imported.
+
+    Raises:
+        UnknownPackageError: a name that has no package, at the first place it occurs.
+    """
+    # Each name → the first place the configuration writes it.
+    capabilities: dict[str, str] = {}
+    families: dict[str, str] = {}
+
+    def walk(value: object, path: str) -> None:
+        if isinstance(value, list | tuple):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                where = f"{path}.{key}" if path else str(key)
+                if key == CapabilityRegistrar.discriminator_field and isinstance(item, str):
+                    capabilities.setdefault(item, where)
+                elif key == AgentRegistrar.discriminator_field and isinstance(item, str):
+                    families.setdefault(agent_family(item), where)
+                else:
+                    walk(item, where)
+
+    walk(raw, "")
+    for named, kind, parent, known, code in (
+        (
+            capabilities,
+            "capability",
+            CAPABILITIES_PACKAGE,
+            capability_ids(),
+            "unknown_capability_package",
+        ),
+        (families, "agent family", AGENTS_PACKAGE, agent_families(), "unknown_agent_family"),
+    ):
+        for name, path in named.items():
+            if name not in known:
+                package = f"{parent}.{name}"
+                available = ", ".join(known) or "none"
+                raise UnknownPackageError(
+                    f"{path}: names the {kind} {name!r}, which has no package {package} "
+                    f"(known: {available}).",
+                    issue=CompositionIssue(
+                        code,
+                        path,
+                        f"The {kind} {name!r} has no package {package}.",
+                        f"Name one that exists ({available}), or add the package.",
+                    ),
+                )
+    return frozenset(capabilities), frozenset(families)
+
+
 def _discriminator_names(registrar: Any) -> frozenset[str]:
     """Every field a registrar uses as a discriminator tag.
 
@@ -758,5 +854,6 @@ __all__ = [
     "ConfigComposer",
     "DuplicateInstanceIdError",
     "InstantiationError",
+    "UnknownPackageError",
     "UnresolvedWiringError",
 ]

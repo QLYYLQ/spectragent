@@ -44,7 +44,6 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.prompts import AGENT_PROMPT_ROOT
 from spectragent.core.action_guard import build_guarded_act, params_refusal
 from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.environment import BrowserEnvironment
 from spectragent.core.capabilities.browser.observations import (
@@ -52,6 +51,7 @@ from spectragent.core.capabilities.browser.observations import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import ContentPartImageParam, ContentPartTextParam
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
@@ -532,7 +532,7 @@ async def test_the_history_window_is_a_config_field() -> None:
     raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
     raw["agent"][0]["step_history_window"] = 2
     raw.pop("hook", None)
-    agent = build_composer().compose(raw).single("agent")
+    agent = ConfigComposer.for_config(raw).compose(raw).single("agent")
     assert agent.step_history_window == 2
     assert await _replayed_steps(agent, 5) == ["step_4", "step_5"]
 
@@ -543,7 +543,7 @@ def test_a_window_of_no_steps_is_refused_by_the_config() -> None:
     raw = yaml.safe_load(_SHIPPED.read_text(encoding="utf-8"))
     raw["agent"][0]["step_history_window"] = 0
     with pytest.raises(ValidationError, match="step_history_window"):
-        build_composer().compose(raw)
+        ConfigComposer.for_config(raw).compose(raw)
 
 
 # ── Loud failures ─────────────────────────────────────────────────────
@@ -561,7 +561,7 @@ def test_prepare_refuses_a_profile_without_a_dom(member: type[BrowserUseAgent]) 
     raw["agent"][0]["agent_id"] = member.__registry_key__
     raw["environment"][0]["capabilities"][0]["profile"] = "vision_only"
     raw.pop("hook", None)
-    run = build_composer().compose(raw)
+    run = ConfigComposer.for_config(raw).compose(raw)
     runtime = AgentRuntime.for_agent(run, "main")
     with pytest.raises(IncompatibleFragmentError) as exc:
         runtime.prepare()

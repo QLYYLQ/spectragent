@@ -30,7 +30,6 @@ import yaml
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.action_spaces import space_of
 from tests._helpers.fragment_formats import dom_formats
@@ -88,8 +87,8 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt(tmp_path: Path) -
     advertise it only if Runtime passes the current typed execution limits.
     """
     traces = tmp_path / "traces"
-    composer = ConfigComposer(registrars=collect_registrars())
-    run = composer.compose(_shipped_config(trace_dir=traces))
+    raw = _shipped_config(trace_dir=traces)
+    run = ConfigComposer.for_config(raw).compose(raw)
 
     agent_id = run.ids("agent")[0]
     agent = run.instance("agent", agent_id)
@@ -135,8 +134,8 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt(tmp_path: Path) -
 
 def test_agent_renders_whatever_limit_it_is_handed() -> None:
     """The agent half, in isolation: no hidden default of its own."""
-    composer = ConfigComposer(registrars=collect_registrars())
-    run = composer.compose(_shipped_config())
+    raw = _shipped_config()
+    run = ConfigComposer.for_config(raw).compose(raw)
 
     agent = run.instance("agent", run.ids("agent")[0])
     # Real descriptors: browser_use compiles them into a closed output

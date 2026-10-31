@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from spectragent.core.benchmark_session import SessionLedger, TaskProgress
-from spectragent.core.composer import ComposedRun
+from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
@@ -1014,14 +1014,6 @@ def _task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 # ── CLI ────────────────────────────────────────────────────────────
 
 
-def build_composer() -> Any:
-    """Build a ConfigComposer over every registered layer."""
-    from spectragent.core.composer import ConfigComposer
-    from spectragent.core.registries import collect_registrars
-
-    return ConfigComposer(registrars=collect_registrars())
-
-
 def _resolve_loader(run: ComposedRun, benchmark: str | None, subset: str | None) -> Any:
     """Prefer the loader the config wired; fall back to explicit flags."""
     loader = run.optional_single("task_loader")
@@ -1217,7 +1209,7 @@ def main(
         if args.config_source is not None
         else ConfigSource.from_path(canonical, data=source_bytes)
     )
-    composer = build_composer()
+    composer = ConfigComposer.for_config(raw)
     probe = composer.compose(raw)
     loader = _resolve_loader(probe, args.benchmark, args.subset)
 

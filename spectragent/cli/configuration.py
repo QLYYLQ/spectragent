@@ -16,7 +16,6 @@ from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.base import declare_environment_presence
-from spectragent.core.registries import collect_registrars
 from spectragent.core.run_cli import task_context
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceNegotiation
@@ -37,8 +36,7 @@ def explain_config(
         if not isinstance(raw, dict):
             raise ValueError("The configuration must be a YAML mapping")
     with inspection_stage("schema"):
-        registrars = collect_registrars()
-        composer = ConfigComposer(registrars=registrars)
+        composer = ConfigComposer.for_config(raw)
     with inspection_stage("validation"):
         config = composer.top_level_type.model_validate(raw)
     with inspection_stage("composition"):
@@ -102,7 +100,7 @@ def explain_config(
     )
     generated_status = "missing" if missing_files else "stale" if stale_layers else "current"
     with inspection_stage("provenance"):
-        provenance = explain_provenance(run, registrars)
+        provenance = explain_provenance(run, composer.registrars)
     return {
         "checked": checked,
         "launched": False,
@@ -147,8 +145,8 @@ def explain_config(
 
 
 def list_components(layer: str | None = None) -> dict[str, Any]:
-    registrars = collect_registrars()
-    composer = ConfigComposer(registrars=registrars)
+    composer = ConfigComposer.for_every_package()
+    registrars = composer.registrars
     if layer is not None and layer not in registrars:
         raise ValueError(f"Unknown component layer {layer!r}; choose {', '.join(registrars)}")
     schema = composer.top_level_type.model_json_schema()

@@ -41,7 +41,9 @@ async def test_single_run_passes_the_source_version_it_parsed(tmp_path, monkeypa
         )
 
     monkeypatch.setattr(
-        run_cli, "ConfigComposer", lambda **kwargs: SimpleNamespace(compose=compose)
+        run_cli,
+        "ConfigComposer",
+        SimpleNamespace(for_config=lambda raw: SimpleNamespace(compose=compose)),
     )
     monkeypatch.setattr(run_cli.AgentRuntime, "for_agent", lambda *args: Runtime())
     assert (
@@ -62,7 +64,9 @@ def _stub_composer(monkeypatch, path, *, change_source=False):
 
     loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
     monkeypatch.setattr(
-        benchmark_runner, "build_composer", lambda: SimpleNamespace(compose=compose)
+        benchmark_runner,
+        "ConfigComposer",
+        SimpleNamespace(for_config=lambda raw: SimpleNamespace(compose=compose)),
     )
     monkeypatch.setattr(benchmark_runner, "_resolve_loader", lambda *args: loader)
 

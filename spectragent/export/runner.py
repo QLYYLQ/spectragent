@@ -51,9 +51,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from spectragent.agents._registrar import AgentRegistrar
+from spectragent.agents._registrar import registered_agent
 from spectragent.core.archive import canonical_json
-from spectragent.core.composer import ComposedRun, ConfigComposer
+from spectragent.core.composer import ComposedRun
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.sources import (
     TaskIdentity,
@@ -227,21 +227,16 @@ class ExportRunner:
 
     Args:
         exporter: The composed exporter — its job fields and ``translator``.
-        composer: Composes the student's run configuration (the CLI's own,
-            built from ``collect_registrars()``).
         benchmarks: The benchmark loaders the export document configures
             (decontamination and the leak scan read through them).
     """
 
-    def __init__(
-        self, exporter: Exporter, *, composer: ConfigComposer, benchmarks: BenchmarkLoaders
-    ) -> None:
+    def __init__(self, exporter: Exporter, *, benchmarks: BenchmarkLoaders) -> None:
         self.exporter = exporter
-        self.composer = composer
         self.benchmarks = benchmarks
 
     @classmethod
-    def from_run(cls, run: ComposedRun, *, composer: ConfigComposer, origin: str) -> ExportRunner:
+    def from_run(cls, run: ComposedRun, *, origin: str) -> ExportRunner:
         """The export a composed document configures: its one exporter and its benchmark loaders.
 
         Raises:
@@ -253,7 +248,7 @@ class ExportRunner:
             raise ExportConfigError(
                 f"{origin} must configure exactly one exporter, it configures {len(exporters)}"
             )
-        return cls(exporters[0], composer=composer, benchmarks=BenchmarkLoaders.from_run(run))
+        return cls(exporters[0], benchmarks=BenchmarkLoaders.from_run(run))
 
     def run(self) -> ExportReport:
         """Export, validate and publish the dataset.
@@ -276,7 +271,6 @@ class ExportRunner:
         rewriter = self._rewriter()
         renderer = StudentRenderer.from_config(
             Path(exporter.student_run_config).expanduser(),
-            composer=self.composer,
             untranslatable=exporter.translator.untranslatable,
             thought_source=exporter.thought_source,
             thought_index_refs=exporter.thought_index_refs,
@@ -426,7 +420,7 @@ class ExportRunner:
 
         def prepared(source: Source, verdicts_from: Source | None = None) -> _Prepared:
             if source.run_id not in rendering.prepared:
-                teacher = AgentRegistrar.get_or_none(source.config.agent_id)
+                teacher = registered_agent(source.config.agent_id)
                 samples = canonicalise(
                     source.trace,
                     rel_path=source.rel,

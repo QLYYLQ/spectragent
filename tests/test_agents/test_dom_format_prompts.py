@@ -21,7 +21,6 @@ from typing import Any
 import pytest
 import yaml
 
-from spectragent.core.benchmark_runner import build_composer
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget, DOMBudgetPass
 from spectragent.core.capabilities.browser.dom.models import DOMState
@@ -30,6 +29,7 @@ from spectragent.core.capabilities.browser.observations import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.loops._loop_fragments import loop_fragment_builders
 from spectragent.core.runtime import AgentRuntime
@@ -80,7 +80,7 @@ def _compose(agent_id: str, overrides: dict[str, Any], serializer: str) -> Any:
         "model": "offline-stub",
     }
     raw["environment"][0]["capabilities"][0]["dom_serializer"] = {"serializer_type": serializer}
-    return build_composer().compose(raw)
+    return ConfigComposer.for_config(raw).compose(raw)
 
 
 def _capability(run: Any) -> BrowserCapability:
