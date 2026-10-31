@@ -1280,10 +1280,6 @@ class ActionWatchdog(BrowserWatchdog):
 
         The lifecycle waiter is registered **synchronously** before
         ``Page.navigate`` is sent so we don't race the CDP response.
-        Using :func:`agent_cdp.advanced.expect.expect` here would be a
-        race because its ``scope.connect`` runs inside the coroutine
-        body and may not be installed before ``Page.loadEventFired``
-        arrives.
 
         Filters applied to the lifecycle event:
 

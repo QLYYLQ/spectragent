@@ -2555,7 +2555,7 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | capability_id | 协议 | 核心 Actions | Observation Fragments | 典型 Benchmark |
 |--------------|------|-------------|----------------------|---------------|
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
-| `browser` | agent-cdp (CDP) | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
+| `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
 | `android` | ADB + gRPC | `tap()`, `swipe()`, `screenshot()`, `get_ui_tree()` | `mobile_screenshot`, `ui_tree` | AndroidWorld, MobileWorld |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
@@ -3190,7 +3190,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 #### 事件：暂停的进 task，元数据进 scope，字节进侧存储
 
 - **暂停类事件**（`Fetch.requestPaused`、`waitingForDebugger` 的 `Target.attachedToTarget`）在 recorder 的回调里直接派生受跟踪的 task，**绝不进 scope 队列**：普通 scope 队列有容量限制，拒收一个 `requestPaused` 就可能让页面卡住。暂停的主人（Response 阶段是 `browser.network` 的会话）在超时之内读 body。超时是主人自报的预算（`pause_budget_s`，`browser.network` 是 `2 × command_timeout_s + body_read_timeout_s`：POST body 的补取与开不了的流各一条命令，再加内联读）再加 1 s；不报预算的主人用 recorder 的默认 15 s，旋钮因此不会被一个更短的全局上限悄悄截断；**continue 由 recorder 在 `finally` 里发**，不依赖主人记得。回放时规则相反（M30）：只要有一个贡献者声明 `serves_requests`（回放服务），recorder 对 Request 阶段任何没有被应答的暂停（主人超时、主人抛错、找不到主人、teardown 时还扣着的）一律发 `Fetch.failRequest{errorReason: "Failed"}`，**从不 continue**：今天唯一的回放服务属于 `archive` 网络来源，它不把请求放到线上（不同于 mitmproxy 的默认 `forward` 与 WARC-Bench 对 Sentry / Datadog 的 `route.continue()`）。这是 `archive` 来源自己的规则，不是框架的定律（下面"回放：网络来源与 miss 策略"）。主人自己发出 fulfill / fail 并成功之后才把 `PausedRequest.answered` 置位，所以发送失败的那个仍由 recorder 兜底失败。
-- **元数据事件**：哪些 CDP 事件进 archive scope，由贡献者自己声明（`event_methods()`；`browser.network` 声明 `Network.*` 的请求 / 响应 / ExtraInfo / 结束 / 失败与 `webSocket*`），recorder 在 `open()` 时订阅当时贡献者声明的并集。和 Fetch pattern 一样，采什么在 recorder 打开时定下；它自己只认 target 的 attach / detach 簿记。recorder 模块里的本地分发器在客户端的接收循环里把每个原始事件交给声明了它的贡献者准入（`admit_event(method, params, session_id)`，同步）：贡献者返回要交给自己的小事件（带 session id），或 `None`；分发器在事件上记下它的 `consumer`，发进 archive scope。ArchiveWatchdog 在 scope 的循环里把准入的事件只交给准入它的那个贡献者（它可能指向那个贡献者的侧存储），target 簿记交给每个贡献者。准入时抛错与处理时抛错一样记进 `ArchiveChannel.errors`，下一次收集因此抛错。不用 `CDPEventBridge`：它的事件工厂拿不到 session id（让 agent-cdp 的 bridge 带上 session id 是以后的增强，M29 不给它打补丁）。
+- **元数据事件**：哪些 CDP 事件进 archive scope，由贡献者自己声明（`event_methods()`；`browser.network` 声明 `Network.*` 的请求 / 响应 / ExtraInfo / 结束 / 失败与 `webSocket*`），recorder 在 `open()` 时订阅当时贡献者声明的并集。和 Fetch pattern 一样，采什么在 recorder 打开时定下；它自己只认 target 的 attach / detach 簿记。recorder 模块里的本地分发器在客户端的接收循环里把每个原始事件交给声明了它的贡献者准入（`admit_event(method, params, session_id)`，同步）：贡献者返回要交给自己的小事件（带 session id），或 `None`；分发器在事件上记下它的 `consumer`，发进 archive scope。ArchiveWatchdog 在 scope 的循环里把准入的事件只交给准入它的那个贡献者（它可能指向那个贡献者的侧存储），target 簿记交给每个贡献者。准入时抛错与处理时抛错一样记进 `ArchiveChannel.errors`，下一次收集因此抛错。逐贡献者的准入与分流由 recorder 自己的分发器做，不经 `CDPEventBridge`。（agent-cdp 0.5 的桥已经能带上 session id，`with_session=True`，`CrashWatchdog` 在用；早先"桥拿不到 session id"的说法已经过时。）
 - **字节从不随事件走**（archive scope 不保留事件历史）：响应体、POST body、WebSocket 帧的内容、原始 DOM 采集放在会话自己的侧存储里。流式 body 的块（`Network.dataReceived` 的 `data`）在准入时直接追加进它所属的流，准入什么也不交出，块从不进 scope；Chrome 对每个请求都发 `dataReceived`（没开流的不带 `data`），不属于任何流的在准入时丢掉。准入就是分界：`browser.network` 的准入（`archive/network_model.py` 的 `admit_network_event`）把 `requestWillBeSent` 的 `postData` / `postDataEntries` 与帧的 `payloadData` 留在会话的侧存储里（按准入事件的 `event_id`，事件处理时取回），归档从不保存的值根本不进 scope：剥离的请求头只留名字、值置空（名字照样进台账），ExtraInfo 只留 `requestId`、`headers`（与 `statusCode`），`associatedCookies` / `blockedCookies` / `exemptedCookies` 都不带，响应里重复的原始请求头（`requestHeaders` / `requestHeadersText`）去掉。原始事件本身不被修改（多个贡献者共用它）。
 - **收集前缀**：archive scope 显式配置 `queue_maxsize=65536`、`max_history_size=0`，业务标签通过 `metadata` 传入，未知参数直接拒绝。`ArchiveChannel.flush()` 使用 agent-cdp 原生 `scope.flush()` 固定已接收前缀，不发占队列名额的空事件。公开 `scope.stats` 与 flush 的逐投递结果区分完成、失败、取消、拒收、未完成；同时核对 AF 实际发出/处理的元数据与原始 DOM 轮次，收集失败不能伪装成成功空归档。它只报告记录健康/缺口，不把采集或落盘故障写成动作失败。
 
@@ -5412,21 +5412,20 @@ environment:
 
 外部核心依赖：
 - `conscribe` — 注册 + 配置生成
-- `bubus` — 事件总线 (watchdog 事件分发)
-- `agent-cdp` — Browser Capability 内部中间层 (BaseEvent, WatchdogBase, ScopeGroup, EventScope)
+- `agent-cdp` — Browser Capability 内部的进程内事件调度器（BaseEvent、EventScope、ScopeGroup、WatchdogBase，以及把 CDP 事件送进 scope 的 `CDPEventBridge`）；不带 CDP 客户端，不管 target 与会话发现
 - `pydantic` v2 — 数据契约
 - `websockets`（≥ 15，`proxy` 参数）— CDP WebSocket 连接（Browser Capability 内部）
 - `warcio`（Apache-2.0，唯一的依赖是 `six`）— `browser.network` 写 WARC（M29）。许可证陷阱：`py-wacz` → `cdxj-indexer` → `surt`（AGPL），这三个永远不进依赖，锁文件测试守着；WACZ 打包与 SURT/CDXJ 需要时自己实现
 
 ---
 
-## 11. Capability 内部中间层示例：Browser (agent-cdp)
+## 11. Capability 内部中间层示例：Browser
 
-每个 capability 各自管理自己与 backend 之间的中间层协议。以 Browser Capability 为例，内部通过 `agent-cdp` 实现事件驱动架构：
+每个 capability 各自管理自己与 backend 之间的中间层协议。以 Browser Capability 为例，中间层是浏览器包自己的代码：CDP 客户端（`cdp_client.py`）、target 跟踪、recorder、DOM 流水线和输入层都在 `core/capabilities/browser/` 里。agent-cdp 只在其中做进程内的事件调度，也就是下面的 ScopeGroup / EventScope、watchdog 绑定，以及把少数 CDP 事件送进 scope 的 `CDPEventBridge`：
 
 ```
 Browser Capability
-├── agent-cdp 中间层
+├── 浏览器包自有的中间层（scope 调度由 agent-cdp 提供）
 │   ├── 控制连接 CDPClient (WebSocket → Chrome/Chromium；agent 的 tab、观测、动作、viewport)
 │   ├── recorder 连接 CDPClient（只在绑定了归档器或 replayability ≠ none 时；§4.14）
 │   │   ├── browser 级 auto-attach + waitForDebuggerOnStart，逐 target 流水线准备，finally 里 resume
@@ -5457,7 +5456,7 @@ Browser Capability
     ├── local_chrome, lexmount, skyvern, browser_use,
     │   agentbay, airtop, hyperbrowser
     ├── 每个 backend 提供 async open() → ProviderSession.cdp_url
-    │   capability.setup() 调 backend.open() 拿到 cdp_url 后启 agent-cdp
+    │   capability.setup() 调 backend.open() 拿到 cdp_url 后建立 CDP 连接与各 scope
     └── __capabilities__ 声明支持什么：NETWORK_CAPTURE / LAUNCH_ARGS / NETWORK_ISOLATION 只有 local_chrome（§4.9.x）
 ```
 

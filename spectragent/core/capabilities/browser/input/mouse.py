@@ -2,7 +2,7 @@
 
 A plain controller (NOT an agent-cdp watchdog) that owns the cursor position
 and a trajectory strategy, and performs every mouse primitive — move / click /
-wheel / drag — by driving the agent-cdp CDP client directly. ``ActionWatchdog``
+wheel / drag — by driving the browser package's own CDP client directly. ``ActionWatchdog``
 holds one ``HumanMouse`` per tab and calls it directly.
 
 Why a direct-call controller rather than an event-driven watchdog: agent-cdp's
