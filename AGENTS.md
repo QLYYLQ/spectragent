@@ -259,6 +259,15 @@ About 320 tests launch a real headless Chrome, usually a fresh one per test. All
 - **A real-Chrome failure while the machine is loaded:** rerun it alone before calling it load. If it also fails on the base commit, say so; do not mute it.
 - **Tests signal only processes they started.** On 2026-10-23 fakes with made-up PIDs reached real `os.killpg` calls and SIGKILLed unrelated process groups. A session-wide guard in `tests/conftest.py` now refuses and fails any `os.kill` / `os.killpg` aimed elsewhere. A fake standing for a real process replaces the function that sends the signal; never weaken the guard to let a fake through.
 
+### 3.12 Skills and review
+
+The af-* skills under `.agents/skills/` were written by agents and have not been audited by the user. Use them as guidance, never as authority. When a skill disagrees with `docs/architecture_design.md` or the code, the design doc wins; say which skill is wrong.
+
+Review happens at two points (user ruling, 2026-10-31):
+
+- **After each change**, the agent that made it reviews its own diff in the same context with the Ponytail review (the `ponytail-review` skill where the agent has it) and fixes what it finds before committing.
+- **Before a branch is merged into main**, the whole branch diff is reviewed again against `docs/architecture_design.md`, Ponytail and this file, by a reviewer with a clean context, so the read is not anchored on the author's. Every finding is fixed, or reported to the user, before the merge.
+
 ## 4. External dependencies worth knowing
 
 - `conscribe` (v≥2.1.0,<3, in-house) — the registrar + `__wiring__` + config-generation framework. Its three-element `__wiring__` tuple (`(registry, required, optional)`) is the keystone of the whole design. M01 in the DAG = already shipped.
