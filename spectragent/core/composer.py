@@ -459,6 +459,13 @@ class ConfigComposer:
                     )
                 state.record_wiring(f"{path}.{name}", entry, "declaration_only")
                 continue
+            value = getattr(cfg, name, None) if name in model_fields else None
+            if spec.registry_name in self._left_out and not _is_populated(value):
+                # Its layer has no implementation in this run (no named
+                # capability provides an archiver), and the value selects
+                # nothing: nothing could fill it, so the owner's default stands.
+                retained.append((name, entry))
+                continue
             if spec.registry_name not in self._registrars:
                 raise UnresolvedWiringError(
                     f"{path}.{name}: {cls.__name__} declares a receptor slot wired to "
@@ -471,7 +478,6 @@ class ConfigComposer:
                         "Add the registrar to the configuration catalog's input registrars.",
                     ),
                 )
-            value = getattr(cfg, name, None) if name in model_fields else None
             if value is None:
                 if self._registrars[spec.registry_name].inline_only:
                     # Filled from its own block or not at all: omitted or

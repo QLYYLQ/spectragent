@@ -481,6 +481,39 @@ class TestErrors:
         with pytest.raises(ComposeError, match="registrar with an implementation"):
             ConfigComposer(registrars={"cmp_empty": EmptyReg})
 
+    def test_a_receptor_whose_layer_was_left_out_keeps_the_owners_default(self) -> None:
+        # A run naming no capability that provides an archiver leaves the
+        # archiver layer out; trace_writer's archive, omitted, null or [],
+        # selects nothing, so the owner's default stands instead of
+        # uncollected_registry (docs/architecture_design.md §4.2.1).
+        @runtime_checkable
+        class _ItemP(Protocol):
+            key: str
+
+        @runtime_checkable
+        class _OwnerP(Protocol):
+            key: str
+
+        ItemReg = create_registrar("cmp_unbuilt", _ItemP, discriminator_field="key")
+        OwnerReg = create_registrar("cmp_writer", _OwnerP, discriminator_field="key")
+
+        class _WriterBase(metaclass=OwnerReg.Meta):
+            __abstract__ = True
+
+        class _Writer(_WriterBase):
+            __registry_key__: ClassVar[str] = "writer"
+            __wiring__: ClassVar[dict[str, Any]] = {"items": "cmp_unbuilt"}
+
+            def __init__(self, items: list[_ItemP] | None = None) -> None:
+                self.items = list(items or [])
+
+        composer = ConfigComposer(
+            registrars={"cmp_writer": OwnerReg, "cmp_unbuilt": ItemReg}, coverage="partial"
+        )
+        for block in ({}, {"items": None}, {"items": []}):
+            run = composer.compose({"cmp_writer": [{"key": "writer", **block}]})
+            assert run.single("cmp_writer").items == []
+
     def test_invalid_yaml_rejected_by_pydantic(
         self,
         composer: ConfigComposer,
