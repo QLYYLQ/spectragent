@@ -513,7 +513,8 @@ class ConfigComposer:
                 # keys; a value naming one is refused as a fresh process
                 # refuses it at validation.
                 if _is_populated(value):
-                    raise _no_implementation(f"{path}.{name}", spec.registry_name, name)
+                    unimplemented = _unimplemented(spec.registry_name, name)
+                    raise _refusal([_Problem(f"{path}.{name}", unimplemented, True)])
                 retained.append((name, entry))
                 continue
             if spec.registry_name not in self._registrars:
@@ -945,11 +946,6 @@ def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
 def _inside(module: str, packages: Collection[str]) -> bool:
     """Whether *module* is one of *packages* or lies below one."""
     return any(module == package or module.startswith(f"{package}.") for package in packages)
-
-
-def _no_implementation(path: str, layer: str, name: str) -> ComposeError:
-    """The refusal of a value in a field whose layer this run holds no implementation of."""
-    return _refusal([_Problem(path, _unimplemented(layer, name), True)])
 
 
 def _unimplemented(layer: object, name: object) -> str:
