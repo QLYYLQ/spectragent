@@ -1913,6 +1913,7 @@ capability:
 - **协商**：universe 是环境提供的动作加本 Loop 的 `__loop_actions__`。相对名的绑定与歧义规则不变：agent 写的 `done` 绑定到 `loop.done`；环境里也有一个本地名是 `done` 的动作时，相对的 `done` 报 `AmbiguousActionError`，在 `__wiring__` 里写全限定键钉住一个。agent 要求一个已注册、本 Loop 不提供的 Loop 动作时，`IncompatibleActionError` 的提供方是这个 Loop（`provider == "loop '<loop_id>'"`，`provided` 是它提供的那些），不是环境；两边都没有的动作照旧是环境没提供。不带环境的 run 里动作空间只有 Loop 提供的动作。
 - **`wait` 这次仍归 capability**（`browser.wait`，Android 的 `android.wait` 同样，§11.2）：训练导出去掉等待时按动作所属的 capability（键的第一段）对上被截断的采集（§4.15 "等待动作"）；做组合环境之前用同一套机制把它挪到 Loop，先要想清这条规则。
 - **没有别名**：这次改动之前录下的 run 里结束动作叫 `browser.done`。它们的协商与动作空间与现在的不同，不能分叉（`IncompatibleCheckpointError`）；`browser.done` 不是注册的动作，不能导出（`no_counterpart`）。不设别名、不做读时转换，重录（测试数据可丢弃）；trace 格式版本不变。
+- **`scroll` 有起点之前录下的视觉 run 同样不能分叉**（可选起点 `start`，上文"参数的含义"）：那之前录下的 UI-TARS、`browser_use.dom_vision` 与 `skyvern.dom_vision` 的 run 里，`scroll` 的 descriptor 没有起点，录下的动作空间与现在的不同（`IncompatibleCheckpointError`，差在 `action_space`），UI-TARS 的种子系统提示里 `scroll` 的签名也不同。同样不设兼容路径，重录（测试数据可丢弃）。只看 DOM 的 `browser_use.dom`、`skyvern.dom` 不提供起点，它们的动作空间不变，录下的 run 照常分叉。
 
 #### 协商流程
 
