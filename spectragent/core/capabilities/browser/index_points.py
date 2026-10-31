@@ -1,7 +1,8 @@
 """Where a recorded element can be clicked on its recorded screenshot (training export, arch §4.15).
 
 The browser half of the ``index_to_coordinate`` translator. A BrowserUse or
-Skyvern teacher clicks ``[42]``; a vision student has to be taught a point.
+Skyvern teacher clicks ``[42]`` (or types into it, or scrolls inside it); a
+vision student has to be taught a point.
 This module turns a recorded element into that point, or says why there is
 none — off the screenshot, gone from the selector map, covered — and
 records how it decided. It reads only what it is handed (a recorded
@@ -47,6 +48,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Final, Literal
 
+from spectragent.core.actions._registrar import registered_params
+from spectragent.core.actions.params import point_params
 from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
     REQUIRED_COMPUTED_STYLES,
 )
@@ -58,12 +61,18 @@ from spectragent.core.capabilities.browser.dom.models import (
 )
 from spectragent.schemas.sample import UntranslatableReason
 
-#: Index actions with a coordinate action that does the same thing at a point.
-#: Their other params carry over unchanged (``type``'s ``text`` and ``clear``).
+#: Index actions with a coordinate action that does the same thing at a point,
+#: which fills the counterpart's one declared point (``PointAxis``). Their other
+#: params carry over unchanged (``type``'s ``text`` and ``clear``, ``scroll``'s
+#: ``direction`` and ``amount``). A scroll's counterpart is itself, from that
+#: point (its ``start``): a live index scroll turns the wheel at a point inside
+#: the element, as a scroll from a start point does, and what covers the point
+#: takes the wheel as it would take a click.
 COORDINATE_COUNTERPARTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "browser.click": "browser.click_coordinate",
         "browser.type": "browser.type_coordinate",
+        "browser.scroll": "browser.scroll",
     }
 )
 
@@ -116,12 +125,17 @@ def coordinate_action(
 ) -> tuple[str, dict[str, Any]]:
     """The coordinate counterpart of index action *name* at *point*: ``(name, params)``.
 
+    *point* fills the one point the counterpart's registered ``Params`` declare.
+
     Raises:
         KeyError: *name* has no coordinate counterpart.
     """
     counterpart = COORDINATE_COUNTERPARTS[name]
+    declared = registered_params(counterpart)
+    assert declared is not None, f"{counterpart} is not a registered action"
+    ((x_key, y_key),) = point_params(declared)
     rest = {key: value for key, value in params.items() if key != INDEX_PARAM}
-    return counterpart, {"coordinate_x": point[0], "coordinate_y": point[1], **rest}
+    return counterpart, {x_key: point[0], y_key: point[1], **rest}
 
 
 def locate_element(

@@ -91,12 +91,18 @@ class TestGeometry:
         assert dict(COORDINATE_COUNTERPARTS) == {
             "browser.click": "browser.click_coordinate",
             "browser.type": "browser.type_coordinate",
+            "browser.scroll": "browser.scroll",
         }
         assert coordinate_action(
             "browser.type", {"index": 6, "text": "a", "clear": False}, (1, 2)
         ) == (
             "browser.type_coordinate",
             {"coordinate_x": 1, "coordinate_y": 2, "text": "a", "clear": False},
+        )
+        # The counterpart's own point: a scroll starts there.
+        assert coordinate_action("browser.scroll", {"index": 6, "direction": "up"}, (1, 2)) == (
+            "browser.scroll",
+            {"start_x": 1, "start_y": 2, "direction": "up"},
         )
         with pytest.raises(KeyError):
             coordinate_action("browser.select_dropdown", {"index": 1, "text": "a"}, (1, 2))

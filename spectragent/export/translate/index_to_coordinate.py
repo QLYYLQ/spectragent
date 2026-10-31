@@ -4,8 +4,9 @@ For a vision student learning from a DOM teacher. An action that addresses
 an element — a param marked ``AddressesElement`` with a value
 (``core/actions/params.py::element_params``) — becomes its coordinate
 counterpart at the point ``core/capabilities/browser/index_points.py``
-locates on the step's recorded screenshot; every other action passes
-unchanged. The browser knowledge (geometry, occlusion evidence) lives in
+locates on the step's recorded screenshot (a click a coordinate click, a
+scroll inside an element a scroll from that point); every other action
+passes unchanged. The browser knowledge (geometry, occlusion evidence) lives in
 ``index_points``; this module fetches what it needs from the trace and
 organises the calls.
 """
@@ -56,7 +57,7 @@ class _StepEvidence:
 
 
 class IndexToCoordinateTranslator(ActionTranslatorBase):
-    """``browser.click`` / ``browser.type`` by index → ``*_coordinate`` at a checked point."""
+    """``browser.click`` / ``browser.type`` / ``browser.scroll`` by index → the same at a checked point."""
 
     __registry_key__ = "index_to_coordinate"
 

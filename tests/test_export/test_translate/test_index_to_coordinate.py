@@ -58,6 +58,24 @@ class TestGeometry:
             )
         ]
 
+    def test_a_scroll_inside_an_element_becomes_a_scroll_from_its_point(
+        self, recorded: Recorder
+    ) -> None:
+        """Its start is where the live index scroll would have turned the wheel."""
+        scroll = Action(
+            name="browser.scroll",
+            params={"direction": "down", "amount": 600, "index": INDEX["clear"]},
+        )
+        sample, trace = recorded([scroll])
+        translation = IndexToCoordinateTranslator().translate(sample, trace)
+        assert translation.actions == [
+            Action(
+                name="browser.scroll",
+                params={"start_x": 700, "start_y": 220, "direction": "down", "amount": 600},
+            )
+        ]
+        assert translation.records[0].payload["point"] == [700, 220]
+
     def test_an_iframe_element_is_placed_by_its_page_box(self, recorded: Recorder) -> None:
         """``bounds`` already include the frame's offset: no second offset."""
         sample, trace = recorded([_click("inside")])
@@ -93,7 +111,6 @@ class TestUntranslatable:
         "action",
         [
             Action(name="browser.select_dropdown", params={"index": 7, "text": "Large"}),
-            Action(name="browser.scroll", params={"direction": "down", "index": 7}),
             Action(name="browser.extract_content", params={"index": 7}),
         ],
     )
@@ -168,9 +185,18 @@ class TestOcclusion:
             translation.records[0].payload["point_source"],
         ) == ("dom_raw", "grid")
 
-    def test_dom_raw_fully_covered(self, recorded: Recorder) -> None:
+    @pytest.mark.parametrize(
+        "action",
+        [
+            _click("covered"),
+            Action(name="browser.scroll", params={"direction": "down", "index": INDEX["covered"]}),
+        ],
+        ids=["click", "scroll"],
+    )
+    def test_dom_raw_fully_covered(self, recorded: Recorder, action: Action) -> None:
+        """What covers the element takes the wheel as it takes the click."""
         sample, trace = recorded(
-            [_click("covered")], state=sticky_state(paint_orders=False), documents=[raw_document()]
+            [action], state=sticky_state(paint_orders=False), documents=[raw_document()]
         )
         translation = IndexToCoordinateTranslator().translate(sample, trace)
         assert translation.untranslatable is not None
