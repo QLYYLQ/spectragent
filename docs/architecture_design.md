@@ -51,7 +51,7 @@
 | **Tool-Use Agent** (ToolBench, BFCL) | API 沙箱 | ReAct / function-calling | **动态的** — 每个 task 定义不同的可用 tools | 上一次 tool 调用的返回值 | 工具调用序列匹配 |
 | **多工具推理** (GAIA) | 浏览器 + 计算器 + 代码解释器 | Plan-Execute / ReAct | 混合：navigate + calculate + run_code | 混合：页面 + 计算结果 + 代码输出 | 最终答案精确匹配 |
 | **桌面 Agent** (OSWorld) | 桌面 VM (VNC) | ReAct (视觉) | click(x,y), type, hotkey | 桌面截图 | 最终状态检查 |
-| **移动 Agent** | 手机 (ADB/Appium) | ReAct (视觉) | tap(x,y), swipe, input | 屏幕截图, view hierarchy | UI 状态断言 |
+| **移动 Agent** (AndroidWorld) | Android 模拟器 / 手机 (ADB) | ReAct (视觉) | 点按(x,y), 滑动, 输入, 系统键 | 屏幕截图, view hierarchy | 设备状态检查（基准的任务裁判在活体设备上判，§4.2） |
 
 ---
 
@@ -142,7 +142,7 @@
 > **`backend` 是 capability 的执行层配置**：每个 capability 通过 `__wiring__["backend"] = "<provider_registry>"` 声明后端注册表（如 BrowserCapability 用 `"browser_provider"`）。Backend 文件物理上属于 `core/capabilities/{cap}/backends/`，与 capability 同目录，从属关系一目了然。
 
 > 完整的 Capability 架构示意图见 [`flat_capability_architecture.svg`](./flat_capability_architecture.svg)。
-> 每个 capability 各自管理自己的 lifecycle（启动/销毁/清理），通过 `setup()` 调 `backend.open()` 取得 transport 端点（cdp_url / vnc_address / adb_device_id ...），`teardown()` 调 `backend.close()` 释放 session。
+> 每个 capability 各自管理自己的 lifecycle（启动/销毁/清理），通过 `setup()` 调 `backend.open()` 取得 transport 端点（browser 的 `cdp_url`、Android 的回环 `AdbEndpoint`、desktop 的 VNC 地址……，各归各 capability 的包，§11），`teardown()` 调 `backend.close()` 释放 session。
 > Framework（AgentRuntime）负责：协商 observation/action → 织入 AOP → weave Loop → 评分。
 
 ---
@@ -861,6 +861,16 @@ class AgentRuntime:
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `writing`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
+**Loop 结束之后、teardown 之前的判分时间点（用户 2026-10-31 的裁决）。** 有的基准只能对着活体环境判分：AndroidWorld 读设备上的数据库、文件与设置，必须在 agent 停下之后、设备拆掉之前的一个确定时刻跑。所以 Runtime 在 Loop 结束（返回或抛出）之后、`_finish` 之前，调一次织过的环境的 `read_oracle_scores(timeout_s=...)`（§4.3）：判分要进 trace，trace 在 `on_run_end` 里收尾，teardown 又在 `on_run_end` 之后。环境还活着的结束路径都经过它：完成、步数用完、超时、Loop 抛错、否决；环境在 run 里已经坏了也照样调，裁判读不出来就记成没判。setup 失败的 run 走不到 Loop，不判。Runtime 不认识 capability，经 environment 到达裁判；这是一次公开的方法调用，不是旁路（§4.6 "与 emitter.dispatch() 的权衡"）。
+
+- **谁判**：实现了可选 Protocol `TaskOracle`（§4.9）的 capability，Android 的任务裁判就是它（§11.2）。environment 并发问每一个，各限时 `timeout_s`；本 run 没有裁判的 capability 返回 `None`，不进记录。
+- **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。
+- **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛。被取消的 run 没有判分记录，评测器记为没判。
+- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
+- **记录**：TraceWriter 经 AOP 拦截 `read_oracle_scores`（`after`，role `env`），把交回的列表写成 §5.3 的判分记录（`oracle_scores.json`）；评测器从这份记录读判分（§4.11），从不碰活体环境。
+
+它不借 `collect_archive` 的时机：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，§4.9 "最后一次收集"），收集也从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻对着环境跑。
+
 **收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（某个 hook 的 `on_run_end` 抛错；`TraceWriter` 自己收尾时从不抛错，它把写不进去的东西记进 trace 的 `incomplete_reason`，§4.6），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。被否决的 run 同理（下一段）。其余路径（完成、超时、其他异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
 
 **否决总是上抛，记录失败顶替不了它。** `execute` 只看从 Loop 里出来的是不是 `RunAbort`。Loop 重抛否决之前先把被否决的那一步交给 `record_step`；那次记录若失败（归档收集坏了、磁盘满），记录失败绝不能取代否决从 Loop 里出来，否则 `raise_on_error=False` 会把它当成普通失败吞成结果，sweep 接着跑下一个任务。Loop 把它作为 note 附在否决上照样重抛；基础设施失败的终止结果同理，`error` 仍然点名根因（§4.6 "记录失败不顶替 run 已经定下的结局"）。收尾失败同样顶替不了它：`execute` 对否决和对取消一样处理（`_close_out_vetoed`）：`_finish` 抛出的 `Exception`（某个 blocking hook 收尾失败）只记日志，并作为又一条 note 附在否决上，重抛的仍是 `RunAbort`，sweep 照样停下。磁盘一直满着时，`TraceWriter` 收尾要把这一步还登记着的调用（归档时还有遗留批次和尾部）作为 trailing 提交，照样失败——它不抛错，写不进去的那一样丢掉，原因记进 trace 的 `incomplete_reason`（连终态都写不进去时 manifest 停在 `writing`），§4.6。**setup 里的否决也是否决**：环境 setup 期间抛出的 `RunAbort` 不被当成普通的 setup 失败，照样以 `agent_done=vetoed` 收尾、越过 `raise_on_error=False` 上抛，sweep 照样停下。取消落在否决的收尾里时，取消优先：`CancelledError` 是 `BaseException`，这一层不接它。
@@ -987,6 +997,9 @@ class Environment(Protocol):
     # setup 之前的检查 — prepare() 调：setup 会拒绝的，现在就拒绝（下文）；不获取任何资源
     def check_setup(self, context: Mapping[str, Any] | None = None, *,
                     negotiation: Any = None, archivers: Sequence[ArchiverBase] = ()) -> None: ...
+
+    # 判分（§4.2）— Runtime 在 Loop 结束之后、on_run_end 之前调一次；扇出给实现了 TaskOracle 的 capability
+    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]: ...
 
     # 生命周期 — setup 的 context 按 capability 路由，不广播（capability 自己内部调 backend.open/close）；
     # teardown 在 setup 半途失败、或根本没有 setup 之后调用也必须安全
@@ -1151,6 +1164,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - `verify_restoration(recorded, restored) -> list[RestorationEvidence]`：按 capability 顺序扇出到每个实现了 `RestorationSupport` 的 capability，各交回一份证据（带自己的 `capability_id`）；没有任何实现者时是空列表，即"没有可校验的"。`recorded` 与 `restored` 都是本次协商的整个 `NegotiatedObservation`，capability 按自己 fragment 的本地名读它要的那几个（协商保证本地名不撞）。
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
 - `align_next_observation(recorded, *, media_seek_timeout_s, media_end_lead_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
+
+**判分的路由（用户 2026-10-31 的裁决，§4.2）**（`core/environments/_registrar.py`）：`read_oracle_scores(*, timeout_s)` 给每个实现了 §4.9 `TaskOracle` 的 capability 一个任务，并发跑，每个限时 `timeout_s`；返回 `None` 的（本 run 没有裁判）不进列表，超时或抛 `Exception` 的换成一份 `status: not_scored` 的 `OracleScore`（`reason` 是 `timeout` 或 `error`，`detail` 是诊断）；全部跑完才按 capability 顺序返回，从不抛 `Exception`。`CancelledError` 原样传播：先取消还没结束的裁判、等它们收场，再重抛，不留孤儿任务（与 `collect_archive` 同一做法）。没有实现者时返回空列表。Protocol 上有这个方法，Runtime 对每个走到判分时间点的 run 都调它，所以结构化实现 `Environment` 的环境也要实现它。
 
 **fragment 的格式说明**（`core/environments/_registrar.py`，§4.4 "观测格式由提供方描述"）：`fragment_formats() -> dict[str, str]`：按 capability 顺序合并每个实现了 §4.9 `FragmentFormats` 的 capability 交出的说明（全限定键 → 文字）；没实现的 capability 什么都不描述。capability 只为自己的 fragment 说话：交出的键不在 `<capability_id>.` 前缀下时抛 `ValueError`，不让它替别的 capability 的 fragment 写说明。只读配置：`AgentRuntime.prepare()` 第 2b 步在 setup 之前调它，而且只在 Agent 引用的 fragment 这个 run 确实激活了时才调。
 
@@ -2026,7 +2041,7 @@ loop.weave(wrapped_agent, env=wrapped_env, llm=wrapped_llm,
 
 | hook_id | 状态 | blocking | `__intercepts__` | 职责 |
 |---------|------|----------|-------------------|------|
-| `trace_writer` | ✅ | True | `around_ainvoke(llm)`、`around_act(env，仅有环境时)`、`around_execute_step(loop)`、`around_observe_terminal(loop)`、`around_record_step(loop)` | 单一调用账与执行计时，含每个动作的起止时间；步骤交接时封存所选事实和原始 env 的归档批次，有界后台任务按原身份提交/重试。收尾只把未交出步骤的调用与真正尾部证据写为 trailing；错误进入记录健康，不控制执行。 |
+| `trace_writer` | ✅ | True | `around_ainvoke(llm)`、`around_act(env，仅有环境时)`、`after_read_oracle_scores(env，仅有环境时)`、`around_execute_step(loop)`、`around_observe_terminal(loop)`、`around_record_step(loop)` | 单一调用账与执行计时，含每个动作的起止时间；步骤交接时封存所选事实和原始 env 的归档批次，有界后台任务按原身份提交/重试；判分时间点交回的判分写成判分记录（§4.2、§5.3）。收尾只把未交出步骤的调用与真正尾部证据写为 trailing；错误进入记录健康，不控制执行。 |
 | `prompt_contribution` | ✅ | True | `around_build_react_prompt(agent)` | 以显式步骤/阶段生成并传递贡献，Agent 负责消息位置；helper 调用独立归因，由 Runtime 统一收尾。 |
 | `omit_source_replies` | ✅ | True | `around_build_restored_history(agent)` | restored 历史的对照臂：交给 Agent 的恢复历史不带源回复（thought），动作与实际恢复执行照常；trace 的 `source_history` 不变（§4.1）。 |
 | `live_monitor` | 本地终端监控 | True | `around_observe(env)`, `around_act(env)`, `around_ainvoke(llm)`，步骤记录与 lifecycle | 只在内存中捕获开始、完成、失败和取消；界面独立刷新，不在 handler 中做文件、网络或终端 I/O。无环境时不声明 env 拦截。见 §4.17。 |
@@ -2397,6 +2412,8 @@ class RestorationAlignment(Protocol):
 - 预约只属于紧接着的那一次观测；那次观测的 `verify_restoration` 交回对齐记录并清掉预约（用上与否），所以检查点之后的策略步与终止观测从不对齐。
 - 不进 `BaseCapability`，`CapabilityBase` 不给默认；不实现的 capability 什么都不用写，environment 的扇出跳过它。它与 `RestorationSupport` 分开，是因为能重定位与校验的 capability 不一定有可对齐的东西。
 
+**恢复证据按 capability 分型（用户 2026-10-31 的裁决；与 Android 的分支回放一起，在 Android 阶段 3 开头实施）。** 上面的 `RestorationEvidence` 是一个固定结构，字段是浏览器那一套（网址、元素签名、截图距离、文档 miss、媒体）；判定（`core/loops/restore/checks.py`）把这些字段写死，失败原因是一个封闭的列表（§5.3 的 `RestorationReason`）；对齐用的参数也是媒体专用的，却挂在框架上。"恢复出的状态与录下的对不对得上"，不同环境的标准天差地别：Android 量的是前台 app 与 Activity、界面树签名、截图距离。往现成字段里挤会让它们冒充浏览器的量，往这个结构里加字段会让它变成大部分为空的大杂烩。所以改为每个 capability 定义自己的恢复证据与判定，trace 里按 capability 存，读回时按 id 找到类型，与动作效果 `Effect` 同一做法（§4.5）；`align_next_observation` 的媒体参数与 `prefix_replay` 上的 `media*` 旋钮一起挪进浏览器。实施之前，本节与 §4.1、§4.3、§4.14、§5.3 写的仍是现状。
+
 **采集一致性检查（M32）也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
 
 ```python
@@ -2446,6 +2463,20 @@ class SetupCheck(Protocol):
 - capability 的 `setup()` 可以再调一次同一个方法（防御性复查，带着那时已绑定的归档器）：browser 如此。
 - Browser 的实现（`BrowserCapability.check_setup`）：profile 的 watchdog 解析不了的已协商 fragment（profile 当场重新解析），任务的起始页不是一个 http(s) URL（`start_page.py::start_page_problem`，§4.10 "起始页"），§4.14 "协作检查一览"的全部行（`cdp_url` 取路由来的 context，没有再取旋钮），回放时源 run 与本配置的一致性（只读源 run 的环境指纹）；一次报全，合成一个 `BrowserCooperationError`。`replay_archive` 指向的不是已提交的 run 目录时抛 `ArchiveOpenError`。
 - 与 `RestorationSupport`、`CaptureCheck` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。
+
+**活体判分也是单独的、可选的 Protocol**（`core/capabilities/base.py`，用户 2026-10-31 的裁决，§4.2 "判分时间点"）：
+
+```python
+@runtime_checkable
+class TaskOracle(Protocol):
+    # Loop 结束之后、on_run_end 与 teardown 之前，对着活体环境读出本任务的判分。
+    # 只判不改：不执行动作、不拆环境。本 run 没有裁判时返回 None；时限由 environment 执行
+    async def read_score(self) -> OracleScore | None: ...
+```
+
+- 为什么需要：有的基准只能对着活体环境判分（AndroidWorld 读设备上的数据库、文件与设置），只有 capability 够得着那个环境。判分作为证据进 trace（§5.3 的判分记录），评测器读它，不另开"活体评测器"。
+- 判了的 `OracleScore` 由裁判自己填（分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。
+- 与 `SetupCheck`、`RestorationAlignment` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。Android 的任务裁判实现它（§11.2）。
 
 #### 4.9.x Capability ↔ Backend 生命周期
 
@@ -2557,9 +2588,11 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
 | `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()`, `done()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
-| `android` | ADB + gRPC | `tap()`, `swipe()`, `screenshot()`, `get_ui_tree()` | `mobile_screenshot`, `ui_tree` | AndroidWorld, MobileWorld |
+| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`type_coordinate`；`scroll` 落在哪里待定（见 §11.2）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、界面树（键的设计待定，见 §11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
 | `tool_sandbox` | HTTP / in-process | `call_tool(name, params)`, `get_user_msg()`, `get_policy()` | `tool_result` | τ-bench, ToolBench, AppWorld |
+
+**相对名就是参数契约（用户 2026-10-31 的裁决）。** 协商只按名字绑定、不看参数（§4.3 的 capability-relative wiring），同名不同参要到协商通过之后的参数校验才报错。所以不同 capability 用同一个相对名，就必须是同一份语义与参数：Android 与浏览器语义、参数都相同的动作沿用浏览器的相对名，不同的另起名。UI-TARS 这类坐标 agent 的必需动作因此不改 `__wiring__` 就能协商；它的移动端动词要在 wiring 里把 `long_press`、`open_app`、`press_key` 加为可选动作。往焦点框里输入叫 `type_text`，因为浏览器的 `type` 按 DOM 索引寻址；系统键叫 `press_key`，因为返回键、主页键不是 `send_keys` 那种组合键。手势的时长（`drag`、`long_press`）照 §4.5 "YAML 驱动的行为调参" 是动作实例上的设置（与 `ScrollAction.default_amount` 一样），不是给模型的参数，所以 `drag` 与浏览器同参。`scroll` 落在哪里还没定（§14.5）。截图片段同理：Android 的截图是 `android.screenshot`，本地名 `screenshot`，坐标帧与 `RunTrace.screenshots` 都按这个本地名找截图（§4.1 "坐标系归框架"）。
 
 **Capability 通过 `__wiring__` 声明 observation provides**：
 
@@ -2790,6 +2823,8 @@ class BaseEvaluator(Protocol):
 
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
 每个 evaluator（包括仅结构化满足 Protocol 的实现）公开 `config_signature()` 与稳定的 `verdict_slug`：无旋钮时签名显式返回 `{}`，有旋钮时写出影响判定的可复现设置，slug 随之变化。Runner 不猜测缺失身份，也不把读取签名的异常吞掉后记成空签名。落盘的 `EvalResult` 只接受当前 `schema_version: "2.1"`；构造新判定时 `verdict_source` 默认 `graded`，读回已存判定时该字段与 `evaluator_config` 必须实际存在，旧数据不能被默认值伪装成已评分。
+
+**活体环境的判分也从 trace 读（用户 2026-10-31 的裁决）。** 只能对着活体环境判的基准（AndroidWorld 读设备上的数据库、文件与设置）不开"活体评测器"这个例外，那会违反"录一次、评多次"：capability 的任务裁判在 Runtime 的判分时间点（§4.2）读出判分，写成带来源的判分记录（§5.3），评测器经 `RunTrace.oracle_scores()` 读它，不碰活体环境；"没判"的记录与没有记录都不算判错。Android 阶段 3 加上状态转储归档器之后，一部分判分可以离线重算，用来对变体重评（换部分分规则、换比较字段）。
 
 **现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
@@ -4523,6 +4558,7 @@ traces/
       ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 7；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
+      ├── oracle_scores.json            # 判分记录（list[OracleScore]，§4.2）；没有任务裁判或没走到判分时间点就没有
       │
       ├── steps/
       │   ├── 000.json                  # StepRecord
@@ -4579,6 +4615,7 @@ traces/
 | 归档文件（trailing） | `env/trailing/{n:02d}/{archiver_id}/{name}` | `archive_trailing_path(n, archiver_id, name)`；`n` 同上，是该条目在 `manifest.trailing` 里的位置 |
 | 内容寻址的归档文件 | `env/blobs/sha256/{sha256[:2]}/{sha256[2:]}` | `archive_blob_path(sha256)`；run 内只写一次，`sha256` 是 `data` 的摘要 |
 | run 记录 | `env/run.{capability_id}.json`（第 0 版）、`env/run.{capability_id}.{k}.json`（第 k 版，k ≥ 1） | `archive_run_path(capability_id, version)`；JSON |
+| 判分记录 | `oracle_scores.json` | `list[OracleScore]`；Loop 结束之后、`result.json` 之前写一次（§4.2） |
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
@@ -4637,6 +4674,8 @@ traces/
 
 `complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
+**判分记录（`oracle_scores.json`，用户 2026-10-31 的裁决）。** TraceWriter 收到 `read_oracle_scores` 的返回（§4.2）就交给持久化，在 `on_run_end` 写 `result.json` 之前提交，manifest 的 `oracle_scores` 指向它；空列表不写文件。它不受 RecordingPlan 的通道选择影响：它很小，评测离不开它。写不进去是一条记录问题（`incomplete_reason` 点名 `oracle_scores`），与 agent 的结局无关。读侧是 `RunTrace.oracle_scores() -> list[OracleScore]`，没有记录时是空列表，评测器记为没判。
+
 **记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 7`）：
 
 ```python
@@ -4680,6 +4719,19 @@ class TraceManifest(BaseModel):
     trailing: list[TrailingEntry] = Field(default_factory=list)
     output_formats: list[str] = Field(default_factory=list)  # 已提交的 output schema 的 sha256
     prompt_images: list[str] = Field(default_factory=list)   # 已提交的 prompt 图片：messages/images/<sha256><后缀>，每张一次，按提交顺序
+    oracle_scores: str | None = None         # oracle_scores.json；没有判分记录为 None
+
+class OracleScore(BaseModel):          # oracle_scores.json 的一条：一个 capability 的任务裁判对本任务的判分（§4.2）
+    capability_id: str
+    status: Literal["scored", "not_scored"]
+    score: float | None = None         # 判了：基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；scored 时必有
+    oracle: str | None = None          # 裁判身份，如 "androidworld"；scored 时必有，裁判没交回时为 None
+    oracle_version: str | None = None  # 裁判版本，如钉住的 AndroidWorld commit
+    provenance: dict[str, str] = Field(default_factory=dict)   # 判的是什么：基准的任务 id、参数摘要……，裁判自己给
+    started_at: float                  # 墙钟 Unix 时间，与 StepRecord.timestamp 可比
+    duration_ms: int
+    reason: Literal["timeout", "error"] | None = None   # 恰在 not_scored 时有值
+    detail: str | None = None          # 没判的诊断：异常类名与消息
 
 class ExtraFileRecord(BaseModel):      # extra 文件索引里的一条
     path: str                          # run 目录下的相对路径
@@ -5419,7 +5471,9 @@ environment:
 
 ---
 
-## 11. Capability 内部中间层示例：Browser
+## 11. Capability 内部中间层示例
+
+### 11.1 Browser
 
 每个 capability 各自管理自己与 backend 之间的中间层协议。以 Browser Capability 为例，中间层是浏览器包自己的代码：CDP 客户端（`cdp_client.py`）、target 跟踪、recorder、DOM 流水线和输入层都在 `core/capabilities/browser/` 里。agent-cdp 只在其中做进程内的事件调度，也就是下面的 ScopeGroup / EventScope、watchdog 绑定，以及把少数 CDP 事件送进 scope 的 `CDPEventBridge`：
 
@@ -5481,7 +5535,100 @@ scope（§4.14）。
 
 **策略一律不在 profile 上**：`dom_cleaner`、`dom_serializer`、`mouse_trajectory`、`typing_rhythm`、`replayability`、`network_source` 全部是 `BrowserCapability` 上的 `__wiring__` 受体（§4.12 / §4.13 / §4.14）。profile 曾经用字符串名持有 cleaner 与 serializer，后果是消费者拿着名字去注册表里 `get(name)()` 现造一个默认实例，把 Composer 已经按 YAML 构造好的那个丢掉——策略的 knobs 生成在 config 里却无人可达。profile 也不支持 override 或增量修改：一个预设要么被整体选中，要么另起一个。区分规则是「谁为它买单」——改变一次 capture 花多少次 CDP 往返的，属于 profile；改变产出的 observation 让 prompt 花多少 token 的（`screenshot_quality`、`dom_max_elements`），是 capability 自己的 `Annotated` 标量。
 
-其他 capability 的中间层各不相同：Docker 用 Docker Engine API（`core/capabilities/docker/backends/` P2 占位），Android 用 ADB + gRPC，Desktop VM 用 VNC + AT-SPI，GPU Profiling 用 Unix socket IPC → bare-metal harness。这些都是 capability 的实现细节，framework 不感知。
+其他 capability 的中间层各不相同：Docker 用 Docker Engine API（`core/capabilities/docker/backends/` P2 占位），Android 用 ADB 加我们自己的设备端服务（§11.2），Desktop VM 用 VNC + AT-SPI，GPU Profiling 用 Unix socket IPC → bare-metal harness。这些都是 capability 的实现细节，framework 不感知。
+
+### 11.2 Android
+
+Android 的中间层同样是 Android 包自己的代码（`core/capabilities/android/`）。`AndroidEnvironment` 也放在这个包里，不照 `BrowserEnvironment` 放进框架的 `core/environments/`，否则加 Android 就要改框架文件。与浏览器有两处不同。第一，服务端要自己写：Chrome 自带 CDP 服务端，ADB 却只提供管道，所以设备上要装我们自己的无障碍服务 APK 和一个 shell 身份的助手，并随 Android 版本维护。第二，不导入 agent-cdp：传输、流和设备发现它都不做，能帮上的只有每台设备上的调度（`tests/test_core/test_capabilities/test_agent_cdp_boundary.py` 禁止浏览器包以外的模块导入它）。桥接契约由 Android 包自己用 Protocol 定义，下面各层是这些 Protocol 的实现。本节是 2026-10-29 至 10-31 的调研里定下的设计；证据与被否决的选项在本地的调研报告里（`tmp/reports/android_capability_research.html`，不入库），阶段划分见 `docs/execution_dag.md`。
+
+```
+Android Capability（core/capabilities/android/）
+├── capability 自己：片段、动作、界面"静止"的定义、app 名称到包名的解析
+├── 策略轴：provider、UI 树来源、键入后端、点按注入器、任务裁判（none / androidworld）
+├── 设备会话层（每台设备一个；自写，不导入 agent-cdp）
+│   ├── 串行工作队列：采集与动作一个一个来，等待上限与执行上限分开
+│   ├── 采集扇出：一次采集同时问截图、界面树、前台 app，各带超时，等齐了再交出
+│   ├── 流读取：无障碍事件（一条不丢）、logcat（在读取端过滤）
+│   └── 热插拔、进程变化；系统弹窗、ANR、权限框
+├── 主机传输层（自写的 asyncio ADB host 协议客户端）
+│   ├── 每个 run 一个私有 adb server，起在私有端口上
+│   └── 一条连接只办一件事：track-devices、shell,v2:、exec:、sync:、tcp:、abb_exec:，以及到设备端服务的转发
+├── 状态查询：dumpsys、settings、content、root 下的 sqlite3
+├── 模拟器控制面（只在模拟器上）：grpc.aio 存根，端口从 pid_<PID>.ini 读
+│   └── 快照、setVmState、硬件路径触摸、无损截图
+└── Backend（core/capabilities/android/backends/，AndroidProviderRegistrar）
+    ├── v1：本地模拟器、按 adb 序列号接上的已连接设备；云手机以后
+    └── open() 返回的会话带着回环 AdbEndpoint（host、port、kind、encrypted、needs_adb_key、expires_at）
+
+设备端（我们自己写，随 Android 版本维护）
+├── 无障碍服务 APK（主力；adb install 安装，写 secure 设置开启；最低 Android 11）
+│   ├── UI 树与事件流、元素级动作、手势（点按、滑动、多指）、全局动作（返回、主页、最近任务）
+│   ├── 截图（API 30+，最快每 333 ms 一张）、文本输入（API 33+）
+│   └── isAccessibilityTool：构建期开关，默认 false
+├── shell 身份助手（app_process）：快速截图、任意按键；安装、开启服务，force-stop 之后重新开启；
+│   也是一种点按注入器（injectInputEvent）
+└── 与主机的通道：adb forward 到一个 localabstract socket；长度前缀消息，带请求 id；先做版本握手；
+    每个会话一个 token；ContentProvider 负责启动引导与健康检查
+```
+
+**主机传输层。** ADB 的 host 协议很小：每条请求是 4 位十六进制的长度加内容，一条连接只办一件事（跑 shell 命令、传文件、连到设备上我们自己的服务），并发就开多条。Python 里没有仍在维护的原生 asyncio ADB 客户端（2026-10 查过），所以自己写。每个 run 在私有端口上起自己的 adb server（`adb -P <port>` 或 `ADB_SERVER_SOCKET`）：`adb connect` 会把设备登记进一个按用户、所有运行共享的 server，那违反零全局状态。
+
+**两把钥匙。** ADB 密钥是 adb 自己的一对 RSA 钥匙，让设备信任"这台电脑"。每个实验生成一对，私钥不离开 Spectragent，也不碰本机的 `~/.android/adbkey`（那一把同时能连用户自己的手机），实验用完就作废。接云手机时只有公钥交给 lite SDK，由它经厂商接口装进云手机（真机上同一步是有人在屏幕上点"允许 USB 调试"）。厂商的 API key 是另一把：lite SDK 用它调厂商接口（开机、拿 ADB 地址、关机），账单记在它名下，照旧归 lite SDK 管，与浏览器 lite SDK 的 apikey 是同一个概念。本地模拟器与 USB 真机怎样配私有 adb server 和实验密钥，阶段 0 实测。
+
+**设备会话层（2026-10-31 定）。** 自己写，不导入 agent-cdp。agent-cdp 的行为按浏览器调过：队列满了就拒收最新的事件，而无障碍事件不能丢；事件类注册在整个进程共用的一张表里，Android 的事件类会与浏览器的撞名；Android 的每个新需要都会变成一次 agent-cdp 的发版。会话层的约定：
+
+- 每台设备一个串行工作队列，采集与动作排队一个一个来；等待上限与执行上限分开，没开始的任务可以撤回，被取消的任务要等它真正退出。agent-cdp 0.5 踩过的四个坑写成会话层的测试：任务不能等它自己；等待上限与执行上限分开；一个处理器被取消不能弄死整条队列；flush 要能确认之前收到的都已处理完。
+- 一次采集同时问几个来源（截图、界面树、前台 app），用 `asyncio.gather` 加每个来源各自的超时，等齐了再交出。
+- 服务推送的界面事件一条都不能丢：丢掉一个内容变化事件，主机镜像的界面树就会悄悄过期。logcat 是高量的行流，只有少数行有用（崩溃、ANR），在读取端过滤之后再交出。
+- 以后若长出很多"看到某个事件就反应"的组件（例如每个动作前查系统弹窗、崩溃后自动恢复），再考虑只借 agent-cdp 的调度器，那时把缺的"等待式发送"写进它的需求台账。
+
+**模拟器控制面。** 只有模拟器有：经 `grpc.aio` 存根连模拟器自己的 gRPC，端口从运行中的模拟器写下的 `pid_<PID>.ini` 发现文件读，不写死；提供快照、`setVmState`（暂停虚拟机）、硬件路径触摸和不经客体进程的无损截图。gRPC 自带超时、取消与流控。
+
+**设备端。** 主力是我们自己的无障碍服务 APK。只要拿得到 adb shell，它就能无人值守地开启（`adb install` 之后把服务追加进 `enabled_accessibility_services`，不覆盖已启用的别的服务），而且它是唯一能推送界面事件、不依赖 adb 连接存活的路线。shell 身份助手补上服务做不到的事：不受 333 ms 限制的截图、任意按键，以及服务被关掉之后的重新开启。四条硬约束，任何代码路径都不许违反：
+
+- 不开默认方式的 UiAutomation：它在连接期间解绑所有无障碍服务；确实需要时必须带 `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`；
+- 服务启用期间不调 `uiautomator dump`：它用的正是默认方式的 UiAutomation；
+- 复位时不 force-stop 我们自己的包：force-stop 会把服务从启用列表里永久移除，复位只停被测 app；
+- 开启之后用 ping 确认服务真的绑上了，不重读设置：Android 14 起被拒的服务会从设置里悄悄消失，不报错。
+
+setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有这个特性，系统会取消所有无障碍手势，节点动作却照常可用。`isAccessibilityTool` 做成 APK 的构建期开关，默认 `false`：这个声明告诉系统"这是给残障用户用的工具"，声明了限制与提醒会少一些，而它带来的好处是否真的挡住评测任务还没测过；它的两项影响（任务路径上有没有数据敏感视图，24 小时提醒会不会出现在截图里）阶段 2 写 APK 时实测。
+
+**主机与设备之间的通道。** APK 里的服务绑在一个 `localabstract` socket 上，主机经 `adb forward` 连它：不依赖设备自己的网络（不必为连主机关飞行模式、设 `no_proxy`，也就不与切换网络的任务冲突），也不占设备上每个 app 都看得见的 localhost TCP 端口。消息是长度前缀的帧，带请求 id，服务主动推送的事件走同一条 socket；连上先做版本握手，不匹配就拒绝；每个会话一个鉴权 token，经 adb shell 下发。另留一个 ContentProvider（`adb shell content`）负责启动引导与健康检查：它不需要 forward，服务的 socket 挂了它也还在；每次调用都要起一个 shell 进程，所以不传大块数据。默认不让设备主动连主机，那需要 `adb reverse` 或只在模拟器上有效的 `10.0.2.2`。界面树的线上格式对齐 android_env 的 `AndroidAccessibilityForest`，AndroidControl 数据集存的也是这个格式。
+
+**阶段 1 先用 adb 内建原语。** `screencap`、`input`、`uiautomator dump` 实现同一组桥接 Protocol，阶段 2 在这组 Protocol 之后换成自有的 APK 与助手。这一阶段不开启无障碍服务，因为 `uiautomator dump` 会把它解绑。代价是延迟与动画屏上的失败率偏高，`input text` 也打不出中文；AndroidWorld 的任务几乎都是 ASCII 文本，足够打通端到端。
+
+**Provider。** 每个 capability 一个 provider 注册表（§4.9.x），Android 用 `AndroidProviderRegistrar`；通用 schema 里同时带 `cdp_url`、`vnc_address`、`adb_device_id` 的 `ProviderSession` 挪回浏览器包，它从来只有浏览器在用。Android provider 的 `open()` 返回自己的会话对象，它带着一个回环地址形式的 `AdbEndpoint`（`host`、`port`、`kind`、`encrypted`、`needs_adb_key`、`expires_at`），任何 ADB 客户端都能直接连。云手机厂商那一段传输（WebSocket 或 SSH 隧道）在 lite SDK 里变成本地 `host:port`，ADB 本身与密钥归 Spectragent，与浏览器"SDK 交出一个 URL，协议归我们"是同一种分工。v1 只用官方模拟器（AndroidWorld、MobileWorld、AndroidLab 都只认它，能用快照秒级复位的也只有自托管的模拟器），provider 只有本地模拟器与按 adb 序列号接上的已连接设备两种；云手机和浏览器一样放到后面，国内云手机怎么接、cloud phone lite SDK 放在哪里叫什么，到那时再定。
+
+**策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；包在自己的声明模块里列出这些注册表（§4.2.1），开局要求类的登记见 §4.10；注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
+
+- **provider**：见上一段。
+- **UI 树来源**：策略受体，也是实验身份的一项；阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务。每次观测实际跑的是哪个生产方要记下。片段键怎么设计还没定（§14.4）。
+- **键入后端**：`input text` 只认键位表里的字符，中文要靠别的后端（例如服务里的输入法提交、`ACTION_SET_TEXT`）。当前输入法会改变截图内容，所以它与键入后端一起进实验身份。
+- **点按注入器**：取值至少有无障碍手势、shell 注入（助手的 `injectInputEvent`）和 provider 原生（模拟器 gRPC 的触摸）。选哪个只看保真度与稳定性，不看哪个更难被认出：无障碍手势与 shell 注入，app 都认得出来。每个动作实际用了哪个记进 trace。
+- **任务裁判**：`none` 或 `androidworld`，见下一段。
+
+**任务裁判与 `AndroidSetup`。** `androidworld` 负责 AndroidWorld 每个任务的开局、判分与收尾，也管着 AndroidWorld 的服务进程：独立的 venv 或容器，钉住 AndroidWorld 的 commit（它钉死的依赖几乎肯定与 Spectragent 的锁文件冲突），teardown 时关掉。它在进程外：AndroidWorld 的 FastAPI 服务负责初始化、判分与拆除，观测与动作走我们自己的桥（这个服务没有界面树的端点，树由我们提供）。Android 的开局要求类 `AndroidSetup` 由 Android 包自己登记（§4.10）；选了 `androidworld` 时，AndroidWorld 的任务数据（任务类名与参数，含种子）对 capability 是不透明的，经 setup 原样交给裁判。判分要读设备上的数据库、文件与设置，所以 `AndroidCapability` 实现 `TaskOracle`（§4.9）：Runtime 的判分时间点（§4.2）经它读出判分，写成判分记录（§5.3），评测器从记录读（§4.11）；选 `none` 时 `read_score` 返回 `None`，不留记录。阶段 3 再加 `android.state_dump` 归档器，在 run 开头与结尾各转储一次设备状态，让离线重新实现的判定能对变体重评。AndroidWorld 的服务能不能不进 Docker、在独立 venv 里对接原生模拟器，还没有验证。
+
+**片段。**
+
+- `android.screenshot`：本地名 `screenshot`（§4.9 "相对名就是参数契约"），报告截图几何（`ScreenshotGeometry`）；手机上 viewport 通常就是点按用的物理分辨率。每一步记下截屏的生产方（`screencap`、助手、服务、模拟器 gRPC……）。
+- 界面树：字段对齐 `AndroidAccessibilityForest`；片段键的设计还没定（§14.4）。只看截图的 agent 不协商树，就不触发树的采集。
+- `android.capture_state`：继承 `CaptureStateFragment`（§4.4）；手机没有指针，`pointer` 是 `unavailable`；界面"静止"由 capability 定义。
+- `android.platform`：`operating_system` 加一个 `android` 取值，`InputPlatform` 从浏览器包挪到中立位置，渲染器补上触屏的键盘规则（没有 Control / Meta 那种全选，要考虑输入法）。实测的设备事实也随它走（下面"实验身份"）。
+- 前台 app 元数据：前台包名与 Activity 等，片段名随阶段 1 定。
+
+**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 落在哪里还没定（§14.5）；沿用 `scroll` 这个名字时，方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词，wiring 把对应的动作加为可选（§4.9）。
+
+**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定（界面树见 §14.4）。
+
+**以后，或还没定的。**
+
+- 阶段 1 之前要用户定的两件：界面树的片段键（§14.4）、`scroll` 落在哪里（§14.5）。
+- 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。
+- 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
+- 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
+- 云手机、真机、MobileWorld 与 AndroidLab、输入拟人化：阶段 4。
+- 真实国内 app 档（带反自动化检查的 app）暂缓，排在阶段 4 之后。届时按同意划定范围（金融 app 要机构授权；拒绝被自动化的 app 只做人执行或只读的步骤，或者排除；专用账号、钉住 app 版本、有人在场；被 app 拦下记为一种结局，不做任何规避），开跑前做法律审查；无障碍服务开不开是一项要记录的选择；人工交接放在 Loop；trace 只记事实（暴露快照、检测证据、交接步、账号状态），四类结局由评测器离线分类。设备端探针 app 在它开跑之前做。
 
 ---
 
@@ -5552,3 +5699,21 @@ DD 1.4 提到走独立的 A2A 通讯协议设计，不属于 agent loop 范畴�
 已按 §4.7 实施执行内惰性复用与显式收尾。生命周期归一次任务、独立评测批次或显式 Python
 `model_session`，不属于 AgentLoop 策略，也不通过 YAML wire id 建立共享池。云浏览器 lite SDK 的
 生命周期审计仍延期；不因模型客户端改动扩大到浏览器后端。
+
+### 14.4 Android 界面树的片段键（阶段 1 之前要用户定）
+
+UI 树来源是 Android capability 的一个策略受体，也是实验身份的一项；每次观测实际跑的是哪个生产方要记下（§11.2）。没定的是片段键：
+
+- **(a)** 一个键 `android.ui_tree`：生产方进 run 的身份；每次观测另带一个 `producer` 字段，以防中途退回别的来源时它变了。这与 `browser.dom` 跨 DOM cleaner 的做法相同：agent 不关心生产方，换来源不改 capability 提供什么。
+- **(b)** 每个生产方一个键（无障碍树、uiautomator 树各一个）。调研第二轮的设备端建议（2026-10-31 按建议裁决）写的就是"片段键标明生产方"，第三轮"trace 要记什么"一表沿用。代价是 agent 要声明自己读哪几个生产方的键。
+
+建议 (a)。它偏离了调研里已经同意的写法，所以要用户回答。
+
+### 14.5 Android 的 `scroll` 落在哪里（阶段 1 之前要用户定）
+
+浏览器的 `scroll` 参数是 `direction`、`amount` 和只在有 DOM 时才有的 `index`，在指针所在处滚动；Android 没有指针，UI-TARS 移动端写的是 `scroll(start_box, direction)`。
+
+- **(a)** 给 `scroll` 加一个可选的坐标点，浏览器与 Android 一起加，两边仍是一份参数契约：浏览器先把指针移到那一点再滚轮，Android 从那一点开始滑；不给点时，浏览器在当前指针处滚，Android 在屏幕中央滑。
+- **(b)** Android 的这个动作另起名字。
+
+建议 (a)。要用户回答之后才能开始阶段 1。

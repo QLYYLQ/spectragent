@@ -1088,7 +1088,7 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 
 #### 业务实现
 
-实现 `DesktopVMCapability`（VNC + AT-SPI / PyWinAuto）和 `AndroidCapability`（ADB + gRPC），分别支持桌面和移动 agent benchmark。
+实现 `DesktopVMCapability`（VNC + AT-SPI / PyWinAuto）和 `AndroidCapability`（ADB 加我们自己的设备端服务，模拟器另有 gRPC 控制面），分别支持桌面和移动 agent benchmark。Android 的设计以 architecture §4.9 的 capability 表与 §11.2 为准（2026-10-29 至 10-31 的调研定下）。
 
 #### 业务逻辑
 
@@ -1098,17 +1098,24 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 - Backend: VNC 连接到桌面 VM
 - 典型 Benchmark: OSWorld, macOSWorld
 
-**AndroidCapability**：
-- Actions: tap(x,y), swipe(start, end), input(text), screenshot(), get_ui_tree()
-- Fragments: MobileScreenshotObs, UITreeObs
-- Backend: ADB + gRPC 连接到 Android emulator 或真机
-- 典型 Benchmark: AndroidWorld, MobileWorld
+**AndroidCapability**：动作、片段、桥的各层、策略轴、任务裁判与实验身份都以 architecture §4.9 的 capability 表与 §11.2 为准，这里不重复。典型 Benchmark：先接 AndroidWorld，走进程外的任务裁判；MobileWorld、AndroidLab 在阶段 4。
 
 两者与 BrowserCapability 相似但使用不同的底层协议（VNC/AT-SPI vs CDP，ADB vs CDP）。各自管理自己的 backend 连接和生命周期。
+
+**Android 的分阶段路线**（每个阶段单独验收）：
+
+- **阶段 0：度量与桩。** 在模拟器上测 adb 自带截图（`screencap`）、模拟器 gRPC 截图、`input` 点按、`uiautomator dump` 的往返延迟，阶段 1 用的正是这些自带手段；写一个会数往返次数的假 ADB 传输与采集 harness；用桩 capability 跑契约套件，再对 UI-TARS 跑 `prepare()`；实测本地模拟器与 USB 真机怎样配私有 adb server 和实验密钥。这一阶段只做不需要自有 APK 的事：无障碍服务与 shell 助手的延迟、`isAccessibilityTool` 的两项实测在阶段 2，云手机上的 `faketouch` 与服务开启预检在接云 provider 时，设备端探针 app 在真实 app 档之前。完成标准：一份 adb 自带手段的延迟表；挡住 UI-TARS 的四处浏览器假设被测试复现（任务开局要求与策略轴是框架文件里的两份名单、`platform` 片段只认桌面系统、UI-TARS 的动词表封闭；两份名单若已由阶段 1 之前的重构修掉，就复现余下两处）。
+- **阶段 1：最小可跑。** 开始之前：浏览器那边先做完这几项重构：`done` 迁到 Loop（`loop.done`）；capability 包自己声明注册表和开局要求；一次 run 只导入配置用到的包；用户答完 architecture §14.4（界面树的片段键）与 §14.5（`scroll` 落在哪里）。然后：主机传输层与每台设备的会话层；设备端先用 adb 内建原语，放在桥接 Protocol 之后（这一阶段不开启无障碍服务，`uiautomator dump` 会把它解绑）；`AndroidCapability`、片段、核心动作、`AndroidSetup` 与 `AndroidEnvironment`（都在 Android 包里：`BrowserEnvironment` 放在框架的 `core/environments/` 下，Android 不照搬，否则加 Android 就要改框架文件）、本地模拟器 provider；最小的 `androidworld` 任务裁判（进程外）与只载入几个 AndroidWorld 任务的任务加载器；`platform` 片段认 `android`，UI-TARS 补上移动端动词；Runtime 的判分时间点与判分记录（architecture §4.2、§5.3）。完成标准：几个 AndroidWorld 任务端到端跑通，产出 trace 和判分。
+- **阶段 2：AndroidWorld 全量与自有设备端服务。** AndroidWorld 全部任务、多个种子，出多种子报告；用自有的无障碍服务 APK 和 shell 助手换掉内建原语，补测它们的延迟和 `isAccessibilityTool` 的两项（任务路径上有没有数据敏感视图；24 小时提醒会不会出现在截图里）；接入 Qwen 家族和 AutoGLM；Linux KVM 容器池。完成标准：多种子结果稳定，并与官方 harness 的结果一致。
+- **阶段 3：可复现与飞轮。** 先做分支回放：恢复证据按 capability 分型（媒体专用的对齐参数随之挪进浏览器），从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则；固定设备时钟、等界面静止。再做任务中途快照：`capability_checkpoint` 与 `RestorableCapability`（要给 Environment 加方法；到阶段 3 前再确认）。另有：`android.state_dump` 归档器，支持离线重评；导出改为按任务切分（现在按起始页的站点切）；飞轮度量按 capability 拆开；AndroidControl 风格的 SFT 导出。这一阶段建立在已完成的 M28（归档机制）、M31（分叉）、M32（导出）、M33（度量）之上。完成标准：能从 Android 录制上分支，并导出训练样本。
+- **阶段 4：扩展。** MobileWorld、AndroidLab 这类筛选好的环境；云手机（AgentBay 等先行，国内云手机怎么接到时再定）；真机（三星 S23 Ultra）；在组合环境里接手机 Chrome 和 WebView（进不进 v1 还没定，建议放在这里），做组合环境之前先把 `wait` 也迁到 Loop；网络归档档位（v1 不做，到阶段 4 前再确认）；输入拟人化。完成标准：每一项单独验收。
+- **以后，暂缓：真实国内 app 档。** 带反自动化检查的国内 app：按同意划定范围，零售真机、专用账号、操作员，开跑前做法律审查（architecture §11.2 "以后，或还没定的"）；设备端探针 app 在它开跑之前做。
 
 #### 设计思考
 
 Desktop 和 Android Capability 验证了 Capability 抽象的终极泛化能力 — 从 CDP WebSocket 到 VNC 到 ADB，中间层协议完全不同，但 framework 层（AgentRuntime → Environment → Capability）的编排逻辑完全相同。如果新增 Capability 需要修改 framework 代码，说明 Capability 抽象有泄漏。
+
+Android 是这句话的第一次实测。调研从代码里查出约 20 处浏览器假设，其中四处挡住"用 UI-TARS 跑一次 Android"（阶段 0 的四处）。按这句话它们都是泄漏，修法是一次性的修正，不给 Android 开特例：两份名单改由各 capability 包自己声明（2026-10-31 的裁决，此后加 Android 不改这两处框架文件），`platform` 加 `android` 取值，UI-TARS 的动词表补上移动端动词（agent 一侧）。同期另定的框架改动对每个 capability 都成立，不是 Android 专用：`done` 由 Loop 提供（`loop.done`）；Runtime 加 Loop 结束之后、teardown 之前的判分时间点；恢复证据按 capability 分型（阶段 3 开头）。
 
 ---
 
