@@ -5625,7 +5625,7 @@ Android Capability（core/capabilities/android/）
 │   ├── 每个 run 一个私有 adb server，起在私有端口上
 │   └── 一条连接只办一件事：track-devices、shell,v2:、exec:、sync:、tcp:、abb_exec:，以及到设备端服务的转发
 ├── 状态查询：dumpsys、settings、content、root 下的 sqlite3
-├── 模拟器控制面（只在模拟器上）：grpc.aio 存根，端口从 pid_<PID>.ini 读
+├── 模拟器控制面（只在模拟器上）：grpc.aio 存根，端口由 provider 经 `-grpc` 给，token 从 pid_<PID>.ini 读，地址以模拟器自己报的为准
 │   └── 快照、setVmState、硬件路径触摸、无损截图
 └── Backend（core/capabilities/android/backends/，AndroidProviderRegistrar）
     ├── v1：本地模拟器、按 adb 序列号接上的已连接设备；云手机以后
@@ -5653,7 +5653,7 @@ Android Capability（core/capabilities/android/）
 - 服务推送的界面事件一条都不能丢：丢掉一个内容变化事件，主机镜像的界面树就会悄悄过期。logcat 是高量的行流，只有少数行有用（崩溃、ANR），在读取端过滤之后再交出。
 - 以后若长出很多"看到某个事件就反应"的组件（例如每个动作前查系统弹窗、崩溃后自动恢复），再考虑只借 agent-cdp 的调度器，那时把缺的"等待式发送"写进它的需求台账。
 
-**模拟器控制面。** 只有模拟器有：经 `grpc.aio` 存根连模拟器自己的 gRPC，提供快照、`setVmState`（暂停虚拟机）、硬件路径触摸和不经客体进程的无损截图。gRPC 自带超时、取消与流控。它默认不开（模拟器 37.2.13，2026-11-01 实测）：启动时带 `-grpc <port>` 才起，端口由启动方给（`-help` 说端口被占就不起），所以 provider 每次挑一个空闲端口传进去，不写死；带 `-grpc-use-token` 时每次调用要带 `authorization: Bearer <token>`，token 在模拟器写下的发现文件里，macOS 上是 `~/Library/Caches/TemporaryItems/avd/running/pid_<PID>.ini` 的 `grpc.token`（`<PID>` 是模拟器进程；不开 gRPC 就不写这个文件；`-help` 写的文件名 `pid_<PID>_info.ini` 与实测不符）。代理有两处要关：模拟器内部经 localhost 的 gRPC 会跟着 `http_proxy` / `https_proxy` 走，模拟器的环境里要设 `NO_PROXY` / `no_proxy=localhost,127.0.0.1,::1`；grpcio 的客户端通道连 localhost 也走 `http_proxy`（把它指到一个关着的端口，调用就失败），存根要带 `grpc.enable_http_proxy=0`。
+**模拟器控制面。** 只有模拟器有：经 `grpc.aio` 存根连模拟器自己的 gRPC，提供快照、`setVmState`（暂停虚拟机）、硬件路径触摸和不经客体进程的无损截图。gRPC 自带超时、取消与流控。它默认不开（模拟器 37.2.13，2026-11-01 实测）：启动时带 `-grpc <port>` 才起，端口由启动方给，所以 provider 每次挑一个空闲端口传进去，不写死；带 `-grpc-use-token` 时每次调用要带 `authorization: Bearer <token>`，provider 从模拟器写下的发现文件里读 token，macOS 上是 `~/Library/Caches/TemporaryItems/avd/running/pid_<PID>.ini` 的 `grpc.token`（`<PID>` 是模拟器进程；不开 gRPC 就不写这个文件；`-help` 写的文件名 `pid_<PID>_info.ini` 与实测不符）。gRPC 只听回环地址，端口被占时也不像 `-help` 说的那样只是不起：`127.0.0.1` 上被占，它就改听 `[::1]`；`127.0.0.1` 与 `::1` 都被占，它报 "Failed to start grpc service, even though it was explicitly requested"，开不了机，以退出码 139 退出。发现文件里的 `grpc.port` 每次都只是照抄传进去的端口，看不出这些，所以 provider 连的地址以模拟器输出里 "Started GRPC server at <地址>:<端口>" 那一行为准，没有这一行就是 gRPC 没起。代理有两处要关：模拟器内部经 localhost 的 gRPC 会跟着 `http_proxy` / `https_proxy` 走，模拟器的环境里要设 `NO_PROXY` / `no_proxy=localhost,127.0.0.1,::1`；grpcio 的客户端通道连 localhost 也走 `http_proxy`（把它指到一个关着的端口，调用就失败），存根要带 `grpc.enable_http_proxy=0`。
 
 **设备端。** 主力是我们自己的无障碍服务 APK。只要拿得到 adb shell，它就能无人值守地开启（`adb install` 之后把服务追加进 `enabled_accessibility_services`，不覆盖已启用的别的服务），而且它是唯一能推送界面事件、不依赖 adb 连接存活的路线。shell 身份助手补上服务做不到的事：不受 333 ms 限制的截图、任意按键，以及服务被关掉之后的重新开启。四条硬约束，任何代码路径都不许违反：
 
