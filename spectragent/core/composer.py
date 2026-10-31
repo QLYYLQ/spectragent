@@ -396,7 +396,7 @@ class ConfigComposer:
             for error in exc.errors():
                 if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
                     continue
-                path = _location(error["loc"])
+                path = _location(error["loc"], raw)
                 context = error.get("ctx") or {}
                 layer, name = context.get("layer"), context.get("field")
                 known = _known_packages()
@@ -911,11 +911,23 @@ def _known_packages() -> str:
     )
 
 
-def _location(loc: tuple[int | str, ...]) -> str:
-    """A pydantic error location written as a config path: ``hook[0].archive``."""
-    path = ""
+def _location(loc: tuple[int | str, ...], raw: object) -> str:
+    """A pydantic error location as the configuration wrote it: ``hook[0].archive``.
+
+    pydantic puts a discriminated union's tag in the location
+    (``hook[0].trace_writer.archive``); no block has a key of that name, so
+    walking *raw* along the location leaves the tag out.
+    """
+    path, node = "", raw
     for part in loc:
-        path += f"[{part}]" if isinstance(part, int) else f".{part}" if path else str(part)
+        if isinstance(part, int):
+            path += f"[{part}]"
+            node = node[part] if isinstance(node, list | tuple) and part < len(node) else None
+        elif isinstance(node, Mapping) and part not in node:
+            continue
+        else:
+            path += f".{part}" if path else part
+            node = node.get(part) if isinstance(node, Mapping) else None
     return path
 
 

@@ -507,6 +507,11 @@ class TestErrors:
             def __init__(self, items: list[_ItemP] | None = None) -> None:
                 self.items = list(items or [])
 
+        class _Reader(_WriterBase):
+            # A second implementation: pydantic now puts the union's tag in
+            # error locations, which the refusal's path leaves out.
+            __registry_key__: ClassVar[str] = "reader"
+
         composer = ConfigComposer(
             registrars={"cmp_writer": OwnerReg, "cmp_unbuilt": ItemReg}, coverage="partial"
         )
