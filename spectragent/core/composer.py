@@ -978,21 +978,24 @@ class _Problem:
 
 
 def _refusal(problems: list[_Problem]) -> ComposeError:
-    """One refusal listing every problem; its issue is the first unimplemented one."""
+    """One refusal listing every problem, in its text and in its issue.
+
+    ``config check`` shows the issue, not the text. The issue's path and
+    remedy are the first unimplemented problem's.
+    """
     known = _known_packages()
     first = next(problem for problem in problems if problem.unimplemented)
     if len(problems) == 1:
         message = f"{first.path}: {first.message} ({known})."
+        summary = f"{first.message[0].upper()}{first.message[1:]}."
     else:
         listed = "\n".join(f"  {problem.path}: {problem.message}" for problem in problems)
         message = f"{len(problems)} problems in the configuration ({known}):\n{listed}"
+        summary = f"{len(problems)} problems in the configuration:\n{listed}"
     return ComposeError(
         message,
         issue=CompositionIssue(
-            "no_implementation",
-            first.path,
-            f"{first.message[0].upper()}{first.message[1:]}.",
-            f"{first.remedy} ({known}).",
+            "no_implementation", first.path, summary, f"{first.remedy} ({known})."
         ),
     )
 

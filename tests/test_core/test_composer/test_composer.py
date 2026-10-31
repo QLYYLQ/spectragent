@@ -544,18 +544,19 @@ class TestErrors:
         }
         with pytest.raises(ComposeError) as refused:
             unbuilt.compose(raw)
-        message = str(refused.value)
-        assert message.startswith("3 problems in the configuration")
-        for path in ("cmp_unbuilt", "cmp_writer[0].items", "cmp_writer[1]"):
-            assert f"\n  {path}: " in message, path
-        # pydantic's own text for the unknown tag quotes it; config check
-        # never shows input values, so neither does the refusal.
-        assert "writr" not in message
         issue = refused.value.issue
         assert issue is not None and (issue.code, issue.path) == (
             "no_implementation",
             "cmp_unbuilt",
         )
+        # config check shows the issue, so it lists them too.
+        for message in (str(refused.value), issue.message):
+            assert message.startswith("3 problems in the configuration")
+            for path in ("cmp_unbuilt", "cmp_writer[0].items", "cmp_writer[1]"):
+                assert f"\n  {path}: " in message, path
+            # pydantic's own text for the unknown tag quotes it; config check
+            # never shows input values, so neither does the refusal.
+            assert "writr" not in message
 
     def test_invalid_yaml_rejected_by_pydantic(
         self,
