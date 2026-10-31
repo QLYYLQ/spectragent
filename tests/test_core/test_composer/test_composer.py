@@ -465,9 +465,8 @@ class TestErrors:
         # A run composes against the layers whose implementations it imported:
         # an empty one is no section of the schema, not a refusal
         # (docs/architecture_design.md §4.2.1). conscribe's EmptyLayerError is
-        # generation's.
-        from pydantic import ValidationError
-
+        # generation's. Writing its section names the missing implementation
+        # instead of failing validation with "Extra inputs are not permitted".
         @runtime_checkable
         class _EmptyP(Protocol):
             key: str
@@ -475,8 +474,10 @@ class TestErrors:
         EmptyReg = create_registrar("cmp_empty", _EmptyP, discriminator_field="key")
         composer = ConfigComposer(registrars={**registrars, "cmp_empty": EmptyReg})
         assert "cmp_empty" not in composer.registrars
-        with pytest.raises(ValidationError, match="cmp_empty"):
+        with pytest.raises(ComposeError, match="none of the packages it names") as refused:
             composer.compose({"cmp_empty": []})
+        issue = refused.value.issue
+        assert issue is not None and (issue.code, issue.path) == ("no_implementation", "cmp_empty")
         with pytest.raises(ComposeError, match="registrar with an implementation"):
             ConfigComposer(registrars={"cmp_empty": EmptyReg})
 

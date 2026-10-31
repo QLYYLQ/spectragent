@@ -224,6 +224,29 @@ def test_a_free_form_field_names_no_package() -> None:
     assert run.single("llm").extra_body == free_form
 
 
+def test_an_environment_without_a_capability_says_what_is_missing() -> None:
+    # No capability is named, so no environment is imported: the refusal says
+    # so instead of failing validation with "Extra inputs are not permitted".
+    refused = cast(
+        dict[str, str],
+        _run(
+            """
+import json
+
+from spectragent.core.composer import ComposeError, ConfigComposer
+
+raw = {"environment": [{"env_type": "browser"}]}
+try:
+    ConfigComposer.for_config(raw).compose(raw)
+except ComposeError as exc:
+    print(json.dumps({"code": exc.issue.code, "path": exc.issue.path, "message": str(exc)}))
+"""
+        ),
+    )
+    assert (refused["code"], refused["path"]) == ("no_implementation", "environment")
+    assert "capability packages: browser" in refused["message"]
+
+
 _GENERATE = """
 import json
 

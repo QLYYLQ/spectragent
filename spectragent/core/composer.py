@@ -283,6 +283,7 @@ class ConfigComposer:
         self._registrars = {
             layer: registrar for layer, registrar in registrars.items() if registrar.get_all()
         }
+        self._left_out = frozenset(registrars) - frozenset(self._registrars)
         if not self._registrars:
             raise ComposeError("ConfigComposer requires a registrar with an implementation.")
         self._catalog = build_configuration_catalog(self._registrars)
@@ -314,6 +315,8 @@ class ConfigComposer:
 
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         """Validate, instantiate (leaves-first), inject, assemble."""
+        if isinstance(raw, Mapping):
+            self._refuse_a_layer_left_out(raw)
         cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
         inputs = configured_inputs(cfg)
         state = _State(by_layer={layer: {} for layer in self._registrars})
@@ -333,6 +336,33 @@ class ConfigComposer:
                 wiring=tuple(state.wiring),
             ),
         )
+
+    def _refuse_a_layer_left_out(self, raw: Mapping[object, object]) -> None:
+        """Name the section whose layer no imported package implements.
+
+        Validation would only say ``Extra inputs are not permitted``: the layer
+        is left out of the schema because none of the packages the
+        configuration names implements it (``environment`` with no capability).
+        """
+        written = sorted(self._left_out.intersection(raw))
+        if written:
+            layer = written[0]
+            known = (
+                f"capability packages: {', '.join(capability_ids()) or 'none'}; "
+                f"agent families: {', '.join(agent_families()) or 'none'}"
+            )
+            raise ComposeError(
+                f"{layer}: the configuration writes the {layer!r} section, and none of the "
+                f"packages it names implements that layer. Environments, actions and archivers "
+                f"come from the package of a capability the configuration names, agents from "
+                f"their family's package: name the one this section needs ({known}).",
+                issue=CompositionIssue(
+                    "no_implementation",
+                    layer,
+                    f"None of the packages the configuration names implements {layer!r}.",
+                    f"Name the capability or agent family that provides it ({known}).",
+                ),
+            )
 
     # -- Per-instance assembly ---------------------------------------
 
