@@ -1696,7 +1696,7 @@ class Params(BaseModel):
 
 删除发生在 descriptor 的 `**context` 通道上：`AgentRuntime.prepare` Step 4 调用 `env.get_action_space(active_actions=..., fragments=negotiated_obs.active_fragments)`，环境把它转发给每个 capability、再转发给每个 `action.descriptor(**context)`——与 §4.9 里 `task_tools` 走的是同一条通道。协商规则不变；不读 `fragments` 的 capability 行为与从前完全一致。
 
-守门是静态扫描：`tests/test_core/test_actions/test_action_params_schema.py` 对每个 agent × 每个模式检查"激活动作推导出的依赖 ⊆ 同一模式 observation 的 required"。运行时一致性检查推迟到第二个会用到 DOM 的 capability 出现时再加。
+守门是静态扫描：`tests/test_core/test_actions/test_action_params_schema.py` 对每个 agent × 每个模式检查"激活动作推导出的依赖 ⊆ 同一模式 observation 的 required"。运行时一致性检查推迟到第二个会用到元素树的 capability 出现时再加：Android 的 `click`（`index` 指名 `android.ui_tree`，§11.2）就是它，所以这项检查随 Android 的 `click` 一起在 Android 阶段 2 加上。到那时静态扫描也要改：它现在按名字的最后一段对动作，有了 `android.click` 就会把浏览器 agent 的 `click` 与它混在一起，要改成按绑定后的全限定名查。
 
 **YAML 旋钮进 description，不进 `default`**：`clear_by_default` 这类当前值被插进参数的 description（prompt 和 schema 两边都看得到），但 descriptor 的 schema 里**不写 `default`**——默认值归 capability，在 `execute()` 里应用，写一个 schema default 等于声明一个"省略该参数时会得到的值"，而那个值不是它。
 
@@ -2647,7 +2647,7 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
 | `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
-| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click_coordinate`、`drag`、`type_coordinate`、`scroll`（带一个可选的起点 `start`，§4.5）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`（`android.ui_tree`，一个键，生产方另记，§11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
+| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click`（按编号，指名 `android.ui_tree` 里的元素）、`click_coordinate`、`drag`、`type_coordinate`、`scroll`（带一个可选的起点 `start`，§4.5）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`（`android.ui_tree`，一个键，生产方另记，§11.2）、`capture_state`、`platform`，加前台 app 元数据 | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
 | `tool_sandbox` | HTTP / in-process | `call_tool(name, params)`, `get_user_msg()`, `get_policy()` | `tool_result` | τ-bench, ToolBench, AppWorld |
 
@@ -5614,7 +5614,7 @@ Android 的中间层同样是 Android 包自己的代码（`core/capabilities/an
 ```
 Android Capability（core/capabilities/android/）
 ├── capability 自己：片段、动作、界面"静止"的定义、app 名称到包名的解析
-├── 策略轴：provider、UI 树来源、键入后端、点按注入器、任务裁判（none / androidworld）
+├── 策略轴：provider、UI 树来源、界面树清洗器与序列化器、键入后端、点按注入器、任务裁判（none / androidworld）
 ├── 设备会话层（每台设备一个；自写，不导入 agent-cdp）
 │   ├── 串行工作队列：采集与动作一个一个来，等待上限与执行上限分开
 │   ├── 采集扇出：一次采集同时问截图、界面树、前台 app，各带超时，等齐了再交出
@@ -5672,7 +5672,8 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 **策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；包在自己的声明模块里列出这些注册表（§4.2.1），开局要求类的登记见 §4.10；注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
 
 - **provider**：见上一段。
-- **UI 树来源**：策略受体，也是实验身份的一项；阶段 1 是 `uiautomator dump`，阶段 2 起是我们的无障碍服务。每次观测实际跑的是哪个生产方要记下：片段是一个键 `android.ui_tree`，生产方记在 run 的身份与每次观测的 `producer` 字段里（§14.4）。
+- **UI 树来源**：策略受体，也是实验身份的一项。界面树从阶段 2 开始提供：阶段 1 只接只看截图的 agent（UI-TARS），用不到树；阶段 2 起默认来源是我们的无障碍服务，`uiautomator dump` 留作另一个可选的来源。每次观测实际跑的是哪个生产方要记下：片段是一个键 `android.ui_tree`，生产方记在 run 的身份与每次观测的 `producer` 字段里（§14.4）。
+- **界面树清洗与序列化**（用户 2026-11-01 的裁决）：与浏览器的 DOM cleaner / serializer 同一形状的两条轴，与 UI 树来源分开。清洗器决定交给 agent 的是哪些节点，序列化器决定这些元素印成什么样子；每个清洗器都给留下的元素编号，并留着每个元素的边界和编号到节点的对应（印出来的文字不带边界时也留着）。第一个清洗器移植 AndroidWorld 的规则：留下看得见、在屏幕上有非空边界、且是叶子或带描述或可滚动的节点，去掉空的布局容器与屏幕外的节点，按树的顺序编号；配 M3A 的行格式（都是 Apache-2.0，读的正是我们对齐的 `AndroidAccessibilityForest`），T3A 的纯文本格式作为第二个序列化器。AutoDroid 的"子节点文字并入可点的父节点"（MIT）以后再加。AndroidLab 与 Portal 的代码不照抄（AndroidLab 的上游没有许可证，Portal 是 AGPL），需要时照思路重写（2026-10-29 "借鉴重写"的裁决）。理由是复现已发表的 agent：它们最大的差别就在怎么呈现这棵树，省 token 是次要的（原始的树中位数约 3.1k token，AndroidWorld 的格式约 800）。调研见本地笔记 `tmp/research_notes/Android 能力技术栈调研/ui_tree_cleaning.md`。
 - **键入后端**：`input text` 只认键位表里的字符，中文要靠别的后端（例如服务里的输入法提交、`ACTION_SET_TEXT`）。当前输入法会改变截图内容，所以它与键入后端一起进实验身份。
 - **点按注入器**：取值至少有无障碍手势、shell 注入（助手的 `injectInputEvent`）和 provider 原生（模拟器 gRPC 的触摸）。选哪个只看保真度与稳定性，不看哪个更难被认出：无障碍手势与 shell 注入，app 都认得出来。每个动作实际用了哪个记进 trace。
 - **任务裁判**：`none` 或 `androidworld`，见下一段。
@@ -5682,17 +5683,18 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 **片段。**
 
 - `android.screenshot`：本地名 `screenshot`（§4.9 "相对名就是参数契约"），报告截图几何（`ScreenshotGeometry`）；手机上 viewport 通常就是点按用的物理分辨率。每一步记下截屏的生产方（`screencap`、助手、服务、模拟器 gRPC……）。
-- 界面树：一个键 `android.ui_tree`（本地名 `ui_tree`），字段对齐 `AndroidAccessibilityForest`（用户 2026-10-31 的裁决）。生产方（我们的无障碍服务或 `uiautomator dump`）是 UI 树来源这个策略受体的取值，进 run 的身份；每次观测另带一个 `producer` 字段，以防它在 run 中途变化（现在没有设计中途换来源：服务开着时不能调 `uiautomator dump`）。这与 `browser.dom` 跨 DOM cleaner 的做法相同：agent 不关心生产方，换来源不改 capability 提供什么。只看截图的 agent 不协商树，就不触发树的采集。
+- 界面树：一个键 `android.ui_tree`（本地名 `ui_tree`），字段对齐 `AndroidAccessibilityForest`（用户 2026-10-31 的裁决）。生产方（我们的无障碍服务或 `uiautomator dump`）是 UI 树来源这个策略受体的取值，进 run 的身份；每次观测另带一个 `producer` 字段，以防它在 run 中途变化（现在没有设计中途换来源：服务开着时不能调 `uiautomator dump`）。这与 `browser.dom` 跨 DOM cleaner 的做法相同：agent 不关心生产方，换来源不改 capability 提供什么。片段里装的是清洗后的树，与 `browser.dom` 一样；原始的整棵树需要时由一个可选的归档器另外记下，与浏览器的 `browser.dom_raw` 同一做法（键名随实现定）。我们的无障碍服务抓全树：带上不重要的布局容器（`FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`）与控件 id（`FLAG_REPORT_VIEW_IDS`），每个节点另记"是否重要"（`AndroidAccessibilityForest` 没有这个字段，我们在对齐之外多加一个），删节点只由清洗器做：绑定了原始树归档器时录下的是全树，以后还能换一种方式重新清洗，删过的树补不回来；这个归档器放在阶段 3，与 `android.state_dump` 一起。屏幕外的节点采集时先留着，设一个大小上限，防止长网页把树撑爆，由清洗器决定扔不扔（以上用户 2026-11-01 的裁决）。只看截图的 agent 不协商树，就不触发树的采集。
 - `android.capture_state`：继承 `CaptureStateFragment`（§4.4）；手机没有指针，`pointer` 是 `unavailable`；界面"静止"由 capability 定义。
 - `android.platform`：`operating_system` 加一个 `android` 取值，`InputPlatform` 从浏览器包挪到中立位置，渲染器补上触屏的键盘规则（没有 Control / Meta 那种全选，要考虑输入法）。实测的设备事实也随它走（下面"实验身份"）。
 - 前台 app 元数据：前台包名与 Activity 等，片段名随阶段 1 定。
 
-**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`、`scroll`；Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 带一个可选的起点 `start`，与浏览器同一份参数（用户 2026-10-31 的裁决，§4.5）：给了点，Android 从那一点开始滑，不给时在屏幕中央滑；方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来；UI-TARS 写的 `scroll(start_box, direction)`（桌面与移动端都这么写）就落在这个点上，它的 `scroll` 动词随之加一个可选的 `start_box`（§4.1 UI-TARS 编解码）。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词，wiring 把对应的动作加为可选（§4.9）。
+**动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`、`scroll`，以及按编号点击的 `click`（`index` 指名 `android.ui_tree` 里清洗器编了号的元素，用户 2026-11-01 的裁决）：Android 把编号换成那个元素边界中心的一次点按，经配置的点按注入器执行；动作的含义归 capability，不让各 agent 自己把编号换算成坐标。没有界面树的 run（只看截图）协商不到 `click`，与浏览器的 `click` 依赖 `browser.dom` 同一条规则（§4.5"参数的含义"）。Android 独有的另起名：`long_press`、`type_text`（往焦点框里输入）、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 与浏览器同一份参数（用户 2026-10-31 的裁决，§4.5）：可选的起点 `start`，以及可选的 `index`（指名 `android.ui_tree` 里要滚的元素，没协商到树的 run 从描述里删掉，与浏览器的 `index` 依赖 `browser.dom` 同一条规则），两者二选一；给了点，Android 从那一点开始滑，给了编号从那个元素的中心开始滑，都不给时在屏幕中央滑；方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来；UI-TARS 写的 `scroll(start_box, direction)`（桌面与移动端都这么写）就落在这个点上，它的 `scroll` 动词随之加一个可选的 `start_box`（§4.1 UI-TARS 编解码）。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词，wiring 把对应的动作加为可选（§4.9）。
 
-**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。
+**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、界面树清洗器与序列化器、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。
 
 **以后，或还没定的。**
 
+- 按编号寻址的其他 Android 动作（带 `index` 的 `long_press`、`type_text`）还没定，随要接的按编号操作的 agent（例如 AndroidWorld 的 M3A、T3A）再定；它们与 `click` 一样要依赖 `android.ui_tree`。
 - 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。
 - 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
 - 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
