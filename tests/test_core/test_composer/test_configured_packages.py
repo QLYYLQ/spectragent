@@ -199,6 +199,31 @@ def test_a_name_with_no_package_is_refused_before_anything_is_imported(
     assert path in str(refused.value)
 
 
+def test_a_free_form_field_names_no_package() -> None:
+    # Only capability and agent blocks name packages: the same key inside a
+    # hook's parameters or a provider's extra_body is the user's data.
+    free_form = {"capability_id": "nowhere", "agent_id": "nowhere.dom"}
+    raw = {
+        "llm": [
+            {
+                "model_type": "openai",
+                "model": "m",
+                "provider": {"name": "openrouter", "extra_body": free_form},
+            }
+        ],
+        "hook": [
+            {
+                "hook_id": "prompt_contribution",
+                "function": "tests.test_core.test_hooks.test_prompt_contribution:plain_contribution",
+                "parameters": free_form,
+            }
+        ],
+    }
+    run = ConfigComposer.for_config(raw).compose(raw)
+    assert run.single("hook").parameters == free_form
+    assert run.single("llm").extra_body == free_form
+
+
 _GENERATE = """
 import json
 

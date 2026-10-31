@@ -247,18 +247,23 @@ class ConfigComposer:
     def for_config(cls, raw: object) -> ConfigComposer:
         """The Composer for one configuration, importing only what *raw* names.
 
-        Every ``capability_id`` in *raw* names a capability package and every
-        ``agent_id`` names an agent family (``browser_use.dom``: the
-        ``browser_use`` family). The framework's own packages and those
-        packages are imported; the schema holds the framework axes and the
-        named capabilities' axes (``docs/architecture_design.md`` §4.2.1).
+        Each capability block's ``capability_id`` names a capability package
+        and each agent block's ``agent_id`` an agent family
+        (``browser_use.dom``: the ``browser_use`` family). The framework's own
+        packages and those packages are imported; the schema holds the
+        framework axes and the named capabilities' axes
+        (``docs/architecture_design.md`` §4.2.1).
 
         Raises:
             UnknownPackageError: *raw* names a capability or a family that has
                 no package. No capability package or family is imported yet.
         """
-        capabilities, families = _named_packages(raw)
-        discover_implementations(*FRAMEWORK_PACKAGES, capabilities=capabilities, families=families)
+        capabilities, agents = _named_packages(raw)
+        discover_implementations(
+            *FRAMEWORK_PACKAGES,
+            capabilities=capabilities,
+            families={agent_family(agent_id) for agent_id in agents},
+        )
         return cls(registrars=collect_registrars(capabilities))
 
     @classmethod
@@ -748,35 +753,44 @@ class ConfigComposer:
 # -- Module-level helpers --------------------------------------------
 
 
-def _named_packages(raw: object) -> tuple[frozenset[str], frozenset[str]]:
-    """The capability ids and agent families *raw* names, each checked against its package.
+#: The receptor every environment inherits from ``EnvironmentBase``. An
+#: environment's own class lives in its capability's package, which is not
+#: imported yet when names are read, so its capability blocks are found here.
+_ENVIRONMENT_CAPABILITIES = "capabilities"
 
-    Every mapping at any depth names a capability with a ``capability_id``
-    string and an agent family with an ``agent_id`` string, the part before
-    its first ``.``. Read before anything is imported.
+
+def _named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
+    """The capability ids and agent ids *raw* names, each with the first place it is written.
+
+    Read before anything is imported, and only where the schema puts those
+    blocks: the entries of the top-level ``capability`` and ``agent``
+    sections and each environment's ``capabilities``. Only those blocks'
+    discriminator fields are read, never a free-form field: an ``agent_id``
+    in a hook's ``parameters`` or a provider's ``extra_body`` names nothing.
 
     Raises:
-        UnknownPackageError: a name that has no package, at the first place it occurs.
+        UnknownPackageError: a capability, or the family of an agent
+            (``browser_use.dom``: ``browser_use``), that has no package.
     """
-    # Each name → the first place the configuration writes it.
-    capabilities: dict[str, str] = {}
+    sections = raw if isinstance(raw, Mapping) else {}
+    capabilities = _ids(
+        [
+            *_blocks(sections.get("capability"), "capability"),
+            *(
+                held
+                for environment, path in _blocks(sections.get("environment"), "environment")
+                for held in _blocks(
+                    environment.get(_ENVIRONMENT_CAPABILITIES),
+                    f"{path}.{_ENVIRONMENT_CAPABILITIES}",
+                )
+            ),
+        ],
+        CapabilityRegistrar.discriminator_field,
+    )
+    agents = _ids(_blocks(sections.get("agent"), "agent"), AgentRegistrar.discriminator_field)
     families: dict[str, str] = {}
-
-    def walk(value: object, path: str) -> None:
-        if isinstance(value, list | tuple):
-            for index, item in enumerate(value):
-                walk(item, f"{path}[{index}]")
-        elif isinstance(value, Mapping):
-            for key, item in value.items():
-                where = f"{path}.{key}" if path else str(key)
-                if key == CapabilityRegistrar.discriminator_field and isinstance(item, str):
-                    capabilities.setdefault(item, where)
-                elif key == AgentRegistrar.discriminator_field and isinstance(item, str):
-                    families.setdefault(agent_family(item), where)
-                else:
-                    walk(item, where)
-
-    walk(raw, "")
+    for agent_id, path in agents.items():
+        families.setdefault(agent_family(agent_id), path)
     for named, kind, parent, known, code in (
         (
             capabilities,
@@ -801,7 +815,30 @@ def _named_packages(raw: object) -> tuple[frozenset[str], frozenset[str]]:
                         f"Name one that exists ({available}), or add the package.",
                     ),
                 )
-    return frozenset(capabilities), frozenset(families)
+    return capabilities, agents
+
+
+def _blocks(value: object, path: str) -> list[tuple[Mapping[object, object], str]]:
+    """The component blocks written at *path*: one inline block, or each block of a list."""
+    if isinstance(value, Mapping):
+        return [(value, path)]
+    if isinstance(value, list | tuple):
+        return [
+            (item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+            if isinstance(item, Mapping)
+        ]
+    return []
+
+
+def _ids(blocks: list[tuple[Mapping[object, object], str]], field: str) -> dict[str, str]:
+    """Each string value of *field* in *blocks*, with the first place it is written."""
+    ids: dict[str, str] = {}
+    for block, path in blocks:
+        value = block.get(field)
+        if isinstance(value, str):
+            ids.setdefault(value, f"{path}.{field}")
+    return ids
 
 
 def _discriminator_names(registrar: Any) -> frozenset[str]:
