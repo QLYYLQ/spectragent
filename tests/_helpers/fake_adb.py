@@ -9,7 +9,7 @@ to it exactly as it would to a private adb server, without an adb binary, an
 emulator or a phone.
 
 It speaks ``host:transport``, ``shell,v2:`` and ``exec:``, as adb 1.0.41
-answered them on the emulator (2026-11-01), and refuses every other service:
+answered them on the emulator (2026-11-01), and refuses every other request:
 
 - A request is four hex digits giving its length, then that many bytes. The
   answer is ``OKAY``, or ``FAIL`` followed by four hex digits and a message. A
@@ -27,10 +27,11 @@ answered them on the emulator (2026-11-01), and refuses every other service:
   exit code. Its stderr comes in the same stream: a warning on stderr lands
   inside the bytes of a ``screencap -p`` PNG. This fake writes stdout, then
   stderr.
-- Any other service (``shell:`` without ``v2``; ``sync:`` and ``tcp:``, which
-  the design's client will also use) is answered ``FAIL``, so a client that
-  starts using one fails a test until this fake learns it, instead of getting
-  a guess at the answer.
+- Any other request (``host:version``, ``host:track-devices``; ``shell:``
+  without ``v2``; ``sync:`` and ``tcp:``, which the design's client will also
+  use) is answered ``FAIL``, so a client that starts using one fails a test
+  until this fake learns it, instead of getting a guess at the answer. A
+  ``host:`` request is the server's, so it is never a device round trip.
 
 Round trips: every service sent to a device is one round trip to it, kept in
 :attr:`FakeAdbServer.requests` in arrival order, so a test can check what one
@@ -157,6 +158,9 @@ class FakeAdbServer:
                         return
                     writer.write(b"OKAY")
                     continue
+                if request.startswith("host:"):
+                    await _fail(writer, _unspoken(request))
+                    return
                 if serial is None:
                     await _fail(writer, "device offline (no transport)")
                     return
@@ -180,7 +184,7 @@ class FakeAdbServer:
         service, _, command = request.partition(":")
         kind, *options = service.split(",")
         if not (kind == "shell" and "v2" in options) and not (kind == "exec" and not options):
-            await _fail(writer, f"this fake speaks shell,v2: and exec:, not {service!r}")
+            await _fail(writer, _unspoken(service))
             return
         # The stream is open once the device accepts it, before the command ends.
         writer.write(b"OKAY")
@@ -220,6 +224,10 @@ async def _read_request(reader: asyncio.StreamReader) -> str | None:
 async def _drop_input(reader: asyncio.StreamReader) -> None:
     with contextlib.suppress(ConnectionError):
         await reader.read()
+
+
+def _unspoken(request: str) -> str:
+    return f"this fake speaks host:transport:, shell,v2: and exec:, not {request!r}"
 
 
 async def _fail(writer: asyncio.StreamWriter, message: str) -> None:
