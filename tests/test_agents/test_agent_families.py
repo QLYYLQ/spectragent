@@ -33,6 +33,7 @@ from spectragent.agents.prompts import (
     load_prompt,
 )
 from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.negotiation._base import extract_wiring
 from spectragent.core.registries import collect_registrars
@@ -175,7 +176,8 @@ def test_members_merge_the_roots_wiring_and_keep_their_own():
 
 def test_keys_without_a_separator_are_unchanged():
     """The undotted shipped agents keep their keys, and a new undotted agent stays undotted."""
-    assert AgentRegistrar.get("ui_tars").__registry_key__ == "ui_tars"
+    assert AgentRegistrar.get("ui_tars") is UITarsAgent
+    assert UITarsAgent.__registry_key__ == "ui_tars"
 
     @dataclass
     class StandaloneProbe(AgentBase):
