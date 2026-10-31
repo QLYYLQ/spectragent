@@ -171,6 +171,29 @@ def test_config_validation_error_does_not_include_input_values(tmp_path, capsys)
     assert any("api_key" in issue["location"] for issue in result["error"]["issues"])
 
 
+@pytest.mark.parametrize(
+    ("change", "code", "location"),
+    [
+        (
+            lambda raw: raw["environment"][0]["capabilities"][0].update(capability_id="browsr"),
+            "unknown_capability_package",
+            "environment[0].capabilities[0].capability_id",
+        ),
+        (lambda raw: raw.pop("environment"), "agent_without_capability", "agent[0].agent_id"),
+    ],
+)
+def test_a_name_refusal_is_a_validation_error(tmp_path, capsys, change, code, location):
+    """What a configuration names is its own error, refused before the schema is built."""
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    change(raw)
+    path = tmp_path / "named.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    assert main(["--json", "config", "check", str(path)]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["stage"] == "validation"
+    assert [(issue["code"], issue["path"]) for issue in error["issues"]] == [(code, location)]
+
+
 def test_yaml_syntax_error_never_echoes_a_credential_line(tmp_path, capsys):
     path = tmp_path / "invalid.yaml"
     path.write_text("llm:\n  api_key: [secret-malformed-yaml-sentinel\n")

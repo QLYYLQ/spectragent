@@ -14,7 +14,7 @@ from spectragent import GENERATED_DIR
 from spectragent.cli.configuration_errors import inspection_stage
 from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
-from spectragent.core.composer import ConfigComposer
+from spectragent.core.composer import ConfigComposer, named_packages
 from spectragent.core.hooks.base import declare_environment_presence
 from spectragent.core.run_cli import task_context
 from spectragent.core.runtime import AgentRuntime
@@ -35,6 +35,10 @@ def explain_config(
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("The configuration must be a YAML mapping")
+    with inspection_stage("validation"):
+        # A name with no package, or an agent with no capability, is refused
+        # before the schema is built; it is the configuration's error.
+        named_packages(raw)
     with inspection_stage("schema"):
         composer = ConfigComposer.for_config(raw)
     with inspection_stage("validation"):

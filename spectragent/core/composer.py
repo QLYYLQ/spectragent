@@ -259,26 +259,10 @@ class ConfigComposer:
         for negotiation to decide (``docs/architecture_design.md`` §4.2.1).
 
         Raises:
-            UnknownPackageError: *raw* names a capability or a family that has
-                no package. No capability package or family is imported yet.
-            ComposeError: *raw* names an agent and no capability (issue
-                ``agent_without_capability``); nothing is imported yet either.
+            UnknownPackageError, ComposeError: what :func:`named_packages`
+                refuses, before any capability package or family is imported.
         """
-        capabilities, agents = _named_packages(raw)
-        if agents and not capabilities:
-            agent_id, path = next(iter(agents.items()))
-            known = ", ".join(capability_ids()) or "none"
-            raise ComposeError(
-                f"{path}: the agent {agent_id!r} observes and acts through a capability, and "
-                f"the configuration names none: add an environment block holding one "
-                f"(capability packages: {known}).",
-                issue=CompositionIssue(
-                    "agent_without_capability",
-                    path,
-                    f"The agent {agent_id!r} has no capability to observe and act through.",
-                    f"Add an environment block holding a capability ({known}).",
-                ),
-            )
+        capabilities, agents = named_packages(raw)
         families = {agent_family(agent_id) for agent_id in agents}
         discover_implementations(*FRAMEWORK_PACKAGES, capabilities=capabilities, families=families)
         return cls(
@@ -879,7 +863,7 @@ class ConfigComposer:
 _ENVIRONMENT_CAPABILITIES = "capabilities"
 
 
-def _named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
+def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
     """The capability ids and agent ids *raw* names, each with the first place it is written.
 
     Read before anything is imported, and only where the schema puts those
@@ -887,10 +871,14 @@ def _named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
     sections and each environment's ``capabilities``. Only those blocks'
     discriminator fields are read, never a free-form field: an ``agent_id``
     in a hook's ``parameters`` or a provider's ``extra_body`` names nothing.
+    Its refusals are the configuration's errors, not the schema's: ``config
+    check`` reports them at its validation stage.
 
     Raises:
         UnknownPackageError: a capability, or the family of an agent
             (``browser_use.dom``: ``browser_use``), that has no package.
+        ComposeError: an agent and no capability (issue
+            ``agent_without_capability``).
     """
     sections = raw if isinstance(raw, Mapping) else {}
     capabilities = _ids(
@@ -935,6 +923,20 @@ def _named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
                         f"Name one that exists ({available}), or add the package.",
                     ),
                 )
+    if agents and not capabilities:
+        agent_id, path = next(iter(agents.items()))
+        known = ", ".join(capability_ids()) or "none"
+        raise ComposeError(
+            f"{path}: the agent {agent_id!r} observes and acts through a capability, and "
+            f"the configuration names none: add an environment block holding one "
+            f"(capability packages: {known}).",
+            issue=CompositionIssue(
+                "agent_without_capability",
+                path,
+                f"The agent {agent_id!r} has no capability to observe and act through.",
+                f"Add an environment block holding a capability ({known}).",
+            ),
+        )
     return capabilities, agents
 
 
@@ -1098,4 +1100,5 @@ __all__ = [
     "InstantiationError",
     "UnknownPackageError",
     "UnresolvedWiringError",
+    "named_packages",
 ]
