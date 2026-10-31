@@ -90,7 +90,10 @@ class TestTaskDefinitionDispatch:
         assert task.setup.to_context() == {"image": "img"}
 
     def test_an_unregistered_setup_type_is_refused_naming_the_registered(self) -> None:
-        with pytest.raises(ValidationError, match=r"'unknown_env' names no registered.*browser"):
+        with pytest.raises(
+            ValidationError,
+            match=r"'unknown_env' names no registered.*browser.*capability_declarations\(\)",
+        ):
             TaskDefinition.model_validate(
                 {"task_id": "t1", "benchmark": "b", "setup": {"setup_type": "unknown_env"}}
             )

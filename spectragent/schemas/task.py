@@ -114,8 +114,8 @@ def _registered_setup(value: object) -> object:
         registered = ", ".join(sorted(TaskSetupRegistrar.keys())) or "none"
         raise ValueError(
             f"setup_type {setup_type!r} names no registered task setup (registered: "
-            f"{registered}). A capability package registers its task setup and names it "
-            f"TASK_SETUP in its declarations.py."
+            f"{registered}). Call spectragent.core.registries.capability_declarations() "
+            f"before validating a task: it registers every capability's task setup."
         )
     return setup.model_validate(value)
 
