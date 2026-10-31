@@ -101,26 +101,22 @@ def discover_implementations(*packages: str, exclude: Iterable[str] = ()) -> Non
 def setup_class_for_env(env_type: str) -> type[SetupBase]:
     """The registered task setup class whose ``__env_types__`` claims *env_type*.
 
-    On a miss it reads every capability package's declarations, which
-    registers each package's setup, and looks again: a caller (a loader built
-    directly, a test) need not have imported the capability first.
+    It first reads every capability package's declarations, which registers
+    each package's setup: a caller (a loader built directly, a test) need not
+    have imported the capability, and two packages claiming one env type are
+    always caught.
 
     Raises:
         ValueError: no registered setup claims *env_type*, or more than one does.
     """
     from spectragent.schemas.task import SetupBase, TaskSetupRegistrar
 
-    def claims() -> list[type[SetupBase]]:
-        return [
-            setup
-            for _, setup in sorted(TaskSetupRegistrar.get_all().items())
-            if issubclass(setup, SetupBase) and env_type in setup.__env_types__
-        ]
-
-    found = claims()
-    if not found:
-        capability_declarations()
-        found = claims()
+    capability_declarations()
+    found = [
+        setup
+        for _, setup in sorted(TaskSetupRegistrar.get_all().items())
+        if issubclass(setup, SetupBase) and env_type in setup.__env_types__
+    ]
     if len(found) > 1:
         names = ", ".join(setup.__name__ for setup in found)
         raise ValueError(f"task setups {names} all claim env_type={env_type!r}; one may")
