@@ -99,14 +99,15 @@ class FrameRecord:
     ``before_action`` frame, ``action_index`` is the ordinal of its
     ``env.act`` call since that cycle — the index into the step's
     ``StepRecord.action_spans``, not into ``StepRecord.actions`` (an action
-    ``guarded_act`` refused never reaches the environment and is in
-    neither) — and ``action`` the action's name; both are ``None`` for
-    ``after_observation``. ``requested_at`` is the action's start, or the
-    cycle's commit plus the delay; ``captured_at`` is when the capture's
-    reply arrived (``None`` when nothing was captured); ``released_at`` is
-    when this archiver let the action go (``before_action`` only, ``None``
-    otherwise), so ``released_at - requested_at`` is what recording added to
-    the action's span. ``name`` is the image's file name among the same
+    ``guarded_act`` refused, and the Loop's own ``loop.done``, never reach
+    the environment and are in neither) — and ``action`` the action's name;
+    both are ``None`` for ``after_observation``. ``requested_at`` is the
+    action's start, or the cycle's commit plus the delay; ``captured_at`` is
+    when the capture's reply arrived (``None`` when nothing was captured);
+    ``released_at`` is when this archiver let the action go
+    (``before_action`` only, ``None`` otherwise), so
+    ``released_at - requested_at`` is what recording added to the action's
+    span. ``name`` is the image's file name among the same
     batch's ``browser.frames`` files and ``sha256`` its digest; with
     ``width`` and ``height`` they are ``None`` unless the outcome is
     ``captured`` (``width`` / ``height`` also when the PNG header could not

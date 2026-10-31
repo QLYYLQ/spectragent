@@ -351,11 +351,12 @@ def frame_geometry(trace: RunTrace, step: int | None, record: FrameRecord | None
 def executed_action(record: StepRecord, call: int, name: str | None) -> int | None:
     """The index into ``record.actions`` of the step's ``env.act`` call number *call*.
 
-    A frame is numbered by environment call (``StepRecord.action_spans``); an
-    action the guard refused never reached the environment, so the recorded
-    actions are aligned with the spans by name, in order (a refused action's
-    name is never an executable one). Without spans, the action at *call* if
-    its name is *name*.
+    A frame is numbered by environment call (``StepRecord.action_spans``). Two
+    kinds of recorded action never reach the environment: one the guard
+    refused, and the Loop's own ``loop.*`` action (``loop.done``), which the
+    Loop executes itself. So the recorded actions are aligned with the spans
+    by name, in order (neither name is ever a span's). Without spans, the
+    action at *call* if its name is *name*.
     """
     spans = record.action_spans
     if spans is None:
