@@ -6,7 +6,8 @@ about coordinates. These tests pin the framework's half:
 
 - the run's action space is framed on the declared grid when it holds a point
   action — its point params say the model's units, nothing else about the
-  space changes — and is left alone otherwise;
+  space changes — and is left alone otherwise; an agent that declares no grid
+  is offered no optional point;
 - each step's frame is the declared grid over the screenshot that step shows
   the model, with no grid when the screenshot's size is unknown or the model
   is shown none, and an assembly error when the screenshot reports no
@@ -22,11 +23,13 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.actions.params import PointAxis, params_view, point_params
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.composer import ConfigComposer
@@ -80,6 +83,31 @@ def _screenshot(
 
 def _pointing(coordinate_space: Any = "normalized_1000") -> ActionSpace:
     return browser_space("click_coordinate", "drag", "scroll", coordinate_space=coordinate_space)
+
+
+class _PanParams(BaseModel):
+    """An action with an optional point: given, the action happens there."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["up", "down"]
+    at_x: Annotated[
+        int | None, PointAxis("at", "x"), Field(description="CSS px from the viewport's left edge")
+    ] = None
+    at_y: Annotated[
+        int | None, PointAxis("at", "y"), Field(description="CSS px from the viewport's top edge")
+    ] = None
+
+
+def _pan() -> ActionDescriptor:
+    prose, schema = params_view(_PanParams)
+    return ActionDescriptor(
+        name="browser.pan",
+        description="Pan the page.",
+        params=prose,
+        params_schema=schema,
+        point_params=tuple(point_params(_PanParams)),
+    )
 
 
 # ── What an Agent declares ────────────────────────────────────────────
@@ -153,6 +181,36 @@ class TestTheFramedActionSpace:
     def test_an_agent_that_declares_no_grid_keeps_the_capabilitys_units(self) -> None:
         plain = _pointing(None)
         assert framed_action_space(plain, None) is plain
+
+    def test_an_agent_that_declares_no_grid_is_offered_no_optional_point(self) -> None:
+        """Dropped like an optional param whose fragment is not active: prose, schema, points."""
+        space = space_of([_pan(), *browser_descriptors("click_coordinate")])
+        pan, click = space.descriptors
+        assert space.coordinate_space is None
+        assert pan.params == {"direction": "up|down"}
+        assert pan.params_schema is not None
+        assert set(pan.params_schema["properties"]) == {"direction"}
+        assert pan.params_schema["required"] == ["direction"]
+        assert pan.point_params == pan.optional_points == ()
+        # A required point is the action's own, in the capability's units.
+        assert click == browser_descriptors("click_coordinate")[0]
+
+    def test_a_grid_keeps_an_optional_point_and_frames_it(self) -> None:
+        space = space_of([_pan()], coordinate_space="normalized_1000")
+        (pan,) = space.descriptors
+        assert space.coordinate_space == "normalized_1000"
+        assert pan.point_params == pan.optional_points == (("at_x", "at_y"),)
+        assert pan.params["at_x"] == (
+            "int (optional) -- x on a 0-1000 grid laid over the screenshot whatever its "
+            "pixel size, from its left edge"
+        )
+
+    def test_an_optional_point_is_one_the_schema_does_not_require(self) -> None:
+        assert _pan().optional_points == (("at_x", "at_y"),)
+        (drag,) = browser_descriptors("drag")
+        assert drag.optional_points == ()
+        unschemed = drag.model_copy(update={"params_schema": None})
+        assert unschemed.optional_points == ()
 
     def test_a_grid_on_a_space_without_a_point_action_cannot_be_stated(self) -> None:
         with pytest.raises(ValueError, match="taught no coordinate frame"):
