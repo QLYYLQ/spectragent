@@ -5,9 +5,11 @@ Skyvern teacher clicks ``[42]`` (or types into it, or scrolls inside it); a
 vision student has to be taught a point.
 This module turns a recorded element into that point, or says why there is
 none — off the screenshot, gone from the selector map, covered — and
-records how it decided. It reads only what it is handed (a recorded
-``DOMState`` and its self-contained selector-map entries, the step's raw DOM
-documents) and imports neither ``core.trace`` nor ``spectragent.export``.
+records how it decided. It reads what it is handed (a recorded ``DOMState``
+and its self-contained selector-map entries, the step's raw DOM documents)
+and, for the point params of a coordinate counterpart, the action registry
+(:func:`coordinate_action`); it imports neither ``core.trace`` nor
+``spectragent.export``.
 
 **Geometry.** An entry's ``bounds`` are page coordinates of the top-level
 document in CSS px, iframe offsets included and independent of the device
