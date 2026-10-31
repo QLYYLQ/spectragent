@@ -921,8 +921,7 @@ class ConfigComposer:
     def __init__(self, *, registrars, discover_roots=("spectragent.agents",
                                                        "spectragent.core",
                                                        "spectragent.schemas")):
-        for root in discover_roots:
-            discover(root)                                  # 1) 触发自动注册
+        discover_implementations(*discover_roots)           # 1) 触发自动注册（跳过 OPTIONAL_EXTRA_MODULES）
         self._composed = build_composed_config(             # 2) 生成 schema
             registrars, inline_wiring=True
         )
