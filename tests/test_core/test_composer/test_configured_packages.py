@@ -27,7 +27,6 @@ from spectragent import REPO_ROOT
 from spectragent.agents._registrar import AgentBase
 from spectragent.core.capabilities.browser.declarations import STRATEGY_AXES as BROWSER_AXES
 from spectragent.core.composer import ComposeError, ConfigComposer, UnknownPackageError
-from spectragent.core.registries import discover_every_implementation
 from spectragent.scripts import generate_all
 
 #: A second capability, complete enough to compose and prepare a UI-TARS run:
@@ -371,20 +370,49 @@ def test_a_trace_writer_composes_in_a_run_with_no_archiver() -> None:
     assert refused == {"archive": [], "code": "no_implementation", "path": "hook[0].archive"}
 
 
+_REFUSAL = """
+import json
+
+from spectragent.core.composer import ComposeError, ConfigComposer
+from spectragent.core.registries import discover_every_implementation
+
+raw = {raw}
+
+
+def refusal():
+    try:
+        ConfigComposer.for_config(raw).compose(raw)
+    except ComposeError as exc:
+        return [exc.issue.code, exc.issue.path, exc.issue.remedy, str(exc)]
+    return None
+
+
+fresh = refusal()
+discover_every_implementation()
+print(json.dumps({{"fresh": fresh, "imported": refusal()}}))
+"""
+
+_LLM = [{"model_type": "openai", "model": "m", "provider": {"name": "direct"}}]
+
+
+def _refusals(raw: dict[str, object]) -> dict[str, list[str]]:
+    """How a fresh interpreter refuses *raw*, then again after importing every package.
+
+    In a fresh interpreter: the test session's own fakes (an archiver some test
+    module registers) would keep layers in that a run naming no capability
+    leaves out.
+    """
+    return cast(dict[str, list[str]], _run(_REFUSAL.format(raw=repr(raw))))
+
+
 def test_an_archiver_an_earlier_import_registered_is_still_refused() -> None:
-    # After the browser package was imported, its archivers stay registered and
+    # Once the browser package is imported its archivers stay registered, and
     # trace_writer's archive takes their bare keys. A run naming no capability
     # holds no archiver layer, so naming one is refused as in a fresh process.
-    discover_every_implementation()
-    raw = {
-        "llm": [{"model_type": "openai", "model": "m", "provider": {"name": "direct"}}],
-        "hook": [{"hook_id": "trace_writer", "archive": ["browser.network"]}],
-    }
-    with pytest.raises(ComposeError) as refused:
-        ConfigComposer.for_config(raw).compose(raw)
-    issue = refused.value.issue
-    assert issue is not None
-    assert (issue.code, issue.path) == ("no_implementation", "hook[0].archive")
+    archive = [{"hook_id": "trace_writer", "archive": ["browser.network"]}]
+    refusals = _refusals({"llm": _LLM, "hook": archive})
+    assert refusals["imported"] == refusals["fresh"]
+    assert refusals["fresh"][:2] == ["no_implementation", "hook[0].archive"]
 
 
 def test_explain_says_what_a_run_cannot_provide(probe_root: Path) -> None:
@@ -639,17 +667,12 @@ except ComposeError as exc:
 def test_an_archiver_section_says_where_archivers_are_written() -> None:
     # Naming the capability that provides archivers would only meet the
     # inline_only_layer refusal, so this refusal says where they go instead.
-    raw = {
-        "llm": [{"model_type": "openai", "model": "m", "provider": {"name": "direct"}}],
-        "archiver": [],
-    }
-    with pytest.raises(
-        ComposeError, match=r"written under hook\[trace_writer\]\.archive"
-    ) as refused:
-        ConfigComposer.for_config(raw).compose(raw)
-    issue = refused.value.issue
-    assert issue is not None and (issue.code, issue.path) == ("no_implementation", "archiver")
-    assert issue.remedy.startswith("Leave it out, or write its instances under hook[trace_writer]")
+    refusals = _refusals({"llm": _LLM, "archiver": []})
+    assert refusals["imported"] == refusals["fresh"]
+    code, path, remedy, message = refusals["fresh"]
+    assert (code, path) == ("no_implementation", "archiver")
+    assert "written under hook[trace_writer].archive" in message
+    assert remedy.startswith("Leave it out, or write its instances under hook[trace_writer]")
 
 
 _GENERATE = """
