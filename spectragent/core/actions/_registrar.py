@@ -224,7 +224,7 @@ def registered_params(name: str) -> type[BaseModel] | None:
     (``point_params``, ``element_params``); an Agent reads the same facts off
     its run's descriptors instead.
     """
-    params = getattr(ActionRegistrar.get_or_none(name), "Params", None)
+    params = getattr(_registered_action(name), "Params", None)
     return params if isinstance(params, type) and issubclass(params, BaseModel) else None
 
 
@@ -245,4 +245,22 @@ def is_wait_action(name: str) -> bool:
     for a name no action is registered under. *name* is the key the guard
     qualified the action with, as a trace records it.
     """
-    return bool(getattr(ActionRegistrar.get_or_none(name), "only_waits", False))
+    return bool(getattr(_registered_action(name), "only_waits", False))
+
+
+def _registered_action(name: str) -> type | None:
+    """The action class registered under *name*, discovering the capabilities on a miss.
+
+    A reader that never composed a configuration (``spectragent view``, the
+    lookahead labels) may not have imported the module that registers the
+    action: importing one module of a capability package does not import the
+    rest of it. So a miss imports every capability implementation and looks
+    again, as ``RunTrace`` does for fragments and effects.
+    """
+    action = ActionRegistrar.get_or_none(name)
+    if action is None:
+        from spectragent.core.registries import CAPABILITIES_PACKAGE, discover_implementations
+
+        discover_implementations(CAPABILITIES_PACKAGE)
+        action = ActionRegistrar.get_or_none(name)
+    return action
