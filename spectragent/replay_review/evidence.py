@@ -55,6 +55,19 @@ def _browser_config(value: dict[str, Any]) -> dict[str, Any]:
     return candidates[0]
 
 
+def _source_browser(config_path: Path) -> tuple[Any, dict[str, Any]]:
+    """The source run's browser capability and recipe, built from its configuration file.
+
+    Composed for the packages that file names. Only the browser block is
+    instantiated, never the source Agent's model, hooks or loaders: offline
+    evidence needs none of their credentials or runtime resources.
+    """
+    raw = yaml.safe_load(config_path.read_text())
+    composer = ConfigComposer.for_config(raw)
+    configured = _browser_config(composer.validate(raw).model_dump(mode="json"))
+    return composer.compose({"capability": [configured]}).single("capability"), configured
+
+
 def _ref(trace: RunTrace, step: int) -> EvidenceRef:
     return EvidenceRef(
         run_id=trace.run_id,
@@ -231,14 +244,7 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
         config_path = Path(pair.source_config)
         if not config_path.is_file():
             raise ReviewEvidenceError("missing_source", "Source run configuration is missing")
-        raw = yaml.safe_load(config_path.read_text())
-        composer = ConfigComposer.for_config(raw)
-        source_config = composer.validate(raw)
-        configured = _browser_config(source_config.model_dump(mode="json"))
-        # Instantiate the recorded browser recipe once, without constructing the
-        # source Agent's model, hooks or loaders. Offline evidence needs none of
-        # their credentials or runtime resources.
-        cap = composer.compose({"capability": [configured]}).single("capability")
+        cap, configured = _source_browser(config_path)
         recorded = _browser_config(source.config.resolved)
         recipe_keys = (
             "dom_cleaner",

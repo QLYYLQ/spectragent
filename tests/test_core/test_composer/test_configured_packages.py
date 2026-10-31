@@ -268,7 +268,11 @@ def _shipped(name: str) -> str:
 
 @pytest.mark.parametrize(
     ("config", "family"),
-    [("browser_use_local.yaml", "browser_use"), ("ui_tars_local.yaml", "ui_tars")],
+    [
+        ("browser_use_local.yaml", "browser_use"),
+        ("skyvern_agent_local.yaml", "skyvern"),
+        ("ui_tars_local.yaml", "ui_tars"),
+    ],
 )
 def test_a_browser_run_imports_only_the_agent_family_it_names(
     probe_root: Path, config: str, family: str
@@ -430,6 +434,68 @@ def test_a_runs_configuration_hash_does_not_follow_import_history(probe_root: Pa
     digests = cast(dict[str, dict[str, str]], _run(code))
     assert set(digests["before"]) == {*_AGENT_LESS, "ui_tars_on_probe"}
     assert digests["before"] == digests["after"]
+
+
+_EXPORT = """
+import json
+import sys
+from pathlib import Path
+
+import yaml
+
+from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import agent_families
+from spectragent.export.render import StudentRenderer
+from spectragent.export.runner import ExportRunner
+
+raw = yaml.safe_load(Path("configs/flywheel/export_sft.yaml").read_text())
+exporter = ExportRunner.from_run(ConfigComposer.for_config(raw).compose(raw), origin="test").exporter
+renderer = StudentRenderer.from_config(
+    Path(exporter.student_run_config),
+    untranslatable=exporter.translator.untranslatable,
+    thought_source=exporter.thought_source,
+    thought_index_refs=exporter.thought_index_refs,
+)
+print(json.dumps({
+    "loop": renderer.loop_id,
+    "families": [f for f in agent_families() if f"spectragent.agents.{f}" in sys.modules],
+}))
+"""
+
+
+def test_the_export_composes_its_document_and_then_its_student() -> None:
+    # The export document names no package; the student's configuration names
+    # its own (UI-TARS, the browser), composed by the renderer itself.
+    composed = cast(dict[str, object], _run(_EXPORT))
+    assert composed == {"loop": "react", "families": ["ui_tars"]}
+
+
+_REPLAY_REVIEW = """
+import json
+import sys
+from pathlib import Path
+
+from spectragent.core.registries import agent_families
+from spectragent.replay_review.evidence import _source_browser
+
+capability, configured = _source_browser(Path("configs/flywheel/record_ui_tars_pinned.yaml"))
+print(json.dumps({
+    "capability": type(capability).__name__,
+    "cleaner": configured["dom_cleaner"]["cleaner_type"],
+    "families": [f for f in agent_families() if f"spectragent.agents.{f}" in sys.modules],
+}))
+"""
+
+
+def test_replay_review_composes_the_source_runs_browser() -> None:
+    # As replay review builds the recorded recipe: the source configuration's
+    # own packages, and only its browser block instantiated.
+    composed = cast(dict[str, object], _run(_REPLAY_REVIEW))
+    assert composed == {
+        "capability": "BrowserCapability",
+        "cleaner": "browser_use",
+        "families": ["ui_tars"],
+    }
 
 
 def test_a_misspelled_declared_key_fails_the_complete_builds(
