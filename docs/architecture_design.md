@@ -928,18 +928,18 @@ class ConfigComposer:
             capabilities=capabilities,
             families={agent_family(agent_id) for agent_id in agents},
         )
-        return cls(registrars=collect_registrars(capabilities))
+        return cls(registrars=collect_registrars(capabilities), coverage="partial")
 
     @classmethod
     def for_every_package(cls) -> ConfigComposer:          # 整份目录（components list、config template）
         discover_every_implementation()
-        return cls(registrars=collect_registrars())
+        return cls(registrars=collect_registrars())          # 完整构建
 
-    def __init__(self, *, registrars):
+    def __init__(self, *, registrars, coverage="complete"):
         # 不发现：调用方先导入（上面两个工厂）。没有已导入实现的层不进 schema。
         self._registrars = {layer: r for layer, r in registrars.items() if r.get_all()}
         self._composed = build_composed_config(             # 2) 生成 schema
-            self._registrars, inline_wiring=True
+            self._registrars, inline_wiring=True, coverage=coverage
         )
 
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
@@ -975,18 +975,24 @@ class ConfigComposer:
 - **配置点名的 capability 包**：配置里每个 `capability_id` 的值点名一个，包名就是 `capability_id`（`spectragent/core/capabilities/<capability_id>/`，上面的约定）；
 - **配置点名的 agent 家族**：每个 `agent_id` 的值点名它的家族，即第一个点之前的部分（§4.1 "Agent 家族"）：`browser_use.dom` 点名 `spectragent/agents/browser_use/`，不带点的键（`ui_tars`）自成一族。`spectragent/agents/` 下的每个子包都是一个家族，框架自己的两个子包除外：`memory`（memory 轴）与 `rendering`（各家族共用的 prompt 呈现），这份名单在 `core/registries.py`。`spectragent/agents/__init__.py` 因此不导入任何家族。
 
-名字在任何导入之前读，而且只从 schema 放 capability 块与 agent 块的位置读：顶层 `capability` 段与 `agent` 段的每一项，以及每个 environment 的 `capabilities` 受体（`EnvironmentBase` 声明的；environment 自己的类在它的 capability 包里，这时还没导入）。只读这些块的判别字段 `capability_id` 与 `agent_id`，从不读自由字段：hook 的 `parameters`、provider 的 `extra_body` 里写的同名键不点名任何包。读到的名字用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。点名了 agent 家族却没点名任何 capability 时，抛 `ComposeError`（issue `agent_without_capability`），点名这个 agent 与现有的 capability 包，让人加一个带 capability 的 environment 块：agent 的观测与动作都来自 capability，v1 也没有不要环境的 Loop（§4.1）。没点名的包是发现的排除项：发现不遍历它们，也不读它们的 `declarations.py`，`collect_registrars(capabilities)` 只读点名的包的声明；框架代码直接导入的模块照旧随那段代码进来（下面"仍会导入 browser 模块的框架代码"）。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
+名字在任何导入之前读，而且只从 schema 放 capability 块与 agent 块的位置读：顶层 `capability` 段与 `agent` 段的每一项，以及每个 environment 的 `capabilities` 受体（`EnvironmentBase` 声明的；environment 自己的类在它的 capability 包里，这时还没导入）。只读这些块的判别字段 `capability_id` 与 `agent_id`，从不读自由字段：hook 的 `parameters`、provider 的 `extra_body` 里写的同名键不点名任何包。读到的名字用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。点名了 agent 家族却没点名任何 capability 时，抛 `ComposeError`（issue `agent_without_capability`），点名这个 agent 与现有的 capability 包，让人加一个带 capability 的 environment 块：agent 的观测与动作都来自 capability，v1 也没有不要环境的 Loop（§4.1）。没点名的包是发现的排除项：发现不遍历它们，也不读它们的 `declarations.py`，`collect_registrars(capabilities)` 只读点名的包的声明（框架代码也只在用到时才导入 browser 的模块，下面"框架代码只在用到时导入 browser 的模块"）。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
 
-这次组装的目录是框架轴加上点名的 capability 声明的轴；没有已导入实现的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`compose()` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`。conscribe 对进了目录的每个类都解析 `__wiring__`，`declare_only` 条目也一样，键对照的是整个进程的注册表，指向空注册表或没注册的键都是错误，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
+这次组装的目录是框架轴加上点名的 capability 声明的轴；没有已导入实现的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`compose()` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`。conscribe 对进了目录的每个类都解析 `__wiring__`，键对照的是整个进程的注册表。部分构建（下一段）只放宽 `declare_only` 条目与默认什么都不选的受体；一个受体写明要某个 capability 的键（`("capability", ["browser"])`）仍然必须解析，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
 
-**没解决：agent 的声明与归档受体在只导入点名的包时可能解析不了（等用户对 conscribe 的裁决）。** 同一条检查也落在 agent 的声明和 trace_writer 上，挪文件解决不了：
+**一次组装用部分构建（conscribe ≥ 2.2 的 `coverage="partial"`）。** 只导入点名的包，目录就只有一部分实现；`for_config` 因此明确声明这是部分构建，conscribe 只改两条规则：
 
-- agent 声明的动作里，点名的 capability 没注册的那些（可选的也算）在组装时就报错。例如一个只提供 `click_coordinate`、`type_coordinate` 的 capability 配 `ui_tars`，得到 `WiringResolutionError … unknown optional keys 'scroll', 'send_keys', 'drag', 'wait'`；导入全部包时这份配置能组装，协商把这些可选动作去掉。
-- trace_writer 的 `archive` 受体指向 archiver 注册表，而只有 capability 包注册归档器：注册表为空时每次建目录都失败（`TraceWriter … registry 'archiver' is empty`）。现在看不出这一条：每次组装都经下一段列出的框架模块导入了 browser 的归档器。
+- `declare_only` 条目里没注册的键从它的 `Literal` 里拿掉，不报错。例如一个只提供 `click_coordinate`、`type_coordinate` 的 capability 配 `ui_tars`：`ui_tars` 声明的 `scroll`、`send_keys`、`drag`、`wait` 这次没有实现，照样组装；该用哪些仍由 `prepare()` 的协商决定，它激活 `loop.done` 与那两个动作。
+- 目标注册表为空时，`declare_only` 或没有受体的条目、以及默认什么都不选的受体（`None`；多实例受体还可以是空列表或 `default_factory`）照样保留。trace_writer 的 `archive` 就是这样：没点名任何提供归档器的 capability 时 archiver 注册表为空，`archive` 只接受"什么都不选"（省略、`null`、`[]`）。
 
-怎么补等用户对 conscribe 的裁决，在那之前不绕开它。
+这样的字段写了别的值，pydantic 报错误类型 `no_implementation`；Composer 把它换成 `ComposeError`（issue `no_implementation`），用白话说这一层这次没有实现（"no imported capability provides any archiver; leave `archive` out or name a capability that does"）。其余照完整构建检查：未知的注册表、非 `declare_only` 条目里未知的键、默认值、矛盾的声明。
 
-**仍会导入 browser 模块的框架代码。** 框架自己的几个模块直接导入 browser 包的模块：导出的 `index_to_coordinate` 翻译器与 `export/filters.py`、replay 审查的 `evidence.py`、`lexbench_browser` 任务加载器。框架的包照旧导入，所以没点名 browser 的组装也会经它们导入 browser 包的一部分（归档器、DOM 模型、观测 fragment、tab 管理，连带 agent-cdp），但不导入 `BrowserCapability`、它的动作与 `BrowserEnvironment`。archiver 注册表是经这些导入才不为空的（上面"没解决"的第二条）。另外，任务加载器按 §4.10 查 setup 类时，已注册的 setup 里没有才读每个 capability 包的声明（只读声明，不导入实现）。
+整份目录仍用完整构建（默认的 `coverage="complete"`）：`spectragent config generate`、指纹探针、`tests/test_generated/test_in_sync_with_registries.py` 与 `ConfigComposer.for_every_package()`。所以声明里拼错的键在生成与静态测试里照样失败，部分构建不会把它悄悄放过。
+
+被留在目录外的层：一个受体的目标层这次没有已导入的实现（不进目录），而配置给它的值什么都不选（省略、`null`、`[]`）时，Composer 保留主人自己的默认值，不再报 `uncollected_registry`（trace_writer 的 `archive` 在没点名 browser 的 run 里）。
+
+`config check` / `config explain` 按部分构建组装，声明来源也按部分构建解释（`get_config_provenance(key, coverage="partial")`）；部分构建记下的 `unresolved_wiring` 里，属于这次组装出的组件的那些条目列在输出的 `unresolved_wiring` 下（例如这次的 capability 不提供、所以被拿掉的可选动作）。运行时用哪些仍只由 `prepare()` 的协商决定。
+
+**框架代码只在用到时导入 browser 的模块。** 导出的 `index_to_coordinate` 翻译器与 `export/filters.py`、replay 审查的 `evidence.py`、`lexbench_browser` 任务加载器要用 browser 的模块，都在用到它们的函数里导入，不在模块顶层。所以组装一份没点名 browser 的配置不导入任何 `spectragent.core.capabilities.browser` 模块，也不导入 agent-cdp，`collect_registrars()` 也不再经框架的注册表模块带进 browser 的归档器；新鲜进程的测试对只写 judge 模型的配置与上面那个 `ui_tars` 配置检查这一点。任务加载器按 §4.10 查 setup 类时，已注册的 setup 里没有才读每个 capability 包的声明（只读声明，不导入实现）。
 
 **整份目录的工具导入一切。** `spectragent config generate` 为每一层的每个实现生成配置；指纹探针（`cli/fingerprints.py`，在干净的子进程里跑）与 `tests/test_generated/test_in_sync_with_registries.py` 拿生成时的同一份目录比对；`spectragent components list` 列出每一层的全部实现；`spectragent config template` 按用户挑的任意组件拼 YAML、拼错时列出全部可选的实现。后两者经 `ConfigComposer.for_every_package()`。`config check` / `config explain` 按一次组装的方式组装（`for_config`：同样的拒绝、同样的目录、同样的 resolved 配置与摘要），只有"生成产物是否过期"这一项要整份目录，由指纹探针在它自己的子进程里算。
 
