@@ -861,6 +861,10 @@ class AgentRuntime:
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `writing`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
+**Loop 结束之后、teardown 之前的判分时间点（用户 2026-10-31 的裁决）。** 有的基准只能对着活体环境判分：AndroidWorld 读设备上的数据库、文件与设置，必须在 agent 停下之后、设备拆掉之前的一个确定时刻跑。所以 Runtime 在 Loop 结束（返回或抛出）之后有一个明确的判分时间点，环境还活着的每条结束路径都经过它：完成、步数用完、超时、Loop 抛错、否决、外部取消；setup 失败的 run 环境没有起来，不经过。判分要进 trace，而 trace 在 `on_run_end` 里收尾，所以这个时间点也在 `on_run_end` 之前。在这里，实现了任务裁判的 capability（Android 的任务裁判，§11.2）读出活体判分；判分作为带来源的证据写进 trace，评测器从 trace 读它（§4.11），它不改 run 的结局（`agent_done`）。Runtime 不认识 capability，经 environment 到达任务裁判；这是一次公开的方法调用，不是旁路（§4.6 "与 emitter.dispatch() 的权衡"）。
+
+它不借 `collect_archive` 的时机，原因有两条：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，teardown 在它之后，§4.9 "最后一次收集"）；收集从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻驱动环境。方法的名字与签名、判分在 trace 里的记录形式、读判分的时限与失败怎样记、外部取消时怎样保证取消优先，在 Android 阶段 1（最小可跑，§11.2）实现时定，届时补进本节与 §4.3、§5.3。
+
 **收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（某个 hook 的 `on_run_end` 抛错；`TraceWriter` 自己收尾时从不抛错，它把写不进去的东西记进 trace 的 `incomplete_reason`，§4.6），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。被否决的 run 同理（下一段）。其余路径（完成、超时、其他异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
 
 **否决总是上抛，记录失败顶替不了它。** `execute` 只看从 Loop 里出来的是不是 `RunAbort`。Loop 重抛否决之前先把被否决的那一步交给 `record_step`；那次记录若失败（归档收集坏了、磁盘满），记录失败绝不能取代否决从 Loop 里出来，否则 `raise_on_error=False` 会把它当成普通失败吞成结果，sweep 接着跑下一个任务。Loop 把它作为 note 附在否决上照样重抛；基础设施失败的终止结果同理，`error` 仍然点名根因（§4.6 "记录失败不顶替 run 已经定下的结局"）。收尾失败同样顶替不了它：`execute` 对否决和对取消一样处理（`_close_out_vetoed`）：`_finish` 抛出的 `Exception`（某个 blocking hook 收尾失败）只记日志，并作为又一条 note 附在否决上，重抛的仍是 `RunAbort`，sweep 照样停下。磁盘一直满着时，`TraceWriter` 收尾要把这一步还登记着的调用（归档时还有遗留批次和尾部）作为 trailing 提交，照样失败——它不抛错，写不进去的那一样丢掉，原因记进 trace 的 `incomplete_reason`（连终态都写不进去时 manifest 停在 `writing`），§4.6。**setup 里的否决也是否决**：环境 setup 期间抛出的 `RunAbort` 不被当成普通的 setup 失败，照样以 `agent_done=vetoed` 收尾、越过 `raise_on_error=False` 上抛，sweep 照样停下。取消落在否决的收尾里时，取消优先：`CancelledError` 是 `BaseException`，这一层不接它。
@@ -2397,6 +2401,8 @@ class RestorationAlignment(Protocol):
 - 预约只属于紧接着的那一次观测；那次观测的 `verify_restoration` 交回对齐记录并清掉预约（用上与否），所以检查点之后的策略步与终止观测从不对齐。
 - 不进 `BaseCapability`，`CapabilityBase` 不给默认；不实现的 capability 什么都不用写，environment 的扇出跳过它。它与 `RestorationSupport` 分开，是因为能重定位与校验的 capability 不一定有可对齐的东西。
 
+**恢复证据按 capability 分型（用户 2026-10-31 的裁决；与 Android 的分支回放一起，在 Android 阶段 3 开头实施）。** 上面的 `RestorationEvidence` 是一个固定结构，字段是浏览器那一套（网址、元素签名、截图距离、文档 miss、媒体）；判定（`core/loops/restore/checks.py`）把这些字段写死，失败原因是一个封闭的列表（§5.3 的 `RestorationReason`）；对齐用的参数也是媒体专用的，却挂在框架上。"恢复出的状态与录下的对不对得上"，不同环境的标准天差地别：Android 量的是前台 app 与 Activity、界面树签名、截图距离。往现成字段里挤会让它们冒充浏览器的量，往这个结构里加字段会让它变成大部分为空的大杂烩。所以改为每个 capability 定义自己的恢复证据与判定，trace 里按 capability 存，读回时按 id 找到类型，与动作效果 `Effect` 同一做法（§4.5）；`align_next_observation` 的媒体参数与 `prefix_replay` 上的 `media*` 旋钮一起挪进浏览器。实施之前，本节与 §4.1、§4.3、§4.14、§5.3 写的仍是现状。
+
 **采集一致性检查（M32）也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
 
 ```python
@@ -2790,6 +2796,8 @@ class BaseEvaluator(Protocol):
 
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
 每个 evaluator（包括仅结构化满足 Protocol 的实现）公开 `config_signature()` 与稳定的 `verdict_slug`：无旋钮时签名显式返回 `{}`，有旋钮时写出影响判定的可复现设置，slug 随之变化。Runner 不猜测缺失身份，也不把读取签名的异常吞掉后记成空签名。落盘的 `EvalResult` 只接受当前 `schema_version: "2.1"`；构造新判定时 `verdict_source` 默认 `graded`，读回已存判定时该字段与 `evaluator_config` 必须实际存在，旧数据不能被默认值伪装成已评分。
+
+**活体环境的判分也从 trace 读（用户 2026-10-31 的裁决）。** 只能对着活体环境判的基准（AndroidWorld 读设备上的数据库、文件与设置）不开"活体评测器"这个例外，那会违反"录一次、评多次"：capability 的任务裁判在 Runtime 的判分时间点（§4.2）读出判分，作为带来源的证据写进 trace，评测器读这份证据，不碰活体环境。Android 阶段 3 加上状态转储归档器之后，一部分判分可以离线重算，用来对变体重评（换部分分规则、换比较字段）。
 
 **现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
