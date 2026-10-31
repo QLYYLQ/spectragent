@@ -286,8 +286,9 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
 ```
 
 - The source run arrives per task as `replay_archive`, a run directory. A relative one is
-  relative to the launch directory: `AgentRuntime.execute` makes it absolute
-  (`schemas/task.py::resolve_env_context_paths`) before it is recorded as `task_setup` and
+  relative to the launch directory: `AgentRuntime.prepare` routes the context through the
+  environment, and the browser's `prepare_setup_context` makes it absolute (design doc
+  §4.10) before it is recorded as `task_setup` and
   handed to setup, for every caller — `spectragent run`, a task loader, a Python caller
   building `env_context` itself; `prepare()` checks the absolute one. The `archive` source
   without it is a `BrowserCooperationError` row at `prepare()`
@@ -824,10 +825,12 @@ A new axis, that is, a new registrar:
 - `create_registrar(...)`, a Protocol, a base, and a `default_*()` factory for owners built
   by hand. The receptor goes on its owner as af-add-a-receptor §2 lays out; the layering rule
   (§1) picks the package.
-- Add it to `collect_registrars()` in `spectragent/core/registries.py`, leaves before
-  owners. An empty registry cannot be a Composer layer, so create and document it now and
-  collect it with its first implementation (af-add-a-receptor §2, the `ArchiverRegistrar`
-  case).
+- Let the Composer collect it: a browser-internal axis (replayability, network source,
+  miss policy) goes in `core/capabilities/browser/declarations.py` under `STRATEGY_AXES`;
+  a framework axis (archiver, restorer, step selector, exporter, translator) goes in the
+  framework list in `spectragent/core/registries.py`. An empty registry cannot be a
+  Composer layer, so create and document it now and collect it with its first
+  implementation (af-add-a-receptor §2, the `ArchiverRegistrar` case).
 - Add its rows to `AGENTS.md` §2.2 and architecture §6 in the same change; the coverage
   test fails otherwise.
 - A required single-instance receptor reaches every hand-written block of its owner:

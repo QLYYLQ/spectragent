@@ -284,7 +284,8 @@ Do not edit `spectragent/generated` by hand. Verify the live-registry fingerprin
 real YAML that sets the knob; a stale generated class can pass its own tests. Use
 `af-regenerate-and-verify` for that seam and `af-add-a-receptor` when the new axis is a
 configurable strategy. Every new registrar also belongs in the architecture and AGENTS
-registrar tables and `collect_registrars()`.
+registrar tables, and a Loop's YAML-selected axis (such as the restorer) in the framework
+list of `collect_registrars()` (`spectragent/core/registries.py`).
 
 ## 6. Test seams a Loop change owes
 
