@@ -214,10 +214,11 @@ importing, so an optional extra or an unimported module cannot hide one.
 > Do step 3 when you do step 1.
 
 **The one exception: a registrar with no implementation yet.** An empty registry cannot
-be a Composer layer, for three separate reasons: `ConfigComposer` and `generate_all` propagate conscribe
-`EmptyLayerError` for a collected layer with no implementation; and an owner whose wired slot points at an
-uncollected registry fails to compose (`UnresolvedWiringError`) for every config that
-names the owner, whether or not it uses the slot. So create and document the registrar
+be a generated layer, for two separate reasons: `generate_all`'s complete build propagates conscribe
+`EmptyLayerError` for a collected layer with no implementation (a run's `ConfigComposer` only leaves
+such a layer out of its schema, so a run does not show the problem; generation does); and an owner
+whose wired slot points at an uncollected registry fails to compose (`UnresolvedWiringError`) for
+every config that names the owner, whether or not it uses the slot. So create and document the registrar
 (step 1 and step 12) now, and do steps 3, 4, 5 and 9 (collect, the `__wiring__` entry,
 the class-level annotation, regenerate) **in the change that registers its first
 implementation**. Until then the owner takes the strategy list as a **plain, non-`Annotated`
