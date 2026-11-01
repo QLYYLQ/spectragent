@@ -110,7 +110,7 @@ async def test_a_service_this_fake_does_not_speak_is_refused(service: str) -> No
         statuses, _ = await _call(adb, f"host:transport:{SERIAL}", service)
 
     assert statuses[-1].startswith(
-        b"FAIL this fake speaks host:transport:, shell,v2:, exec: and root:"
+        b"FAIL this fake speaks host:transport:, shell,v2:, exec:, localabstract: and root:"
     )
 
 
@@ -121,7 +121,8 @@ async def test_a_host_request_this_fake_does_not_speak_is_refused(host_request: 
         transported, _ = await _call(adb, f"host:transport:{SERIAL}", host_request)
 
     refusal = (
-        f"FAIL this fake speaks host:transport:, shell,v2:, exec: and root:, not {host_request!r}"
+        "FAIL this fake speaks host:transport:, shell,v2:, exec:, localabstract: and root:, "
+        f"not {host_request!r}"
     )
     assert statuses == [refusal.encode()]
     assert transported == [b"OKAY", refusal.encode()]

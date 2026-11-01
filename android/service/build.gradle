@@ -1,0 +1,108 @@
+// Spectragent's device-side APK: the accessibility service, the shell helper run
+// from the same APK through app_process, and the bootstrap provider
+// (docs/architecture_design.md §11.2, "设备端"). Plain Java on the framework
+// APIs, no dependencies.
+//
+// Build it through the host package, which also writes the APK's sidecar:
+//   uv run python -m spectragent.core.capabilities.android.device.apk build
+// The sidecar records what a run's identity needs (its SHA-256, versions, the
+// protocol and isAccessibilityTool); a run refuses an APK without one.
+
+plugins {
+    id "com.android.application" version "8.7.3"
+}
+
+// The channel's protocol version: one constant, written once, in the host's
+// client. The two ends are built from it, so the hello matches by construction.
+def channelModule = file("../../spectragent/core/capabilities/android/device/channel.py")
+def protocolMatch = channelModule.text =~ /(?m)^PROTOCOL_VERSION = (\d+)$/
+if (!protocolMatch.find()) {
+    throw new GradleException("no line 'PROTOCOL_VERSION = <n>' in ${channelModule}")
+}
+def protocolVersion = protocolMatch.group(1)
+
+// isAccessibilityTool, a build-time switch, false unless asked (§11.2).
+def accessibilityTool = (findProperty("spectragent.accessibilityTool") ?: "false").toString()
+if (!(accessibilityTool in ["true", "false"])) {
+    throw new GradleException("spectragent.accessibilityTool is true or false, not ${accessibilityTool}")
+}
+
+android {
+    namespace "org.spectragent.device"
+    compileSdk 33
+    buildToolsVersion "34.0.0"
+
+    defaultConfig {
+        applicationId "org.spectragent.device"
+        minSdk 30
+        targetSdk 33
+        versionCode 1
+        versionName "1"
+        buildConfigField "int", "PROTOCOL_VERSION", protocolVersion
+        buildConfigField "boolean", "ACCESSIBILITY_TOOL", accessibilityTool
+        resValue "bool", "accessibility_tool", accessibilityTool
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    // The default key is committed on purpose, password and all. It signs a test
+    // tool for emulators, CI and tests, and one key for every build keeps two things
+    // true: a build of one commit has one SHA-256 on every machine, and installing a
+    // newer build over an older one never fails on a changed signature. Anyone can
+    // sign with it, so an APK signed with it must never be installed on a real
+    // device (docs/architecture_design.md §11.2): anyone who reaches that device's
+    // adb could install a build of their own over it, and it would keep our
+    // accessibility grant. A build for a real device is signed with a keystore kept
+    // outside the repository, named by the environment, never by the command line:
+    // SPECTRAGENT_KEYSTORE (its path), SPECTRAGENT_KEY_ALIAS,
+    // SPECTRAGENT_KEYSTORE_PASSWORD and SPECTRAGENT_KEY_PASSWORD (the store's when
+    // unset).
+    def ownKeystore = System.getenv("SPECTRAGENT_KEYSTORE")
+    if (ownKeystore && !(System.getenv("SPECTRAGENT_KEY_ALIAS") && System.getenv("SPECTRAGENT_KEYSTORE_PASSWORD"))) {
+        throw new GradleException("SPECTRAGENT_KEYSTORE needs SPECTRAGENT_KEY_ALIAS and SPECTRAGENT_KEYSTORE_PASSWORD")
+    }
+    signingConfigs {
+        committed {
+            storeFile file("signing/spectragent-device.p12")
+            storeType "pkcs12"
+            storePassword "spectragent"
+            keyAlias "spectragent-device"
+            keyPassword "spectragent"
+        }
+        if (ownKeystore) {
+            own {
+                storeFile file(ownKeystore)
+                storePassword System.getenv("SPECTRAGENT_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SPECTRAGENT_KEY_ALIAS")
+                keyPassword System.getenv("SPECTRAGENT_KEY_PASSWORD") ?: System.getenv("SPECTRAGENT_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ownKeystore ? signingConfigs.own : signingConfigs.committed
+            // The plugin would record the checkout's commit in the APK, so one source
+            // would hash differently from commit to commit, and in a worktree.
+            vcsInfo.include false
+        }
+    }
+
+    // Google's encrypted dependency report would differ from build to build.
+    dependenciesInfo {
+        includeInApk false
+        includeInBundle false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    lint {
+        checkReleaseBuilds false
+    }
+}

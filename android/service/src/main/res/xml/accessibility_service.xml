@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- docs/architecture_design.md §11.2 ("设备端"):
+     - every event type, delivered without delay: notificationTimeout 0, because
+       a timeout above 0 makes the system deliver only the last event of each
+       type within it, which drops events;
+     - the full tree: views that are not important for accessibility
+       (flagIncludeNotImportantViews) and view ids (flagReportViewIds), every
+       interactive window;
+     - gestures, screenshots, and text through an input method of its own
+       (flagInputMethodEditor, API 33);
+     - isAccessibilityTool from the build (spectragent.accessibilityTool),
+       false unless asked. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagInputMethodEditor"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/service_description"
+    android:isAccessibilityTool="@bool/accessibility_tool"
+    android:notificationTimeout="0" />

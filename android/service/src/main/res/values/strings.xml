@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Spectragent device</string>
+    <string name="service_label">Spectragent</string>
+    <string name="service_description">Lets a Spectragent evaluation run read the screen\'s accessibility tree and act on the device. Installed and enabled over adb for a run.</string>
+</resources>
