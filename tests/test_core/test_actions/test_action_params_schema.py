@@ -26,6 +26,7 @@ from typing import Any, get_type_hints
 import pytest
 from pydantic import BaseModel, ValidationError
 
+import spectragent.core.capabilities.android.actions  # noqa: F401 — registers them
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 import spectragent.core.loops.actions  # noqa: F401 — registers the Loop's own (loop.done)
 from spectragent.core.actions._registrar import ActionRegistrar
@@ -48,6 +49,10 @@ _KEYS = sorted(
     for key, cls in ActionRegistrar.get_all().items()
     if cls.__module__.startswith("spectragent.")
 )
+
+#: An Android point param's prose: physical pixels of the screen.
+_ANDROID_X = "int -- Physical px from the screen's left edge"
+_ANDROID_Y = "int -- Physical px from the screen's top edge"
 
 #: What every action's ``params`` prose rendered before this change, to the
 #: byte. Not a restatement of the implementation: it is the *old*
@@ -123,6 +128,33 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "clear": "bool (optional, default=true)",
     },
     "browser.wait": {"seconds": "float (optional, default=1.0, max=30.0)"},
+    "android.click_coordinate": {"coordinate_x": _ANDROID_X, "coordinate_y": _ANDROID_Y},
+    "android.drag": {
+        "start_x": _ANDROID_X,
+        "start_y": _ANDROID_Y,
+        "end_x": _ANDROID_X,
+        "end_y": _ANDROID_Y,
+    },
+    "android.long_press": {"coordinate_x": _ANDROID_X, "coordinate_y": _ANDROID_Y},
+    "android.open_app": {"app_name": "str"},
+    "android.press_key": {"key": "back|home|enter|delete|recent_apps"},
+    "android.scroll": {
+        "direction": "up|down|left|right",
+        "amount": "int (optional)",
+        "index": "int (optional) -- scroll inside specific element",
+        "start_x": "int (optional, the swipe starts there; never with index) -- "
+        "Physical px from the screen's left edge",
+        "start_y": "int (optional, the swipe starts there; never with index) -- "
+        "Physical px from the screen's top edge",
+    },
+    "android.type_coordinate": {
+        "coordinate_x": _ANDROID_X,
+        "coordinate_y": _ANDROID_Y,
+        "text": "str",
+        "clear": "bool (optional, default=true)",
+    },
+    "android.type_text": {"text": "str"},
+    "android.wait": {"seconds": "float (optional, default=1.0, max=30.0)"},
 }
 
 #: Which fragment each action cannot run without. Written out rather than
@@ -374,6 +406,11 @@ _GOLDEN_POINTS: dict[str, tuple[tuple[str, str], ...]] = {
     "browser.type_coordinate": (("coordinate_x", "coordinate_y"),),
     "browser.drag": (("start_x", "start_y"), ("end_x", "end_y")),
     "browser.scroll": (("start_x", "start_y"),),
+    "android.click_coordinate": (("coordinate_x", "coordinate_y"),),
+    "android.long_press": (("coordinate_x", "coordinate_y"),),
+    "android.type_coordinate": (("coordinate_x", "coordinate_y"),),
+    "android.drag": (("start_x", "start_y"), ("end_x", "end_y")),
+    "android.scroll": (("start_x", "start_y"),),
 }
 _GOLDEN_ELEMENTS: dict[str, tuple[str, ...]] = {
     "browser.click": ("index",),
@@ -381,6 +418,7 @@ _GOLDEN_ELEMENTS: dict[str, tuple[str, ...]] = {
     "browser.select_dropdown": ("index",),
     "browser.scroll": ("index",),
     "browser.extract_content": ("index",),
+    "android.scroll": ("index",),
 }
 
 
@@ -437,6 +475,11 @@ def test_a_point_declares_both_of_its_axes_once() -> None:
 # ── A scroll's optional start point ───────────────────────────────────
 
 
+#: The scrolls that share one param contract, and so one validator's rules.
+_SCROLLS = ("browser.scroll", "android.scroll")
+
+
+@pytest.mark.parametrize("scroll", _SCROLLS)
 @pytest.mark.parametrize(
     "params",
     [
@@ -446,10 +489,13 @@ def test_a_point_declares_both_of_its_axes_once() -> None:
         {"direction": "down", "amount": 600, "start_x": 0, "start_y": 0},
     ],
 )
-def test_a_scroll_takes_the_pointer_an_element_or_a_start_point(params: dict[str, Any]) -> None:
-    assert ActionRegistrar.get("browser.scroll").Params.model_validate(params)
+def test_a_scroll_takes_the_pointer_an_element_or_a_start_point(
+    scroll: str, params: dict[str, Any]
+) -> None:
+    assert ActionRegistrar.get(scroll).Params.model_validate(params)
 
 
+@pytest.mark.parametrize("scroll", _SCROLLS)
 @pytest.mark.parametrize(
     ("params", "said"),
     [
@@ -462,10 +508,10 @@ def test_a_scroll_takes_the_pointer_an_element_or_a_start_point(params: dict[str
     ],
 )
 def test_a_scroll_start_is_both_axes_and_never_beside_an_index(
-    params: dict[str, Any], said: str
+    scroll: str, params: dict[str, Any], said: str
 ) -> None:
     with pytest.raises(ValidationError, match=said):
-        ActionRegistrar.get("browser.scroll").Params.model_validate(params)
+        ActionRegistrar.get(scroll).Params.model_validate(params)
 
 
 def test_the_start_is_the_scrolls_one_optional_point() -> None:
