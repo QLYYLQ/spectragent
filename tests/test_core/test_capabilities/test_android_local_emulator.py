@@ -2,11 +2,13 @@
 
 A fake SDK stands in for the real one, so these run anywhere: its ``adb`` serves
 ``tests/_helpers/fake_adb.py`` on the port it is given (answering
-``sys.boot_completed``) and writes a key pair under ``$HOME/.android`` as adb
-does; its ``emulator`` leaves a ``sleep`` of its own in its process group, as
-the real one leaves ``netsimd``, reports a console port as ``-report-console``
-asks, records how it was started and, when stopped, whether the run's adb
-server still answered. The real emulator is booted by
+``sys.boot_completed``, ``root:``, ``id -u`` and the routing tables, each
+command recorded) and writes a key pair under ``$HOME/.android`` as adb does;
+its ``emulator`` leaves a ``sleep`` of its own in its process group, as the real
+one leaves ``netsimd``, reports a console port as ``-report-console`` asks,
+records how it was started, starts "gRPC" as ``-grpc`` asks (its log line and
+discovery file, as emulator 37.2.13 wrote them) and, when stopped, records
+whether the run's adb server still answered. The real emulator is booted by
 ``test_android_emulator_live.py``.
 """
 
@@ -18,17 +20,22 @@ import json
 import os
 import signal
 import stat
-import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
 from spectragent import REPO_ROOT
-from spectragent.core.capabilities.android.backends.base import AdbEndpoint
+from spectragent.core.capabilities.android.backends.base import (
+    AdbEndpoint,
+    DeviceNeeds,
+    EmulatorAccess,
+    EmulatorGrpc,
+)
 from spectragent.core.capabilities.android.backends.local_emulator import (
+    DISCOVERY_DIR,
     LocalEmulatorProvider,
     _ConsoleReport,
     emulator_command,
@@ -36,12 +43,17 @@ from spectragent.core.capabilities.android.backends.local_emulator import (
     find_avd_home,
     find_sdk,
 )
+from tests._helpers.process_checks import gone, groups, soon
 
 AVD = "test_avd"
 
 #: ``adb -P <port> server nodaemon``: a fake ADB server on that port. Until the
 #: emulator has registered (its ``registered`` marker), ``sys.boot_completed`` is
-#: empty; then it is ``$FAKE_BOOT`` (``1`` by default).
+#: empty; then it is ``$FAKE_BOOT`` (``1`` by default). ``root:`` restarts adbd as
+#: root (``FAKE_ROOT=refused``: a production build's refusal), after which ``id
+#: -u`` says 0. The routing tables have the guest Wi-Fi's default route unless
+#: ``FAKE_WIFI=0``. Every command after the registration is appended to
+#: ``commands.txt``.
 FAKE_ADB = f"""#!{sys.executable}
 import asyncio, json, os, sys
 sys.path.insert(0, {str(REPO_ROOT)!r})
@@ -54,11 +66,29 @@ for name in ("adbkey", "adbkey.pub"):
 with open(os.path.join(record, "adb.json"), "w") as out:
     json.dump({{"pid": os.getpid(), "home": home}}, out)
 booted = os.environ.get("FAKE_BOOT", "1").encode()
+routes = b"default dev dummy0 table 1002 proto static scope link \\n"
+if os.environ.get("FAKE_WIFI", "1") == "1":
+    routes += b"default via 10.0.2.2 dev wlan0 table 1016 proto static \\n"
+rooted = False
 
 async def device(command):
-    if os.path.exists(os.path.join(record, "registered")):
-        return await scripted({{"getprop sys.boot_completed": ShellResult(stdout=booted)}})(command)
-    return ShellResult()
+    global rooted
+    if not os.path.exists(os.path.join(record, "registered")):
+        return ShellResult()
+    with open(os.path.join(record, "commands.txt"), "a") as log:
+        log.write(command + "\\n")
+    if command == "root:":
+        if os.environ.get("FAKE_ROOT") == "refused":
+            return ShellResult(stdout=b"adbd cannot run as root in production builds\\n")
+        if rooted:
+            return ShellResult(stdout=b"adbd is already running as root\\n")
+        rooted = True
+        return ShellResult(stdout=b"restarting adbd as root\\n")
+    return await scripted({{
+        "getprop sys.boot_completed": ShellResult(stdout=booted),
+        "id -u": ShellResult(stdout=b"0\\n" if rooted else b"2000\\n"),
+        "ip -4 route show table all": ShellResult(stdout=routes),
+    }})(command)
 
 port = int(sys.argv[sys.argv.index("-P") + 1])
 
@@ -76,7 +106,9 @@ asyncio.run(serve())
 #: says, registers with the adb server (the marker the fake reads) and waits; on
 #: SIGTERM it records whether the run's adb server still answered, then exits.
 #: ``FAKE_EMULATOR_MODE=crash`` prints a line and exits with code 7 once the
-#: sleep is running, instead of reporting anything.
+#: sleep is running, instead of reporting anything. Given ``-grpc <port>``, it
+#: prints the line emulator 37.2.13 prints when its gRPC listens and writes its
+#: discovery file under ``$HOME``, with a token (``FAKE_GRPC=silent``: neither).
 FAKE_EMULATOR = f"""#!{sys.executable}
 import json, os, signal, socket, subprocess, sys
 record = os.environ["FAKE_RECORD"]
@@ -87,6 +119,14 @@ with open(os.path.join(record, "emulator.json"), "w") as out:
 print("emulator: could not open the AVD", flush=True)
 if os.environ.get("FAKE_EMULATOR_MODE") == "crash":
     sys.exit(7)
+if "-grpc" in sys.argv and os.environ.get("FAKE_GRPC") != "silent":
+    port = sys.argv[sys.argv.index("-grpc") + 1]
+    print(f"INFO         | Started GRPC server at 127.0.0.1:{{port}}, security: Local, "
+          "auth: +token", flush=True)
+    running = os.path.join(os.environ["HOME"], "Library/Caches/TemporaryItems/avd/running")
+    os.makedirs(running, exist_ok=True)
+    with open(os.path.join(running, f"pid_{{os.getpid()}}.ini"), "w") as found:
+        found.write(f"avd.name=test_avd\\ngrpc.token=run-token\\ngrpc.port={{port}}\\n")
 
 def stopped(*_):
     with socket.socket() as probe:
@@ -150,32 +190,6 @@ def _recorded(record: Path, name: str) -> dict[str, object]:
     return json.loads((record / name).read_text())
 
 
-def _gone(pid: object) -> bool:
-    assert isinstance(pid, int)
-    try:
-        os.kill(pid, 0)  # signal 0 delivers nothing; it only asks whether the PID exists
-    except ProcessLookupError:
-        return True
-    return False
-
-
-def _groups() -> set[int]:
-    """The process group of every process on the machine."""
-    listing = subprocess.run(
-        ["ps", "-A", "-o", "pgid="], capture_output=True, text=True, check=True
-    )
-    return {int(group) for group in listing.stdout.split()}
-
-
-async def _soon(condition: Callable[[], bool]) -> bool:
-    """Whether *condition* holds within 5 s: a killed orphan is reaped by init, not at once."""
-    for _ in range(100):
-        if condition():
-            return True
-        await asyncio.sleep(0.05)
-    return condition()
-
-
 async def test_a_session_boots_through_the_runs_own_server_and_close_releases_everything(
     provider: LocalEmulatorProvider, record: Path, tmp_path: Path, sdk: Path
 ) -> None:
@@ -210,9 +224,9 @@ async def test_a_session_boots_through_the_runs_own_server_and_close_releases_ev
     assert _recorded(record, "stopped.json") == {"server_answered": True}, (
         "the emulator is stopped while the run's adb server is still up"
     )
-    assert _gone(emulator["pid"]) and _gone(_recorded(record, "adb.json")["pid"])
-    assert await _soon(lambda: _gone(emulator["leftover"])), "the group is swept, not only stopped"
-    assert await _soon(lambda: emulator["group"] not in _groups()), "nothing of the group is left"
+    assert gone(emulator["pid"]) and gone(_recorded(record, "adb.json")["pid"])
+    assert await soon(lambda: gone(emulator["leftover"])), "the group is swept, not only stopped"
+    assert await soon(lambda: emulator["group"] not in groups()), "nothing of the group is left"
     assert list((tmp_path / "runs").iterdir()) == [], "the run directory is removed"
 
 
@@ -228,10 +242,10 @@ async def test_an_emulator_that_exits_before_booting_is_reported_and_nothing_is_
         await provider.open()
 
     assert "could not open the AVD" in str(failed.value), "the end of the emulator's log"
-    assert _gone(_recorded(record, "adb.json")["pid"])
+    assert gone(_recorded(record, "adb.json")["pid"])
     # The emulator was gone before the release; the watcher still held its group.
     emulator = _recorded(record, "emulator.json")
-    assert await _soon(lambda: _gone(emulator["leftover"])), "what it left in its group is swept"
+    assert await soon(lambda: gone(emulator["leftover"])), "what it left in its group is swept"
     assert list((tmp_path / "runs").iterdir()) == []
 
 
@@ -247,8 +261,8 @@ async def test_a_device_that_does_not_boot_in_time_is_released(
     with pytest.raises(TimeoutError, match="had not booted after 1 s .sys.boot_completed was '0'"):
         await provider.open()
 
-    assert _gone(_recorded(record, "emulator.json")["pid"])
-    assert _gone(_recorded(record, "adb.json")["pid"])
+    assert gone(_recorded(record, "emulator.json")["pid"])
+    assert gone(_recorded(record, "adb.json")["pid"])
     assert list((tmp_path / "runs").iterdir()) == []
 
 
@@ -271,8 +285,8 @@ async def test_a_boot_cancelled_halfway_releases_everything_before_the_cancellat
     with pytest.raises(asyncio.CancelledError):
         await opening
 
-    assert _gone(_recorded(record, "emulator.json")["pid"])
-    assert _gone(_recorded(record, "adb.json")["pid"])
+    assert gone(_recorded(record, "emulator.json")["pid"])
+    assert gone(_recorded(record, "adb.json")["pid"])
     assert list((tmp_path / "runs").iterdir()) == []
 
 
@@ -308,23 +322,23 @@ async def test_a_run_killed_outright_takes_its_emulator_and_adb_server_with_it(
         env={**os.environ, "TMPDIR": str(tmp_path / "runs")},
     )
     assert child.stdout is not None
-    groups: set[int] = set()
+    run_groups: set[int] = set()
     try:
-        groups = set(json.loads(await asyncio.wait_for(child.stdout.readline(), 30)))
-        assert groups <= _groups(), "both programs are running"
+        run_groups = set(json.loads(await asyncio.wait_for(child.stdout.readline(), 30)))
+        assert run_groups <= groups(), "both programs are running"
         child.kill()  # this test's own child: no teardown runs in it
         await child.wait()
 
-        assert await _soon(lambda: not groups & _groups()), (
+        assert await soon(lambda: not run_groups & groups()), (
             "the emulator's and the adb server's groups are gone"
         )
-        assert _gone(_recorded(record, "emulator.json")["pid"])
-        assert _gone(_recorded(record, "adb.json")["pid"])
+        assert gone(_recorded(record, "emulator.json")["pid"])
+        assert gone(_recorded(record, "adb.json")["pid"])
     finally:
         if child.returncode is None:
             child.kill()
             await child.wait()
-        for group in groups & _groups():  # only when the watchers failed to
+        for group in run_groups & groups():  # only when the watchers failed to
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(group, signal.SIGKILL)
 
@@ -339,6 +353,125 @@ async def test_a_missing_avd_is_named_with_the_avds_that_are_there(
     ):
         await provider.open()
     assert list(record.iterdir()) == [], "nothing was started"
+
+
+def _commands(record: Path) -> list[str]:
+    """The commands the fake adb server answered after the emulator registered, in order."""
+    log = record / "commands.txt"
+    return log.read_text().splitlines() if log.is_file() else []
+
+
+#: Every need a run's strategies can ask of the device.
+EVERY_NEED = DeviceNeeds(emulator_grpc=True, root=True, guest_wifi=True)
+macos_only = pytest.mark.skipif(
+    sys.platform != "darwin", reason="the emulator's gRPC discovery file was measured on macOS"
+)
+
+
+@macos_only
+async def test_what_the_run_needs_is_met_before_the_session_is_handed_over(
+    provider: LocalEmulatorProvider, record: Path, sdk: Path
+) -> None:
+    session = await provider.open(EVERY_NEED)
+    try:
+        emulator = _recorded(record, "emulator.json")
+        argv = emulator["argv"]
+        assert isinstance(argv, list)
+        grpc_port = int(argv[argv.index("-grpc") + 1])
+        assert argv[argv.index("-grpc") + 2] == "-grpc-use-token"
+        home = Path(str(_recorded(record, "adb.json")["home"]))
+        assert session.emulator == EmulatorAccess(
+            console_port=5554,
+            home=str(home),
+            adb=str(sdk / "platform-tools" / "adb"),
+            grpc=EmulatorGrpc(
+                host="127.0.0.1",
+                port=grpc_port,
+                token_file=str(home / DISCOVERY_DIR / f"pid_{emulator['pid']}.ini"),
+            ),
+        )
+        assert "run-token" not in repr(session), "the token stays in the emulator's file"
+        commands = _commands(record)
+        assert commands.index("root:") < commands.index("id -u"), "root first, then its shell"
+        assert commands[-1] == "ip -4 route show table all", "the Wi-Fi wait ends the boot"
+    finally:
+        await provider.close(session)
+
+
+async def test_a_run_that_needs_nothing_boots_without_grpc_or_root(
+    provider: LocalEmulatorProvider, record: Path
+) -> None:
+    session = await provider.open()
+    try:
+        argv = _recorded(record, "emulator.json")["argv"]
+        assert isinstance(argv, list) and "-grpc" not in argv
+        assert session.emulator is not None and session.emulator.grpc is None
+        assert session.emulator.console_port == 5554
+        assert _commands(record) == ["getprop sys.boot_completed"]
+    finally:
+        await provider.close(session)
+
+
+async def test_adbd_that_refuses_root_fails_the_boot_and_nothing_is_left(
+    provider: LocalEmulatorProvider,
+    record: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_ROOT", "refused")
+
+    with pytest.raises(RuntimeError, match="refused to run adbd as root: 'adbd cannot run"):
+        await provider.open(DeviceNeeds(root=True))
+
+    assert gone(_recorded(record, "emulator.json")["pid"])
+    assert gone(_recorded(record, "adb.json")["pid"])
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+async def test_wifi_that_never_routes_fails_the_boot_in_time_and_nothing_is_left(
+    provider: LocalEmulatorProvider,
+    record: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_WIFI", "0")
+    provider.boot_timeout_s = 1.5
+
+    with pytest.raises(
+        TimeoutError, match=r"emulator-5554's Wi-Fi had no IPv4 default route after 1.5 s"
+    ):
+        await provider.open(DeviceNeeds(guest_wifi=True))
+
+    assert gone(_recorded(record, "emulator.json")["pid"])
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+@macos_only
+async def test_grpc_that_never_starts_fails_the_boot_in_time(
+    provider: LocalEmulatorProvider, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_GRPC", "silent")
+    provider.boot_timeout_s = 1.5
+
+    with pytest.raises(TimeoutError, match="had no 'Started GRPC server at' line"):
+        await provider.open(DeviceNeeds(emulator_grpc=True))
+
+    assert gone(_recorded(record, "emulator.json")["pid"])
+
+
+async def test_the_grpc_endpoint_is_refused_where_its_discovery_file_was_not_measured(
+    provider: LocalEmulatorProvider, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with pytest.raises(NotImplementedError, match="measured on macOS only"):
+        await provider.open(DeviceNeeds(emulator_grpc=True))
+    assert list(record.iterdir()) == [], "nothing was started"
+
+
+def test_the_emulator_serves_grpc_behind_a_token_when_asked() -> None:
+    command = emulator_command(Path("/e"), "pixel", 40999, read_only=True, grpc_port=41000)
+    assert command[-4:] == ["-read-only", "-grpc", "41000", "-grpc-use-token"]
 
 
 def test_the_emulator_runs_headless_reports_its_console_port_and_saves_no_snapshot() -> None:

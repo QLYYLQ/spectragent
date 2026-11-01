@@ -109,7 +109,9 @@ async def test_a_service_this_fake_does_not_speak_is_refused(service: str) -> No
     async with FakeAdbServer({SERIAL: scripted({})}) as adb:
         statuses, _ = await _call(adb, f"host:transport:{SERIAL}", service)
 
-    assert statuses[-1].startswith(b"FAIL this fake speaks host:transport:, shell,v2: and exec:")
+    assert statuses[-1].startswith(
+        b"FAIL this fake speaks host:transport:, shell,v2:, exec: and root:"
+    )
 
 
 @pytest.mark.parametrize("host_request", ["host:version", "host:track-devices"])
@@ -118,7 +120,9 @@ async def test_a_host_request_this_fake_does_not_speak_is_refused(host_request: 
         statuses, _ = await _call(adb, host_request)
         transported, _ = await _call(adb, f"host:transport:{SERIAL}", host_request)
 
-    refusal = f"FAIL this fake speaks host:transport:, shell,v2: and exec:, not {host_request!r}"
+    refusal = (
+        f"FAIL this fake speaks host:transport:, shell,v2:, exec: and root:, not {host_request!r}"
+    )
     assert statuses == [refusal.encode()]
     assert transported == [b"OKAY", refusal.encode()]
     assert adb.requests == [], "a host request is the server's, never a device round trip"
