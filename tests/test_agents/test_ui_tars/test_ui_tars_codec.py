@@ -43,6 +43,7 @@ from spectragent.core.loops.coordinate_frames import (
     step_frame,
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
@@ -135,7 +136,7 @@ _PAN_VERB = Verb(
 def _action(codec: UITarsCodec, verb: str) -> Action:
     """An action the verb writes, under the run's full name, every param it fills set."""
     bound = codec.verbs[verb]
-    values = {**_VALUES, **bound.fixed}
+    values = {**_VALUES, **bound.verb.fixed}
     return Action(name=bound.descriptor.name, params={key: values[key] for key in bound.params})
 
 
@@ -288,6 +289,32 @@ class TestPointsAreTheActionsOwn:
         UITarsAgent().check_action_space(_every_verb_space())
 
 
+class _KeysWithoutHome(BaseModel):
+    """A ``press_key`` whose keys leave out ``home``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: Literal["back", "enter"]
+
+
+class _KeycodeOnly(BaseModel):
+    """A ``press_key`` with no ``key`` param at all."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keycode: int
+
+
+def _press_key(params: type[BaseModel]) -> ActionDescriptor:
+    prose, schema = params_view(params)
+    return ActionDescriptor(
+        name="android.press_key",
+        description="Press a system key.",
+        params=prose,
+        params_schema=schema,
+    )
+
+
 class TestMobileVerbs:
     """``long_press``, ``open_app``, ``press_home`` and ``press_back`` run as Android's actions."""
 
@@ -355,6 +382,31 @@ class TestMobileVerbs:
         )
         # Shown as a fact, it keeps its JSON.
         assert codec.write_fact(enter) == enter.model_dump(mode="json")
+
+    def test_a_verb_whose_fixed_value_the_action_refuses_is_not_offered(self) -> None:
+        """A ``press_key`` without ``home``: ``press_home`` is unbound, untaught, an unknown verb."""
+        space = space_of([_press_key(_KeysWithoutHome)])
+        codec = UITarsCodec(space)
+        assert list(codec.verbs) == ["press_back"]
+        # No key param at all: neither key verb can set one.
+        assert not UITarsCodec(space_of([_press_key(_KeycodeOnly)])).verbs
+        with pytest.raises(ParseError) as excinfo:
+            codec.read_actions("Action: press_home()")
+        assert excinfo.value.detail == (
+            "Action line 1: unknown verb 'press_home'; this run offers: press_back"
+        )
+        prompt = (
+            UITarsAgent()
+            .prepare(
+                task="t",
+                action_space=space,
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
+            )[0]
+            .content
+        )
+        assert isinstance(prompt, str)
+        assert "- press_back()" in prompt
+        assert "press_home" not in prompt
 
     def test_a_bound_verb_writes_only_the_value_it_fixes(self) -> None:
         bound = self._mobile_codec().verbs["press_home"]

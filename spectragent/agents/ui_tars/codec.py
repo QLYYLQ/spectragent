@@ -145,6 +145,15 @@ class Verb:
             for name in argument.names
         )
 
+    @property
+    def fixed(self) -> dict[str, str]:
+        """Each param the verb fills with a fixed value, and the value (``press_home``: ``key='home'``)."""
+        return {
+            a.param: a.value
+            for a in self.arguments
+            if a.kind == "fixed" and a.param is not None and a.value is not None
+        }
+
 
 DIRECTIONS = ("up", "down", "left", "right")
 
@@ -196,8 +205,9 @@ def _fixed(param: str, value: str) -> Argument:
 #:   ``WaitAction.default_seconds``.
 #: - ``open_app``: the app's name; the capability resolves it to a package.
 #: - ``press_home`` / ``press_back``: no argument; each runs as ``press_key``
-#:   with the key it fixes. Writing a ``press_key`` back picks the verb by its
-#:   key, and a key no verb fixes (``enter``) cannot be written.
+#:   with the key it fixes, and is not offered where ``press_key`` does not
+#:   take that key. Writing a ``press_key`` back picks the verb by its key,
+#:   and a key no verb fixes (``enter``) cannot be written.
 #: - ``finished``: ``done`` reads ``extracted_content``. The task claim:
 #:   ``finished`` has no argument that says whether the task was accomplished
 #:   (a model ends with ``finished(content='无法完成…')`` too), so it reads back
@@ -312,18 +322,9 @@ class BoundVerb:
             *(a.param for a in self.verb.arguments if a.param is not None),
         )
 
-    @property
-    def fixed(self) -> dict[str, str]:
-        """Each param the verb fills with a fixed value, and the value (``press_home``: ``key='home'``)."""
-        return {
-            a.param: a.value
-            for a in self.verb.arguments
-            if a.kind == "fixed" and a.param is not None and a.value is not None
-        }
-
-    def fixes(self, params: Mapping[str, Any]) -> bool:
+    def fixes(self, params: Mapping[str, object]) -> bool:
         """Whether *params* hold every value the verb fixes, so the verb can write them."""
-        return all(params.get(key) == value for key, value in self.fixed.items())
+        return all(params.get(key) == value for key, value in self.verb.fixed.items())
 
     def read(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         """The action params a call's arguments say, its points as written.
@@ -368,16 +369,38 @@ class BoundVerb:
         return f"{self.verb.name}({', '.join(written)})"
 
 
+def _admits(descriptor: ActionDescriptor, param: str, value: str) -> bool:
+    """Whether *descriptor*'s params schema lets *param* hold *value*.
+
+    No when the schema lists no such param, or its top-level ``const`` or
+    ``enum`` leaves *value* out. A param stating neither, or a descriptor
+    with no schema, takes any value as far as this can tell.
+    """
+    schema = descriptor.params_schema
+    if schema is None:
+        return True
+    node = (schema.get("properties") or {}).get(param)
+    if node is None:
+        return False
+    if "const" in node:
+        return node["const"] == value
+    return value in node.get("enum", (value,))
+
+
 def _bind(space: ActionSpace) -> Mapping[str, BoundVerb]:
     """The verbs *space* executes, in table order, each bound to the run action its bindings resolve.
 
-    A verb whose action the run does not resolve (not negotiated, or a short
-    name two capabilities offer) is not offered.
+    A verb the run cannot execute is not offered: its action does not resolve
+    (not negotiated, or a short name two capabilities offer), or it fixes a
+    value its action's param does not accept (no ``press_home`` for a
+    ``press_key`` without ``home``).
     """
     bound: dict[str, BoundVerb] = {}
     for name, verb in VERBS.items():
         descriptor = executed_descriptor(space, verb.action)
-        if descriptor is not None:
+        if descriptor is not None and all(
+            _admits(descriptor, param, value) for param, value in verb.fixed.items()
+        ):
             bound[name] = BoundVerb.bind(verb, descriptor)
     return MappingProxyType(bound)
 
@@ -499,10 +522,10 @@ class UITarsCodec:
         # Verbs that run as one action are told apart by the values they fix.
         bound = next((b for b in runs_as if b.fixes(action.params)), None)
         if bound is None:
-            keys = sorted({key for b in runs_as for key in b.fixed})
+            keys = sorted({key for b in runs_as for key in b.verb.fixed})
             stated = ", ".join(f"{key}={action.params.get(key)!r}" for key in keys)
             fixes = "; ".join(
-                f"{b.verb.name}() sets {', '.join(f'{k}={v!r}' for k, v in b.fixed.items())}"
+                f"{b.verb.name}() sets {', '.join(f'{k}={v!r}' for k, v in b.verb.fixed.items())}"
                 for b in runs_as
             )
             raise UnrepresentableActionError(
