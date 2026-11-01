@@ -242,8 +242,8 @@ class AndroidTypeCoordinateAction(ActionBase):
     action reports success; the browser refuses that case ("No text field took
     focus at the clicked point"). The gap is recorded in
     ``docs/architecture_design.md`` §11.2 with the open question of how UI-TARS's
-    ``type`` maps on Android, whose answer may retire this action here, so no
-    focus check is written until it is settled.
+    ``type`` maps on Android and whether this action stays, which waits on a
+    ruling; no focus check is written until it is settled.
     """
 
     __registry_key__ = "android.type_coordinate"

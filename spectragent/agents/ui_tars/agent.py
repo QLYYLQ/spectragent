@@ -205,15 +205,13 @@ class UITarsAgent(AgentBase):
     # ── Cross-registry wiring ────────────────────────────────────
     # Domain verbs only, no ``capability`` entry: negotiation binds relative
     # keys (AGENTS.md §2.5). The required actions are what the model cannot
-    # work without; the optional four are the rest of its native vocabulary,
+    # work without; the optional ones are the rest of its native vocabulary,
     # dropped from the prompt and the codec when a capability does not offer
-    # them. The mobile verbs' actions (``long_press``, ``open_app``,
-    # ``press_key``) join ``optional_keys`` with the Android capability that
-    # registers them: the complete catalog build refuses a relative key no
-    # capability registers. ``capture_state`` is the platform-neutral capture
-    # fact (optional); browser page state (``browser_meta``) is for
-    # browser-specific agents and deliberately not declared
-    # (``docs/architecture_design.md`` §4.4).
+    # them: a browser offers none of the mobile verbs' actions (``long_press``,
+    # ``open_app``, ``press_key``, which Android registers). ``capture_state``
+    # is the platform-neutral capture fact (optional); browser page state
+    # (``browser_meta``) is for browser-specific agents and deliberately not
+    # declared (``docs/architecture_design.md`` §4.4).
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
 
     __wiring__: ClassVar[dict[str, Any]] = {
@@ -227,7 +225,15 @@ class UITarsAgent(AgentBase):
         "action": {
             "registry": "action",
             "keys": ["click_coordinate", "type_coordinate", "done"],
-            "optional_keys": ["scroll", "send_keys", "drag", "wait"],
+            "optional_keys": [
+                "scroll",
+                "send_keys",
+                "drag",
+                "wait",
+                "long_press",
+                "open_app",
+                "press_key",
+            ],
             "declare_only": True,
         },
         "llm": "llm",

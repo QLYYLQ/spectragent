@@ -118,14 +118,17 @@ def browser_space(
 def wired_space(
     agent_cls: type, *, coordinate_space: CoordinateSpace | None = None, **context: Any
 ) -> ActionSpace:
-    """The browser action space a run gives *agent_cls*: every action its wiring names.
+    """The browser action space a run gives *agent_cls*: every action its wiring names that a browser has.
 
     Required and optional, each the registered action of that name a browser
     run binds it to (:func:`run_action_key`), as a browser environment that
     offers them all, under a Loop that provides ``loop.done``, negotiates them.
+    An optional action no browser registers (UI-TARS's ``long_press``) is left
+    out, as negotiation leaves it out.
     """
     required, optional = extract_wiring(agent_cls, "action")
-    return browser_space(*sorted(required | optional), coordinate_space=coordinate_space, **context)
+    offered = {name for name in optional if ActionRegistrar.get_or_none(run_action_key(name))}
+    return browser_space(*sorted(required | offered), coordinate_space=coordinate_space, **context)
 
 
 class _ProvidesActions:

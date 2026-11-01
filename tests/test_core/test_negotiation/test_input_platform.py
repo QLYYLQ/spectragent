@@ -18,7 +18,9 @@ import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.rendering.platform import BROWSER_PLATFORMS, render_browser_platform
-from spectragent.core.environments._registrar import EnvironmentBase
+from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.environment import AndroidEnvironment
+from spectragent.core.capabilities.android.observations import PLATFORM, AndroidPlatformObs
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops import ReactLoop
 from spectragent.core.negotiation.platform import (
@@ -31,13 +33,9 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
 from spectragent.schemas.observation.platform import InputPlatform
-from tests._helpers.android_stub import (
-    ANDROID_STUB,
-    PLATFORM,
-    AndroidPlatformObs,
-    StubAndroidCapability,
-)
+from tests._helpers.android_device import SERIAL, FakeServerProvider, ScriptedPhone
 from tests._helpers.assembly import AGENT_ID, NoModel, StartSpy, make_env, make_run
+from tests._helpers.fake_adb import FakeAdbServer
 
 
 class _VisionAgent:
@@ -79,7 +77,7 @@ class TestTheTwoDeclarationsAreCompared:
         check_input_platform(_DesktopAgent(), {PLATFORM_FIELD: "browser.platform"}, name="desktop")
 
     def test_a_fragment_that_may_report_another_platform_is_refused_by_name(self) -> None:
-        with ANDROID_STUB.activate(), pytest.raises(IncompatiblePlatformError) as excinfo:
+        with pytest.raises(IncompatiblePlatformError) as excinfo:
             check_input_platform(_DesktopAgent(), {PLATFORM_FIELD: PLATFORM}, name="desktop")
         assert str(excinfo.value).startswith(
             "desktop's prompt renders the input platforms macos, windows, linux, but the "
@@ -99,7 +97,7 @@ class TestTheTwoDeclarationsAreCompared:
             check_input_platform(_DesktopAgent(), {PLATFORM_FIELD: "nowhere.platform"}, name="x")
 
     def test_an_agent_that_declares_no_platforms_is_refused(self) -> None:
-        with ANDROID_STUB.activate(), pytest.raises(IncompatiblePlatformError) as excinfo:
+        with pytest.raises(IncompatiblePlatformError) as excinfo:
             check_input_platform(_VisionAgent(), {PLATFORM_FIELD: PLATFORM}, name="vision")
         assert str(excinfo.value).startswith(
             "vision negotiates the platform fragment android.platform (AndroidPlatformObs) but "
@@ -131,17 +129,15 @@ class TestEveryPlatformFragmentIsAClosedLiteral:
         }
 
     def test_there_are_platform_fragments_to_check(self) -> None:
-        assert "browser.platform" in self._shipped()
+        assert {"browser.platform", PLATFORM} <= set(self._shipped())
 
     def test_each_reports_a_closed_literal_of_input_platforms(self) -> None:
-        with ANDROID_STUB.activate():
-            fragments = {**self._shipped(), PLATFORM: ObservationRegistrar.get(PLATFORM)}
-        for key, cls in fragments.items():
+        for key, cls in self._shipped().items():
             reported = reported_platforms(cls)
             assert reported is not None, f"{key} ({cls.__name__}): operating_system is no Literal"
             assert set(reported) <= set(get_args(InputPlatform)), (key, reported)
 
-    def test_the_browser_reports_the_desktop_systems_and_the_stub_android(self) -> None:
+    def test_the_browser_reports_the_desktop_systems_and_android_its_own(self) -> None:
         assert reported_platforms(ObservationRegistrar.get("browser.platform")) == (
             "macos",
             "windows",
@@ -152,23 +148,17 @@ class TestEveryPlatformFragmentIsAClosedLiteral:
 
 @pytest.mark.parametrize("agent_class", [_DesktopAgent, _VisionAgent])
 async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts(
-    agent_class: type[_VisionAgent], monkeypatch: pytest.MonkeyPatch
+    agent_class: type[_VisionAgent],
 ) -> None:
     """Refused in ``prepare()``, declared or not: no trace opened, nothing set up, no screen read."""
-    setups: list[Any] = []
-
-    async def setup(*args: Any, **kwargs: Any) -> None:
-        setups.append((args, kwargs))
-
-    with ANDROID_STUB.activate():
-        capability = StubAndroidCapability()
-        env = make_env(EnvironmentBase, {"android#0": capability})
-        monkeypatch.setattr(env, "setup", setup)
+    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
+        capability = AndroidCapability()
+        capability.backend = FakeServerProvider(adb.host, adb.port)
         spy = StartSpy()
         run = make_run(
             agent=agent_class(),
             loop=ReactLoop(),
-            env=env,
+            env=make_env(AndroidEnvironment, {"android#0": capability}),
             llm=NoModel(),
             memory=SimpleMemory(),
             hooks=[spy],
@@ -180,5 +170,5 @@ async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts
             await runtime.execute("open the settings app")
 
     assert spy.starts == []
-    assert setups == []
-    assert capability.device.captures == 0
+    # Setup reads the device's facts and a screenshot is a screencap: the device got neither.
+    assert adb.requests == []

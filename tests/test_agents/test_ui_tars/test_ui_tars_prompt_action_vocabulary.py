@@ -43,6 +43,7 @@ from spectragent.agents.prompts import agent_prompt_variants
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.agents.ui_tars.codec import BoundVerb, UITarsCodec
 from spectragent.core.action_guard import build_guarded_act, executed_name
+from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.environment import BrowserEnvironment
@@ -53,7 +54,6 @@ from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_for
-from tests._helpers.android_stub import mobile_descriptors
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -318,22 +318,21 @@ class TestPromptVocabulary:
         """The same verbs, bound where the run holds their actions: each listed, a fixed key shown."""
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         agent.prompt_template = "mobile_use"
+        descriptors = AndroidCapability().get_action_descriptors()
         prompt = agent.prepare(
             task="t",
-            action_space=space_for(agent, mobile_descriptors()),
+            action_space=space_for(agent, descriptors),
             execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
+        described = {d.name: d.description for d in descriptors}
+        held, key, app = (
+            described[f"android.{name}"] for name in ("long_press", "press_key", "open_app")
+        )
+        # A point is no "executes" line: the Coordinates section says what it is.
+        assert f"- long_press(point='(x, y)')\n  {held}\n- " in prompt
         assert (
-            "- long_press(point='(x, y)')\n"
-            "  Press and hold a point on the screen.\n"
-            "- open_app(app_name='app name')\n"
-            "  Open an installed app by its name.\n"
-            "  executes: app_name: str\n"
-            "- press_home()\n"
-            "  Press a system key.\n"
-            "  executes: key='home'\n"
-            "- press_back()\n"
-            "  Press a system key.\n"
-            "  executes: key='back'"
+            f"- press_home()\n  {key}\n  executes: key='home'\n"
+            f"- press_back()\n  {key}\n  executes: key='back'\n"
         ) in prompt
+        assert f"- open_app(app_name='app name')\n  {app}\n  executes: app_name: str\n" in prompt
