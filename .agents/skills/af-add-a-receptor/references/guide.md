@@ -47,11 +47,12 @@ In `spectragent/generated/_composed.py`, on `BrowserCapabilityConfig` (grep the
 field name — the file is regenerated, so line numbers move):
 
 ```python
-# receptors — nested discriminated union, required, every knob typed
+# receptors — nested discriminated union, every knob typed; the wiring's default
+# strategy is the field's default (a block left out is that strategy)
 mouse_trajectory: Union[BezierMouse_TrajectoryConfig, InstantMouse_TrajectoryConfig,
-                        LearnedMouse_TrajectoryConfig, WindmouseMouse_TrajectoryConfig] = ...
-dom_cleaner:      Union[BrowserUseDom_CleanerConfig, SkyvernDom_CleanerConfig] = ...
-dom_serializer:   Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig] = ...
+                        LearnedMouse_TrajectoryConfig, WindmouseMouse_TrajectoryConfig] = Field(default_factory=InstantMouse_TrajectoryConfig, ...)
+dom_cleaner:      Union[BrowserUseDom_CleanerConfig, SkyvernDom_CleanerConfig] = Field(default_factory=BrowserUseDom_CleanerConfig, ...)
+dom_serializer:   Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig] = Field(default_factory=TextDom_SerializerConfig, ...)
 
 # a __wiring__ entry with NO slot — declaration-only, a name and nothing else
 observation: Optional[Literal['browser.browser_meta', 'browser.dom', 'browser.screenshot']] = None
@@ -66,8 +67,9 @@ conscribe 2.0 exposes the same reflection to the builder and the Composer throug
 `conscribe.introspect.wiring_slots`, `receptor_slots` and `init_param_names`. A runtime
 slot is a constructor parameter or non-`ClassVar` annotation. Negotiation entries use
 `{"registry": "observation", "keys": [...], "optional_keys": [...], "declare_only": True}`;
-they never get placeholders or stubs. A default-free single-instance receptor remains
-required; explicit defaults and optional annotations follow conscribe's documented rules.
+they never get placeholders or stubs. A single-instance receptor whose owner installs a
+Python default names that strategy as its wiring's `default` (step 4), so YAML may leave
+it out; one without a Python default stays required (architecture §4.2.1).
 
 ## 2. The checklist
 
@@ -142,12 +144,18 @@ registrar its `declarations.py` does not declare.
 (`core/capabilities/browser/capability.py:272` for the dict, `:357` for this entry):
 
 ```python
-"dom_serializer": ("dom_serializer", ["text", "html"]),
+"dom_serializer": {"registry": "dom_serializer", "keys": ["text", "html"], "default": "text"},
 ```
 
-`(registry_name, allowed_keys)`. The attribute name is the left side; the registry it
-draws from is the right. A bare string (`"backend": "browser_provider"`, `:362`) means
-"any registered key".
+The attribute name is the left side; `registry` is the registry it draws from, `keys`
+the allowed keys. `default` is the key of the strategy step 6 installs: a block that
+leaves the receptor out gets that strategy, and the resolved config records it as if the
+block were written (architecture §4.2.1). Give a `default` only when the owner has a
+Python default; a receptor without one (`backend`) stays required, and nobody invents a
+default for it. `tests/test_core/test_composer/test_strategy_defaults.py` lists every
+default and checks it against the Python one, so add yours there. A bare string
+(`"backend": "browser_provider"`, `:362`) means "any registered key", the tuple
+`(registry_name, allowed_keys)` a key subset without a default.
 
 **5. The annotation-only class attribute** (`capability.py:372`):
 
@@ -155,8 +163,8 @@ draws from is the right. A bare string (`"backend": "browser_provider"`, `:362`)
 dom_serializer: DOMSerializerProtocol  # type: ignore[misc]
 ```
 
-An annotation-only slot keeps the YAML receptor required; an explicit class default
-changes the generated default. conscribe 2.0 preserves class and dataclass defaults. If the owner exposes the name as a `property`, put the annotation on a
+An annotation-only slot has no default of its own: the wiring's `default` (step 4)
+decides whether YAML may leave the receptor out. conscribe 2.0 preserves class and dataclass defaults. If the owner exposes the name as a `property`, put the annotation on a
 mixin instead (`_BrowserReceptors`, `capability.py:239`; same split as
 `agents/_registrar.py::AgentReceptors`).
 
@@ -164,7 +172,7 @@ mixin instead (`_BrowserReceptors`, `capability.py:239`; same split as
 (`capability.py:591`): `self.dom_serializer = default_serializer()`. The bare
 annotation is a `WiredField` that raises on read until something injects; this
 shadows it with a real instance attribute, so `BrowserCapability()` in a test still
-works while YAML stays required. Call the **factory**, not the class — `DOMWatchdog`
+works; the wiring's `default` must name the same strategy. Call the **factory**, not the class — `DOMWatchdog`
 needs the same default (`dom_watchdog.py:100`) and one fact in two files drifts.
 (`mouse_trajectory` still names `InstantTrajectory()` in two places,
 `capability.py:582` and `input/mouse.py:120` — don't copy that.)
@@ -187,10 +195,11 @@ one entry point (`pyproject.toml:76`); AGENTS.md §3.4 used to name nine
 `generate_config.py` files that no longer exist. See the **af-regenerate-and-verify**
 skill for the verification loop and the staleness trap.
 
-**10. Add the YAML block and fix every hand-written one.** A new single-instance
-receptor is a **required** field, so every place a capability block is written by hand
-now fails validation. `grep -rn 'dom_cleaner' tests/ configs/` is the reliable index of
-those places. Shipped pattern, `configs/browser_use_local.yaml:171`:
+**10. Add the YAML block where a configuration should show it.** A new single-instance
+receptor with a `default` leaves every existing block valid: leaving it out means the
+default. One without a default is a **required** field, so every place a block of its
+owner is written by hand then fails validation; `grep -rn 'dom_cleaner' tests/ configs/`
+is the reliable index of those places. Shipped pattern, `configs/browser_use_local.yaml:171`:
 
 ```yaml
 dom_serializer:
@@ -372,17 +381,15 @@ and scans only on first use. conscribe does not change this lifecycle requiremen
   block. `tests/test_core/test_composer/test_yaml_safe_values.py` refuses every one of
   them (any case) across all registry keys and every schema option value. "Not enabled"
   is spelled `none` (architecture §4.2.1): the replayability tier that used to be `off` is
-  `none`, so every block writes `replayability: { replayability_id: none }` unquoted.
+  `none`, so a block writes `replayability: { replayability_id: none }` unquoted.
   A no-op strategy that does a normal thing keeps a descriptive name (`instant`, `live`).
 - **A required single-instance receptor ripples through every hand-written block.**
-  Adding `replayability` made it mandatory in the generated schema, so the same change
-  edited every capability block that writes one by hand (the set
-  `rg -l typing_rhythm configs tests .agents` finds: shipped configs, `configs/README.md`,
-  the test configs, this guide's example), and the shipped-config gate
-  (`test_shipped_config_integration.py`) proves each new value arrives. `network_source`
-  (M30) rippled the same way (`rg -l replayability_id` is the index now), and every
-  hand-built `ConfigComposer(registrars={...})` map in the tests had to gain the new
-  layer too, or the capability's slot fails to compose (`UnresolvedWiringError`).
+  `replayability` and `network_source` (M30) were required when they were added, so those
+  changes edited every capability block that wrote one by hand (`rg -l replayability_id`
+  is the index); they now name a `default` and may be left out (architecture §4.2.1).
+  Every hand-built `ConfigComposer(registrars={...})` map in the tests must still gain a
+  new layer, default or not, or the capability's slot fails to compose
+  (`UnresolvedWiringError`).
 - **A strategy can carry its own receptor** (`ArchiveNetworkSource.miss_policy`). The
   composed union nests through every collected layer. Constructor-only optional list or
   dict slots are supported; they no longer need duplicate class annotations for shape.

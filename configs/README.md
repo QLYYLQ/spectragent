@@ -80,7 +80,7 @@ Notes:
 
 - A wiring entry becomes a runtime receptor **only** when the owning class declares a slot for it. `observation` / `action` on the agent and `observation` on the capability have no slot: they are declaration-only constraints the negotiation engine reads off `__wiring__`. They are optional in the schema, and *populating* one is a hard `UnresolvedWiringError` — the value would otherwise be silently dropped.
 - Mode 1 wirings (`agent_loop`, `llm`, `memory`) become full discriminated unions of every registered config — you write the **complete child config** inline, no top-level reference list needed.
-- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`, `capability.replayability`, `capability.network_source`, and `miss_policy` inside an `archive` network source) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional: omitted (or `null`) they adopt the matching instances of a top-level section, and with none the owner's default applies (every compatible capability; every wired action). `[]` always means empty: `actions: []` builds no action at all.
+- Single-instance receptors with no default (`llm`, `agent_loop`, `memory`, `capability.backend`) are **required**. The strategy receptors that have a default may be left out, and leaving one out means its default, recorded in the resolved config exactly as if the block were written (`docs/architecture_design.md` §4.2.1): `capability.mouse_trajectory` and `capability.typing_rhythm` are `instant`, `capability.dom_cleaner` is `browser_use`, `capability.dom_serializer` is `text`, `capability.replayability` is `none`, `capability.network_source` is `live`, and `miss_policy` inside an `archive` network source is `strict`. The shipped files still write these blocks out. List-shaped receptors (`environment.capabilities`, `capability.actions`) are optional: omitted (or `null`) they adopt the matching instances of a top-level section, and with none the owner's default applies (every compatible capability; every wired action). `[]` always means empty: `actions: []` builds no action at all.
 - A strategy is always a receptor block, never a name on `profile:`. `profile:` says which watchdogs run and which CDP round trips they may spend — nothing else. Naming a strategy there is what made `mouse_trajectory`, then `dom_cleaner`, then `dom_serializer` arrive default-constructed with every configured knob discarded.
 - `browser.dom` has a cost surface of its own, off by default: `dom_max_elements`, `dom_max_serialized_chars` (both a number or `unlimited`, the default — a numeric limit is never written `null`), `dom_interactive_only`, `dom_viewport_only`. When any of them cuts, the observation fragment records the cut in `budget`, so a trace never shows a truncated page as a sparse one.
 - The two input-humanization receptors are independent axes and each is its own off-switch: `mouse_trajectory: { trajectory_type: instant }` and `typing_rhythm: { rhythm_type: instant }` are the legacy instant jump and the legacy single bulk `Input.insertText`. There is no boolean beside either — the strategy *is* the switch.
@@ -318,7 +318,7 @@ network_source:
     levels: [exact, normalized]     # default; add fuzzy for same-path query-ratio matching
     fuzzy_threshold: 0.5            # lowest 2M/T score a fuzzy hit needs (inclusive)
     site_rules: configs/replay_rules   # per-site <domain>.yaml rules (see its README)
-  miss_policy: { miss_policy_id: strict }   # required in an archive block
+  miss_policy: { miss_policy_id: strict }   # the default; may be left out
   # max_fulfill_body_bytes: 67108864   (≤ 72 MiB)   fulfill_timeout_s: 10.0   log_repeat_limit: 3
 ```
 
@@ -423,7 +423,7 @@ agent_loop:
   terminal_observation: true        # default: one more observation after the run ends
   history_source: source            # exact source history, or restored execution history
   restorer:
-    restorer_id: prefix_replay
+    restorer_id: prefix_replay      # the default: a block that leaves restorer out gets it
     verify: strict                  # warn: record a failed check and go on
     screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
     pace: none                      # recorded_llm_latency: wait as long as the source waited;
@@ -437,7 +437,7 @@ task_loader:
   - benchmark_name: trace_branches
     data_dir: traces/recorded       # the sources root (default: traces)
     # sources: ["*"]                # globs relative to data_dir, sorted
-    step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
+    step_selector: { selector_id: all }   # the default | every_k {k, offset} | explicit {steps: [2, 5]} | last
     branches_per_step: 3            # b0, b1, b2 per selected step (the shipped value)
     agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
     # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
@@ -566,7 +566,7 @@ exporter:
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # site | task, never step
     decontamination: { against: [], match: either }   # the benchmarks you evaluate on; []: none
     translator:
-      translator_id: index_to_coordinate   # identity: the teacher's actions as recorded
+      translator_id: index_to_coordinate   # identity (the default): the teacher's actions as recorded
       occlusion: check               # none skips the check
       occlusion_unknown: raise       # untranslatable: drop a step with no occlusion evidence
       untranslatable: drop_step      # truncate | keep_as_text | fail

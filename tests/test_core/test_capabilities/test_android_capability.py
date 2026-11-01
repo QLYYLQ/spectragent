@@ -424,7 +424,7 @@ def test_prepare_refuses_a_device_the_provider_cannot_give_naming_oracle_needs_a
     assert oracle.calls == [], "the device comes first: the oracle's own check never ran"
 
 
-def test_the_capability_block_must_select_its_oracle() -> None:
+def test_a_capability_block_that_leaves_its_oracle_out_selects_none() -> None:
     def composed(**block: JsonValue) -> AndroidCapability:
         raw = {
             "capability": [
@@ -439,9 +439,10 @@ def test_the_capability_block_must_select_its_oracle() -> None:
         assert isinstance(capability, AndroidCapability)
         return capability
 
-    with pytest.raises(ValidationError, match=r"\.task_oracle\n  Field required"):
-        composed()
+    assert isinstance(composed().task_oracle, NoTaskOracle)
     assert isinstance(composed(task_oracle={"oracle_id": "none"}).task_oracle, NoTaskOracle)
+    with pytest.raises(ValidationError, match="union_tag_invalid"):
+        composed(task_oracle={"oracle_id": "android_world"})
     selected = composed(
         task_oracle={"oracle_id": "androidworld", "root": "~/aw", "call_timeout_s": 30}
     ).task_oracle

@@ -287,14 +287,14 @@ backend:
 
 其他后端可从任一现成 YAML 复制为自己的配置，再把 `backend` 块改成 `{ provider_id: <上表的值> }`。额外参数见各实现的 `Annotated` 字段或重新生成的配置 schema；环境变量由各 SDK 读取。先用 `--dry-run` 检查配置形状，再用真实任务检查服务连接。
 
-每个 browser capability 块都必须写 `replayability` 与 `network_source`，现成 YAML 里都有。评测用的写法是：
+browser capability 块可以不写 `replayability` 与 `network_source`，不写就是评测用的这两个值（现成 YAML 照样写出来）：
 
 ```yaml
 replayability: { replayability_id: none }
 network_source: { source_id: live }
 ```
 
-漏写任一项，`--dry-run` 会报该字段 `Field required`，例如 `environment.0.capabilities.0.replayability`。这一档原名 `off`，现在叫 `none`：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`，旧写法会报 `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'none', 'pinned'`。`none` 不 pin 任何东西，`live` 直接用线上网络，两者都不会打开第二条 CDP 连接，任何后端都能用。
+不写与写出这两行是同一个配置：resolved 配置照样记下它们，`config_hash` 也相同（architecture §4.2.1）。写了的块照常校验，拼错的名字会报错。这一档原名 `off`，现在叫 `none`：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`，旧写法会报 `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'none', 'pinned'`。`none` 不 pin 任何东西，`live` 直接用线上网络，两者都不会打开第二条 CDP 连接，任何后端都能用。
 
 `replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `none`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
 

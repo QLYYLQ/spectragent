@@ -546,6 +546,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 "browser.wait",
             ],
         ),
+        # The six strategy receptors below each name their ``default``: the
+        # strategy ``__init__`` installs for a hand-built capability. A
+        # capability block may leave one out, and leaving it out means that
+        # default, recorded in the resolved config like a written block
+        # (docs/architecture_design.md §4.2.1).
+        #
         # ``mouse_trajectory`` is a receptor, not a scalar: the chosen
         # strategy arrives as a *constructed instance* carrying its own
         # knobs (windmouse gravity/wind, bezier control points, ...), so
@@ -561,10 +567,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # per action — meant for anti-bot-sensitive evals, not throughput
         # benchmarks. A separate ``humanize_mouse: bool`` used to sit next
         # to this receptor and silently overrode it when false.
-        "mouse_trajectory": (
-            "mouse_trajectory",
-            ["bezier", "instant", "learned", "windmouse"],
-        ),
+        "mouse_trajectory": {
+            "registry": "mouse_trajectory",
+            "keys": ["bezier", "instant", "learned", "windmouse"],
+            "default": "instant",
+        },
         # ``typing_rhythm`` is the keyboard's half of the same idea, on its
         # own axis — a run may want a curved cursor and a bulk insert, or the
         # reverse — and with the same rule: the strategy *is* the switch,
@@ -573,7 +580,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # at all; ``human`` dispatches a real keydown/keyup per character on
         # modelled flight and hold times, at a cost of roughly 250 ms per
         # character — meant for anti-bot-sensitive evals, not throughput.
-        "typing_rhythm": ("typing_rhythm", ["human", "instant"]),
+        "typing_rhythm": {
+            "registry": "typing_rhythm",
+            "keys": ["human", "instant"],
+            "default": "instant",
+        },
         # ``dom_cleaner`` is a receptor for the same reason: the strategy
         # arrives constructed, carrying the knobs that decide what the
         # agent gets to see (``descendants_occlude``,
@@ -583,7 +594,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ``BrowserUseDom_CleanerConfig`` existed and nothing could reach it.
         # ``skyvern_hit_test`` (M32): Skyvern plus an in-page hit test per
         # indexed element, recorded as ``hit_test``; ``covered_elements``.
-        "dom_cleaner": ("dom_cleaner", ["browser_use", "skyvern", "skyvern_hit_test"]),
+        "dom_cleaner": {
+            "registry": "dom_cleaner",
+            "keys": ["browser_use", "skyvern", "skyvern_hit_test"],
+            "default": "browser_use",
+        },
         # ``dom_serializer`` is the third instance of that identical
         # defect and closes it: the serializer decides what the *prompt*
         # says the page is, and ``TextSerializer.max_text_length`` /
@@ -593,15 +608,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ``DOMWatchdog`` did ``DOMSerializerRegistrar.get(name)()``.
         # ``tests/.../test_receptor_hygiene.py`` is the structural guard
         # against a fourth.
-        "dom_serializer": ("dom_serializer", ["text", "html"]),
+        "dom_serializer": {
+            "registry": "dom_serializer",
+            "keys": ["text", "html"],
+            "default": "text",
+        },
         # ``replayability`` (§4.14) decides how far a run is pinned for replay:
         # ``none`` (the default, the no-op) or ``pinned`` (seeded randomness, a
         # stepped clock from T0, fixed time zone / locale / user agent / DPR,
         # its own Chrome launch switches). Same shape as ``typing_rhythm``:
-        # the strategy is the switch, so YAML names one in every capability
-        # block, and nothing beside it can disagree with it. Anything but
-        # ``none`` opens the recorder connection.
-        "replayability": ("replayability", ["none", "pinned"]),
+        # the strategy is the switch, and nothing beside it can disagree with
+        # it. Anything but ``none`` opens the recorder connection.
+        "replayability": {
+            "registry": "replayability",
+            "keys": ["none", "pinned"],
+            "default": "none",
+        },
         # ``network_source`` (§4.14 "回放") decides where the network comes
         # from: ``live`` (the default, the no-op) or ``archive`` (every request
         # answered from a recorded run's archive at the Fetch Request stage,
@@ -610,7 +632,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # switch — whether the browser must be isolated from the network is the
         # source's own property, never a provider boolean beside it. Anything
         # but ``live`` opens the recorder connection.
-        "network_source": ("network_source", ["archive", "live"]),
+        "network_source": {
+            "registry": "network_source",
+            "keys": ["archive", "live"],
+            "default": "live",
+        },
         # Archive provides (§4.5, §4.14) — the third axis, a negotiation-only
         # declaration like ``observation``: what a run records is the trace
         # hook's ``archive`` list, bound here by ``bind_archivers``. Keep in
@@ -1164,16 +1190,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.new_tabs = new_tabs
         self.background_tabs = background_tabs
 
-        # In-Python default for the wired trajectory receptor. YAML must
-        # name one (a single-instance receptor is required in the
-        # generated schema, exactly like ``backend``); constructing the
-        # capability directly gets the no-op strategy, which is the
-        # legacy instant-jump behaviour. ``ConfigComposer`` setattrs the
-        # configured instance over this, shadowing the descriptor.
+        # In-Python default for the wired trajectory receptor: constructing
+        # the capability directly gets the no-op strategy, which is the
+        # legacy instant-jump behaviour. A YAML block that leaves the
+        # receptor out gets the same strategy through the wiring's
+        # ``default``, which must name this one. ``ConfigComposer`` setattrs
+        # the configured instance over this, shadowing the descriptor.
         self.mouse_trajectory = InstantTrajectory()
-        # Same contract for the keyboard's rhythm and for the DOM cleaning
-        # strategy: YAML names one, a hand-built capability gets the default
-        # strategy with its defaults.
+        # Same contract for the keyboard's rhythm and the other strategy
+        # receptors: a hand-built capability gets the default strategy with
+        # its defaults, the strategy the wiring's ``default`` names.
         self.typing_rhythm = InstantRhythm()
         # Via the strategy packages' own ``default_*`` factories, not by
         # naming the class here: ``DOMWatchdog`` needs the same default for

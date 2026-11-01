@@ -134,11 +134,16 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
 
     __registry_key__ = "trace_branches"
     __wiring__: ClassVar[dict[str, Any]] = {
-        "step_selector": ("step_selector", ["all", "every_k", "explicit", "last"]),
+        "step_selector": {
+            "registry": "step_selector",
+            "keys": ["all", "every_k", "explicit", "last"],
+            "default": "all",
+        },
     }
 
     # Annotation only: conscribe installs a ``WiredField`` and the Composer
-    # injects the configured selector; ``__init__`` shadows it with the default.
+    # injects the configured selector (a block that leaves it out gets the
+    # wiring's ``default``); ``__init__`` shadows it with the same default.
     step_selector: StepSelector  # type: ignore[misc]
 
     # ── the knobs, as attributes (assigned in __init__) ──

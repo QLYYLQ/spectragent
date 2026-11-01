@@ -143,10 +143,13 @@ class TestRegistryAndGeneratedConfig:
         cap = BrowserCapability()
         assert isinstance(cap.replayability, NoneReplayability)
         assert isinstance(default_replayability(), NoneReplayability)
-        assert BrowserCapability.__wiring__["replayability"] == (
-            "replayability",
-            ["none", "pinned"],
+        # A block that leaves it out gets the same tier.
+        from spectragent.generated._composed import BrowserCapabilityConfig
+
+        omitted = BrowserCapabilityConfig.model_validate(
+            {"backend": {"provider_id": "local_chrome"}}
         )
+        assert omitted.replayability.replayability_id == "none"
 
 
 class TestNoneIsInert:

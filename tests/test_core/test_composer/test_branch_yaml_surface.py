@@ -6,7 +6,7 @@ shape) with a hand-built default. Pinned here, against the real Composer and
 the real registrars:
 
 - the generated union nests agent → ``agent_loop`` → ``restorer``, every knob
-  typed, and the restorer is required in a ``branch`` block;
+  typed, and a ``branch`` block that leaves the restorer out gets the default;
 - the configured restorer and its knobs reach the instance, replacing the
   default a hand-built loop gets; each ``pace`` is recorded and moves the
   configuration digest;
@@ -168,9 +168,12 @@ class TestNestedUnions:
         assert isinstance(loop.restorer, PrefixReplayRestorer)
         assert loop.restorer.verify == "strict"
 
-    def test_the_restorer_is_required_in_a_branch_block(self, composer: ConfigComposer) -> None:
-        with pytest.raises(ValidationError, match="restorer"):
-            composer.top_level_type.model_validate(_branch())
+    def test_a_branch_block_that_leaves_the_restorer_out_gets_the_default(
+        self, composer: ConfigComposer
+    ) -> None:
+        loop = _loop(composer, _branch())
+        assert isinstance(loop.restorer, PrefixReplayRestorer)
+        assert loop.restorer.verify == "strict"
 
     def test_the_restorer_block_defaults_its_knobs(self, composer: ConfigComposer) -> None:
         loop = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"}))
@@ -362,9 +365,12 @@ class TestTheTaskLoaderSurface:
         )
         assert (loader.require_archive, loader.on_unbranchable) == ((), "skip")
 
-    def test_the_selector_is_required_in_the_block(self, composer: ConfigComposer) -> None:
-        with pytest.raises(ValidationError, match="step_selector"):
-            composer.top_level_type.model_validate(_sweep())
+    def test_a_block_that_leaves_the_selector_out_selects_every_step(
+        self, composer: ConfigComposer
+    ) -> None:
+        from spectragent.core.data_loader.task.step_selector import AllSteps
+
+        assert isinstance(composer.compose(_sweep()).single("task_loader").step_selector, AllSteps)
 
     @pytest.mark.parametrize(
         "loader",

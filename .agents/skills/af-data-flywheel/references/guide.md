@@ -805,7 +805,7 @@ A new strategy on an existing axis:
 2. Make sure an import registers it. Each package's `__init__` imports its implementations,
    and an owner's module imports whatever its `__wiring__` lists.
 3. Add the key to the owner's `__wiring__` list when the owner restricts keys. Every
-   flywheel owner does, except `ExporterBase` (`"translator": "action_translator"`) and
+   flywheel owner does, except `ExporterBase` (`"translator": {"registry": "action_translator", "default": "identity"}`) and
    `TraceWriter` (`"archive": "archiver"`), which have no key list to update: their
    receptor takes any *registered* key, and validation still refuses an unregistered one.
 4. Declare knobs as `Annotated` constructor parameters or dataclass fields with real
@@ -833,9 +833,13 @@ A new axis, that is, a new registrar:
   implementation (af-add-a-receptor §2, the `ArchiverRegistrar` case).
 - Add its rows to `AGENTS.md` §2.2 and architecture §6 in the same change; the coverage
   test fails otherwise.
-- A required single-instance receptor reaches every hand-written block of its owner:
-  shipped configs, `configs/README.md`, test configs, skill examples. `rg` an existing
-  receptor key of the same owner to find them all.
+- A single-instance receptor whose owner has a Python default names it as its wiring's
+  `default` (`default_*()`'s strategy), so existing blocks stay valid: left out, it is
+  that default (architecture §4.2.1); add it to
+  `tests/test_core/test_composer/test_strategy_defaults.py`. One without a Python default
+  is required and reaches every hand-written block of its owner: shipped configs,
+  `configs/README.md`, test configs, skill examples. `rg` an existing receptor key of the
+  same owner to find them all.
 
 ### 3.1 Archiver
 
@@ -942,7 +946,7 @@ already collected; regenerate all the same.
 | Registrar | `NetworkSourceRegistrar` (`source_id`), `core/capabilities/browser/replay/network_source.py`; collected as `network_source` |
 | Design section | Architecture §4.14 ("回放：网络来源与 miss 策略" and the subsections after it; "协作检查一览") |
 | Protocol, base | `NetworkSourceProtocol`: `intercepts`, `isolation`, `open_replay(reader) -> RecordedArchive`, `serve(recorded, ctx) -> ReplayServer`, `fingerprint()`. `NetworkSourceBase` carries the live network's defaults; `default_network_source()` is `live` |
-| Owner | `BrowserCapability.__wiring__["network_source"]`, a required single-instance receptor |
+| Owner | `BrowserCapability.__wiring__["network_source"]`, a single-instance receptor; left out, it is `live` |
 | Tests to copy | `test_browser_replay_receptors.py`, `test_browser_replay_cooperation.py`, `test_browser_replay_consistency.py`, `test_browser_replay_isolation.py`, `test_browser_replay_server.py`, live `test_browser_replay_live.py` |
 
 - The `archive` source never lets a request reach the network. That is its own rule, not a
@@ -958,8 +962,8 @@ already collected; regenerate all the same.
   goes into `replay/consistency.py`, read against the source's fingerprint only.
 - A source with a receptor of its own (`archive` carries `miss_policy`) is not a dataclass.
   It hand-writes `__init__`, declares the receptor as a class annotation with a `default_*()`
-  factory, uses `from __future__ import annotations` for the stub, and types nested knobs as
-  pydantic dataclasses (§4).
+  factory whose strategy its wiring names as `default`, uses `from __future__ import
+  annotations` for the stub, and types nested knobs as pydantic dataclasses (§4).
 
 ### 3.3 Miss policy
 
@@ -991,7 +995,7 @@ already collected; regenerate all the same.
 | Registrar | `ReplayabilityRegistrar` (`replayability_id`), `replay/replayability.py`; collected as `replayability` |
 | Design section | Architecture §4.14 ("`replayability`：回放档位"; "协作检查一览") |
 | Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, `needs_client_hints`, the `device_scale_factor` property, `launch_args()`, `launch_env()`, `plan(*, t0_ms, browser_user_agent, client_hints=None) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `none` |
-| Owner | `BrowserCapability.__wiring__["replayability"]`, a required single-instance receptor |
+| Owner | `BrowserCapability.__wiring__["replayability"]`, a single-instance receptor; left out, it is `none` |
 | Tests to copy | `test_browser_replayability.py` (`TestRegistryAndGeneratedConfig`, `TestPinnedSwitches`, `TestPinnedPlan`, `TestShim`, `TestCooperation`), `test_browser_client_hints.py`, `test_browser_replay_consistency.py` |
 
 - The tier is the only source of its Chrome switches and launch environment (both through
@@ -1202,12 +1206,14 @@ value on an existing one.
   `collect_archive`, no `env/`. Two hooks with non-empty archives, one archiver in two
   hooks, and one key listed twice are each a problem in one `IncompatibleArchiveError` at
   `prepare()`, so two hooks cannot split the evidence.
-- Required single-instance receptors are required in YAML: `replayability` and
-  `network_source` in every capability block, `miss_policy` in every
-  `network_source: {source_id: archive}` block (the replay's network source, unrelated to
-  the `trace_writer.archive` list of archivers), `restorer` in every `branch` loop block,
-  `step_selector` in every `trace_branches` block, `translator` in every exporter block.
-  The `default_*()` factories serve objects built by hand only.
+- These single-instance receptors may be left out of YAML, and leaving one out means its
+  `default_*()` strategy, recorded in the resolved config as if written (architecture
+  §4.2.1): `replayability` (`none`) and `network_source` (`live`) in a capability block,
+  `miss_policy` (`strict`) in a `network_source: {source_id: archive}` block (the replay's
+  network source, unrelated to the `trace_writer.archive` list of archivers), `restorer`
+  (`prefix_replay`) in a `branch` loop block, `step_selector` (`all`) in a
+  `trace_branches` block, `translator` (`identity`) in an exporter block. A written block
+  is validated in full.
 - "Not enabled" is spelled `none` (the same ruling): `replayability_id: none`,
   `occlusion: none`. The old `off` fails validation, bare or quoted (PyYAML is YAML 1.1 and
   reads a bare `off` as `false`). In a site rule `fuzzy: on` is read as `true`, which is what
@@ -1346,7 +1352,6 @@ value on an existing one.
 | Every browser block fails validation with `Extra inputs are not permitted` on `replayability`, `network_source`, `mouse_trajectory` and the other receptors | A key in `BrowserCapability.__wiring__`, such as a new archiver's, names a class that never registered, and conscribe dropped the capability's whole wiring. Look in the log for `Failed to import module`: `discover()` skips a module whose import raises `ImportError` or `SyntaxError` |
 | Validation says `replayability_id` or `occlusion` is `False` | The old name `off`, unquoted; write `none` |
 | `InlineOnlyLayerError: The top-level 'archiver' section is not accepted ...` | Move the entries into `trace_writer.archive` |
-| `Field required` for `step_selector`, `restorer`, `translator`, `miss_policy`, `network_source` or `replayability` | Write the receptor block (§4) |
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
 | `spectragent bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
 | A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |
