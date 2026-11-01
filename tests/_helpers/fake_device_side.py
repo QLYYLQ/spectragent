@@ -268,8 +268,9 @@ class FakeDeviceSide:
     - the helper's ``enable_service`` appends the service to the setting, and
       the system binds it, so its socket appears, unless *binds* is false: then
       the service vanishes from the setting again and never listens, as
-      Android 14 drops a service it refuses; ``disable_service`` takes it out
-      and unbinds it;
+      Android 14 drops a service it refuses. The helper remembers whether it
+      wrote the setting, and its ``disable_service`` takes out only what it
+      added, which unbinds the service;
     - :meth:`force_stop` does what ``am force-stop`` of the package does: the
       service leaves the setting and its process, token and socket go.
     """
@@ -301,6 +302,8 @@ class FakeDeviceSide:
             methods={"ping": self._service_ping, "gesture": self._gesture},
         )
         self.bound = False
+        #: Whether the helper put the service into the setting; it takes out only that.
+        self.added = False
         #: How many times the service's token was written to the provider.
         self.tokens_written = 0
         self._lose_token_once = lose_token_once
@@ -412,6 +415,7 @@ class FakeDeviceSide:
         changed = SERVICE_COMPONENT not in entries
         if changed:
             self.enabled = ":".join([*entries, SERVICE_COMPONENT])
+            self.added = True
         current = self.enabled
         if self.binds:
             self.bound = True
@@ -421,7 +425,10 @@ class FakeDeviceSide:
 
     async def _disable_method(self, params: JsonObject) -> Answer:
         previous = self.enabled
+        if not self.added:
+            return Answer({"previous": previous, "current": previous, "changed": False})
         changed = self._disable()
+        self.added = False
         return Answer({"previous": previous, "current": self.enabled, "changed": changed})
 
     def _disable(self) -> bool:

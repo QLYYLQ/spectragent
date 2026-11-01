@@ -11,7 +11,13 @@ down, within the section's four hard constraints:
    sources);
 3. never force-stop our own package on reset: :meth:`DeviceSide.stop` takes the
    service out of ``enabled_accessibility_services``, other services kept, which
-   unbinds it, and leaves the package alone; nothing here sends ``am force-stop``;
+   unbinds it, and leaves the package alone; nothing here sends ``am force-stop``.
+   The helper remembers whether it put the service there, from the moment it
+   wrote the setting, and takes out only that; ``stop`` asks it whenever an
+   enable was sent, so a start cut short while enabling, or an enable that
+   failed after its write, still leaves the setting as it found it. The
+   helper's connection answers in order, so the take-out runs after an enable
+   still in flight;
 4. binding is confirmed by a ping on the service's socket, never by reading the
    setting again: Android 14 and later drop a service they refuse from the
    setting without an error.
@@ -124,8 +130,8 @@ class DeviceSide:
         self._helper_reading: asyncio.Future[None] | None = None
         self._helper: HelperClient | None = None
         self._service: ServiceClient | None = None
-        #: Whether this run put the service into the setting, so stop() takes it out.
-        self._enabled_service = False
+        #: Whether an enable was sent: stop() then asks the helper to take out what it added.
+        self._enable_sent = False
         self._step = "not started"
 
     @property
@@ -208,7 +214,7 @@ class DeviceSide:
         return True
 
     async def stop(self) -> None:
-        """Close both channels, take the service out of the setting if this run put it there, end the helper.
+        """Close both channels, take the service out of the setting if the helper put it there, end the helper.
 
         Never force-stops our package. Safe to repeat.
 
@@ -220,11 +226,11 @@ class DeviceSide:
         if self._service is not None:
             await self._service.close()
             self._service = None
-        if self._enabled_service and self._helper is not None:
+        if self._enable_sent and self._helper is not None:
             try:
                 async with asyncio.timeout(_STOP_STEP_S):
                     await self._helper.disable_service()
-                self._enabled_service = False
+                self._enable_sent = False
             except (ChannelError, OSError, TimeoutError) as exc:
                 failure = exc
         if self._helper is not None:
@@ -334,8 +340,8 @@ class DeviceSide:
         await self._hand_over_token()
         self._service_socket = (await self.health()).socket
         self._step = "enabling the service"
-        if (await self.helper.enable_service()).changed:
-            self._enabled_service = True
+        self._enable_sent = True
+        await self.helper.enable_service()
         self._step = "waiting for the service to answer a ping"
         while True:
             try:

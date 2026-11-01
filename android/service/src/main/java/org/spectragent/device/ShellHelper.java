@@ -27,8 +27,9 @@ import org.json.JSONObject;
  * <p>Methods: {@code ping}; {@code screenshot} (from SurfaceFlinger, API 31-33, without the
  * service's 333 ms limit); {@code key} (any key, by its KEYCODE_ name); {@code gesture} (one timed
  * stroke, {@link Strokes}, injected with injectInputEvent as {@code input} injects, each event at
- * its planned time); {@code enable_service} and {@code disable_service} (the service appended to,
- * or removed from, enabled_accessibility_services, other services kept).
+ * its planned time); {@code enable_service} and {@code disable_service} (the service appended to
+ * enabled_accessibility_services, and taken out again only if this helper put it there; other
+ * services kept).
  */
 public final class ShellHelper {
     private static final ComponentName SERVICE =
@@ -36,6 +37,12 @@ public final class ShellHelper {
     private static final String ENABLED = "enabled_accessibility_services";
     /** Moves between a stroke's points, every 8 ms: what `input swipe` sends (120 Hz). */
     private static final long MOVE_INTERVAL_MS = 8;
+    /**
+     * Whether this helper wrote the service into the setting. Set as soon as the write is made, so
+     * that disable_service takes it out again even when the enable failed afterwards, or its answer
+     * never reached the host; a service enabled before the run is never this helper's to remove.
+     */
+    private static boolean added;
 
     private ShellHelper() {}
 
@@ -197,7 +204,7 @@ public final class ShellHelper {
         return 0;
     }
 
-    private static Reply enableService() throws Failure {
+    private static synchronized Reply enableService() throws Failure {
         String previous = setting(ENABLED);
         List<String> entries = entries(previous);
         boolean present = false;
@@ -209,13 +216,17 @@ public final class ShellHelper {
             entries.add(SERVICE.flattenToShortString());
             current = String.join(":", entries);
             settings("put", "secure", ENABLED, current);
+            added = true;
         }
         settings("put", "secure", "accessibility_enabled", "1");
         return Reply.of(Json.obj("previous", previous, "current", current, "changed", !present));
     }
 
-    private static Reply disableService() throws Failure {
+    private static synchronized Reply disableService() throws Failure {
         String previous = setting(ENABLED);
+        if (!added) {
+            return Reply.of(Json.obj("previous", previous, "current", previous, "changed", false));
+        }
         List<String> entries = entries(previous);
         List<String> kept = new ArrayList<>();
         for (String entry : entries) {
@@ -232,6 +243,7 @@ public final class ShellHelper {
             current = String.join(":", kept);
             settings("put", "secure", ENABLED, current);
         }
+        added = false;
         return Reply.of(Json.obj("previous", previous, "current", current, "changed", changed));
     }
 

@@ -26,10 +26,14 @@ from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApk,
 )
-from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION
+from spectragent.core.capabilities.android.device.channel import (
+    PROTOCOL_VERSION,
+    JsonObject,
+    RemoteError,
+)
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
 from tests._helpers.fake_adb import FakeAdbServer, ShellIO, StreamingCommand
-from tests._helpers.fake_device_side import SERVICE_COMPONENT, FakeDeviceSide
+from tests._helpers.fake_device_side import SERVICE_COMPONENT, Answer, Failure, FakeDeviceSide
 
 SERIAL = "emulator-5554"
 TALKBACK = "com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService"
@@ -222,6 +226,37 @@ async def test_a_second_recovery_works_after_one_that_ran_out_of_time(apk: Servi
             await device.stop()
 
     assert side.enabled is None
+
+
+class _SlowToAnswerEnable(FakeDeviceSide):
+    """The helper writes the setting, and its answer comes back late (a loaded machine)."""
+
+    async def _enable_method(self, params: JsonObject) -> Answer:
+        answer = await super()._enable_method(params)
+        await asyncio.sleep(2)
+        return answer
+
+
+class _EnableFailsAfterItsWrite(FakeDeviceSide):
+    """The helper writes the setting, and then the enable fails."""
+
+    async def _enable_method(self, params: JsonObject) -> Answer:
+        await super()._enable_method(params)
+        raise Failure("settings_failed", "settings put secure accessibility_enabled exited 1")
+
+
+@pytest.mark.parametrize("side_class", [_SlowToAnswerEnable, _EnableFailsAfterItsWrite])
+async def test_a_start_that_fails_while_enabling_leaves_the_setting_as_it_was(
+    apk: ServiceApk, side_class: type[FakeDeviceSide]
+) -> None:
+    side = side_class(enabled=TALKBACK)
+    async with _phone(side) as (_, client):
+        with pytest.raises((TimeoutError, RemoteError)):
+            await DeviceSide.start(client, SERIAL, apk, timeout_s=1.0)
+        await _helper_exited(side)
+
+    assert side.enabled == TALKBACK, "our entry was taken out again, TalkBack's kept"
+    assert side.helper_exits == 1
 
 
 async def test_a_device_without_faketouch_reports_that_it_cancels_gestures(
