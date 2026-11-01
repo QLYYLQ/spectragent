@@ -17,7 +17,7 @@ run's bindings route it to Android's action, and the phone receives a command.
 from __future__ import annotations
 
 import re
-from typing import Any
+from collections.abc import Sequence
 
 import pytest
 
@@ -25,6 +25,7 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
+from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
@@ -46,9 +47,11 @@ class _ScriptedModel:
 
     def __init__(self, *replies: str) -> None:
         self.replies = list(replies)
-        self.calls: list[list[Any]] = []
+        self.calls: list[list[BaseMessage]] = []
 
-    async def ainvoke(self, messages: Any, output_format: Any = None) -> ChatInvokeCompletion:
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: object = None
+    ) -> ChatInvokeCompletion:
         self.calls.append(list(messages))
         if not self.replies:
             raise AssertionError("the script has no reply left")
@@ -153,7 +156,7 @@ async def test_a_verb_whose_points_its_action_lacks_is_refused_before_the_run_st
         capability = _android(adb)
         described = capability.get_action_descriptors
 
-        def without_the_taps_point(**context: Any) -> list[ActionDescriptor]:
+        def without_the_taps_point(**context: object) -> list[ActionDescriptor]:
             return [
                 d.model_copy(update={"point_params": ()})
                 if d.name == "android.click_coordinate"

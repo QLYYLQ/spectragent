@@ -4,8 +4,8 @@ The observation-cycle contract runs it through
 ``tests/_helpers/capability_contract.py`` (``HARNESS_FACTORIES``); this module
 pins what is the capability's own: which fragments a capture builds and from
 which commands, what an action does to the capture before it, setup and
-teardown through the backend, and that UI-TARS seats against it with its
-wiring unchanged. The phone is ``tests/_helpers/android_device.py``.
+teardown through the backend, and that UI-TARS seats against it. The phone is
+``tests/_helpers/android_device.py``.
 """
 
 from __future__ import annotations
@@ -239,7 +239,7 @@ async def test_the_android_environment_routes_android_actions_to_the_capability(
     assert result.success and phone.inputs == ["input tap 7 8"]
 
 
-def test_ui_tars_assembles_against_the_android_capability_with_its_wiring_unchanged() -> None:
+def test_ui_tars_assembles_against_the_android_capability() -> None:
     """A relative name is a param contract (§4.9), so UI-TARS's demands bind to Android's actions."""
     env = make_env(EnvironmentBase, {"android#0": AndroidCapability()})
     run = make_run(

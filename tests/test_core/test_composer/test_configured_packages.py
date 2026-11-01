@@ -151,7 +151,7 @@ _PROBE_PACKAGE = {
 _BROWSER = "spectragent.core.capabilities.browser"
 
 #: UI-TARS on the probe capability, which provides two of its required actions
-#: and none of its optional ones (scroll, send_keys, drag, wait).
+#: and none of its optional ones.
 _UI_TARS_ON_PROBE = {
     "agent": [
         {

@@ -995,7 +995,7 @@ class ConfigComposer:
 
 **一次组装用部分构建（conscribe ≥ 2.2 的 `coverage="partial"`）。** 只导入点名的包，目录就只有一部分实现；`for_config` 因此明确声明这是部分构建，conscribe 只改两条规则：
 
-- `declare_only` 条目里没注册的键从它的 `Literal` 里拿掉，不报错。例如一个只提供 `click_coordinate`、`type_coordinate` 的 capability 配 `ui_tars`：`ui_tars` 声明的 `scroll`、`send_keys`、`drag`、`wait` 这次没有实现，照样组装；该用哪些仍由 `prepare()` 的协商决定，它激活 `loop.done` 与那两个动作。
+- `declare_only` 条目里没注册的键从它的 `Literal` 里拿掉，不报错。例如一个只提供 `click_coordinate`、`type_coordinate` 的 capability 配 `ui_tars`：`ui_tars` 声明的 `scroll`、`send_keys`、`drag`、`wait`、`long_press`、`open_app`、`press_key` 这次没有实现，照样组装；该用哪些仍由 `prepare()` 的协商决定，它激活 `loop.done` 与那两个动作。
 - 目标注册表为空时，`declare_only` 或没有受体的条目、以及默认什么都不选的受体（`None`；多实例受体还可以是空列表或 `default_factory`）照样保留。trace_writer 的 `archive` 就是这样：没点名任何提供归档器的 capability 时 archiver 注册表为空，`archive` 只接受"什么都不选"（省略、`null`、`[]`）。
 
 这样的字段写了别的值，pydantic 报错误类型 `no_implementation`；Composer 把它换成 `ComposeError`（issue `no_implementation`，`compose()` 与 `config explain` 共用的 `ConfigComposer.validate`），用白话说这一层这次没有实现：`hook[0].archive: no package this configuration names provides any 'archiver'; leave 'archive' out, or name the capability or agent family that does (capability packages: …; agent families: …)`。同一份配置的其余错误（别处的拼写错误、被留在目录外的段）在同一个 `ComposeError` 里一起报出，一次修完；只有普通的校验错误时照旧是 pydantic 的 `ValidationError`。其余照完整构建检查：未知的注册表、非 `declare_only` 条目里未知的键、默认值、矛盾的声明。
@@ -5779,8 +5779,8 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 **以后，或还没定的。**
 
 - 按编号寻址的其他 Android 动作（带 `index` 的 `long_press`、`type_text`）还没定，随要接的按编号操作的 agent（例如 AndroidWorld 的 M3A、T3A）再定；它们与 `click` 一样要依赖 `android.ui_tree`。
-- UI-TARS 不带点的 `type(content=...)`：编解码里一个动词名现在只绑一个动作（`type` → `type_coordinate`，点必填），它在 Android 上怎样对应 `type_text`，随 UI-TARS 的移动端动词一起定。
-- Android 的 `type_coordinate` 不查点按之后有没有文本框拿到焦点：阶段 1 的 adb 内建命令看不出哪个视图有焦点。点落在输入框旁的标签上时，清空抹掉的是仍有焦点的那个框，字也打进那里，动作照样报成功；浏览器在同样情形下拒绝（"No text field took focus at the clicked point"），同一个相对名两边的含义因此不一致。它随上一条一起定：那个裁决可能让 Android 不再提供 `type_coordinate`，定之前不写焦点检查。
+- UI-TARS 不带点的 `type(content=...)`：编解码里一个动词名现在只绑一个动作（`type` → `type_coordinate`，点必填）。它在 Android 上怎样对应，以及 Android 是否保留 `type_coordinate`，等用户裁决。
+- Android 的 `type_coordinate` 不查点按之后有没有文本框拿到焦点：阶段 1 的 adb 内建命令看不出哪个视图有焦点。点落在输入框旁的标签上时，清空抹掉的是仍有焦点的那个框，字也打进那里，动作照样报成功；浏览器在同样情形下拒绝（"No text field took focus at the clicked point"），同一个相对名两边的含义因此不一致。它随上一条的裁决一起定，定之前不写焦点检查。
 - 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。
 - 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
 - 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
