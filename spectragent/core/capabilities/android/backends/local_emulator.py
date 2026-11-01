@@ -76,7 +76,7 @@ on macOS, emulator 37.2.13, API 33 Google APIs, 2026-11-01):
   while the shell is not root.
 - ``guest_wifi``: an IPv4 default route over ``wlan0`` in any routing table
   (``default via 10.0.2.2 dev wlan0 table 1016``), which came 4-7 s after the
-  boot completed. On about 2 of 21 boots it never came, and the boot fails
+  boot completed. On about 3 of 24 boots it never came, and the boot fails
   after ``boot_timeout_s`` naming the ``wlan0`` routes the guest had; how to
   recover such a boot is not decided.
 - ``fresh``: ``read_only``; the provider refuses this need when it is false.
