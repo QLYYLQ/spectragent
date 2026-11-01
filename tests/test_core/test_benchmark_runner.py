@@ -1555,3 +1555,20 @@ def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     assert main(argv) == 0
     assert main([*argv, "--oracle-timeout", "12.5"]) == 0
     assert given == [ORACLE_TIMEOUT_S, 12.5]
+
+
+@pytest.mark.parametrize("flag", ["--timeout", "--oracle-timeout"])
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "soon"])
+def test_a_time_limit_is_seconds_above_zero_on_both_clis(flag, value, capsys):
+    """0, a negative number or NaN would expire at once: every live score would be lost."""
+    from spectragent.core import run_cli
+    from spectragent.core.benchmark_runner import main
+
+    for cli, argv in (
+        (main, ["--config", "bench.yaml"]),
+        (run_cli.main, ["--config", "run.yaml", "--task", "t"]),
+    ):
+        with pytest.raises(SystemExit) as raised:
+            cli([*argv, flag, value])
+        assert raised.value.code == 2
+        assert flag in capsys.readouterr().err

@@ -1121,6 +1121,24 @@ def _token_limit_argument(text: str) -> int | Unlimited:
     return value
 
 
+def positive_seconds(text: str) -> float:
+    """``--timeout`` / ``--oracle-timeout`` (here and in ``spectragent run``): seconds above 0.
+
+    ``value > 0`` refuses NaN as well. A limit of 0, below 0 or NaN expires at
+    once: every oracle would come back not scored, and a score read against
+    the live environment cannot be read again once it is torn down.
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number of seconds") from None
+    if not value > 0:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not above 0: a time limit is seconds above 0"
+        )
+    return value
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1151,10 +1169,10 @@ def main(
     parser.add_argument("--subset", help="Benchmark subset/split.")
     parser.add_argument("--task-id", action="append", dest="task_ids", help="Repeatable.")
     parser.add_argument("--limit", type=int, help="Run at most N tasks.")
-    parser.add_argument("--timeout", type=float, default=300.0, help="Per-task seconds.")
+    parser.add_argument("--timeout", type=positive_seconds, default=300.0, help="Per-task seconds.")
     parser.add_argument(
         "--oracle-timeout",
-        type=float,
+        type=positive_seconds,
         default=ORACLE_TIMEOUT_S,
         help="Seconds each task oracle may take to score a task after its run.",
     )

@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from spectragent.core.benchmark_runner import positive_seconds
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
@@ -192,10 +193,12 @@ def main(
         help="Recorded run directory to replay the browser's network from "
         "(needs network_source: archive)",
     )
-    parser.add_argument("--timeout", type=float, default=300.0, help="Run timeout in seconds")
+    parser.add_argument(
+        "--timeout", type=positive_seconds, default=300.0, help="Run timeout in seconds"
+    )
     parser.add_argument(
         "--oracle-timeout",
-        type=float,
+        type=positive_seconds,
         default=ORACLE_TIMEOUT_S,
         help="Seconds each task oracle may take to score the task after the run",
     )
