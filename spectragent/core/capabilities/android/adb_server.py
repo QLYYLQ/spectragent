@@ -31,7 +31,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from spectragent.core.capabilities.android.processes import log_tail, settle, spawn, stop
+from spectragent.core.capabilities.android.processes import finish, log_tail, spawn, stop
 
 #: Where the server listens and clients connect: loopback only.
 HOST = "127.0.0.1"
@@ -100,7 +100,7 @@ class PrivateAdbServer:
                     f"{log_tail(server.log)}"
                 )
             try:
-                await settle(asyncio.ensure_future(server.stop()))
+                await finish(asyncio.ensure_future(server.stop()))
             except Exception as exc:
                 error.add_note(f"stopping the adb server also failed: {exc}")
             if error is failure:

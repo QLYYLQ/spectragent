@@ -50,14 +50,15 @@ async def spawn(
         try:
             return await asyncio.shield(starting)
         except asyncio.CancelledError as cancelled:
-            try:
-                process = await settle(starting)
-            except Exception:
-                raise cancelled from None  # it never started
-            try:
-                await settle(asyncio.ensure_future(stop(process, grace_s=0.0)))
-            except Exception as exc:
-                cancelled.add_note(f"stopping the process it had started failed: {exc}")
+            with contextlib.suppress(asyncio.CancelledError):
+                await finish(starting)  # whatever else arrives, the start is over after this
+            if starting.cancelled() or starting.exception() is not None:
+                raise  # nothing was started
+            with contextlib.suppress(asyncio.CancelledError):
+                try:
+                    await finish(asyncio.ensure_future(stop(starting.result(), grace_s=0.0)))
+                except Exception as exc:
+                    cancelled.add_note(f"stopping the process it had started failed: {exc}")
             raise
 
 
@@ -93,15 +94,23 @@ async def stop(process: asyncio.subprocess.Process, *, grace_s: float) -> None:
         os.killpg(process.pid, signal.SIGKILL)
 
 
-async def settle(task: asyncio.Future[T]) -> T:
-    """Await *task* to its end even if the caller is cancelled meanwhile, then return its result.
+async def finish(task: asyncio.Future[T]) -> T:
+    """Await *task* to its end even if the caller is cancelled meanwhile.
 
-    For cleanup that must not be abandoned halfway: a second cancellation of
-    the caller is absorbed until the task is done.
+    For cleanup that must not be abandoned halfway. A cancellation of the
+    caller that arrives meanwhile is raised once *task* is done; otherwise
+    *task*'s own result or exception is.
     """
+    cancelled: asyncio.CancelledError | None = None
     while not task.done():
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.done():
+                break  # the task itself was cancelled: its result says so
+            cancelled = cancelled or exc
+    if cancelled is not None:
+        raise cancelled
     return task.result()
 
 

@@ -97,16 +97,17 @@ class FakeAdbServer:
     """A loopback ADB server for *devices*, serial → :data:`Device`; an async context manager.
 
     Inside the ``async with`` block, :attr:`host` and :attr:`port` are where a
-    client connects. Leaving it stops listening and drops every connection at
-    once, so neither a held answer nor a client that stays connected, or that
-    stopped reading, can keep the test waiting. Then it raises the first error
-    a connection hit, so a fault in a device script or in this fake fails the
-    test instead of only cutting an answer short.
+    client connects: *port*, or an ephemeral port when it is 0. Leaving it
+    stops listening and drops every connection at once, so neither a held
+    answer nor a client that stays connected, or that stopped reading, can
+    keep the test waiting. Then it raises the first error a connection hit, so
+    a fault in a device script or in this fake fails the test instead of only
+    cutting an answer short.
     """
 
-    def __init__(self, devices: Mapping[str, Device]) -> None:
+    def __init__(self, devices: Mapping[str, Device], *, port: int = 0) -> None:
         self.host = "127.0.0.1"
-        self.port = 0
+        self.port = port
         #: Every service sent to a device, in arrival order.
         self.requests: list[DeviceRequest] = []
         self._devices = dict(devices)
@@ -119,7 +120,7 @@ class FakeAdbServer:
         return sum(1 for request in self.requests if request.serial == serial)
 
     async def __aenter__(self) -> FakeAdbServer:
-        self._server = await asyncio.start_server(self._accept, self.host, 0)
+        self._server = await asyncio.start_server(self._accept, self.host, self.port)
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 

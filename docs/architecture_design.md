@@ -5290,6 +5290,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `EnvironmentRegistrar` | `env_type` (flat) | 环境实现，通过 `__wiring__["capabilities"]` 注入 Capabilities，按前缀路由 action | ✅（仅 BrowserEnvironment；CompositeEnvironment 待） |
 | `CapabilityRegistrar` | `capability_id` (flat) | 能力 = ActionGroup + Resolver 合体；持 backend wired field | ✅（仅 BrowserCapability；docker / tool_sandbox / desktop_vm / android / gpu_profiling 待） |
 | `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern` / `browser_use` / `airtop` / `agentbay` / `hyperbrowser`。文件位于 `core/capabilities/browser/backends/` | ✅ |
+| `AndroidProviderRegistrar` | `provider_id` (flat) | Android capability 的 backend：`local_emulator`（从 AVD 无头启动官方模拟器，每 run 一个私有 adb server 与实验密钥，§11.2）。文件位于 `core/capabilities/android/backends/` | ✅（android 内部） |
 | `DockerProviderRegistrar` | `provider_id` (flat) | Docker capability 的 backend（`local_docker` / `ssh_docker` ...） | P2 占位待实现 |
 | `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（3 种；协议兼容性在 `prepare()` 校验，SummaryMemory 待实现） |
 | `RestorerRegistrar` | `restorer_id` (flat) | 检查点恢复策略：把环境恢复到源 run 第 t 步之前的状态（`prefix_replay`；快照恢复 `capability_checkpoint` 是已知的下一个），`core/loops/restore/`；`BranchLoop.__wiring__["restorer"]` 受体，进 `collect_registrars()`（§4.1） | M31 |
@@ -5302,7 +5303,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
-| `TaskSetupRegistrar` | `setup_type` (flat) | 任务 setup 类（`SetupBase` 子类），契约与注册表在 `schemas/task.py`；每个 capability 包注册自己的 setup 类，并在 `declarations.py` 里声明为 `TASK_SETUP`；`TaskDefinition.setup` 按 `setup_type` 在已注册的 setup 里分派（§4.10）。不是 YAML 配置层（与 `ObservationRegistrar` 同一先例） | ✅ `browser` |
+| `TaskSetupRegistrar` | `setup_type` (flat) | 任务 setup 类（`SetupBase` 子类），契约与注册表在 `schemas/task.py`；每个 capability 包注册自己的 setup 类，并在 `declarations.py` 里声明为 `TASK_SETUP`；`TaskDefinition.setup` 按 `setup_type` 在已注册的 setup 里分派（§4.10）。不是 YAML 配置层（与 `ObservationRegistrar` 同一先例） | ✅ `browser`、`android` |
 | `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，只作标签的截图 `browser.frames`，回放的 `browser.replay_log`（§4.14），进 `collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
 | `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
 | `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
@@ -5313,9 +5314,9 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `MouseTrajectoryRegistrar` | `trajectory_type` (flat) | 光标轨迹策略（`instant` / `windmouse` / `bezier` / `learned`）；同时是鼠标侧唯一的拟人化开关，见 §4.13 | ✅（browser 内部） |
 | `TypingRhythmRegistrar` | `rhythm_type` (flat) | 键入节奏策略（`instant` / `human`）；键盘侧的同一形状，独立于轨迹轴，见 §4.13 | ✅（browser 内部） |
 
-> **哪些注册表是配置层**：`collect_registrars()` 收集框架轴（`core/registries.py` 显式列出）与每个 capability 包在 `declarations.py` 里声明的内部策略轴（上表标"browser 内部"的那些与 `BrowserProviderRegistrar`，§4.2.1）。`ObservationRegistrar`、`NegotiationResultRegistrar` 与 `TaskSetupRegistrar` 不由 YAML 选择，不收集。
+> **哪些注册表是配置层**：`collect_registrars()` 收集框架轴（`core/registries.py` 显式列出）与每个 capability 包在 `declarations.py` 里声明的内部策略轴（上表标"browser 内部""android 内部"的那些与 `BrowserProviderRegistrar`，§4.2.1）。`ObservationRegistrar`、`NegotiationResultRegistrar` 与 `TaskSetupRegistrar` 不由 YAML 选择，不收集。
 
-> **Provider 目录归属**：每个 capability 的 backend provider 文件物理上属于 `spectragent/core/capabilities/{cap}/backends/`，对应的 `*ProviderRegistrar` 也在该目录的 `_registrar.py` 里，由该包的 `declarations.py` 声明。Browser 已落地；Docker / Desktop / Android 等 P2/P3 时按同样模式增设。
+> **Provider 目录归属**：每个 capability 的 backend provider 文件物理上属于 `spectragent/core/capabilities/{cap}/backends/`，对应的 `*ProviderRegistrar` 也在该目录的 `_registrar.py` 里，由该包的 `declarations.py` 声明。Browser 与 Android 已落地；Docker / Desktop 等 P2/P3 时按同样模式增设。
 
 > **Dotted-key flat vs nested discriminator（2026-04 订正）**：Action / Observation 原计划上 nested discriminator，实测 conscribe 在“所有 leaf 同一 source”时会命中 Pydantic 的单字段 discriminator 冲突（见 `conscribe.config.composed._build_subset_union`）。改用 *dotted-key flat*：discriminator 仍是单字段 `action_id` / `fragment_id`，但键内嵌 source 前缀（`browser.click`、`loop.action_result`），同时避免 registry 撞名和 conscribe 的 Pydantic 冲突。语义与 nested 等价，wiring 字符串、前缀路由、config 生成都不需要特殊处理。Agent 的家族键同理：`agent_id: browser_use.dom` 是单个判别值，不是嵌套块（§4.1 "Agent 家族"）。
 

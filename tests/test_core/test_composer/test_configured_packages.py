@@ -27,6 +27,7 @@ from spectragent import REPO_ROOT
 from spectragent.agents._registrar import AgentBase
 from spectragent.core.capabilities.browser.declarations import STRATEGY_AXES as BROWSER_AXES
 from spectragent.core.composer import ComposeError, ConfigComposer, UnknownPackageError
+from spectragent.core.registries import capability_ids
 from spectragent.scripts import generate_all
 
 #: A second capability, complete enough to compose and prepare a UI-TARS run:
@@ -616,7 +617,7 @@ def test_an_agent_without_a_capability_is_refused_in_plain_words(
     issue = refused.value.issue
     assert issue is not None
     assert (issue.code, issue.path) == ("agent_without_capability", "agent[0].agent_id")
-    assert "capability packages: browser" in str(refused.value)
+    assert f"capability packages: {', '.join(capability_ids())}" in str(refused.value)
 
 
 def test_a_free_form_field_names_no_package() -> None:
@@ -664,7 +665,7 @@ except ComposeError as exc:
         ),
     )
     assert (refused["code"], refused["path"]) == ("no_implementation", "environment")
-    assert "capability packages: browser" in refused["message"]
+    assert f"capability packages: {', '.join(capability_ids())}" in refused["message"]
 
 
 def test_an_archiver_section_says_where_archivers_are_written() -> None:
