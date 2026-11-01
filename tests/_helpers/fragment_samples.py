@@ -304,7 +304,10 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             image_height=2400,
             viewport_width=1080,
             viewport_height=2400,
-            producer="screencap",
+            producer="shell_helper",
+            capture_ms=17,
+            encode_ms=85,
+            waited_ms=0,
         ),
     },
     "android.foreground_app": {
@@ -318,8 +321,16 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
     "android.platform": {
         "measured": lambda: AndroidPlatformObs(
             fingerprint="google/sdk_gphone64_arm64/emu64a:13/TE1A.240213.009/12342917:userdebug/dev-keys",
+            sdk_int=33,
             input_method="com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME",
             faketouch=True,
+            gestures=True,
+            service_apk_sha256="b9786e2ad6769ee234ebf55211532cdd93cef61210c5c8f77afb8452d23f3af8",
+            service_apk_version="1 (1)",
+            accessibility_tool=False,
+            service_apk_signing_certificate_sha256=(
+                "9d148d72d24c2b08d17a64c92a4cac5ca15ca5bff41467b32931834a1a4810b3"
+            ),
         ),
         "unreported": AndroidPlatformObs,
     },

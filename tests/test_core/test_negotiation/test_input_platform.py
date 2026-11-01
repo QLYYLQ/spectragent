@@ -12,6 +12,7 @@ prompt (``docs/architecture_design.md`` §11.2, ``android.platform``).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, ClassVar, Literal, get_args
 
 import pytest
@@ -33,9 +34,13 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
 from spectragent.schemas.observation.platform import InputPlatform
-from tests._helpers.android_device import SERIAL, FakeServerProvider, ScriptedPhone
+from tests._helpers.android_device import (
+    ScriptedPhone,
+    configured,
+    fake_service_apk,
+    phone_server,
+)
 from tests._helpers.assembly import AGENT_ID, NoModel, StartSpy, make_env, make_run
-from tests._helpers.fake_adb import FakeAdbServer
 
 
 class _VisionAgent:
@@ -148,12 +153,13 @@ class TestEveryPlatformFragmentIsAClosedLiteral:
 
 @pytest.mark.parametrize("agent_class", [_DesktopAgent, _VisionAgent])
 async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts(
-    agent_class: type[_VisionAgent],
+    agent_class: type[_VisionAgent], tmp_path: Path
 ) -> None:
     """Refused in ``prepare()``, declared or not: no trace opened, nothing set up, no screen read."""
-    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
-        capability = AndroidCapability()
-        capability.backend = FakeServerProvider(adb.host, adb.port)
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
         spy = StartSpy()
         run = make_run(
             agent=agent_class(),
@@ -170,5 +176,5 @@ async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts
             await runtime.execute("open the settings app")
 
     assert spy.starts == []
-    # Setup reads the device's facts and a screenshot is a screencap: the device got neither.
-    assert adb.requests == []
+    # Setup installs the APK and reads the device's facts: the device got nothing.
+    assert adb.requests == [] and phone.inputs == []

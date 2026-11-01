@@ -3,15 +3,17 @@
 One capture serves every negotiated fragment of an observation cycle:
 
 - ``android.screenshot``: the screen, with the four sizes of
-  :class:`~spectragent.schemas.observation.geometry.ScreenshotGeometry` and the
-  producer that made it. ``screencap`` captures the display in its current
-  orientation at the resolution ``input`` takes points in, so the viewport is
-  the image's own size;
+  :class:`~spectragent.schemas.observation.geometry.ScreenshotGeometry`, the
+  program that took it and what it cost on the device. Both programs capture
+  the display in its current orientation at the resolution touches take points
+  in, so the viewport is the image's own size;
 - ``android.foreground_app``: the app and window in front, as the window
   manager reports them;
 - ``android.platform``: the operating system the input reaches (a closed
   ``Literal``, so ``prepare()`` can read it with ``typing.get_args``), with the
-  device facts measured on the device and never inferred from the host;
+  device facts measured on the device and never inferred from the host: its
+  build, its input method, the faketouch check and the test tap, and the
+  device-side APK that runs there (§11.2, "实验身份");
 - ``android.capture_state``: the platform-neutral capture state. A phone has
   no pointer and these reads measure no failed resources, so both are
   ``unavailable``; the settle wait is the capability's "still"
@@ -26,6 +28,7 @@ from typing import Any, ClassVar, Literal, Self
 
 from pydantic import field_serializer
 
+from spectragent.core.capabilities.android.device.clients import ScreenshotProducer
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
@@ -53,8 +56,14 @@ class AndroidScreenshotObs(FragmentBase):
     image_height: int = 0
     viewport_width: int = 0
     viewport_height: int = 0
-    #: What made the image (``screencap``); another producer is another experiment.
-    producer: str = ""
+    #: The program that took the image: the shell helper where its screenshot
+    #: works (API 31-33), else the accessibility service.
+    producer: ScreenshotProducer | None = None
+    #: What it cost on the device, in ms: taking the image, encoding the PNG,
+    #: and waiting first to keep the service's one screenshot per 333 ms.
+    capture_ms: int | None = None
+    encode_ms: int | None = None
+    waited_ms: int | None = None
 
     def model_image_bytes(self) -> bytes | None:
         return self.image_bytes
@@ -80,7 +89,7 @@ class AndroidScreenshotObs(FragmentBase):
     def summary(self) -> str:
         if not self.viewport_width and not self.viewport_height:
             return ""
-        return f"{self.viewport_width}x{self.viewport_height} by {self.producer}"
+        return f"{self.viewport_width}x{self.viewport_height} by {self.producer or 'unknown'}"
 
 
 class AndroidForegroundAppObs(FragmentBase):
@@ -118,11 +127,27 @@ class AndroidPlatformObs(FragmentBase):
     operating_system: Literal["android"] = "android"
     #: ``ro.build.fingerprint``: the build that runs, image and revision.
     fingerprint: str | None = None
+    #: The API level, as the device-side programs report it.
+    sdk_int: int | None = None
     #: The current input method, which changes what a screenshot shows while typing.
     input_method: str | None = None
     #: Whether the device declares ``android.hardware.faketouch``; without it the
-    #: system cancels accessibility gestures (§11.2), which a later stage uses.
+    #: system cancels accessibility gestures (§11.2).
     faketouch: bool | None = None
+    #: Whether setup's test tap through the accessibility service completed:
+    #: whether accessibility gestures work on this device.
+    gestures: bool | None = None
+    #: The device-side APK that runs: its SHA-256 as the service computed it on
+    #: the device, which setup checked against the configured build's sidecar.
+    service_apk_sha256: str | None = None
+    #: Its ``versionName`` and ``versionCode``, as the service reported them.
+    service_apk_version: str | None = None
+    #: Whether the system takes the service for an accessibility tool
+    #: (``isAccessibilityTool``), as it read the APK; ``None`` before API 31.
+    accessibility_tool: bool | None = None
+    #: The SHA-256 of the certificate that signed it, from the configured
+    #: build's sidecar: the same build, since its SHA-256 matched.
+    service_apk_signing_certificate_sha256: str | None = None
 
     def summary(self) -> str:
         return self.operating_system

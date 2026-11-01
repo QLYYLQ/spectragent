@@ -37,7 +37,6 @@ from spectragent.agents.ui_tars.codec import (
     read_thought,
 )
 from spectragent.core.actions.params import PointAxis, params_view, point_params
-from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.loops.coordinate_frames import (
     actions_in_capability_units,
@@ -51,6 +50,7 @@ from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import CoordinateSpace
 from tests._helpers.action_spaces import browser_descriptors, space_for, space_of, wired_space
+from tests._helpers.android_device import unset_capability
 
 #: One value per param a verb fills; the points lie on a 1280x720 viewport.
 _VALUES: dict[str, Any] = {
@@ -89,7 +89,7 @@ def _codec(**kwargs: Any) -> UITarsCodec:
 
 def _android_codec() -> UITarsCodec:
     """The codec of a UI-TARS run on the Android capability, which holds all its actions."""
-    return UITarsCodec(space_for(UITarsAgent(), AndroidCapability().get_action_descriptors()))
+    return UITarsCodec(space_for(UITarsAgent(), unset_capability().get_action_descriptors()))
 
 
 def _every_verb_space(coordinate_space: CoordinateSpace = "screenshot_pixels") -> ActionSpace:
@@ -100,7 +100,7 @@ def _every_verb_space(coordinate_space: CoordinateSpace = "screenshot_pixels") -
     name: a name two actions share binds to neither.
     """
     required, optional = extract_wiring(UITarsAgent, "action")
-    android = {d.name: d for d in AndroidCapability().get_action_descriptors()}
+    android = {d.name: d for d in unset_capability().get_action_descriptors()}
     return space_of(
         [
             *browser_descriptors(*sorted((required | optional) - set(_ANDROID_ONLY))),

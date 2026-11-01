@@ -23,7 +23,6 @@ from spectragent.core.capabilities.android.backends.base import (
     EmulatorAccess,
     EmulatorGrpc,
 )
-from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.oracle import androidworld
 from spectragent.core.capabilities.android.oracle.androidworld import (
@@ -42,6 +41,7 @@ from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
 )
 from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
 from spectragent.schemas.oracle_score import OracleReading, OracleScore
+from tests._helpers.android_device import unset_capability
 from tests._helpers.assembly import make_env
 from tests._helpers.fake_androidworld import fake_installation, requests, service, write_behaviour
 from tests._helpers.process_checks import gone, groups, soon
@@ -417,7 +417,7 @@ async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path
 
 
 async def _environment_scores(oracle: AndroidWorldOracle, timeout_s: float) -> list[OracleScore]:
-    capability = AndroidCapability()
+    capability = unset_capability()
     capability.task_oracle = oracle
     env = make_env(AndroidEnvironment, {"android": capability})
     return await env.read_oracle_scores(timeout_s=timeout_s)
@@ -445,7 +445,7 @@ async def test_the_environment_records_the_score_and_each_way_of_not_scoring(
 
 
 async def test_with_no_oracle_the_environment_records_nothing() -> None:
-    env = make_env(AndroidEnvironment, {"android": AndroidCapability()})
+    env = make_env(AndroidEnvironment, {"android": unset_capability()})
     assert await env.read_oracle_scores(timeout_s=1.0) == []
 
 

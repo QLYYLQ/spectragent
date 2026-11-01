@@ -64,8 +64,7 @@ from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import BrowserStateSummary
-from tests._helpers.android_device import SERIAL, ScriptedPhone, android_capability
-from tests._helpers.fake_adb import FakeAdbServer
+from tests._helpers.android_device import ScriptedPhone, android_capability, phone_server
 
 
 @dataclass
@@ -362,24 +361,23 @@ async def browser_harness() -> AsyncIterator[CaptureHarness]:
 async def android_harness() -> AsyncIterator[CaptureHarness]:
     """An ``AndroidCapability`` set up over the fake ADB server, every fragment negotiated.
 
-    The real bridge, session and transport run; only the device is scripted
-    (``tests/_helpers/android_device.py``). A capture is counted by its
-    ``screencap``, failed ones included, and breaking the capture makes
-    ``screencap`` fail, which fails the screenshot source and with it the
-    whole capture.
+    The real bridge, session, transport and device-side clients run; only the
+    device is scripted (``tests/_helpers/android_device.py``). A capture is
+    counted by its screenshot from the helper, failed ones included, and
+    breaking the capture makes that screenshot fail, which fails the
+    screenshot source and with it the whole capture.
     """
     phone = ScriptedPhone()
-    async with FakeAdbServer({SERIAL: phone}) as adb, android_capability(adb) as capability:
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        setup_shots = phone.helper_calls("screenshot")  # setup asks the helper for one
 
         def break_capture() -> None:
-            phone.screencap_fails = True
+            phone.screenshot_fails = True
 
         yield CaptureHarness(
             capability=capability,
             fragments=(SCREENSHOT, FOREGROUND_APP, PLATFORM, CAPTURE_STATE),
-            captures=lambda: sum(
-                1 for request in adb.requests if request.service == "shell,v2:screencap -p"
-            ),
+            captures=lambda: phone.helper_calls("screenshot") - setup_shots,
             break_capture=break_capture,
         )
 

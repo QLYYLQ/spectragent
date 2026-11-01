@@ -7,14 +7,20 @@ registrar definitions and the setup schema, never the implementation
 """
 
 from spectragent.core.capabilities.android.backends._registrar import AndroidProviderRegistrar
+from spectragent.core.capabilities.android.input._registrar import (
+    AndroidTapInjectorRegistrar,
+    AndroidTypingBackendRegistrar,
+)
 from spectragent.core.capabilities.android.oracle._registrar import AndroidTaskOracleRegistrar
 from spectragent.core.capabilities.android.task_setup import AndroidSetup
 
 #: The Android capability's internal strategy axes, layer name → registrar: the
-#: provider and the task oracle. The typing backend, the tap injector and the UI
-#: tree source become axes when each has a second implementation (§11.2).
+#: provider, the tap injector, the typing backend and the task oracle. The UI
+#: tree source joins them with the tree (§11.2).
 STRATEGY_AXES = {
     "android_provider": AndroidProviderRegistrar,
+    "android_tap_injector": AndroidTapInjectorRegistrar,
+    "android_typing_backend": AndroidTypingBackendRegistrar,
     "android_task_oracle": AndroidTaskOracleRegistrar,
 }
 

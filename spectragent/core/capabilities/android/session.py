@@ -37,8 +37,9 @@ answer in time is logged, and the device is released anyway.
 app, ...) at once, each within its own timeout, and hands over every answer or
 none (:func:`fan_out`).
 
-Event streams (accessibility events, logcat) join this layer with the
-device-side service of a later stage.
+The service's accessibility events are read where they are used: the
+capability subscribes, and its wait for a still screen reads them
+(``settle.py``). Logcat is not read yet.
 """
 
 from __future__ import annotations

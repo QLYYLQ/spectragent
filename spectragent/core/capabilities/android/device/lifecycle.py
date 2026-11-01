@@ -156,6 +156,15 @@ class DeviceSide:
             raise RuntimeError("the shell helper is not running")
         return self._helper
 
+    @property
+    def service_connected(self) -> bool:
+        """Whether the service's channel is open: ``ensure_bound`` is due when it is not."""
+        return self._service is not None and not self._service.channel.closed
+
+    def clients(self) -> list[ServiceClient | HelperClient]:
+        """The clients of both programs that are connected now; the device session asks each job."""
+        return [client for client in (self._service, self._helper) if client is not None]
+
     @classmethod
     async def start(
         cls,

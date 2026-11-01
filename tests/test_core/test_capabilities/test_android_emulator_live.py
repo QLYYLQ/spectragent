@@ -1,8 +1,12 @@
 """The Android capability on a real emulator, booted once for the whole module.
 
 Opt-in (marker ``requires_android_emulator``): set ``SPECTRAGENT_TEST_AVD`` to
-the name of an AVD. The capability is composed from YAML, as a run composes
-it, with the ``local_emulator`` provider. The one boot covers, in file order:
+the name of an AVD and ``SPECTRAGENT_TEST_SERVICE_APK`` to an APK built by
+``uv run python -m spectragent.core.capabilities.android.device.apk build``.
+The capability is composed from YAML, as a run composes it, with the
+``local_emulator`` provider, the accessibility service's gestures as its tap
+injector and ``set_text`` as its typing backend, which every API level from 30
+runs. The one boot covers, in file order:
 
 - the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): the
   emulator hands the guest the run's own key (its log's "Sending adb public
@@ -12,14 +16,21 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
   console command sent through adb with that ``HOME`` reaches the emulator;
 - the run's own ``netsimd``: its ``netsim.ini`` is in the run's ``TMPDIR``, the
   user's ``$TMPDIR/netsim.ini`` stays as it was, and the guest joins its Wi-Fi;
-- the screenshot's geometry;
+- the device side is up: the platform fragment reports the APK the device
+  runs, the faketouch check and the test tap; the screenshot comes from the
+  helper where its screenshot works (API 31-33), else from the service, with
+  the screen's geometry;
 - ``open_app`` with the foreground app checked, and the back and home keys;
 - ``type_coordinate`` without a point: refused on Settings' main page, where
   no text field has focus, and typed into the search field a tap opens;
 - ``type_coordinate`` at a point: refused after a tap on nothing editable, and
-  typed into the search field its tap on the search bar opens, which takes
-  focus well after the tap (1.5-1.9 s, measured), within ``focus_wait_ms``;
-- a scroll down that shows what is further down, measured on the screenshots;
+  after its tap on the search bar opens a screen whose field takes focus away
+  from the point (1.5-1.9 s after the tap, measured); typed into that field
+  when tapped at the field itself;
+- a scroll down that shows what is further down, measured on the screenshots,
+  its effect naming the injector that delivered it;
+- a capture waits for a still screen: after a cold start of Settings it waits
+  for the window manager, the frames and the events, and reports how;
 - a clean teardown: no process of the run is left, nothing listens on its
   private adb port, its directory is gone, nothing listens on adb's default port
   5037 that did not before, every other emulator and ``netsimd`` (another
@@ -59,10 +70,16 @@ from spectragent.core.capabilities.android.backends.local_emulator import (
     find_sdk,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.device.apk import ServiceApk
+from spectragent.core.capabilities.android.effects import AndroidTouchEffect
 from spectragent.core.capabilities.android.observations import (
+    CAPTURE_STATE,
     FOREGROUND_APP,
+    PLATFORM,
     SCREENSHOT,
+    AndroidCaptureStateObs,
     AndroidForegroundAppObs,
+    AndroidPlatformObs,
     AndroidScreenshotObs,
 )
 from spectragent.core.composer import ConfigComposer
@@ -77,8 +94,10 @@ pytestmark = [
 
 #: The AVD to boot; the marker skips this module when it is unset (``tests/conftest.py``).
 AVD_VARIABLE = "SPECTRAGENT_TEST_AVD"
+APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 SETTINGS = "com.android.settings"
-SETTINGS_SEARCH = "com.google.android.settings.intelligence"
+#: Settings' search: Google's on the API 31 and 33 images, AOSP's on API 30's.
+SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.settings.intelligence")
 #: Where Settings' search bar is on a 1080 x 2400 screen.
 SEARCH_BAR = (540, 660)
 #: A point of Settings' main page on no control: the toolbar above its title.
@@ -162,6 +181,11 @@ def _listening(port: int) -> bool:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def booted() -> AsyncIterator[Booted]:
+    apk = os.environ.get(APK_VARIABLE)
+    if not apk:
+        pytest.skip(
+            f"set {APK_VARIABLE} to an APK built by `uv run python -m {ServiceApk.__module__} build`"
+        )
     user_keys, user_netsim, listening = _key_state(), _file_state(USER_NETSIM), _listening(5037)
     user_home, user_token = set(os.listdir(Path.home())), _file_state(USER_TOKEN)
     raw = {
@@ -172,6 +196,9 @@ async def booted() -> AsyncIterator[Booted]:
                     "provider_id": "local_emulator",
                     "avd": os.environ[AVD_VARIABLE],
                 },
+                "service_apk": apk,
+                "tap_injector": {"injector_id": "accessibility_gesture"},
+                "typing_backend": {"typing_id": "set_text"},
                 "task_oracle": {"oracle_id": "none"},
             }
         ]
@@ -227,7 +254,7 @@ async def _screenshot(booted: Booted) -> Image.Image:
 async def _settings_from_scratch(booted: Booted) -> None:
     """Settings, freshly started, in front: no page left open by an earlier test."""
     client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
-    for package in (SETTINGS, SETTINGS_SEARCH):
+    for package in (SETTINGS, *SETTINGS_SEARCH):
         await client.shell(booted.session.serial, f"am force-stop {package}")
     assert (await _act(booted, "open_app", app_name="Settings")).success
     assert (await _foreground(booted)).package == SETTINGS
@@ -280,14 +307,33 @@ async def test_the_run_has_a_netsimd_of_its_own_and_the_guest_is_online(booted: 
     assert "Wifi is connected to" in status, status
 
 
-async def test_a_screenshot_reports_the_screens_geometry(booted: Booted) -> None:
+async def test_the_device_side_is_up_on_the_configured_build(booted: Booted) -> None:
+    platform = await _observe(booted, PLATFORM)
+    assert isinstance(platform, AndroidPlatformObs)
+    apk = ServiceApk.load(os.environ[APK_VARIABLE])
+
+    assert platform.service_apk_sha256 == apk.info.sha256
+    assert platform.service_apk_signing_certificate_sha256 == apk.info.signing_certificate_sha256
+    assert (platform.faketouch, platform.gestures) == (True, True)
+    assert platform.sdk_int is not None and platform.sdk_int >= 30
+    expected_tool = apk.info.accessibility_tool if platform.sdk_int >= 31 else None
+    assert platform.accessibility_tool == expected_tool
+
+
+async def test_a_screenshot_comes_from_the_fastest_program_and_reports_the_screens_geometry(
+    booted: Booted,
+) -> None:
+    platform = await _observe(booted, PLATFORM)
     shot = await _observe(booted, SCREENSHOT)
+    assert isinstance(platform, AndroidPlatformObs) and platform.sdk_int is not None
     assert isinstance(shot, AndroidScreenshotObs) and shot.image_bytes is not None
     size = booted.capability.screen_size
 
     assert image_size(shot.image_bytes) == (shot.image_width, shot.image_height) == size
     assert (shot.viewport_width, shot.viewport_height) == size
-    assert shot.producer == "screencap"
+    expected = "shell_helper" if 31 <= platform.sdk_int <= 33 else "accessibility_service"
+    assert shot.producer == expected
+    assert shot.capture_ms is not None and shot.encode_ms is not None
 
 
 async def test_open_app_brings_settings_to_the_front_and_back_and_home_leave_it(
@@ -324,7 +370,7 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
             booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
         )
     ).success
-    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
     before = await _screenshot(booted)
     typed = await _act(booted, "type_coordinate", text="bluetooth")
     assert typed.success, typed.error
@@ -333,45 +379,47 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     assert _results_appeared(before, after)
 
 
-async def test_typing_at_a_point_waits_for_the_field_its_tap_opens_and_refuses_a_tap_on_nothing(
+async def test_typing_at_a_point_refuses_a_tap_on_nothing_and_a_field_away_from_it(
     booted: Booted,
 ) -> None:
-    """The tap on the search bar opens a screen whose field takes focus 1.5-1.9 s later."""
+    """The tap on the search bar opens a screen whose field takes focus 1.5-1.9 s later, at its
+    top: away from the point, so refused; tapped at that field itself, it takes the text."""
     if booted.capability.screen_size != (1080, 2400):
         pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
     await _settings_from_scratch(booted)
 
-    refused = await _act(
+    on_nothing = await _act(
         booted,
         "type_coordinate",
         coordinate_x=NOTHING_THERE[0],
         coordinate_y=NOTHING_THERE[1],
         text="bluetooth",
     )
-    assert (refused.success, refused.error) == (
+    assert (on_nothing.success, on_nothing.error) == (
         False,
         "No text field took focus at the tapped point: focus is in "
         "com.android.settings/com.android.settings.Settings, not on a text field, "
         "so no text was typed.",
     )
-    assert (
-        await _act(
-            booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
-        )
-    ).success
-    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    elsewhere = await _act(
+        booted, "type_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1], text="x"
+    )
+    assert not elsewhere.success
+    assert elsewhere.error is not None and "away from the tapped point" in elsewhere.error
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
+    field = await booted.capability.bridge.input.focused_field()
+    assert field is not None and field.is_editable
     empty = await _screenshot(booted)
 
-    await _settings_from_scratch(booted)
+    box = field.bounds_in_screen
     typed = await _act(
         booted,
         "type_coordinate",
-        coordinate_x=SEARCH_BAR[0],
-        coordinate_y=SEARCH_BAR[1],
+        coordinate_x=(box.left + box.right) // 2,
+        coordinate_y=(box.top + box.bottom) // 2,
         text="bluetooth",
     )
     assert typed.success, typed.error
-    assert (await _foreground(booted)).package == SETTINGS_SEARCH
     assert _results_appeared(empty, await _screenshot(booted))
 
 
@@ -385,10 +433,31 @@ async def test_a_scroll_down_shows_what_is_further_down(booted: Booted) -> None:
     await _settings_from_scratch(booted)
     before = await _screenshot(booted)
 
-    assert (await _act(booted, "scroll", direction="down")).success
+    scrolled = await _act(booted, "scroll", direction="down")
+    assert scrolled.success, scrolled.error
     after = await _screenshot(booted)
 
     assert _content_shift(before, after) > 100, "the content moved up the screen"
+    assert isinstance(scrolled.effect, AndroidTouchEffect)
+    assert scrolled.effect.touch.delivered_by == "accessibility_gesture"
+
+
+async def test_a_capture_after_a_cold_start_waits_for_a_still_screen(booted: Booted) -> None:
+    """``am start`` returns once Settings is shown; the capture after it waits, and says how."""
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, f"am force-stop {SETTINGS}")
+    assert (await _act(booted, "press_key", key="home")).success
+    assert (await _act(booted, "open_app", app_name="Settings")).success
+
+    state = await _observe(booted, CAPTURE_STATE)
+
+    assert isinstance(state, AndroidCaptureStateObs) and state.settle is not None
+    print(f"after a cold start of Settings: {state.settle}")
+    assert state.settle.outcome in ("settled", "capped"), state.settle.detail
+    again = await _observe(booted, CAPTURE_STATE)
+    assert isinstance(again, AndroidCaptureStateObs) and again.settle is not None
+    print(f"right after: {again.settle}")
+    assert again.settle.outcome == "settled", "nothing changed since"
 
 
 def _content_shift(before: Image.Image, after: Image.Image) -> int:

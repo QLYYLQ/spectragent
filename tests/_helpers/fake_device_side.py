@@ -40,7 +40,7 @@ from spectragent.core.capabilities.android.device.channel import (
     encode_frame,
     read_frame,
 )
-from tests._helpers.fake_adb import ShellIO, ShellResult, SocketServer, StreamingCommand
+from tests._helpers.fake_adb import Device, ShellIO, ShellResult, SocketServer, StreamingCommand
 
 
 @dataclass(frozen=True)
@@ -127,16 +127,19 @@ class FakeProgram:
         max_unsent_events: int | None = None,
         apk_sha256: str = "0" * 64,
         accessibility_tool: bool | None = None,
+        sdk_int: int = 33,
     ) -> None:
         self.component = component
         self.token = token
         self.protocol = protocol
         #: Every request served, in order: its method and params.
         self.calls: list[tuple[str, JsonObject]] = []
+        #: The SHA-256 its hello reports: the APK it runs from.
+        self.apk_sha256 = apk_sha256
+        self.sdk_int = sdk_int
         self._methods = dict(methods)
         self._refuses_other_protocols = refuses_other_protocols
         self._max_unsent_events = max_unsent_events
-        self._apk_sha256 = apk_sha256
         self._accessibility_tool = accessibility_tool
         self._subscribed: list[_Outbound] = []
         self._next_seq = 0
@@ -205,8 +208,8 @@ class FakeProgram:
             "package": "org.spectragent.device",
             "version_code": 1,
             "version_name": "1",
-            "sdk_int": 33,
-            "apk_sha256": self._apk_sha256,
+            "sdk_int": self.sdk_int,
+            "apk_sha256": self.apk_sha256,
             "accessibility_tool": self._accessibility_tool,
         }
 
@@ -253,6 +256,11 @@ SERVICE_SOCKET = "spectragent_device"
 PROVIDER_ERROR = "Error while accessing provider:org.spectragent.device.bootstrap"
 
 
+def _sha256(data: bytes | None) -> str:
+    """The SHA-256 a program running from *data* reports; zeros when nothing is installed."""
+    return hashlib.sha256(data).hexdigest() if data is not None else "0" * 64
+
+
 def _thrown(exception: str) -> ShellResult:
     """What ``content`` answers when the provider throws: the error on stderr, and still exit 0."""
     return ShellResult(stderr=f"{PROVIDER_ERROR}\n{exception}\n".encode())
@@ -285,6 +293,11 @@ class FakeDeviceSide:
       *crashes_on_force_stop*, the system also holds it as crashed, as API 30
       does: enabling it again binds nothing until the setting has been seen
       without it.
+
+    Both programs report the installed APK's SHA-256 and *sdk_int* in their
+    hello. *service_methods* and *helper_methods* add methods to the two
+    programs (a phone's screenshots, gestures, keys and text); *fallback*
+    answers the shell commands this device side does not know.
     """
 
     def __init__(
@@ -297,6 +310,10 @@ class FakeDeviceSide:
         lose_token_once: bool = False,
         token_write_throws: bool = False,
         crashes_on_force_stop: bool = False,
+        sdk_int: int = 33,
+        service_methods: Mapping[str, Method] | None = None,
+        helper_methods: Mapping[str, Method] | None = None,
+        fallback: Device | None = None,
     ) -> None:
         #: The installed APK's bytes; ``None``: not installed.
         self.installed = installed
@@ -309,11 +326,23 @@ class FakeDeviceSide:
         #: What each helper read on its stdin.
         self.helper_stdin: list[bytes] = []
         self.helper: FakeProgram | None = None
+        #: Every helper started, the one running last.
+        self.helpers: list[FakeProgram] = []
         self.helper_socket: str | None = None
+        self.sdk_int = sdk_int
+        self._helper_methods = dict(helper_methods or {})
+        self._fallback = fallback
         self.service = FakeProgram(
             component="service",
             token="",
-            methods={"ping": self._service_ping, "gesture": self._gesture},
+            methods={
+                "ping": self._service_ping,
+                "gesture": self._gesture,
+                **(service_methods or {}),
+            },
+            apk_sha256=_sha256(installed),
+            accessibility_tool=False,
+            sdk_int=sdk_int,
         )
         self.bound = False
         #: Whether the helper put the service into the setting; it takes out only that.
@@ -345,6 +374,8 @@ class FakeDeviceSide:
             return self._provider(shlex.split(command))
         if command == "pm has-feature android.hardware.faketouch":
             return ShellResult(stdout=b"true\n" if self.faketouch else b"false\n")
+        if self._fallback is not None:
+            return await self._fallback(command)
         name = command.split(maxsplit=1)[0] if command.strip() else command
         return ShellResult(stderr=f"/system/bin/sh: {name}: not found\n".encode(), exit_code=127)
 
@@ -407,6 +438,7 @@ class FakeDeviceSide:
                 await shell.write(b"Failure [INSTALL_FAILED_INVALID_APK]\n")
                 return 1
             self.installed = bytes(data)
+            self.service.apk_sha256 = _sha256(self.installed)
             self.installs += 1
             await shell.write(b"Success\n")
             return 0
@@ -424,8 +456,12 @@ class FakeDeviceSide:
             methods={
                 "enable_service": self._enable_method,
                 "disable_service": self._disable_method,
+                **self._helper_methods,
             },
+            apk_sha256=_sha256(self.installed),
+            sdk_int=self.sdk_int,
         )
+        self.helpers.append(self.helper)
         await shell.write(b"READY 1\n")
         while await shell.read_stdin() is not None:  # until the host's session ends
             pass

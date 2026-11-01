@@ -1,29 +1,42 @@
 """A scripted phone behind the fake ADB server, and the Android capability set up over it.
 
-:class:`ScriptedPhone` answers the commands the capability's bridge sends
-(``spectragent/core/capabilities/android/bridge.py``) with output shaped like
-the emulator's (API 33, 2026-11-01): a PNG for ``screencap``, the focus lines of
-``dumpsys window``, the input method client's served connection from
-``dumpsys input_method``, a frame count from ``dumpsys gfxinfo``, ``wm size``,
-``getprop``, ``settings``, ``pm``, ``cmd package`` and ``am start``. Any other
-command is answered as ``sh`` does (exit 127), so a capability that starts
-sending a new command fails a test until this phone learns it. It keeps every
-``input`` command it received, in order.
+:class:`ScriptedPhone` is one phone with both of its sides:
+
+- **adb's own commands**, answered with output shaped like the emulator's (API
+  33, 2026-11-01): the focus lines of ``dumpsys window``, the input method
+  client's served connection from ``dumpsys input_method``, a frame count from
+  ``dumpsys gfxinfo``, ``wm size``, ``getprop``, ``settings``, ``pm``,
+  ``cmd package`` and ``am start``;
+- **the device side** (:class:`~tests._helpers.fake_device_side.FakeDeviceSide`):
+  the APK's install, the shell helper, the accessibility service, and what
+  they do for a run: screenshots, timed strokes, keys, text, the node with
+  input focus and the events the service pushes.
+
+Any other command is answered as ``sh`` does (exit 127), so a capability that
+starts sending a new command fails a test until this phone learns it. It keeps
+every input its device side received, in order (:attr:`ScriptedPhone.inputs`).
 
 :func:`android_capability` is an ``AndroidCapability`` set up over a
-:class:`~tests._helpers.fake_adb.FakeAdbServer` holding such a phone: a
-provider hands it the fake server's endpoint, as ``local_emulator`` hands it
-the run's private adb server.
+:class:`~tests._helpers.fake_adb.FakeAdbServer` holding such a phone
+(:func:`phone_server`): a provider hands it the fake server's endpoint, as
+``local_emulator`` hands it the run's private adb server.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
 import struct
+import tempfile
+import time
 import zlib
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from pydantic import JsonValue
 
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
@@ -31,12 +44,23 @@ from spectragent.core.capabilities.android.backends.base import (
     DeviceNeeds,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.device.apk import TEST_KEY_CERTIFICATE_SHA256
+from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION, JsonObject
+from spectragent.core.capabilities.android.input._registrar import (
+    AndroidTapInjector,
+    AndroidTypingBackend,
+)
+from spectragent.core.capabilities.android.input.tap import ShellInjectionInjector
+from spectragent.core.capabilities.android.input.text import SetTextBackend
 from tests._helpers.fake_adb import FakeAdbServer, ShellResult
+from tests._helpers.fake_device_side import Answer, Failure, FakeDeviceSide, Method
 
 SERIAL = "emulator-5554"
 LAUNCHER = "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
 FINGERPRINT = "google/sdk_gphone64_arm64/emu64a:13/TE1A.240213.009/12342917:userdebug/dev-keys"
 INPUT_METHOD = "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME"
+#: The APK the fake phone installs; its sidecar describes it (:func:`fake_service_apk`).
+APK_BYTES = b"PK\x03\x04 the device-side APK " + bytes(range(256)) * 64
 _LAUNCHABLE = "-a android.intent.action.MAIN -c android.intent.category.LAUNCHER"
 
 
@@ -46,6 +70,24 @@ def png(width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + struct.pack(">I", zlib.crc32(ihdr))
 
 
+def fake_service_apk(directory: Path) -> Path:
+    """An APK of :data:`APK_BYTES` with the sidecar the build writes beside it, in *directory*."""
+    path = directory / "spectragent-device.apk"
+    path.write_bytes(APK_BYTES)
+    sidecar = {
+        "format": "spectragent-device-apk-2",
+        "package": "org.spectragent.device",
+        "version_code": 1,
+        "version_name": "1",
+        "protocol": PROTOCOL_VERSION,
+        "accessibility_tool": False,
+        "sha256": hashlib.sha256(APK_BYTES).hexdigest(),
+        "signing_certificate_sha256": TEST_KEY_CERTIFICATE_SHA256,
+    }
+    path.with_suffix(".json").write_text(json.dumps(sidecar))
+    return path
+
+
 @dataclass
 class ScriptedPhone:
     """A phone's answers; change the attributes to change what it reports next.
@@ -53,10 +95,14 @@ class ScriptedPhone:
     Attributes:
         width: Its screen's width in pixels (a Pixel 6 by default).
         height: Its height.
+        sdk_int: Its API level, as its device-side programs report it.
         focused: The activity in front, as ``package/.Activity``.
-        frames: How many frames the app in front has rendered.
+        frames: How many frames the app in front has rendered; ``None``: its
+            process reports none (it has not started).
         launchable: Installed packages with their launcher activities.
-        screencap_fails: ``screencap`` fails from now on.
+        helper_screenshots: Whether the helper takes screenshots (API 31-33);
+            otherwise it answers ``unsupported`` and the service takes them.
+        screenshot_fails: Every screenshot fails from now on.
         text_field: A text field of the activity in front has focus: the input
             method serves its window, and the view with focus holds an input
             connection. ``None``: the input method's client does not answer, so
@@ -64,37 +110,186 @@ class ScriptedPhone:
         window_over: A window over the activity that has focus instead of it,
             by its title (``NotificationShade``): the input method still serves
             the activity's window, as the emulator reported.
-        inputs: Every ``input`` command received, in order.
+        field_bounds: Where the node with input focus is, as the service
+            reports it while :attr:`text_field` is true: ``(left, top, right,
+            bottom)``; ``None``: the service names no focused node.
+        inputs: Every input the device side received, in order, setup's test
+            tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
+            KEYCODE_..."``, ``"service set_text '...' replace|at the cursor"``,
+            ``"service commit_text '...' replace|at the cursor"``.
     """
 
     width: int = 1080
     height: int = 2400
+    sdk_int: int = 33
     focused: str = LAUNCHER
-    frames: int = 36
+    frames: int | None = 36
     launchable: dict[str, str] = field(
         default_factory=lambda: {"com.android.settings": "com.android.settings/.Settings"}
     )
-    screencap_fails: bool = False
+    helper_screenshots: bool = True
+    screenshot_fails: bool = False
     text_field: bool | None = False
     window_over: str | None = None
+    field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
     inputs: list[str] = field(default_factory=list)
+    side: FakeDeviceSide = field(init=False)
+    _booted: float = field(init=False, default_factory=time.monotonic)
+
+    def __post_init__(self) -> None:
+        self.side = FakeDeviceSide(
+            sdk_int=self.sdk_int,
+            service_methods={
+                "ping": self._service_ping,
+                "screenshot": self._screenshot("accessibility_service"),
+                "gesture": self._stroke("service"),
+                "focus": self._focus,
+                "set_text": self._text("set_text"),
+                "commit_text": self._text("commit_text"),
+            },
+            helper_methods={
+                "ping": self._helper_ping,
+                "screenshot": self._screenshot("shell_helper"),
+                "gesture": self._stroke("helper"),
+                "key": self._key,
+            },
+            fallback=self._adb,
+        )
+
+    @property
+    def uptime_ms(self) -> int:
+        """The device's uptime: the clock its events and pings are on."""
+        return 100_000 + round((time.monotonic() - self._booted) * 1000)
+
+    def emit(self, event_type: str = "TYPE_WINDOW_CONTENT_CHANGED") -> int:
+        """The service receives an accessibility event now; returns its ``seq``."""
+        return self.side.service.emit(
+            type=event_type,
+            time_ms=self.uptime_ms,
+            package_name=self.focused.partition("/")[0],
+            class_name="android.widget.FrameLayout",
+            window_id=7,
+            content_change_types=1,
+            window_changes=0,
+            text=[],
+            content_description=None,
+            before_text=None,
+            from_index=-1,
+            to_index=-1,
+            item_count=-1,
+            added_count=-1,
+            removed_count=-1,
+            scroll_delta_x=-1,
+            scroll_delta_y=-1,
+        )
+
+    def service_calls(self, method: str) -> int:
+        """How many times the service was asked *method*."""
+        return sum(1 for name, _ in self.side.service.calls if name == method)
+
+    def helper_calls(self, method: str) -> int:
+        """How many times a helper was asked *method*."""
+        return sum(1 for helper in self.side.helpers for name, _ in helper.calls if name == method)
+
+    # ── the device side ───────────────────────────────────────────────
+
+    async def _service_ping(self, params: JsonObject) -> Answer:
+        return Answer({"uptime_ms": self.uptime_ms, "next_seq": 0})
+
+    async def _helper_ping(self, params: JsonObject) -> Answer:
+        return Answer({"uptime_ms": self.uptime_ms})
+
+    def _screenshot(self, producer: str) -> Method:
+        async def screenshot(params: JsonObject) -> Answer:
+            if producer == "shell_helper" and not self.helper_screenshots:
+                raise Failure("unsupported", "the helper's screenshot is written for API 31 to 33")
+            if self.screenshot_fails:
+                raise Failure("screenshot_failed", "the capture failed")
+            waited = 0 if producer == "shell_helper" else 40
+            result: JsonObject = {
+                "width": self.width,
+                "height": self.height,
+                "format": "png",
+                "capture_ms": 17,
+                "encode_ms": 85,
+                "waited_ms": waited,
+            }
+            return Answer(result, png(self.width, self.height))
+
+        return screenshot
+
+    def _stroke(self, program: str) -> Method:
+        async def gesture(params: JsonObject) -> Answer:
+            if program == "service" and not self.side.faketouch:
+                raise Failure("gesture_cancelled", "the system cancelled the gesture")
+            strokes = params["strokes"]
+            assert isinstance(strokes, list)
+            for stroke in strokes:
+                assert isinstance(stroke, dict) and isinstance(stroke["points"], list)
+                points = " ".join(
+                    f"({point[0]},{point[1]})@{point[2]}"
+                    for point in stroke["points"]
+                    if isinstance(point, list)
+                )
+                self.inputs.append(f"{program} stroke {points}")
+            return Answer({"elapsed_ms": 55})
+
+        return gesture
+
+    async def _key(self, params: JsonObject) -> Answer:
+        code = params["code"]
+        self.inputs.append(f"helper key {code}")
+        if code == "KEYCODE_HOME":
+            self.focused = LAUNCHER
+        return Answer()
+
+    async def _focus(self, params: JsonObject) -> Answer:
+        if not self.text_field or self.field_bounds is None:
+            return Answer({"focused": None})
+        left, top, right, bottom = self.field_bounds
+        node: dict[str, JsonValue] = {
+            "bounds_in_screen": {"left": left, "top": top, "right": right, "bottom": bottom},
+            "is_editable": True,
+            "package_name": self.focused.partition("/")[0],
+            "class_name": "android.widget.EditText",
+            "view_id_resource_name": "android:id/search_src_text",
+        }
+        return Answer({"focused": node})
+
+    def _text(self, method: str) -> Method:
+        async def enter(params: JsonObject) -> Answer:
+            if not self.text_field:
+                raise Failure("no_focused_field", "no editable field has input focus")
+            how = "replace" if params.get("replace") else "at the cursor"
+            self.inputs.append(f"service {method} {params['text']!r} {how}")
+            package = self.focused.partition("/")[0]
+            if method == "commit_text":
+                return Answer({"package_name": package})
+            return Answer(
+                {
+                    "package_name": package,
+                    "class_name": "android.widget.EditText",
+                    "view_id_resource_name": "android:id/search_src_text",
+                }
+            )
+
+        return enter
+
+    # ── adb's own commands ────────────────────────────────────────────
 
     async def __call__(self, command: str) -> ShellResult:
+        """The phone as a fake ADB server's device: its device side first, then adb's commands."""
+        return await self.side.device(command)
+
+    async def _adb(self, command: str) -> ShellResult:
         words = command.split()
-        if words[:1] == ["input"]:
-            self.inputs.append(command)
-            return self._input(command)
         package = self.focused.partition("/")[0]
-        if command == "screencap -p":
-            if self.screencap_fails:
-                return ShellResult(stderr=b"screencap: capture failed\n", exit_code=1)
-            return ShellResult(stdout=png(self.width, self.height))
         if command == "dumpsys window":
             return ShellResult(stdout=_window_report(self.focused, self.window_over))
         if command == "dumpsys input_method":
             return ShellResult(stdout=_input_method_report(self.text_field))
         if words[:2] == ["dumpsys", "gfxinfo"]:
-            if words[2] != package:
+            if words[2] != package or self.frames is None:
                 return ShellResult(stdout=f"No process found for: {words[2]}\n".encode())
             return ShellResult(stdout=f"Total frames rendered: {self.frames}\n".encode())
         if command == "wm size":
@@ -103,8 +298,6 @@ class ScriptedPhone:
             return ShellResult(stdout=f"{FINGERPRINT}\n".encode())
         if command == "settings get secure default_input_method":
             return ShellResult(stdout=f"{INPUT_METHOD}\n".encode())
-        if command == "pm has-feature android.hardware.faketouch":
-            return ShellResult(stdout=b"true\n")
         if words[:2] == ["pm", "path"]:
             if words[2] in self.launchable:
                 return ShellResult(stdout=f"package:/system/app/{words[2]}.apk\n".encode())
@@ -113,27 +306,21 @@ class ScriptedPhone:
             component = self.launchable[words[-1]]
             return ShellResult(stdout=f"priority=0 isDefault=true\n{component}\n".encode())
         if words[:4] == ["am", "start", "-W", "-n"]:
-            self.focused = words[4]
+            self.focused = shlex.split(command)[4]
             return ShellResult(
-                stdout=f"Starting: Intent {{ cmp={words[4]} }}\nStatus: ok\n".encode()
+                stdout=f"Starting: Intent {{ cmp={self.focused} }}\nStatus: ok\n".encode()
             )
         name = words[0] if words else command
         return ShellResult(
             stderr=f"/system/bin/sh: {name}: inaccessible or not found\n".encode(), exit_code=127
         )
 
-    def _input(self, command: str) -> ShellResult:
-        words = shlex.split(command)
-        if words[1] == "text" and not words[2].isascii():
-            # What API 33 answered for a character outside the virtual keyboard map.
-            return ShellResult(
-                stderr=b"\nException occurred while executing 'text':\n"
-                b"java.lang.NullPointerException: Attempt to get length of null array\n",
-                exit_code=255,
-            )
-        if words[1:] == ["keyevent", "KEYCODE_HOME"]:
-            self.focused = LAUNCHER
-        return ShellResult()
+
+def phone_server(phone: ScriptedPhone) -> FakeAdbServer:
+    """A fake ADB server holding *phone*, its device side's streams and sockets included."""
+    return FakeAdbServer(
+        {SERIAL: phone}, streams={SERIAL: phone.side.streams}, sockets={SERIAL: phone.side.sockets}
+    )
 
 
 def _window_report(focused: str, window_over: str | None) -> bytes:
@@ -215,6 +402,26 @@ class FakeServerProvider:
         self.closed.append(session.session_id if session is not None else "all")
 
 
+def unset_capability() -> AndroidCapability:
+    """An ``AndroidCapability`` that is never set up, for what it declares; its APK path is never read."""
+    return AndroidCapability(service_apk="never-read.apk")
+
+
+def configured(
+    capability: AndroidCapability,
+    adb: FakeAdbServer,
+    *,
+    tap_injector: AndroidTapInjector | None = None,
+    typing_backend: AndroidTypingBackend | None = None,
+) -> FakeServerProvider:
+    """Give *capability* a provider of *adb*'s phone and both input strategies; returns the provider."""
+    provider = FakeServerProvider(adb.host, adb.port)
+    capability.backend = provider
+    capability.tap_injector = tap_injector or ShellInjectionInjector()
+    capability.typing_backend = typing_backend or SetTextBackend()
+    return provider
+
+
 @asynccontextmanager
 async def android_capability(
     adb: FakeAdbServer,
@@ -223,20 +430,26 @@ async def android_capability(
     settle_max_wait_s: float = 0.0,
     settle_quiet_ms: int = 300,
     query_timeout_s: float = 5.0,
+    tap_injector: AndroidTapInjector | None = None,
+    typing_backend: AndroidTypingBackend | None = None,
 ) -> AsyncIterator[AndroidCapability]:
     """An ``AndroidCapability`` set up over *adb*, negotiated to *fragments* (all when ``None``).
 
-    The wait for a still screen is off unless *settle_max_wait_s* says
-    otherwise, so a capture is one round trip per source.
+    The APK is :func:`fake_service_apk`; the tap injector is the shell helper's
+    and the typing backend ``set_text`` unless given. The wait for a still
+    screen is off unless *settle_max_wait_s* says otherwise, so a capture is
+    one round trip per source.
     """
-    capability = AndroidCapability(
-        settle_max_wait_s=settle_max_wait_s,
-        settle_quiet_ms=settle_quiet_ms,
-        query_timeout_s=query_timeout_s,
-    )
-    capability.backend = FakeServerProvider(adb.host, adb.port)
-    await capability.setup(negotiation=None if fragments is None else frozenset(fragments))
-    try:
-        yield capability
-    finally:
-        await capability.teardown()
+    with tempfile.TemporaryDirectory() as directory:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(Path(directory))),
+            settle_max_wait_s=settle_max_wait_s,
+            settle_quiet_ms=settle_quiet_ms,
+            query_timeout_s=query_timeout_s,
+        )
+        configured(capability, adb, tap_injector=tap_injector, typing_backend=typing_backend)
+        await capability.setup(negotiation=None if fragments is None else frozenset(fragments))
+        try:
+            yield capability
+        finally:
+            await capability.teardown()

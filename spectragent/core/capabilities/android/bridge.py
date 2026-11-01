@@ -1,4 +1,4 @@
-"""The bridge to the device: what the capability asks of it, as Protocols, and an implementation.
+"""The bridge to the device: what the capability asks of it, as Protocols, and their implementations.
 
 ``docs/architecture_design.md`` §11.2: the Android package defines its bridge
 contracts as Protocols, and the layers below are their implementations. The
@@ -7,22 +7,32 @@ capability reaches a device only through :class:`DeviceBridge`: the screen
 (:class:`ForegroundApps`), launching apps (:class:`AppLauncher`) and the
 device's measured facts (:class:`DeviceFacts`).
 
-:class:`AdbBuiltins` implements all five with adb's built-in commands, each one
-``shell,v2`` round trip over the host transport (``adb.py``): ``screencap``,
-``input``, ``dumpsys``, ``pm``, ``cmd package``, ``am``, ``wm``, ``getprop`` and
-``settings``. A later stage puts the package's own accessibility service and
-shell helper behind the same Protocols. This one never enables an
-accessibility service, never runs ``uiautomator dump`` (the UI tree comes
-later) and never talks to the emulator's gRPC. Medians measured on the
-emulator over the host protocol (API 33, 2026-11-01): ``screencap -p`` about
-0.7 s (the emulator's gRPC returns a PNG of the same screen about 7 times
-faster), ``input tap`` 14 ms, ``dumpsys window`` 18 ms, ``getprop`` 8 ms,
-``dumpsys input_method`` about 0.1 s (550 KB, most of it the keyboard's own
-state).
+Two sides implement them.
+
+- **The device side**, our APK's accessibility service and shell helper
+  (``device/``): the screen (:class:`ProgramScreen`, the helper's screenshot
+  where it works, else the service's) and input (:class:`DeviceInput`: each
+  touch a timed stroke through the configured tap injector, keys through the
+  helper, text through the configured typing backend, and the node with input
+  focus as the service reports it). Every call goes through the run's
+  :class:`~spectragent.core.capabilities.android.device.lifecycle.DeviceSide`,
+  so a service channel it replaced (``ensure_bound``) is the one used next.
+- **adb's own commands**, for what the window manager, the package manager and
+  the settings report, and for starting apps (:class:`AdbQueries`):
+  ``dumpsys``, ``pm``, ``cmd package``, ``am``, ``wm``, ``getprop`` and
+  ``settings``, each one ``shell,v2`` round trip over the host transport
+  (``adb.py``). Medians measured on the emulator (API 33, 2026-11-01):
+  ``dumpsys window`` 18 ms, ``getprop`` 8 ms, ``dumpsys input_method`` about
+  0.1 s (550 KB, most of it the keyboard's own state). The device side replaced
+  ``screencap`` (about 0.7 s, against 0.12 s from the helper) and ``input``;
+  ``uiautomator dump`` is never run here: it unbinds every accessibility
+  service while it runs, ours included.
 
 A command that fails raises :class:`BridgeError` with the command's own words.
 A fact the device does not report (no focused app, an unset input method) is
-``None``; transport failures raise :class:`~spectragent.core.capabilities.android.adb.AdbError`.
+``None``; transport failures raise
+:class:`~spectragent.core.capabilities.android.adb.AdbError`, a device-side
+program's refusal :class:`~spectragent.core.capabilities.android.device.channel.RemoteError`.
 """
 
 from __future__ import annotations
@@ -33,12 +43,22 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from spectragent.core.capabilities.android.adb import AdbClient, ShellResult
+from spectragent.core.capabilities.android.device.clients import (
+    FocusedNode,
+    Screenshot,
+    ScreenshotProducer,
+    Stroke,
+    TextTarget,
+)
+from spectragent.core.capabilities.android.device.lifecycle import DeviceSide
+from spectragent.core.capabilities.android.input._registrar import (
+    AndroidTapInjector,
+    AndroidTypingBackend,
+)
 
-_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 #: A package name as Android writes it; nothing else reaches a command line.
 _PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+")
 _KEYCODE = re.compile(r"KEYCODE_[A-Z0-9_]+")
-_FEATURE = re.compile(r"[A-Za-z0-9_.]+")
 #: ``mFocusedApp=ActivityRecord{6dbdd1 u0 com.android.settings/.Settings t9}``.
 _FOCUSED_APP = re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ (?P<component>[^\s}]+)")
 #: ``mCurrentFocus=Window{388b3c9 u0 com.android.settings/com.android.settings.Settings}``:
@@ -100,37 +120,43 @@ class ScreenCapture(Protocol):
     """The screen, as an image."""
 
     @property
-    def producer(self) -> str:
-        """What made the images, recorded with each one (``screencap``)."""
+    def producer(self) -> ScreenshotProducer:
+        """The program that takes the images, recorded with each one."""
         ...
 
-    async def capture(self) -> bytes:
-        """The whole screen as PNG bytes, at the size taps are given in."""
+    async def capture(self) -> Screenshot:
+        """The whole screen as a PNG, at the size touches are given in, with what it cost."""
         ...
 
 
 @runtime_checkable
 class InputInjection(Protocol):
-    """Touches, text and keys, in screen pixels."""
+    """Touches, keys and text, in screen pixels."""
 
-    async def tap(self, x: int, y: int) -> None: ...
-
-    async def swipe(
-        self, start: tuple[int, int], end: tuple[int, int], *, duration_ms: int
-    ) -> None:
-        """Touch *start*, move to *end* over *duration_ms*, lift; a long press when they are equal."""
+    @property
+    def injector(self) -> str:
+        """The tap injector that delivers every stroke, by its registry key."""
         ...
 
-    async def type_text(self, text: str) -> None:
-        """Type *text* into the focused field."""
+    @property
+    def typing(self) -> str:
+        """The typing backend that enters text, by its registry key."""
         ...
 
-    async def clear_focused_field(self) -> None:
-        """Select everything in the focused field and delete it."""
+    async def stroke(self, stroke: Stroke) -> int:
+        """Deliver one finger's timed stroke; return how long it took on the device, in ms."""
         ...
 
     async def press_key(self, keycode: str) -> None:
         """Press and release one key, named as Android names it (``KEYCODE_BACK``)."""
+        ...
+
+    async def enter_text(self, text: str, *, replace: bool) -> TextTarget:
+        """Enter *text* into the field with input focus: over its text with *replace*, else at its cursor."""
+        ...
+
+    async def focused_field(self) -> FocusedNode | None:
+        """The node with input focus and where it is; ``None`` when no view has it."""
         ...
 
 
@@ -170,8 +196,6 @@ class DeviceFacts(Protocol):
 
     async def input_method(self) -> str | None: ...
 
-    async def has_feature(self, feature: str) -> bool | None: ...
-
 
 @dataclass(frozen=True)
 class DeviceBridge:
@@ -183,68 +207,61 @@ class DeviceBridge:
     launcher: AppLauncher
     facts: DeviceFacts
 
-    @classmethod
-    def over_adb(cls, client: AdbClient, serial: str) -> DeviceBridge:
-        """Every role on adb's built-in commands (:class:`AdbBuiltins`)."""
-        builtins = AdbBuiltins(client, serial)
-        return cls(builtins, builtins, builtins, builtins, builtins)
+
+@dataclass(frozen=True)
+class ProgramScreen:
+    """Screenshots from one device-side program: the helper's or the service's.
+
+    The helper's has no limit on how often (121 ms median on the API 33
+    emulator) but is written for API 31 to 33 only; the service's waits to keep
+    one per 333 ms (1000 ms on API 30) and took 188 ms (2026-11-01, §11.2).
+    """
+
+    side: DeviceSide
+    producer: ScreenshotProducer
+
+    async def capture(self) -> Screenshot:
+        program = self.side.helper if self.producer == "shell_helper" else self.side.service
+        return await program.screenshot()
 
 
-class AdbBuiltins:
-    """Every bridge role on adb's built-in commands, one ``shell,v2`` round trip each."""
+@dataclass(frozen=True)
+class DeviceInput:
+    """Input through the device side: the configured tap injector and typing backend, the helper's keys."""
 
-    def __init__(self, client: AdbClient, serial: str) -> None:
-        self._client = client
-        self._serial = serial
+    side: DeviceSide
+    tap_injector: AndroidTapInjector
+    typing_backend: AndroidTypingBackend
 
     @property
-    def producer(self) -> str:
-        return "screencap"
+    def injector(self) -> str:
+        return self.tap_injector.injector_id
 
-    async def capture(self) -> bytes:
-        image = await self._check("screencap -p")
-        if not image.startswith(_PNG_SIGNATURE):
-            raise BridgeError(f"screencap -p answered {len(image)} bytes that are not a PNG")
-        return image
+    @property
+    def typing(self) -> str:
+        return self.typing_backend.typing_id
 
-    async def tap(self, x: int, y: int) -> None:
-        await self._check(f"input tap {int(x)} {int(y)}")
-
-    async def swipe(
-        self, start: tuple[int, int], end: tuple[int, int], *, duration_ms: int
-    ) -> None:
-        (x1, y1), (x2, y2) = start, end
-        await self._check(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {int(duration_ms)}")
-
-    async def type_text(self, text: str) -> None:
-        """Type *text* with ``input text``, which knows only the virtual keyboard's characters.
-
-        ``input text`` turns each character into the key events of Android's
-        virtual keyboard map, so letters, digits, ASCII punctuation and spaces
-        type and a character outside the map (Chinese, emoji) fails the whole
-        call (it exited 255 with a NullPointerException, measured). It also
-        reads ``%s`` as a space, so that pair cannot be typed literally. Other
-        typing backends come with the device-side service of a later stage.
-        """
-        if not text:
-            return
-        result = await self._run(f"input text {shlex.quote(text)}")
-        if result.exit_code != 0:
-            raise BridgeError(
-                f"input text failed (exit {result.exit_code}): it types only characters on "
-                f"Android's virtual keyboard map, such as ASCII letters, digits, punctuation "
-                f"and spaces ({_first_line(result)})"
-            )
-
-    async def clear_focused_field(self) -> None:
-        await self._check(
-            "input keycombination KEYCODE_CTRL_LEFT KEYCODE_A && input keyevent KEYCODE_DEL"
-        )
+    async def stroke(self, stroke: Stroke) -> int:
+        return await self.tap_injector.inject(self.side, stroke)
 
     async def press_key(self, keycode: str) -> None:
         if not _KEYCODE.fullmatch(keycode):
             raise ValueError(f"not an Android key code: {keycode!r}")
-        await self._check(f"input keyevent {keycode}")
+        await self.side.helper.key(keycode)
+
+    async def enter_text(self, text: str, *, replace: bool) -> TextTarget:
+        return await self.typing_backend.enter(self.side, text, replace=replace)
+
+    async def focused_field(self) -> FocusedNode | None:
+        return await self.side.service.focus()
+
+
+class AdbQueries:
+    """What the window manager, the package manager and the settings report, and starting apps, over adb."""
+
+    def __init__(self, client: AdbClient, serial: str) -> None:
+        self._client = client
+        self._serial = serial
 
     async def foreground(self) -> ForegroundApp:
         report = (await self._check("dumpsys window")).decode(errors="replace")
@@ -304,12 +321,6 @@ class AdbBuiltins:
         value = result.stdout.decode().strip()
         return value if result.exit_code == 0 and value not in ("", "null") else None
 
-    async def has_feature(self, feature: str) -> bool | None:
-        if not _FEATURE.fullmatch(feature):
-            raise ValueError(f"not an Android feature name: {feature!r}")
-        answer = (await self._run(f"pm has-feature {feature}")).stdout.decode().strip()
-        return {"true": True, "false": False}.get(answer)
-
     async def _run(self, command: str) -> ShellResult:
         return await self._client.shell(self._serial, command)
 
@@ -348,8 +359,8 @@ def parse_text_focus(windows: str, methods: str) -> TextFocus:
     opens Settings' search, its field holds one, keyboard shown or hidden; with
     the notification shade pulled over that field the shade has focus, the
     input method still serves the search window, the field still holds its
-    connection, and ``input text`` went nowhere. The first window and client of
-    each report count: the default display's, the input method's current
+    connection, and text typed then went nowhere. The first window and client
+    of each report count: the default display's, the input method's current
     client.
 
     ``text_field`` is ``None`` when a report leaves the answer open: the input
