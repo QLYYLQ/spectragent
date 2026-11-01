@@ -69,12 +69,19 @@ from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
 
 if TYPE_CHECKING:
+    from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
     from spectragent.schemas.restoration import BranchProvenance
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOOK_PRIORITY = 100
+
+#: Seconds each task oracle may take to read its score at the scoring point
+#: (``execute``'s ``oracle_timeout``, docs/architecture_design.md §4.2).
+# shortcut: provisional; the Android work sets the default once it has measured
+# how long AndroidWorld's scoring takes.
+ORACLE_TIMEOUT_S = 60.0
 
 
 async def _no_environment_act(action: Any, **_kwargs: Any) -> Any:
@@ -162,6 +169,12 @@ class AgentRuntime:
         # :meth:`prepare`, step 2b).
         self._fragment_formats: Mapping[str, str] | None = None
         self._execution_started: float | None = None
+        # Where the execution clock stopped: the Loop's end, before scoring
+        # (see :meth:`_score`). ``None`` until the run reaches the scoring point.
+        self._execution_ended: float | None = None
+        # The environment as :meth:`prepare` wove it, so a hook observes the
+        # scoring point's ``read_oracle_scores`` like any other call on it.
+        self._woven_env: Environment | None = None
         self._recorder: StepSink = StepRecorder()
         self._env_needs_teardown = False
         # Set the moment :meth:`_finish` starts closing out the current
@@ -606,6 +619,7 @@ class AgentRuntime:
         self._action_space = action_space
         self._memory = memory
         self._prepared_agent = wrapped_agent
+        self._woven_env = wrapped_env
 
         # Step 6: Bind the archivers — the last statement, so no later
         # assembly check can fail after a capability's state changed. On
@@ -659,6 +673,7 @@ class AgentRuntime:
         task: str,
         *,
         timeout: float = 300,
+        oracle_timeout: float = ORACLE_TIMEOUT_S,
         task_id: str = "unknown",
         benchmark: str = "",
         subset: str = "",
@@ -725,9 +740,21 @@ class AgentRuntime:
         a veto), that error propagates as it is — the run is not closed out
         again as if the hook's failure had been the run's.
 
+        The scoring point (docs/architecture_design.md §4.2): once the Loop
+        has returned or raised — done, max_steps, the run's timeout, an
+        exception, a veto — and before ``on_run_end`` and teardown, the woven
+        environment's task oracles read the task's score against the live
+        environment (``read_oracle_scores``), and the trace records it. A run
+        whose setup failed, or that was cancelled from outside, is not scored;
+        a cancellation that lands during scoring closes the run out as
+        cancelled. Scoring time stays out of ``execution_ms``, and scoring
+        never changes ``agent_done`` or fails the run.
+
         Args:
             task: Task text handed to the agent.
             timeout: Wall-clock budget for ``agent.run``.
+            oracle_timeout: Seconds each task oracle may take at the scoring
+                point; separate from *timeout*, which covers ``agent.run`` only.
             task_id: Dataset identity of this task.
             benchmark: Benchmark registry key, recorded in the trace so it
                 can be joined back to its ``EvalReference``.
@@ -838,6 +865,7 @@ class AgentRuntime:
             )
 
             self._execution_started = time.monotonic()
+            self._execution_ended = None
             self._finish_started = False
             try:
                 try:
@@ -873,9 +901,8 @@ class AgentRuntime:
                     return result
 
                 try:
-                    result = await asyncio.wait_for(
-                        prepared_agent.run(task),
-                        timeout=timeout,
+                    result = await self._run_to_the_scoring_point(
+                        prepared_agent, task, timeout=timeout, oracle_timeout=oracle_timeout
                     )
                 except TimeoutError as timed_out:
                     # The run's own timeout — but the run may already have ended
@@ -1043,10 +1070,44 @@ class AgentRuntime:
 
     # -- Private helpers ---------------------------------------
 
+    async def _run_to_the_scoring_point(
+        self, prepared_agent: Any, task: str, *, timeout: float, oracle_timeout: float
+    ) -> AgentResult:
+        """Drive the Loop under the run's own timeout, then score the run (:meth:`_score`).
+
+        However the Loop ends — a result, the run's timeout, an exception, a
+        veto — the run is scored before its outcome goes on to ``execute``,
+        unchanged. A cancellation leaves at once: a cancelled run is not scored.
+        """
+        try:
+            result = await asyncio.wait_for(prepared_agent.run(task), timeout=timeout)
+        except Exception:
+            await self._score(oracle_timeout)
+            raise
+        await self._score(oracle_timeout)
+        return result
+
+    async def _score(self, timeout_s: float) -> None:
+        """The scoring point: the execution clock stops, then the task oracles read the score.
+
+        Through the woven environment, so the trace hook records what comes
+        back. Scoring never fails the run: the environment hands back a failed
+        oracle as a not-scored entry, and an environment that raises anyway is
+        logged here, not raised. A cancellation propagates.
+        """
+        self._execution_ended = time.monotonic()
+        if self._woven_env is None:
+            return
+        try:
+            await self._woven_env.read_oracle_scores(timeout_s=timeout_s)
+        except Exception:
+            logger.exception("AgentRuntime: reading the task oracles' scores failed")
+
     async def _finish(self, result: AgentResult, error: BaseException | None = None) -> None:
         """Close a run out: ``on_run_end`` first, then error detail, then drain."""
         if not self._finish_started and self._execution_started is not None:
-            result.metrics.execution_ms = int((time.monotonic() - self._execution_started) * 1000)
+            ended = time.monotonic() if self._execution_ended is None else self._execution_ended
+            result.metrics.execution_ms = int((ended - self._execution_started) * 1000)
         self._finish_started = True
         await self._dispatch_lifecycle("on_run_end", result=result, env=self._env)
         if error is not None:

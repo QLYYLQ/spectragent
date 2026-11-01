@@ -58,6 +58,7 @@ from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentUsage
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import (
     ExecutionError,
     RecordingHealth,
@@ -136,6 +137,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="around"),
         Intercept("act", role="env", advice="around"),
+        Intercept("read_oracle_scores", role="env", advice="after"),
         Intercept("execute_step", role="loop", advice="around"),
         Intercept("observe_terminal", role="loop", advice="around"),
         Intercept("record_step", role="loop", advice="around"),
@@ -255,6 +257,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._archive_keys: frozenset[str] = frozenset()
         self._archive_owners: frozenset[str] = frozenset()
         self._collections = 0
+        self._oracle_scores: list[OracleScore] = []
         self._storage: RecordingStorage | None = None
         self._health = RecordingHealth()
 
@@ -269,10 +272,11 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         return True
 
     def intercept_environment(self, present: bool) -> None:
-        """Time ``env.act`` only in a run that has an environment (``EnvironmentInterceptor``).
+        """Intercept ``env.act`` and ``env.read_oracle_scores`` only in a run that has an environment.
 
-        An env-less run executes no action, so its measured steps carry
-        ``action_spans == []`` without an interception that could never fire.
+        The ``EnvironmentInterceptor`` declaration. An env-less run executes no
+        action, so its measured steps carry ``action_spans == []``, and it has
+        no task oracle to score with: neither interception could ever fire.
         """
         intercepts = [item for item in type(self).__intercepts__ if present or item.role != "env"]
         # The declaration is a ClassVar: shadow it on this instance only.
@@ -491,6 +495,20 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                     )
                 except Exception as exc:
                     self._problem(step, "timing", "capture", exc)
+
+    async def after_read_oracle_scores(
+        self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
+    ) -> None:
+        """Keep the scores the scoring point read; the close-out commits them before ``result.json``.
+
+        Whatever the recording plan selects: the record is small and evaluation
+        depends on it (``docs/architecture_design.md`` §5.3 "判分记录"). Never
+        raises into the scoring point; a fault is an ``oracle_scores`` problem.
+        """
+        try:
+            self._oracle_scores = list(result)
+        except Exception as exc:
+            self._problem(None, "oracle_scores", "capture", exc)
 
     async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
         pending: PendingLLMCall | None = None
@@ -961,9 +979,16 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     async def _finalize(self) -> None:
         if self._stop_writes.is_set():
             return
+        wal = self.wal
+        # The scores first: committed before ``result.json``, and early enough
+        # that the result's recording health says whether they were.
+        if self._oracle_scores and wal is not None and wal.manifest is not None:
+            try:
+                await self._offload(wal.commit_oracle_scores, self._oracle_scores)
+            except Exception as exc:
+                self._problem(None, "oracle_scores", "closeout", exc)
         self._refresh_health()
         self._enrich_result()
-        wal = self.wal
         if wal is None or wal.manifest is None:
             self._health.status = "incomplete"
             self._enrich_result()

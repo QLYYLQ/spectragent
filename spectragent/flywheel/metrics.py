@@ -2075,6 +2075,7 @@ _CATEGORY_OF_KIND: dict[str, str] = {
     "manifest": "run",
     "config": "run",
     "result": "run",
+    "oracle_scores": "run",
     "step": "steps",
     "extra_index": "steps",
     "llm_call": "messages",

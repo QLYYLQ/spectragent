@@ -119,6 +119,7 @@ def views(trace: RunTrace) -> dict[str, Any]:
         "archive_run_file": {
             capability: _dump(trace.archive_run_file(capability)) for capability in CAPABILITIES
         },
+        "oracle_scores": [_dump(score) for score in trace.oracle_scores()],
         "committed_files": [_dump(file) for file in trace.committed_files],
         "read_committed": {
             file.path: trace.read_committed(file.path) for file in trace.committed_files

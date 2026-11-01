@@ -45,6 +45,22 @@ def test_replay_archive_flag_reaches_env_context(monkeypatch: pytest.MonkeyPatch
     ) == {"replay_archive": "/runs/src"}
 
 
+def test_the_oracle_timeout_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[float] = []
+
+    async def _fake_run(**kwargs: Any) -> int:
+        seen.append(kwargs["oracle_timeout"])
+        return 0
+
+    monkeypatch.setattr(run_cli, "_run", _fake_run)
+    monkeypatch.setattr(run_cli, "load_dotenv", lambda: None)  # never read the repo's .env
+    monkeypatch.setattr(run_cli.logging, "basicConfig", lambda **_kw: None)
+    argv = ["--config", "run.yaml", "--task", "score it"]
+    assert run_cli.main(argv) == 0
+    assert run_cli.main([*argv, "--oracle-timeout", "9"]) == 0
+    assert seen == [run_cli.ORACLE_TIMEOUT_S, 9.0]
+
+
 def test_a_dry_run_checks_what_setup_would_refuse(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--dry-run`` prepares with the flags' task context: the setup check sees it too."""
     from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError

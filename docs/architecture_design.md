@@ -746,7 +746,8 @@ class AgentRuntime:
         return wrapped_agent
 
     # ── execute(task): 一站式驱动 ───────────────────────────────────
-    async def execute(self, task, *, timeout=300, task_id="unknown", benchmark="", subset="",
+    async def execute(self, task, *, timeout=300, oracle_timeout=ORACLE_TIMEOUT_S,
+                      task_id="unknown", benchmark="", subset="",
                       run_id=None, env_context=None, loop_inputs=None, branch=None,
                       action_filter=None, config=None, raise_on_error=True):   # 没有 **kwargs
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
@@ -780,9 +781,10 @@ class AgentRuntime:
                 return result
 
             try:
-                result = await asyncio.wait_for(
-                    prepared_agent.run(task), timeout=timeout
-                )
+                # wait_for(agent.run(task), timeout) 返回或抛出（外部取消除外）之后，结局交出去之前
+                # 先到判分时间点：执行计时停下，织过的环境 read_oracle_scores(timeout_s=oracle_timeout)
+                result = await self._run_to_the_scoring_point(
+                    prepared_agent, task, timeout=timeout, oracle_timeout=oracle_timeout)
             except TimeoutError as timed_out:
                 # 切断 Loop 的那次取消可能带着 Loop 已经定下的结局（RunEnded，见下文）
                 ended = _outcome_under(timed_out)
@@ -849,7 +851,7 @@ class AgentRuntime:
 
 **种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_space=..., execution_limits=..., fragment_formats=...)`（`action_space` 是 Runtime 公开的有效动作空间的副本：prompt 广告的 descriptors 与说明短名含义的绑定，与守卫用的是同一份；`fragment_formats` 是第 2b 步解析出的格式说明）；是否需要限制、需要哪些格式说明，已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
 
-**两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或执行路径结束、进入结束 lifecycle 之前停止；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
+**两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或抛出时停止（走到判分时间点的 run 停在判分之前；setup 失败与外部取消的 run 停在进入结束 lifecycle 之前）；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除判分、结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
 
 **执行内模型资源收尾只有一个入口。** Runtime 在 `prepare()` 从主模型和 `PromptModelOwner.helper_llms` 明确收集本次执行的原始模型，织入后仍保留这一份资源清单；`execute` 最外层 `finally` 调 `close_models`，按对象去重并独立、有界地尝试全部关闭。普通结束 hook 失败不能跳过任何 helper。提示 Hook 提供和绑定领域依赖，不另在 `on_run_end` / `on_run_error` 关闭同一模型；独立 Python 使用通过 `model_session` 管理自己的执行边界。
 
@@ -888,9 +890,9 @@ class AgentRuntime:
 **Loop 结束之后、teardown 之前的判分时间点（用户 2026-10-31 的裁决）。** 有的基准只能对着活体环境判分：AndroidWorld 读设备上的数据库、文件与设置，必须在 agent 停下之后、设备拆掉之前的一个确定时刻跑。所以 Runtime 在 Loop 结束（返回或抛出）之后、`_finish` 之前，调一次织过的环境的 `read_oracle_scores(timeout_s=...)`（§4.3）：判分要进 trace，trace 在 `on_run_end` 里收尾，teardown 又在 `on_run_end` 之后。环境还活着的结束路径都经过它：完成、步数用完、超时、Loop 抛错、否决；环境在 run 里已经坏了也照样调，裁判读不出来就记成没判。setup 失败的 run 走不到 Loop，不判。Runtime 不认识 capability，经 environment 到达裁判；这是一次公开的方法调用，不是旁路（§4.6 "与 emitter.dispatch() 的权衡"）。
 
 - **谁判**：实现了可选 Protocol `TaskOracle`（§4.9）的 capability，Android 的任务裁判就是它（§11.2）。environment 并发问每一个，各限时 `timeout_s`；本 run 没有裁判的 capability 返回 `None`，不进记录。
-- **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。
-- **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛。被取消的 run 没有判分记录，评测器记为没判。
-- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
+- **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。结构化实现的环境若违约抛出 `Exception`，Runtime 只记日志，照常收尾，这个 run 没有判分记录。
+- **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛，Runtime 照外部取消收尾（`error="Execution cancelled"`，Loop 交出的结局不保留，与取消落在别处一样）。被取消的 run 没有判分记录，评测器记为没判。
+- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定，在那之前暂定 60 s（`core/runtime.py::ORACLE_TIMEOUT_S`，标着 `shortcut:`）。它与 `timeout` 走同一条路到 `execute`：`BenchmarkRunner(oracle_timeout=)`、`spectragent bench` 与 `spectragent run` 的 `--oracle-timeout`、度量链每段 `StageSpec` 的 `oracle_timeout`（§4.16，省略时不传，用 bench 的默认）。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
 - **记录**：TraceWriter 经 AOP 拦截 `read_oracle_scores`（`after`，role `env`），把交回的列表写成 §5.3 的判分记录（`oracle_scores.json`）；评测器从这份记录读判分（§4.11），从不碰活体环境。
 
 它不借 `collect_archive` 的时机：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，§4.9 "最后一次收集"），收集也从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻对着环境跑。
@@ -1246,7 +1248,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
 - `align_next_observation(recorded, *, media_seek_timeout_s, media_end_lead_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
 
-**判分的路由（用户 2026-10-31 的裁决，§4.2）**（`core/environments/_registrar.py`）：`read_oracle_scores(*, timeout_s)` 给每个实现了 §4.9 `TaskOracle` 的 capability 一个任务，并发跑，每个限时 `timeout_s`；返回 `None` 的（本 run 没有裁判）不进列表，超时或抛 `Exception` 的换成一份 `status: not_scored` 的 `OracleScore`（`reason` 是 `timeout` 或 `error`，`detail` 是诊断）；全部跑完才按 capability 顺序返回，从不抛 `Exception`。`CancelledError` 原样传播：先取消还没结束的裁判、等它们收场，再重抛，不留孤儿任务（与 `collect_archive` 同一做法）。没有实现者时返回空列表。Protocol 上有这个方法，Runtime 对每个走到判分时间点的 run 都调它，所以结构化实现 `Environment` 的环境也要实现它。
+**判分的路由（用户 2026-10-31 的裁决，§4.2）**（`core/environments/_registrar.py`）：`read_oracle_scores(*, timeout_s)` 给每个实现了 §4.9 `TaskOracle` 的 capability 一个任务，并发跑，每个限时 `timeout_s`；每份 `OracleScore` 都由 environment 拼：裁判交回的 `OracleReading` 拼成 `status: scored` 的一份，capability 的 id、这次读的开始时间与耗时是 environment 自己的（耗时在调用两头量）；返回 `None` 的（本 run 没有裁判）不进列表，超时或抛 `Exception` 的换成一份 `status: not_scored` 的 `OracleScore`（`reason` 是 `timeout` 或 `error`，`detail` 是诊断：超时写明限时，抛错写异常类名与消息）；`timeout` 只指 environment 自己的限时到了，裁判在限时之内自己抛出的 `TimeoutError` 是 `error`。交回的既不是 `OracleReading` 也不是 `None` 的，同样换成 `error` 的没判（与 `collect_archive` 的契约检查同一做法）。全部跑完才按 capability 顺序返回，从不抛 `Exception`。`CancelledError` 原样传播：先取消还没结束的裁判、等它们收场，再重抛，不留孤儿任务（与 `collect_archive` 同一做法）。没有实现者时返回空列表。Protocol 上有这个方法，Runtime 对每个走到判分时间点的 run 都调它，所以结构化实现 `Environment` 的环境也要实现它。
 
 **fragment 的格式说明**（`core/environments/_registrar.py`，§4.4 "观测格式由提供方描述"）：`fragment_formats() -> dict[str, str]`：按 capability 顺序合并每个实现了 §4.9 `FragmentFormats` 的 capability 交出的说明（全限定键 → 文字）；没实现的 capability 什么都不描述。capability 只为自己的 fragment 说话：交出的键不在 `<capability_id>.` 前缀下时抛 `ValueError`，不让它替别的 capability 的 fragment 写说明。只读配置：`AgentRuntime.prepare()` 第 2b 步在 setup 之前调它，而且只在 Agent 引用的 fragment 这个 run 确实激活了时才调。
 
@@ -2582,15 +2584,22 @@ class SetupCheck(Protocol):
 **活体判分也是单独的、可选的 Protocol**（`core/capabilities/base.py`，用户 2026-10-31 的裁决，§4.2 "判分时间点"）：
 
 ```python
+class OracleReading(BaseModel):   # schemas/oracle_score.py；frozen，别的字段一概拒收
+    score: float                  # 基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；有限数
+    oracle: str                   # 裁判身份，如 "androidworld"
+    oracle_version: str | None = None                          # 裁判版本，如钉住的 AndroidWorld commit
+    provenance: dict[str, str] = Field(default_factory=dict)   # 判的是什么：基准的任务 id、参数摘要……
+
 @runtime_checkable
 class TaskOracle(Protocol):
     # Loop 结束之后、on_run_end 与 teardown 之前，对着活体环境读出本任务的判分。
     # 只判不改：不执行动作、不拆环境。本 run 没有裁判时返回 None；时限由 environment 执行
-    async def read_score(self) -> OracleScore | None: ...
+    async def read_score(self) -> OracleReading | None: ...
 ```
 
 - 为什么需要：有的基准只能对着活体环境判分（AndroidWorld 读设备上的数据库、文件与设置），只有 capability 够得着那个环境。判分作为证据进 trace（§5.3 的判分记录），评测器读它，不另开"活体评测器"。
-- 判了的 `OracleScore` 由裁判自己填（分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。
+- 判了的 `OracleScore` 由裁判自己填（分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。裁判交回的只是这几样（`OracleReading`）；capability 的 id、这次读的开始时间与耗时由 environment 记，耗时是它在调用两头自己量的，所以判分记录里的耗时不取决于裁判自己的时钟，`oracle_timeout` 的默认值也按它定。`OracleReading` 与 `OracleScore` 都在 `schemas/oracle_score.py`，capability 与 environment 都不必 import trace 层（§5.3、§10）。
+- 裁判把自己的传输故障换成普通异常（如 `ConnectionError`），从不让 `CancelledError` 漏出来：框架把任何 `CancelledError` 都当作 run 被取消（照外部取消收尾、不留判分记录，§4.2 "取消先走"），与 `collect_archive` 和 capability 的其余调用是同一个约定。
 - 与 `SetupCheck`、`RestorationAlignment` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。Android 的任务裁判实现它（§11.2）。
 
 #### 4.9.x Capability ↔ Backend 生命周期
@@ -2821,9 +2830,9 @@ BENCHMARK_CAPABILITIES = {
 - **日志/trajectory 记录** — Hook（TraceWriter）自动记录每步事件
 - **环境证据的落盘** — 归档消费者（TraceWriter）在自己的提交点拉取、写进 `env/`（§4.6、§5）
 - **超时/资源控制** — AgentRuntime 对 loop.run() 加 timeout
-- **评分** — AgentRuntime 按 benchmark 注册的 evaluator 执行
+- **评分** — 评测器读 trace 判分（§4.11）；只能对着活体环境判分的基准，由实现了可选 `TaskOracle`（上文）的 capability 在 Runtime 的判分时间点读出判分，environment 并发问、限时、计时，TraceWriter 写成判分记录（§4.2、§4.3、§5.3）
 
-Capability 本身不需要知道日志、超时、评分的存在。环境证据是唯一的分工：**被拉取时产出**环境证据是 capability 的职责（只有它够得着自己的世界），**持久化**不是：capability 不知道 WAL，不知道步号，也不知道 `env/` 的布局。
+Capability 本身不需要知道日志与超时的存在，也不需要知道判分怎样被计时与记录。分工有两处，都只在 capability 够得着自己的世界的地方：**被拉取时产出**环境证据、实现了 `TaskOracle` 的 capability **被问时读出**判分（`OracleReading`），是 capability 的职责；**计时、限时与持久化**不是：capability 不知道 WAL，不知道步号，也不知道 `env/` 与 `oracle_scores.json` 的布局。
 
 **GPU Profiling Capability — DockerCapability 的插件**：
 
@@ -4181,7 +4190,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **路径从哪里算**：规格里的相对路径（`root`、每段的 `config`）相对工作目录，与每个 af CLI 读路径的方式一样（阶段 YAML 自己的相对路径，例如 `matcher.site_rules: configs/replay_rules`，也相对工作目录）；`root` 解析成绝对路径后，链写进阶段 YAML 的路径都是绝对的。
 - **链只改路径**：每段的 YAML 原样读入，链只写这几个字段再落到 `<root>/configs/<段>.yaml`：唯一的 `trace_writer` 的 `trace_dir`（`<root>/traces/<段>`）；`same_path` / `branch` 唯一的 `trace_branches` 加载器的 `data_dir`（`<root>/traces/record`）；导出段唯一的导出器的 `sources_root`（`<root>/traces`）、`sources`（`["record/*", "branch/*"]`）与 `output_dir`（`<root>/datasets/first`，第二次 `second`）。缺这些块（或多于一个）在任何一段开跑之前报错、点名段与缺的块。其余一切（agent、档位、归档器、选步、分支数、`verify`、评测器）都写在段的 YAML 里；对照组的 YAML 自己写 `archive: []`。
 - **段的成败**：`spectragent bench` 退出码 0 或 1（个别任务的基础设施失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；退出码 4（这一段的 sweep 达到了链交给它的 token 额度）且写出了新 run，这一段算跑完、链在这里停下（下面"token 上限"）；别的退出码（2：它的 pre-flight 拒绝了这一段的配置，一个任务也没跑；3：一个 guard 否决了这一段，被否决那一段的 run 不喂给下一段；§4.2）、`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
-- **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, token_limit, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个），`token_limit` 是至少为 1 的整数或 `unlimited`（默认）。CLI：`spectragent flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状，也不知道 token 上限）；退出码 0 完成、1 某段失败（`report` 算不出报告——发布的数据集读不回来——或写不了——`--out` 建不了、写不进——也是 1，报错点名是哪一个，不抛 traceback）、2 规格或参数不对、4 链在 token 上限处停下（`run`；选了报告段时报告照样算出，与 `spectragent bench` 的 4 同一个意思）。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
+- **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, token_limit, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, oracle_timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器；`oracle_timeout` 省略时不传 `--oracle-timeout`，bench 用自己的默认，§4.2 "判分时间点"），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个），`token_limit` 是至少为 1 的整数或 `unlimited`（默认）。CLI：`spectragent flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状，也不知道 token 上限）；退出码 0 完成、1 某段失败（`report` 算不出报告——发布的数据集读不回来——或写不了——`--out` 建不了、写不进——也是 1，报错点名是哪一个，不抛 traceback）、2 规格或参数不对、4 链在 token 上限处停下（`run`；选了报告段时报告照样算出，与 `spectragent bench` 的 4 同一个意思）。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
 - **token 上限**（用户 2026-10-14 的裁决）：`token_limit` 是链的所有运行段合计能用的 token，数的是 trace 里记下的用量——每个 run 的每次调用记录里 provider 报的数（`core/trace/usage.py::recorded_usage`：每个已提交步的调用、再是 trailing 调用；成功、失败与取消都读 `RecordedCallMetrics.usage`，失败的调用照样计费；一次调用的 token 数与步记录同一条规则 `TokenUsage.from_llm_usage`：provider 的 `total_tokens`，没给总数时 prompt 加 completion）。从独立 `call_metrics` 账读取，不需要还原完整提示或图片；记录计划没选 metrics 时用量为未测量。provider 没报用量的调用（被取消的、回复之前就失败的、从不报用量的 provider 的）计入调用数、不加 token，按 `traces/<角色>/<run>: step S call K (状态)` 点名，从不当作 0；调用记录读不回来的 run 不计，点名原因。
   - 有上限时，链开跑之前先数一遍链根下已有的每个 run（四个角色，`metrics.role_token_use`），所以分段跑（`--stages`）时前几次花掉的照样算，重跑一段加的 run 也算。每个运行段把剩下的额度（上限减已用）交给 `spectragent bench --token-limit`（§4.2 "sweep 的 token 上限"：每个任务跑完就加一次，达到额度时那个任务照常跑完、之后的任务不开始、退出码 4）；段跑完后链数这一段新写的 run（`chain.json` 的 `stages.<段>.token_use{runs, tokens, calls, calls_without_usage, skipped}`），加进总数（这一段失败了也加，来历照记）。
   - 这一段的 bench 以退出码 4 结束，或总数达到上限（大于或等于）：链停下，后面的运行段与导出段都不开始；报告段（选了的话）照样用已有的数据算；`chain.json` 写 `stopped_by_token_limit{stage, tokens_used, token_limit, stages_not_started, calls_without_usage}`（顶层另有 `token_limit` 与当时的 `tokens_used`）；`spectragent flywheel run` 打印停在哪里、退出码 4。开跑之前已有的 run 就已经达到上限（例如上一次在上限处停下，规格里的上限没有调高）：选中的运行段与导出段一个也不开始（`stage: null`），报告照跑；只选了报告段时没有要停的段，不算停下。要接着跑，先调高 `token_limit`，再用 `--stages` 只跑没开始的段。
@@ -4225,7 +4234,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算，验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头，不带这些头的拦截页面认不出来（写明的残余）。
 - **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉，占参与比较的分叉的比例（与导出的 `duplicate_of` 同一规则：检查点步没有动作的分叉不比较，计在 `not_compared`——三次失败的 teacher 调用不是两个重复），并对照数据集 manifest 的 `duplicates`。teacher 的采样够不够分散就看它；它高时再考虑每个分支不同的提示（§4.1 "teacher 采样"）。
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
-- **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`（调用记录与 output schema）、`messages:images`（prompt 里内联的图片，每个 run 每张只存一份，§5.3）、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的三个文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比；按文件开头的字节认出已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
+- **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`（调用记录与 output schema）、`messages:images`（prompt 里内联的图片，每个 run 每张只存一份，§5.3）、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result / 判分记录）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比；按文件开头的字节认出已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
 - **保留期与容量**：每个角色每个 run 的平均字节、数据集每个样本的字节；每个任务的字节 = 一次录制 + 其余每个角色"每次录制有几个 run × 每个 run 的字节" + 数据集每个任务的字节；按 `RETENTION_PROJECTION_TASKS`（10、20、300：第一次 live run、完整的 live 链、整个 `All` 子集）投影。
 - **导出产出**：每个切分的样本数、按原因的丢弃与跳过（数据集 manifest，经导出写它用的同一个 `DatasetManifest` 读），`labels.step_status == action_failed` 的样本占比（导出该留还是该丢它们；每行 `<split>.samples.jsonl` 的样本经导出 dump 它用的同一个 `CanonicalStepSample` 读，`metrics.dataset_samples`）。读不回来的 manifest 或样本行是点名文件（与行号）的 `DatasetFormatError`，不读成 0。
 - **待决的决定**：`miss_policy`（`strict` 够不够用；"miss 时转去真实网络"不是 miss 策略，而是一个新的网络来源，§4.14）看分叉覆盖、子资源 miss 的分布与 POST miss（`STRICT_MIN_IN_ARCHIVE_SHARE` 0.9：动了手的分叉里零文档 miss 的占比不低于它就留 `strict`，空分叉不进分母）；`recording_coverage`（录制时扩大覆盖：预取或探索）看动了手的分叉在检查点之后的文档 miss 里 GET 到未录 URL（`no_match`）的占比（`EXPAND_COVERAGE_MIN_UNRECORDED_SHARE` 0.5；没有文档 miss 时结论是"不扩大"）；`site_rules`（给哪些端点写站点规则：只提给人审，从不自动生成）看所有回放 run（`same_path` 与 `branch`）的近邻 miss（browser 的 `near_misses` / `site_rule_candidates`：最佳候选（匹配器排第一的那个）同 host、同 path、同方法，而查询参数或 body 字段不同的 `no_match`；按站点（回放 run 的任务站点）与端点（host、方法、路径）汇总（计数、排除与排序三条是用户 2026-10-23 的裁决），**计的是回放 run，不是请求**：一个 run 对一个端点、一个字段、一种一起变化的字段组合各只计一次，每秒都发的遥测因此不再靠重复压过只发一次的内容请求，请求数 `requests` 只作参考；查询参数与 body 字段（拍平后的路径，即 `ignore_body_paths` 写的名字）分开计，并列出每一种一起变化的字段组合（`field_sets`：总是一起出现的字段是一条规则要一起忽略的）；**不喂页面的请求按录制本身判断、不按域名表，单独计数**（`not_feeding_page`，按原因给端点数与请求数）：回放用的规则已经对它合成 204（`rule_answers_204`），Chrome 把它标成 `Ping`（`navigator.sendBeacon` 与 `<a ping>`，Chrome 没有单独的 beacon 类型）或 `Image`（`ping_or_image`），或者录下的应答是 204、正文为空（`recorded_empty`），依次判断，取第一条；**排序看它与恢复失败的关联**：每个有恢复校验的步（每个 run 的每一步只计一次）按这一步自己的校验过没过分成 `failed_check_steps` 与 `passed_check_steps`，`failure_association` 是失败占比的 95% Wilson 区间下界（没有校验过的步为 0），站点内按它从高到低，再按 `failed_restoration_runs`（恢复没过、且在第一个没过的步或之前就有这个近邻 miss 的 run 数），再按 run 数，同分按 host、路径、方法；每步都发的请求在恢复通过的步上也 miss，所以排在只在恢复失败的步上 miss 的请求之后。只看"第一个失败步或之前"区分不了：实测 2026-10-23 那批 304 个分叉里 279 个恢复没过，几乎都在第 0、1 步（截图距离、媒体状态），落地页的遥测在每个 run 都排第一，B 站的 `wbi/search/type`（搜索在后面几步）一个也算不上，按步的关联把它排到 B 站第一（58 个有近邻 miss 的校验步里 57 个失败），所以关联按步算，run 级的计数只作次序；两边都按回放自己记下的规则（`recorded_site_rules`）规范化——源 run 用这份规则载入（`load_archive`），活请求的查询用这份规则为它选出的那条，body 用回放日志里的 body 键（服务时已按同一条规则去掉忽略的路径）——所以规则已经忽略的字段不算不同；一边的 body 只剩摘要（规范化本身的 4096 字符上限，或 body 解析不了：匹配器手里也只有摘要；回放日志的 body 键 2026-10-23 起原样保存，不再截短）时只能说 body 不同、说不出哪些字段，记作 `opaque_body`；源 run 不在链里、规则快照或源归档读不回来的回放连同原因记在 `skipped`；每个站点排在最前的 `SITE_RULE_MAX_PROPOSALS_PER_SITE` 3 个端点建议给它写一条限定在这个端点的规则（`ignore_query` / `ignore_body_paths`，取最多 run 一起变化的那组字段，判断里只写前 `SITE_RULE_PROPOSAL_MAX_FIELDS` 4 个、每个截到 `SITE_RULE_PROPOSAL_FIELD_MAX_CHARS` 40 字符：拍平的 body 路径可以有几千字符）供人审，代替原来全局的次数门槛（2 次时 220 个端点里 215 个达标，判断约 19000 字符）：每条建议都要人去读这个端点的应答，确认这些字段不选内容，所以每站一小批；完整的排名留在 `decision_inputs`。只是提示，不证明这些字段不选内容）；`retention` 看上一条的容量数（与 `recommendations.sections.retention` 是同一条建议）。这几个决定的输入（分叉的文档 miss、近邻 miss）单列在报告的 `decision_inputs` 里。
@@ -4797,9 +4806,9 @@ traces/
 | `complete` | 已关闭，在声明记录范围内完整；已恢复的历史故障仍可见 | `finalize` |
 | `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容或它的某一路归档证据（run 可继续）、收尾那次收集（含超出 `closeout_collection_timeout`）、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（每一项 `<通道>: <错误类>: <原因>`，几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
-`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
+`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 7，旧数据和 fixtures 重建，不保留兼容路径。
 
-**判分记录（`oracle_scores.json`，用户 2026-10-31 的裁决）。** TraceWriter 收到 `read_oracle_scores` 的返回（§4.2）就交给持久化，在 `on_run_end` 写 `result.json` 之前提交，manifest 的 `oracle_scores` 指向它；空列表不写文件。它不受 RecordingPlan 的通道选择影响：它很小，评测离不开它。写不进去是一条记录问题（`incomplete_reason` 点名 `oracle_scores`），与 agent 的结局无关。读侧是 `RunTrace.oracle_scores() -> list[OracleScore]`，没有记录时是空列表，评测器记为没判。
+**判分记录（`oracle_scores.json`，用户 2026-10-31 的裁决）。** TraceWriter 收到 `read_oracle_scores` 的返回（§4.2）就交给持久化，在 `on_run_end` 写 `result.json` 之前提交，manifest 的 `oracle_scores` 指向它；空列表不写文件。它不受 RecordingPlan 的通道选择影响：它很小，评测离不开它。写不进去是一条记录问题（`incomplete_reason` 点名 `oracle_scores`），与 agent 的结局无关。读侧是 `RunTrace.oracle_scores() -> list[OracleScore]`，没有记录时是空列表，评测器记为没判。`OracleScore` 不在 `core/trace/models.py`，在 `schemas/oracle_score.py`，与裁判交回的 `OracleReading` 在一起：capability 构造 `OracleReading`，environment 由它（或由超时与抛错）构造每一份 `OracleScore`，两边都不 import trace 层（§10），与 `schemas/restoration.py`、`schemas/agent_result.py` 是同一种跨层记录（`tests/test_schemas/test_oracle_score.py` 守着这个模块不 import `spectragent.core`）。
 
 **记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 7`）：
 
@@ -4846,17 +4855,18 @@ class TraceManifest(BaseModel):
     prompt_images: list[str] = Field(default_factory=list)   # 已提交的 prompt 图片：messages/images/<sha256><后缀>，每张一次，按提交顺序
     oracle_scores: str | None = None         # oracle_scores.json；没有判分记录为 None
 
-class OracleScore(BaseModel):          # oracle_scores.json 的一条：一个 capability 的任务裁判对本任务的判分（§4.2）
+class OracleScore(BaseModel):          # 在 schemas/oracle_score.py，不在本模块（见上文"判分记录"）；frozen
+    # oracle_scores.json 的一条：一个 capability 的任务裁判对本任务的判分（§4.2）
     capability_id: str
     status: Literal["scored", "not_scored"]
-    score: float | None = None         # 判了：基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；scored 时必有
+    score: float | None = None         # 判了：基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；恰在 scored 时有值，有限数
     oracle: str | None = None          # 裁判身份，如 "androidworld"；scored 时必有，裁判没交回时为 None
     oracle_version: str | None = None  # 裁判版本，如钉住的 AndroidWorld commit
     provenance: dict[str, str] = Field(default_factory=dict)   # 判的是什么：基准的任务 id、参数摘要……，裁判自己给
-    started_at: float                  # 墙钟 Unix 时间，与 StepRecord.timestamp 可比
-    duration_ms: int
+    started_at: float                  # environment 问裁判的墙钟 Unix 时间，与 StepRecord.timestamp 可比；有限数
+    duration_ms: int                   # ≥ 0；environment 在调用两头量的
     reason: Literal["timeout", "error"] | None = None   # 恰在 not_scored 时有值
-    detail: str | None = None          # 没判的诊断：异常类名与消息
+    detail: str | None = None          # 没判的诊断：超时写限时；抛错写异常类名与消息
 
 class ExtraFileRecord(BaseModel):      # extra 文件索引里的一条
     path: str                          # run 目录下的相对路径
@@ -5119,6 +5129,7 @@ class RunTrace:
     def config(self) -> TraceConfig: ...                    # config.json
     @cached_property
     def result(self) -> AgentResult | None: ...             # result.json；None = 文件不存在
+    def oracle_scores(self) -> list[OracleScore]: ...       # oracle_scores.json（§5.3 判分记录）；[] = 没有记录
     @cached_property
     def step_records(self) -> list[StepRecord]: ...         # 每个已提交 step，manifest 顺序
     def step(self, idx: int) -> StepRecord | None: ...      # None = 该步没有提交
@@ -5166,6 +5177,7 @@ class RunTrace:
 
 各访问器的语义：
 
+- `oracle_scores()`：manifest 的 `oracle_scores` 指向的判分记录（§5.3），每条读回成 `OracleScore`，按 capability 顺序。manifest 不指向记录（没有任务裁判判过这个任务，或 run 没走到判分时间点：setup 失败、被取消）→ `[]`，评测器记为没判，不记成判错（§4.11）；指向了却读不了 → 点名文件的 `TraceSchemaError`。
 - `step(idx)` / `step_records`：只看 manifest 列出的 step。列了但文件缺失抛 `TraceSchemaError`，不再静默跳过或返回 `None`。
 - `observation_fragment(step, key)`：`key` 是全限定 fragment key（`browser.dom`）。该步没提交，或它的 fragment 索引里没有这个 key（本 run 没激活、这一步没记录）→ `None`。索引 `failed: true` → 按 `FragmentFailure` 读回并返回（它记录的 `fragment_id` 也必须等于 `key`）。否则用 `ObservationRegistrar.get(key)` 找到类，要求 payload 的 `fragment_id == key`，返回 `cls.from_trace(payload, artifact)`；`from_trace` 抛的 `ValueError`（以及嵌套深到解码器走不下去的 `RecursionError`，远超写侧的深度）转成点名文件和类的 `TraceSchemaError`。
 - `screenshot(step)`：该步本地名为 `screenshot` 的 fragment（`browser.screenshot`、`desktop.screenshot`……，协商保证一步至多一个）的 artifact 字节。该步没提交、没有截图 fragment、或截图采集失败 → `None`；失败原因用 `observation_fragment` 读。
@@ -5181,7 +5193,7 @@ class RunTrace:
 - `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
 - `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl.gz`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；名字以 `.gz` 结尾的是 gzip 压缩的逐行 JSON，先解压再读（`reader.py::GZIP_SUFFIX`），解压不了 → `TraceSchemaError`；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
 - `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；目录按排序后的顺序遍历，所以几份都坏时点名的是哪一份不取决于文件系统列目录的顺序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
-- `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；然后是请求的回复 schema；最后是 prompt 图片（`manifest.prompt_images` 的顺序）。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `prompt_image` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交、回复 schema 与 prompt 图片为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
+- `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的文件（`manifest.json`、`config.json`，写了的话还有 `result.json`，manifest 指向的话还有判分记录 `oracle_scores.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；然后是请求的回复 schema；最后是 prompt 图片（`manifest.prompt_images` 的顺序）。`kind` 说文件是什么（`manifest` / `config` / `result` / `oracle_scores` / `step` / `fragment` / `artifact` / `llm_call` / `call_metrics` / `extra_index` / `output_schema` / `prompt_image` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交、回复 schema 与 prompt 图片为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
 - `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 与 prompt 图片的字节要与它的地址相符；artifact 不能为空；调用记录是盘上的样子（图片是引用）；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
 - 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见。
 
@@ -5197,7 +5209,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 情况 | 表现 | 含义 |
 |---|---|---|
-| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件、归档文件不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`、`archive_run_file`）或 `[]`（`llm_messages`、`extra_files`、`archive_files`）；`read_extra` / `output_schema` / `blob` / `read_committed` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
+| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件、归档文件、判分记录不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`、`archive_run_file`）或 `[]`（`llm_messages`、`extra_files`、`archive_files`、`oracle_scores`）；`read_extra` / `output_schema` / `blob` / `read_committed` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
 | 存在但不可读 | 抛 `TraceSchemaError`，点名文件（以及 model、key 或版本） | trace 本身不可读，重跑评测也没用，只能重跑任务 |
 | 评测器自己失败 | `EvaluationError` | 与 trace 无关（judge 429、prompt 缺失等） |
 
@@ -5205,7 +5217,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 来源 | 说明 |
 |---|---|
-| JSON 损坏、非 UTF-8、空文件 | manifest、config、result、step、fragment、调用记录、extra 索引、output schema 一视同仁；嵌套深到连解释器都解析不了的 JSON 同样算（远超写侧能写出的深度） |
+| JSON 损坏、非 UTF-8、空文件 | manifest、config、result、判分记录、step、fragment、调用记录、extra 索引、output schema 一视同仁；嵌套深到连解释器都解析不了的 JSON 同样算（远超写侧能写出的深度） |
 | schema 不匹配 | 包括 `AgentResult.schema_version` 不是当前版本 |
 | manifest 列了、磁盘上没有 | 提交过的文件丢了是损坏，不是"没跑完"；`manifest.json`、`config.json` 缺失同理 |
 | 路径出了 run 目录 | manifest 或 extra 索引列出的路径不符合写侧的路径规则（绝对路径、`..` 段等），或解析符号链接之后不在 run 目录里；三个固定名字的文件是指向目录外的链接。点名列出它的文件，被指向的文件不会被打开 |
@@ -5556,6 +5568,7 @@ environment:
        │              → 拦截审计 → env.bind_archivers（有消费者时） │
        ├── execute(task): on_run_start → asyncio.wait_for(         │
        │                  agent.run(task), timeout=...)            │
+       │                  → env.read_oracle_scores（判分，§4.2）     │
        │                  → on_run_end                              │
        │                                                           │
        │ AOP 拦截：llm.ainvoke → TraceWriter 登记 LLM 调用             │
@@ -5584,7 +5597,7 @@ environment:
 - browser 的归档器、回放档位与离线回放（`core/capabilities/browser/archive/`、`replay/`、`recorder.py`）只从框架 import `core.archive`（类型、`ArchiverBase`、`privacy`、回放读侧的 `ArchiveReader` / `open_archive`），不 import `core.trace` / `core.hooks`，因为 capability 不知道 WAL；`core.hooks.trace_writer` 也不 import 任何具体归档器，归档器配置经注册表进入它的生成配置；
 - 新的归档与协商模型里没有 `price` / `cost` / `usd` / `dollar` 字段：只记 token，不记钱（2026-09-19）。
 
-**分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立：`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。
+**分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立：`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。判分同理：`TaskOracle` 的实现与 `core/environments/*` 只认 `schemas/oracle_score.py` 的 `OracleReading` 与 `OracleScore`，这个模块不 import `spectragent.core`；trace 层也从那里读 `OracleScore`（§5.3 "判分记录"）。
 
 **导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`core/registries.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。导出的叶子规则有且只有一个例外：度量闸门的链（`spectragent/flywheel/chain.py`）把 `spectragent export` 当作一段来调，只 import `spectragent.export.cli`（测试按模块名钉住）。
 

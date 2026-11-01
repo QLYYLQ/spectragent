@@ -25,6 +25,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops._registrar import AgentLoopRegistrar, LoopInput
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.negotiation import IncompatibleActionError
+from spectragent.core.runtime import ORACLE_TIMEOUT_S
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
@@ -249,6 +250,21 @@ class TestBenchmarkRunner:
         assert summary.failed == 0
         assert summary.count_by_done() == {"done": 2}
         assert [o.task_id for o in summary.outcomes] == ["t-1", "t-2"]
+
+    async def test_every_run_scores_within_the_oracle_timeout(self, tmp_path, monkeypatch):
+        seen: list[float] = []
+        read = EnvironmentBase.read_oracle_scores
+
+        async def spy(self, *, timeout_s):
+            seen.append(timeout_s)
+            return await read(self, timeout_s=timeout_s)
+
+        monkeypatch.setattr(_Env, "read_oracle_scores", spy)
+        compose = _make_factory(tmp_path, [], [])
+        await BenchmarkRunner(
+            loader=_Loader(), compose=compose, timeout=10, oracle_timeout=4.5
+        ).run()
+        assert seen == [4.5, 4.5]
 
     async def test_each_task_gets_a_fresh_stack_and_lifecycle(self, tmp_path):
         envs: list[_Env] = []
@@ -1510,3 +1526,49 @@ class TestTheTokenLimit:
             == 0
         )
         assert limits == [None, None, 7]
+
+
+def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
+    from spectragent.core.benchmark_runner import main
+    from tests._helpers.branch_sources import write_source
+
+    given: list[float] = []
+    construct = BenchmarkRunner.__init__
+
+    def spy(self, **kwargs):
+        given.append(kwargs["oracle_timeout"])
+        construct(self, **kwargs)
+
+    async def no_sweep(self, *, task_ids=None, limit=None):
+        return BenchmarkRunSummary(benchmark="b", subset="")
+
+    monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    monkeypatch.setattr(BenchmarkRunner, "run", no_sweep)
+    write_source(tmp_path / "recorded", "run-a", steps=2)
+    argv = [
+        "--session-dir",
+        str(tmp_path / ".sessions"),
+        "--config",
+        str(_branch_sweep_config(tmp_path)),
+        "--no-eval",
+    ]
+    assert main(argv) == 0
+    assert main([*argv, "--oracle-timeout", "12.5"]) == 0
+    assert given == [ORACLE_TIMEOUT_S, 12.5]
+
+
+@pytest.mark.parametrize("flag", ["--timeout", "--oracle-timeout"])
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "soon"])
+def test_a_time_limit_is_seconds_above_zero_on_both_clis(flag, value, capsys):
+    """0, a negative number or NaN would expire at once: every live score would be lost."""
+    from spectragent.core import run_cli
+    from spectragent.core.benchmark_runner import main
+
+    for cli, argv in (
+        (main, ["--config", "bench.yaml"]),
+        (run_cli.main, ["--config", "run.yaml", "--task", "t"]),
+    ):
+        with pytest.raises(SystemExit) as raised:
+            cli([*argv, flag, value])
+        assert raised.value.code == 2
+        assert flag in capsys.readouterr().err

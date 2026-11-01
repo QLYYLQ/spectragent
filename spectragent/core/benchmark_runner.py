@@ -71,7 +71,7 @@ from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
-from spectragent.core.runtime import AgentRuntime
+from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.encoding import MANIFEST_FILE
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
@@ -566,6 +566,8 @@ class BenchmarkRunner:
         env_id: Which environment to run against. Required only when a
             run holds more than one.
         timeout: Per-task wall-clock budget.
+        oracle_timeout: Seconds each task oracle may take to score a task
+            after its run (``AgentRuntime.execute``'s ``oracle_timeout``).
         benchmark / subset: Recorded identity. Default to the loader's own.
         run_id_prefix: Prepended to every generated trace directory name.
         evaluator: Optional ``BaseEvaluator``. When given, every trace the
@@ -590,6 +592,7 @@ class BenchmarkRunner:
         agent_id: str | None = None,
         env_id: str | None = None,
         timeout: float = 300.0,
+        oracle_timeout: float = ORACLE_TIMEOUT_S,
         benchmark: str | None = None,
         subset: str | None = None,
         run_id_prefix: str = "",
@@ -613,6 +616,7 @@ class BenchmarkRunner:
         self._agent_id = agent_id
         self._env_id = env_id
         self._timeout = timeout
+        self._oracle_timeout = oracle_timeout
         self._benchmark = benchmark or getattr(loader, "benchmark_name", "")
         self._subset = subset if subset is not None else getattr(loader, "subset", "")
         self._run_id_prefix = run_id_prefix
@@ -950,6 +954,7 @@ class BenchmarkRunner:
                 branch=context.branch,
                 config_source=self._config_source,
                 timeout=self._timeout,
+                oracle_timeout=self._oracle_timeout,
                 raise_on_error=False,
                 config=_task_snapshot(task, self._benchmark, self._subset),
             )
@@ -1116,6 +1121,24 @@ def _token_limit_argument(text: str) -> int | Unlimited:
     return value
 
 
+def positive_seconds(text: str) -> float:
+    """``--timeout`` / ``--oracle-timeout`` (here and in ``spectragent run``): seconds above 0.
+
+    ``value > 0`` refuses NaN as well. A limit of 0, below 0 or NaN expires at
+    once: every oracle would come back not scored, and a score read against
+    the live environment cannot be read again once it is torn down.
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number of seconds") from None
+    if not value > 0:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not above 0: a time limit is seconds above 0"
+        )
+    return value
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1146,7 +1169,13 @@ def main(
     parser.add_argument("--subset", help="Benchmark subset/split.")
     parser.add_argument("--task-id", action="append", dest="task_ids", help="Repeatable.")
     parser.add_argument("--limit", type=int, help="Run at most N tasks.")
-    parser.add_argument("--timeout", type=float, default=300.0, help="Per-task seconds.")
+    parser.add_argument("--timeout", type=positive_seconds, default=300.0, help="Per-task seconds.")
+    parser.add_argument(
+        "--oracle-timeout",
+        type=positive_seconds,
+        default=ORACLE_TIMEOUT_S,
+        help="Seconds each task oracle may take to score a task after its run.",
+    )
     parser.add_argument("--agent-id", help="Agent instance id to drive.")
     parser.add_argument("--env-id", help="Environment instance id to run against.")
     parser.add_argument("--log-level", default="INFO")
@@ -1239,6 +1268,7 @@ def main(
         agent_id=args.agent_id,
         env_id=args.env_id,
         timeout=args.timeout,
+        oracle_timeout=args.oracle_timeout,
         benchmark=args.benchmark,
         subset=args.subset,
         evaluator=evaluator,
