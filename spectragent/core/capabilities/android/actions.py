@@ -336,11 +336,13 @@ class AndroidTypeCoordinateAction(ActionBase):
         PydanticField(
             ge=0,
             description=(
-                "How long typing waits, in ms, before it fails without entering text: while no "
-                "text field has focus yet (after its tap, or at once without a point) and, with a "
-                "point, while focus stays on the field that had it before the tap, a field the "
-                "point was not in, or the service does not name the field with focus yet. Read "
-                "again every 0.1 s. A tap that opens a screen takes a while: on the API 33 "
+                "How long typing waits, in ms, while no text field has focus yet (after its tap, "
+                "or at once without a point) and, with a point, while focus stays on the field "
+                "that had it before the tap, a field the point was not in, or the service does "
+                "not name the field with focus yet. Read again every 0.1 s. When the wait runs "
+                "out, typing fails without entering text, except where the service still names "
+                "no field: it cannot tell then, and enters the text as asked. A tap that opens a "
+                "screen takes a while: on the API 33 "
                 "emulator, Settings' search field had focus 1.8-2.8 s after a tap on its bar on a "
                 "still page, and up to 4.6 s after a tap right after Settings started."
             ),

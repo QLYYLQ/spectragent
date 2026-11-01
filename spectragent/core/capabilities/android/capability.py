@@ -226,7 +226,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                     "The device-side APK to install for the run: the path that `uv run python -m "
                     "spectragent.core.capabilities.android.device.apk build` prints, with its "
                     "sidecar beside it. The run refuses an APK whose sidecar is missing or does "
-                    "not describe it, or that was built for another protocol."
+                    "not describe it, that was built for another protocol, or that is not in the "
+                    "directory its build names (the first 16 characters of its SHA-256)."
                 ),
             ),
         ],
@@ -420,7 +421,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             TypingBackendUnsupported: The device's API level, as the provider
                 reads it from configuration, cannot run the typing backend.
             ServiceApkError: ``service_apk`` names no APK with a sidecar that
-                describes it, or one built for another protocol.
+                describes it, one built for another protocol or package, or one
+                outside the directory named by its SHA-256.
             Exception: The oracle's own refusal of its installation or task.
         """
         oracle = self.task_oracle

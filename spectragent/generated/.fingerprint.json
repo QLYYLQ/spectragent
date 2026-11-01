@@ -1,5 +1,5 @@
 {
-  "action": "f5c7b1931cdbfd52",
+  "action": "880135adce359f48",
   "action_translator": "9676d3c4b1ebe5c2",
   "agent": "8943d0d21b3e516f",
   "agent_loop": "49ac35a8ba9714cc",
@@ -9,7 +9,7 @@
   "android_typing_backend": "0120623800ae34fc",
   "archiver": "a7d95691c1b812e5",
   "browser_provider": "59618076010d6a34",
-  "capability": "24760974a95e4215",
+  "capability": "557d56a351214d05",
   "decision_model": "78ea078bf0b0bc82",
   "dom_cleaner": "3b3dceaa4c39cedd",
   "dom_serializer": "020375d3b20de5f8",
