@@ -37,6 +37,13 @@ CLAUDE.md
 /test_path/
 /traces/
 
+# The device-side APK's Gradle build (android/service/): its outputs and caches.
+# The APK itself is built on demand and lives in a cache directory outside the
+# repository (spectragent/core/capabilities/android/device/apk.py).
+/android/service/build/
+/android/service/.gradle/
+/android/service/local.properties
+
 # conscribe codegen output (regenerate via spectragent.scripts.generate_all)
 *.pyi
 # Contents, not the directory: git does not descend into an excluded
