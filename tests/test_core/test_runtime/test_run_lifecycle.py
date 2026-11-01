@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import time
 from typing import Any
 
 import pytest
@@ -27,7 +26,7 @@ from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace import RunTrace
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.schemas.oracle_score import OracleScore
+from spectragent.schemas.oracle_score import OracleReading, OracleScore
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
@@ -1457,7 +1456,7 @@ class _OracleCap(_DoneCap):
         self.hangs = hangs
         self.asked = asyncio.Event()
 
-    async def read_score(self) -> OracleScore | None:
+    async def read_score(self) -> OracleReading | None:
         self.log.append("score")
         self.asked.set()
         if self.hangs:
@@ -1468,14 +1467,7 @@ class _OracleCap(_DoneCap):
                 raise
         if self.fails:
             raise RuntimeError("device unreachable")
-        return OracleScore(
-            capability_id=self.capability_id,
-            status="scored",
-            score=1.0,
-            oracle="lifecycle_oracle",
-            started_at=time.time(),
-            duration_ms=0,
-        )
+        return OracleReading(score=1.0, oracle="lifecycle_oracle")
 
 
 class _ScoringEnv(_Env):
@@ -1729,7 +1721,7 @@ class TestTheScoringPoint:
         class _SlowOracle(_OracleCap):
             __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-            async def read_score(self) -> OracleScore | None:
+            async def read_score(self) -> OracleReading | None:
                 clock.now += 13.0
                 return await super().read_score()
 

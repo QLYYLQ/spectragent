@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
-from spectragent.schemas.oracle_score import OracleScore
+from spectragent.schemas.oracle_score import OracleReading
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 if TYPE_CHECKING:
@@ -397,16 +397,22 @@ class TaskOracle(Protocol):
     concurrently and each within the run's ``oracle_timeout``, and the trace
     records the answers as evidence evaluators read (§5.3). Not part of
     :class:`BaseCapability`; ``CapabilityBase`` gives no default.
+
+    An oracle turns its own transport failures into ordinary exceptions (a
+    ``ConnectionError``, say) and never lets a ``CancelledError`` escape: the
+    framework takes any ``CancelledError`` for the run being cancelled, closes
+    the run out as cancelled and records no score, as it does for every other
+    capability call.
     """
 
-    async def read_score(self) -> OracleScore | None:
+    async def read_score(self) -> OracleReading | None:
         """Score this task against the live environment; ``None`` when this run has no oracle.
 
-        Reads only: executes no action and tears nothing down. The oracle fills
-        a scored entry itself: this capability's ``capability_id``, when its
-        read started and how long it took, the score, its identity and version,
-        and what it judged. The environment enforces the time limit and turns a
-        timeout or an exception into a not-scored entry.
+        Reads only: executes no action and tears nothing down. The reading holds
+        only what the oracle knows: the score, its identity and version, what it
+        judged. The environment records this capability's id and when the read
+        started and how long it took, on its own clock; it enforces the time
+        limit and turns a timeout or an exception into a not-scored entry.
         """
         ...
 

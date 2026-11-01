@@ -268,9 +268,11 @@ class Environment(Protocol):
         point (after the Loop returned or raised, before ``on_run_end`` and
         teardown), so a structural implementation needs it too. Asks every
         capability implementing ``TaskOracle`` (``core/capabilities/base.py``)
-        concurrently, each within *timeout_s*; a ``None`` is left out, and a
-        timeout or an ``Exception`` comes back as a ``not_scored`` entry. Never
-        raises ``Exception``. A cancellation cancels the oracles still running,
+        concurrently, each within *timeout_s*. A reading comes back as a
+        ``scored`` entry with the capability's id and the start time and
+        duration measured around the call; a ``None`` is left out, and a timeout
+        or an ``Exception`` comes back as a ``not_scored`` entry. Never raises
+        ``Exception``. A cancellation cancels the oracles still running,
         waits for them, and then propagates.
         """
         ...
