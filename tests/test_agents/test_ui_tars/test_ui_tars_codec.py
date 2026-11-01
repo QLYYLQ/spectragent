@@ -11,9 +11,9 @@ run's action space and reads only its arguments and itself, so:
 - a malformed reply or an unwritable action is refused with the same words
   as before the codec existed (the agent's tests pin the rest of them);
 - a verb binds only where the run holds its action: the mobile verbs bind to
-  Android's actions (here the stub's, ``tests/_helpers/android_stub.py``) and
-  to nothing in a browser run; ``press_home`` and ``press_back`` run as one
-  action, told apart by the key each fixes;
+  the Android capability's actions and to nothing in a browser run;
+  ``press_home`` and ``press_back`` run as one action, told apart by the key
+  each fixes;
 - two codecs for one space say the same thing, in any call order.
 """
 
@@ -36,6 +36,7 @@ from spectragent.agents.ui_tars.codec import (
     read_thought,
 )
 from spectragent.core.actions.params import PointAxis, params_view, point_params
+from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.loops.coordinate_frames import (
     actions_in_capability_units,
@@ -48,8 +49,7 @@ from spectragent.core.negotiation import extract_wiring
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import CoordinateSpace
-from tests._helpers.action_spaces import browser_descriptors, space_of, wired_space
-from tests._helpers.android_stub import mobile_descriptors
+from tests._helpers.action_spaces import browser_descriptors, space_for, space_of, wired_space
 
 #: One value per param a verb fills; the points lie on a 1280x720 viewport.
 _VALUES: dict[str, Any] = {
@@ -68,6 +68,8 @@ _VALUES: dict[str, Any] = {
 
 #: The verbs that run as Android's actions, which a browser run does not hold.
 _MOBILE_VERBS = ("long_press", "open_app", "press_home", "press_back")
+#: The actions those verbs run as, which only Android has.
+_ANDROID_ONLY = ("long_press", "open_app", "press_key")
 
 
 _SCREENSHOT = ScreenshotObs(
@@ -85,14 +87,19 @@ def _codec(**kwargs: Any) -> UITarsCodec:
 
 
 def _every_verb_space(coordinate_space: CoordinateSpace = "screenshot_pixels") -> ActionSpace:
-    """A space holding an action for every verb: a browser's for UI-TARS's wiring, and Android's three.
+    """A space holding an action for every verb: the browser's, and Android's where a browser has none.
 
-    The browser actions UI-TARS's wiring names, and the stub's ``long_press``,
-    ``open_app`` and ``press_key``, which no capability shipped today registers.
+    The browser actions UI-TARS's wiring names, and the Android capability's
+    ``long_press``, ``open_app`` and ``press_key``. One action per relative
+    name: a name two actions share binds to neither.
     """
     required, optional = extract_wiring(UITarsAgent, "action")
+    android = {d.name: d for d in AndroidCapability().get_action_descriptors()}
     return space_of(
-        [*browser_descriptors(*sorted(required | optional)), *mobile_descriptors()],
+        [
+            *browser_descriptors(*sorted(required | optional)),
+            *(android[f"android.{name}"] for name in _ANDROID_ONLY),
+        ],
         coordinate_space=coordinate_space,
     )
 
@@ -320,7 +327,8 @@ class TestMobileVerbs:
 
     @staticmethod
     def _mobile_codec() -> UITarsCodec:
-        return UITarsCodec(space_of(mobile_descriptors()))
+        """The codec of a UI-TARS run on the Android capability, which holds all its actions."""
+        return UITarsCodec(space_for(UITarsAgent(), AndroidCapability().get_action_descriptors()))
 
     def test_a_browser_run_binds_none_of_them(self) -> None:
         assert not set(_MOBILE_VERBS) & set(_codec().verbs)
