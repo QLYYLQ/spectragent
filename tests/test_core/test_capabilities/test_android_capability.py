@@ -35,7 +35,7 @@ from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApkError,
 )
-from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION
+from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION, RemoteError
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSideError
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
@@ -200,6 +200,19 @@ async def test_the_service_takes_the_screenshots_where_the_helper_cannot() -> No
     assert isinstance(screenshot, AndroidScreenshotObs)
     assert (screenshot.producer, screenshot.waited_ms) == ("accessibility_service", 40)
     assert phone.service_calls("screenshot") == 1
+
+
+async def test_a_helper_screenshot_that_fails_at_setup_fails_setup(tmp_path: Path) -> None:
+    """Only the helper's ``unsupported`` moves screenshots to the service; a failure is the device's."""
+    phone = ScriptedPhone(screenshot_fails=True)
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        provider = configured(capability, adb)
+        with pytest.raises(RemoteError, match="screenshot_failed"):
+            await capability.setup()
+
+    assert provider.closed == ["fake-session"] and not capability.is_alive
+    assert phone.service_calls("screenshot") == 0, "the service was never asked instead"
 
 
 async def test_an_action_drops_the_capture_it_came_after() -> None:

@@ -769,10 +769,17 @@ def _check_build(side: DeviceSide, apk: ServiceApk, typing_backend: AndroidTypin
 
 
 async def _fastest_screen(side: DeviceSide) -> ScreenshotProducer:
-    """The helper's screenshot when it answers one (API 31-33), else the service's."""
+    """The helper's screenshot where the helper takes one (API 31-33), else the service's.
+
+    Only the helper's ``unsupported`` picks the service: any other failure of
+    the probe (``screenshot_failed``) is the device's, and fails setup rather
+    than moving the whole run to the slower program.
+    """
     try:
         await side.helper.screenshot()
     except RemoteError as exc:
+        if exc.code != "unsupported":
+            raise
         logger.info("screenshots come from the accessibility service: the helper said %s", exc)
         return "accessibility_service"
     return "shell_helper"
