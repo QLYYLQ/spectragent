@@ -44,7 +44,12 @@ class DeviceBusyError(TimeoutError):
 
 
 class DeviceJobTimeout(TimeoutError):
-    """A job ran past its run limit; it was cancelled and had exited when this was raised."""
+    """A job ran past its run limit; it was cancelled, and its coroutine had exited when this was raised.
+
+    A request it had sent to a device-side program may still be running on the
+    device: the channel drops the late answer, and only later requests on that
+    same channel wait for it (``device/channel.py``).
+    """
 
 
 class ReentrantJobError(RuntimeError):

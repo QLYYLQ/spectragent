@@ -10,8 +10,12 @@ injected as ``input`` injects them, and turning the service on and off.
 Each method is one request. None sets a deadline of its own: the device
 session's queue bounds every job (``session.py``), and a cancelled call
 returns at once and drops the answer when it comes. The device answers one
-channel's requests in order, so a request after a cancelled one starts once
-the cancelled one is done on the device.
+channel's requests in order, so a request after a cancelled one on the same
+channel starts once the cancelled one is done on the device. Only on the same
+channel: the service, the helper and adb's own shell are separate paths, and
+a long press cut short on the service still runs while a helper screenshot
+is taken at once. A job that gives up on a device call therefore pings that
+same channel, within a limit, before it hands the device on.
 
 **Gestures are timed strokes** (:class:`Stroke`): each finger's path as
 points with the time, in ms from the gesture's start, at which the finger is
