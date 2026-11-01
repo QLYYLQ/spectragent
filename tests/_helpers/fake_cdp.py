@@ -62,6 +62,12 @@ session of the target and reports it destroyed. ``Page.windowOpen`` is a test's
 to fire, on the opener's session (:meth:`FakeClient.fire`). ``Target.getTargetInfo``
 on a target's own session names that target, as the tab-effect probes read it.
 
+And navigation, as opening a start page reads it: ``Page.navigate`` is
+answered as Chrome answers a same-document navigation, without a
+``loaderId`` (so nothing waits for a load), and its commit follows the reply
+as ``Page.navigatedWithinDocument`` on the same session (so nothing waits
+for the commit either).
+
 And the page lifecycle, as freezing the tabs the focus left reads it
 (``background_tabs: freeze``, §4.14 "离开焦点的 tab"): ``Page.setWebLifecycleState``
 freezes or resumes the target of the session it is sent on
@@ -671,6 +677,15 @@ class FakeBrowser:
                     }
                 }
             }
+        if method == "Page.navigate":
+            # As Chrome answers a same-document navigation: no loaderId, so
+            # nothing waits for a load, and its commit reported after the reply.
+            frame_id = f"frame-{session_id}"
+            commit = {"frameId": frame_id, "url": params.get("url"), "navigationType": "fragment"}
+            asyncio.get_running_loop().call_soon(
+                client.fire, "Page.navigatedWithinDocument", commit, session_id
+            )
+            return {"frameId": frame_id}
         if method == "Fetch.getResponseBody":
             body = self.response_bodies.get(str(params.get("requestId")), b"")
             return {"body": base64.b64encode(body).decode("ascii"), "base64Encoded": True}
