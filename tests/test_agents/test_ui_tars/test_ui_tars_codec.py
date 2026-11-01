@@ -10,6 +10,10 @@ run's action space and reads only its arguments and itself, so:
   required and optional with optional;
 - a malformed reply or an unwritable action is refused with the same words
   as before the codec existed (the agent's tests pin the rest of them);
+- a verb binds only where the run holds its action: the mobile verbs bind to
+  Android's actions (here the stub's, ``tests/_helpers/android_stub.py``) and
+  to nothing in a browser run; ``press_home`` and ``press_back`` run as one
+  action, told apart by the key each fixes;
 - two codecs for one space say the same thing, in any call order.
 """
 
@@ -39,8 +43,12 @@ from spectragent.core.loops.coordinate_frames import (
     step_frame,
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
+from spectragent.core.negotiation import extract_wiring
 from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.observation.geometry import CoordinateSpace
 from tests._helpers.action_spaces import browser_descriptors, space_of, wired_space
+from tests._helpers.android_stub import mobile_descriptors
 
 #: One value per param a verb fills; the points lie on a 1280x720 viewport.
 _VALUES: dict[str, Any] = {
@@ -54,7 +62,11 @@ _VALUES: dict[str, Any] = {
     "direction": "left",
     "keys": "Control+Shift+t",
     "extracted_content": "the answer",
+    "app_name": "Clock",
 }
+
+#: The verbs that run as Android's actions, which a browser run does not hold.
+_MOBILE_VERBS = ("long_press", "open_app", "press_home", "press_back")
 
 
 _SCREENSHOT = ScreenshotObs(
@@ -69,6 +81,23 @@ _SCREENSHOT = ScreenshotObs(
 def _codec(**kwargs: Any) -> UITarsCodec:
     """A codec for UI-TARS's space, framed on its grid as a run frames it."""
     return UITarsCodec(wired_space(UITarsAgent, coordinate_space="screenshot_pixels"), **kwargs)
+
+
+def _every_verb_space(coordinate_space: CoordinateSpace = "screenshot_pixels") -> ActionSpace:
+    """A space holding an action for every verb: a browser's for UI-TARS's wiring, and Android's three.
+
+    The browser actions UI-TARS's wiring names, and the stub's ``long_press``,
+    ``open_app`` and ``press_key``, which no capability shipped today registers.
+    """
+    required, optional = extract_wiring(UITarsAgent, "action")
+    return space_of(
+        [*browser_descriptors(*sorted(required | optional)), *mobile_descriptors()],
+        coordinate_space=coordinate_space,
+    )
+
+
+def _every_verb_codec(**kwargs: Any) -> UITarsCodec:
+    return UITarsCodec(_every_verb_space(), **kwargs)
 
 
 class _PanParams(BaseModel):
@@ -106,13 +135,14 @@ _PAN_VERB = Verb(
 def _action(codec: UITarsCodec, verb: str) -> Action:
     """An action the verb writes, under the run's full name, every param it fills set."""
     bound = codec.verbs[verb]
-    return Action(name=bound.descriptor.name, params={key: _VALUES[key] for key in bound.params})
+    values = {**_VALUES, **bound.fixed}
+    return Action(name=bound.descriptor.name, params={key: values[key] for key in bound.params})
 
 
 class TestEveryVerbRoundTrips:
     @pytest.mark.parametrize("verb", list(VERBS))
     def test_write_then_read_is_the_same_action(self, verb: str) -> None:
-        codec = _codec()
+        codec = _every_verb_codec()
         action = _action(codec, verb)
         (back,) = codec.read_actions(codec.write([action]))
         assert back.name == VERBS[verb].action
@@ -126,7 +156,7 @@ class TestEveryVerbRoundTrips:
         points come back into viewport units, and writing that again gives the
         same text. The framework moves the points; the codec only spells them.
         """
-        space = wired_space(UITarsAgent, coordinate_space="normalized_1000")
+        space = _every_verb_space("normalized_1000")
         codec = UITarsCodec(space)
         frame = step_frame(space, SimpleNamespace(screenshot=_SCREENSHOT))
         recorded = [_action(codec, verb)]
@@ -136,21 +166,25 @@ class TestEveryVerbRoundTrips:
         assert codec.write(actions_in_model_frame(read, frame, space), thought="a b c") == text
 
     def test_a_reply_of_every_verb_reads_back_in_order(self) -> None:
-        codec = _codec()
+        codec = _every_verb_codec()
         actions = [_action(codec, verb) for verb in VERBS]
         back = codec.read_actions(codec.write(actions))
         assert [a.name for a in back] == [verb.action for verb in VERBS.values()]
         assert [a.params for a in back] == [a.params for a in actions]
 
     def test_each_verb_is_written_as_its_signature_teaches(self) -> None:
-        codec = _codec()
+        codec = _every_verb_codec()
         written = {verb: codec.write_call(_action(codec, verb)) for verb in VERBS}
         assert written == {
             "click": "click(point='(640, 360)')",
+            "long_press": "long_press(point='(640, 360)')",
             "type": "type(content='it\\'s \"done\"\\n東京 \\\\ x', point='(640, 360)')",
             "scroll": "scroll(start_box='(1, 2)', direction='left')",
+            "open_app": "open_app(app_name='Clock')",
             "hotkey": "hotkey(key='Control+Shift+t')",
             "drag": "drag(start_point='(1, 2)', end_point='(999, 700)')",
+            "press_home": "press_home()",
+            "press_back": "press_back()",
             "wait": "wait()",
             "finished": "finished(content='the answer')",
         }
@@ -251,7 +285,82 @@ class TestPointsAreTheActionsOwn:
         bare = ActionDescriptor(name="browser.click_coordinate", description="Click.")
         with pytest.raises(ValueError, match=r"click\(\) writes 1 point\(s\)"):
             UITarsAgent().check_action_space(space_of([bare]))
-        UITarsAgent().check_action_space(_codec().space)
+        UITarsAgent().check_action_space(_every_verb_space())
+
+
+class TestMobileVerbs:
+    """``long_press``, ``open_app``, ``press_home`` and ``press_back`` run as Android's actions."""
+
+    @staticmethod
+    def _mobile_codec() -> UITarsCodec:
+        return UITarsCodec(space_of(mobile_descriptors()))
+
+    def test_a_browser_run_binds_none_of_them(self) -> None:
+        assert not set(_MOBILE_VERBS) & set(_codec().verbs)
+
+    def test_a_run_holding_androids_actions_binds_each_to_its_action(self) -> None:
+        verbs = self._mobile_codec().verbs
+        assert {verb: verbs[verb].descriptor.name for verb in _MOBILE_VERBS} == {
+            "long_press": "android.long_press",
+            "open_app": "android.open_app",
+            "press_home": "android.press_key",
+            "press_back": "android.press_key",
+        }
+
+    def test_long_press_holds_where_its_point_is(self) -> None:
+        codec = self._mobile_codec()
+        held = Action(name="long_press", params={"coordinate_x": 10, "coordinate_y": 20})
+        assert codec.read_actions("Action: long_press(point='(10, 20)')") == [held]
+        # UI-TARS's mobile prompt spells the point start_box.
+        assert codec.read_actions("Action: long_press(start_box='(10, 20)')") == [held]
+        assert codec.write_call(held.model_copy(update={"name": "android.long_press"})) == (
+            "long_press(point='(10, 20)')"
+        )
+
+    def test_open_app_names_the_app(self) -> None:
+        codec = self._mobile_codec()
+        opened = Action(name="open_app", params={"app_name": "Clock"})
+        assert codec.read_actions("Action: open_app(app_name='Clock')") == [opened]
+        assert codec.write_call(opened) == "open_app(app_name='Clock')"
+        with pytest.raises(ParseError, match="open_app needs app_name='app name'"):
+            codec.read_actions("Action: open_app()")
+
+    @pytest.mark.parametrize(("verb", "key"), [("press_home", "home"), ("press_back", "back")])
+    def test_a_key_verb_presses_the_key_it_fixes(self, verb: str, key: str) -> None:
+        codec = self._mobile_codec()
+        assert codec.verbs[verb].verb.signature == f"{verb}()"
+        assert codec.read_actions(f"Action: {verb}()") == [
+            Action(name="press_key", params={"key": key})
+        ]
+        pressed = Action(name="android.press_key", params={"key": key})
+        assert codec.write_call(pressed) == f"{verb}()"
+
+    def test_the_fixed_key_is_no_argument_of_the_call(self) -> None:
+        with pytest.raises(ParseError) as excinfo:
+            self._mobile_codec().read_actions("Action: press_home(key='back')")
+        assert excinfo.value.detail == (
+            "Action line 1, press_home(key='back'): press_home() does not take key; "
+            "write it as press_home()"
+        )
+
+    def test_a_key_no_verb_fixes_cannot_be_written(self) -> None:
+        codec = self._mobile_codec()
+        enter = Action(name="android.press_key", params={"key": "enter"})
+        with pytest.raises(UnrepresentableActionError) as excinfo:
+            codec.write_call(enter)
+        assert list(excinfo.value.params) == ["key"]
+        assert excinfo.value.detail == (
+            "no UI-TARS verb sets key='enter' (press_home() sets key='home'; "
+            "press_back() sets key='back')"
+        )
+        # Shown as a fact, it keeps its JSON.
+        assert codec.write_fact(enter) == enter.model_dump(mode="json")
+
+    def test_a_bound_verb_writes_only_the_value_it_fixes(self) -> None:
+        bound = self._mobile_codec().verbs["press_home"]
+        assert bound.write({"key": "home"}) == "press_home()"
+        with pytest.raises(ValueError, match=r"press_home\(\) always sets key='home'"):
+            bound.write({"key": "back"})
 
 
 class TestMalformedRepliesKeepTheirWords:
@@ -423,7 +532,7 @@ class TestNoState:
             codec.verbs["zoom"] = codec.verbs["click"]  # type: ignore[index]
 
     def test_two_codecs_for_one_space_agree_in_any_order(self) -> None:
-        first, second = _codec(), _codec()
+        first, second = _every_verb_codec(), _every_verb_codec()
         actions = [_action(first, verb) for verb in VERBS]
         reply = first.write(actions)
         assert second.read_actions(reply) == first.read_actions(reply)

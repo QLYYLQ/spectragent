@@ -151,7 +151,7 @@ def _action_contract(max_actions_per_step: int, *, can_finish: bool) -> tuple[st
 
 
 def _render_action_space(codec: UITarsCodec) -> str:
-    """The run's actions as UI-TARS call syntax, one block per action the codec binds a verb to::
+    """The run's actions as UI-TARS call syntax, one block per verb the codec binds::
 
         - type(content='text to type', point='(x, y)')
           Click a point in the page viewport to focus a text field, then type.
@@ -161,25 +161,29 @@ def _render_action_space(codec: UITarsCodec) -> str:
     parameter types are the descriptor's (what the action executes). The
     ``executes`` line names the params the verb's non-point arguments fill,
     as a consequence rather than as syntax: the descriptor's names belong to
-    the executor (``text``), the model writes the verb's (``content``). Points
-    are left out of it: the Coordinates section says which grid they are on.
-    A run action with no verb is skipped: the model has no syntax for it.
+    the executor (``text``), the model writes the verb's (``content``). A
+    param the verb fixes is shown with its value (``press_home()`` executes
+    ``key='home'``), which is all that tells apart two verbs of one action.
+    Points are left out of it: the Coordinates section says which grid they
+    are on. Blocks follow the space's actions; a run action with no verb is
+    skipped, since the model has no syntax for it.
     """
-    bound_to = {bound.descriptor.name: bound for bound in codec.verbs.values()}
     blocks: list[str] = []
     for descriptor in codec.space.descriptors:
-        bound = bound_to.get(descriptor.name)
-        if bound is None:
-            continue
-        lines = [f"- {bound.verb.signature}", f"  {descriptor.description}"]
-        filled = [
-            (a.param, descriptor.params[a.param])
-            for a in bound.verb.arguments
-            if a.param is not None and a.param in descriptor.params
-        ]
-        if filled:
-            lines.append(f"  executes: {', '.join(f'{k}: {v}' for k, v in filled)}")
-        blocks.append("\n".join(lines))
+        for bound in codec.verbs.values():
+            if bound.descriptor.name != descriptor.name:
+                continue
+            lines = [f"- {bound.verb.signature}", f"  {descriptor.description}"]
+            filled = [
+                f"{a.param}={a.value!r}"
+                if a.kind == "fixed"
+                else f"{a.param}: {descriptor.params[a.param]}"
+                for a in bound.verb.arguments
+                if a.param is not None and a.param in descriptor.params
+            ]
+            if filled:
+                lines.append(f"  executes: {', '.join(filled)}")
+            blocks.append("\n".join(lines))
     return "\n".join(blocks)
 
 
@@ -203,9 +207,13 @@ class UITarsAgent(AgentBase):
     # keys (AGENTS.md §2.5). The required actions are what the model cannot
     # work without; the optional four are the rest of its native vocabulary,
     # dropped from the prompt and the codec when a capability does not offer
-    # them. ``capture_state`` is the platform-neutral capture fact (optional);
-    # browser page state (``browser_meta``) is for browser-specific agents and
-    # deliberately not declared (``docs/architecture_design.md`` §4.4).
+    # them. The mobile verbs' actions (``long_press``, ``open_app``,
+    # ``press_key``) join ``optional_keys`` with the Android capability that
+    # registers them: the complete catalog build refuses a relative key no
+    # capability registers. ``capture_state`` is the platform-neutral capture
+    # fact (optional); browser page state (``browser_meta``) is for
+    # browser-specific agents and deliberately not declared
+    # (``docs/architecture_design.md`` §4.4).
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
 
     __wiring__: ClassVar[dict[str, Any]] = {

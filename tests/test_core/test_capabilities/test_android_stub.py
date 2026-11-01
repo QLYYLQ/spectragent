@@ -19,7 +19,7 @@ completeness check without running the contract.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, ClassVar
+from typing import Any, ClassVar, get_args
 
 import pytest
 from pydantic import BaseModel
@@ -36,6 +36,7 @@ from spectragent.schemas.action import ActionDescriptor
 from tests._helpers.android_stub import (
     ACTIONS,
     ANDROID_STUB,
+    MOBILE_ACTIONS,
     StubAndroidCapability,
     android_stub_harness,
 )
@@ -248,3 +249,19 @@ def test_each_stub_action_takes_the_params_of_the_browser_action_of_its_name(key
 
     assert _schema_without_descriptions(stub.Params) == _schema_without_descriptions(browser.Params)
     assert point_params(stub.Params) == point_params(browser.Params)
+
+
+def test_the_android_only_actions_take_what_the_mobile_verbs_fill() -> None:
+    """``long_press`` takes a tap's point, ``open_app`` an app's name, ``press_key`` a closed key set."""
+    long_press, open_app, press_key = (ActionRegistrar.get(key) for key in MOBILE_ACTIONS)
+    tap = ActionRegistrar.get("android.click_coordinate")
+
+    assert _schema_without_descriptions(long_press.Params) == _schema_without_descriptions(
+        tap.Params
+    )
+    assert point_params(long_press.Params) == point_params(tap.Params)
+    (app_name,) = open_app.Params.model_fields.values()
+    assert list(open_app.Params.model_fields) == ["app_name"]
+    assert app_name.annotation is str and app_name.is_required()
+    key = press_key.Params.model_fields["key"]
+    assert get_args(key.annotation) == ("back", "home", "enter")

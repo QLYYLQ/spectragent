@@ -52,6 +52,8 @@ from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.prompt import ReactPromptContext
+from tests._helpers.action_spaces import space_for
+from tests._helpers.android_stub import mobile_descriptors
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -301,12 +303,37 @@ class TestPromptVocabulary:
     async def test_no_mobile_only_verb_survives_in_any_template(self, harness) -> None:
         """``long_press`` / ``open_app`` / ``press_home`` / ``press_back``.
 
-        All four are unimplementable on a browser and were taught by
-        ``mobile_use.md``. They belong to an Android capability that does
-        not exist yet; until it does, nothing advertises them.
+        All four are unimplementable on a browser and were once taught by
+        ``mobile_use.md`` whatever the run held. They run as Android's
+        actions, and the codec binds a verb only where the run holds its
+        action, so a browser run's prompt advertises none of them.
         """
         agent, _guard, extra = harness
         for variant in _VARIANTS:
             prompt = await _rendered(agent, extra["space"], variant)
             for verb in ("long_press", "open_app", "press_home", "press_back"):
                 assert verb not in prompt, variant
+
+    def test_a_run_holding_androids_actions_teaches_the_mobile_verbs(self) -> None:
+        """The same verbs, bound where the run holds their actions: each listed, a fixed key shown."""
+        agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
+        agent.prompt_template = "mobile_use"
+        prompt = agent.prepare(
+            task="t",
+            action_space=space_for(agent, mobile_descriptors()),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )[0].content
+        assert isinstance(prompt, str)
+        assert (
+            "- long_press(point='(x, y)')\n"
+            "  Press and hold a point on the screen.\n"
+            "- open_app(app_name='app name')\n"
+            "  Open an installed app by its name.\n"
+            "  executes: app_name: str\n"
+            "- press_home()\n"
+            "  Press a system key.\n"
+            "  executes: key='home'\n"
+            "- press_back()\n"
+            "  Press a system key.\n"
+            "  executes: key='back'"
+        ) in prompt

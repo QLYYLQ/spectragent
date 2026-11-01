@@ -21,7 +21,8 @@ fills. That one entry reads a call into an action, writes an action back as
 the call, and gives the prompt its signature. A point argument names no
 param: it fills the next point the action declares
 (``ActionDescriptor.point_params``), so this module never restates which
-params are a point.
+params are a point. A verb binds only where the run holds its action, so a
+browser run binds none of the mobile verbs and its prompt never teaches them.
 
 **Points stay on the model's grid.** A point read is the numbers the reply
 writes (a box's centre for four); a point written is the numbers it is handed.
@@ -66,8 +67,10 @@ __all__ = ["VERBS", "Argument", "BoundVerb", "UITarsCodec", "Verb", "read_though
 
 #: How an argument's value is read and written. ``point``: two numbers, or a
 #: box's four; ``text``: any string, quoted; ``choice``: one of
-#: :attr:`Argument.choices`; ``keys``: a key chord, ``+``-joined.
-ArgumentKind = Literal["point", "text", "choice", "keys"]
+#: :attr:`Argument.choices`; ``keys``: a key chord, ``+``-joined; ``fixed``:
+#: nothing, the call never writes it and the verb itself fills its param with
+#: :attr:`Argument.value` (``press_home()`` presses ``home``).
+ArgumentKind = Literal["point", "text", "choice", "keys", "fixed"]
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,8 @@ class Argument:
             declares: absent, the action has no such point; and a written call
             leaves it out when the action states none.
         choices: The values a ``choice`` takes.
+        value: The value a ``fixed`` argument fills its param with. A call
+            neither writes nor may write it: the verb's name says it.
     """
 
     name: str
@@ -99,6 +104,7 @@ class Argument:
     spellings: tuple[str, ...] = ()
     required: bool = True
     choices: tuple[str, ...] = ()
+    value: str | None = None
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -112,7 +118,9 @@ class Verb:
 
     Every param the verb fills comes from an argument, so an action param no
     argument fills cannot be written: ``type``'s ``clear``, ``scroll``'s
-    ``amount``, ``wait``'s ``seconds``, ``done``'s ``success``.
+    ``amount``, ``wait``'s ``seconds``, ``done``'s ``success``. Verbs that run
+    as one action are told apart by the values they fix: ``press_home`` and
+    ``press_back`` are both ``press_key``.
     """
 
     name: str
@@ -123,13 +131,19 @@ class Verb:
 
     @property
     def signature(self) -> str:
-        """The call the prompt teaches: every argument, with its example value."""
-        return f"{self.name}({', '.join(f'{a.name}={a.example}' for a in self.arguments)})"
+        """The call the prompt teaches: every argument a call writes, with its example value."""
+        written = (a for a in self.arguments if a.kind != "fixed")
+        return f"{self.name}({', '.join(f'{a.name}={a.example}' for a in written)})"
 
     @property
     def accepts(self) -> tuple[str, ...]:
         """Every argument name the verb reads; anything else is refused, never dropped."""
-        return tuple(name for argument in self.arguments for name in argument.names)
+        return tuple(
+            name
+            for argument in self.arguments
+            if argument.kind != "fixed"
+            for name in argument.names
+        )
 
 
 DIRECTIONS = ("up", "down", "left", "right")
@@ -155,12 +169,19 @@ def _keys(name: str, example: str, param: str, *spellings: str) -> Argument:
     return Argument(name, "keys", example, param=param, spellings=spellings)
 
 
-#: Every verb UI-TARS may emit, in the order the prompt and the error hints
-#: list them. A verb absent from this table is a parse error, not a silently
-#: made-up action name. The mobile-only verbs (``long_press``, ``open_app``,
-#: ``press_home``, ``press_back``) have no browser action and no entry here;
-#: an Android capability brings them as its actions.
+def _fixed(param: str, value: str) -> Argument:
+    return Argument(param, "fixed", "", param=param, value=value)
+
+
+#: Every verb UI-TARS may emit, in the order the error hints list them. A verb
+#: absent from this table is a parse error, not a silently made-up action name.
+#: A run binds the verbs whose action it holds (:func:`_bind`), so the mobile
+#: verbs (``long_press``, ``open_app``, ``press_home``, ``press_back``), which
+#: run as Android's actions (``docs/architecture_design.md`` §11.2), are
+#: unknown verbs in a browser run.
 #:
+#: - ``long_press``: one point, like ``click``: taught as ``point``, read as
+#:   ``start_box`` too, as UI-TARS's mobile prompt writes it.
 #: - ``type``: UI-TARS says ``content``, the action reads ``text``. Required:
 #:   with ``clear_by_default`` a missing text would clear the field and type
 #:   nothing, reported as a success.
@@ -173,6 +194,10 @@ def _keys(name: str, example: str, param: str, *spellings: str) -> Argument:
 #:   (``ScrollAction.default_amount`` is the capability's; the agent declares
 #:   that it can scroll). Likewise ``wait``'s length is
 #:   ``WaitAction.default_seconds``.
+#: - ``open_app``: the app's name; the capability resolves it to a package.
+#: - ``press_home`` / ``press_back``: no argument; each runs as ``press_key``
+#:   with the key it fixes. Writing a ``press_key`` back picks the verb by its
+#:   key, and a key no verb fixes (``enter``) cannot be written.
 #: - ``finished``: ``done`` reads ``extracted_content``. The task claim:
 #:   ``finished`` has no argument that says whether the task was accomplished
 #:   (a model ends with ``finished(content='无法完成…')`` too), so it reads back
@@ -183,6 +208,7 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
         verb.name: verb
         for verb in (
             _verb("click", "click_coordinate", _point("point", "'(x, y)'", "start_box")),
+            _verb("long_press", "long_press", _point("point", "'(x, y)'", "start_box")),
             _verb(
                 "type",
                 "type_coordinate",
@@ -195,6 +221,7 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
                 _point("start_box", "'(x, y)'", "point", required=False),
                 _choice("direction", "direction", DIRECTIONS),
             ),
+            _verb("open_app", "open_app", _text("app_name", "'app name'", "app_name")),
             _verb("hotkey", "send_keys", _keys("key", "'ctrl+a'", "keys", "keys")),
             _verb(
                 "drag",
@@ -202,6 +229,8 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
                 _point("start_point", "'(x1, y1)'", "start_box"),
                 _point("end_point", "'(x2, y2)'", "end_box"),
             ),
+            _verb("press_home", "press_key", _fixed("key", "home")),
+            _verb("press_back", "press_key", _fixed("key", "back")),
             _verb("wait", "wait"),
             _verb(
                 "finished",
@@ -282,6 +311,19 @@ class BoundVerb:
             *(key for _argument, pair in self.points for key in pair),
             *(a.param for a in self.verb.arguments if a.param is not None),
         )
+
+    @property
+    def fixed(self) -> dict[str, str]:
+        """Each param the verb fills with a fixed value, and the value (``press_home``: ``key='home'``)."""
+        return {
+            a.param: a.value
+            for a in self.verb.arguments
+            if a.kind == "fixed" and a.param is not None and a.value is not None
+        }
+
+    def fixes(self, params: Mapping[str, Any]) -> bool:
+        """Whether *params* hold every value the verb fixes, so the verb can write them."""
+        return all(params.get(key) == value for key, value in self.fixed.items())
 
     def read(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         """The action params a call's arguments say, its points as written.
@@ -437,16 +479,14 @@ class UITarsCodec:
         Raises:
             UnrepresentableActionError: Naming what cannot be written: a run
                 action with no verb, an action this run does not execute, a
-                set param no argument fills, or a value with no spelling (a
-                point that is not two numbers, a key chord with whitespace in
-                it, a direction outside the four).
+                value no verb fixes (``press_key``'s ``enter``), a set param
+                no argument fills, or a value with no spelling (a point that
+                is not two numbers, a key chord with whitespace in it, a
+                direction outside the four).
         """
         full = executed_name(self.space, action.name)
-        bound = next(
-            (b for b in self.verbs.values() if full is not None and b.descriptor.name == full),
-            None,
-        )
-        if bound is None:
+        runs_as = [b for b in self.verbs.values() if full is not None and b.descriptor.name == full]
+        if not runs_as:
             offered = "; ".join(
                 f"{name}() runs as {b.descriptor.name}" for name, b in self.verbs.items()
             )
@@ -456,6 +496,18 @@ class UITarsCodec:
                 else f"UI-TARS has no verb for {full} ({offered})"
             )
             raise UnrepresentableActionError(action.name, (), detail)
+        # Verbs that run as one action are told apart by the values they fix.
+        bound = next((b for b in runs_as if b.fixes(action.params)), None)
+        if bound is None:
+            keys = sorted({key for b in runs_as for key in b.fixed})
+            stated = ", ".join(f"{key}={action.params.get(key)!r}" for key in keys)
+            fixes = "; ".join(
+                f"{b.verb.name}() sets {', '.join(f'{k}={v!r}' for k, v in b.fixed.items())}"
+                for b in runs_as
+            )
+            raise UnrepresentableActionError(
+                action.name, keys, f"no UI-TARS verb sets {stated} ({fixes})"
+            )
         filled = bound.params
         extra = [
             key for key, value in action.params.items() if value is not None and key not in filled
@@ -568,6 +620,10 @@ def _read_keys(kwargs: Mapping[str, Any], argument: Argument, verb: Verb) -> str
     return keys
 
 
+def _read_fixed(kwargs: Mapping[str, Any], argument: Argument, verb: Verb) -> str | None:
+    return argument.value
+
+
 def _required(params: Mapping[str, Any], key: str) -> Any:
     value = params.get(key)
     if value is None:
@@ -626,8 +682,21 @@ def _write_keys(params: Mapping[str, Any], argument: Argument, verb: Verb) -> st
     return _quoted(keys)
 
 
-_READ = MappingProxyType({"text": _read_text, "choice": _read_choice, "keys": _read_keys})
-_WRITE = MappingProxyType({"text": _write_text, "choice": _write_choice, "keys": _write_keys})
+def _write_fixed(params: Mapping[str, Any], argument: Argument, verb: Verb) -> None:
+    """Nothing: the verb's name says the value, so *params* must hold the one it fixes."""
+    assert argument.param is not None
+    if params.get(argument.param) != argument.value:
+        raise _Unwritable(
+            (argument.param,), f"{verb.name}() always sets {argument.param}={argument.value!r}"
+        )
+
+
+_READ = MappingProxyType(
+    {"text": _read_text, "choice": _read_choice, "keys": _read_keys, "fixed": _read_fixed}
+)
+_WRITE = MappingProxyType(
+    {"text": _write_text, "choice": _write_choice, "keys": _write_keys, "fixed": _write_fixed}
+)
 
 
 def _quoted(text: str) -> str:
