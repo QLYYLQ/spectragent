@@ -91,7 +91,7 @@ from spectragent.core.capabilities.browser.input._schedule import (
 )
 from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.core.capabilities.browser.input.rhythm import Keystroke, TypingRhythmProtocol
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 
 logger = logging.getLogger(__name__)
 _KEY_RELEASE_TIMEOUT_S = 2.0
@@ -215,10 +215,10 @@ class HumanKeyboard:
         self,
         cdp: CDPCommandProtocol,
         *,
-        input_platform: InputPlatform,
+        input_platform: BrowserPlatform,
         rhythm: TypingRhythmProtocol | None = None,
     ) -> None:
-        if input_platform not in get_args(InputPlatform):
+        if input_platform not in get_args(BrowserPlatform):
             raise ValueError("HumanKeyboard requires the measured browser input_platform")
         self._cdp = cdp
         self.input_platform = input_platform

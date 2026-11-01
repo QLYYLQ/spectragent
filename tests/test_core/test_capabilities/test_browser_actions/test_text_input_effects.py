@@ -32,7 +32,7 @@ from spectragent.core.capabilities.browser.effects import (
     KeyPressEffect,
     TextInputEffect,
 )
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.schemas.action import ActionResult
 from tests.test_core.test_capabilities.test_browser_actions._effect_tab import (
     ProbeCDP,
@@ -60,7 +60,7 @@ async def type_into(
     text: str = "Ada",
     *,
     clear: bool | None = None,
-    platform: InputPlatform = "linux",
+    platform: BrowserPlatform = "linux",
     node: DOMElementNode | None = None,
     **watchdog_kwargs: Any,
 ) -> ActionResult:

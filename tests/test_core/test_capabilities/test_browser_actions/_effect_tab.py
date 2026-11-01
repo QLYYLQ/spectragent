@@ -31,7 +31,7 @@ from typing import Any
 from agent_cdp import EventScope, ScopeGroup
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMRect
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     _FOCUSED_FIELD_JS,
     ActionWatchdog,
@@ -267,7 +267,7 @@ class EffectTab:
         cdp: ProbeCDP,
         scope: EventScope,
         nodes: dict[int, DOMElementNode],
-        platform: InputPlatform = "linux",
+        platform: BrowserPlatform = "linux",
         action_effect_timeout_s: float = 1.0,
     ) -> None:
         self.cdp = cdp
@@ -295,7 +295,7 @@ async def effect_tab(
     cdp: ProbeCDP,
     *,
     nodes: dict[int, DOMElementNode] | None = None,
-    platform: InputPlatform = "linux",
+    platform: BrowserPlatform = "linux",
     **watchdog_kwargs: Any,
 ) -> AsyncIterator[EffectTab]:
     """A focused tab named ``tab`` whose actions run on *cdp*."""

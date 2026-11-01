@@ -32,7 +32,7 @@ from spectragent.core.capabilities.browser.effects import (
     TabFacts,
 )
 from spectragent.core.capabilities.browser.input.chords import parse_key_chord
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.trace.effects import registered_effect
 from spectragent.schemas.action import ActionResult
 from tests.test_core.test_capabilities.test_browser_actions._effect_tab import (
@@ -103,7 +103,7 @@ class HistoryProbeCDP(ProbeCDP):
 
 
 async def press(
-    cdp: ProbeCDP, keys: str, platform: InputPlatform, **watchdog_kwargs: Any
+    cdp: ProbeCDP, keys: str, platform: BrowserPlatform, **watchdog_kwargs: Any
 ) -> ActionResult:
     async with effect_tab(cdp, platform=platform, **watchdog_kwargs) as tab:
         return await SendKeysAction(post_delay_ms=0).execute({"keys": keys}, capability=tab)  # type: ignore[arg-type]
@@ -136,7 +136,9 @@ HARD_RELOAD += [("windows", "Shift+F5"), ("linux", "Control+F5"), ("linux", "Con
 
 class TestNavigationShortcuts:
     @pytest.mark.parametrize(("platform", "keys"), BACK)
-    async def test_back_goes_to_the_earlier_entry(self, platform: InputPlatform, keys: str) -> None:
+    async def test_back_goes_to_the_earlier_entry(
+        self, platform: BrowserPlatform, keys: str
+    ) -> None:
         cdp = HistoryProbeCDP([A, B], 1)
         result = await press(cdp, keys, platform)
         shortcut = ran(result)
@@ -162,7 +164,7 @@ class TestNavigationShortcuts:
 
     @pytest.mark.parametrize(("platform", "keys"), FORWARD)
     async def test_forward_goes_to_the_later_entry(
-        self, platform: InputPlatform, keys: str
+        self, platform: BrowserPlatform, keys: str
     ) -> None:
         cdp = HistoryProbeCDP([A, B], 0)
         shortcut = ran(await press(cdp, keys, platform))
@@ -172,7 +174,7 @@ class TestNavigationShortcuts:
 
     @pytest.mark.parametrize(("platform", "keys"), RELOAD)
     async def test_reload_loads_the_document_again(
-        self, platform: InputPlatform, keys: str
+        self, platform: BrowserPlatform, keys: str
     ) -> None:
         cdp = HistoryProbeCDP([A, B], 1)
         result = await press(cdp, keys, platform)
@@ -192,7 +194,7 @@ class TestNavigationShortcuts:
 
     @pytest.mark.parametrize(("platform", "keys"), HARD_RELOAD)
     async def test_a_hard_reload_ignores_the_cache(
-        self, platform: InputPlatform, keys: str
+        self, platform: BrowserPlatform, keys: str
     ) -> None:
         cdp = HistoryProbeCDP([A], 0)
         result = await press(cdp, keys, platform)
@@ -318,7 +320,7 @@ class TestShortcutsForBrowserUi:
         ],
     )
     async def test_the_key_goes_to_the_page_and_the_effect_says_what_it_is(
-        self, platform: InputPlatform, keys: str, line: str
+        self, platform: BrowserPlatform, keys: str, line: str
     ) -> None:
         cdp = HistoryProbeCDP([A], 0)
         effect = key_press(await press(cdp, keys, platform))
@@ -355,7 +357,7 @@ class TestAnotherPlatformsShortcut:
         ],
     )
     async def test_with_nothing_editable_focused_the_effect_names_the_measured_binding(
-        self, platform: InputPlatform, keys: str, line: str
+        self, platform: BrowserPlatform, keys: str, line: str
     ) -> None:
         cdp = HistoryProbeCDP([A, B], 1)
         effect = key_press(await press(cdp, keys, platform))

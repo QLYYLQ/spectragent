@@ -202,11 +202,18 @@ class TestVerbTableAndWiringAgree:
     invisible until a live run.
     """
 
+    #: The actions the mobile verbs run as. The wiring names them together with
+    #: the Android capability that registers them, since the complete catalog
+    #: build refuses a relative key no capability registers; this set then empties.
+    _UNWIRED_MOBILE_ACTIONS = frozenset({"long_press", "open_app", "press_key"})
+
     def test_every_verb_maps_to_a_wired_action(self) -> None:
         entry = UITarsAgent.__wiring__["action"]
         required, optional = entry["keys"], entry["optional_keys"]
         wired = set(required) | set(optional)
-        assert {v.action for v in VERBS.values()} == wired
+        verb_actions = {v.action for v in VERBS.values()}
+        assert verb_actions - wired == self._UNWIRED_MOBILE_ACTIONS
+        assert wired <= verb_actions
 
     def test_every_verb_names_no_capability(self) -> None:
         assert all("." not in v.action for v in VERBS.values())

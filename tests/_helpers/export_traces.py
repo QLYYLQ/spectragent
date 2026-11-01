@@ -26,7 +26,7 @@ from spectragent.core.capabilities.browser.observations import (
     BrowserPlatformObs,
     ScreenshotObs,
 )
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.trace.encoding import TraceFile, encode_fragment
 from spectragent.core.trace.models import (
@@ -159,7 +159,7 @@ def write_run(
     agent_done: AgentDoneStatus | None = AgentDoneStatus.DONE,
     verdicts: dict[str, EvalResult] | None = None,
     secrets_recorded: bool = False,
-    input_platform: InputPlatform = "macos",
+    input_platform: BrowserPlatform = "macos",
 ) -> Path:
     """Commit one recorded run under ``root/<run_id>`` and return its directory.
 

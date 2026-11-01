@@ -29,7 +29,7 @@ from spectragent.core.capabilities.browser.input.keyboard import (
     key_event,
 )
 from spectragent.core.capabilities.browser.input.rhythm import Keystroke
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
 from tests.test_core.test_capabilities.test_browser_action_click_robustness import FakeCDP
@@ -181,7 +181,7 @@ async def test_named_chords_use_the_cdp_modifier_bits(chord, expected):
     ],
 )
 async def test_only_the_measured_platforms_native_select_all_gets_an_editing_command(
-    platform: InputPlatform,
+    platform: BrowserPlatform,
     chord: str,
 ):
     cdp = FakeCDP()

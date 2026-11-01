@@ -24,17 +24,17 @@ from spectragent.core.capabilities.browser.input.shortcuts import (
     binding,
     browser_shortcut,
 )
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 
-PLATFORMS: tuple[InputPlatform, ...] = get_args(InputPlatform)
+PLATFORMS: tuple[BrowserPlatform, ...] = get_args(BrowserPlatform)
 
 
-def match(keys: str, platform: InputPlatform) -> object:
+def match(keys: str, platform: BrowserPlatform) -> object:
     return browser_shortcut(parse_key_chord(keys), platform)
 
 
 #: (platform, chord, the shortcut it runs there): Chrome's bindings, every one.
-RUNS: list[tuple[InputPlatform, str, Shortcut]] = [
+RUNS: list[tuple[BrowserPlatform, str, Shortcut]] = [
     ("macos", "Meta+[", Shortcut("back")),
     ("macos", "Meta+ArrowLeft", Shortcut("back", yields_to_text=True)),
     ("macos", "Meta+]", Shortcut("forward")),
@@ -83,7 +83,7 @@ RUNS: list[tuple[InputPlatform, str, Shortcut]] = [
 class TestRuns:
     @pytest.mark.parametrize(("platform", "keys", "shortcut"), RUNS)
     def test_the_measured_platforms_binding_runs_the_command(
-        self, platform: InputPlatform, keys: str, shortcut: Shortcut
+        self, platform: BrowserPlatform, keys: str, shortcut: Shortcut
     ) -> None:
         assert match(keys, platform) == Runs(shortcut)
 
@@ -140,7 +140,7 @@ class TestNotRun:
         ],
     )
     def test_shortcuts_for_browser_ui_this_browser_does_not_show(
-        self, platform: InputPlatform, keys: str, command: str
+        self, platform: BrowserPlatform, keys: str, command: str
     ) -> None:
         assert match(keys, platform) == WithoutUi(command)  # type: ignore[arg-type]
 
@@ -165,7 +165,7 @@ class TestNotRun:
         ],
     )
     def test_another_platforms_shortcut_names_the_measured_binding(
-        self, platform: InputPlatform, keys: str, expected: OtherPlatform
+        self, platform: BrowserPlatform, keys: str, expected: OtherPlatform
     ) -> None:
         assert match(keys, platform) == expected
 
@@ -174,17 +174,17 @@ class TestNotRun:
         ["Enter", "Escape", "PageDown", "Meta+A", "Control+A", "a", "Tab", "Meta+Shift+W", "+"],
     )
     @pytest.mark.parametrize("platform", PLATFORMS)
-    def test_other_keys_are_no_browser_shortcut(self, keys: str, platform: InputPlatform) -> None:
+    def test_other_keys_are_no_browser_shortcut(self, keys: str, platform: BrowserPlatform) -> None:
         assert match(keys, platform) is None
 
 
 class TestTheTable:
     @pytest.mark.parametrize("platform", PLATFORMS)
-    def test_no_chord_both_runs_and_needs_browser_ui(self, platform: InputPlatform) -> None:
+    def test_no_chord_both_runs_and_needs_browser_ui(self, platform: BrowserPlatform) -> None:
         assert not set(COMMANDS[platform]) & set(BROWSER_UI[platform])
 
     @pytest.mark.parametrize("platform", PLATFORMS)
-    def test_every_command_names_a_binding_that_runs_it(self, platform: InputPlatform) -> None:
+    def test_every_command_names_a_binding_that_runs_it(self, platform: BrowserPlatform) -> None:
         for shortcut in COMMANDS[platform].values():
             chord = binding(platform, shortcut.command, shortcut.tab)
             ran = match(chord, platform)

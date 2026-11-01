@@ -27,7 +27,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
-from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.assembly import AGENT_ID, StartSpy, make_env, make_run
 
 
 class _Cap(CapabilityBase):
@@ -129,25 +129,6 @@ def teardown_module() -> None:
     AgentLoopRegistrar.unregister("test_loop_inputs_channel_probe")
 
 
-class _StartSpy:
-    hook_id = "loop_inputs_channel_spy"
-    blocking = True
-    priority = 1
-    __intercepts__: list[Any] = []
-
-    def __init__(self) -> None:
-        self.starts: list[dict[str, Any]] = []
-
-    async def on_run_start(self, **kw: Any) -> None:
-        self.starts.append(kw)
-
-    async def on_run_end(self, **kw: Any) -> None:
-        pass
-
-    async def on_run_error(self, **kw: Any) -> None:
-        pass
-
-
 def _runtime(loop: Any, *, hooks: list[Any] | None = None) -> tuple[AgentRuntime, _Cap]:
     cap = _Cap()
     env = make_env(_Env, {"loop_inputs_channel_cap": cap})
@@ -176,7 +157,7 @@ class TestRefusedEarly:
 
     async def test_refused_before_on_run_start_and_setup(self, tmp_path) -> None:  # noqa: ANN001
         traces = tmp_path / "traces"
-        spy = _StartSpy()
+        spy = StartSpy()
         runtime, cap = _runtime(_ProbeLoop(), hooks=[spy, TraceWriter(trace_dir=str(traces))])
         with pytest.raises(IncompatibleLoopInputError):
             await runtime.execute("t", task_id="t-1", loop_inputs={"checkpoint": {"step": 1}})
@@ -218,7 +199,7 @@ class TestDelivered:
         assert result.agent_done == AgentDoneStatus.DONE
 
     async def test_branch_reaches_on_run_start_by_name(self, tmp_path) -> None:  # noqa: ANN001
-        spy = _StartSpy()
+        spy = StartSpy()
         provenance = BranchProvenance(
             source_run_id="src",
             source_trace="src",
@@ -237,7 +218,7 @@ class TestDelivered:
         assert start["branch"] is provenance
 
     async def test_a_plain_run_starts_with_branch_none(self) -> None:
-        spy = _StartSpy()
+        spy = StartSpy()
         runtime, _ = _runtime(ReactLoop(), hooks=[spy])
         await runtime.execute("t")
         (start,) = spy.starts

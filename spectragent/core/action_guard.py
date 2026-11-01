@@ -11,7 +11,10 @@ executes.
 Beside it, the refusals a Loop words before anything runs, all in one voice:
 an action name the guard would refuse (:func:`name_refusal`), params that do
 not fit the action's ``Params`` (:func:`params_refusal`), and a structured
-reply that does not fit the run's output model (:func:`reply_refusal`).
+reply that does not fit the run's output model (:func:`reply_refusal`). For
+an Agent, the names its run executes (:func:`executed_name`,
+:func:`executed_descriptor`) and the optional check of the whole action space
+that ``AgentRuntime.prepare()`` makes (:class:`ActionSpaceCheck`).
 
 See docs/architecture_design.md §4.5 "guarded_act()" for the design.
 """
@@ -20,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 from pydantic_core import ErrorDetails
@@ -94,6 +97,27 @@ def executed_descriptor(space: ActionSpace, name: str) -> ActionDescriptor | Non
     if full is None:
         return None
     return next(descriptor for descriptor in space.descriptors if descriptor.name == full)
+
+
+@runtime_checkable
+class ActionSpaceCheck(Protocol):
+    """Optional, for an Agent: refuse in ``AgentRuntime.prepare()`` an action space it cannot speak.
+
+    An Agent whose own protocol has to fit the run's actions (UI-TARS: each
+    verb's points fill the points its action declares) is handed the run's
+    effective, framed action space, the one its ``prepare`` seed slot gets
+    later, right after the coordinate frame is checked. A misfit is then
+    refused before a trace is opened and before the environment is set up
+    (AGENTS.md §2.3), not in ``seed_messages`` once ``prepare()`` has passed.
+    An Agent without it is not asked.
+    """
+
+    def check_action_space(self, action_space: ActionSpace) -> None:
+        """Raise, naming what does not fit, if this Agent cannot speak *action_space*.
+
+        Reads its argument only; writes no state.
+        """
+        ...
 
 
 def _not_an_action(space: ActionSpace, name: str) -> str:

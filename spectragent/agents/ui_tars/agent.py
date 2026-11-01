@@ -46,7 +46,10 @@ from spectragent.agents.rendering.capture_state import (
     capture_state_demand,
     render_capture_state,
 )
-from spectragent.agents.rendering.platform import render_computer_use_platform
+from spectragent.agents.rendering.platform import (
+    COMPUTER_USE_PLATFORMS,
+    render_computer_use_platform,
+)
 from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
@@ -66,6 +69,7 @@ from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import CoordinateSpace
 from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.observation.platform import InputPlatform
 from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 
 # ── The coordinate contract ───────────────────────────────────
@@ -147,7 +151,7 @@ def _action_contract(max_actions_per_step: int, *, can_finish: bool) -> tuple[st
 
 
 def _render_action_space(codec: UITarsCodec) -> str:
-    """The run's actions as UI-TARS call syntax, one block per action the codec binds a verb to::
+    """The run's actions as UI-TARS call syntax, one block per verb the codec binds::
 
         - type(content='text to type', point='(x, y)')
           Click a point in the page viewport to focus a text field, then type.
@@ -157,25 +161,29 @@ def _render_action_space(codec: UITarsCodec) -> str:
     parameter types are the descriptor's (what the action executes). The
     ``executes`` line names the params the verb's non-point arguments fill,
     as a consequence rather than as syntax: the descriptor's names belong to
-    the executor (``text``), the model writes the verb's (``content``). Points
-    are left out of it: the Coordinates section says which grid they are on.
-    A run action with no verb is skipped: the model has no syntax for it.
+    the executor (``text``), the model writes the verb's (``content``). A
+    param the verb fixes is shown with its value (``press_home()`` executes
+    ``key='home'``), which is all that tells apart two verbs of one action.
+    Points are left out of it: the Coordinates section says which grid they
+    are on. Blocks follow the space's actions; a run action with no verb is
+    skipped, since the model has no syntax for it.
     """
-    bound_to = {bound.descriptor.name: bound for bound in codec.verbs.values()}
     blocks: list[str] = []
     for descriptor in codec.space.descriptors:
-        bound = bound_to.get(descriptor.name)
-        if bound is None:
-            continue
-        lines = [f"- {bound.verb.signature}", f"  {descriptor.description}"]
-        filled = [
-            (a.param, descriptor.params[a.param])
-            for a in bound.verb.arguments
-            if a.param is not None and a.param in descriptor.params
-        ]
-        if filled:
-            lines.append(f"  executes: {', '.join(f'{k}: {v}' for k, v in filled)}")
-        blocks.append("\n".join(lines))
+        for bound in codec.verbs.values():
+            if bound.descriptor.name != descriptor.name:
+                continue
+            lines = [f"- {bound.verb.signature}", f"  {descriptor.description}"]
+            filled = [
+                f"{a.param}={a.value!r}"
+                if a.kind == "fixed"
+                else f"{a.param}: {descriptor.params[a.param]}"
+                for a in bound.verb.arguments
+                if a.param is not None and a.param in descriptor.params
+            ]
+            if filled:
+                lines.append(f"  executes: {', '.join(filled)}")
+            blocks.append("\n".join(lines))
     return "\n".join(blocks)
 
 
@@ -199,9 +207,13 @@ class UITarsAgent(AgentBase):
     # keys (AGENTS.md §2.5). The required actions are what the model cannot
     # work without; the optional four are the rest of its native vocabulary,
     # dropped from the prompt and the codec when a capability does not offer
-    # them. ``capture_state`` is the platform-neutral capture fact (optional);
-    # browser page state (``browser_meta``) is for browser-specific agents and
-    # deliberately not declared (``docs/architecture_design.md`` §4.4).
+    # them. The mobile verbs' actions (``long_press``, ``open_app``,
+    # ``press_key``) join ``optional_keys`` with the Android capability that
+    # registers them: the complete catalog build refuses a relative key no
+    # capability registers. ``capture_state`` is the platform-neutral capture
+    # fact (optional); browser page state (``browser_meta``) is for
+    # browser-specific agents and deliberately not declared
+    # (``docs/architecture_design.md`` §4.4).
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
 
     __wiring__: ClassVar[dict[str, Any]] = {
@@ -220,6 +232,11 @@ class UITarsAgent(AgentBase):
         },
         "llm": "llm",
     }
+
+    # A computer-use prompt states every input platform, a phone's included
+    # (``render_computer_use_platform``); ``AgentRuntime.prepare()`` holds the
+    # run's platform fragment against it (``core/negotiation/platform.py``).
+    __input_platforms__: ClassVar[frozenset[InputPlatform]] = COMPUTER_USE_PLATFORMS
 
     # ── config (conscribe visible) ─────────────────────────────
     # ``max_steps`` / ``max_actions_per_step`` are the Loop's. The members of
@@ -298,7 +315,16 @@ class UITarsAgent(AgentBase):
             self, registry, required, optional, shown=self.show_capture_state
         )
 
-    # ── Lifecycle hook called by AgentRuntime ──────────────────
+    # ── Lifecycle hooks called by AgentRuntime ─────────────────
+
+    def check_action_space(self, action_space: ActionSpace) -> None:
+        """Refuse in ``AgentRuntime.prepare()`` a space the codec cannot bind (``ActionSpaceCheck``).
+
+        Builds the codec :meth:`prepare` later builds from the same space and
+        discards it: a verb whose points differ from its action's raises its
+        ``ValueError`` here, before the run starts.
+        """
+        UITarsCodec(action_space)
 
     def prepare(
         self,

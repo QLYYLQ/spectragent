@@ -106,7 +106,7 @@ from spectragent.core.capabilities.browser.input.shortcuts import (
     browser_shortcut,
 )
 from spectragent.core.capabilities.browser.input.trajectory import MouseTrajectoryProtocol
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.scroll_probe import ScrollProbe
 from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -448,7 +448,7 @@ class ActionWatchdog(BrowserWatchdog):
         self,
         cdp: CDPCommandProtocol,
         *,
-        input_platform: InputPlatform,
+        input_platform: BrowserPlatform,
         selector_map_getter: Callable[[], DOMSelectorMap | None] | None = None,
         main_frame_id_getter: Callable[[], str | None] | None = None,
         debug_highlight: bool = False,
@@ -493,7 +493,7 @@ class ActionWatchdog(BrowserWatchdog):
         # single bulk ``Input.insertText``.
         self._keyboard = HumanKeyboard(cdp, input_platform=input_platform, rhythm=typing_rhythm)
         # Which chords are the browser's own shortcuts (``input/shortcuts.py``).
-        self._input_platform: InputPlatform = input_platform
+        self._input_platform: BrowserPlatform = input_platform
 
         # The window a dispatched point has to land in — the only thing
         # ``_aim_inside`` knows that the strategy deciding the offset does not.

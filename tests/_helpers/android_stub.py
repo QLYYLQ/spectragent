@@ -16,7 +16,13 @@ any Android code is written. It provides what ``docs/architecture_design.md``
   browser's relative names and with its params, because a relative name is a
   param contract (§4.9). ``scroll``'s optional ``index`` names an element of
   ``android.ui_tree``, which this stub does not provide, so it is never
-  offered. The actions are described for negotiation and never executed.
+  offered;
+- ``long_press``, ``open_app`` and ``press_key``, three of the Android-only
+  names (§11.2), which UI-TARS's mobile verbs run as. UI-TARS's wiring does not
+  name them until the real capability registers them, so its tests hand the
+  codec an action space holding these descriptors (:func:`mobile_descriptors`).
+
+The actions are described for negotiation and never executed.
 
 Its device is a script (:class:`StubDevice`): one capture reads the screen
 once and all three fragments come from it; a failed capture fails the rest of
@@ -63,6 +69,8 @@ ACTIONS = (
     "android.scroll",
     "android.wait",
 )
+#: The Android-only actions UI-TARS's mobile verbs run as; no browser action shares a name.
+MOBILE_ACTIONS = ("android.long_press", "android.open_app", "android.press_key")
 
 ANDROID_STUB = isolated_registries()
 
@@ -213,6 +221,62 @@ with ANDROID_STUB:
             return self.describe("Pause before the next observation.", **context)
 
 
+# ── actions only Android has, under the names of §11.2, described, never executed ──
+
+with ANDROID_STUB:
+
+    @dataclass
+    class AndroidLongPressAction(ActionBase):
+        __registry_key__ = "android.long_press"
+
+        class Params(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            coordinate_x: Annotated[
+                int,
+                PointAxis("coordinate", "x"),
+                PydanticField(description="Physical px from the screen's left edge"),
+            ]
+            coordinate_y: Annotated[
+                int,
+                PointAxis("coordinate", "y"),
+                PydanticField(description="Physical px from the screen's top edge"),
+            ]
+
+        def descriptor(self, **context: Any) -> ActionDescriptor:
+            return self.describe("Press and hold a point on the screen.", **context)
+
+    @dataclass
+    class AndroidOpenAppAction(ActionBase):
+        __registry_key__ = "android.open_app"
+
+        class Params(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            app_name: str
+
+        def descriptor(self, **context: Any) -> ActionDescriptor:
+            return self.describe("Open an installed app by its name.", **context)
+
+    @dataclass
+    class AndroidPressKeyAction(ActionBase):
+        __registry_key__ = "android.press_key"
+
+        class Params(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            key: Literal["back", "home", "enter"]
+
+        def descriptor(self, **context: Any) -> ActionDescriptor:
+            return self.describe("Press a system key.", **context)
+
+
+def mobile_descriptors(**context: Any) -> list[ActionDescriptor]:
+    """The descriptors of :data:`MOBILE_ACTIONS`, as the stub describes them to a run."""
+    actions = (AndroidLongPressAction(), AndroidOpenAppAction(), AndroidPressKeyAction())
+    return [action.descriptor(**context) for action in actions]
+
+
 # ── the capability ─────────────────────────────────────────────────
 
 
@@ -244,7 +308,7 @@ class _Cycle:
 with ANDROID_STUB:
 
     class StubAndroidCapability(CapabilityBase):
-        """``android``: three fragments from one screen read, four actions described."""
+        """``android``: three fragments from one screen read, seven actions described."""
 
         __registry_key__ = "android"
         __wiring__: ClassVar[dict[str, Any]] = {
@@ -253,7 +317,11 @@ with ANDROID_STUB:
                 "keys": [SCREENSHOT, CAPTURE_STATE, PLATFORM],
                 "declare_only": True,
             },
-            "action": {"registry": "action", "keys": list(ACTIONS), "declare_only": True},
+            "action": {
+                "registry": "action",
+                "keys": [*ACTIONS, *MOBILE_ACTIONS],
+                "declare_only": True,
+            },
         }
 
         # No custom __init__ (CapabilityBase.id must stay visible to conscribe):
@@ -270,7 +338,10 @@ with ANDROID_STUB:
                 AndroidScrollAction(),
                 AndroidWaitAction(),
             )
-            return [action.descriptor(**context) for action in actions]
+            return [
+                *(action.descriptor(**context) for action in actions),
+                *mobile_descriptors(**context),
+            ]
 
         async def begin_observation(self, cycle: int) -> None:
             self.__dict__["_cycle"] = _Cycle()

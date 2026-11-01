@@ -3,11 +3,14 @@
 Unit tests instantiate a class directly and then setattr its wired
 dependencies. This keeps tests decoupled from the full Composer pipeline
 while matching production wiring semantics (setattr = WiredField injection).
+Two parts such runs often need live here too: :class:`NoModel`, for a run
+that must call no model, and :class:`StartSpy`, which records every
+``on_run_start``.
 """
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any, ClassVar, NoReturn, TypeVar
 
 T = TypeVar("T")
 
@@ -89,3 +92,40 @@ def make_run(
     if hooks:
         by_layer["hook"] = {f"hook#{i}": h for i, h in enumerate(hooks)}
     return ComposedRun(by_layer=by_layer)
+
+
+class NoModel:
+    """A chat model for a run that must call none: an assembly, or a run refused before it starts."""
+
+    inference_kind = "chat"
+    model = name = "no-model"
+
+    async def ainvoke(self, messages: object, **kwargs: object) -> NoReturn:
+        raise AssertionError("this run calls no model")
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
+        return ()
+
+
+class StartSpy:
+    """A lifecycle hook that records the keyword arguments of every ``on_run_start``.
+
+    ``starts`` stays empty for a run refused before it starts.
+    """
+
+    hook_id = "start_spy"
+    blocking = True
+    priority = 1
+    __intercepts__: ClassVar[list[object]] = []
+
+    def __init__(self) -> None:
+        self.starts: list[dict[str, object]] = []
+
+    async def on_run_start(self, **kw: object) -> None:
+        self.starts.append(kw)
+
+    async def on_run_end(self, **kw: object) -> None:
+        pass
+
+    async def on_run_error(self, **kw: object) -> None:
+        pass

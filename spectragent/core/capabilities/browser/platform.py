@@ -10,7 +10,13 @@ from typing import Any, Literal
 
 from spectragent.core.capabilities.browser.commands import BrowserCommands
 
-InputPlatform = Literal["macos", "windows", "linux"]
+BrowserPlatform = Literal["macos", "windows", "linux"]
+"""The input platforms a browser reports: the desktop systems Chrome runs on.
+
+A closed subset of :data:`~spectragent.schemas.observation.platform.InputPlatform`,
+and the ``Literal`` of ``browser.platform``'s ``operating_system``: a browser on
+Android is not designed (``docs/architecture_design.md`` §11.2).
+"""
 PLATFORM_URL = "chrome://version/"
 PLATFORM_WORLD = "af-input-platform"
 PLATFORM_PROBE = "document.getElementById('os_type')?.textContent || null"
@@ -19,12 +25,12 @@ _CLOSE_TIMEOUT_S = 2.0
 logger = logging.getLogger(__name__)
 
 
-def input_platform_from_record(value: Any) -> InputPlatform | None:
+def input_platform_from_record(value: Any) -> BrowserPlatform | None:
     """Read a recorded contract value without inventing an unknown platform."""
     return value if isinstance(value, str) and value in ("macos", "windows", "linux") else None
 
 
-def platform_from_os_text(value: str) -> InputPlatform:
+def platform_from_os_text(value: str) -> BrowserPlatform:
     """Normalize Chrome's OS field, never its user agent or a hardware model."""
     text = value.strip().casefold()
     if text == "macos" or text.startswith(("macos ", "mac os x")):
@@ -96,7 +102,7 @@ async def measure_input_platform(
     *,
     timeout: float,
     attempt_timeout: float,
-) -> InputPlatform:
+) -> BrowserPlatform:
     """Measure once before business targets are adopted; close only our temporary target.
 
     The OS cell is populated by Chrome's browser-side version UI, independently
@@ -107,7 +113,7 @@ async def measure_input_platform(
     opening the tab included, *timeout*.
     """
     target_id: str | None = None
-    measured: InputPlatform
+    measured: BrowserPlatform
     reads = 0
     try:
         try:

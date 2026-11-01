@@ -66,7 +66,7 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     without_routing_switches,
 )
 from spectragent.core.capabilities.browser.client_hints import ClientHints
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class BrowserFingerprint:
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
-        input_platform: InputPlatform | None = None,
+        input_platform: BrowserPlatform | None = None,
         initial_storage: Mapping[str, Any] | None = None,
         timeout: float = 1.0,
         include_unchanged: bool = False,
@@ -189,7 +189,7 @@ class BrowserFingerprint:
         background_tabs: str,
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
-        input_platform: InputPlatform | None = None,
+        input_platform: BrowserPlatform | None = None,
         initial_storage: Mapping[str, Any] | None = None,
         timeout: float = 1.0,
     ) -> dict[str, Any]:

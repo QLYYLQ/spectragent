@@ -67,7 +67,7 @@ from spectragent.agents.prompts import PromptEngine
 from spectragent.agents.rendering.action_effects import result_facts
 from spectragent.agents.rendering.browser_state import render_browser_state
 from spectragent.agents.rendering.capture_state import capture_state_demand, write_viewport_pixels
-from spectragent.agents.rendering.platform import render_browser_platform
+from spectragent.agents.rendering.platform import BROWSER_PLATFORMS, render_browser_platform
 from spectragent.agents.rendering.prompt_context import (
     action_json,
     place_prompt_contributions,
@@ -90,6 +90,7 @@ from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.observation.platform import InputPlatform
 from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 from spectragent.schemas.step_record import StepRecord
 
@@ -107,6 +108,8 @@ class SkyvernAgent(AgentBase):
 
     # The system prompt states the Loop's per-step action budget.
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    # The prompt states a desktop browser's input platform (render_browser_platform).
+    __input_platforms__: ClassVar[frozenset[InputPlatform]] = BROWSER_PLATFORMS
     # The element tree's format is the DOM serializer's to describe: the
     # system prompt quotes the run's description verbatim, so changing the
     # serializer changes the prompt with it (``docs/architecture_design.md``

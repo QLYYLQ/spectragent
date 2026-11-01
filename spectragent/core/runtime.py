@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.action_guard import ActionSpaceCheck, build_guarded_act
 from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
@@ -54,6 +54,7 @@ from spectragent.core.loops.limits import ExecutionLimits, validate_execution_li
 from spectragent.core.loops.validation import MissingEnvironmentError
 from spectragent.core.negotiation import (
     FRAGMENT_FORMATS_PARAMETER,
+    check_input_platform,
     negotiate_action,
     negotiate_archive,
     negotiate_memory,
@@ -366,8 +367,14 @@ class AgentRuntime:
             IncompatibleArchiveError: The archivers a hook asks for cannot
                 be bound to this run's environment — raised before
                 anything is woven, and before ``on_run_start``.
+            IncompatiblePlatformError: The run's platform fragment may report
+                an input platform the agent's prompt cannot render, or the
+                agent declares none (``negotiation.platform.check_input_platform``).
             ValueError: A setup context key no capability accepts (or any
-                key, in a run with no environment).
+                key, in a run with no environment). Also UI-TARS's refusal,
+                from its ``check_action_space`` (``ActionSpaceCheck``), of a
+                verb whose points differ from its action's; another agent's
+                check raises its own errors.
             BrowserCooperationError: (and any capability's own refusal)
                 from ``Environment.check_setup``.
             ScreenshotGeometryError: The agent's model writes points on a
@@ -414,6 +421,17 @@ class AgentRuntime:
         # describes is refused now, not sent out as a prompt without it
         # (docs/architecture_design.md §4.4 "观测格式由提供方描述").
         self._fragment_formats = quoted_fragment_formats(agent, negotiated_obs, env)
+
+        # Step 2c: The input platform the agent's prompt states, from the
+        # platform fragment negotiated above. A fragment that may report one
+        # the prompt cannot render, or an agent that declares none, is refused
+        # now, by name, rather than at the first prompt, after setup and a
+        # first screenshot (``core/negotiation/platform.py``).
+        check_input_platform(
+            agent,
+            negotiated_obs.fragment_bindings,
+            name=self._identity.agent_id or type(agent).__name__,
+        )
 
         # Step 2.5: Action negotiation: the environment's actions and the
         # Loop's own (``loop.done``) on offer, the agent's demand to meet.
@@ -549,6 +567,12 @@ class AgentRuntime:
             negotiated_obs.fragment_bindings,
             agent=self._identity.agent_id or type(agent).__name__,
         )
+        # Step 4c: An agent speaking a protocol of its own checks it against
+        # the space its seed slot will be handed (UI-TARS: each verb's points
+        # against its action's), so a misfit fails here, not in
+        # ``seed_messages`` after ``prepare()`` has passed.
+        if isinstance(agent, ActionSpaceCheck):
+            agent.check_action_space(action_space.model_copy(deep=True))
 
         # Step 5: Loop weaving — patches wrapped_agent.run. A Loop with
         # assembly checks of its own makes them here (``BranchLoop`` checks
