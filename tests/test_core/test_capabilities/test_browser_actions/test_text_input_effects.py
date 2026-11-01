@@ -580,6 +580,124 @@ class TestTypingNeedsATextField:
         assert settled == []
 
 
+#: What typing at (100, 150) answers when the click left focus on the field
+#: that had it, a field the point was not in.
+STAYED_AWAY = (
+    'No text field took focus at the clicked point: focus stayed on textbox "Name", away '
+    "from the clicked point, so no text was typed."
+)
+
+
+class TestTypingAtAPointGoesWhereFocusWent:
+    """``type_coordinate`` with a point (user ruling 2026-11-02, ``docs/architecture_design.md`` §4.9).
+
+    The focused element is held before the click, and whether the point is in
+    its box is measured then. Focus that moved to a text field is typed into,
+    wherever it is; focus that stayed on the element that had it, one the
+    point was not in, is refused, and nothing is cleared or typed. Without a
+    point nothing is held and nothing changes.
+    """
+
+    async def test_focus_that_stayed_on_a_field_away_from_the_point_is_refused(self) -> None:
+        # A press on the "Last name" label beside a focused, filled "First name"
+        # field: the label keeps focus where it was.
+        cdp = ProbeCDP(field="node", before="node", stayed=[True], readings=name_field("0:1"))
+        effect = refused(await type_at(cdp, type_focus_wait_s=0.1), STAYED_AWAY)
+        assert effect.target == NAME
+        assert "mouseReleased" in [c.params.get("type") for c in cdp.inputs()]
+        assert keys_and_text(cdp) == []
+
+    async def test_focus_that_moved_to_a_field_elsewhere_is_typed_into(self) -> None:
+        # A press on a search bar that opens a field of its own, away from it.
+        cdp = ProbeCDP(
+            field="node", before="node", stayed=[False], readings=name_field("0:1", "3:2")
+        )
+        effect = text_input(await type_at(cdp))
+        assert (effect.target, effect.text_entered, effect.value_changed) == (NAME, True, True)
+
+    async def test_a_point_in_the_field_that_has_focus_is_typed_into_unchecked(self) -> None:
+        # Where the field is was measured before the click: a field the page
+        # moves afterwards still took the press.
+        cdp = ProbeCDP(
+            field="node",
+            before="node",
+            inside=True,
+            stayed=[True],
+            readings=name_field("0:1", "3:2"),
+        )
+        assert text_input(await type_at(cdp)).text_entered
+        assert "stayed" not in cdp.kinds()
+
+    async def test_focus_that_leaves_the_field_a_moment_later_is_waited_for(self) -> None:
+        cdp = ProbeCDP(
+            field="node",
+            before="node",
+            stayed=[True, True, False],
+            readings=name_field("0:1", "0:1", "0:1", "3:2"),
+        )
+        assert text_input(await type_at(cdp)).text_entered
+        assert cdp.kinds().count("stayed") == 3
+
+    async def test_focus_that_stays_away_is_refused_once_the_wait_is_out(self) -> None:
+        cdp = ProbeCDP(field="node", before="node", stayed=[True], readings=name_field("0:1"))
+        started = time.monotonic()
+        refused(await type_at(cdp, type_focus_wait_s=0.2), STAYED_AWAY)
+        assert 0.2 <= time.monotonic() - started < 0.5
+        assert cdp.kinds().count("stayed") > 1
+
+    async def test_the_focus_and_its_box_are_read_before_the_click_and_let_go(self) -> None:
+        cdp = ProbeCDP(field="node", before="node", readings=name_field("0:1", "3:2"))
+        text_input(await type_at(cdp))
+        assert cdp.index("focus_before") < cdp.index("holds_point") < cdp.index("mousePressed")
+        assert cdp.index("mouseReleased") < cdp.index("stayed")
+        released = [c.params["objectId"] for c in cdp.calls if c.method == "Runtime.releaseObject"]
+        assert "before" in released
+
+    @pytest.mark.parametrize("before", ["null", "opaque"])
+    async def test_focus_that_was_nowhere_to_hold_is_not_checked(self, before: str) -> None:
+        # Nothing had focus, or it was in a frame of another site.
+        cdp = ProbeCDP(
+            field="node", before=before, stayed=[True], readings=name_field("0:1", "3:2")
+        )
+        assert text_input(await type_at(cdp)).text_entered
+        assert {"holds_point", "stayed"}.isdisjoint(cdp.kinds())
+
+    @pytest.mark.parametrize(
+        ("inside", "stayed"),
+        [(None, True), ("yes", True), (False, None), (False, "yes")],
+        ids=["box unread", "box unclear", "identity unread", "identity unclear"],
+    )
+    async def test_a_reading_that_cannot_tell_types_as_asked(
+        self, inside: Any, stayed: Any
+    ) -> None:
+        cdp = ProbeCDP(
+            field="node",
+            before="node",
+            inside=inside,
+            stayed=[stayed],
+            readings=name_field("0:1", "3:2"),
+        )
+        assert text_input(await type_at(cdp)).text_entered
+
+    @pytest.mark.parametrize("failing", ["holds_point", "stayed"])
+    async def test_a_reading_that_fails_types_as_asked(self, failing: str) -> None:
+        cdp = ProbeCDP(
+            field="node",
+            before="node",
+            stayed=[True],
+            fail={failing},
+            readings=name_field("0:1", "3:2"),
+        )
+        assert text_input(await type_at(cdp)).text_entered
+
+    async def test_without_a_point_nothing_is_held(self) -> None:
+        cdp = ProbeCDP(
+            field="node", before="node", stayed=[True], readings=name_field("0:1", "3:2")
+        )
+        assert text_input(await type_at(cdp, point=None)).text_entered
+        assert {"focus_before", "holds_point", "stayed"}.isdisjoint(cdp.kinds())
+
+
 class TestSendKeys:
     async def test_a_named_key_into_a_field(self) -> None:
         cdp = ProbeCDP(field="node", readings=name_field("3:2", "3:2"))

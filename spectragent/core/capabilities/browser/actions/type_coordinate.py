@@ -17,9 +17,12 @@ model would be taught parameters its run cannot honour.
 The point is optional (user ruling 2026-11-01, ``docs/architecture_design.md``
 §4.5): given one, the action clicks there and types into the field that took
 focus; without one it clicks nothing and types into the field that has focus.
-Either way it sends no key when no text field has focus. Like ``scroll``'s
-start, the point is both axes or neither, and a run whose agent declares no
-grid is not offered it (``coordinate_frames.framed_action_space``).
+Either way it sends no key when no text field has focus. Given a point, it
+also sends none when focus stayed on the element that had it before the
+click and the point is not in that element (user ruling 2026-11-02, §4.9); a
+field that took focus is typed into wherever it is. Like ``scroll``'s start,
+the point is both axes or neither, and a run whose agent declares no grid is
+not offered it (``coordinate_frames.framed_action_space``).
 """
 
 from __future__ import annotations
@@ -131,9 +134,9 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
             except RuntimeError as exc:
                 # The handler answers with an ``error`` when the click that
                 # should focus the field failed, when no text field has focus
-                # (it then types nothing, and still answers the effect it
-                # measured), or when the typing failed: the text never went
-                # in, so the action failed.
+                # or focus stayed away from the point (it then types nothing,
+                # and still answers the effect it measured), or when the
+                # typing failed: the text never went in, so the action failed.
                 effect = effect_from(self, handler_field(event, "effect_facts"))
                 if effect is not None and event.coordinate_x is not None:
                     # Refused after the click: the click ran, and the page

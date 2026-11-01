@@ -26,10 +26,16 @@ each case on a freshly loaded page:
 - ``type_coordinate`` without a point (user ruling 2026-11-01): typed into the
   text field a click focused, and into the field a widget focuses a moment
   after the click that opens it; refused the same way, sending nothing, with
-  nothing focused and with a button focused.
+  nothing focused and with a button focused;
+- ``type_coordinate`` at a point while a filled field has focus (user ruling
+  2026-11-02, ``docs/architecture_design.md`` §4.9): a press on the caption
+  beside another field keeps focus in the filled field, away from the point,
+  and is refused, the field keeping its text; a press on a button that
+  focuses a field elsewhere, a press into another field and a press into the
+  focused field itself are typed into.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
-(``TestTypingNeedsATextField``).
+(``TestTypingNeedsATextField``, ``TestTypingAtAPointGoesWhereFocusWent``).
 """
 
 from __future__ import annotations
@@ -66,6 +72,8 @@ UNTOUCHED = {
     "locked": "Fixed",
     "component": "Beijing",
     "closed": "",
+    "first": "Grace",
+    "last": "",
 }
 #: The page's state: its selection, the keys its document saw, and every field's content.
 STATE = """(() => {
@@ -86,6 +94,8 @@ STATE = """(() => {
       locked: $('text_locked').textContent,
       component: $('text_component').textContent,
       closed: window.__closedField.value,
+      first: $('text_first').value,
+      last: $('text_last').value,
     },
   };
 })()"""
@@ -144,6 +154,16 @@ async def _index_of(cap: BrowserCapability, cycle: int, element_id: str) -> int:
     raise AssertionError(f"#{element_id} is not indexed")
 
 
+async def _click(cap: BrowserCapability, point: tuple[int, int]) -> None:
+    click = await cap.execute_action(
+        Action(
+            name="browser.click_coordinate",
+            params={"coordinate_x": point[0], "coordinate_y": point[1]},
+        )
+    )
+    assert click.success, click.error
+
+
 def _session() -> Session:
     async def _all() -> Session:
         session = Session()
@@ -152,9 +172,16 @@ def _session() -> Session:
                 session.platform = str(cap._input_platform)
 
                 async def at(
-                    label: str, point: tuple[int, int], *, clear: bool | None = None
+                    label: str,
+                    point: tuple[int, int],
+                    *,
+                    clear: bool | None = None,
+                    focused: str | None = None,
                 ) -> None:
+                    """Type at *point* on a fresh page, after a click into *focused* (a box name)."""
                     await _load(cap, site)
+                    if focused is not None:
+                        await _click(cap, centre(focused))
                     params: dict[str, Any] = {
                         "coordinate_x": point[0],
                         "coordinate_y": point[1],
@@ -181,13 +208,7 @@ def _session() -> Session:
                     """Type without a point, after a click at *clicked* (``None``: none)."""
                     await _load(cap, site)
                     if clicked is not None:
-                        click = await cap.execute_action(
-                            Action(
-                                name="browser.click_coordinate",
-                                params={"coordinate_x": clicked[0], "coordinate_y": clicked[1]},
-                            )
-                        )
-                        assert click.success, click.error
+                        await _click(cap, clicked)
                     result = await cap.execute_action(
                         Action(name="browser.type_coordinate", params={"text": TEXT})
                     )
@@ -226,6 +247,11 @@ def _session() -> Session:
                 await into_focus("late, no point", centre("text_opener"))
                 await into_focus("nothing, no point", None)
                 await into_focus("button, no point", centre("text_button"))
+
+                await at("caption", centre("text_last_label"), focused="text_first")
+                await at("opener, a field focused", centre("text_opener"), focused="text_first")
+                await at("another field", centre("text_last"), focused="text_first")
+                await at("the focused field", centre("text_first"), focused="text_first")
         return session
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
@@ -405,3 +431,37 @@ def test_typing_without_a_point_into_a_focused_button_is_refused_and_named(
         "so no text was typed.",
     )
     assert effect.target == ElementFacts(role="button", name="Search")
+
+
+def test_a_press_that_leaves_focus_in_a_filled_field_away_from_it_is_refused(
+    session: Session,
+) -> None:
+    # The caption beside "Last name" keeps focus in "First name", which holds
+    # "Grace": refused, nothing cleared or typed.
+    first = ElementFacts(role="textbox", name="First name")
+    effect = _refused(
+        session.cases["caption"],
+        'No text field took focus at the clicked point: focus stayed on textbox "First name", '
+        "away from the clicked point, so no text was typed.",
+    )
+    assert (effect.target, effect.focus_after) == (first, first)
+
+
+@pytest.mark.parametrize(
+    ("label", "where"),
+    [
+        # The button takes focus, then the field it opens, away from the point.
+        ("opener, a field focused", "late"),
+        ("another field", "last"),
+        ("the focused field", "first"),
+    ],
+)
+def test_focus_that_moved_or_a_point_in_the_focused_field_takes_the_text(
+    session: Session, label: str, where: str
+) -> None:
+    case = session.cases[label]
+    assert case.result.success, case.result.error
+    effect = case.result.effect
+    assert isinstance(effect, TextInputEffect)
+    assert (effect.text_entered, effect.value_changed) == (True, True)
+    assert case.state["fields"] == {**UNTOUCHED, where: TEXT}

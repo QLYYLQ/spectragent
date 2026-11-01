@@ -265,6 +265,31 @@ _FOCUS_EXPRESSION = (
 _FOCUSED_REF_EXPRESSION = (
     "(() => {" + DEEP_FOCUS_JS + "const f = deepFocus(); return f.opaque ? 'opaque' : f.el; })()"
 )
+#: The same, read before a ``type_coordinate`` click; marked so a reader of
+#: the calls can tell it from the reads after the click.
+_FOCUSED_BEFORE_CLICK_EXPRESSION = (
+    "(() => { /* spectragent focus before the click */"
+    + DEEP_FOCUS_JS
+    + "const f = deepFocus(); return f.opaque ? 'opaque' : f.el; })()"
+)
+
+#: Whether ``this`` element's box holds the viewport point ``(x, y)``, edges
+#: included, in CSS px: the box in the tab's viewport, through the same-origin
+#: frames ``deepFocus`` finds focus in.
+_HOLDS_POINT_FN = (
+    "function(x, y) { /* spectragent focus holds the point */"
+    " const r = this.getBoundingClientRect();"
+    " let left = r.left, top = r.top, right = r.right, bottom = r.bottom;"
+    " let win = this.ownerDocument.defaultView;"
+    " for (let hops = 0; win && win.frameElement && hops < 64; hops += 1) {"
+    "   const frame = win.frameElement, box = frame.getBoundingClientRect();"
+    "   const dx = box.left + frame.clientLeft, dy = box.top + frame.clientTop;"
+    "   left += dx; right += dx; top += dy; bottom += dy;"
+    "   win = frame.ownerDocument.defaultView; }"
+    " return left <= x && x <= right && top <= y && y <= bottom; }"
+)
+#: Whether ``this`` is the element *before* held.
+_SAME_ELEMENT_FN = "function(before) { /* spectragent focus stayed */ return this === before; }"
 
 #: What :class:`FieldProbe` reads off its element: facts, the sensitivity
 #: attributes, whether it takes typed text, and a hash of the current value
@@ -519,13 +544,19 @@ class FieldProbe:
         await self.locate()
         await self.read_focused()
 
-    async def locate(self) -> None:
-        """Find where focus is (``located``), holding a focused element by reference."""
+    async def locate(self, *, before_click: bool = False) -> None:
+        """Find where focus is (``located``), holding a focused element by reference.
+
+        *before_click*: the read a ``type_coordinate`` makes before its click,
+        to tell afterwards whether focus stayed (:meth:`holds_point`,
+        :meth:`holds_same_element`).
+        """
+        expression = _FOCUSED_BEFORE_CLICK_EXPRESSION if before_click else _FOCUSED_REF_EXPRESSION
 
         async def focused_ref() -> Any:
             reply = await self.cdp.send(
                 "Runtime.evaluate",
-                {"expression": _FOCUSED_REF_EXPRESSION, "returnByValue": False},
+                {"expression": expression, "returnByValue": False},
                 session_id=self.session_id,
             )
             if not isinstance(reply, dict) or reply.get("exceptionDetails"):
@@ -602,6 +633,56 @@ class FieldProbe:
             )
 
         answer = await self.budget.run(describe, "shadow roots")
+        return answer if isinstance(answer, bool) else None
+
+    async def holds_point(self, x: int, y: int) -> bool | None:
+        """Whether the held element's box holds the viewport point *(x, y)*, in CSS px.
+
+        The box is measured in the tab's viewport, through the same-origin
+        frames focus was found in. ``None`` when this probe holds no element
+        (nothing has focus, or it is in a frame of another site) or the
+        reading failed.
+        """
+        object_id = self._object_id
+        if object_id is None:
+            return None
+
+        async def read() -> Any:
+            reply = await self.cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": _HOLDS_POINT_FN,
+                    "objectId": object_id,
+                    "arguments": [{"value": x}, {"value": y}],
+                    "returnByValue": True,
+                },
+                session_id=self.session_id,
+            )
+            return evaluation_value(reply)
+
+        answer = await self.budget.run(read, "focused box")
+        return answer if isinstance(answer, bool) else None
+
+    async def holds_same_element(self, before: FieldProbe) -> bool | None:
+        """Whether this probe holds the element *before* held; ``None`` when either holds none or the reading failed."""
+        object_id, before_id = self._object_id, before._object_id
+        if object_id is None or before_id is None:
+            return None
+
+        async def read() -> Any:
+            reply = await self.cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": _SAME_ELEMENT_FN,
+                    "objectId": object_id,
+                    "arguments": [{"objectId": before_id}],
+                    "returnByValue": True,
+                },
+                session_id=self.session_id,
+            )
+            return evaluation_value(reply)
+
+        answer = await self.budget.run(read, "same element")
         return answer if isinstance(answer, bool) else None
 
     async def after(self) -> bool | Unmeasured:

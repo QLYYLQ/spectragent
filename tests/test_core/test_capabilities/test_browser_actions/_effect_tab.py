@@ -23,7 +23,7 @@ late, by the delays given.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -86,6 +86,8 @@ def probe_kind(method: str, params: dict[str, Any]) -> str | None:
         expression = params.get("expression", "")
         if "spectragent click target snapshot" in expression:
             return "click_target_snapshot"
+        if "spectragent focus before the click" in expression:
+            return "focus_before"
         if "deepHit" in expression:
             return "hit"
         if expression == _FOCUSED_FIELD_JS:
@@ -97,6 +99,10 @@ def probe_kind(method: str, params: dict[str, Any]) -> str | None:
         function = params.get("functionDeclaration", "")
         if "spectragent click target check" in function:
             return "click_target_check"
+        if "spectragent focus holds the point" in function:
+            return "holds_point"
+        if "spectragent focus stayed" in function:
+            return "stayed"
         if "deepHit" in function:
             return "hit"
         if "digest" in function:
@@ -122,6 +128,11 @@ class ProbeCDP:
     per reference read, the last repeated (focus that lands late).
     ``shadow_root``: the type of the shadow root ``DOM.describeNode`` lists on
     that control (``"closed"``, ``"open"``), or ``None`` for none.
+    ``before``: what the focus read before a ``type_coordinate`` click finds
+    (``"node"``, ``"null"``, ``"opaque"``); ``inside``: what the reading of
+    whether its box holds the point answers then; ``stayed``: what each check
+    after the click that the element with focus is that one answers, one per
+    check, the last repeated.
     ``fail_methods``: CDP methods that raise, as a closed target's would.
     ``answer_after_s``: per probe kind, how many seconds each call of it takes
     to answer, one per call, the last repeated (a page that answers slowly).
@@ -139,6 +150,9 @@ class ProbeCDP:
         fail_methods: Iterable[str] = (),
         shadow_root: str | None = None,
         answer_after_s: dict[str, Iterable[float]] | None = None,
+        before: str = "null",
+        inside: Any = False,
+        stayed: Sequence[Any] = (False,),
     ) -> None:
         self.calls: list[Call] = []
         self.shadow_root = shadow_root
@@ -151,6 +165,9 @@ class ProbeCDP:
         self.hang = set(hang)
         self.fail_methods = set(fail_methods)
         self.answer_after_s = {kind: list(d) for kind, d in (answer_after_s or {}).items()}
+        self.before = before
+        self.inside = inside
+        self.stayed = list(stayed)
 
     async def send(
         self,
@@ -175,6 +192,17 @@ class ProbeCDP:
             return {"result": {"type": "object", "value": self.hit}}
         if kind == "focus":
             return {"result": {"type": "object", "value": self.focus}}
+        if kind == "focus_before":
+            if self.before == "node":
+                return {"result": {"type": "object", "subtype": "node", "objectId": "before"}}
+            if self.before == "opaque":
+                return {"result": {"type": "string", "value": "opaque"}}
+            return {"result": {"type": "object", "subtype": "null", "value": None}}
+        if kind == "holds_point":
+            return {"result": {"type": "object", "value": self.inside}}
+        if kind == "stayed":
+            value = self.stayed.pop(0) if len(self.stayed) > 1 else self.stayed[0]
+            return {"result": {"type": "object", "value": value}}
         if kind == "field_ref":
             self.field = self.fields.pop(0) if len(self.fields) > 1 else self.fields[0]
             if self.field == "fail":

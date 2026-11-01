@@ -35,8 +35,12 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   same widget marked ``aria-readonly`` ``#text_locked`` (``Locked``), a light-DOM
   component ``<x-select>`` ``#text_component`` with role ``combobox``
   (``City``), a ``div`` ``#text_closed`` hosting a closed shadow root filled by
-  a text field (``window.__closedField``; the host delegates focus to it), and
-  a paragraph of text; :data:`FIELDS_EMPTY_POINT` is on none of them. A
+  a text field (``window.__closedField``; the host delegates focus to it), a
+  text field ``#text_first`` (``First name``, holding ``Grace``), a text field
+  ``#text_last`` (``Last name``) and beside it its caption ``#text_last_label``
+  (``Last name``), plain text whose press keeps focus where it was (as an
+  editor's toolbar keeps it in the editor), and a paragraph of text;
+  :data:`FIELDS_EMPTY_POINT` is on none of them. A
   capture-phase listener keeps the ``key`` of every keydown the page's own
   document sees in ``window.__keys``;
 - ``far.html`` — a button ``#far`` (``Far button``) at :data:`FAR_LEFT` px from
@@ -103,6 +107,9 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "text_locked": (400, 300, 300, 32),
     "text_component": (400, 350, 300, 32),
     "text_closed": (400, 400, 300, 32),
+    "text_first": (400, 450, 300, 32),
+    "text_last_label": (400, 500, 100, 32),
+    "text_last": (510, 500, 190, 32),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -301,6 +308,11 @@ def _fields_page() -> bytes:
         f'<x-select id="text_component" role="combobox" tabindex="0" aria-label="City" '
         f'style="{_box("text_component")}display:block;border:1px solid #888">Beijing</x-select>'
         f'<div id="text_closed" style="{_box("text_closed")}"></div>'
+        f'<input id="text_first" aria-label="First name" value="Grace" '
+        f'style="{_box("text_first")}">'
+        f'<span id="text_last_label" onmousedown="event.preventDefault()" '
+        f'style="{_box("text_last_label")}">Last name</span>'
+        f'<input id="text_last" aria-label="Last name" style="{_box("text_last")}">'
         f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
         "<script>window.__keys = [];"
         " addEventListener('keydown', e => window.__keys.push(e.key), true);"
