@@ -606,9 +606,15 @@ def _probe_dex(directory: Path) -> bytes:
     android_jar = sdk / "platforms" / "android-33" / "android.jar"
     d8 = sdk / "build-tools" / BUILD_TOOLS / "d8"
     java_home = os.environ.get("JAVA_HOME")
-    javac = str(Path(java_home) / "bin" / "javac") if java_home else shutil.which("javac")
+    javac = shutil.which(str(Path(java_home) / "bin" / "javac") if java_home else "javac")
+    # macOS ships a /usr/bin/javac that only forwards to a registered JDK and
+    # fails when there is none, so a javac that is there must also run.
+    if javac and subprocess.run([javac, "-version"], capture_output=True).returncode != 0:
+        javac = None
     if not (android_jar.is_file() and d8.is_file() and javac):
-        pytest.skip(f"the probe needs javac, {android_jar} and {d8}")
+        pytest.skip(
+            f"the probe needs a javac that runs (set JAVA_HOME to a JDK), {android_jar} and {d8}"
+        )
     source = directory / "Probe.java"
     source.write_text(PROBE_SOURCE)
     for command in (
