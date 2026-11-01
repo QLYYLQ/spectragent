@@ -8,7 +8,8 @@ from ``android/service/`` at the root of the repository, a Gradle project, by
         [--accessibility-tool] [--out DIR] [-- GRADLE_ARGS...]
 
 The build needs JDK 17 (``JAVA_HOME``) and the Android SDK with platform 33 and
-build-tools 34.0.0 (``ANDROID_HOME``); Gradle arguments after ``--`` reach
+build-tools 34.0.0 (``ANDROID_HOME`` or ``ANDROID_SDK_ROOT``, else where
+Android Studio puts it, :func:`android_sdk`); Gradle arguments after ``--`` reach
 Gradle as they are (a proxy: ``-Dhttps.proxyHost=... -Dhttps.proxyPort=...``).
 It copies the APK, with a sidecar beside it, into a directory of its own named
 by the APK's SHA-256, under a cache directory outside the repository
@@ -184,8 +185,8 @@ def build(
     Raises:
         ServiceApkError: A Gradle argument would set what the sidecar records,
             a keystore lacks its alias or password, the Gradle project is not
-            there (an installed package carries no APK sources), or the build
-            failed.
+            there (an installed package carries no APK sources), there is no
+            Android SDK where :func:`android_sdk` looks, or the build failed.
     """
     environment = dict(os.environ if env is None else env)
     overriding = [arg for arg in gradle_args if arg.startswith("-Pspectragent.")]
@@ -213,6 +214,16 @@ def build(
             f"the APK's sources are not at {project}: an installed package does not carry them; "
             "build from a checkout of the repository"
         )
+    # Gradle never looks where Android Studio puts the SDK, and refuses two SDK
+    # variables that name different SDKs; it gets the one SDK this module reads.
+    sdk = android_sdk(environment)
+    if not sdk.is_dir():
+        raise ServiceApkError(
+            f"no Android SDK at {sdk}: set ANDROID_HOME to an SDK with platform 33 and "
+            f"build-tools {BUILD_TOOLS}"
+        )
+    environment["ANDROID_HOME"] = str(sdk)
+    environment.pop("ANDROID_SDK_ROOT", None)
     cache = (out or default_cache_dir(environment)).expanduser().resolve()
     # The Android Gradle plugin writes into ANDROID_USER_HOME (~/.android by
     # default), next to the user's adb keys; it gets a directory of its own.

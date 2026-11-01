@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApk,
     ServiceApkError,
+    android_sdk,
     build,
     project_dir,
 )
@@ -117,6 +119,65 @@ def test_a_keystore_without_its_alias_or_password_is_refused(tmp_path: Path) -> 
         ServiceApkError, match="needs --key-alias and SPECTRAGENT_KEYSTORE_PASSWORD"
     ):
         build(out=tmp_path, keystore=tmp_path / "own.p12", env={})
+
+
+def test_the_build_hands_gradle_the_sdk_where_android_studio_puts_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no SDK variable set this module reads the SDK where Android Studio puts it, a place
+    Gradle never looks; the build hands Gradle that SDK."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    sdk = android_sdk({})
+    assert sdk.is_relative_to(tmp_path)
+    sdk.mkdir(parents=True)
+    handed: list[str | None] = []
+
+    def gradle(
+        command: list[str], *, env: Mapping[str, str], check: bool
+    ) -> subprocess.CompletedProcess[bytes]:
+        handed.append(env.get("ANDROID_HOME"))
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(subprocess, "run", gradle)
+    with pytest.raises(ServiceApkError, match="the Gradle build failed"):
+        build(out=tmp_path / "cache", env={})
+    assert handed == [str(sdk)]
+
+
+def test_the_build_drops_a_second_sdk_variable_gradle_would_refuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gradle refuses ANDROID_HOME and ANDROID_SDK_ROOT naming different SDKs; the build keeps
+    the one this module reads, ANDROID_HOME's."""
+    home_sdk, root_sdk = tmp_path / "home-sdk", tmp_path / "root-sdk"
+    home_sdk.mkdir()
+    root_sdk.mkdir()
+    handed: list[dict[str, str]] = []
+
+    def gradle(
+        command: list[str], *, env: Mapping[str, str], check: bool
+    ) -> subprocess.CompletedProcess[bytes]:
+        handed.append({k: v for k, v in env.items() if k in ("ANDROID_HOME", "ANDROID_SDK_ROOT")})
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(subprocess, "run", gradle)
+    with pytest.raises(ServiceApkError, match="the Gradle build failed"):
+        build(
+            out=tmp_path / "cache",
+            env={"ANDROID_HOME": str(home_sdk), "ANDROID_SDK_ROOT": str(root_sdk)},
+        )
+    assert handed == [{"ANDROID_HOME": str(home_sdk)}]
+
+
+def test_a_build_without_an_android_sdk_is_refused_before_gradle_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def gradle(*_: object, **__: object) -> None:
+        raise AssertionError("Gradle ran without an Android SDK")
+
+    monkeypatch.setattr(subprocess, "run", gradle)
+    with pytest.raises(ServiceApkError, match="no Android SDK at"):
+        build(out=tmp_path / "cache", env={"ANDROID_HOME": str(tmp_path / "missing")})
 
 
 def test_the_build_tools_that_read_the_signature_are_the_ones_the_project_builds_with() -> None:
