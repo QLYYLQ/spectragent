@@ -1121,6 +1121,18 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 
 - **阶段 2：AndroidWorld 全量与自有设备端服务。** AndroidWorld 全部任务、多个种子，出多种子报告；其中 25 个信息检索任务按 agent 的回答判分，要等回答的通路：用户 2026-11-01 的裁决是现在不做，要做时由 Runtime 在判分时间点把 run 的最终回答交给裁判，在那之前加载器照旧跳过它们（architecture §11.2）；用自有的无障碍服务 APK 和 shell 助手换掉内建原语，补测它们的延迟和 `isAccessibilityTool` 的两项（任务路径上有没有数据敏感视图；24 小时提醒会不会出现在截图里）；界面树片段 `android.ui_tree`（从这一阶段开始提供，默认来源是自有服务；`uiautomator dump` 作来源会弄坏 AndroidWorld 按界面树判分的 7 个任务，architecture §11.2），服务抓全树（含不重要的容器与控件 id，另记"是否重要"）；界面树清洗器与序列化器（先移植 AndroidWorld 的规则与 M3A 行格式，T3A 格式第二）；按编号点击的 `click` 与 `scroll` 的可选 `index`，连同随之加上的运行时检查（元素编号要有它的树）和按全限定名查的静态扫描（architecture §4.5、§11.2）；移植 AndroidWorld 的 M3A agent 来验证 `android.ui_tree`（Apache-2.0；它看原截图、标了编号框的截图与元素列表，元素列表用 M3A 的行格式，每步另调一次模型写小结；选哪个 agent，用户 2026-11-01 说"都行"、让我们定，取了 M3A），`click`、`scroll` 之外按编号寻址的动作随它再定（architecture §11.2 "以后，或还没定的"）；不接 Qwen 家族和 AutoGLM（用户 2026-11-01 的裁决）。完成标准：多种子结果稳定，并与官方 harness 的结果一致。
 
+  **2026-11-02，换上自有的设备端。** capability 改由设备端驱动：setup 起 `DeviceSide`（装配置的 APK、起助手、开启服务、ping 确认、查 faketouch 并试点），teardown 停它；截图由助手（API 31–33）或服务拍，每张记下生产方；每次触摸是一笔带时间的点，经新的点按注入器轴（`accessibility_gesture`、`shell_injection`）送达，文字经新的键入后端轴（`set_text`、`commit_text`），两轴都必填；`screencap` 与 `input` 删掉，`dumpsys`、`settings`、`pm`、`am` 这些状态查询与开 app 留着；给了点的输入查有焦点的框在不在点到的位置；界面"静止"加上服务的事件与窗口管理器的焦点；放弃了一次设备调用的任务在交出设备之前 ping 那条通道（architecture §11.2）。阶段 1 的五个任务按同一个模型与配置重跑（注入器 `shell_injection`、后端 `set_text`；`show_action_effects: false`，提示词与阶段 1 相同，那时 Android 的动作还不报效果）：
+
+  | 任务 | 阶段 1 | 设备端 |
+  |---|---|---|
+  | `OpenAppTaskEval` | 4 步，1.0 | 4 步，1.0 |
+  | `SystemBluetoothTurnOff` | 4 步，1.0 | 6 步，1.0 |
+  | `SystemWifiTurnOff` | 6 步，1.0 | 5 步，1.0 |
+  | MiniWoB++ 的 `click-button` | 3 步，1.0 | 4 步，1.0 |
+  | `SystemBrightnessMax` | 用完 10 步，0.0 | 4 步后自称完成，0.0 |
+
+  亮度任务这次拉下了快捷设置、拖了亮度条，但拖到 x=978 就松手；在 API 33 模拟器上照这几笔重放，亮度是 184，拖到 1060 才是 AndroidWorld 要的 255，所以输在终点，不在设备端。每步除去模型与动作的时间（主要是等界面静止与截图）中位数 766 ms，最长 2302 ms（阶段 1 是 1103 与 2488 ms）；截图都由助手拍，设备上拍 9–59 ms、编 PNG 25–134 ms（阶段 1 的 `screencap -p` 约 0.7 s）；等界面静止中位数 662 ms，最长 2136 ms（阶段 1 是 509 与 2146 ms，上限都是 2 s）。这次五个任务都没撞上客体 Wi-Fi 没有默认路由的开机。配置、日志与 trace 在本地这个分支的 worktree 的 `tmp/e2e/`，不入库。
+
   **用户 2026-11-01 的裁决。** 不建 Linux KVM 容器池：用户的 codelab 机器用不了，多个种子改在本机（Apple M1 Pro，10 核、32 GB）上同时开 2–3 个模拟器跑。这还是计划：已测的是每个 run 的模拟器自己挑空闲端口，adb server、`HOME`、`TMPDIR` 与 `netsimd` 都归 run 自己，另一个模拟器在跑时照样开机，收尾也不碰它（architecture §11.2）；没测的是同一个 AVD 同时开几个会话，以及 2–3 个模拟器一起跑时内存与 CPU 够不够（AndroidWorld 用的 AVD 配 2 GB 内存、4 个虚拟 CPU）。在磁盘允许的情况下，也可以试别的 benchmark，顺序见下面阶段 4（用户 2026-11-01 的裁决）。
 
 - **阶段 3：可复现与飞轮。** 先做分支回放，只用前缀重放（用户 2026-11-01 的裁决，见下；设计见 architecture §11.2 "分支回放"）：恢复证据按 capability 分型（媒体专用的对齐参数随之挪进浏览器）；开局照常经任务裁判，用录下的种子与日期（MiniWoB++ 的目标在开局时由设备随机生成，对不上），再重放源 run 的动作；Android 实现 `RestorationSupport`（按编号寻址的动作按元素的属性重新找到目标，坐标动作原样重放；校验交回 Android 自己类型的证据，按需加规则）与对齐（每个被恢复的观测之前钉住设备时钟）；稳定手段（录制与重放在每次观测之前用同一个界面静止等待、关掉动画、滑动用固定时长）的设置进配置身份，录制带上设备时钟与前台 app；框架改两处：`trace_branches` 只在源 run 有网络归档时才给分叉任务 `replay_archive`，`RetargetMethod` 与 `RestorationReason` 按 capability 打开。另有：`android.state_dump` 归档器，支持离线重评；原始界面树的归档器（录下全树，以后能换一种方式重新清洗）；导出改为按任务切分（现在按起始页的站点切）；飞轮度量按 capability 拆开；AndroidControl 风格的 SFT 导出。这一阶段建立在已完成的 M28（归档机制）、M31（分叉）、M32（导出）、M33（度量）之上。完成标准：能从 Android 录制上分支，并导出训练样本。
