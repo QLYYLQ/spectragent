@@ -8,12 +8,16 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
   emulator hands the guest the run's own key (its log's "Sending adb public
   key" carries the run's ``adbkey.pub``) and the user's ``~/.android/adbkey*``
   stay as they were;
+- the run's own ``netsimd``: its ``netsim.ini`` is in the run's ``TMPDIR``, the
+  user's ``$TMPDIR/netsim.ini`` stays as it was, and the guest joins its Wi-Fi;
 - the screenshot's geometry;
 - ``open_app`` with the foreground app checked, and the back and home keys;
 - a tap that opens Settings' search, and ``type_text`` into its field;
 - a scroll down that shows what is further down, measured on the screenshots;
-- a clean teardown: no process of the run is left, its directory is gone, and
-  nothing listens on adb's default port 5037 that did not before.
+- a clean teardown: no process of the run is left, nothing listens on its
+  private adb port, its directory is gone, nothing listens on adb's default port
+  5037 that did not before, and every other emulator and ``netsimd`` (another
+  run's or another tool's) that ran when the teardown began still runs.
 
 The tap point on Settings' search bar was read off a Pixel 6 profile
 (1080 x 2400, 420 dpi) with the API 33 Google APIs image; on another screen the
@@ -22,12 +26,14 @@ test that taps there skips.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import os
 import re
 import socket
 import subprocess
+import tempfile
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -50,6 +56,7 @@ from spectragent.core.capabilities.android.observations import (
 )
 from spectragent.core.composer import ConfigComposer
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.image import image_size
 
 pytestmark = [
@@ -64,6 +71,8 @@ SETTINGS_SEARCH = "com.google.android.settings.intelligence"
 #: Where Settings' search bar is on a 1080 x 2400 screen.
 SEARCH_BAR = (540, 660)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
+#: Where every emulator started with the user's TMPDIR finds the netsimd it shares.
+USER_NETSIM = Path(tempfile.gettempdir()) / "netsim.ini"
 
 
 @dataclass
@@ -74,20 +83,42 @@ class Booted:
     session: AndroidProviderSession
     run_directory: Path
     emulator_pid: int
+    emulator_group: int
     adb_server_pid: int
     user_keys: list[tuple[str, float] | None]
+    user_netsim: tuple[str, float] | None
     listening_on_5037: bool
     cycle: int = 0
 
 
+def _file_state(path: Path) -> tuple[str, float] | None:
+    """*path*'s digest and modification time, or ``None`` when there is no such file."""
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime
+
+
 def _key_state() -> list[tuple[str, float] | None]:
     """Each of the user's adb key files: its digest and modification time, or ``None``."""
-    return [
-        (hashlib.sha256(key.read_bytes()).hexdigest(), key.stat().st_mtime)
-        if key.exists()
-        else None
-        for key in USER_KEYS
-    ]
+    return [_file_state(key) for key in USER_KEYS]
+
+
+def _processes() -> list[tuple[int, int, str]]:
+    """Every process on the machine: its PID, its process group and its command."""
+    listing = subprocess.run(
+        ["ps", "-A", "-o", "pid=,pgid=,command="], capture_output=True, text=True, check=True
+    ).stdout
+    rows = [line.split(maxsplit=2) for line in listing.splitlines()]
+    return [(int(pid), int(group), command) for pid, group, command in rows]
+
+
+def _emulators(*, besides: int) -> set[int]:
+    """The PIDs of every emulator and netsimd running now outside the process group *besides*."""
+    return {
+        pid
+        for pid, group, command in _processes()
+        if group != besides and ("qemu-system" in command or command.split()[0].endswith("netsimd"))
+    }
 
 
 def _listening(port: int) -> bool:
@@ -98,7 +129,7 @@ def _listening(port: int) -> bool:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def booted() -> AsyncIterator[Booted]:
-    user_keys, listening = _key_state(), _listening(5037)
+    user_keys, user_netsim, listening = _key_state(), _file_state(USER_NETSIM), _listening(5037)
     raw = {
         "capability": [
             {
@@ -117,14 +148,17 @@ async def booted() -> AsyncIterator[Booted]:
         provider, session = capability.backend, capability._session
         assert isinstance(provider, LocalEmulatorProvider) and session is not None
         run = provider._runs[session.session_id]  # what the run owns, for the checks below
-        assert run.emulator is not None and run.server is not None
+        assert run.emulator is not None and run.emulator_group is not None
+        assert run.server is not None
         yield Booted(
             capability=capability,
             session=session,
             run_directory=run.directory,
             emulator_pid=run.emulator.pid,
+            emulator_group=run.emulator_group.id,
             adb_server_pid=run.server.process.pid,
             user_keys=user_keys,
+            user_netsim=user_netsim,
             listening_on_5037=listening,
         )
     finally:
@@ -135,7 +169,7 @@ async def _act(booted: Booted, name: str, **params: Any) -> ActionResult:
     return await booted.capability.execute_action(Action(name=f"android.{name}", params=params))
 
 
-async def _observe(booted: Booted, key: str) -> Any:
+async def _observe(booted: Booted, key: str) -> FragmentBase:
     booted.cycle += 1
     await booted.capability.begin_observation(booted.cycle)
     return await booted.capability.resolve_fragment(key)
@@ -172,6 +206,22 @@ async def test_the_emulator_got_the_runs_own_key_and_the_users_keys_are_untouche
 
     assert sent[1] == run_key
     assert _key_state() == booted.user_keys
+
+
+async def test_the_run_has_a_netsimd_of_its_own_and_the_guest_is_online(booted: Booted) -> None:
+    """netsimd carries the guest's network; one shared through the user's TMPDIR would die with
+    whichever emulator's group started it (``docs/architecture_design.md`` §11.2)."""
+    assert (booted.run_directory / "tmp" / "netsim.ini").is_file()
+    assert _file_state(USER_NETSIM) == booted.user_netsim
+
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    status = ""
+    for _ in range(60):  # Wi-Fi joined about 5 s after the boot completed; at most 30 s
+        status = (await client.shell(booted.session.serial, "cmd wifi status")).stdout.decode()
+        if "Wifi is connected to" in status:
+            break
+        await asyncio.sleep(0.5)
+    assert "Wifi is connected to" in status, status
 
 
 async def test_a_screenshot_reports_the_screens_geometry(booted: Booted) -> None:
@@ -261,20 +311,18 @@ def _content_shift(before: Image.Image, after: Image.Image) -> int:
 async def test_teardown_stops_what_the_run_started_and_removes_its_directory(
     booted: Booted,
 ) -> None:
+    # Taken just before: another tool may stop its own emulator during the boot.
+    others = _emulators(besides=booted.emulator_group)
     await booted.capability.teardown()
 
-    group = subprocess.run(
-        ["ps", "-A", "-o", "pid=,pgid="], capture_output=True, text=True, check=True
-    ).stdout.split()
-    left = {
-        int(pid)
-        for pid, pgid in zip(group[::2], group[1::2], strict=True)
-        if int(pgid) == booted.emulator_pid
-    }
-    assert left == set(), "nothing of the emulator's process group is left"
-    for pid in (booted.emulator_pid, booted.adb_server_pid):
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)  # signal 0 delivers nothing; it only asks whether the PID exists
+    processes = _processes()
+    left = {pid for pid, group, _ in processes if group == booted.emulator_group}
+    assert left == set(), "nothing of the emulator's process group is left, netsimd included"
+    running = {pid for pid, _, _ in processes}
+    assert booted.emulator_pid not in running and booted.adb_server_pid not in running
+    assert others <= running, "every other emulator and netsimd still runs"
+    assert not _listening(booted.session.endpoint.port), "the run's adb server is gone"
     assert not booted.run_directory.exists()
     assert _listening(5037) == booted.listening_on_5037
     assert _key_state() == booted.user_keys
+    assert _file_state(USER_NETSIM) == booted.user_netsim

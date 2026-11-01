@@ -3,8 +3,9 @@
 A fake SDK stands in for the real one, so these run anywhere: its ``adb`` serves
 ``tests/_helpers/fake_adb.py`` on the port it is given (answering
 ``sys.boot_completed``) and writes a key pair under ``$HOME/.android`` as adb
-does; its ``emulator`` records how it was started and waits to be stopped. The
-real emulator is booted by ``test_android_emulator_live.py``.
+does; its ``emulator`` reports a console port as ``-report-console`` asks,
+records how it was started and, when stopped, whether the run's adb server
+still answered. The real emulator is booted by ``test_android_emulator_live.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import asyncio
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import AsyncIterator
@@ -63,19 +65,36 @@ async def serve():
 asyncio.run(serve())
 """
 
-#: ``emulator ...``: records its argv and environment, registers with the adb
-#: server (the marker the fake reads) and waits to be stopped;
-#: ``FAKE_EMULATOR_MODE=crash`` prints a line and exits with code 7 instead.
+#: ``emulator ...``: reports console port 5554 where ``-report-console`` says,
+#: records its argv, environment and process group, registers with the adb
+#: server (the marker the fake reads) and waits; on SIGTERM it records whether
+#: the run's adb server still answered, then exits. ``FAKE_EMULATOR_MODE=crash``
+#: prints a line and exits with code 7 instead of reporting anything.
 FAKE_EMULATOR = f"""#!{sys.executable}
-import json, os, signal, sys
+import json, os, signal, socket, sys
 record = os.environ["FAKE_RECORD"]
 with open(os.path.join(record, "emulator.json"), "w") as out:
-    json.dump({{"argv": sys.argv[1:], "env": dict(os.environ), "pid": os.getpid()}}, out)
+    json.dump({{"argv": sys.argv[1:], "env": dict(os.environ), "pid": os.getpid(),
+               "group": os.getpgid(0)}}, out)
 print("emulator: could not open the AVD", flush=True)
 if os.environ.get("FAKE_EMULATOR_MODE") == "crash":
     sys.exit(7)
+
+def stopped(*_):
+    with socket.socket() as probe:
+        probe.settimeout(2)
+        answered = probe.connect_ex(("127.0.0.1", int(os.environ["ANDROID_ADB_SERVER_PORT"]))) == 0
+    with open(os.path.join(record, "stopped.json"), "w") as out:
+        json.dump({{"server_answered": answered}}, out)
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, stopped)
+report = sys.argv[sys.argv.index("-report-console") + 1]
+with socket.create_connection(("127.0.0.1", int(report.removeprefix("tcp:")))) as console:
+    console.sendall(b"5554")
 open(os.path.join(record, "registered"), "w").close()
-signal.pause()
+while True:
+    signal.pause()
 """
 
 
@@ -98,16 +117,22 @@ def record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-async def provider(tmp_path: Path) -> AsyncIterator[LocalEmulatorProvider]:
-    """A provider over the fake SDK; whatever a test leaves open is closed after it."""
+def sdk(tmp_path: Path) -> Path:
+    """The fake SDK, with one AVD beside it in ``<tmp>/avd``."""
     sdk = tmp_path / "sdk"
     _executable(sdk / "platform-tools" / "adb", FAKE_ADB)
     _executable(sdk / "emulator" / "emulator", FAKE_EMULATOR)
     avds = tmp_path / "avd"
     avds.mkdir()
     (avds / f"{AVD}.ini").write_text("path=/nowhere\n")
+    return sdk
+
+
+@pytest.fixture
+async def provider(sdk: Path, tmp_path: Path) -> AsyncIterator[LocalEmulatorProvider]:
+    """A provider over the fake SDK; whatever a test leaves open is closed after it."""
     provider = LocalEmulatorProvider(
-        avd=AVD, sdk_root=str(sdk), avd_home=str(avds), boot_timeout_s=10
+        avd=AVD, sdk_root=str(sdk), avd_home=str(tmp_path / "avd"), boot_timeout_s=10
     )
     yield provider
     await provider.close()
@@ -126,16 +151,23 @@ def _gone(pid: object) -> bool:
     return False
 
 
+def _groups() -> set[int]:
+    """The process group of every process on the machine."""
+    listing = subprocess.run(
+        ["ps", "-A", "-o", "pgid="], capture_output=True, text=True, check=True
+    )
+    return {int(group) for group in listing.stdout.split()}
+
+
 async def test_a_session_boots_through_the_runs_own_server_and_close_releases_everything(
-    provider: LocalEmulatorProvider, record: Path, tmp_path: Path
+    provider: LocalEmulatorProvider, record: Path, tmp_path: Path, sdk: Path
 ) -> None:
     session = await provider.open()
     try:
         emulator = _recorded(record, "emulator.json")
         argv, env = emulator["argv"], emulator["env"]
         assert isinstance(argv, list) and isinstance(env, dict)
-        console_port = argv[argv.index("-port") + 1]
-        assert session.serial == f"emulator-{console_port}"
+        assert session.serial == "emulator-5554", "the console port the emulator reported"
         assert session.endpoint == AdbEndpoint(
             host="127.0.0.1",
             port=session.endpoint.port,
@@ -143,18 +175,24 @@ async def test_a_session_boots_through_the_runs_own_server_and_close_releases_ev
             encrypted=False,
             needs_adb_key=False,
         )
-        # The emulator is pointed at the run's server and handed the key it wrote.
+        # The emulator is pointed at the run's server and SDK and handed the key it wrote.
         assert env["ANDROID_ADB_SERVER_PORT"] == str(session.endpoint.port)
         adb_home = _recorded(record, "adb.json")["home"]
         assert env["ANDROID_EMULATOR_HOME"] == f"{adb_home}/.android"
         assert Path(env["ANDROID_EMULATOR_HOME"], "adbkey.pub").read_text() == "run key"
         assert env["ANDROID_AVD_HOME"] == str(tmp_path / "avd")
+        assert env["ANDROID_HOME"] == str(sdk)
+        assert env["TMPDIR"] == f"{adb_home}/tmp" and Path(env["TMPDIR"]).is_dir()
         assert {"-read-only", "-no-snapshot-save", "-no-window"} <= set(argv)
+        assert "-port" not in argv, "the emulator binds a free console port itself"
     finally:
         await provider.close(session)
 
-    assert _gone(_recorded(record, "emulator.json")["pid"])
-    assert _gone(_recorded(record, "adb.json")["pid"])
+    assert _recorded(record, "stopped.json") == {"server_answered": True}, (
+        "the emulator is stopped while the run's adb server is still up"
+    )
+    assert _gone(emulator["pid"]) and _gone(_recorded(record, "adb.json")["pid"])
+    assert emulator["group"] not in _groups(), "nothing of the emulator's process group is left"
     assert list((tmp_path / "runs").iterdir()) == [], "the run directory is removed"
 
 
@@ -215,6 +253,54 @@ async def test_a_boot_cancelled_halfway_releases_everything_before_the_cancellat
     assert list((tmp_path / "runs").iterdir()) == []
 
 
+#: A run in a process of its own: opens a session over the fake SDK, prints the
+#: process groups of its emulator and adb server, and waits to be killed.
+_KILLED_RUN = """
+import asyncio, json, sys
+from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
+
+async def main():
+    avd, sdk, avd_home = sys.argv[1:]
+    provider = LocalEmulatorProvider(avd=avd, sdk_root=sdk, avd_home=avd_home, boot_timeout_s=10)
+    session = await provider.open()
+    run = provider._runs[session.session_id]
+    print(json.dumps([run.emulator_group.id, run.server.group.id]), flush=True)
+    await asyncio.Event().wait()
+
+asyncio.run(main())
+"""
+
+
+async def test_a_run_killed_outright_takes_its_emulator_and_adb_server_with_it(
+    sdk: Path, record: Path, tmp_path: Path
+) -> None:
+    child = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _KILLED_RUN,
+        AVD,
+        str(sdk),
+        str(tmp_path / "avd"),
+        stdout=asyncio.subprocess.PIPE,
+        env={**os.environ, "TMPDIR": str(tmp_path / "runs")},
+    )
+    assert child.stdout is not None
+    try:
+        groups = json.loads(await asyncio.wait_for(child.stdout.readline(), 30))
+        assert set(groups) <= _groups(), "both programs are running"
+    finally:
+        child.kill()  # this test's own child: no teardown runs in it
+        await child.wait()
+
+    for _ in range(100):  # the watchers kill their groups at once; at most 10 s
+        if not set(groups) & _groups():
+            break
+        await asyncio.sleep(0.1)
+    assert not set(groups) & _groups(), "the emulator's and the adb server's groups are gone"
+    assert _gone(_recorded(record, "emulator.json")["pid"])
+    assert _gone(_recorded(record, "adb.json")["pid"])
+
+
 async def test_a_missing_avd_is_named_with_the_avds_that_are_there(
     provider: LocalEmulatorProvider, record: Path
 ) -> None:
@@ -227,13 +313,13 @@ async def test_a_missing_avd_is_named_with_the_avds_that_are_there(
     assert list(record.iterdir()) == [], "nothing was started"
 
 
-def test_the_emulator_runs_headless_on_the_console_port_and_saves_no_snapshot() -> None:
-    assert emulator_command(Path("/sdk/emulator/emulator"), "pixel", 5556, read_only=False) == [
+def test_the_emulator_runs_headless_reports_its_console_port_and_saves_no_snapshot() -> None:
+    assert emulator_command(Path("/sdk/emulator/emulator"), "pixel", 40999, read_only=False) == [
         "/sdk/emulator/emulator",
         "-avd",
         "pixel",
-        "-port",
-        "5556",
+        "-report-console",
+        "tcp:40999",
         "-no-window",
         "-no-audio",
         "-no-boot-anim",
@@ -243,34 +329,43 @@ def test_the_emulator_runs_headless_on_the_console_port_and_saves_no_snapshot() 
     ]
 
 
-def test_the_emulator_environment_names_the_runs_server_home_and_avds_and_skips_the_proxy() -> None:
+def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() -> None:
     base = {
         "PATH": "/usr/bin",
+        "ANDROID_HOME": "/Users/someone/other-sdk",
+        "ANDROID_SDK_ROOT": "/Users/someone/other-sdk",
         "ANDROID_USER_HOME": "/Users/someone/.android",
         "ANDROID_SDK_HOME": "/Users/someone",
+        "ANDROID_ADB_SERVER_ADDRESS": "elsewhere",
         "ADB_SERVER_SOCKET": "tcp:localhost:5037",
+        "TMPDIR": "/var/folders/xy/T/",
         "NO_PROXY": "intranet.example",
     }
 
     env = emulator_environment(
-        base, adb_port=40123, emulator_home=Path("/runs/r1/.android"), avd_home=Path("/avds")
+        base,
+        sdk=Path("/sdk"),
+        adb_port=40123,
+        emulator_home=Path("/runs/r1/.android"),
+        avd_home=Path("/avds"),
+        tmpdir=Path("/runs/r1/tmp"),
     )
 
     assert env == {
         "PATH": "/usr/bin",
+        "ANDROID_HOME": "/sdk",
         "ANDROID_ADB_SERVER_PORT": "40123",
         "ANDROID_EMULATOR_HOME": "/runs/r1/.android",
         "ANDROID_AVD_HOME": "/avds",
+        "TMPDIR": "/runs/r1/tmp",
         "NO_PROXY": "localhost,127.0.0.1,::1,intranet.example",
         "no_proxy": "localhost,127.0.0.1,::1,intranet.example",
     }
 
 
 def test_the_sdk_is_the_configured_one_else_the_first_named_by_the_environment(
-    provider: LocalEmulatorProvider, tmp_path: Path
+    sdk: Path, tmp_path: Path
 ) -> None:
-    sdk = tmp_path / "sdk"
-
     assert find_sdk(None, {"ANDROID_HOME": str(sdk)}) == sdk
     with pytest.raises(FileNotFoundError, match=f"at {tmp_path / 'elsewhere'}; set"):
         find_sdk(str(tmp_path / "elsewhere"), {"ANDROID_HOME": str(sdk)})

@@ -65,6 +65,7 @@ def test_the_server_environment_moves_home_turns_the_scans_off_and_drops_foreign
         "HOME": "/Users/someone",
         "ADB_VENDOR_KEYS": "/Users/someone/.android/other.key",
         "ADB_SERVER_SOCKET": "tcp:localhost:5037",
+        "ANDROID_ADB_SERVER_ADDRESS": "elsewhere",
         "ANDROID_ADB_SERVER_PORT": "5037",
     }
 

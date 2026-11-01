@@ -3,8 +3,10 @@
 ``docs/architecture_design.md`` §11.2 ("Provider", "两把钥匙"). For each session
 it makes a run directory, starts the run's private adb server there
 (``adb_server.py``), starts the emulator pointed at that server and waits until
-the device has booted. The emulator's environment carries what was measured
-on 2026-11-01 (emulator 37.2.13, adb 1.0.41):
+the device has booted. Both programs run in process groups of the run's own,
+tied to this Python process (``processes.py``): a killed run leaves no emulator
+behind. The emulator's environment carries what was measured (emulator 37.2.13,
+adb 1.0.41, 2026-11-01):
 
 - ``ANDROID_ADB_SERVER_PORT`` names the private server. The emulator's own adb
   calls read only this variable; without it they start a global server on
@@ -14,34 +16,47 @@ on 2026-11-01 (emulator 37.2.13, adb 1.0.41):
   (its log's "Sending adb public key"), never the user's
   ``~/.android/adbkey.pub``, and writes its own files there instead of in
   ``~/.android``. ``ANDROID_AVD_HOME`` keeps pointing at the AVDs.
+- ``TMPDIR`` is the run's ``tmp`` directory. ``netsimd``, which carries the
+  guest's network, is shared by every emulator started with one ``TMPDIR``
+  (``$TMPDIR/netsim.ini``) and lives in the process group of the emulator that
+  started it, so a shared one would die with the first run's group and cut the
+  others' network mid-task.
+- ``ANDROID_HOME`` is the configured SDK, and ``ANDROID_SDK_ROOT`` is not passed
+  on: the emulator reads them before its own location.
 - ``NO_PROXY`` / ``no_proxy`` start with the loopback addresses: the
   emulator's internal gRPC over localhost would otherwise follow
   ``http_proxy`` / ``https_proxy``.
 
 The emulator runs headless (``-no-window -no-audio -no-boot-anim``, software
-rendering ``-gpu swiftshader_indirect``), never saves a snapshot
-(``-no-snapshot-save``: one is about 2.1 GB) and by default ``-read-only``: its
-disk images and ``config.ini`` stay as they were (measured), so every session
-boots the same device and the AVD can serve several sessions at once. It
-still rewrites its own bookkeeping files in the AVD directory
-(``emu-launch-params.txt``, ``emulator-user.ini``).
+rendering ``-gpu swiftshader_indirect``) and never saves a snapshot
+(``-no-snapshot-save``: one is about 2.1 GB). By default it boots
+``-read-only``: its disk images, ``config.ini`` and ``hardware-qemu.ini`` stay
+as they were, so every session starts from the same device. It still writes
+into the AVD directory on every launch: ``initrd`` (whose boot configuration
+carries that run's adb public key), ``bootcompleted.ini``, ``tmpAdbCmds/``,
+``emu-launch-params.txt``, ``emulator-user.ini``,
+``snapshots/default_boot/snapshot.pb`` and a few files under
+``modem_simulator/``. Two sessions of one AVD at once were not measured.
 
-The console port is an even port from 5554 to 5584 whose neighbour, the
-emulator's ADB port, is free too (the emulator takes no other); the serial is
-``emulator-<console port>``. Teardown stops the emulator (SIGTERM; it exited
-within 1.5 s and its ``netsimd`` and crash handler with it, measured), then the
-adb server, then removes the run directory. Every wait is bounded, and a run
-whose process did not exit stays owned, so ``close()`` can be retried.
+The emulator binds the first free console port pair itself (5554 and 5555,
+then 5556 and 5557, ...) rather than being handed one, which another run could
+take between the provider's check and the emulator's start. It reports the
+port it bound (``-report-console``) to a loopback listener of the provider; the
+serial is ``emulator-<that port>``. Other adb servers that scan the default
+ports still find it.
+
+Teardown stops the emulator (SIGTERM; it exited within 1.5 s, measured) and the
+rest of its group, its ``netsimd`` included, then the adb server, then removes
+the run directory. Every wait is bounded, and a run whose process did not exit
+stays owned, so ``close()`` can be retried.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import errno
 import os
 import shutil
-import socket
 import sys
 import tempfile
 import uuid
@@ -59,24 +74,26 @@ from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
     AndroidProviderSession,
 )
-from spectragent.core.capabilities.android.processes import finish, log_tail, spawn, stop
+from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
 
-#: The console ports the emulator accepts; each takes the next port for ADB.
-CONSOLE_PORTS = range(5554, 5586, 2)
 #: What the emulator's NO_PROXY starts with.
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
 #: Variables of this process the emulator must not inherit: each would point
-#: it at another home, another set of AVDs or another adb server.
+#: it at another home, another SDK, another set of AVDs or another adb server.
 _NOT_INHERITED = (
     "ANDROID_USER_HOME",
     "ANDROID_SDK_HOME",
+    "ANDROID_SDK_ROOT",
     "ANDROID_EMULATOR_HOME",
     "ANDROID_AVD_HOME",
+    "ANDROID_ADB_SERVER_ADDRESS",
     "ANDROID_ADB_SERVER_PORT",
     "ADB_SERVER_SOCKET",
 )
 _BOOT_POLL_S = 0.5
 _BOOT_QUERY_TIMEOUT_S = 5.0
+#: How long the emulator's report of its console port may take to arrive once it connected.
+_REPORT_READ_S = 5.0
 
 
 def find_sdk(configured: str | None, env: Mapping[str, str]) -> Path:
@@ -126,14 +143,18 @@ def find_avd_home(configured: str | None, env: Mapping[str, str]) -> Path:
     return Path.home() / ".android" / "avd"
 
 
-def emulator_command(emulator: Path, avd: str, console_port: int, *, read_only: bool) -> list[str]:
-    """The emulator's command line for one headless session of *avd*."""
+def emulator_command(emulator: Path, avd: str, report_port: int, *, read_only: bool) -> list[str]:
+    """The emulator's command line for one headless session of *avd*.
+
+    The emulator picks its console port and reports it to *report_port* on the
+    loopback address.
+    """
     command = [
         str(emulator),
         "-avd",
         avd,
-        "-port",
-        str(console_port),
+        "-report-console",
+        f"tcp:{report_port}",
         "-no-window",
         "-no-audio",
         "-no-boot-anim",
@@ -147,20 +168,64 @@ def emulator_command(emulator: Path, avd: str, console_port: int, *, read_only: 
 
 
 def emulator_environment(
-    base: Mapping[str, str], *, adb_port: int, emulator_home: Path, avd_home: Path
+    base: Mapping[str, str],
+    *,
+    sdk: Path,
+    adb_port: int,
+    emulator_home: Path,
+    avd_home: Path,
+    tmpdir: Path,
 ) -> dict[str, str]:
-    """The emulator's environment, built on *base*: the run's adb server, key, home and AVDs."""
+    """The emulator's environment, built on *base*: the run's SDK, adb server, key, home, AVDs and tmp."""
     env = {name: value for name, value in base.items() if name not in _NOT_INHERITED}
     existing = base.get("NO_PROXY") or base.get("no_proxy")
     no_proxy = ",".join([*LOOPBACK, existing] if existing else LOOPBACK)
     env.update(
+        ANDROID_HOME=str(sdk),
         ANDROID_ADB_SERVER_PORT=str(adb_port),
         ANDROID_EMULATOR_HOME=str(emulator_home),
         ANDROID_AVD_HOME=str(avd_home),
+        TMPDIR=str(tmpdir),
         NO_PROXY=no_proxy,
         no_proxy=no_proxy,
     )
     return env
+
+
+@dataclass
+class _ConsoleReport:
+    """A loopback listener the emulator reports the console port it bound to (``-report-console``)."""
+
+    server: asyncio.Server
+    console_port: asyncio.Future[int]
+
+    @property
+    def port(self) -> int:
+        return self.server.sockets[0].getsockname()[1]
+
+    @classmethod
+    async def listen(cls) -> _ConsoleReport:
+        console_port: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+
+        async def receive(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                text = (await asyncio.wait_for(reader.read(), _REPORT_READ_S)).decode().strip()
+            except (TimeoutError, UnicodeDecodeError, ConnectionError) as exc:
+                text = f"<{type(exc).__name__}>"
+            finally:
+                writer.close()
+            if not console_port.done():
+                if text.isdigit():
+                    console_port.set_result(int(text))
+                else:
+                    console_port.set_exception(
+                        RuntimeError(f"the emulator reported {text!r} as its console port")
+                    )
+
+        return cls(await asyncio.start_server(receive, HOST, 0), console_port)
+
+    def close(self) -> None:
+        self.server.close()
 
 
 @dataclass
@@ -169,6 +234,7 @@ class _Run:
 
     directory: Path
     server: PrivateAdbServer | None = None
+    emulator_group: ProcessGroup | None = None
     emulator: asyncio.subprocess.Process | None = None
     releasing: asyncio.Future[None] | None = None
 
@@ -208,10 +274,8 @@ class LocalEmulatorProvider(AndroidProviderBase):
         Field(
             description=(
                 "Boot with -read-only: the AVD's disk images are not written, so every session "
-                "starts from the same device, changes are discarded at shutdown, and several "
-                "sessions may run the same AVD at once. False writes the session's changes "
-                "into the AVD, where the next session finds them, and allows one session at "
-                "a time."
+                "starts from the same device and its changes are discarded at shutdown. False "
+                "writes the session's changes into the AVD, where the next session finds them."
             )
         ),
     ] = True
@@ -254,34 +318,41 @@ class LocalEmulatorProvider(AndroidProviderBase):
         session_id = uuid.uuid4().hex
         run = _Run(Path(tempfile.mkdtemp(prefix="spectragent-android-")))
         self._runs[session_id] = run
+        report: _ConsoleReport | None = None
         try:
+            (run.directory / "tmp").mkdir()
             run.server = await PrivateAdbServer.start(
                 str(sdk / "platform-tools" / "adb"), run.directory
             )
-            console_port = _console_port()
-            run.emulator = await spawn(
+            report = await _ConsoleReport.listen()
+            run.emulator_group = await ProcessGroup.open()
+            run.emulator = await run.emulator_group.spawn(
                 emulator_command(
                     sdk / "emulator" / "emulator",
                     self.avd,
-                    console_port,
+                    report.port,
                     read_only=self.read_only,
                 ),
                 env=emulator_environment(
                     os.environ,
+                    sdk=sdk,
                     adb_port=run.server.port,
                     emulator_home=run.directory / ".android",
                     avd_home=avd_home,
+                    tmpdir=run.directory / "tmp",
                 ),
                 log=_emulator_log(run),
             )
-            serial = f"emulator-{console_port}"
-            await self._wait_for_boot(run, run.server, run.emulator, serial)
+            serial = await self._wait_for_boot(run, run.server, run.emulator, report)
         except BaseException as failure:
             try:
                 await self._close_run(session_id)
             except Exception as exc:
                 failure.add_note(f"releasing the emulator also failed: {exc}")
             raise
+        finally:
+            if report is not None:
+                report.close()
         return AndroidProviderSession(
             session_id=session_id,
             provider_id=self.provider_id,
@@ -314,35 +385,41 @@ class LocalEmulatorProvider(AndroidProviderBase):
         run: _Run,
         server: PrivateAdbServer,
         emulator: asyncio.subprocess.Process,
-        serial: str,
-    ) -> None:
-        """Poll ``sys.boot_completed`` through the run's server until it reads 1."""
+        report: _ConsoleReport,
+    ) -> str:
+        """Learn the emulator's serial from its report, then poll ``sys.boot_completed`` until 1."""
         client = AdbClient(HOST, server.port)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.boot_timeout_s
+        serial: str | None = None
+        last = "the emulator had not reported its console port"
         while True:
             if emulator.returncode is not None:
                 raise RuntimeError(
-                    f"the emulator exited with code {emulator.returncode} before {serial} "
+                    f"the emulator exited with code {emulator.returncode} before it "
                     f"booted:\n{log_tail(_emulator_log(run))}"
                 )
             if server.process.returncode is not None:
                 raise RuntimeError(
                     f"the run's adb server exited with code {server.process.returncode} "
-                    f"while {serial} was booting:\n{log_tail(server.log)}"
+                    f"while the emulator was booting:\n{log_tail(server.log)}"
                 )
-            try:
-                async with asyncio.timeout(_BOOT_QUERY_TIMEOUT_S):
-                    answer = await client.shell(serial, "getprop sys.boot_completed")
-                if answer.stdout.strip() == b"1":
-                    return
-                last = f"sys.boot_completed was {answer.stdout.strip().decode(errors='replace')!r}"
-            except (AdbError, OSError, TimeoutError) as exc:
-                last = f"{type(exc).__name__}: {exc}"
+            if serial is None and report.console_port.done():
+                serial = f"emulator-{report.console_port.result()}"
+            if serial is not None:
+                try:
+                    async with asyncio.timeout(_BOOT_QUERY_TIMEOUT_S):
+                        answer = await client.shell(serial, "getprop sys.boot_completed")
+                    if answer.stdout.strip() == b"1":
+                        return serial
+                    booted = answer.stdout.strip().decode(errors="replace")
+                    last = f"sys.boot_completed was {booted!r}"
+                except (AdbError, OSError, TimeoutError) as exc:
+                    last = f"{type(exc).__name__}: {exc}"
             if loop.time() >= deadline:
                 raise TimeoutError(
-                    f"{serial} had not booted after {self.boot_timeout_s:g} s ({last}):\n"
-                    f"{log_tail(_emulator_log(run))}"
+                    f"{serial or 'the emulator'} had not booted after {self.boot_timeout_s:g} s "
+                    f"({last}):\n{log_tail(_emulator_log(run))}"
                 )
             await asyncio.sleep(_BOOT_POLL_S)
 
@@ -356,9 +433,9 @@ class LocalEmulatorProvider(AndroidProviderBase):
         self._runs.pop(session_id, None)
 
     async def _release(self, run: _Run) -> None:
-        """Stop the emulator, then the adb server it talks to, then remove the run directory."""
-        if run.emulator is not None:
-            await stop(run.emulator, grace_s=self.shutdown_timeout_s)
+        """Stop the emulator and its group, then the adb server, then remove the run directory."""
+        if run.emulator_group is not None:
+            await run.emulator_group.close(run.emulator, grace_s=self.shutdown_timeout_s)
         if run.server is not None:
             await run.server.stop()
         with contextlib.suppress(FileNotFoundError):
@@ -367,28 +444,3 @@ class LocalEmulatorProvider(AndroidProviderBase):
 
 def _emulator_log(run: _Run) -> Path:
     return run.directory / "emulator.log"
-
-
-def _console_port() -> int:
-    """The first console port that is free, with the ADB port after it."""
-    for port in CONSOLE_PORTS:
-        if _free(port) and _free(port + 1):
-            return port
-    raise RuntimeError(
-        f"no free emulator console port: the emulator takes an even port from "
-        f"{CONSOLE_PORTS.start} to {CONSOLE_PORTS.stop - 2} and the one after it, and every pair "
-        f"is in use"
-    )
-
-
-def _free(port: int) -> bool:
-    """Whether nothing listens on *port* on the loopback addresses the emulator binds."""
-    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-        try:
-            with socket.socket(family, socket.SOCK_STREAM) as probe:
-                probe.bind((host, port))
-        except OSError as exc:
-            if exc.errno == errno.EADDRINUSE:
-                return False
-            # Any other error is a host without that address family: nothing holds the port there.
-    return True

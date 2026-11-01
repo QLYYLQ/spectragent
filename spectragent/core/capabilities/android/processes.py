@@ -1,14 +1,23 @@
-"""The processes the Android capability starts, and how it stops them.
+"""The processes the Android capability starts, how they are tied to this one, and how they stop.
 
-A run starts two: its private adb server and, with the local emulator
-provider, the emulator. Each leads a process group of its own
-(``process_group=0``), like the browser's Chrome
-(``docs/architecture_design.md`` §4.9.x): a terminal's Ctrl-C then reaches this
-process only, and its teardown stops them in order — the emulator before the
-adb server the emulator's own adb calls go to. Only a process started here is
-signalled, through its own handle; its group is signalled only right after its
-leader was seen to exit, when what is left of the group (the emulator's
-``netsimd`` and adb clients) can only be its own.
+A run starts two programs: its private adb server and, with the local emulator
+provider, the emulator. Each runs in a process group of its own
+(:class:`ProcessGroup`), opened by a watcher, ``sh -c 'read _; kill -KILL 0'``,
+whose stdin is a pipe whose writing end only this Python process holds. The
+watcher leads the group and the program joins it (``docs/architecture_design.md``
+§11.2):
+
+- **Tied to this process.** However this process ends, SIGKILL included, the
+  kernel closes the writing end, the watcher's ``read`` returns and it kills
+  its whole group, itself included: an emulator never outlives the run that
+  started it.
+- **The group's ID stays ours.** While the watcher lives, the group has a
+  member, so its ID cannot pass to another process; teardown can therefore
+  always signal the group, even after the program that joined it exited.
+- **In order.** A terminal's Ctrl-C reaches this process only, and its teardown
+  stops each program (SIGTERM, then SIGKILL after a grace period) and then
+  everything left in its group, the emulator's ``netsimd`` and adb clients
+  among them: the emulator before the adb server its own adb calls go to.
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ import contextlib
 import os
 import signal
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
@@ -25,55 +35,82 @@ T = TypeVar("T")
 
 #: How long a process gets to exit after SIGKILL before it is reported as stuck.
 KILL_WAIT_S = 5.0
+#: Waits for EOF on its stdin, then kills its whole process group, itself included.
+_WATCHER = ("/bin/sh", "-c", "read _; kill -KILL 0")
 
 
-async def spawn(
-    argv: Sequence[str], *, env: Mapping[str, str], log: Path
-) -> asyncio.subprocess.Process:
-    """Start *argv* leading a process group of its own, its output appended to *log*.
+@dataclass
+class ProcessGroup:
+    """A process group this run owns, led by a watcher tied to this Python process."""
 
-    Cancelling ``create_subprocess_exec`` can lose the process after the fork,
-    so a cancelled start finishes acquiring the handle, stops the process, and
-    then re-raises the cancellation.
-    """
-    with log.open("ab") as output:
-        starting = asyncio.ensure_future(
-            asyncio.create_subprocess_exec(
+    watcher: asyncio.subprocess.Process
+    #: The writing end of the watcher's stdin; closing it, or this process ending, ends the group.
+    _tether: int | None = field(repr=False)
+
+    @property
+    def id(self) -> int:
+        return self.watcher.pid
+
+    @classmethod
+    async def open(cls) -> ProcessGroup:
+        """Start a watcher leading a new process group; programs join it with :meth:`spawn`."""
+        reading, writing = os.pipe()  # not inherited by any other child (PEP 446)
+        try:
+            watcher = await asyncio.create_subprocess_exec(
+                *_WATCHER,
+                stdin=reading,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                process_group=0,
+            )
+        except BaseException:
+            os.close(writing)
+            raise
+        finally:
+            os.close(reading)
+        return cls(watcher, writing)
+
+    async def spawn(
+        self, argv: Sequence[str], *, env: Mapping[str, str], log: Path
+    ) -> asyncio.subprocess.Process:
+        """Start *argv* in this group, its output appended to *log*."""
+        with log.open("ab") as output:
+            return await asyncio.create_subprocess_exec(
                 *argv,
                 env=dict(env),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=output,
                 stderr=asyncio.subprocess.STDOUT,
-                process_group=0,
+                process_group=self.id,
             )
-        )
-        try:
-            return await asyncio.shield(starting)
-        except asyncio.CancelledError as cancelled:
-            with contextlib.suppress(asyncio.CancelledError):
-                await finish(starting)  # whatever else arrives, the start is over after this
-            if starting.cancelled() or starting.exception() is not None:
-                raise  # nothing was started
-            with contextlib.suppress(asyncio.CancelledError):
-                try:
-                    await finish(asyncio.ensure_future(stop(starting.result(), grace_s=0.0)))
-                except Exception as exc:
-                    cancelled.add_note(f"stopping the process it had started failed: {exc}")
-            raise
+
+    async def close(self, program: asyncio.subprocess.Process | None, *, grace_s: float) -> None:
+        """Stop *program* (SIGTERM, SIGKILL after *grace_s*), then SIGKILL the rest of the group.
+
+        The watcher goes with the rest, and the tether is closed. Safe to call
+        again after a failure.
+
+        Raises:
+            RuntimeError: *program* or the watcher was still running
+                :data:`KILL_WAIT_S` after SIGKILL.
+        """
+        saw_exit = False
+        if program is not None and program.returncode is None:
+            await _stop(program, grace_s=grace_s)
+            saw_exit = True
+        # While the watcher lives the group's ID is ours; without it, only right
+        # after its program was seen to exit (a group with members keeps its ID).
+        # EPERM is what macOS answers for a group of zombies only.
+        if self.watcher.returncode is None or saw_exit:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(self.id, signal.SIGKILL)
+        await _exited(self.watcher)
+        if self._tether is not None:
+            os.close(self._tether)
+            self._tether = None
 
 
-async def stop(process: asyncio.subprocess.Process, *, grace_s: float) -> None:
-    """SIGTERM *process*, SIGKILL it after *grace_s*, then what is left of its group.
-
-    A process that had already exited before this call is left alone, group
-    included: it exited at a moment nobody saw, and its group ID may belong to
-    another process by now.
-
-    Raises:
-        RuntimeError: It was still running :data:`KILL_WAIT_S` after SIGKILL.
-    """
-    if process.returncode is not None:
-        return
+async def _stop(process: asyncio.subprocess.Process, *, grace_s: float) -> None:
     with contextlib.suppress(ProcessLookupError):
         process.terminate()
     try:
@@ -81,17 +118,16 @@ async def stop(process: asyncio.subprocess.Process, *, grace_s: float) -> None:
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_S)
-        except TimeoutError:
-            raise RuntimeError(
-                f"process {process.pid} was still running {KILL_WAIT_S:g} s after SIGKILL"
-            ) from None
-    # Right after its leader exited: a group with members left keeps its ID,
-    # so the signal reaches this process's own children or nothing. EPERM is
-    # what macOS answers for a group of zombies only; both mean nothing is left.
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(process.pid, signal.SIGKILL)
+        await _exited(process)
+
+
+async def _exited(process: asyncio.subprocess.Process) -> None:
+    try:
+        await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_S)
+    except TimeoutError:
+        raise RuntimeError(
+            f"process {process.pid} was still running {KILL_WAIT_S:g} s after SIGKILL"
+        ) from None
 
 
 async def finish(task: asyncio.Future[T]) -> T:

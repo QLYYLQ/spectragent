@@ -10,15 +10,16 @@ of the run's own and leaves the user's ``~/.android/adbkey``, which also
 unlocks the user's phones, untouched. adb reads no other variable for that
 directory.
 
-The server runs in the foreground (``adb server nodaemon``) as a child of this
-process, so it is stopped through its own handle (``processes.py``). It serves
+The server runs in the foreground (``adb server nodaemon``), in a process
+group of the run's own that ends with this process (``processes.py``). It serves
 only the devices that register with it, such as an emulator started with
 ``ANDROID_ADB_SERVER_PORT`` pointing here: ``ADB_EMU=0``, ``ADB_USB=0`` and
 ``ADB_MDNS=0`` turn off its scans of the default emulator ports, of USB and of
 the network, so it never reaches another run's emulator, nor a phone on this
 machine whose owner would be asked to trust the run's key. ``ADB_VENDOR_KEYS``
 (more keys for the server to offer) and the variables that would point the
-server at another socket are not passed on.
+server at another address or socket are not passed on; adb reads
+``ANDROID_ADB_SERVER_ADDRESS`` even when ``-P`` names the port.
 """
 
 from __future__ import annotations
@@ -31,12 +32,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from spectragent.core.capabilities.android.processes import finish, log_tail, spawn, stop
+from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
 
 #: Where the server listens and clients connect: loopback only.
 HOST = "127.0.0.1"
 #: Variables of this process the server must not inherit.
-_NOT_INHERITED = ("ADB_VENDOR_KEYS", "ADB_SERVER_SOCKET", "ANDROID_ADB_SERVER_PORT")
+_NOT_INHERITED = (
+    "ADB_VENDOR_KEYS",
+    "ADB_SERVER_SOCKET",
+    "ANDROID_ADB_SERVER_ADDRESS",
+    "ANDROID_ADB_SERVER_PORT",
+)
 _POLL_S = 0.05
 
 
@@ -54,11 +60,13 @@ class PrivateAdbServer:
     Attributes:
         port: The loopback port it listens on.
         home: Its ``HOME``; its key is ``home/.android/adbkey``.
-        process: Its process, which leads a process group of its own.
+        group: The process group it runs in, which ends with this process.
+        process: Its process.
     """
 
     port: int
     home: Path
+    group: ProcessGroup
     process: asyncio.subprocess.Process
 
     @property
@@ -84,12 +92,17 @@ class PrivateAdbServer:
             TimeoutError: It was not ready within *ready_timeout_s*.
         """
         port = _free_port()
-        process = await spawn(
-            [adb, "-P", str(port), "server", "nodaemon"],
-            env=server_environment(home, os.environ),
-            log=_log(home),
-        )
-        server = cls(port=port, home=home, process=process)
+        group = await ProcessGroup.open()
+        try:
+            process = await group.spawn(
+                [adb, "-P", str(port), "server", "nodaemon"],
+                env=server_environment(home, os.environ),
+                log=_log(home),
+            )
+        except BaseException:
+            await finish(asyncio.ensure_future(group.close(None, grace_s=0)))
+            raise
+        server = cls(port=port, home=home, group=group, process=process)
         try:
             await asyncio.wait_for(server._ready(), timeout=ready_timeout_s)
         except BaseException as failure:
@@ -109,8 +122,8 @@ class PrivateAdbServer:
         return server
 
     async def stop(self, *, grace_s: float = 5.0) -> None:
-        """Stop the server; it holds no device state worth a graceful exit beyond SIGTERM."""
-        await stop(self.process, grace_s=grace_s)
+        """Stop the server, then its process group; it holds no state worth more than SIGTERM."""
+        await self.group.close(self.process, grace_s=grace_s)
 
     async def _ready(self) -> None:
         while True:
