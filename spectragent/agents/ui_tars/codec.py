@@ -193,7 +193,11 @@ def _fixed(param: str, value: str) -> Argument:
 #:   ``start_box`` too, as UI-TARS's mobile prompt writes it.
 #: - ``type``: UI-TARS says ``content``, the action reads ``text``. Required:
 #:   with ``clear_by_default`` a missing text would clear the field and type
-#:   nothing, reported as a success.
+#:   nothing, reported as a success. The point is optional, as the action's is
+#:   (user ruling 2026-11-01): UI-TARS's own prompt writes ``type(content=...)``
+#:   with none, which types into the field that has focus; a call with one
+#:   clicks or taps there first. Taught after the content, as ``point``
+#:   (``start_box`` reads too), and an action without one is written without it.
 #: - ``scroll``: a direction, and the point the scroll starts at, ``start_box``
 #:   as UI-TARS writes it on desktop and mobile alike. ``point`` reads too: the
 #:   prompt spells every other point that way, and UI-TARS-1.5 writes
@@ -223,7 +227,7 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
                 "type",
                 "type_coordinate",
                 _text("content", "'text to type'", "text"),
-                _point("point", "'(x, y)'", "start_box"),
+                _point("point", "'(x, y)'", "start_box", required=False),
             ),
             _verb(
                 "scroll",
@@ -329,9 +333,9 @@ class BoundVerb:
     def read(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         """The action params a call's arguments say, its points as written.
 
-        Points are read first, so a call missing both a point and its text
-        says the point is missing. An optional point the call leaves out
-        fills no param.
+        Points are read first, so a call missing both a required point and
+        another argument says the point is missing. An optional point the
+        call leaves out fills no param.
 
         Raises:
             _VerbError: A required argument is missing, or an argument is malformed.

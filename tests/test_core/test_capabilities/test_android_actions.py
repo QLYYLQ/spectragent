@@ -171,6 +171,8 @@ async def test_typing_at_a_point_taps_clears_and_types(
         )
     ).success
 
+    # No text field has focus on this phone: with a point, nothing checks that
+    # one took it (the gap of docs/architecture_design.md §11.2).
     assert phone.inputs == [
         "input tap 5 6",
         "input keycombination KEYCODE_CTRL_LEFT KEYCODE_A && input keyevent KEYCODE_DEL",
@@ -178,6 +180,53 @@ async def test_typing_at_a_point_taps_clears_and_types(
         "input tap 5 6",
         "input text x",
     ]
+
+
+async def test_typing_without_a_point_types_into_the_field_that_has_focus(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    phone.text_field = True
+
+    assert (await act(capability, "type_coordinate", text="hi there")).success
+    assert (await act(capability, "type_coordinate", text="x", clear=False)).success
+
+    assert phone.inputs == [
+        "input keycombination KEYCODE_CTRL_LEFT KEYCODE_A && input keyevent KEYCODE_DEL",
+        "input text 'hi there'",
+        "input text x",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text_field", "window_over", "where"),
+    [
+        (
+            False,
+            None,
+            "focus is in com.google.android.apps.nexuslauncher/"
+            "com.google.android.apps.nexuslauncher.NexusLauncherActivity, not on a text field",
+        ),
+        # The field keeps its input connection under the shade, and the text would go to the shade.
+        (True, "NotificationShade", "focus is in NotificationShade, not on a text field"),
+    ],
+    ids=["no text field", "the notification shade over a text field"],
+)
+async def test_typing_without_a_point_sends_nothing_when_no_text_field_has_focus(
+    capability: AndroidCapability,
+    phone: ScriptedPhone,
+    text_field: bool,
+    window_over: str | None,
+    where: str,
+) -> None:
+    phone.text_field, phone.window_over = text_field, window_over
+
+    result = await act(capability, "type_coordinate", text="hi")
+
+    assert (result.success, result.error) == (
+        False,
+        f"No text field has focus: {where}, so no text was typed.",
+    )
+    assert phone.inputs == []
 
 
 async def test_text_the_keyboard_map_lacks_fails_the_action_and_says_why(

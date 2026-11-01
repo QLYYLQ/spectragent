@@ -154,11 +154,13 @@ def _render_action_space(codec: UITarsCodec) -> str:
     """The run's actions as UI-TARS call syntax, one block per verb the codec binds::
 
         - type(content='text to type', point='(x, y)')
-          Click a point in the page viewport to focus a text field, then type.
+          Type into a text field. With a point, click there first to focus the field; ...
           executes: text: str
 
     The signature is the verb's (the codec reads it); the description and the
     parameter types are the descriptor's (what the action executes). The
+    signature writes an optional argument like any other; what the call does
+    without it is for the description to say (``type``'s point above). The
     ``executes`` line names the params the verb's non-point arguments fill,
     as a consequence rather than as syntax: the descriptor's names belong to
     the executor (``text``), the model writes the verb's (``content``). A

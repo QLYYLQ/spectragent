@@ -334,6 +334,23 @@ def test_a_scroll_with_a_start_is_drawn_there_and_leaves_the_pointer_there() -> 
     assert (after.kind, after.x, after.y, after.text) == ("scroll", 40, 20, "向上滚动")
 
 
+def test_typing_without_a_point_is_listed_and_leaves_the_pointer_where_it_was() -> None:
+    """It went into the field that had focus: nothing to draw, and nothing moved the pointer."""
+    record = StepRecord(
+        step=0,
+        actions=[
+            Action(name="browser.type_coordinate", params={"text": "贵州茅台"}),
+            Action(name="browser.scroll", params={"direction": "down"}),
+        ],
+        action_results=[ActionResult(success=True), ActionResult(success=True)],
+    )
+    grid = PointGrid("screenshot_pixels", SIZE[0], SIZE[1], *VIEWPORT)
+    typed, scroll = step_marks(record, Geometry(grid, SIZE[0], SIZE[1]), pointer=(6, 7))
+    assert (typed.kind, typed.x, typed.unplaced, typed.text) == (None, None, None, "输入“贵州茅台”")
+    # the page scroll after it turns where the pointer already was: (6, 7) CSS px at scale 2
+    assert (scroll.kind, scroll.x, scroll.y) == ("scroll", 12, 14)
+
+
 def test_an_action_the_step_skipped_is_listed_but_not_drawn() -> None:
     """The Loop stopped the step at the failed click; the second click never ran."""
 

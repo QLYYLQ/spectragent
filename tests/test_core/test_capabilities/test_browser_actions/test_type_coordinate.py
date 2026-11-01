@@ -4,7 +4,8 @@
 negotiates no DOM fragment, so its selector_map is empty by construction.
 UI-TARS declared ``type`` anyway and every typed step came back
 ``Missing param: 'index'``; this action is the executable half of that
-verb.
+verb. Its point is optional (user ruling 2026-11-01): without one it types
+into the field that has focus.
 """
 
 from __future__ import annotations
@@ -37,6 +38,19 @@ class TestTypeCoordinate:
         assert (event.coordinate_x, event.coordinate_y) == (100, 200)
         assert event.text == "hello"
         assert event.clear is True
+
+    async def test_without_a_point_the_event_has_none(
+        self, fake_capability: FakeCapability
+    ) -> None:
+        """The point is optional: the handler then clicks nothing and types into the focus."""
+        result = await TypeCoordinateAction().execute(
+            {"text": "hello"},
+            capability=fake_capability,  # type: ignore[arg-type]
+        )
+        assert result.success
+        event = fake_capability._scopes["sid_main"].emitted[0]
+        assert isinstance(event, TypeAtCoordinateEvent)
+        assert (event.coordinate_x, event.coordinate_y, event.text) == (None, None, "hello")
 
     async def test_does_not_touch_the_selector_map(self, fake_capability: FakeCapability) -> None:
         """The whole reason this class exists: no index, no DOM."""

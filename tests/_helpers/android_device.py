@@ -3,7 +3,8 @@
 :class:`ScriptedPhone` answers the commands the capability's bridge sends
 (``spectragent/core/capabilities/android/bridge.py``) with output shaped like
 the emulator's (API 33, 2026-11-01): a PNG for ``screencap``, the focus lines of
-``dumpsys window``, a frame count from ``dumpsys gfxinfo``, ``wm size``,
+``dumpsys window``, the input method client's served connection from
+``dumpsys input_method``, a frame count from ``dumpsys gfxinfo``, ``wm size``,
 ``getprop``, ``settings``, ``pm``, ``cmd package`` and ``am start``. Any other
 command is answered as ``sh`` does (exit 127), so a capability that starts
 sending a new command fails a test until this phone learns it. It keeps every
@@ -56,6 +57,12 @@ class ScriptedPhone:
         frames: How many frames the app in front has rendered.
         launchable: Installed packages with their launcher activities.
         screencap_fails: ``screencap`` fails from now on.
+        text_field: A text field of the activity in front has focus: the input
+            method serves its window, and the view with focus holds an input
+            connection.
+        window_over: A window over the activity that has focus instead of it,
+            by its title (``NotificationShade``): the input method still serves
+            the activity's window, as the emulator reported.
         inputs: Every ``input`` command received, in order.
     """
 
@@ -67,6 +74,8 @@ class ScriptedPhone:
         default_factory=lambda: {"com.android.settings": "com.android.settings/.Settings"}
     )
     screencap_fails: bool = False
+    text_field: bool = False
+    window_over: str | None = None
     inputs: list[str] = field(default_factory=list)
 
     async def __call__(self, command: str) -> ShellResult:
@@ -80,7 +89,9 @@ class ScriptedPhone:
                 return ShellResult(stderr=b"screencap: capture failed\n", exit_code=1)
             return ShellResult(stdout=png(self.width, self.height))
         if command == "dumpsys window":
-            return ShellResult(stdout=_window_report(self.focused))
+            return ShellResult(stdout=_window_report(self.focused, self.window_over))
+        if command == "dumpsys input_method":
+            return ShellResult(stdout=_input_method_report(self.text_field))
         if words[:2] == ["dumpsys", "gfxinfo"]:
             if words[2] != package:
                 return ShellResult(stdout=f"No process found for: {words[2]}\n".encode())
@@ -124,15 +135,39 @@ class ScriptedPhone:
         return ShellResult()
 
 
-def _window_report(focused: str) -> bytes:
-    """The two lines of ``dumpsys window`` the bridge reads, in a little of the rest of it."""
+def _window_report(focused: str, window_over: str | None) -> bytes:
+    """The lines of ``dumpsys window`` the bridge reads, in a little of the rest of it."""
     package, _, activity = focused.partition("/")
-    window = f"{package}/{package}{activity}" if activity.startswith(".") else focused
+    title = f"{package}/{package}{activity}" if activity.startswith(".") else focused
+    window = f"388b3c9 u0 {title}"
+    focus = f"31ca038 u0 {window_over}" if window_over is not None else window
     return (
         "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)\n"
-        f"  mCurrentFocus=Window{{388b3c9 u0 {window}}}\n"
+        f"  mCurrentFocus=Window{{{focus}}}\n"
         f"  mFocusedApp=ActivityRecord{{6dbdd1 u0 {focused} t9}}\n"
         "  mHoldScreenWindow=null\n"
+        f"  imeInputTarget in display# 0 Window{{{window}}}\n"
+    ).encode()
+
+
+def _input_method_report(text_field: bool) -> bytes:
+    """The input method client's lines of ``dumpsys input_method``, around the one the bridge reads."""
+    connection = (
+        "RemoteInputConnectionImpl{connection=dzl@450171d finished=false "
+        "mParentInputMethodManager.isActive()=true mServedView=dzd{805613a VFED..CL. .F...... "
+        "0,0-954,126 #7f0a01fa app:id/open_search_view_edit_text aid=1073741824}}"
+        if text_field
+        else "null"
+    )
+    return (
+        "Current Input Method Manager state:\n"
+        "  mShowRequested=false mShowExplicitlyRequested=false mShowForced=false "
+        "mInputShown=false\n"
+        " \n"
+        "Input method client state for android.view.inputmethod.InputMethodManager@ac641eb:\n"
+        "  mActive=true mRestartOnNextWindowFocus=false mBindSequence=6\n"
+        f"  mServedInputConnection={connection}\n"
+        "  mServedInputConnectionHandler=null\n"
     ).encode()
 
 

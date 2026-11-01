@@ -16,7 +16,9 @@ accessibility service, never runs ``uiautomator dump`` (the UI tree comes
 later) and never talks to the emulator's gRPC. Medians measured on the
 emulator over the host protocol (API 33, 2026-11-01): ``screencap -p`` about
 0.7 s (the emulator's gRPC returns a PNG of the same screen about 7 times
-faster), ``input tap`` 14 ms, ``dumpsys window`` 18 ms, ``getprop`` 8 ms.
+faster), ``input tap`` 14 ms, ``dumpsys window`` 18 ms, ``getprop`` 8 ms,
+``dumpsys input_method`` about 0.1 s (550 KB, most of it the keyboard's own
+state).
 
 A command that fails raises :class:`BridgeError` with the command's own words.
 A fact the device does not report (no focused app, an unset input method) is
@@ -39,8 +41,15 @@ _KEYCODE = re.compile(r"KEYCODE_[A-Z0-9_]+")
 _FEATURE = re.compile(r"[A-Za-z0-9_.]+")
 #: ``mFocusedApp=ActivityRecord{6dbdd1 u0 com.android.settings/.Settings t9}``.
 _FOCUSED_APP = re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ (?P<component>[^\s}]+)")
-#: ``mCurrentFocus=Window{388b3c9 u0 com.android.settings/com.android.settings.Settings}``.
-_CURRENT_FOCUS = re.compile(r"mCurrentFocus=Window\{\S+ u\d+ (?P<title>[^}]*)\}")
+#: ``mCurrentFocus=Window{388b3c9 u0 com.android.settings/com.android.settings.Settings}``:
+#: the window (its id, user and title) and its title.
+_CURRENT_FOCUS = re.compile(r"mCurrentFocus=Window\{(?P<window>\S+ u\d+ (?P<title>[^}]*))\}")
+#: ``imeInputTarget in display# 0 Window{388b3c9 u0 com.android.settings/...}``: the
+#: window the input method serves.
+_IME_INPUT_TARGET = re.compile(r"imeInputTarget in display# \d+ Window\{(?P<window>[^}]*)\}")
+#: ``mServedInputConnection=null``, or the input connection the input method client's
+#: focused view holds (``RemoteInputConnectionImpl{...}``).
+_SERVED_CONNECTION = re.compile(r"^ +mServedInputConnection=(?P<connection>\S+)", re.MULTILINE)
 _FRAMES = re.compile(r"Total frames rendered: (?P<frames>\d+)")
 _SIZE = re.compile(r"(?P<kind>Physical|Override) size: (?P<width>\d+)x(?P<height>\d+)")
 
@@ -64,6 +73,23 @@ class ForegroundApp:
     package: str | None
     activity: str | None
     window: str | None
+
+
+@dataclass(frozen=True)
+class TextFocus:
+    """Whether text typed now has a text field to go into, as the device reports it.
+
+    Attributes:
+        window: The window that has input focus, by its title (as
+            :attr:`ForegroundApp.window`); ``None`` when no window has focus.
+        text_field: Whether a text field of that window has focus: the input
+            method serves the window, and the view with focus in it holds an
+            input connection. ``False`` when no window has focus; ``None``
+            when the device did not say.
+    """
+
+    window: str | None
+    text_field: bool | None
 
 
 @runtime_checkable
@@ -107,12 +133,16 @@ class InputInjection(Protocol):
 
 @runtime_checkable
 class ForegroundApps(Protocol):
-    """What is in front, and whether it is still drawing."""
+    """What is in front, whether it is still drawing, and whether a text field in it has focus."""
 
     async def foreground(self) -> ForegroundApp: ...
 
     async def frames_drawn(self, package: str) -> int | None:
         """How many frames *package* has rendered so far; ``None`` when it reports none."""
+        ...
+
+    async def text_focus(self) -> TextFocus:
+        """Whether text typed now would go into a text field, and which window has focus."""
         ...
 
 
@@ -224,6 +254,11 @@ class AdbBuiltins:
         found = _FRAMES.search(report)
         return int(found["frames"]) if found else None
 
+    async def text_focus(self) -> TextFocus:
+        windows = (await self._check("dumpsys window")).decode(errors="replace")
+        methods = (await self._check("dumpsys input_method")).decode(errors="replace")
+        return parse_text_focus(windows, methods)
+
     async def is_installed(self, package: str) -> bool:
         result = await self._run(f"pm path {_package(package)}")
         if result.exit_code == 0 and result.stdout.startswith(b"package:"):
@@ -295,6 +330,36 @@ def parse_foreground(report: str) -> ForegroundApp:
     return ForegroundApp(
         package=package, activity=activity or None, window=focus["title"] if focus else None
     )
+
+
+def parse_text_focus(windows: str, methods: str) -> TextFocus:
+    """Whether a text field has focus, from a ``dumpsys window`` and a ``dumpsys input_method`` report.
+
+    A text field has focus when the window that has focus (``mCurrentFocus``)
+    is the one the input method serves (``imeInputTarget``), and the view with
+    focus there holds an input connection: the input method client's
+    ``mServedInputConnection`` is not ``null``. Each alone misleads, measured on
+    the emulator (API 33, 2026-11-01): on Settings' main page and the home
+    screen the input method serves the focused window and its view holds no
+    connection; once a tap opens Settings' search, its field holds one,
+    keyboard shown or hidden; with the notification shade pulled over that
+    field the shade has focus, the input method still serves the search
+    window, the field still holds its connection, and ``input text`` went
+    nowhere. The first window and client of each report count: the default
+    display's, the input method's current client. ``text_field`` is ``None``
+    when the input method's report names no served connection at all (its
+    client did not answer).
+    """
+    focus = _CURRENT_FOCUS.search(windows)
+    if focus is None:
+        return TextFocus(window=None, text_field=False)
+    target = _IME_INPUT_TARGET.search(windows)
+    if target is None or target["window"] != focus["window"]:
+        return TextFocus(window=focus["title"], text_field=False)
+    served = _SERVED_CONNECTION.search(methods)
+    if served is None:
+        return TextFocus(window=focus["title"], text_field=None)
+    return TextFocus(window=focus["title"], text_field=served["connection"] != "null")
 
 
 def _package(package: str) -> str:

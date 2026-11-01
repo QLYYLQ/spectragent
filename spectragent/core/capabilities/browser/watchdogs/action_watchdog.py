@@ -894,28 +894,27 @@ class ActionWatchdog(BrowserWatchdog):
             return {"error": str(e)}
 
     async def _on_type_at_coordinate(self, event: TypeAtCoordinateEvent) -> dict[str, Any] | None:
-        """Type into whatever is at (x, y) — the vision-only path.
+        """Type into whatever is at (x, y), or into the focus as it is — the vision-only path.
 
         A vision-only agent negotiates no DOM fragment, so the
         selector_map is empty and ``DOM.focus`` has nothing to aim at.
         Clicking the coordinate is what moves focus; everything after it
         (the check that a text field took focus, select-all + Backspace,
         ``Input.insertText``) is focus-relative already and is shared
-        verbatim with :meth:`_on_type_text`.
+        verbatim with :meth:`_on_type_text`. Without a point nothing is
+        clicked: the field that has focus is judged the same way, and
+        focus is not waited for, since nothing was done that could move it.
 
         The focusing click measures nothing: this action's effect is the
         typing's (``TextInputEffect``), measured from the focus it left.
         """
         budget = self._effect_budget()
-        clicked = await self._click_at(
-            event.coordinate_x,
-            event.coordinate_y,
-            "left",
-            1,
-            label=f"({event.coordinate_x}, {event.coordinate_y})",
-        )
-        if "error" in clicked:
-            return clicked
+        x, y = event.coordinate_x, event.coordinate_y
+        point = (x, y) if x is not None and y is not None else None
+        if point is not None:
+            clicked = await self._click_at(*point, "left", 1, label=f"({point[0]}, {point[1]})")
+            if "error" in clicked:
+                return clicked
         try:
             return await self._insert_text_at_focus(
                 event.text,
@@ -923,7 +922,12 @@ class ActionWatchdog(BrowserWatchdog):
                 budget=budget,
                 # No coordinates in the text: the action line already says where, on the
                 # grid the agent writes, and a CSS-pixel copy here would contradict it.
-                no_field="No text field took focus at the clicked point",
+                no_field=(
+                    "No text field took focus at the clicked point"
+                    if point is not None
+                    else "No text field has focus"
+                ),
+                wait_for_focus=point is not None,
             )
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)
@@ -937,6 +941,7 @@ class ActionWatchdog(BrowserWatchdog):
         budget: ProbeBudget,
         no_field: str,
         session_id: str | None = None,
+        wait_for_focus: bool = True,
     ) -> dict[str, Any]:
         """Clear (optionally) and enter *text* into the focused text field.
 
@@ -966,7 +971,9 @@ class ActionWatchdog(BrowserWatchdog):
         that cannot be told, and be typed into, depending on when the wait
         happened to end. A reading that cannot even say where focus is (it
         failed or ran out) is dropped, and the last one that could stands, for
-        the verdict and the effect alike. A reading that cannot tell whether the
+        the verdict and the effect alike. Without *wait_for_focus* (nothing was
+        done that could move focus: ``type_coordinate`` without a point) the
+        first reading is the verdict. A reading that cannot tell whether the
         focused element takes text — the element's own reading failed, focus
         is in a frame of another site, in a closed shadow root or embedded
         content — does not stop the typing: only a measured "no text field"
@@ -1000,7 +1007,7 @@ class ActionWatchdog(BrowserWatchdog):
         try:
             await field.before()
             refused = _no_text_entry(field)
-            if refused is not None:
+            if refused is not None and wait_for_focus:
                 # The wait spends at most ``type_focus_wait_s`` of the budget;
                 # the rest is kept for the probes after it.
                 wait_until = time.monotonic() + self._focus_wait_s

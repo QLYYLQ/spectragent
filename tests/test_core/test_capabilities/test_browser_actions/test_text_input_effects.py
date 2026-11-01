@@ -74,10 +74,17 @@ async def type_into(
 
 
 async def type_at(
-    cdp: ProbeCDP, text: str = "Ada", *, clear: bool | None = None, **watchdog_kwargs: Any
+    cdp: ProbeCDP,
+    text: str = "Ada",
+    *,
+    clear: bool | None = None,
+    point: tuple[int, int] | None = (100, 150),
+    **watchdog_kwargs: Any,
 ) -> ActionResult:
-    """``browser.type_coordinate`` at (100, 150)."""
-    params: dict[str, Any] = {"coordinate_x": 100, "coordinate_y": 150, "text": text}
+    """``browser.type_coordinate`` at *point*, (100, 150); ``None``: into the focus as it is."""
+    params: dict[str, Any] = {"text": text}
+    if point is not None:
+        params["coordinate_x"], params["coordinate_y"] = point
     if clear is not None:
         params["clear"] = clear
     async with effect_tab(cdp, **watchdog_kwargs) as tab:
@@ -216,10 +223,25 @@ class TestTypeCoordinate:
         assert "hit" not in cdp.kinds()
         assert cdp.index("mouseReleased") < cdp.index("field_ref")
 
+    async def test_without_a_point_nothing_is_clicked_and_the_focus_is_typed_into(self) -> None:
+        cdp = ProbeCDP(
+            field="node",
+            readings=name_field("0:1", "3:2"),
+            focus={"facts": facts("textbox", "Name")},
+        )
+        effect = text_input(await type_at(cdp, point=None))
+        assert (effect.target, effect.value_changed, effect.text_entered) == (NAME, True, True)
+        assert effect.keys == ("Control+A", "Backspace")
+        assert "Input.dispatchMouseEvent" not in [c.method for c in cdp.inputs()]
+
 
 #: What typing at (100, 150) answers when the click left nothing focused.
 NOTHING_FOCUSED = (
     "No text field took focus at the clicked point: nothing has focus, so no text was typed."
+)
+#: What typing without a point answers when nothing has focus.
+NOTHING_FOCUSED_WITHOUT_A_POINT = (
+    "No text field has focus: nothing has focus, so no text was typed."
 )
 
 
@@ -261,6 +283,30 @@ class TestTypingNeedsATextField:
         cdp = ProbeCDP(field="null")
         refused(await type_at(cdp, clear=False), NOTHING_FOCUSED)
         assert keys_and_text(cdp) == []
+
+    async def test_without_a_point_nothing_focused_is_refused_without_waiting(self) -> None:
+        # Nothing is clicked, so nothing could move focus: the first reading stands.
+        cdp = ProbeCDP(field="null")
+        started = time.monotonic()
+        effect = refused(
+            await type_at(cdp, point=None, type_focus_wait_s=0.2), NOTHING_FOCUSED_WITHOUT_A_POINT
+        )
+        assert time.monotonic() - started < 0.2
+        assert cdp.kinds().count("field_ref") == 1
+        assert cdp.inputs() == []
+        assert (effect.target, effect.focus_after) == ("nothing", "nothing")
+
+    async def test_without_a_point_an_element_that_is_not_a_text_field_is_named(self) -> None:
+        cdp = ProbeCDP(
+            field="node",
+            readings=[reading("button", "Search", digest="6:1", tag="BUTTON", entry="no-role")],
+        )
+        refused(
+            await type_at(cdp, point=None),
+            'No text field has focus: focus is on button "Search", which does not take typed '
+            "text, so no text was typed.",
+        )
+        assert cdp.inputs() == []
 
     async def test_an_element_that_is_not_a_text_field_is_named(self) -> None:
         node = page_node(42)
@@ -488,6 +534,20 @@ class TestTypingNeedsATextField:
             )
         refused(result, NOTHING_FOCUSED)
         assert settled == [True]
+
+    async def test_a_type_refused_without_a_point_does_not_settle(self) -> None:
+        """Nothing was clicked or typed: there is nothing for the page to settle from."""
+        settled: list[bool] = []
+        action = TypeCoordinateAction(post_delay_ms=0)
+
+        async def settle() -> None:
+            settled.append(True)
+
+        action.settle = settle  # type: ignore[method-assign]
+        async with effect_tab(ProbeCDP(field="null")) as tab:
+            result = await action.execute({"text": "Ada"}, capability=tab)  # type: ignore[arg-type]
+        refused(result, NOTHING_FOCUSED_WITHOUT_A_POINT)
+        assert settled == []
 
     async def test_a_coordinate_type_whose_click_failed_does_not_settle(self) -> None:
         settled: list[bool] = []

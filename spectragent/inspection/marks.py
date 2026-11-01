@@ -24,7 +24,9 @@ presses at its first point and releases at its second. A scroll given a start
 point is drawn there, where the pointer moved before the wheel turned. A page
 scroll without one is dispatched where the pointer was, so its mark sits at
 the pointer position the step's observation recorded, moved by the pointer
-actions before it in the same step; unknown is left unknown.
+actions before it in the same step; unknown is left unknown. Typing given no
+point went into the field that had focus: it is listed, not drawn, and moves
+no pointer.
 """
 
 from __future__ import annotations
@@ -529,14 +531,15 @@ def _css(action: Action, result: ActionResult | None, pointer: tuple[int, int] |
             said += f" → 元素 #{element}"
         if name == "browser.type":
             return _Css(None, said, pointer_after=None)
-        point = first
+        if first is None:
+            # Typed into the focus as it was: no place to draw, and the pointer did not move.
+            return _Css(None, said)
         return _Css(
             "type",
             said,
-            point=point,
+            point=first,
             typed=_clip(typed, TYPED_CHARS) if typed is not None else None,
-            unplaced=None if point else "没有记录输入的位置",
-            pointer_after=point,
+            pointer_after=first,
         )
     if name == "browser.scroll":
         direction = params.get("direction")

@@ -14,7 +14,8 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
   user's ``$TMPDIR/netsim.ini`` stays as it was, and the guest joins its Wi-Fi;
 - the screenshot's geometry;
 - ``open_app`` with the foreground app checked, and the back and home keys;
-- a tap that opens Settings' search, and ``type_text`` into its field;
+- ``type_coordinate`` without a point: refused on Settings' main page, where
+  no text field has focus, and typed into the search field a tap opens;
 - a scroll down that shows what is further down, measured on the screenshots;
 - a clean teardown: no process of the run is left, nothing listens on its
   private adb port, its directory is gone, nothing listens on adb's default port
@@ -297,13 +298,20 @@ async def test_open_app_brings_settings_to_the_front_and_back_and_home_leave_it(
         assert front.package is not None and "launcher" in front.package
 
 
-async def test_a_tap_opens_settings_search_and_type_text_writes_into_its_field(
+async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowhere(
     booted: Booted,
 ) -> None:
+    """Refused where no text field has focus; typed into Settings' search once a tap opens it."""
     if booted.capability.screen_size != (1080, 2400):
         pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
     await _settings_from_scratch(booted)
 
+    refused = await _act(booted, "type_coordinate", text="bluetooth")
+    assert (refused.success, refused.error) == (
+        False,
+        "No text field has focus: focus is in com.android.settings/com.android.settings.Settings, "
+        "not on a text field, so no text was typed.",
+    )
     assert (
         await _act(
             booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
@@ -311,7 +319,8 @@ async def test_a_tap_opens_settings_search_and_type_text_writes_into_its_field(
     ).success
     assert (await _foreground(booted)).package == SETTINGS_SEARCH
     before = await _screenshot(booted)
-    assert (await _act(booted, "type_text", text="bluetooth")).success
+    typed = await _act(booted, "type_coordinate", text="bluetooth")
+    assert typed.success, typed.error
     after = await _screenshot(booted)
 
     # The results the query brings appear between the search field and the keyboard.

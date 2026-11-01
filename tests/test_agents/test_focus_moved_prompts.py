@@ -56,7 +56,10 @@ _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: only difference: the old digest comes back with the old description put back).
 #: Updated 2026-11-01: ``scroll`` takes an optional start point, which UI-TARS writes as
 #: ``start_box`` (the only difference: ``start_box='(x, y)', `` in its signature).
-UI_TARS_PROMPT_SHA256 = "a77e2bc800e4fa4c63a7050ae2490feabec56194cc0d4d8d60312763adcc3696"
+#: Updated 2026-11-01: ``type``'s point is optional, and the description of
+#: ``browser.type_coordinate`` says what leaving it out does (the only difference: the old
+#: digest comes back with the old description put back).
+UI_TARS_PROMPT_SHA256 = "35be215af2c4ef97b9f053ad2d8d62d63a126c35070d0e2adda777b3acc69891"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:

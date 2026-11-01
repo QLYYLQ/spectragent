@@ -22,7 +22,10 @@ each case on a freshly loaded page:
   typed into as before;
 - a ``div`` with role ``textbox`` that is no editor and handles keys itself:
   it gets the clear's keys without Chrome's select-all command, so it empties
-  itself and nothing on the page is selected.
+  itself and nothing on the page is selected;
+- ``type_coordinate`` without a point (user ruling 2026-11-01): typed into the
+  text field a click focused; refused the same way, sending nothing, with
+  nothing focused and with a button focused.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
 (``TestTypingNeedsATextField``).
@@ -91,8 +94,9 @@ STATE = """(() => {
 class Case:
     result: ActionResult
     state: dict[str, Any]
-    #: Where a coordinate case typed, or the index an index case typed into.
-    aim: tuple[int, int] | int
+    #: Where a coordinate case typed, or the index an index case typed into;
+    #: ``None`` for typing without a point.
+    aim: tuple[int, int] | int | None
 
 
 @dataclass
@@ -172,6 +176,23 @@ def _session() -> Session:
                     await asyncio.sleep(0.1)
                     session.cases[label] = Case(result, await _state(cap), index)
 
+                async def into_focus(label: str, clicked: tuple[int, int] | None) -> None:
+                    """Type without a point, after a click at *clicked* (``None``: none)."""
+                    await _load(cap, site)
+                    if clicked is not None:
+                        click = await cap.execute_action(
+                            Action(
+                                name="browser.click_coordinate",
+                                params={"coordinate_x": clicked[0], "coordinate_y": clicked[1]},
+                            )
+                        )
+                        assert click.success, click.error
+                    result = await cap.execute_action(
+                        Action(name="browser.type_coordinate", params={"text": TEXT})
+                    )
+                    await asyncio.sleep(0.1)
+                    session.cases[label] = Case(result, await _state(cap), None)
+
                 await at("empty", FIELDS_EMPTY_POINT)
                 await at("empty without a clear", FIELDS_EMPTY_POINT, clear=False)
 
@@ -199,6 +220,10 @@ def _session() -> Session:
                 await at("custom", centre("text_custom"))
                 await at("closed", centre("text_closed"))
                 await by_index("input by index", 2, "text_input")
+
+                await into_focus("input, no point", centre("text_input"))
+                await into_focus("nothing, no point", None)
+                await into_focus("button, no point", centre("text_button"))
         return session
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
@@ -341,3 +366,38 @@ def test_a_textbox_widget_gets_the_keys_but_the_page_is_not_selected(session: Se
     assert case.state["selection"] == ""
     assert case.state["fields"] == {**UNTOUCHED, "custom": ""}
     assert case.state["keys"] == [select_all, "a", "Backspace"]
+
+
+def test_typing_without_a_point_goes_into_the_field_a_click_focused(session: Session) -> None:
+    case = session.cases["input, no point"]
+    assert case.result.success, case.result.error
+    effect = case.result.effect
+    assert isinstance(effect, TextInputEffect)
+    assert (effect.target, effect.text_entered, effect.value_changed) == (
+        ElementFacts(role="textbox", name="Name"),
+        True,
+        True,
+    )
+    assert case.state["fields"] == {**UNTOUCHED, "input": TEXT}
+    assert case.state["selection"] == ""
+
+
+def test_typing_without_a_point_where_nothing_has_focus_fails_and_sends_nothing(
+    session: Session,
+) -> None:
+    effect = _refused(
+        session.cases["nothing, no point"],
+        "No text field has focus: nothing has focus, so no text was typed.",
+    )
+    assert (effect.target, effect.focus_after) == ("nothing", "nothing")
+
+
+def test_typing_without_a_point_into_a_focused_button_is_refused_and_named(
+    session: Session,
+) -> None:
+    effect = _refused(
+        session.cases["button, no point"],
+        'No text field has focus: focus is on button "Search", which does not take typed text, '
+        "so no text was typed.",
+    )
+    assert effect.target == ElementFacts(role="button", name="Search")
