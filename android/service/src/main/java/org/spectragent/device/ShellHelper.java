@@ -98,12 +98,16 @@ public final class ShellHelper {
 
     private static Reply screenshot() throws Failure {
         long started = SystemClock.uptimeMillis();
-        Bitmap bitmap = Hidden.captureDisplay();
+        Hidden.Capture capture = Hidden.captureDisplay();
         long captured = SystemClock.uptimeMillis();
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        byte[] png = Images.png(bitmap);
-        bitmap.recycle();
+        int width = capture.bitmap.getWidth();
+        int height = capture.bitmap.getHeight();
+        byte[] png;
+        try {
+            png = Images.png(capture.bitmap);
+        } finally {
+            capture.close();
+        }
         return Reply.of(Json.obj(
                 "width", width,
                 "height", height,

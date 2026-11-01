@@ -1,6 +1,7 @@
 package org.spectragent.device;
 
 import android.graphics.Bitmap;
+import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.IBinder;
 import android.view.InputEvent;
@@ -22,11 +23,28 @@ final class Hidden {
 
     private Hidden() {}
 
+    /** A screenshot: a hardware bitmap, and the graphics buffer under it, which close() releases. */
+    static final class Capture implements AutoCloseable {
+        final Bitmap bitmap;
+        private final HardwareBuffer buffer;
+
+        Capture(Bitmap bitmap, HardwareBuffer buffer) {
+            this.bitmap = bitmap;
+            this.buffer = buffer;
+        }
+
+        @Override
+        public void close() {
+            bitmap.recycle();
+            buffer.close();
+        }
+    }
+
     /**
      * The default display now, straight from SurfaceFlinger: SurfaceControl.captureDisplay
-     * (API 31-33; Android 14 moved it to ScreenCapture). A hardware bitmap.
+     * (API 31-33; Android 14 moved it to ScreenCapture).
      */
-    static Bitmap captureDisplay() throws Failure {
+    static Capture captureDisplay() throws Failure {
         if (Build.VERSION.SDK_INT < 31 || Build.VERSION.SDK_INT > 33) {
             throw new Failure("unsupported", "the helper's screenshot is written for API 31 to 33; this device runs API "
                     + Build.VERSION.SDK_INT);
@@ -41,7 +59,9 @@ final class Hidden {
             if (buffer == null) {
                 throw new Failure("screenshot_failed", "SurfaceControl.captureDisplay returned nothing");
             }
-            return (Bitmap) buffer.getClass().getMethod("asBitmap").invoke(buffer);
+            Bitmap bitmap = (Bitmap) buffer.getClass().getMethod("asBitmap").invoke(buffer);
+            HardwareBuffer hardware = (HardwareBuffer) buffer.getClass().getMethod("getHardwareBuffer").invoke(buffer);
+            return new Capture(bitmap, hardware);
         } catch (ReflectiveOperationException failed) {
             throw new Failure("screenshot_failed", "SurfaceControl.captureDisplay: " + cause(failed));
         }
