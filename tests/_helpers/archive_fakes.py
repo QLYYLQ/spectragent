@@ -71,6 +71,7 @@ from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_env, make_run
 
@@ -610,7 +611,7 @@ class SurfacelessEnv:
         # Every run calls it (``prepare()``'s setup check), archiving or not.
         self._inner.check_setup(context, negotiation=negotiation, archivers=archivers)
 
-    async def read_oracle_scores(self, *, timeout_s: float) -> Any:
+    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
         # Every run that reaches the scoring point calls it, archiving or not.
         return await self._inner.read_oracle_scores(timeout_s=timeout_s)
 

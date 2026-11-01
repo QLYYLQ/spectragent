@@ -68,6 +68,7 @@ from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
 
 if TYPE_CHECKING:
+    from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
     from spectragent.schemas.restoration import BranchProvenance
 
@@ -172,7 +173,7 @@ class AgentRuntime:
         self._execution_ended: float | None = None
         # The environment as :meth:`prepare` wove it, so a hook observes the
         # scoring point's ``read_oracle_scores`` like any other call on it.
-        self._woven_env: Any = None
+        self._woven_env: Environment | None = None
         self._recorder: StepSink = StepRecorder()
         self._env_needs_teardown = False
         # Set the moment :meth:`_finish` starts closing out the current
@@ -1047,7 +1048,7 @@ class AgentRuntime:
 
     async def _run_to_the_scoring_point(
         self, prepared_agent: Any, task: str, *, timeout: float, oracle_timeout: float
-    ) -> Any:
+    ) -> AgentResult:
         """Drive the Loop under the run's own timeout, then score the run (:meth:`_score`).
 
         However the Loop ends — a result, the run's timeout, an exception, a
