@@ -15,7 +15,8 @@ It speaks only what the capability uses:
   id byte (1 stdout, 2 stderr, 3 exit), a little-endian four-byte length, the
   payload; the exit packet's one byte is the exit code. Unlike ``exec:`` it
   keeps stderr out of stdout (a warning would otherwise land inside a
-  screenshot's PNG bytes) and says how the command exited.
+  screenshot's PNG bytes) and says how the command exited;
+- ``root:``, answered by adbd in words before it restarts as root.
 
 ``tests/_helpers/fake_adb.py`` answers exactly this, as adb 1.0.41 did on the
 emulator (2026-11-01).
@@ -81,6 +82,28 @@ class AdbClient:
             writer.write(_HEADER.pack(_CLOSE_STDIN, 0))
             await writer.drain()
             return await _read_shell(reader, service)
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+
+    async def root(self, serial: str) -> str:
+        """Ask adbd on *serial* to run as root, and return its answer.
+
+        adbd answers ``restarting adbd as root`` and restarts, which drops the
+        device for every client for about 1.5 s (the emulator, API 33,
+        measured), or ``adbd is already running as root``; a build that
+        refuses says so in words.
+
+        Raises:
+            AdbError: The server refused the device or the service.
+            OSError: The server could not be reached.
+        """
+        reader, writer = await asyncio.open_connection(self.host, self.port)
+        try:
+            await _request(reader, writer, f"host:transport:{serial}")
+            await _request(reader, writer, "root:")
+            return (await reader.read()).decode(errors="replace").strip()
         finally:
             writer.close()
             with contextlib.suppress(OSError):

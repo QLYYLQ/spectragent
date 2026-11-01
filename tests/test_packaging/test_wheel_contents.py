@@ -93,6 +93,18 @@ class TestRuntimeDataShips:
             assert source.is_file(), f"{relative} moved; update this gate"
             assert f"{_PACKAGE}/{relative}" in wheel_names
 
+    def test_the_androidworld_programs_ship(self, wheel_names: frozenset[str]) -> None:
+        """The androidworld oracle runs its launcher, and a user runs the task list writer, under
+        AndroidWorld's interpreter; their directory is not a package, so only ``package-data``
+        puts them in the wheel."""
+        service = PACKAGE_ROOT / "core" / "capabilities" / "android" / "oracle"
+        service /= "androidworld_service"
+        assert not (service / "__init__.py").exists(), "discovery would import android_world"
+        for program in ("serve.py", "task_list.py"):
+            relative = (service / program).relative_to(PACKAGE_ROOT).as_posix()
+            assert (service / program).is_file(), f"{relative} moved; update this gate"
+            assert f"{_PACKAGE}/{relative}" in wheel_names
+
 
 class TestBenchmarkDataDoesNotShip:
     def test_no_benchmark_data_member_at_all(self, wheel_names: frozenset[str]) -> None:

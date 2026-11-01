@@ -57,6 +57,30 @@ port it bound (``-report-console``) to a loopback listener of the provider; the
 serial is ``emulator-<that port>``. Other adb servers that scan the default
 ports still find it.
 
+What the run needs beyond ADB (``DeviceNeeds``, derived from its task oracle)
+is met before ``open()`` returns, within the same ``boot_timeout_s`` (measured
+on macOS, emulator 37.2.13, API 33 Google APIs, 2026-11-01):
+
+- ``emulator_grpc``: ``-grpc <port> -grpc-use-token``, the port a free one
+  picked for the run. The address is the one in the emulator's "Started GRPC
+  server at <host>:<port>" line, never assumed (``127.0.0.1``; ``[::1]`` when
+  that port was taken on IPv4), and the token is in the discovery file the
+  emulator writes under the run's ``HOME``,
+  ``Library/Caches/TemporaryItems/avd/running/pid_<emulator PID>.ini``
+  (``grpc.token``). Where it writes the file elsewhere than macOS was not
+  measured, so this need is refused there.
+- ``root``: adbd restarts as root (``root:``): it answered "restarting adbd
+  as root" and dropped the device for 1.5 s; the wait ends when ``id -u``
+  says 0. Right after the boot completed, ``root:`` sometimes met adbd
+  restarting on its own (``FAIL closed``, or no answer), so it is sent again
+  while the shell is not root.
+- ``guest_wifi``: an IPv4 default route over ``wlan0`` in any routing table
+  (``default via 10.0.2.2 dev wlan0 table 1016``), which came 4-7 s after the
+  boot completed. On about 2 of 21 boots it never came, and the boot fails
+  after ``boot_timeout_s`` naming the ``wlan0`` routes the guest had; how to
+  recover such a boot is not decided.
+- ``fresh``: ``read_only``; the provider refuses this need when it is false.
+
 Teardown stops the emulator (SIGTERM; it exited within 1.5 s, measured) and the
 rest of its group, its ``netsimd`` included, then the adb server, then removes
 the run directory. Every wait is bounded, and a run whose process did not exit
@@ -68,25 +92,37 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import sys
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 from pydantic import Field
 
 from spectragent.core.capabilities.android.adb import AdbClient, AdbError
-from spectragent.core.capabilities.android.adb_server import HOST, NO_SCANS, PrivateAdbServer
+from spectragent.core.capabilities.android.adb_server import (
+    HOST,
+    NO_SCANS,
+    PrivateAdbServer,
+    free_port,
+)
 from spectragent.core.capabilities.android.backends._registrar import AndroidProviderBase
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
     AndroidProviderSession,
+    DeviceNeeds,
+    EmulatorAccess,
+    EmulatorGrpc,
+    UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
+
+T = TypeVar("T")
 
 #: What the emulator's NO_PROXY starts with.
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
@@ -110,6 +146,20 @@ _BOOT_POLL_S = 0.5
 _BOOT_QUERY_TIMEOUT_S = 5.0
 #: How long the emulator's report of its console port may take to arrive once it connected.
 _REPORT_READ_S = 5.0
+#: The emulator's line once its gRPC endpoint listens: ``Started GRPC server at
+#: 127.0.0.1:8554, security: Local, auth: +token``.
+_GRPC_STARTED = re.compile(r"Started GRPC server at (?P<host>[^\s,]+):(?P<port>\d+)")
+#: Where, under its ``HOME``, the emulator writes its discovery file on macOS.
+DISCOVERY_DIR = Path("Library/Caches/TemporaryItems/avd/running")
+#: An IPv4 default route over the guest's Wi-Fi, in ``ip -4 route show table all``.
+_WIFI_DEFAULT_ROUTE = re.compile(r"^default via \S+ dev wlan0\b", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class _NotYet:
+    """What a wait saw this time, when it is not over yet."""
+
+    state: str
 
 
 def find_sdk(configured: str | None, env: Mapping[str, str]) -> Path:
@@ -159,11 +209,14 @@ def find_avd_home(configured: str | None, env: Mapping[str, str]) -> Path:
     return Path.home() / ".android" / "avd"
 
 
-def emulator_command(emulator: Path, avd: str, report_port: int, *, read_only: bool) -> list[str]:
+def emulator_command(
+    emulator: Path, avd: str, report_port: int, *, read_only: bool, grpc_port: int | None = None
+) -> list[str]:
     """The emulator's command line for one headless session of *avd*.
 
     The emulator picks its console port and reports it to *report_port* on the
-    loopback address.
+    loopback address. With *grpc_port*, it also serves gRPC there, behind a
+    token.
     """
     command = [
         str(emulator),
@@ -180,6 +233,8 @@ def emulator_command(emulator: Path, avd: str, report_port: int, *, read_only: b
     ]
     if read_only:
         command.append("-read-only")
+    if grpc_port is not None:
+        command += ["-grpc", str(grpc_port), "-grpc-use-token"]
     return command
 
 
@@ -296,7 +351,8 @@ class LocalEmulatorProvider(AndroidProviderBase):
             description=(
                 "Boot with -read-only: the AVD's disk images are not written, so every session "
                 "starts from the same device and its changes are discarded at shutdown. False "
-                "writes the session's changes into the AVD, where the next session finds them."
+                "writes the session's changes into the AVD, where the next session finds them; "
+                "a run that needs a fresh device (the androidworld task oracle) is refused then."
             )
         ),
     ] = True
@@ -305,8 +361,9 @@ class LocalEmulatorProvider(AndroidProviderBase):
         Field(
             gt=0,
             description=(
-                "Seconds the device may take to boot (sys.boot_completed); a cold boot took "
-                "about 18 s on an Apple M1 Pro."
+                "Seconds the device may take to boot (sys.boot_completed) and to meet what "
+                "the run needs of it (its gRPC endpoint, adbd as root, the guest's Wi-Fi); a "
+                "cold boot took about 18 s on an Apple M1 Pro and Wi-Fi a few seconds more."
             ),
         ),
     ] = 180.0
@@ -320,15 +377,40 @@ class LocalEmulatorProvider(AndroidProviderBase):
 
     _runs: dict[str, _Run] = field(default_factory=dict, init=False, repr=False)
 
-    async def open(self) -> AndroidProviderSession:
-        """Boot one device and return where to reach it.
+    def unmet_needs(self, needs: DeviceNeeds) -> list[str]:
+        """The gRPC endpoint off macOS, where the discovery file was not measured; ``fresh`` unless read-only."""
+        unmet = []
+        if needs.emulator_grpc and sys.platform != "darwin":
+            unmet.append(
+                "emulator_grpc: its token is in the discovery file the emulator writes, and "
+                "where it writes that file was measured on macOS only"
+            )
+        if needs.fresh and not self.read_only:
+            unmet.append(
+                "fresh: read_only is false, so the run's changes are written into the AVD and "
+                "become the next run's start"
+            )
+        return unmet
+
+    async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
+        """Boot one device meeting *needs* and return where to reach it.
 
         Raises:
             FileNotFoundError: The SDK or the AVD cannot be found.
+            UnmetDeviceNeeds: :meth:`unmet_needs` named a need it cannot meet.
             RuntimeError: The adb server or the emulator exited before the
-                device booted; the message carries the end of its log.
-            TimeoutError: The device did not boot within ``boot_timeout_s``.
+                device was ready, or adbd refused to run as root; the message
+                carries the end of the emulator's log.
+            TimeoutError: The device did not boot and meet *needs* within
+                ``boot_timeout_s``.
         """
+        needs = needs or DeviceNeeds()
+        unmet = self.unmet_needs(needs)
+        if unmet:
+            raise UnmetDeviceNeeds(
+                f"the {self.provider_id!r} provider cannot meet what the run needs: "
+                + "; ".join(unmet)
+            )
         sdk = find_sdk(self.sdk_root, os.environ)
         avd_home = find_avd_home(self.avd_home, os.environ)
         if not (avd_home / f"{self.avd}.ini").is_file():
@@ -336,35 +418,55 @@ class LocalEmulatorProvider(AndroidProviderBase):
             raise FileNotFoundError(
                 f"no AVD named {self.avd!r} in {avd_home} (found: {', '.join(found) or 'none'})"
             )
+        adb = sdk / "platform-tools" / "adb"
         session_id = uuid.uuid4().hex
         run = _Run(Path(tempfile.mkdtemp(prefix="spectragent-android-")))
         self._runs[session_id] = run
         report: _ConsoleReport | None = None
         try:
             (run.directory / "tmp").mkdir()
-            run.server = await PrivateAdbServer.start(
-                str(sdk / "platform-tools" / "adb"), run.directory
-            )
+            run.server = server = await PrivateAdbServer.start(str(adb), run.directory)
             report = await _ConsoleReport.listen()
             run.emulator_group = await ProcessGroup.open()
-            run.emulator = await run.emulator_group.spawn(
+            run.emulator = emulator = await run.emulator_group.spawn(
                 emulator_command(
                     sdk / "emulator" / "emulator",
                     self.avd,
                     report.port,
                     read_only=self.read_only,
+                    grpc_port=free_port() if needs.emulator_grpc else None,
                 ),
                 env=emulator_environment(
                     os.environ,
                     sdk=sdk,
-                    adb_port=run.server.port,
-                    home=run.server.home,
+                    adb_port=server.port,
+                    home=server.home,
                     avd_home=avd_home,
                     tmpdir=run.directory / "tmp",
                 ),
                 log=_emulator_log(run),
             )
-            serial = await self._wait_for_boot(run, run.server, run.emulator, report)
+            client = AdbClient(HOST, server.port)
+            deadline = asyncio.get_running_loop().time() + self.boot_timeout_s
+            console_port = await self._wait_for_boot(run, client, report, deadline)
+            serial = f"emulator-{console_port}"
+            grpc = None
+            if needs.emulator_grpc:
+                grpc = await self._until(
+                    run,
+                    deadline,
+                    "the emulator had not started its gRPC endpoint",
+                    lambda: _grpc_endpoint(run, server.home, emulator.pid),
+                )
+            if needs.root:
+                await self._become_root(run, client, serial, deadline)
+            if needs.guest_wifi:
+                await self._until(
+                    run,
+                    deadline,
+                    f"{serial}'s Wi-Fi had no IPv4 default route",
+                    lambda: _wifi_routed(client, serial),
+                )
         except BaseException as failure:
             try:
                 await self._close_run(session_id)
@@ -379,12 +481,15 @@ class LocalEmulatorProvider(AndroidProviderBase):
             provider_id=self.provider_id,
             endpoint=AdbEndpoint(
                 host=HOST,
-                port=run.server.port,
+                port=server.port,
                 kind="server",
                 encrypted=False,
                 needs_adb_key=False,
             ),
             serial=serial,
+            emulator=EmulatorAccess(
+                console_port=console_port, home=str(server.home), adb=str(adb), grpc=grpc
+            ),
         )
 
     async def close(self, session: AndroidProviderSession | None = None) -> None:
@@ -402,45 +507,79 @@ class LocalEmulatorProvider(AndroidProviderBase):
             raise ExceptionGroup("releasing Android emulator sessions failed", errors)
 
     async def _wait_for_boot(
+        self, run: _Run, client: AdbClient, report: _ConsoleReport, deadline: float
+    ) -> int:
+        """Learn the emulator's console port from its report, then poll ``sys.boot_completed`` until 1."""
+
+        async def booted() -> int | _NotYet:
+            if not report.console_port.done():
+                return _NotYet("the emulator had not reported its console port")
+            port = report.console_port.result()
+            answer = await client.shell(f"emulator-{port}", "getprop sys.boot_completed")
+            if answer.stdout.strip() == b"1":
+                return port
+            return _NotYet(
+                f"sys.boot_completed was {answer.stdout.strip().decode(errors='replace')!r}"
+            )
+
+        return await self._until(run, deadline, "the emulator had not booted", booted)
+
+    async def _become_root(
+        self, run: _Run, client: AdbClient, serial: str, deadline: float
+    ) -> None:
+        """Restart adbd on *serial* as root, again each time its shell is still not root.
+
+        Sent right after the boot completed, ``root:`` sometimes reached adbd
+        while it was restarting on its own: the server answered ``FAIL
+        closed``, or adbd closed the stream without a word (three boots in a
+        row of a sweep, measured). So every attempt asks the shell first and
+        sends ``root:`` only while it is not root; only a build that says it
+        cannot run as root is refused.
+        """
+
+        async def rooted() -> bool | _NotYet:
+            uid = (await client.shell(serial, "id -u")).stdout.strip().decode(errors="replace")
+            if uid == "0":
+                return True
+            answer = await client.root(serial)
+            if "cannot run as root" in answer:
+                raise RuntimeError(f"{serial} refused to run adbd as root: {answer!r}")
+            return _NotYet(f"its shell was uid {uid!r} and root: answered {answer!r}")
+
+        await self._until(run, deadline, f"{serial} was not running adbd as root", rooted)
+
+    async def _until(
         self,
         run: _Run,
-        server: PrivateAdbServer,
-        emulator: asyncio.subprocess.Process,
-        report: _ConsoleReport,
-    ) -> str:
-        """Learn the emulator's serial from its report, then poll ``sys.boot_completed`` until 1."""
-        client = AdbClient(HOST, server.port)
+        deadline: float,
+        what: str,
+        attempt: Callable[[], Awaitable[T | _NotYet]],
+    ) -> T:
+        """Call *attempt* every half second until it returns what it waits for, at most until *deadline*.
+
+        An attempt that fails to reach the device (an ADB error, a refused
+        connection, no answer within its own limit) only waits longer.
+
+        Raises:
+            RuntimeError: The emulator or the run's adb server exited first.
+            TimeoutError: *deadline* passed; the message says *what* had not
+                happened, what the last attempt saw, and ends with the
+                emulator's log.
+        """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.boot_timeout_s
-        serial: str | None = None
-        last = "the emulator had not reported its console port"
         while True:
-            if emulator.returncode is not None:
-                raise RuntimeError(
-                    f"the emulator exited with code {emulator.returncode} before it "
-                    f"booted:\n{log_tail(_emulator_log(run))}"
-                )
-            if server.process.returncode is not None:
-                raise RuntimeError(
-                    f"the run's adb server exited with code {server.process.returncode} "
-                    f"while the emulator was booting:\n{log_tail(server.log)}"
-                )
-            if serial is None and report.console_port.done():
-                serial = f"emulator-{report.console_port.result()}"
-            if serial is not None:
-                try:
-                    async with asyncio.timeout(_BOOT_QUERY_TIMEOUT_S):
-                        answer = await client.shell(serial, "getprop sys.boot_completed")
-                    if answer.stdout.strip() == b"1":
-                        return serial
-                    booted = answer.stdout.strip().decode(errors="replace")
-                    last = f"sys.boot_completed was {booted!r}"
-                except (AdbError, OSError, TimeoutError) as exc:
-                    last = f"{type(exc).__name__}: {exc}"
+            _check_running(run)
+            try:
+                async with asyncio.timeout(_BOOT_QUERY_TIMEOUT_S):
+                    outcome = await attempt()
+            except (AdbError, OSError, TimeoutError) as exc:
+                outcome = _NotYet(f"{type(exc).__name__}: {exc}")
+            if not isinstance(outcome, _NotYet):
+                return outcome
             if loop.time() >= deadline:
                 raise TimeoutError(
-                    f"{serial or 'the emulator'} had not booted after {self.boot_timeout_s:g} s "
-                    f"({last}):\n{log_tail(_emulator_log(run))}"
+                    f"{what} after {self.boot_timeout_s:g} s ({outcome.state}):\n"
+                    f"{log_tail(_emulator_log(run))}"
                 )
             await asyncio.sleep(_BOOT_POLL_S)
 
@@ -465,3 +604,49 @@ class LocalEmulatorProvider(AndroidProviderBase):
 
 def _emulator_log(run: _Run) -> Path:
     return run.directory / "emulator.log"
+
+
+def _check_running(run: _Run) -> None:
+    """Raise, with the end of its log, if the emulator or the run's adb server has exited."""
+    if run.emulator is not None and run.emulator.returncode is not None:
+        raise RuntimeError(
+            f"the emulator exited with code {run.emulator.returncode} before the device was "
+            f"ready:\n{log_tail(_emulator_log(run))}"
+        )
+    if run.server is not None and run.server.process.returncode is not None:
+        raise RuntimeError(
+            f"the run's adb server exited with code {run.server.process.returncode} while the "
+            f"emulator was starting:\n{log_tail(run.server.log)}"
+        )
+
+
+async def _grpc_endpoint(run: _Run, home: Path, pid: int) -> EmulatorGrpc | _NotYet:
+    """Where the emulator's gRPC endpoint listens, once its log and its discovery file say so."""
+    started = _GRPC_STARTED.search(_emulator_log(run).read_text(errors="replace"))
+    if started is None:
+        return _NotYet("its log had no 'Started GRPC server at' line")
+    discovery = home / DISCOVERY_DIR / f"pid_{pid}.ini"
+    try:
+        keys = {line.partition("=")[0].strip() for line in discovery.read_text().splitlines()}
+    except FileNotFoundError:
+        return _NotYet(f"there was no discovery file at {discovery}")
+    if "grpc.token" not in keys:
+        return _NotYet(f"its discovery file {discovery} had no grpc.token")
+    return EmulatorGrpc(host=started["host"], port=int(started["port"]), token_file=str(discovery))
+
+
+async def _wifi_routed(client: AdbClient, serial: str) -> bool | _NotYet:
+    """Whether the guest's Wi-Fi has an IPv4 default route, in any routing table.
+
+    When it has none yet, the ``wlan0`` routes it has are what a timeout reports.
+    """
+    routes = (await client.shell(serial, "ip -4 route show table all")).stdout.decode(
+        errors="replace"
+    )
+    if _WIFI_DEFAULT_ROUTE.search(routes):
+        return True
+    wlan0 = [line.strip() for line in routes.splitlines() if " dev wlan0" in line]
+    return _NotYet(
+        "no routing table had a default route over wlan0; its wlan0 routes were "
+        + ("; ".join(wlan0[-8:]) if wlan0 else "none")
+    )

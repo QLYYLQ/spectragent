@@ -42,6 +42,15 @@ async def test_output_spread_over_several_packets_comes_back_whole() -> None:
     assert result.stdout == png
 
 
+async def test_root_returns_what_adbd_answered_before_restarting() -> None:
+    device = scripted({"root:": ShellResult(stdout=b"restarting adbd as root\n")})
+    async with FakeAdbServer({SERIAL: device}) as adb:
+        answer = await AdbClient(adb.host, adb.port).root(SERIAL)
+
+    assert answer == "restarting adbd as root"
+    assert [request.service for request in adb.requests] == ["root:"]
+
+
 async def test_an_unknown_device_is_refused_with_the_servers_reason() -> None:
     async with FakeAdbServer({SERIAL: scripted({})}) as adb:
         with pytest.raises(AdbError, match="emulator-9998' not found"):

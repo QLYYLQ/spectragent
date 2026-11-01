@@ -94,7 +94,7 @@ class PrivateAdbServer:
             RuntimeError: The server exited before it was ready.
             TimeoutError: It was not ready within *ready_timeout_s*.
         """
-        port = _free_port()
+        port = free_port()
         group = await ProcessGroup.open()
         try:
             process = await group.spawn(
@@ -155,7 +155,8 @@ async def _accepts(port: int) -> bool:
     return True
 
 
-def _free_port() -> int:
+def free_port() -> int:
+    """A loopback port nothing listens on now; whoever binds it next may lose it to another process."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind((HOST, 0))
         return probe.getsockname()[1]

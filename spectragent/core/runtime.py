@@ -78,9 +78,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HOOK_PRIORITY = 100
 
 #: Seconds each task oracle may take to read its score at the scoring point
-#: (``execute``'s ``oracle_timeout``, docs/architecture_design.md §4.2).
-# shortcut: provisional; the Android work sets the default once it has measured
-# how long AndroidWorld's scoring takes.
+#: (``execute``'s ``oracle_timeout``, docs/architecture_design.md §4.2). Set from
+#: AndroidWorld's scores (2026-11-01): 36-57 ms each in the end-to-end runs, and
+#: over 88 calls of the earlier spike a median of 0.1 s, p90 6.1 s and a longest
+#: of 18.2 s (an SMS task's score waited on a failing ``uiautomator dump``), so
+#: 60 s leaves more than three times the slowest one seen.
 ORACLE_TIMEOUT_S = 60.0
 
 

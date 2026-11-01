@@ -8,8 +8,9 @@ loopback port and keeps its devices in memory, so a client under test connects
 to it exactly as it would to a private adb server, without an adb binary, an
 emulator or a phone.
 
-It speaks ``host:transport``, ``shell,v2:`` and ``exec:``, as adb 1.0.41
-answered them on the emulator (2026-11-01), and refuses every other request:
+It speaks ``host:transport``, ``shell,v2:``, ``exec:`` and ``root:``, as adb
+1.0.41 answered them on the emulator (2026-11-01), and refuses every other
+request:
 
 - A request is four hex digits giving its length, then that many bytes. The
   answer is ``OKAY``, or ``FAIL`` followed by four hex digits and a message. A
@@ -27,6 +28,11 @@ answered them on the emulator (2026-11-01), and refuses every other request:
   exit code. Its stderr comes in the same stream: a warning on stderr lands
   inside the bytes of a ``screencap -p`` PNG. This fake writes stdout, then
   stderr.
+- ``root:`` answers with what the device says to the command ``root:`` (its
+  stdout: "restarting adbd as root", "adbd is already running as root") and
+  closes, as adbd answers before it restarts. A non-zero exit code makes it
+  ``FAIL`` with the stderr instead, as the server answered ``FAIL closed``
+  when adbd closed the stream at once.
 - Any other request (``host:version``, ``host:track-devices``; ``shell:``
   without ``v2``; ``sync:`` and ``tcp:``, which the design's client will also
   use) is answered ``FAIL``, so a client that starts using one fails a test
@@ -184,6 +190,14 @@ class FakeAdbServer:
     ) -> None:
         service, _, command = request.partition(":")
         kind, *options = service.split(",")
+        if request == "root:":
+            result = await device(request)
+            if result.exit_code:
+                await _fail(writer, result.stderr.decode())
+                return
+            writer.write(b"OKAY" + result.stdout)
+            await writer.drain()
+            return
         if not (kind == "shell" and "v2" in options) and not (kind == "exec" and not options):
             await _fail(writer, _unspoken(service))
             return
@@ -228,7 +242,7 @@ async def _drop_input(reader: asyncio.StreamReader) -> None:
 
 
 def _unspoken(request: str) -> str:
-    return f"this fake speaks host:transport:, shell,v2: and exec:, not {request!r}"
+    return f"this fake speaks host:transport:, shell,v2:, exec: and root:, not {request!r}"
 
 
 async def _fail(writer: asyncio.StreamWriter, message: str) -> None:

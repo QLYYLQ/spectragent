@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
     AndroidProviderSession,
+    DeviceNeeds,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from tests._helpers.fake_adb import FakeAdbServer, ShellResult
@@ -143,12 +144,18 @@ class FakeServerProvider:
     port: int
     serial: str = SERIAL
     closed: list[str] = field(default_factory=list)
+    #: What each ``open()`` was asked for.
+    needs: list[DeviceNeeds] = field(default_factory=list)
 
     @property
     def provider_id(self) -> str:
         return "fake_server"
 
-    async def open(self) -> AndroidProviderSession:
+    def unmet_needs(self, needs: DeviceNeeds) -> list[str]:
+        return []
+
+    async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
+        self.needs.append(needs or DeviceNeeds())
         return AndroidProviderSession(
             session_id="fake-session",
             provider_id=self.provider_id,

@@ -103,13 +103,23 @@ include-package-data = false
 # glob is the only reason they reach the wheel — without it an installed
 # (non-editable) spectragent raises FileNotFoundError on first prepare().
 #
+# `core/capabilities/android/oracle/androidworld_service/*.py` are programs the
+# androidworld task oracle runs under AndroidWorld's own interpreter. Their
+# directory is deliberately not a package, so discovery never imports them
+# (they import android_world), and this glob is what ships them.
+#
 # `benchmark_data/**` is deliberately NOT here. Globbing it made the wheel a
 # function of the build machine's disk: a checkout without the data emits a
 # smaller wheel under the same version, and a licensed 5 MB dataset is not
 # something to ship by accident. Loaders find it via `data_dir:` or
 # `$SPECTRAGENT_BENCHMARK_DATA` instead — see configs/README.md.
 [tool.setuptools.package-data]
-"spectragent" = ["prompts/**/*", "viewer/static/*", "viewer/static/**/*"]
+"spectragent" = [
+    "prompts/**/*",
+    "viewer/static/*",
+    "viewer/static/**/*",
+    "core/capabilities/android/oracle/androidworld_service/*.py",
+]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["**/__pycache__/*", "**/*.pyc"]

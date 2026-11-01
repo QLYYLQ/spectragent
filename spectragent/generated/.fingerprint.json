@@ -3,10 +3,11 @@
   "action_translator": "b3d61bb97f090cc3",
   "agent": "8943d0d21b3e516f",
   "agent_loop": "fec05f52abc68f07",
-  "android_provider": "40a07aa3df0bf309",
+  "android_provider": "c679064a2490b1fc",
+  "android_task_oracle": "b10be7b19b257e8a",
   "archiver": "a7d95691c1b812e5",
   "browser_provider": "c73fe28ef8e6c10c",
-  "capability": "2c9b09b8beb5fe31",
+  "capability": "156ce720dc649862",
   "decision_model": "78ea078bf0b0bc82",
   "dom_cleaner": "9a19de80e2d4f977",
   "dom_serializer": "e8e65899f9ed997b",
@@ -24,6 +25,6 @@
   "replayability": "088dda06a0704a43",
   "restorer": "c3acb44fd1c036a0",
   "step_selector": "dc3b952a6f3add2f",
-  "task_loader": "9de2d7bdb1f28094",
+  "task_loader": "9850a10fe37c08b7",
   "typing_rhythm": "a4814b2fd8fa8440"
 }

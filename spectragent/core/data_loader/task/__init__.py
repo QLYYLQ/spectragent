@@ -4,9 +4,10 @@ from spectragent.core.data_loader.task._registrar import (
     TaskLoaderBase,
     TaskLoaderRegistrar,
 )
-from spectragent.core.data_loader.task.base import BaseTaskLoader
 
 # Trigger auto-registration
+from spectragent.core.data_loader.task.androidworld import AndroidWorldTaskLoader  # noqa: F401
+from spectragent.core.data_loader.task.base import BaseTaskLoader
 from spectragent.core.data_loader.task.browsecomp import BrowseCompTaskLoader  # noqa: F401
 from spectragent.core.data_loader.task.lexbench_browser import (
     LexBenchBrowserTaskLoader,  # noqa: F401
@@ -18,6 +19,7 @@ from spectragent.core.data_loader.task.trace_branches import (  # noqa: F401
 )
 
 __all__ = [
+    "AndroidWorldTaskLoader",
     "BaseTaskLoader",
     "TaskLoaderBase",
     "TaskLoaderRegistrar",
