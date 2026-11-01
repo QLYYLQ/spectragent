@@ -38,9 +38,9 @@ runs. The one boot covers, in file order:
   the run added nothing to the top level of the user's home and left the
   user's ``~/.emulator_console_auth_token`` as it was.
 
-The tap point on Settings' search bar was read off a Pixel 6 profile
-(1080 x 2400, 420 dpi) with the API 33 Google APIs image; on another screen the
-test that taps there skips.
+The points on Settings' pages were read off a Pixel 6 profile (1080 x 2400,
+420 dpi) with the API 33 Google APIs image; on another screen or image the tests
+that tap them skip.
 """
 
 from __future__ import annotations
@@ -355,8 +355,7 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     booted: Booted,
 ) -> None:
     """Refused where no text field has focus; typed into Settings' search once a tap opens it."""
-    if booted.capability.screen_size != (1080, 2400):
-        pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
+    await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
     refused = await _act(booted, "type_coordinate", text="bluetooth")
@@ -384,8 +383,7 @@ async def test_typing_at_a_point_refuses_a_tap_on_nothing_and_a_field_away_from_
 ) -> None:
     """The tap on the search bar opens a screen whose field takes focus 1.5-1.9 s later, at its
     top: away from the point, so refused; tapped at that field itself, it takes the text."""
-    if booted.capability.screen_size != (1080, 2400):
-        pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
+    await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
     on_nothing = await _act(
@@ -421,6 +419,19 @@ async def test_typing_at_a_point_refuses_a_tap_on_nothing_and_a_field_away_from_
     )
     assert typed.success, typed.error
     assert _results_appeared(empty, await _screenshot(booted))
+
+
+async def _skip_unless_measured_layout(booted: Booted) -> None:
+    """The points on Settings' pages were read off the API 33 image on a 1080 x 2400 screen.
+
+    On the API 30 and 31 images, Settings' first page is laid out otherwise:
+    the search bar's point opened another page there, and the empty point a
+    suggestion card (2026-11-02).
+    """
+    platform = await _observe(booted, PLATFORM)
+    assert isinstance(platform, AndroidPlatformObs)
+    if booted.capability.screen_size != (1080, 2400) or platform.sdk_int != 33:
+        pytest.skip("the points on Settings' pages were measured on the API 33 image, 1080 x 2400")
 
 
 def _results_appeared(before: Image.Image, after: Image.Image) -> bool:

@@ -65,14 +65,18 @@ _FOCUSED_APP = re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ (?P<component>[
 #: the window (its id, user and title) and its title.
 _CURRENT_FOCUS = re.compile(r"mCurrentFocus=Window\{(?P<window>\S+ u\d+ (?P<title>[^}]*))\}")
 #: ``imeInputTarget in display# 0 Window{388b3c9 u0 com.android.settings/...}``: the
-#: window the input method serves. Android 11 names it ``mInputMethodInputTarget``, as
-#: its platform source prints it (not measured here).
+#: window the input method serves. Android 11 (API 30) names it ``mInputMethodInputTarget``
+#: (measured on the emulator, 2026-11-02).
 _IME_INPUT_TARGET = re.compile(
     r"(?:imeInputTarget|mInputMethodInputTarget) in display# \d+ Window\{(?P<window>[^}]*)\}"
 )
 #: ``mServedInputConnection=null``, or the input connection the input method client's
-#: focused view holds (``RemoteInputConnectionImpl{...}``).
-_SERVED_CONNECTION = re.compile(r"^ +mServedInputConnection=(?P<connection>\S+)", re.MULTILINE)
+#: focused view holds (``RemoteInputConnectionImpl{...}``, API 33); Android 11 and 12
+#: (API 30 and 31) print it as ``mServedInputConnectionWrapper=`` with
+#: ``ControlledInputConnectionWrapper{...}`` or ``IInputConnectionWrapper{...}`` (measured).
+_SERVED_CONNECTION = re.compile(
+    r"^ +mServedInputConnection(?:Wrapper)?=(?P<connection>\S+)", re.MULTILINE
+)
 _FRAMES = re.compile(r"Total frames rendered: (?P<frames>\d+)")
 _SIZE = re.compile(r"(?P<kind>Physical|Override) size: (?P<width>\d+)x(?P<height>\d+)")
 

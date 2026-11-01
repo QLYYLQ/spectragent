@@ -98,6 +98,16 @@ _SERVED = (
     "0,0-954,126 #7f0a01fa app:id/open_search_view_edit_text aid=1073741824}}\n"
 )
 _NOT_SERVED = "  mServedInputConnection=null\n"
+#: The same lines as API 30 and 31 print them (measured on the emulator, 2026-11-02).
+_SERVED_API_30 = (
+    "  mServedInputConnectionWrapper=ControlledInputConnectionWrapper{connection="
+    "com.android.internal.widget.EditableInputConnection@9c97c14 finished=false}\n"
+)
+_SERVED_API_31 = (
+    "  mServedInputConnectionWrapper=IInputConnectionWrapper{connection="
+    "com.android.internal.widget.EditableInputConnection@2247f0c finished=false}\n"
+)
+_NOT_SERVED_API_31 = "  mServedInputConnectionWrapper=null\n"
 
 
 def _windows(focus: str, target: str | None, *, line: str = "imeInputTarget") -> str:
@@ -156,6 +166,23 @@ def _client(served: str) -> str:
             TextFocus(window=_SEARCH.split(" u0 ")[1], text_field=True),
         ),
         (
+            _windows(_SEARCH, _SEARCH, line="mInputMethodInputTarget"),
+            _client(_SERVED_API_30),
+            TextFocus(window=_SEARCH.split(" u0 ")[1], text_field=True),
+        ),
+        (
+            _windows(_SEARCH, _SEARCH),
+            _client(_SERVED_API_31),
+            TextFocus(window=_SEARCH.split(" u0 ")[1], text_field=True),
+        ),
+        (
+            _windows(_SETTINGS, _SETTINGS),
+            _client(_NOT_SERVED_API_31),
+            TextFocus(
+                window="com.android.settings/com.android.settings.Settings", text_field=False
+            ),
+        ),
+        (
             "  mCurrentFocus=null\n  mFocusedApp=null\n",
             _client(_SERVED),
             TextFocus(window=None, text_field=False),
@@ -175,6 +202,9 @@ def _client(served: str) -> str:
         "a connection, and no window the input method serves",
         "no connection, and no window the input method serves",
         "the target as Android 11 names it",
+        "a focused field as API 30 reports it",
+        "a focused field as API 31 reports it",
+        "no text field as API 30 and 31 report it",
         "no window",
         "a client that did not answer",
     ],
