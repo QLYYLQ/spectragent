@@ -43,11 +43,12 @@ class HistoryTab:
     ``Page.navigate`` to another document commits before it answers. A URL
     that differs from the current one only by its fragment is a same-document
     navigation, answered at once without a loader and committed
-    ``within_document_commit_s`` later (``None``: never), when :attr:`scope`
-    hears ``NavigatedWithinDocumentEvent``: measured, Chrome answers it before
-    the page commits it, and the page commits it only once its main thread is
-    free. ``Page.navigateToHistoryEntry`` answers first and commits after
-    ``commit_after`` more history reads (``None``: never).
+    ``within_document_commit_s`` later (``None``: never; ``0``: before the
+    handler sees the reply, as when both reach the client in one read), when
+    :attr:`scope` hears ``NavigatedWithinDocumentEvent``: measured, Chrome
+    answers it before the page commits it, and the page commits it only once
+    its main thread is free. ``Page.navigateToHistoryEntry`` answers first
+    and commits after ``commit_after`` more history reads (``None``: never).
     ``fail`` makes a method raise and ``hang`` makes it never answer.
     """
 
@@ -88,11 +89,14 @@ class HistoryTab:
         self.urls = [*self.urls[: self.index + 1], url]
         self.index += 1
 
-    async def _commit_within_document(self, url: str, after_s: float) -> None:
-        await asyncio.sleep(after_s)
+    def _commit_within_document(self, url: str) -> None:
         self._push(url)
         assert self.scope is not None
-        self.scope.emit(NavigatedWithinDocumentEvent(frame_id="MAIN"))
+        self.scope.emit(NavigatedWithinDocumentEvent(frame_id="MAIN", navigation_type="fragment"))
+
+    async def _commit_later(self, url: str, after_s: float) -> None:
+        await asyncio.sleep(after_s)
+        self._commit_within_document(url)
 
     async def send(
         self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
@@ -119,8 +123,10 @@ class HistoryTab:
             if not same_document:
                 self._push(url)
                 return {"frameId": "MAIN", "loaderId": "L1"}
-            if self.within_document_commit_s is not None:
-                commit = self._commit_within_document(url, self.within_document_commit_s)
+            if self.within_document_commit_s == 0:
+                self._commit_within_document(url)
+            elif self.within_document_commit_s is not None:
+                commit = self._commit_later(url, self.within_document_commit_s)
                 self._commits.append(asyncio.create_task(commit))
             return {"frameId": "MAIN"}
         if method == "Page.navigateToHistoryEntry":
@@ -197,6 +203,19 @@ class TestNavigate:
             "The URL changed from https://a.example/ to https://a.example/#part; "
             "the document has finished loading."
         )
+
+    async def test_a_commit_heard_before_the_reply_counts(self) -> None:
+        """The commit can reach the client with the reply, before the handler resumes.
+
+        The handler listens from before it sends ``Page.navigate``, so it does not miss it.
+        """
+        cdp = HistoryTab([A], 0, within_document_commit_s=0)
+        async with tab(cdp) as capability:
+            started = time.monotonic()
+            result = await NavigateAction().execute({"url": A + "#part"}, capability=capability)  # type: ignore[arg-type]
+            took = time.monotonic() - started
+        assert _effect(result).after == Location(url="https://a.example/#part")
+        assert took < 0.5, "a commit already heard is not waited for (budget 1 s)"
 
     async def test_a_fragment_navigation_that_does_not_commit_within_the_budget_is_unknown(
         self,
