@@ -38,11 +38,6 @@ from typing import Generic, TypeVar
 
 T = TypeVar("T")
 
-#: The device sessions whose turn the current task (and every task it started) holds.
-_HOLDING: ContextVar[frozenset[DeviceSession]] = ContextVar(
-    "android_device_turns", default=frozenset()
-)
-
 
 class DeviceBusyError(TimeoutError):
     """A job waited its whole wait limit for its turn; it was withdrawn and never ran."""
@@ -57,12 +52,18 @@ class ReentrantJobError(RuntimeError):
 
 
 class DeviceSession:
-    """The serial work queue of one device."""
+    """The serial work queue of one device.
+
+    Each session keeps its own context variable for "this task holds my turn";
+    there is no module-level one.
+    """
 
     def __init__(self, serial: str) -> None:
         self.serial = serial
         # asyncio.Lock wakes its waiters first come, first served: the queue's order.
         self._turn = asyncio.Lock()
+        #: Whether the current task, or a task it started, holds this device's turn.
+        self._holding: ContextVar[bool] = ContextVar("android_device_turn", default=False)
 
     async def run(
         self, work: Callable[[], Awaitable[T]], *, what: str, wait_s: float, run_s: float
@@ -80,7 +81,7 @@ class DeviceSession:
             DeviceJobTimeout: It ran longer than *run_s*.
             ReentrantJobError: A job of this device submitted it.
         """
-        if self in _HOLDING.get():
+        if self._holding.get():
             raise ReentrantJobError(
                 f"{what}: a job of device {self.serial} submitted it, and it would wait "
                 f"for that job to finish forever"
@@ -93,7 +94,7 @@ class DeviceSession:
                 f"{what}: device {self.serial} stayed busy for {wait_s:g} s; the job was "
                 f"withdrawn without running"
             ) from None
-        holding = _HOLDING.set(_HOLDING.get() | {self})
+        holding = self._holding.set(True)
         limit = asyncio.timeout(run_s)
         try:
             async with limit:
@@ -105,7 +106,7 @@ class DeviceSession:
                 ) from None
             raise
         finally:
-            _HOLDING.reset(holding)
+            self._holding.reset(holding)
             self._turn.release()
 
     async def flush(self, *, wait_s: float) -> None:
