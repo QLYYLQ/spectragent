@@ -8,6 +8,8 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
   emulator hands the guest the run's own key (its log's "Sending adb public
   key" carries the run's ``adbkey.pub``) and the user's ``~/.android/adbkey*``
   stay as they were;
+- the emulator's ``HOME`` is the run's: its console auth token is there, and a
+  console command sent through adb with that ``HOME`` reaches the emulator;
 - the run's own ``netsimd``: its ``netsim.ini`` is in the run's ``TMPDIR``, the
   user's ``$TMPDIR/netsim.ini`` stays as it was, and the guest joins its Wi-Fi;
 - the screenshot's geometry;
@@ -16,8 +18,10 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
 - a scroll down that shows what is further down, measured on the screenshots;
 - a clean teardown: no process of the run is left, nothing listens on its
   private adb port, its directory is gone, nothing listens on adb's default port
-  5037 that did not before, and every other emulator and ``netsimd`` (another
-  run's or another tool's) that ran when the teardown began still runs.
+  5037 that did not before, every other emulator and ``netsimd`` (another
+  run's or another tool's) that ran when the teardown began still runs, and
+  the run added nothing to the top level of the user's home and left the
+  user's ``~/.emulator_console_auth_token`` as it was.
 
 The tap point on Settings' search bar was read off a Pixel 6 profile
 (1080 x 2400, 420 dpi) with the API 33 Google APIs image; on another screen the
@@ -46,7 +50,10 @@ from PIL import Image, ImageChops
 
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession
-from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
+from spectragent.core.capabilities.android.backends.local_emulator import (
+    LocalEmulatorProvider,
+    find_sdk,
+)
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.observations import (
     FOREGROUND_APP,
@@ -71,6 +78,8 @@ SETTINGS_SEARCH = "com.google.android.settings.intelligence"
 #: Where Settings' search bar is on a 1080 x 2400 screen.
 SEARCH_BAR = (540, 660)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
+#: The console auth token an emulator started with the user's HOME keeps there.
+USER_TOKEN = Path.home() / ".emulator_console_auth_token"
 #: Where every emulator started with the user's TMPDIR finds the netsimd it shares.
 USER_NETSIM = Path(tempfile.gettempdir()) / "netsim.ini"
 
@@ -87,6 +96,9 @@ class Booted:
     adb_server_pid: int
     user_keys: list[tuple[str, float] | None]
     user_netsim: tuple[str, float] | None
+    #: The names at the top level of the user's home before the boot.
+    user_home: set[str]
+    user_token: tuple[str, float] | None
     listening_on_5037: bool
     cycle: int = 0
 
@@ -130,6 +142,7 @@ def _listening(port: int) -> bool:
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def booted() -> AsyncIterator[Booted]:
     user_keys, user_netsim, listening = _key_state(), _file_state(USER_NETSIM), _listening(5037)
+    user_home, user_token = set(os.listdir(Path.home())), _file_state(USER_TOKEN)
     raw = {
         "capability": [
             {
@@ -159,6 +172,8 @@ async def booted() -> AsyncIterator[Booted]:
             adb_server_pid=run.server.process.pid,
             user_keys=user_keys,
             user_netsim=user_netsim,
+            user_home=user_home,
+            user_token=user_token,
             listening_on_5037=listening,
         )
     finally:
@@ -206,6 +221,25 @@ async def test_the_emulator_got_the_runs_own_key_and_the_users_keys_are_untouche
 
     assert sent[1] == run_key
     assert _key_state() == booted.user_keys
+
+
+async def test_a_console_command_sent_through_adb_reaches_the_emulator(booted: Booted) -> None:
+    """The emulator keeps its console auth token in the run's HOME, where adb looks for it when it
+    runs with that HOME; with two different homes the command fails without a word
+    (``docs/architecture_design.md`` §11.2)."""
+    assert (booted.run_directory / ".emulator_console_auth_token").is_file()
+    provider = booted.capability.backend
+    assert isinstance(provider, LocalEmulatorProvider)
+    adb = find_sdk(provider.sdk_root, os.environ) / "platform-tools" / "adb"
+    answer = subprocess.run(
+        [str(adb), "-P", str(booted.session.endpoint.port), "-s", booted.session.serial]
+        + ["emu", "avd", "name"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env={**os.environ, "HOME": str(booted.run_directory)},
+    )
+    assert answer.stdout.split() == [provider.avd, "OK"], answer.stderr
 
 
 async def test_the_run_has_a_netsimd_of_its_own_and_the_guest_is_online(booted: Booted) -> None:
@@ -326,3 +360,5 @@ async def test_teardown_stops_what_the_run_started_and_removes_its_directory(
     assert _listening(5037) == booted.listening_on_5037
     assert _key_state() == booted.user_keys
     assert _file_state(USER_NETSIM) == booted.user_netsim
+    assert set(os.listdir(Path.home())) - booted.user_home == set()
+    assert _file_state(USER_TOKEN) == booted.user_token

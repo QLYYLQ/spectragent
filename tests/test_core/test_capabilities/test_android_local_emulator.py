@@ -175,9 +175,11 @@ async def test_a_session_boots_through_the_runs_own_server_and_close_releases_ev
             encrypted=False,
             needs_adb_key=False,
         )
-        # The emulator is pointed at the run's server and SDK and handed the key it wrote.
+        # The emulator is pointed at the run's server and SDK, shares its home and is
+        # handed the key it wrote.
         assert env["ANDROID_ADB_SERVER_PORT"] == str(session.endpoint.port)
         adb_home = _recorded(record, "adb.json")["home"]
+        assert env["HOME"] == adb_home
         assert env["ANDROID_EMULATOR_HOME"] == f"{adb_home}/.android"
         assert Path(env["ANDROID_EMULATOR_HOME"], "adbkey.pub").read_text() == "run key"
         assert env["ANDROID_AVD_HOME"] == str(tmp_path / "avd")
@@ -332,6 +334,7 @@ def test_the_emulator_runs_headless_reports_its_console_port_and_saves_no_snapsh
 def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() -> None:
     base = {
         "PATH": "/usr/bin",
+        "HOME": "/Users/someone",
         "ANDROID_HOME": "/Users/someone/other-sdk",
         "ANDROID_SDK_ROOT": "/Users/someone/other-sdk",
         "ANDROID_USER_HOME": "/Users/someone/.android",
@@ -346,7 +349,7 @@ def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() 
         base,
         sdk=Path("/sdk"),
         adb_port=40123,
-        emulator_home=Path("/runs/r1/.android"),
+        home=Path("/runs/r1"),
         avd_home=Path("/avds"),
         tmpdir=Path("/runs/r1/tmp"),
     )
@@ -355,6 +358,7 @@ def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() 
         "PATH": "/usr/bin",
         "ANDROID_HOME": "/sdk",
         "ANDROID_ADB_SERVER_PORT": "40123",
+        "HOME": "/runs/r1",
         "ANDROID_EMULATOR_HOME": "/runs/r1/.android",
         "ANDROID_AVD_HOME": "/avds",
         "TMPDIR": "/runs/r1/tmp",

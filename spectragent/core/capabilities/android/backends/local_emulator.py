@@ -11,11 +11,15 @@ adb 1.0.41, 2026-11-01):
 - ``ANDROID_ADB_SERVER_PORT`` names the private server. The emulator's own adb
   calls read only this variable; without it they start a global server on
   5037.
-- ``ANDROID_EMULATOR_HOME`` is the run's ``.android`` directory, where the
-  private server wrote the run's key. The emulator hands the guest that key
-  (its log's "Sending adb public key"), never the user's
-  ``~/.android/adbkey.pub``, and writes its own files there instead of in
-  ``~/.android``. ``ANDROID_AVD_HOME`` keeps pointing at the AVDs.
+- ``HOME`` is the run's directory, which is the private server's ``HOME``
+  too, and ``ANDROID_EMULATOR_HOME`` its ``.android``, where the server wrote
+  the run's key. The emulator hands the guest that key (its log's "Sending
+  adb public key"), never the user's ``~/.android/adbkey.pub``. It keeps its
+  console auth token in ``$HOME/.emulator_console_auth_token``, and a console
+  command sent through adb (``adb emu ...``) reads the token from the adb
+  client's own ``HOME``: with two different homes such commands fail without a
+  word. It also writes nothing into the user's home, its discovery file
+  ``pid_<PID>.ini`` included. ``ANDROID_AVD_HOME`` keeps pointing at the AVDs.
 - ``TMPDIR`` is the run's ``tmp`` directory. ``netsimd``, which carries the
   guest's network, is shared by every emulator started with one ``TMPDIR``
   (``$TMPDIR/netsim.ini``) and lives in the process group of the emulator that
@@ -172,18 +176,22 @@ def emulator_environment(
     *,
     sdk: Path,
     adb_port: int,
-    emulator_home: Path,
+    home: Path,
     avd_home: Path,
     tmpdir: Path,
 ) -> dict[str, str]:
-    """The emulator's environment, built on *base*: the run's SDK, adb server, key, home, AVDs and tmp."""
+    """The emulator's environment, built on *base*: the run's SDK, adb server, home, AVDs and tmp.
+
+    *home* is the adb server's ``HOME``, whose ``.android`` holds the run's key.
+    """
     env = {name: value for name, value in base.items() if name not in _NOT_INHERITED}
     existing = base.get("NO_PROXY") or base.get("no_proxy")
     no_proxy = ",".join([*LOOPBACK, existing] if existing else LOOPBACK)
     env.update(
         ANDROID_HOME=str(sdk),
         ANDROID_ADB_SERVER_PORT=str(adb_port),
-        ANDROID_EMULATOR_HOME=str(emulator_home),
+        HOME=str(home),
+        ANDROID_EMULATOR_HOME=str(home / ".android"),
         ANDROID_AVD_HOME=str(avd_home),
         TMPDIR=str(tmpdir),
         NO_PROXY=no_proxy,
@@ -337,7 +345,7 @@ class LocalEmulatorProvider(AndroidProviderBase):
                     os.environ,
                     sdk=sdk,
                     adb_port=run.server.port,
-                    emulator_home=run.directory / ".android",
+                    home=run.server.home,
                     avd_home=avd_home,
                     tmpdir=run.directory / "tmp",
                 ),
