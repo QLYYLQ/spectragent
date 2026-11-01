@@ -4,13 +4,13 @@ A relative name is a param contract (``docs/architecture_design.md`` §4.9,
 "相对名就是参数契约"): negotiation binds names, never params, so an action that
 means what a browser action means takes its relative name and exactly its
 params. Five do: ``click_coordinate``, ``drag``, ``type_coordinate``, ``scroll``
-and ``wait``. Four are Android's own (§11.2, "动作"): ``long_press``,
-``type_text`` (into the focused field), ``press_key`` (system keys) and
-``open_app`` (by name; the name-to-package table is this action's, never an
-agent's). Points are physical screen pixels, the space ``input`` takes and the
-screenshot's viewport. A gesture's duration is a setting on the action
-instance, never a model param. There is no ``done``: the Loop's ``loop.done``
-ends a run (§4.5).
+and ``wait``; typing into the focused field is ``type_coordinate`` without a
+point (user ruling 2026-11-01). Three are Android's own (§11.2, "动作"):
+``long_press``, ``press_key`` (system keys) and ``open_app`` (by name; the
+name-to-package table is this action's, never an agent's). Points are physical
+screen pixels, the space ``input`` takes and the screenshot's viewport. A
+gesture's duration is a setting on the action instance, never a model param.
+There is no ``done``: the Loop's ``loop.done`` ends a run (§4.5).
 
 ``scroll``'s ``index`` names an element of ``android.ui_tree``, which arrives
 with a later stage; until then no run negotiates the tree, so the param is
@@ -323,27 +323,6 @@ class AndroidTypeCoordinateAction(ActionBase):
         return ActionResult(success=True)
 
 
-@dataclass
-class AndroidTypeTextAction(ActionBase):
-    """Type into the field that has focus."""
-
-    __registry_key__ = "android.type_text"
-
-    class Params(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-
-        text: str
-
-    def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe("Type text into the text field that has focus.", **context)
-
-    async def execute(
-        self, params: dict[str, Any], *, capability: AndroidCapability
-    ) -> ActionResult:
-        await capability.bridge.input.type_text(self.Params.model_validate(params).text)
-        return ActionResult(success=True)
-
-
 SystemKey = Literal["back", "home", "enter", "delete", "recent_apps"]
 #: Each system key, as Android names its key code.
 KEYCODES: dict[SystemKey, str] = {
@@ -519,7 +498,6 @@ ACTIONS: tuple[type[ActionBase], ...] = (
     AndroidDragAction,
     AndroidScrollAction,
     AndroidTypeCoordinateAction,
-    AndroidTypeTextAction,
     AndroidPressKeyAction,
     AndroidOpenAppAction,
     AndroidWaitAction,

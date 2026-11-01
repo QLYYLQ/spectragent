@@ -156,7 +156,6 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "text": "str",
         "clear": "bool (optional, default=true)",
     },
-    "android.type_text": {"text": "str"},
     "android.wait": {"seconds": "float (optional, default=1.0, max=30.0)"},
 }
 

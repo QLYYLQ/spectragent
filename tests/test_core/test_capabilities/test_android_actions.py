@@ -68,7 +68,6 @@ def test_a_shared_action_takes_exactly_the_browser_actions_params(name: str) -> 
             {"coordinate_x", "coordinate_y"},
             (("coordinate_x", "coordinate_y"),),
         ),
-        ("type_text", {"text"}, {"text"}, ()),
         ("press_key", {"key"}, {"key"}, ()),
         ("open_app", {"app_name"}, {"app_name"}, ()),
     ],
@@ -230,9 +229,11 @@ async def test_typing_without_a_point_sends_nothing_when_no_text_field_has_focus
 
 
 async def test_text_the_keyboard_map_lacks_fails_the_action_and_says_why(
-    capability: AndroidCapability,
+    capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
-    result = await act(capability, "type_text", text="你好")
+    phone.text_field = True
+
+    result = await act(capability, "type_coordinate", text="你好", clear=False)
 
     assert not result.success
     assert result.error is not None and "virtual keyboard map" in result.error
