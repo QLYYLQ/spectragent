@@ -15,6 +15,7 @@ import os
 import stat
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -97,14 +98,19 @@ def record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def provider(tmp_path: Path) -> LocalEmulatorProvider:
+async def provider(tmp_path: Path) -> AsyncIterator[LocalEmulatorProvider]:
+    """A provider over the fake SDK; whatever a test leaves open is closed after it."""
     sdk = tmp_path / "sdk"
     _executable(sdk / "platform-tools" / "adb", FAKE_ADB)
     _executable(sdk / "emulator" / "emulator", FAKE_EMULATOR)
     avds = tmp_path / "avd"
     avds.mkdir()
     (avds / f"{AVD}.ini").write_text("path=/nowhere\n")
-    return LocalEmulatorProvider(avd=AVD, sdk_root=str(sdk), avd_home=str(avds), boot_timeout_s=10)
+    provider = LocalEmulatorProvider(
+        avd=AVD, sdk_root=str(sdk), avd_home=str(avds), boot_timeout_s=10
+    )
+    yield provider
+    await provider.close()
 
 
 def _recorded(record: Path, name: str) -> dict[str, object]:
