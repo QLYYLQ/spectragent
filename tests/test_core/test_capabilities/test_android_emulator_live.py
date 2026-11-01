@@ -133,6 +133,19 @@ def _emulators(*, besides: int) -> set[int]:
     }
 
 
+def _netsimds_using(directory: Path) -> set[int]:
+    """The netsimds with a file open under *directory*: a netsimd keeps its logs in its TMPDIR."""
+    holders = subprocess.run(
+        ["lsof", "-t", "+D", str(directory)], capture_output=True, text=True
+    ).stdout
+    using = {int(pid) for pid in holders.split()}
+    return {
+        pid
+        for pid, _, command in _processes()
+        if pid in using and command.split()[0].endswith("netsimd")
+    }
+
+
 def _listening(port: int) -> bool:
     with socket.socket() as probe:
         probe.settimeout(1)
@@ -346,7 +359,9 @@ async def test_teardown_stops_what_the_run_started_and_removes_its_directory(
     booted: Booted,
 ) -> None:
     # Taken just before: another tool may stop its own emulator during the boot.
-    others = _emulators(besides=booted.emulator_group)
+    own_netsimd = _netsimds_using(booted.run_directory / "tmp")
+    assert own_netsimd, "the run's own netsimd runs, with its logs open in the run's tmp"
+    others = _emulators(besides=booted.emulator_group) - own_netsimd
     await booted.capability.teardown()
 
     processes = _processes()
@@ -354,6 +369,7 @@ async def test_teardown_stops_what_the_run_started_and_removes_its_directory(
     assert left == set(), "nothing of the emulator's process group is left, netsimd included"
     running = {pid for pid, _, _ in processes}
     assert booted.emulator_pid not in running and booted.adb_server_pid not in running
+    assert not own_netsimd & running, "the run's own netsimd is gone, wherever its group was"
     assert others <= running, "every other emulator and netsimd still runs"
     assert not _listening(booted.session.endpoint.port), "the run's adb server is gone"
     assert not booted.run_directory.exists()
