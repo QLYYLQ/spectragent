@@ -605,7 +605,7 @@ class RestorationContext:            # 窄的：没有 LLM、没有 memory、没
     checkpoint_step: int             # t
 ```
 
-恢复器只恢复**环境**，从不碰 memory，所以以后的 `capability_checkpoint`（Docker 的 snapshot/restore、Android 模拟器快照，经新增的 `RestorableCapability` 协议接入）是同一个接口下的另一个策略。逐条交回而不是最后一次性返回，是为了每恢复一步就提交一步：恢复到一半超时或崩溃，trace 里也已经有前面的步。
+恢复器只恢复**环境**，从不碰 memory，所以以后的 `capability_checkpoint`（Docker 的 snapshot/restore，经新增的 `RestorableCapability` 协议接入）是同一个接口下的另一个策略；Android 不做任务中途快照（用户 2026-11-01 的裁决），真要做时还要改什么见 §11.2 "分支回放"。逐条交回而不是最后一次性返回，是为了每恢复一步就提交一步：恢复到一半超时或崩溃，trace 里也已经有前面的步。
 
 `prefix_replay`（v1）对每个 k < t：（`media: align` 时先 `env.align_next_observation(recorded_obs_k, media_seek_timeout_s=…, media_end_lead_s=…)`，为下一次观测预约媒体对齐，§4.3 / §4.14）→ `env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（`zip(actions, action_results)`：源 Loop 跳过的、`done` 之后的与抛异常之后的都不执行；这次改动之前录下的步在失败之后照样执行过后面的动作，恢复也照样执行它们；名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency | recorded_timeline`（恢复步之间等多久，默认 `none`，见下文"恢复节奏"）、`media: none | align`（默认 `align`：每一个被恢复的观测，含检查点 t 的那一个，在采集里落定之后、截图之前把对应上的媒体元素对齐到录下的状态；`none` 不对齐，留作对照；发布的原路径与分叉配置显式写 `align`）、`media_time_tolerance_s`（媒体位置差的容差，默认 1 s）、`media_seek_timeout_s`（一次对齐跳转必须完成的上限，默认 2 s）、`media_end_lead_s`（录下时已经播完的元素，从结尾前这么多秒开始播到自然结束，默认 0.5 s，必须短于 `media_seek_timeout_s`，否则构造时报错并点名两个旋钮）。对齐只在恢复前缀里发生：恢复器在第 t 步交回之后不再预约，Loop 从不碰页面上的媒体，检查点之后的策略步与终止观测都是真实时间。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
 
@@ -2714,7 +2714,7 @@ Browser 的三个所有者分别是：provider 继续证明、持有并关闭实
 | `docker` | Docker API | `bash(cmd)`, `read/write_file()`, `snapshot/restore()` | `terminal`, `filesystem` | SWE-bench, Terminal-Bench |
 | `browser` | CDP | `navigate()`, `click()`, `type()`, `scroll()`, `extract()` | `dom`, `screenshot`, `console_log` | WebArena, BrowseComp, Mind2Web |
 | `desktop_vm` | VNC + AT-SPI / PyWinAuto | `screenshot()`, `click(x,y)`, `keyboard()`, `scroll()`, `get_a11y_tree()` | `desktop_screenshot`, `a11y_tree` | OSWorld, macOSWorld |
-| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click`（按编号，指名 `android.ui_tree` 里的元素）、`click_coordinate`、`drag`、`type_coordinate`、`scroll`（带一个可选的起点 `start`，§4.5）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`（`android.ui_tree`，一个键，生产方另记，§11.2）、`capture_state`、`platform`、前台 app 元数据（`android.foreground_app`） | AndroidWorld（先接，进程外的任务裁判）；MobileWorld、AndroidLab 以后 |
+| `android` | 自写的 ADB host 协议客户端 + 设备上我们自己的无障碍服务 APK 与 shell 助手；模拟器另有 gRPC 控制面（§11.2） | 与浏览器同名同参：`click`（按编号，指名 `android.ui_tree` 里的元素）、`click_coordinate`、`drag`、`type_coordinate`、`scroll`（带一个可选的起点 `start`，§4.5）；Android 独有：`long_press`、`type_text`、`press_key`、`open_app`；`wait` 由 capability 提供；结束用 Loop 的 `loop.done` | `screenshot`（`android.screenshot`）、`ui_tree`（`android.ui_tree`，一个键，生产方另记，§11.2）、`capture_state`、`platform`、前台 app 元数据（`android.foreground_app`） | AndroidWorld（先接，进程外的任务裁判）；之后依次是 MiniWoB++、VenusBench-Mobile、MobileSafetyBench（§11.2） |
 | `gpu_profiling` | Docker(no-GPU) + bare-metal harness IPC | `gpu_run()`, `gpu_compile()`, `profile_kernel()`, `profile_system()` | `gpu_metrics` | KernelBench, TritonBench |
 | `tool_sandbox` | HTTP / in-process | `call_tool(name, params)`, `get_user_msg()`, `get_policy()` | `tool_result` | τ-bench, ToolBench, AppWorld |
 
@@ -5512,7 +5512,7 @@ environment:
 | **新增 Archiver（环境证据归档器）** | 继承所属 capability 的 archiver 基类（框架基类 `ArchiverBase`；browser 是 `BrowserArchiverBase`：声明 `needs`、实现 `open(ctx)` 返回运行期会话，§4.14），`__registry_key__ = "<capability>.<id>"`，旋钮写成 `Annotated` 构造参数（模块里不用 `from __future__ import annotations`），按需声明 `privacy_markers`；把键加进该 capability 的 `__wiring__["archiver"]`；capability 实现 `bind_archivers` / `collect_archive`（§4.9 归档契约）；把 capability 接入 `tests/_helpers/archive_contract.py` | `browser.network`、`browser.storage`、`browser.dom_raw`（M29）、`browser.replay_log`；以后的 `browser.rrweb`、`docker.fs_diff`、`android.state_dump` |
 | **新增回放档位** | 继承 `ReplayabilityBase`，实现 `ReplayabilityProtocol` 全部成员（`replayable`、`launch_args`、`launch_env`、`device_scale_factor`、`plan`），旋钮写成 `__init__` 关键字参数；启动开关与启动环境只从自己的设置生成，经 `LAUNCH_ARGS` 进浏览器（§4.14） | 以后的 `realistic` |
 | **新增网络来源 / miss 策略** | 继承 `NetworkSourceBase` / `MissPolicyBase`，设 `__registry_key__`，实现 Protocol 全部成员；网络来源是不是在拦截（`intercepts`）、要不要隔离是策略自己的属性，旁边不加布尔；带受体的策略不是 dataclass、手写 `__init__`（§4.14 "回放"） | 以后的 `har`（从 HAR 回放）、`lenient`（miss 时放宽到 L2 再试） |
-| **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
+| **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot，经新增的 `RestorableCapability` 协议；Android 不做任务中途快照，§11.2） |
 | **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |
 | **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`） |
 | **新增提示贡献** | 配置 `prompt_contribution` Hook 的稳定 Python 函数引用及可选 wired helper；函数按公开 context 返回贡献，Agent 决定 placement（§4.1） | 首策略步一次或每策略步一次；历史重建只读原贡献 |
@@ -5753,7 +5753,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **这些原语的往返（2026-11-01 在本机实测；脚本、原始数据与模拟器日志在本地的 `tmp/research_notes/Android 能力技术栈调研/stage0/`，不入库）。** 本机是 Apple M1 Pro（10 核、32 GB），模拟器 37.2.13 跑 API 33 Google APIs arm64 镜像（Pixel 6，1080×2400），adb 1.0.41 起在私有端口上。每项先空跑一次再量 20 次，报中位数 / p90；每批开始时 1 分钟负载都低于 4，批内最高升到 7.4。每项量两种调用：一条连接直接说 host 协议，是我们自己的客户端将付的代价，下面先写它；括号里是 `adb` 命令行：点按、`dumpsys`、`getprop` 多出的 17–20 ms 是 adb 客户端进程自己的启动；截图那几批里看不出这笔开销，`screencap -p` 的命令行反而快 42 ms（677 对 719），直连那一批的负载从 3.9 升到 5.8，样本散在 665–814 ms。截图：`exec:screencap -p`（PNG，1.37 MB）719 / 784 ms（命令行 677 / 688），不带 `-p` 的原始像素（10.4 MB）714 / 730 ms；模拟器 gRPC `getScreenshot` 取 PNG（1.84 MB）100 / 101 ms，取 RGB888 原始像素（7.8 MB，要我们自己编码）14 / 15 ms。点按：`input tap` 14 / 15 ms（33 / 33），`cmd input tap` 13 / 13 ms（29 / 30）；API 33 的 `input` 是转给 `cmd input` 的脚本。界面树：`uiautomator dump` 写文件 1961 / 1985 ms，读回（`exec:cat`，12.6 KB）11 / 12 ms，`adb pull`（sync）25 / 28 ms。前台窗口：`dumpsys window`（42 KB）18 / 21 ms（38 / 44）。空操作 `getprop` 7.7 / 8.5 ms（27 / 34）。所以阶段 1 一次只看截图的采集约 0.7 s，几乎全花在 `screencap` 上；同一屏经模拟器 gRPC 取 PNG 只要它的约 1/7（两个 PNG 不是同一个文件：1.84 MB 对 1.37 MB）；`uiautomator dump` 一次 2 s。
 
-**Provider。** 每个 capability 一个 provider 注册表（§4.9.x），Android 用 `AndroidProviderRegistrar`；通用 schema 里同时带 `cdp_url`、`vnc_address`、`adb_device_id` 的 `ProviderSession` 挪回浏览器包，它从来只有浏览器在用。Android provider 的 `open()` 返回自己的会话对象，它带着一个回环地址形式的 `AdbEndpoint`（`host`、`port`、`kind`、`encrypted`、`needs_adb_key`、`expires_at`），任何 ADB 客户端都能直接连。云手机厂商那一段传输（WebSocket 或 SSH 隧道）在 lite SDK 里变成本地 `host:port`，ADB 本身与密钥归 Spectragent，与浏览器"SDK 交出一个 URL，协议归我们"是同一种分工。v1 只用官方模拟器（AndroidWorld、MobileWorld、AndroidLab 都只认它，能用快照秒级复位的也只有自托管的模拟器），provider 只有本地模拟器与按 adb 序列号接上的已连接设备两种；云手机和浏览器一样放到后面，国内云手机怎么接、cloud phone lite SDK 放在哪里叫什么，到那时再定。
+**Provider。** 每个 capability 一个 provider 注册表（§4.9.x），Android 用 `AndroidProviderRegistrar`；通用 schema 里同时带 `cdp_url`、`vnc_address`、`adb_device_id` 的 `ProviderSession` 挪回浏览器包，它从来只有浏览器在用。Android provider 的 `open()` 返回自己的会话对象，它带着一个回环地址形式的 `AdbEndpoint`（`host`、`port`、`kind`、`encrypted`、`needs_adb_key`、`expires_at`），任何 ADB 客户端都能直接连。云手机厂商那一段传输（WebSocket 或 SSH 隧道）在 lite SDK 里变成本地 `host:port`，ADB 本身与密钥归 Spectragent，与浏览器"SDK 交出一个 URL，协议归我们"是同一种分工。v1 只用官方模拟器（AndroidWorld、AndroidLab 都只认它；MobileWorld 原本也是，它的 arm64 镜像改在容器里跑 redroid，见下面"以后，或还没定的"；能用快照秒级复位的也只有自托管的模拟器），provider 只有本地模拟器与按 adb 序列号接上的已连接设备两种；云手机和浏览器一样放到后面，国内云手机怎么接、cloud phone lite SDK 放在哪里叫什么，到那时再定。
 
 **策略轴。** 每条轴是 Android 包里的一个注册表、`AndroidCapability` 上的一个受体；包在自己的声明模块里列出这些注册表（§4.2.1），开局要求类的登记见 §4.10；注册表的行随代码一起进 §6 与 AGENTS.md §2.2。
 
@@ -5786,10 +5786,22 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、界面树清洗器与序列化器、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。
 
+**分支回放（阶段 3）。** 用户 2026-11-01 的裁决：从 Android 录制上分叉只用前缀重放，即从任务起点重放录下的动作（`BranchLoop` 与 `prefix_replay`，§4.1），不做任务中途快照。下面的做法照这个裁决、按同一天的一次对比定（依据见本段末）。
+
+- **开局**：照常经任务裁判。AndroidWorld 自己的开局用录下的种子与日期（它给每个任务把设备时钟设成 2023-10-15 UTC），起点因此可复现。
+- **Android 实现 `RestorationSupport`（§4.9）**：`retarget` 让按编号寻址的动作按边界、类名、resource-id、文字与描述在恢复出的界面树里重新找到元素，坐标动作原样重放；`verify_restoration` 交回 Android 自己类型的证据：前台 app 与 Activity、去掉易变节点的界面树签名、键盘与焦点、遮掉状态栏的截图哈希、设备时钟差，其余易变的内容按需加规则。对齐（`RestorationAlignment`）是在每个被恢复的观测之前钉住设备时钟（`cmd alarm set-time`，不要 root）。
+- **稳定手段**：每次观测之前等界面静止，录制与重放用同一个等待；关掉动画；滑动用固定时长。这些设置进配置身份（上面"实验身份"）。录制要带上设备时钟与前台 app。
+- **会失败、校验看得出来的**：依赖流逝时间的状态（秒表、计时器这类，116 个任务里约 22 个）、滑动的惯性、通知与弹窗。快照里会过期的登录凭据是另一个不确定来源，这次的对比没有涉及。
+- **框架要改的两处**：`trace_branches` 现在给每个分叉任务都加 `replay_archive`（§4.10），只有浏览器的 `setup()` 声明这个键，Android 的分叉任务因此过不了 `prepare()`，改为只在源 run 有网络归档时才加；`RetargetMethod` 与 `RestorationReason`（§5.3）是浏览器的封闭列表，随恢复证据按 capability 分型（§4.9）按 capability 打开。
+- **任务中途快照**：不做，只在流逝时间造成的失败占多数、或前缀超过约 30 步时再考虑。真要做，需要一个把快照放在外部存储里的 `android.snapshot` 归档器，`RestorableCapability.restore_checkpoint(ref)`、一个 Environment 的路由方法和一个 `capability_checkpoint` 恢复器，还要改 `BranchLoop`：它要求恢复器把第 0 步到第 t 步逐步现场恢复、逐条交回。更便宜的变体是重放到第 t 步一次，在那里存快照，再从它分出多个分支。
+- **联网的 app**：设备快照回滚不了服务器，所以前缀重放加网络归档或可复位的后端，离线与联网的 run 都能覆盖（网络归档见下面"以后，或还没定的"）。
+
+依据是 2026-11-01 的一次对比（本地的 `tmp/research_notes/Android 能力技术栈调研/replay_vs_snapshot/README.md`，不入库）。实测的只有存快照：存一次约 1.5–2 s，期间客体暂停，每个快照未压缩约 2.1 GB，每存一次 AVD 涨约 2.5 GB；读快照（2–6 s）与前缀重放（5 步约 3–8 s，20 步约 10–30 s）的耗时是估计，那几个小时本机负载一直高于 4。
+
 **以后，或还没定的。**
 
 - `MarkorCreateFolder` 用宿主机生成任务那一刻的时间给文件夹起名（钉住的 commit 的 116 个任务里只有它读宿主机的时钟）。服务在 run 时按地址重建任务，文件夹名永远与列表记下的不同，所以它在 `UNREPRODUCIBLE` 里：加载器跳过它，裁判在 `prepare()` 拒绝它，不会开机之后才在目标比对上失败。要跑它，得让服务用列表记下的参数开局（参数都是 JSON 的任务做得到），还没做。
-- 信息检索任务（116 个里的 25 个）按 agent 的回答判分。回答在 `loop.done` 里，到不了 capability，它怎样到裁判等用户裁决；在那之前加载器跳过它们并记下原因（`AndroidWorldTaskLoader.skipped`），裁判也拒绝它们。
+- 信息检索任务（116 个里的 25 个）按 agent 的回答判分。回答在 `loop.done` 里，到不了 capability。用户 2026-11-01 的裁决：现在不做；要做时，由 Runtime 在判分时间点（§4.2）把 run 的最终回答（`loop.done` 的内容）交给裁判。在那之前加载器跳过它们并记下原因（`AndroidWorldTaskLoader.skipped`），裁判也拒绝它们。
 - MiniWoB 的目标由它的 JavaScript 在开局时在设备上生成（同一个种子两次生成的目标也不同），任务文本却在开局之前就定了，所以加载器给的文本只是目标固定的那一半（"Follow the instructions shown on the top of the screen."），具体指令 agent 从屏幕上读；裁判把设备给的完整目标记在判分来源里。AndroidWorld 自己的 runner 把完整目标交给 agent，要做到一样得让任务文本在 setup 之后才定，还没设计。
 - AndroidWorld 给每个任务 `int(10 × complexity)` 步，框架没有按任务的步数上限（Loop 的 `max_steps` 对 sweep 里每个任务都一样），所以 `complexity` 只留在任务的 `metadata` 里；`metadata` 不进 trace，离线的评测器看不到这个步数预算。
 - AndroidWorld 只在 agent 声明完成时才计分（`suite_utils.py` 的 `agent_successful = task_successful if interaction_results.done else 0.0`）；`oracle_scores.json` 记的是设备上的分数，不管 agent 怎么结束。要与 AndroidWorld 自己的数字比，评测器读判分记录时要配上 `result.json` 的 `agent_done`。
@@ -5798,11 +5810,10 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 - 按编号寻址的其他 Android 动作（带 `index` 的 `long_press`、`type_text`）还没定，随要接的按编号操作的 agent（例如 AndroidWorld 的 M3A、T3A）再定；它们与 `click` 一样要依赖 `android.ui_tree`。
 - UI-TARS 不带点的 `type(content=...)`：编解码里一个动词名现在只绑一个动作（`type` → `type_coordinate`，点必填）。它在 Android 上怎样对应，以及 Android 是否保留 `type_coordinate`，等用户裁决。
 - Android 的 `type_coordinate` 不查点按之后有没有文本框拿到焦点：阶段 1 的 adb 内建命令看不出哪个视图有焦点。点落在输入框旁的标签上时，清空抹掉的是仍有焦点的那个框，字也打进那里，动作照样报成功；浏览器在同样情形下拒绝（"No text field took focus at the clicked point"），同一个相对名两边的含义因此不一致。它随上一条的裁决一起定，定之前不写焦点检查。
-- 分支回放放在阶段 3 开头：从任务起点的快照开局，重放动作，校验截图与界面树，按需加规则，恢复证据按 capability 分型（§4.9）。要固定设备时钟、等界面静止：动画、设备时钟、通知，以及快照里会过期的登录凭据，是 Android 自己的不确定来源。任务中途打快照（`capability_checkpoint` 与 `RestorableCapability`，要给 Environment 加方法）放在阶段 3 后半，到阶段 3 前再确认。这个恢复方案（从任务起点重放动作，还是任务中途打快照）还等用户裁决。
 - 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
 - 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
-- 云手机、真机、MobileWorld 与 AndroidLab、输入拟人化：阶段 4。
-- AndroidWorld 之后先接哪个 benchmark，以及 MobileWorld 与 AndroidLab 是否留在阶段 4，等用户裁决。
+- 云手机、真机、输入拟人化：阶段 4。
+- AndroidWorld 之后接的 benchmark（阶段 4，用户 2026-11-01 的裁决）依次是：MiniWoB++，AndroidWorld 自带的一套（92 个任务），用同一个裁判与任务加载器，任务列表按 `miniwob` 这个 family 生成（阶段 1 跑过其中的 `click-button`）；VenusBench-Mobile，在 AndroidWorld 的框架上改出来的（Apache-2.0），任务更难，宿主机写明支持 macOS，一部分任务由 LLM 评委判分，它的多轮任务在 run 中途换目标，与 Runtime 只在 Loop 结束后判一次分（§4.2）接不上；MobileSafetyBench，它每一步都判分，与只在结束后判一次冲突，还要 Appium：Appium 的 UiAutomator2 会话占着设备上唯一的 UiAutomation 连接，可能把我们自己的无障碍服务解绑（上面"设备端"），接之前要测。MobileWorld 在本机上只能跑它的 arm64 redroid 容器镜像（Android 14 跑在容器里，不是模拟器），要装 Colima 与 Docker：允许装（用户："可以装，我感觉无所谓"），优先级低。AndroidLab 不在这个顺序里，暂缓：它给 Mac 的 arm64 AVD 有用户报开机后缺它的 benchmark app，维护者 2025-03 的建议是先用 Linux 版（要 KVM）。调研见本地笔记 `tmp/research_notes/Android 能力技术栈调研/benchmarks_on_this_mac.md`（不入库）。
 - 真实国内 app 档（带反自动化检查的 app）暂缓，排在阶段 4 之后。届时按同意划定范围（金融 app 要机构授权；拒绝被自动化的 app 只做人执行或只读的步骤，或者排除；专用账号、钉住 app 版本、有人在场；被 app 拦下记为一种结局，不做任何规避），开跑前做法律审查；无障碍服务开不开是一项要记录的选择；人工交接放在 Loop；trace 只记事实（暴露快照、检测证据、交接步、账号状态），四类结局由评测器离线分类。设备端探针 app 在它开跑之前做。
 
 ---
