@@ -44,7 +44,10 @@ from spectragent.core.capabilities.android.device.channel import (
     JsonObject,
     Reply,
 )
-from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
+from spectragent.core.capabilities.android.device.forest import (
+    AndroidAccessibilityForest,
+    ProtoRect,
+)
 
 #: How long a tap's finger stays down unless asked otherwise.
 TAP_MS = 50
@@ -53,6 +56,8 @@ TAP_MS = 50
 MAX_NODES = 5000
 GlobalAction = Literal["back", "home", "recents"]
 Point = tuple[float, float]
+#: The program that takes a screenshot.
+ScreenshotProducer = Literal["accessibility_service", "shell_helper"]
 
 
 class _Result(BaseModel):
@@ -90,6 +95,33 @@ class TextTarget(_Result):
     package_name: str | None = None
     class_name: str | None = None
     view_id_resource_name: str | None = None
+
+
+class FocusedNode(_Result):
+    """The node with input focus: the focused view of the window that has input focus.
+
+    Attributes:
+        bounds_in_screen: Where it is, in screen pixels.
+        is_editable: Whether it takes text.
+        package_name: Its package, as the tree names it.
+        class_name: Its class.
+        view_id_resource_name: Its view id, when it has one.
+    """
+
+    bounds_in_screen: ProtoRect
+    is_editable: bool
+    package_name: str | None = None
+    class_name: str | None = None
+    view_id_resource_name: str | None = None
+
+    def contains(self, x: float, y: float) -> bool:
+        """Whether the point (*x*, *y*) is inside its bounds, edges included."""
+        box = self.bounds_in_screen
+        return box.left <= x <= box.right and box.top <= y <= box.bottom
+
+
+class _Focus(_Result):
+    focused: FocusedNode | None
 
 
 class SettingChange(_Result):
@@ -145,7 +177,7 @@ class Screenshot:
     png: bytes
     width: int
     height: int
-    producer: Literal["accessibility_service", "shell_helper"]
+    producer: ScreenshotProducer
     capture_ms: int
     encode_ms: int
     waited_ms: int
@@ -241,30 +273,39 @@ class ServiceClient:
     async def global_action(self, action: GlobalAction) -> None:
         await self.channel.call("global_action", {"action": action})
 
-    async def set_text(self, text: str) -> TextTarget:
-        """Replace the text of the field that has input focus (``ACTION_SET_TEXT``).
+    async def focus(self) -> FocusedNode | None:
+        """The node with input focus, as the system resolves it; ``None`` when no view has it."""
+        return _Focus.model_validate((await self.channel.call("focus")).result).focused
+
+    async def set_text(self, text: str, *, replace: bool = True) -> TextTarget:
+        """Set *text* on the editable field that has input focus (``ACTION_SET_TEXT``).
+
+        With *replace*, it replaces the field's whole text; without, it
+        replaces the field's selection, or goes at its cursor (at its end
+        when it has none), and the cursor follows it.
 
         Raises:
             RemoteError: ``no_focused_field`` when no editable field has input
-                focus, ``set_text_failed`` when the field refused.
+                focus, ``set_text_failed`` when the field refused,
+                ``password_field`` without *replace* on a password field,
+                whose text the service cannot read.
         """
-        return TextTarget.model_validate(
-            (await self.channel.call("set_text", {"text": text})).result
-        )
+        params: JsonObject = {"text": text, "replace": replace}
+        return TextTarget.model_validate((await self.channel.call("set_text", params)).result)
 
-    async def commit_text(self, text: str) -> TextTarget:
-        """Insert *text* at the cursor through the service's own input method (API 33).
+    async def commit_text(self, text: str, *, replace: bool = False) -> TextTarget:
+        """Commit *text* through the service's own input method (API 33): at the cursor, or over the whole text.
 
-        The current keyboard stays the current keyboard. Only the field's
-        package is known.
+        With *replace*, the field's whole text is selected first, through the
+        same input connection, and the text replaces it. The current keyboard
+        stays the current keyboard. Only the field's package is known.
 
         Raises:
             RemoteError: ``no_focused_field`` when no field started input with
                 the service's input method, ``unsupported`` before API 33.
         """
-        return TextTarget.model_validate(
-            (await self.channel.call("commit_text", {"text": text})).result
-        )
+        params: JsonObject = {"text": text, "replace": replace}
+        return TextTarget.model_validate((await self.channel.call("commit_text", params)).result)
 
     async def events(self, *, max_buffered: int = 100_000) -> ServiceEvents:
         """Start the event stream; once per channel (:meth:`Channel.subscribe`)."""
@@ -343,9 +384,7 @@ class _GestureResult(_Result):
     elapsed_ms: int
 
 
-def _screenshot(
-    reply: Reply, producer: Literal["accessibility_service", "shell_helper"]
-) -> Screenshot:
+def _screenshot(reply: Reply, producer: ScreenshotProducer) -> Screenshot:
     result: JsonObject = reply.result
     timing = _ScreenshotResult.model_validate(result)
     return Screenshot(

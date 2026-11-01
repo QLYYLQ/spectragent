@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Bundle;
@@ -28,9 +29,11 @@ import org.json.JSONObject;
  * (API 30+, PNG, at most one per {@link #SCREENSHOT_INTERVAL_MS}: a request sooner waits, and one
  * the system still finds too soon is sent again until {@link #SCREENSHOT_TIMEOUT_MS});
  * {@code gesture} (timed strokes, {@link Strokes}, up to the system's limits); {@code global_action} (back,
- * home, recents); {@code set_text} (ACTION_SET_TEXT on the field with input focus) and
- * {@code commit_text} (API 33, through the service's own input method, at the cursor); and
- * {@code subscribe}, after which every accessibility event is pushed.
+ * home, recents); {@code focus} (the node with input focus and where it is on the screen);
+ * {@code set_text} (ACTION_SET_TEXT on the field with input focus: its whole text, or the text at
+ * its selection) and {@code commit_text} (API 33, through the service's own input method: at the
+ * cursor, or over the field's whole text); and {@code subscribe}, after which every accessibility
+ * event is pushed.
  */
 public final class DeviceService extends AccessibilityService {
     static final String SOCKET = "spectragent_device";
@@ -108,6 +111,8 @@ public final class DeviceService extends AccessibilityService {
                 return gesture(params);
             case "global_action":
                 return globalAction(params);
+            case "focus":
+                return focus();
             case "set_text":
                 return setText(params);
             case "commit_text":
@@ -297,17 +302,72 @@ public final class DeviceService extends AccessibilityService {
         return Reply.of(new JSONObject());
     }
 
+    /**
+     * The node with input focus, as the system resolves it: the focused view of the window that has
+     * input focus. {@code {"focused": null}} when no view has it.
+     */
+    private Reply focus() {
+        AccessibilityNodeInfo node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        if (node == null) {
+            return Reply.of(Json.obj("focused", null));
+        }
+        try {
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            return Reply.of(Json.obj("focused", Json.obj(
+                    "bounds_in_screen", Json.obj(
+                            "left", bounds.left, "top", bounds.top, "right", bounds.right, "bottom", bounds.bottom),
+                    "is_editable", node.isEditable(),
+                    "package_name", string(node.getPackageName()),
+                    "class_name", string(node.getClassName()),
+                    "view_id_resource_name", node.getViewIdResourceName())));
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                node.recycle(); // pooled before API 33
+            }
+        }
+    }
+
+    /**
+     * ACTION_SET_TEXT on the editable field with input focus. With {@code "replace": true} (the
+     * default) the text replaces the field's whole text; with false it replaces the field's
+     * selection, or goes at the cursor, which then follows it. A password field hides its text from
+     * the service, so text cannot go at its cursor.
+     */
     private Reply setText(JSONObject params) throws Failure {
         String text = text(params);
+        boolean replace = params.optBoolean("replace", true);
         AccessibilityNodeInfo field = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         try {
             if (field == null || !field.isEditable()) {
                 throw new Failure("no_focused_field", "no editable field has input focus");
             }
+            int cursor = -1;
+            if (!replace) {
+                if (field.isPassword()) {
+                    throw new Failure("password_field", "a password field hides its text, so text cannot go at its cursor");
+                }
+                CharSequence current = field.isShowingHintText() || field.getText() == null ? "" : field.getText();
+                int start = field.getTextSelectionStart();
+                int end = field.getTextSelectionEnd();
+                if (start < 0 || end < 0 || start > current.length() || end > current.length()) {
+                    start = end = current.length(); // no cursor: at the end
+                }
+                int from = Math.min(start, end);
+                int to = Math.max(start, end);
+                cursor = from + text.length();
+                text = current.subSequence(0, from) + text + current.subSequence(to, current.length());
+            }
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
                 throw new Failure("set_text_failed", "the focused field refused the text");
+            }
+            if (cursor >= 0) {
+                Bundle selection = new Bundle();
+                selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor);
+                selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor);
+                field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection);
             }
             return Reply.of(Json.obj(
                     "package_name", string(field.getPackageName()),
@@ -325,7 +385,7 @@ public final class DeviceService extends AccessibilityService {
         if (Build.VERSION.SDK_INT < 33) {
             throw new Failure("unsupported", "commit_text needs Android 13 (API 33); this device runs API " + Build.VERSION.SDK_INT);
         }
-        return Reply.of(Api33.commitText(this, text));
+        return Reply.of(Api33.commitText(this, text, params.optBoolean("replace", false)));
     }
 
     private static String text(JSONObject params) throws Failure {

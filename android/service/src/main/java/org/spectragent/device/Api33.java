@@ -9,8 +9,12 @@ import org.json.JSONObject;
 final class Api33 {
     private Api33() {}
 
-    /** Commits text at the cursor of the field that started input with the service's input method. */
-    static JSONObject commitText(AccessibilityService service, String text) throws Failure {
+    /**
+     * Commits text at the cursor of the field that started input with the service's input method;
+     * with replace, over the field's whole text, selected first through the same connection, so the
+     * two arrive in order on one connection.
+     */
+    static JSONObject commitText(AccessibilityService service, String text, boolean replace) throws Failure {
         InputMethod inputMethod = service.getInputMethod();
         if (inputMethod == null) {
             throw new Failure("no_input_method", "the service has no input method; its configuration lacks flagInputMethodEditor");
@@ -18,6 +22,9 @@ final class Api33 {
         InputMethod.AccessibilityInputConnection connection = inputMethod.getCurrentInputConnection();
         if (connection == null) {
             throw new Failure("no_focused_field", "no text field has started input with the service's input method");
+        }
+        if (replace) {
+            connection.performContextMenuAction(android.R.id.selectAll);
         }
         connection.commitText(text, 1, null);
         EditorInfo editor = inputMethod.getCurrentInputEditorInfo();

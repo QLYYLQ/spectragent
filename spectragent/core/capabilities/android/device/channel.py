@@ -67,7 +67,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 #: The version of everything this module describes. Change it with any change
 #: to a frame, a method or a result the two ends exchange.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 #: The largest frame either end sends or accepts.
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 _LENGTHS = struct.Struct(">II")
