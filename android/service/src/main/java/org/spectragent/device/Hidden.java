@@ -13,7 +13,10 @@ import java.lang.reflect.Method;
  * accessibility service while it is connected (docs/architecture_design.md §11.2).
  */
 final class Hidden {
-    private static final int INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH = 2;
+    /** Queue the event and return at once. */
+    static final int INJECT_ASYNC = 0;
+    /** Return once the window the event went to has handled it. */
+    static final int INJECT_WAIT_FOR_FINISH = 2;
     private static Object inputManager;
     private static Method injectInputEvent;
 
@@ -53,8 +56,11 @@ final class Hidden {
         }
     }
 
-    /** Injects event and waits until it was dispatched, as `input` does. */
-    static synchronized void inject(InputEvent event) throws Failure {
+    /**
+     * Injects event in mode: {@link #INJECT_ASYNC}, or {@link #INJECT_WAIT_FOR_FINISH} as `input`
+     * injects. Events are dispatched in the order they were injected either way.
+     */
+    static synchronized void inject(InputEvent event, int mode) throws Failure {
         try {
             if (injectInputEvent == null) {
                 Class<?> managerClass;
@@ -66,7 +72,7 @@ final class Hidden {
                 inputManager = managerClass.getMethod("getInstance").invoke(null);
                 injectInputEvent = managerClass.getMethod("injectInputEvent", InputEvent.class, int.class);
             }
-            Object injected = injectInputEvent.invoke(inputManager, event, INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH);
+            Object injected = injectInputEvent.invoke(inputManager, event, mode);
             if (!Boolean.TRUE.equals(injected)) {
                 throw new Failure("inject_failed", "the input manager did not inject " + event);
             }

@@ -389,10 +389,13 @@ async def test_a_timed_path_keeps_its_timing_and_scrolls(up: Up, injector: str) 
 
     if injector == "service":
         elapsed = await up.side.service.gesture([path])
+        # Each segment after the first waits for the system to finish the one before it.
+        assert 350 <= elapsed < 1350
     else:
         elapsed = await up.side.helper.gesture(path)
-
-    assert 350 <= elapsed < 1350, "the planned 350 ms, and for the service its chain's round trips"
+        # Its events go at their planned times: waiting for the app to handle each move held
+        # this path to about 750 ms (measured).
+        assert 350 <= elapsed < 700
 
     async def scrolled() -> bool:
         return _scrolled(before, await up.side.service.tree())

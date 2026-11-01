@@ -119,14 +119,17 @@ public final class ShellHelper {
 
     private static void injectKey(long down, long time, int action, int code) throws Failure {
         Hidden.inject(new KeyEvent(down, time, action, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
-                InputDevice.SOURCE_KEYBOARD));
+                InputDevice.SOURCE_KEYBOARD), Hidden.INJECT_WAIT_FOR_FINISH);
     }
 
     /**
      * One finger along timed points: down at the first point's time, up at the last's. Between two
      * points that differ it moves every {@link #MOVE_INTERVAL_MS}, on the straight line, and at each
      * point itself; it sends nothing while the finger holds still, so a tap is a down and an up.
-     * Each event carries its planned time and is injected once that time has come.
+     * Each event carries its planned time and is injected once that time has come, without waiting
+     * for the app to handle it: an app takes input once a frame, and waiting for each move held a
+     * 350 ms path of 44 moves to about 750 ms (measured). The up waits, so this returns once the app
+     * has handled the whole stroke.
      */
     private static long touch(float[][] points) throws Failure {
         int device = touchscreen();
@@ -164,6 +167,7 @@ public final class ShellHelper {
     }
 
     private static void injectMotion(long down, long time, int action, float x, float y, int device) throws Failure {
+        int mode = action == MotionEvent.ACTION_UP ? Hidden.INJECT_WAIT_FOR_FINISH : Hidden.INJECT_ASYNC;
         MotionEvent.PointerProperties properties = new MotionEvent.PointerProperties();
         properties.id = 0;
         properties.toolType = MotionEvent.TOOL_TYPE_FINGER;
@@ -176,7 +180,7 @@ public final class ShellHelper {
                 new MotionEvent.PointerProperties[] {properties}, new MotionEvent.PointerCoords[] {coords},
                 0, 0, 1f, 1f, device, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
         try {
-            Hidden.inject(event);
+            Hidden.inject(event, mode);
         } finally {
             event.recycle();
         }
