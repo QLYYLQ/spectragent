@@ -7,8 +7,8 @@ One capture serves every negotiated fragment of an observation cycle:
   producer that made it. ``screencap`` captures the display in its current
   orientation at the resolution ``input`` takes points in, so the viewport is
   the image's own size;
-- ``android.foreground_app``: the app and window in front (stage 1 names this
-  fragment, §11.2 leaves the name to it);
+- ``android.foreground_app``: the app and window in front (§11.2 left this
+  fragment's name open);
 - ``android.platform``: the operating system the input reaches (a closed
   ``Literal``, so ``prepare()`` can read it with ``typing.get_args``), with the
   device facts measured on the device and never inferred from the host;

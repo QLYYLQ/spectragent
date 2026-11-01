@@ -3,8 +3,8 @@
 ``docs/architecture_design.md`` §11.2 ("Provider", "两把钥匙"). For each session
 it makes a run directory, starts the run's private adb server there
 (``adb_server.py``), starts the emulator pointed at that server and waits until
-the device has booted. The emulator's environment carries what the stage-0
-study measured (2026-11-01, emulator 37.2.13, adb 1.0.41):
+the device has booted. The emulator's environment carries what was measured
+on 2026-11-01 (emulator 37.2.13, adb 1.0.41):
 
 - ``ANDROID_ADB_SERVER_PORT`` names the private server. The emulator's own adb
   calls read only this variable; without it they start a global server on
