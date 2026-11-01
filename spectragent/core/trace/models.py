@@ -190,6 +190,10 @@ class TraceManifest(BaseModel):
     #: :class:`PromptImageRef` names one of these; an image it names that is
     #: not listed here was never committed.
     prompt_images: list[str] = Field(default_factory=list)
+    #: ``oracle_scores.json``, the task oracles' scores, committed before
+    #: ``result.json``; ``None`` when there is no such record (no oracle scored
+    #: the task, or the run never reached the scoring point).
+    oracle_scores: str | None = None
 
 
 class ExtraFileRecord(BaseModel):
@@ -290,14 +294,15 @@ class ArchiveRecord(BaseModel):
 
 
 #: What a committed file is (:class:`CommittedFile`): the run's own files
-#: (``manifest``, ``config``, ``result``), what the manifest lists (``step``,
-#: ``fragment`` — an observation's JSON or its recorded failure —,
-#: ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``,
+#: (``manifest``, ``config``, ``result``, ``oracle_scores``), what the manifest
+#: lists (``step``, ``fragment`` — an observation's JSON or its recorded
+#: failure —, ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``,
 #: ``prompt_image``), and what an extra index lists (``extra``).
 CommittedKind = Literal[
     "manifest",
     "config",
     "result",
+    "oracle_scores",
     "step",
     "fragment",
     "artifact",

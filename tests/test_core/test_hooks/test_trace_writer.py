@@ -143,6 +143,7 @@ class TestTraceWriterRegistration:
         assert handlers == {
             ("llm", "around_ainvoke"),
             ("env", "around_act"),
+            ("env", "after_read_oracle_scores"),
             ("loop", "around_record_step"),
             ("loop", "around_execute_step"),
             ("loop", "around_observe_terminal"),

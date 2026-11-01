@@ -154,6 +154,7 @@ def test_explain_lists_the_interceptions_the_run_would_weave(
     points = {(item["role"], item["method"]) for item in writer["intercepts"]}
     assert ("loop", "record_step") in points
     assert (("env", "act") in points) is env_intercepted
+    assert (("env", "read_oracle_scores") in points) is env_intercepted
     assert not (tmp_path / "never-written").exists()
 
 

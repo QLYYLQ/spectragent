@@ -610,6 +610,10 @@ class SurfacelessEnv:
         # Every run calls it (``prepare()``'s setup check), archiving or not.
         self._inner.check_setup(context, negotiation=negotiation, archivers=archivers)
 
+    async def read_oracle_scores(self, *, timeout_s: float) -> Any:
+        # Every run that reaches the scoring point calls it, archiving or not.
+        return await self._inner.read_oracle_scores(timeout_s=timeout_s)
+
     async def observe(self, negotiated: Any) -> Any:
         return await self._inner.observe(negotiated)
 
