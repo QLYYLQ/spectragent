@@ -12,12 +12,13 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
   ids), consistent (ids, children, depths), and visible nodes kept past the
   node limit;
 - screenshots from the service and the helper, each identical to
-  ``screencap``'s between the status bar and the navigation handle;
+  ``screencap``'s between the status bar and the navigation handle (the
+  helper's from API 31);
 - the service's tap, long press and swipe, and the helper's; a timed path
   whose speed changes keeps its timing on both;
 - the global actions back, home and recents, and the helper's keys;
 - text committed through the service's input method at the cursor, Chinese
-  included, and text set on the focused field;
+  included (API 33), and text set on the focused field;
 - events, in order and numbered without gaps;
 - the service refuses a wrong token, closes a connection from an app's uid
   before reading it, closes a hello over 64 KB without an answer, and closes
@@ -86,7 +87,8 @@ pytestmark = [
 AVD_VARIABLE = "SPECTRAGENT_TEST_AVD"
 APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 SETTINGS = "com.android.settings"
-SETTINGS_SEARCH = "com.google.android.settings.intelligence"
+#: Settings' search: Google's on the API 31 and 33 images, AOSP's on API 30's.
+SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.settings.intelligence")
 #: How long the UI may take to show what an action did.
 _SHOWN_S = 15.0
 #: The connections the service keeps open at once (``Server.MAX_CONNECTIONS``).
@@ -163,7 +165,7 @@ async def up() -> AsyncIterator[Up]:
         adb = AdbClient(session.endpoint.host, session.endpoint.port)
         side = await DeviceSide.start(adb, session.serial, apk, timeout_s=120)
         try:
-            shot = await side.helper.screenshot()
+            shot = await side.service.screenshot()  # the helper's needs API 31
             events = await side.service.events()
             yield Up(adb, session.serial, apk, side, (shot.width, shot.height), events)
         finally:
@@ -241,11 +243,11 @@ async def _foreground(up: Up) -> ForegroundApp:
     return parse_foreground(await _shell(up, "dumpsys window"))
 
 
-async def _front_is(up: Up, package: str) -> None:
+async def _front_is(up: Up, packages: tuple[str, ...]) -> None:
     async def check() -> bool:
-        return (await _foreground(up)).package == package
+        return (await _foreground(up)).package in packages
 
-    await _until(f"{package} in front", check)
+    await _until(f"one of {packages} in front", check)
 
 
 async def _until_launcher(up: Up) -> None:
@@ -268,7 +270,8 @@ async def _search_bar(up: Up) -> Node:
     Settings' task is cleared and started again in its running process rather than
     force-stopped: a cold start on a loaded machine took long enough to fail tests.
     """
-    await _shell(up, f"am force-stop {SETTINGS_SEARCH}")
+    for search in SETTINGS_SEARCH:
+        await _shell(up, f"am force-stop {search}")
     # Not `am start -W`: it once waited for a launch it never saw complete, for good (measured).
     said = await _shell(up, f"am start --activity-clear-task -n {SETTINGS}/.Settings")
     try:
@@ -313,7 +316,9 @@ async def test_the_service_is_up_on_the_build_it_was_given(up: Up) -> None:
     assert up.side.installed_now, "a read-only boot starts without the APK"
     assert up.apk.signed_with_test_key, "the default build signs with the committed key"
     assert hello.apk_sha256 == up.apk.info.sha256 == up.side.helper.hello.apk_sha256
-    assert hello.accessibility_tool == up.apk.info.accessibility_tool
+    # The system reads isAccessibilityTool from API 31; below, the hello says null.
+    expected = up.apk.info.accessibility_tool if hello.sdk_int >= 31 else None
+    assert hello.accessibility_tool == expected
     assert (await up.side.service.ping()).uptime_ms > 0
     assert (up.side.faketouch, up.side.gestures) == (True, True)
     assert SERVICE_COMPONENT in await _shell(
@@ -363,32 +368,41 @@ async def test_past_the_node_limit_visible_nodes_are_kept_and_offscreen_ones_cou
 # ── screenshots ───────────────────────────────────────────────────────
 
 
-async def test_both_screenshots_are_screencaps_pixels(up: Up) -> None:
+@pytest.mark.parametrize("producer", ["service", "helper"])
+async def test_a_screenshot_is_screencaps_pixels(up: Up, producer: str) -> None:
+    if producer == "helper" and up.side.helper.hello.sdk_int < 31:
+        pytest.skip(
+            "the helper's screenshot is written for API 31 to 33; below, it answers unsupported"
+        )
     await _home(up)
     reference = Image.open(io.BytesIO((await up.adb.shell(up.serial, "screencap -p")).stdout))
     # Between the status bar, whose clock ticks, and the navigation handle, whose colour
     # follows what is behind it and was still changing after going home (measured).
     between_the_bars = (0, 150, up.screen[0], up.screen[1] - 150)
 
-    for shot in (await up.side.service.screenshot(), await up.side.helper.screenshot()):
-        image = Image.open(io.BytesIO(shot.png))
-        assert image.size == up.screen == (shot.width, shot.height)
-        difference = ImageChops.difference(
-            reference.convert("RGB").crop(between_the_bars),
-            image.convert("RGB").crop(between_the_bars),
-        )
-        assert difference.getbbox() is None, f"{shot.producer} differs from screencap"
+    shot = await (up.side.service if producer == "service" else up.side.helper).screenshot()
+
+    image = Image.open(io.BytesIO(shot.png))
+    assert image.size == up.screen == (shot.width, shot.height)
+    difference = ImageChops.difference(
+        reference.convert("RGB").crop(between_the_bars),
+        image.convert("RGB").crop(between_the_bars),
+    )
+    assert difference.getbbox() is None, f"{shot.producer} differs from screencap"
 
 
 async def test_back_to_back_service_screenshots_wait_instead_of_failing(up: Up) -> None:
-    """The system refuses a screenshot within 333 ms of the last; the service waits instead.
+    """The system refuses a screenshot within 333 ms of the last (1000 ms on API 30); the service
+    waits instead.
 
     Sent together, the second request reaches the service while it still handles the first, so
     nothing but the first's own capture and encoding lies between the two."""
+    interval_ms = 1000 if up.side.service.hello.sdk_int == 30 else 333
+
     first, second = await asyncio.gather(up.side.service.screenshot(), up.side.service.screenshot())
 
     assert first.png and second.png
-    assert second.waited_ms > 0 or first.capture_ms + first.encode_ms >= 333
+    assert second.waited_ms > 0 or first.capture_ms + first.encode_ms >= interval_ms
 
 
 # ── gestures, actions and keys ────────────────────────────────────────
@@ -502,12 +516,10 @@ async def test_the_helper_presses_any_key(up: Up) -> None:
 
 
 def _search_field(node: Node) -> bool:
-    return node.is_editable and node.package_name == SETTINGS_SEARCH
+    return node.is_editable and node.package_name in SETTINGS_SEARCH
 
 
-async def test_text_is_committed_at_the_cursor_and_set_on_the_focused_field(up: Up) -> None:
-    """Committed first: right after ACTION_SET_TEXT replaced a field's text, the field restarts
-    input, and a commit sent before that restart is done is lost without an error (measured)."""
+async def _focused_search_field(up: Up) -> None:
     await _settings_list(up)
     bar = await _node(up, "the search bar", lambda node: node.text == "Search settings")
     await up.side.service.tap(*_center(bar))
@@ -517,14 +529,27 @@ async def test_text_is_committed_at_the_cursor_and_set_on_the_focused_field(up: 
         lambda node: _search_field(node) and node.is_focused,
     )
 
+
+async def test_text_is_committed_at_the_cursor_through_the_services_input_method(up: Up) -> None:
+    if up.side.service.hello.sdk_int < 33:
+        pytest.skip("an accessibility service has an input method of its own from API 33")
+    await _focused_search_field(up)
+
     committed = await up.side.service.commit_text("蓝牙")
-    assert committed.package_name == SETTINGS_SEARCH
+
+    assert committed.package_name in SETTINGS_SEARCH
     await _node(
         up, "the field reading '蓝牙'", lambda node: _search_field(node) and node.text == "蓝牙"
     )
 
+
+async def test_text_is_set_on_the_focused_field(up: Up) -> None:
+    await _focused_search_field(up)
+
     target = await up.side.service.set_text("bluetooth")
-    assert (target.package_name, target.class_name) == (SETTINGS_SEARCH, "android.widget.EditText")
+
+    assert target.package_name in SETTINGS_SEARCH
+    assert target.class_name == "android.widget.EditText"
     await _node(
         up,
         "the field reading 'bluetooth'",
