@@ -89,6 +89,10 @@ class AndroidTapInjectorBase(metaclass=AndroidTapInjectorRegistrar.Meta):
         return self.__registry_key__
 
 
+class TypingBackendUnsupported(ValueError):
+    """The device's API level cannot run the configured typing backend; the message says why."""
+
+
 @runtime_checkable
 class AndroidTypingBackend(Protocol):
     """Enters text into the field that has input focus."""

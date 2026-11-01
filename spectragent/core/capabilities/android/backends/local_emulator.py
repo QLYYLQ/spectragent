@@ -209,6 +209,34 @@ def find_avd_home(configured: str | None, env: Mapping[str, str]) -> Path:
     return Path.home() / ".android" / "avd"
 
 
+def avd_api_level(avd_home: Path, avd: str, sdk: Path) -> int | None:
+    """The API level *avd* runs, from the system image its configuration names.
+
+    The AVD's ``config.ini`` names the image (``image.sysdir.1``, relative to
+    the SDK), and the image's ``source.properties`` its level
+    (``AndroidVersion.ApiLevel``). The AVD's directory is the ``path`` its
+    ``<avd>.ini`` names, else ``<avd>.avd`` beside it. ``None`` when a file is
+    missing or says nothing.
+    """
+    listing = _properties(avd_home / f"{avd}.ini")
+    directory = Path(listing.get("path") or avd_home / f"{avd}.avd")
+    image = _properties(directory / "config.ini").get("image.sysdir.1")
+    if not image:
+        return None
+    level = _properties(sdk / image / "source.properties").get("AndroidVersion.ApiLevel", "")
+    return int(level) if level.isdigit() else None
+
+
+def _properties(path: Path) -> dict[str, str]:
+    """The ``key=value`` lines of *path*; empty when there is no such file."""
+    try:
+        text = path.read_text(errors="replace")
+    except FileNotFoundError:
+        return {}
+    pairs = (line.partition("=") for line in text.splitlines() if "=" in line)
+    return {key.strip(): value.strip() for key, _, value in pairs}
+
+
 def emulator_command(
     emulator: Path, avd: str, report_port: int, *, read_only: bool, grpc_port: int | None = None
 ) -> list[str]:
@@ -391,6 +419,14 @@ class LocalEmulatorProvider(AndroidProviderBase):
                 "become the next run's start"
             )
         return unmet
+
+    def api_level(self) -> int | None:
+        """The API level of the AVD's system image (:func:`avd_api_level`); ``None`` when it cannot be read."""
+        try:
+            sdk = find_sdk(self.sdk_root, os.environ)
+        except FileNotFoundError:
+            return None
+        return avd_api_level(find_avd_home(self.avd_home, os.environ), self.avd, sdk)
 
     async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
         """Boot one device meeting *needs* and return where to reach it.

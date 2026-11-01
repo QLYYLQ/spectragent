@@ -97,6 +97,7 @@ from spectragent.core.capabilities.android.input import tap, text  # noqa: F401 
 from spectragent.core.capabilities.android.input._registrar import (
     AndroidTapInjector,
     AndroidTypingBackend,
+    TypingBackendUnsupported,
 )
 from spectragent.core.capabilities.android.observations import (
     CAPTURE_STATE,
@@ -410,20 +411,27 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
     ) -> None:
-        """Refuse now what setup would: a device the provider cannot give the oracle, the APK, then the task.
+        """Refuse now what setup would: a device the provider cannot give the oracle or the typing
+        backend, the APK, then the task.
 
         Raises:
             UnmetDeviceNeeds: The provider cannot meet what the oracle needs
                 of the device; names the oracle, the needs and the provider.
+            TypingBackendUnsupported: The device's API level, as the provider
+                reads it from configuration, cannot run the typing backend.
             ServiceApkError: ``service_apk`` names no APK with a sidecar that
                 describes it, or one built for another protocol.
             Exception: The oracle's own refusal of its installation or task.
         """
         oracle = self.task_oracle
-        try:
-            backend = self.backend
-        except AttributeError:  # setup refuses a capability without a backend itself
+        try:  # setup refuses a capability without a backend or a typing backend itself
+            backend: BaseAndroidProvider | None = self.backend
+        except AttributeError:
             backend = None
+        try:
+            typing_backend: AndroidTypingBackend | None = self.typing_backend
+        except AttributeError:
+            typing_backend = None
         if backend is not None:
             needs = oracle.device_needs
             unmet = backend.unmet_needs(needs)
@@ -432,6 +440,11 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                     f"task_oracle {oracle.oracle_id!r} needs {', '.join(needs.named())} of the "
                     f"device, and the {backend.provider_id!r} provider cannot meet: "
                     + "; ".join(unmet)
+                )
+            level = backend.api_level()
+            if typing_backend is not None and level is not None:
+                _check_typing(
+                    typing_backend, level, f"the {backend.provider_id!r} provider's device"
                 )
         ServiceApk.load(self.service_apk)
         oracle.check_setup(context.get("oracle_task"))
@@ -754,17 +767,26 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
 
 
 def _check_build(side: DeviceSide, apk: ServiceApk, typing_backend: AndroidTypingBackend) -> None:
-    """Refuse a device that runs another build than the configured one, or cannot take the typing backend."""
+    """Refuse a device that runs another build than the configured one, or cannot take the typing backend.
+
+    The typing backend's check is the backstop for a provider that could not
+    say the device's API level before it was up (``check_setup``).
+    """
     hello = side.service.hello
     if hello.apk_sha256 != apk.info.sha256:
         raise DeviceSideError(
             f"the service on the device runs the APK with SHA-256 {hello.apk_sha256}, and the "
             f"run installed {apk.path} with SHA-256 {apk.info.sha256}"
         )
-    problem = typing_backend.unsupported(hello.sdk_int)
+    _check_typing(typing_backend, hello.sdk_int, "the device")
+
+
+def _check_typing(typing_backend: AndroidTypingBackend, level: int, device: str) -> None:
+    """Refuse *typing_backend* on *device* of API *level* when it cannot enter text there."""
+    problem = typing_backend.unsupported(level)
     if problem is not None:
-        raise DeviceSideError(
-            f"typing_backend {typing_backend.typing_id!r} cannot enter text here: {problem}"
+        raise TypingBackendUnsupported(
+            f"typing_backend {typing_backend.typing_id!r} cannot enter text on {device}: {problem}"
         )
 
 

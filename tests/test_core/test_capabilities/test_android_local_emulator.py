@@ -39,6 +39,7 @@ from spectragent.core.capabilities.android.backends.local_emulator import (
     DISCOVERY_DIR,
     LocalEmulatorProvider,
     _ConsoleReport,
+    avd_api_level,
     emulator_command,
     emulator_environment,
     find_avd_home,
@@ -627,3 +628,39 @@ def test_the_avds_are_where_the_emulator_itself_would_look() -> None:
     assert find_avd_home(None, {"ANDROID_USER_HOME": "/u"}) == Path("/u/avd")
     assert find_avd_home(None, {"ANDROID_SDK_HOME": "/s"}) == Path("/s/.android/avd")
     assert find_avd_home(None, {}) == Path.home() / ".android" / "avd"
+
+
+def _avd_with_image(tmp_path: Path, sdk: Path, level: str | None) -> None:
+    """The fixture's AVD, its configuration naming a system image whose properties say *level*."""
+    avd = tmp_path / "avd" / f"{AVD}.avd"
+    avd.mkdir()
+    (tmp_path / "avd" / f"{AVD}.ini").write_text(
+        f"avd.ini.encoding=UTF-8\npath={avd}\ntarget=android-30\n"
+    )
+    image = "system-images/android-30/google_apis/arm64-v8a/"
+    (avd / "config.ini").write_text(f"hw.lcd.width=1080\nimage.sysdir.1={image}\n")
+    properties = sdk / image / "source.properties"
+    properties.parent.mkdir(parents=True)
+    lines = ["Pkg.Desc=System Image arm64-v8a with Google APIs.", "SystemImage.Abi=arm64-v8a"]
+    if level is not None:
+        lines.append(f"AndroidVersion.ApiLevel={level}")
+    properties.write_text("\n".join(lines) + "\n")
+
+
+def test_the_api_level_is_the_one_the_avds_system_image_declares(
+    sdk: Path, tmp_path: Path, provider: LocalEmulatorProvider
+) -> None:
+    """As ``spectragent_service_api30``'s files say it (2026-11-02), read before anything boots."""
+    _avd_with_image(tmp_path, sdk, "30")
+
+    assert provider.api_level() == 30
+    assert avd_api_level(tmp_path / "avd", AVD, sdk) == 30
+
+
+def test_an_api_level_nothing_declares_is_unknown(
+    sdk: Path, tmp_path: Path, provider: LocalEmulatorProvider
+) -> None:
+    assert provider.api_level() is None, "the fixture's AVD names no directory there is"
+    _avd_with_image(tmp_path, sdk, None)
+    assert provider.api_level() is None, "an image whose properties say no level"
+    assert avd_api_level(tmp_path / "avd", "another_avd", sdk) is None

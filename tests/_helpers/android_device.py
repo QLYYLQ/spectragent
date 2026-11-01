@@ -375,6 +375,8 @@ class FakeServerProvider:
     closed: list[str] = field(default_factory=list)
     #: What each ``open()`` was asked for.
     needs: list[DeviceNeeds] = field(default_factory=list)
+    #: The API level it reports before the device is up; ``None``: it cannot say.
+    level: int | None = None
 
     @property
     def provider_id(self) -> str:
@@ -382,6 +384,9 @@ class FakeServerProvider:
 
     def unmet_needs(self, needs: DeviceNeeds) -> list[str]:
         return []
+
+    def api_level(self) -> int | None:
+        return self.level
 
     async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
         self.needs.append(needs or DeviceNeeds())

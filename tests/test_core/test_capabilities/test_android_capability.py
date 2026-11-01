@@ -38,6 +38,7 @@ from spectragent.core.capabilities.android.device.apk import (
 from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION, RemoteError
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSideError
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
+from spectragent.core.capabilities.android.input._registrar import TypingBackendUnsupported
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
 from spectragent.core.capabilities.android.input.text import CommitTextBackend
 from spectragent.core.capabilities.android.observations import (
@@ -640,13 +641,40 @@ async def test_setup_refuses_a_device_whose_service_runs_another_build(tmp_path:
     assert phone.side.enabled is None, "the device side was stopped"
 
 
-async def test_setup_refuses_a_typing_backend_the_device_cannot_run(tmp_path: Path) -> None:
+def test_prepare_refuses_a_typing_backend_the_providers_device_cannot_run(tmp_path: Path) -> None:
+    """The provider says the device's API level from configuration, so the refusal comes before
+    the trace opens (AGENTS.md §2.3); a provider that cannot say leaves it to setup."""
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    capability.typing_backend = CommitTextBackend()
+    env = make_env(AndroidEnvironment, {"android#0": capability})
+
+    capability.backend = FakeServerProvider("127.0.0.1", 1, level=31)
+    with pytest.raises(TypingBackendUnsupported) as refused:
+        env.check_setup({})
+    assert str(refused.value).startswith(
+        "typing_backend 'commit_text' cannot enter text on the 'fake_server' provider's device: "
+    )
+    assert "this device runs API 31" in str(refused.value)
+
+    for level in (33, None):
+        capability.backend = FakeServerProvider("127.0.0.1", 1, level=level)
+        env.check_setup({})
+
+
+async def test_setup_refuses_a_typing_backend_the_device_cannot_run_when_only_it_can_tell(
+    tmp_path: Path,
+) -> None:
+    """The backstop for a provider that cannot say the level before the device is up."""
     phone = ScriptedPhone(sdk_int=31)
     async with phone_server(phone) as adb:
         capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
-        configured(capability, adb, typing_backend=CommitTextBackend())
-        with pytest.raises(DeviceSideError, match="'commit_text' cannot enter text here: .*API 31"):
+        provider = configured(capability, adb, typing_backend=CommitTextBackend())
+        with pytest.raises(
+            TypingBackendUnsupported, match="'commit_text' .* on the device: .*API 31"
+        ):
             await capability.setup()
+
+    assert provider.needs != [], "it took booting the device to know"
 
 
 async def test_setup_refuses_a_capability_without_its_input_strategies(tmp_path: Path) -> None:
