@@ -34,7 +34,7 @@ from agent_cdp import EventScope, WatchdogBase, WatchdogRegistrar
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
 from spectragent.core.capabilities.browser.input.mouse import PointerPosition
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.sessions import TabSessions
 
 if TYPE_CHECKING:
@@ -126,7 +126,7 @@ class WatchdogContext:
     profile: BrowserProfileConfig
     viewport: tuple[int, int] = (1280, 720)
     #: Measured by capability setup; None only before setup or in isolated tests.
-    input_platform: InputPlatform | None = None
+    input_platform: BrowserPlatform | None = None
 
     #: CDP session id of the tab this watchdog serves. ``None`` for
     #: browser-level watchdogs.

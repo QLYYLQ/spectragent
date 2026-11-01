@@ -31,7 +31,7 @@ from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFin
 from spectragent.core.capabilities.browser.archive.network import MAX_BODY_BYTES, NetworkSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.color_scheme import ColorScheme
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
@@ -77,7 +77,7 @@ class RecordingScript:
         replayability: Any = None,
         browser_defaults: BrowserDefaults | None = RECORDED_DEFAULTS,
         color_scheme: ColorScheme | None = "light",
-        input_platform: InputPlatform | None = "macos",
+        input_platform: BrowserPlatform | None = "macos",
         background_tabs: Literal["run", "freeze"] = "run",
         config: TraceConfig | None = None,
         **archiver_knobs: Any,
@@ -107,7 +107,7 @@ class RecordingScript:
         self.browser_defaults = browser_defaults
         # What the recording says became of a tab the focus left (§4.14 "离开焦点的 tab").
         self.background_tabs: Literal["run", "freeze"] = background_tabs
-        self.input_platform: InputPlatform | None = input_platform
+        self.input_platform: BrowserPlatform | None = input_platform
         self._plan = self.replayability.plan(
             t0_ms=t0_ms, browser_user_agent="ScriptedChrome/1.0", color_scheme=color_scheme
         )

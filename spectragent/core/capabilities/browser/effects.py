@@ -50,7 +50,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.schemas.action import (
     ActionEffect,
     PointWriter,
@@ -515,7 +515,7 @@ class ShortcutOfAnotherPlatform(_Fact):
     chord: str
     command: BrowserCommand | BrowserUiCommand
     tab: int | None = Field(default=None, ge=1)
-    platform: InputPlatform
+    platform: BrowserPlatform
     binding: str
 
     def line(self) -> str:

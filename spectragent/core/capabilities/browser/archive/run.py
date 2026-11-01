@@ -49,7 +49,7 @@ from spectragent.core.capabilities.browser.archive.base import (
 )
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.recorder import ArchiveChannel, ArchiveChannelError
 
 logger = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ class BrowserArchiveRun:
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
-        input_platform: InputPlatform | None = None,
+        input_platform: BrowserPlatform | None = None,
         initial_storage: Mapping[str, Any] | None = None,
     ) -> ArchiveBatch:
         """Flush → each session in binding order → fingerprint → one batch.

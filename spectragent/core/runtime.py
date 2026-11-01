@@ -54,6 +54,7 @@ from spectragent.core.loops.limits import ExecutionLimits, validate_execution_li
 from spectragent.core.loops.validation import MissingEnvironmentError
 from spectragent.core.negotiation import (
     FRAGMENT_FORMATS_PARAMETER,
+    check_input_platform,
     negotiate_action,
     negotiate_archive,
     negotiate_memory,
@@ -366,6 +367,9 @@ class AgentRuntime:
             IncompatibleArchiveError: The archivers a hook asks for cannot
                 be bound to this run's environment — raised before
                 anything is woven, and before ``on_run_start``.
+            IncompatiblePlatformError: The run's platform fragment may report
+                an input platform the agent's prompt cannot render
+                (``negotiation.platform.check_input_platform``).
             ValueError: A setup context key no capability accepts (or any
                 key, in a run with no environment).
             BrowserCooperationError: (and any capability's own refusal)
@@ -414,6 +418,17 @@ class AgentRuntime:
         # describes is refused now, not sent out as a prompt without it
         # (docs/architecture_design.md §4.4 "观测格式由提供方描述").
         self._fragment_formats = quoted_fragment_formats(agent, negotiated_obs, env)
+
+        # Step 2c: The input platform the agent's prompt states, from the
+        # platform fragment negotiated above. A fragment that may report one
+        # the prompt cannot render is refused now, by name, rather than at
+        # the first prompt, after setup and a first screenshot
+        # (``core/negotiation/platform.py``).
+        check_input_platform(
+            agent,
+            negotiated_obs.fragment_bindings,
+            name=self._identity.agent_id or type(agent).__name__,
+        )
 
         # Step 2.5: Action negotiation: the environment's actions and the
         # Loop's own (``loop.done``) on offer, the agent's demand to meet.

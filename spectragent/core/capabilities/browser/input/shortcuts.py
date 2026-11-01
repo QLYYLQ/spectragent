@@ -61,7 +61,7 @@ from typing import get_args
 from spectragent.core.capabilities.browser.effects import BrowserCommand, BrowserUiCommand
 from spectragent.core.capabilities.browser.input.chords import KeyChord, parse_key_chord
 from spectragent.core.capabilities.browser.input.keyboard import SHIFT_PAIRS
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 
 #: A chord as the table matches it: its modifiers and its key.
 ChordKey = tuple[frozenset[str], str]
@@ -171,7 +171,7 @@ _WINDOWS: list[tuple[Shortcut, list[str]]] = [
 ]
 
 #: Each platform's shortcuts for the commands the capability runs.
-COMMANDS: dict[InputPlatform, dict[ChordKey, Shortcut]] = {
+COMMANDS: dict[BrowserPlatform, dict[ChordKey, Shortcut]] = {
     "macos": _table(_MACOS),
     "windows": _table(_WINDOWS),
     "linux": _table([*_WINDOWS, *_numbered("Alt")]),
@@ -209,14 +209,14 @@ def _ui_table(entries: dict[BrowserUiCommand, list[str]]) -> dict[ChordKey, Brow
 
 
 #: Each platform's shortcuts for browser UI this browser does not show.
-BROWSER_UI: dict[InputPlatform, dict[ChordKey, BrowserUiCommand]] = {
+BROWSER_UI: dict[BrowserPlatform, dict[ChordKey, BrowserUiCommand]] = {
     "macos": _ui_table(_UI_MACOS),
     "windows": _ui_table(_UI_WINDOWS),
     "linux": _ui_table(_UI_WINDOWS),
 }
 
 #: The chord each platform's effect names for a command: its first binding.
-_BINDINGS: dict[InputPlatform, dict[tuple[str, int | None], str]] = {
+_BINDINGS: dict[BrowserPlatform, dict[tuple[str, int | None], str]] = {
     "macos": {
         **{(s.command, s.tab): spellings[0] for s, spellings in reversed(_MACOS)},
         **{(command, None): spellings[0] for command, spellings in _UI_MACOS.items()},
@@ -229,7 +229,7 @@ _BINDINGS: dict[InputPlatform, dict[tuple[str, int | None], str]] = {
 _BINDINGS["linux"] = _BINDINGS["windows"]
 
 
-def binding(platform: InputPlatform, command: str, tab: int | None = None) -> str:
+def binding(platform: BrowserPlatform, command: str, tab: int | None = None) -> str:
     """The chord *platform*'s effect line names for *command* (``Meta+[`` for Back on macOS).
 
     Written canonically, as the effect writes the chord pressed
@@ -238,7 +238,7 @@ def binding(platform: InputPlatform, command: str, tab: int | None = None) -> st
     return parse_key_chord(_BINDINGS[platform][(command, tab)]).text
 
 
-def browser_shortcut(chord: KeyChord, platform: InputPlatform) -> ShortcutMatch | None:
+def browser_shortcut(chord: KeyChord, platform: BrowserPlatform) -> ShortcutMatch | None:
     """What *chord* is to the browser on *platform*; ``None`` when no browser shortcut of the table.
 
     The measured platform's own shortcuts come first; another platform's are
@@ -252,7 +252,7 @@ def browser_shortcut(chord: KeyChord, platform: InputPlatform) -> ShortcutMatch 
     ui = BROWSER_UI[platform].get(key)
     if ui is not None:
         return WithoutUi(ui)
-    for other in get_args(InputPlatform):
+    for other in get_args(BrowserPlatform):
         if other == platform:
             continue
         shortcut = COMMANDS[other].get(key)

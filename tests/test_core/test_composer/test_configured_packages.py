@@ -30,9 +30,10 @@ from spectragent.core.composer import ComposeError, ConfigComposer, UnknownPacka
 from spectragent.scripts import generate_all
 
 #: A second capability, complete enough to compose and prepare a UI-TARS run:
-#: its declarations, a screenshot that reports geometry, a platform fragment,
-#: two of the actions UI-TARS declares (none of its optional ones), the
-#: capability and its own single-capability environment.
+#: its declarations, a screenshot that reports geometry, a platform fragment
+#: whose closed Literal says what it reports, two of the actions UI-TARS
+#: declares (none of its optional ones), the capability and its own
+#: single-capability environment.
 _PROBE_PACKAGE = {
     "__init__.py": "",
     "declarations.py": """
@@ -47,6 +48,8 @@ _PROBE_PACKAGE = {
         OPTIONAL_EXTRA_MODULES = ()
     """,
     "observations.py": """
+        from typing import Literal
+
         from spectragent.schemas.observation._registrar import FragmentBase
 
         class ProbeScreenshot(FragmentBase):
@@ -58,7 +61,7 @@ _PROBE_PACKAGE = {
 
         class ProbePlatform(FragmentBase):
             __registry_key__ = "probe.platform"
-            name: str = "probe"
+            operating_system: Literal["linux"] = "linux"
     """,
     "actions.py": """
         from dataclasses import dataclass

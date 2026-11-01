@@ -58,7 +58,10 @@ from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDA
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.color_scheme import ColorScheme, color_scheme_from_record
-from spectragent.core.capabilities.browser.platform import InputPlatform, input_platform_from_record
+from spectragent.core.capabilities.browser.platform import (
+    BrowserPlatform,
+    input_platform_from_record,
+)
 from spectragent.core.capabilities.browser.replay.archive_index import (
     NETWORK_ARCHIVER,
     RecordedArchive,
@@ -103,7 +106,7 @@ def _source(recorded: RecordedArchive) -> str:
 
 
 def input_platform_problems(
-    recorded: RecordedArchive, measured: InputPlatform | None = None
+    recorded: RecordedArchive, measured: BrowserPlatform | None = None
 ) -> list[str]:
     """A missing source platform is refused; a measured replay must match it."""
     value = (recorded.fingerprint or {}).get("input_platform")
@@ -213,7 +216,7 @@ def consistency_problems(
     background_tabs: str,
     planned_launch_flags: Sequence[str] | None,
     browser_defaults: BrowserDefaults | None = None,
-    expected_platform: InputPlatform | None = None,
+    expected_platform: BrowserPlatform | None = None,
 ) -> list[str]:
     """Every way the source run's fingerprint and this configuration disagree, at once.
 

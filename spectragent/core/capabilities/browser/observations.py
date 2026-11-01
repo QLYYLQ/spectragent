@@ -39,7 +39,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     traced_fields,
 )
 from spectragent.core.capabilities.browser.media import MediaState
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.capabilities.browser.tabs import FocusMove, FocusMoveReason
 from spectragent.schemas.observation._registrar import FragmentBase
@@ -588,7 +588,7 @@ class BrowserPlatformObs(FragmentBase):
 
     __registry_key__ = "browser.platform"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
-    operating_system: InputPlatform
+    operating_system: BrowserPlatform
 
     def summary(self) -> str:
         return self.operating_system

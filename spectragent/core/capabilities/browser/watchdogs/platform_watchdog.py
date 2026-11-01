@@ -7,7 +7,7 @@ from typing import ClassVar
 from agent_cdp import ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.observations import BrowserPlatformObs
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -25,7 +25,7 @@ class PlatformWatchdog(BrowserWatchdog):
     level: ClassVar[WatchdogLevel] = "tab"
     provides: ClassVar[frozenset[str]] = frozenset({"browser.platform"})
 
-    def __init__(self, input_platform: InputPlatform | None) -> None:
+    def __init__(self, input_platform: BrowserPlatform | None) -> None:
         self._platform = input_platform
 
     @classmethod

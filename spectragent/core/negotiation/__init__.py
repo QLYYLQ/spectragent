@@ -46,6 +46,7 @@ from spectragent.core.negotiation.observation import (
     ObservationNegotiationResult,
     negotiate_observation,
 )
+from spectragent.core.negotiation.platform import IncompatiblePlatformError, check_input_platform
 
 __all__ = [
     "FRAGMENT_FORMATS_PARAMETER",
@@ -60,11 +61,13 @@ __all__ = [
     "IncompatibleArchiveError",
     "IncompatibleFragmentError",
     "IncompatibleMemoryError",
+    "IncompatiblePlatformError",
     "NegotiationResult",
     "NegotiationResultBase",
     "NegotiationResultRegistrar",
     "ObservationNegotiationResult",
     "bounded_demand",
+    "check_input_platform",
     "demand_label",
     "demand_of",
     "extract_wiring",

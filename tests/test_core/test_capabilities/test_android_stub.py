@@ -4,7 +4,9 @@ The stub (``tests/_helpers/android_stub.py``) stands in for the capability
 ``docs/architecture_design.md`` §11.2 designs until the real one exists. Its
 three fragments come from one screen read, and its capture state is a
 phone's, so running it through the contract shows the contract and
-``Environment.observe`` fit a capability that is not a browser.
+``Environment.observe`` fit a capability that is not a browser. UI-TARS runs
+on it through the real ``AgentRuntime``, and its first prompt states
+``android``.
 
 The contract's classes are subclassed rather than copied, so every clause
 they hold, now or later, runs here too. The stub is kept out of
@@ -26,6 +28,7 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import point_params
 from spectragent.core.environments._registrar import EnvironmentBase
+from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.android_stub import (
@@ -102,6 +105,53 @@ def test_ui_tars_assembles_against_the_stub_with_its_wiring_unchanged() -> None:
     assert "index" not in scroll.params, "no android.ui_tree in this run, so no element to name"
     # The codec binds each verb's points to its action's here, after prepare().
     assert runtime.seed_messages("open the settings app")
+
+
+class _ScriptedModel:
+    """Answers every call with one reply and keeps every message it was shown."""
+
+    inference_kind = "chat"
+    model = name = "scripted"
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.seen: list[Any] = []
+
+    async def ainvoke(self, messages: Any, output_format: Any = None) -> ChatInvokeCompletion:
+        self.seen.extend(messages)
+        return ChatInvokeCompletion(completion=self.reply, usage=None)
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
+        return ()
+
+
+async def test_ui_tars_runs_on_the_stub_and_its_first_prompt_states_android() -> None:
+    """Where the stub first stopped UI-TARS: past ``prepare()``, the first prompt refused android."""
+    model = _ScriptedModel("Action: finished(content='opened')")
+    capability = StubAndroidCapability()
+    env = make_env(EnvironmentBase, {"android#0": capability})
+    run = make_run(
+        agent=UITarsAgent(prompt_template="mobile_use"),
+        loop=ReactLoop(),
+        env=env,
+        llm=model,
+        memory=SimpleMemory(),
+    )
+
+    result = await AgentRuntime.for_agent(run, AGENT_ID).execute("open the clock app", timeout=30)
+
+    assert result.agent_done == "done", result.error
+    assert capability.device.captures == 1
+    stated = [m.content for m in model.seen if "<input_platform>" in str(m.content)]
+    assert stated == [
+        "<input_platform>\n"
+        "Computer-use agent; environment: android.\n"
+        "Actual input platform: Android (android).\n"
+        "On Android, text goes in through an input method's on-screen keyboard, which can "
+        "cover part of the screen while a text field has focus. There are no Control or Meta "
+        "modifiers, so no Control+A or Meta+A selects all.\n"
+        "</input_platform>"
+    ]
 
 
 def _schema_without_descriptions(params: type[BaseModel]) -> object:

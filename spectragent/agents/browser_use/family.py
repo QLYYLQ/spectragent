@@ -65,7 +65,7 @@ from spectragent.agents.rendering.capture_state import (
     capture_state_demand,
     write_viewport_pixels,
 )
-from spectragent.agents.rendering.platform import render_browser_platform
+from spectragent.agents.rendering.platform import BROWSER_PLATFORMS, render_browser_platform
 from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
@@ -80,6 +80,7 @@ from spectragent.prompts import hash_text, text_snapshot
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import PointFrame
+from spectragent.schemas.observation.platform import InputPlatform
 from spectragent.schemas.prompt import (
     PromptRef,
     PromptSnapshot,
@@ -140,6 +141,8 @@ class BrowserUseAgent(AgentBase):
         "llm": "llm",  # auto-discovery — any registered LLM
     }
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    # The prompt states a desktop browser's input platform (render_browser_platform).
+    __input_platforms__: ClassVar[frozenset[InputPlatform]] = BROWSER_PLATFORMS
     # The DOM text's format is its serializer's to describe: the surface
     # quotes the run's description verbatim, so changing the serializer
     # changes the prompt with it (``docs/architecture_design.md`` §4.4

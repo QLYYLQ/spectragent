@@ -177,7 +177,7 @@ from spectragent.core.capabilities.browser.navigation import (
     NavigationFeed,
 )
 from spectragent.core.capabilities.browser.observations import BrowserCaptureFragment, DOMObs
-from spectragent.core.capabilities.browser.platform import InputPlatform, measure_input_platform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform, measure_input_platform
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
@@ -668,7 +668,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     retarget_tolerance_px: float
     new_tabs: Literal["follow", "stay"]
     background_tabs: Literal["run", "freeze"]
-    expected_platform: InputPlatform | None
+    expected_platform: BrowserPlatform | None
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -734,7 +734,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: The time zone and locale a frame no override reaches falls back to,
     #: measured right after launch when archivers are bound (§4.14).
     _browser_defaults: BrowserDefaults | None
-    _input_platform: InputPlatform | None
+    _input_platform: BrowserPlatform | None
     #: Every tab, in the order they opened, from the control connection's
     #: target discovery (``tabs.py``) — between setup and teardown, when the
     #: browser accepted the discovery.
@@ -783,7 +783,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             PydanticField(description="Browser profile name (resolved via resolve_profile)"),
         ] = "standard",
         expected_platform: Annotated[
-            InputPlatform | None,
+            BrowserPlatform | None,
             PydanticField(
                 description="Expected actual browser input platform. None accepts any measured supported platform; a mismatch is refused, never emulated."
             ),
@@ -1354,7 +1354,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return self._cdp
 
     @property
-    def input_platform(self) -> InputPlatform:
+    def input_platform(self) -> BrowserPlatform:
         """The browser's measured desktop input platform (§4.13); measured in :meth:`setup`."""
         if self._input_platform is None:
             raise RuntimeError("BrowserCapability not set up — call setup() first")

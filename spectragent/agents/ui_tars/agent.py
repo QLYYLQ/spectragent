@@ -46,7 +46,10 @@ from spectragent.agents.rendering.capture_state import (
     capture_state_demand,
     render_capture_state,
 )
-from spectragent.agents.rendering.platform import render_computer_use_platform
+from spectragent.agents.rendering.platform import (
+    COMPUTER_USE_PLATFORMS,
+    render_computer_use_platform,
+)
 from spectragent.agents.rendering.prompt_context import (
     place_prompt_contributions,
     restored_history_message,
@@ -66,6 +69,7 @@ from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import CoordinateSpace
 from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.observation.platform import InputPlatform
 from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 
 # ── The coordinate contract ───────────────────────────────────
@@ -220,6 +224,11 @@ class UITarsAgent(AgentBase):
         },
         "llm": "llm",
     }
+
+    # A computer-use prompt states every input platform, a phone's included
+    # (``render_computer_use_platform``); ``AgentRuntime.prepare()`` holds the
+    # run's platform fragment against it (``core/negotiation/platform.py``).
+    __input_platforms__: ClassVar[frozenset[InputPlatform]] = COMPUTER_USE_PLATFORMS
 
     # ── config (conscribe visible) ─────────────────────────────
     # ``max_steps`` / ``max_actions_per_step`` are the Loop's. The members of

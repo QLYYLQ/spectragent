@@ -25,7 +25,7 @@ from spectragent.core.capabilities.browser.input.human_rhythm import HumanRhythm
 from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.core.capabilities.browser.input.keyboard import HumanKeyboard
 from spectragent.core.capabilities.browser.input.rhythm import Keystroke, TypingRhythmProtocol
-from spectragent.core.capabilities.browser.platform import InputPlatform
+from spectragent.core.capabilities.browser.platform import BrowserPlatform
 
 from .conftest import RecordCDP, VirtualClock
 
@@ -144,7 +144,7 @@ class TestClearFocused:
     async def test_the_browser_os_gets_a_physical_select_all_and_backspace(
         self,
         no_sleep: list[float],
-        input_platform: InputPlatform,
+        input_platform: BrowserPlatform,
         modifier: str,
         code: str,
         vk: int,
