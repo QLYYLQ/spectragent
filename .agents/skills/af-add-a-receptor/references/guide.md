@@ -422,8 +422,8 @@ and scans only on first use. conscribe does not change this lifecycle requiremen
   pool. conscribe refuses a top-level section of the layer, even `[]` or `null`, using the
   Pydantic error `inline_only_layer` and a message naming the owner's block
   (`hook[trace_writer].archive`, `capability[browser].replayability`). The Composer leaves
-  the layer out of a build where no block can hold it (`agent_loop`, `memory` and
-  `restorer` in a run that names no agent family), so a run that names no owner simply
-  lacks the layer. No local `__inline_only__` attribute or custom exception is needed.
+  the layer out of a build where no block reachable from the top level holds it
+  (`agent_loop`, `memory` and `restorer` in a run that names no agent family), so a run
+  that names no owner simply lacks the layer. No local `__inline_only__` attribute or custom exception is needed.
   Capability archive provides use `declare_only=True` and remain non-writable
   negotiation declarations.

@@ -146,6 +146,35 @@ _PROBE_PACKAGE = {
             __registry_key__ = "probe"
             __wiring__ = {"capabilities": ("capability", ["probe"])}
     """,
+    # A class of a framework layer (hook) that holds the inline-only restorer:
+    # it holds it only in a run that names the probe, never in one an earlier
+    # import of the probe happened to precede.
+    "hooks.py": """
+        from spectragent.core.hooks._registrar import HookBase
+        from spectragent.core.loops.restore import Restorer
+
+        class ProbeRestorerHook(HookBase):
+            __registry_key__ = "probe_restorer"
+            __wiring__ = {"restorer": ("restorer", ["prefix_replay"])}
+
+            restorer: Restorer
+    """,
+}
+
+#: A family whose one agent narrows its loop to ``react``, so nothing it names
+#: can write a ``branch`` loop block, the restorer's only holder.
+_REACT_ONLY_FAMILY = {
+    "__init__.py": "",
+    "agent.py": """
+        from dataclasses import dataclass
+
+        from spectragent.agents._registrar import AgentBase
+
+        @dataclass
+        class ReactOnlyProbe(AgentBase):
+            __registry_key__ = "reactonlyprobe"
+            __wiring__ = {"agent_loop": ("agent_loop", ["react"])}
+    """,
 }
 
 #: Every module of the browser capability package starts with this.
@@ -251,6 +280,16 @@ def _run(code: str) -> object:
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+@pytest.fixture
+def react_only_root(tmp_path: Path) -> Path:
+    """A directory holding the throwaway ``reactonlyprobe`` agent family."""
+    package = tmp_path / "reactonlyprobe"
+    package.mkdir()
+    for name, source in _REACT_ONLY_FAMILY.items():
+        (package / name).write_text(textwrap.dedent(source))
+    return tmp_path
 
 
 @pytest.fixture
@@ -488,6 +527,66 @@ def test_a_runs_configuration_hash_does_not_follow_import_history(probe_root: Pa
     digests = cast(dict[str, dict[str, str]], _run(code))
     assert set(digests["before"]) == {*_AGENT_LESS, "ui_tars_on_probe"}
     assert digests["before"] == digests["after"]
+
+
+_REACT_ONLY = """
+import hashlib
+import json
+
+import spectragent.agents as agents
+
+agents.__path__.append({root!r})
+
+from spectragent.core.composer import ConfigComposer
+from spectragent.core.trace.redaction import redact_config
+
+raw = {raw}
+
+
+def built():
+    composer = ConfigComposer.for_config(raw)
+    dump = redact_config(composer.compose(raw).top_level_cfg, record_secrets=True)
+    text = json.dumps(dump, sort_keys=True, separators=(",", ":"))
+    return {{
+        "restorer": "restorer" in composer.registrars,
+        "digest": hashlib.sha256(text.encode()).hexdigest(),
+    }}
+
+
+fresh = built()
+import spectragent.agents.ui_tars  # an earlier run's family, whose agent may branch
+print(json.dumps({{"fresh": fresh, "after": built()}}))
+"""
+
+_REACT_ONLY_RUN = {
+    "capability": [
+        {
+            "capability_id": "browser",
+            "backend": {"provider_id": "local_chrome"},
+            "dom_cleaner": {"cleaner_type": "browser_use"},
+            "dom_serializer": {"serializer_type": "text"},
+        }
+    ],
+    "agent": [
+        {
+            "agent_id": "reactonlyprobe",
+            "agent_loop": {"loop_id": "react"},
+            "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+            "memory": {"memory_id": "simple"},
+        }
+    ],
+}
+
+
+def test_a_restorer_no_named_block_can_hold_is_left_out(react_only_root: Path) -> None:
+    # A path from the top level must reach a block of an inline-only layer, and
+    # only a branch loop holds the restorer. The named family's agent runs on
+    # react alone, so the run leaves the restorer out: fresh, and the same after
+    # an earlier import of a family whose agent may branch.
+    code = _REACT_ONLY.format(root=str(react_only_root), raw=repr(_REACT_ONLY_RUN))
+    built = cast(dict[str, dict[str, object]], _run(code))
+    assert built["fresh"]["restorer"] is False
+    assert built["fresh"] == built["after"]
 
 
 _EXPORT = """

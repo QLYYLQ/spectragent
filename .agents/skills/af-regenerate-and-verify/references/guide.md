@@ -45,9 +45,10 @@ Every layer whose instances only a receptor inside another block consumes is inl
 be written in the owner's block (`hook[trace_writer].archive`,
 `capability[browser].replayability`). Use `result.top_level_layers`, not `model_fields`, to
 enumerate writable root sections: conscribe keeps a hidden rejection field for an
-inline-only layer. conscribe also refuses a build that holds an inline-only layer and no
-receptor for it, so the Composer leaves such a layer out, repeating until nothing changes:
-a run that names no agent family has no `agent_loop`, `memory` or `restorer`.
+inline-only layer. conscribe also refuses a build that holds an inline-only layer no path
+from the top level reaches, so the Composer leaves out every inline-only layer that no
+block reachable from the named top-level implementations holds: a run that names no agent
+family has no `agent_loop`, `memory` or `restorer`.
 
 ## Fingerprints and clean interpreters
 

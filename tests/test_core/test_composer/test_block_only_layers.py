@@ -88,3 +88,10 @@ def test_a_build_with_no_agent_leaves_the_agents_layers_out(layer: str) -> None:
         ConfigComposer.for_config(raw).validate(raw)
     issue = refused.value.issue
     assert issue is not None and (issue.code, issue.path) == ("no_implementation", layer)
+    assert issue.message == (
+        f"The {layer!r} layer takes no top-level section, and nothing this configuration "
+        f"names takes it."
+    )
+    assert issue.remedy.startswith(
+        "Leave it out, or name the agent family or capability whose block holds it"
+    )

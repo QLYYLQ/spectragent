@@ -20,7 +20,8 @@ its own config block or keeps the owner's default, and its layer's
 top-level section is refused, naming where the instances go
 (``docs/architecture_design.md`` §4.2.1: ``trace_writer.archive``, the
 capability's strategies, the agent's ``agent_loop`` and ``memory``). An
-inline-only layer that no block of the build can hold is left out.
+inline-only layer that no block the configuration can write holds is left
+out.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from functools import cached_property
 from types import MappingProxyType
 from typing import Any, Literal, get_origin
 
-from conscribe import NO_IMPLEMENTATION_ERROR_TYPE, Coverage
+from conscribe import NO_IMPLEMENTATION_ERROR_TYPE, Coverage, LayerRegistrar
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel, ValidationError
@@ -298,17 +299,17 @@ class ConfigComposer:
         other capability packages and agent families, which an earlier import
         may have left registered) does not keep a layer in: which layers a run
         holds, and so its resolved config and hash, follows what it names.
-        An inline-only layer that no block of the remaining layers can hold
+        An inline-only layer that no block the configuration can write holds
         is left out too (``agent_loop`` in a run that names no agent family).
         """
-        self._registrars = _held(
-            {
-                layer: registrar
-                for layer, registrar in registrars.items()
-                if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
-            },
-            unnamed,
-        )
+        implemented = {
+            layer: registrar
+            for layer, registrar in registrars.items()
+            if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
+        }
+        self._registrars = _held(implemented, unnamed)
+        #: Inline-only layers with implementations here that no block can hold.
+        self._unheld = frozenset(implemented) - frozenset(self._registrars)
         self._left_out = {
             layer: registrar
             for layer, registrar in registrars.items()
@@ -404,15 +405,23 @@ class ConfigComposer:
         if self._left_out[layer].inline_only:
             # Naming a capability that provides it would only meet the
             # inline_only_layer refusal: say where its instances are written.
-            where = self._receptors_of(layer) or "the receptors that hold it"
+            where = self._receptors_of(layer)
+            if layer in self._unheld or not where:
+                return _Problem(
+                    layer,
+                    f"the {layer!r} layer takes no top-level section, and nothing this "
+                    f"configuration names takes it",
+                    True,
+                    "Leave it out, or name the agent family or capability whose block holds it",
+                )
             return _Problem(
                 layer,
                 f"the {layer!r} layer takes no top-level section: its instances are written "
-                f"under {where}, and they or the block that holds them come from the package "
-                f"of a capability or agent family the configuration names",
+                f"under {where}, and come from the package of a capability the configuration "
+                f"names",
                 True,
                 f"Leave it out, or write its instances under {where} and name the capability "
-                f"or agent family they need",
+                f"that provides them",
             )
         return _Problem(
             layer,
@@ -954,32 +963,51 @@ def _inside(module: str, packages: Collection[str]) -> bool:
     return any(module == package or module.startswith(f"{package}.") for package in packages)
 
 
-def _held(registrars: dict[str, Any], unnamed: Collection[str]) -> dict[str, Any]:
-    """*registrars* without the inline-only layers no block of another kept layer can hold.
+def _held(
+    registrars: dict[str, type[LayerRegistrar[object]]], unnamed: Collection[str]
+) -> dict[str, type[LayerRegistrar[object]]]:
+    """*registrars* without the inline-only layers no block the configuration can write holds.
 
-    Repeated until nothing more is left out: without ``agent_loop`` the
-    ``branch`` loop's ``restorer`` has no holder either. Only implementations
-    outside the *unnamed* packages hold a layer, as only they keep one in.
+    conscribe refuses a build holding an inline-only layer that no path from
+    the top level reaches, so the paths are followed here: a top-level section
+    takes every key of its layer, and a receptor the keys it allows. Only
+    implementations outside the *unnamed* packages count, as only they keep a
+    layer in. Without a named agent whose loop may be ``branch``, no block
+    holds the ``restorer``.
     """
-    while True:
-        held = {
-            entry.spec.registry_name
-            for layer, registrar in registrars.items()
-            for cls in registrar.get_all().values()
+    named = {
+        layer: {
+            key: cls
+            for key, cls in registrar.get_all().items()
             if not _inside(cls.__module__, unnamed)
-            for entry in wiring_slots(cls).values()
-            if entry.slot is not None
-            and not entry.declare_only
-            and entry.spec.registry_name != layer
         }
-        unheld = {
-            layer
-            for layer, registrar in registrars.items()
-            if registrar.inline_only and layer not in held
-        }
-        if not unheld:
-            return registrars
-        registrars = {layer: r for layer, r in registrars.items() if layer not in unheld}
+        for layer, registrar in registrars.items()
+    }
+    reached = {
+        (layer, key)
+        for layer, registrar in registrars.items()
+        if not registrar.inline_only
+        for key in named[layer]
+    }
+    pending = list(reached)
+    while pending:
+        layer, key = pending.pop()
+        for entry in wiring_slots(named[layer][key]).values():
+            target = entry.spec.registry_name
+            if entry.slot is None or entry.declare_only or target == layer or target not in named:
+                continue
+            allowed = _allowed_keys(entry.spec)
+            for target_key in named[target]:
+                block = (target, target_key)
+                if (allowed is None or target_key in allowed) and block not in reached:
+                    reached.add(block)
+                    pending.append(block)
+    held = {layer for layer, _ in reached}
+    return {
+        layer: registrar
+        for layer, registrar in registrars.items()
+        if not registrar.inline_only or layer in held
+    }
 
 
 def _unimplemented(layer: object, name: object) -> str:
