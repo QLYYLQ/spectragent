@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import time
 from typing import Any
 
 import pytest
@@ -18,12 +19,15 @@ from spectragent.core.aop import Intercept
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks._registrar import HookBase
+from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.errors import RunAbort, carry_outcome
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.core.runtime import AgentRuntime
+from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
+from spectragent.core.trace import RunTrace
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
@@ -1431,3 +1435,318 @@ async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(mo
     assert outcome.result is not None
     assert outcome.result.metrics.execution_ms == 5000
     assert outcome.elapsed_ms == 58000
+
+
+# ── the scoring point: after the Loop, before on_run_end and teardown ─
+
+
+class _OracleCap(_DoneCap):
+    """``_DoneCap`` with a task oracle that writes ``score`` into the shared log when asked.
+
+    It answers with a score; with *fails* it raises, and with *hangs* it waits
+    until it is cancelled, writes ``score cancelled``, and lets the
+    cancellation through.
+    """
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+    def __init__(self, log: list[str], *, fails: bool = False, hangs: bool = False, **kw):
+        super().__init__(**kw)
+        self.log = log
+        self.fails = fails
+        self.hangs = hangs
+        self.asked = asyncio.Event()
+
+    async def read_score(self) -> OracleScore | None:
+        self.log.append("score")
+        self.asked.set()
+        if self.hangs:
+            try:
+                await asyncio.sleep(100)
+            except asyncio.CancelledError:
+                self.log.append("score cancelled")
+                raise
+        if self.fails:
+            raise RuntimeError("device unreachable")
+        return OracleScore(
+            capability_id=self.capability_id,
+            status="scored",
+            score=1.0,
+            oracle="lifecycle_oracle",
+            started_at=time.time(),
+            duration_ms=0,
+        )
+
+
+class _ScoringEnv(_Env):
+    """``_Env`` whose teardown joins the shared log, keeping every ``timeout_s`` it is given."""
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.log: list[str] = []
+        self.timeouts: list[float] = []
+
+    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+        self.timeouts.append(timeout_s)
+        return await super().read_oracle_scores(timeout_s=timeout_s)
+
+    async def teardown(self):
+        self.log.append("teardown")
+        await super().teardown()
+
+
+class _EndingLoop(_SlowLoop):
+    """Ends its run the way *ending* says, writing ``loop ended`` into the shared log as it does."""
+
+    loop_id = "lifecycle_ending"
+
+    def __init__(self, ending: str, log: list[str]):
+        self.ending = ending
+        self.log = log
+
+    def weave(self, agent, **deps):
+        async def run(task, **kw):
+            try:
+                if self.ending == "done":
+                    return agent_result(task_id="t-1")
+                if self.ending == "max_steps":
+                    return agent_result(
+                        task_id="t-1",
+                        agent_done=AgentDoneStatus.MAX_STEPS,
+                        agent_reported_success=None,
+                    )
+                if self.ending == "error":
+                    raise RuntimeError("loop exploded")
+                if self.ending == "veto":
+                    raise _veto()
+                await asyncio.sleep(100)  # until the run's own timeout cuts it off
+            finally:
+                self.log.append("loop ended")
+
+        agent.run = run
+        return agent
+
+
+def _scoring(
+    env_cls: type[_ScoringEnv] = _ScoringEnv, *, fails: bool = False, hangs: bool = False
+) -> tuple[Any, _OracleCap, list[str]]:
+    """An environment with one oracle capability, and the log both of them write into."""
+    log: list[str] = []
+    oracle = _OracleCap(log, fails=fails, hangs=hangs)
+    env = make_env(env_cls, {"lifecycle_done_cap": oracle})
+    env.log = log
+    return env, oracle, log
+
+
+class TestTheScoringPoint:
+    """docs/architecture_design.md §4.2 "Loop 结束之后、teardown 之前的判分时间点".
+
+    The woven environment's task oracles score the run once its Loop has
+    returned or raised, before ``on_run_end`` and teardown. A failed setup and
+    an outside cancellation are not scored. Scoring never changes the outcome,
+    never fails the run, and its time stays out of ``execution_ms``.
+    """
+
+    @pytest.mark.parametrize(
+        ("ending", "agent_done"),
+        [
+            ("done", AgentDoneStatus.DONE),
+            ("max_steps", AgentDoneStatus.MAX_STEPS),
+            ("timeout", AgentDoneStatus.TIMEOUT),
+            ("error", AgentDoneStatus.ERROR),
+            ("veto", AgentDoneStatus.VETOED),
+        ],
+    )
+    async def test_every_ending_is_scored_after_the_loop_and_before_the_close_out(
+        self, ending: str, agent_done: AgentDoneStatus
+    ):
+        env, _oracle, log = _scoring()
+        hook = _RecordingHook(log)
+        loop = _EndingLoop(ending, log)
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
+
+        if ending == "veto":
+            with pytest.raises(RunAbort):
+                await runtime.execute("t", task_id="t-1", timeout=0.05)
+        else:
+            await runtime.execute("t", task_id="t-1", timeout=0.05, raise_on_error=False)
+
+        error = ["error"] if ending in ("timeout", "error", "veto") else []
+        assert log == [
+            "start(env_events=[])",
+            "loop ended",
+            "score",
+            "end(env_events=['setup'])",
+            *error,
+            "teardown",
+        ]
+        assert env.timeouts == [ORACLE_TIMEOUT_S]
+        assert hook.end_kwargs["result"].agent_done == agent_done
+
+    async def test_its_time_limit_is_the_oracle_timeout_not_the_runs(self):
+        env, _oracle, _log = _scoring()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env), AGENT_ID)
+        await runtime.execute("t", task_id="t-1", timeout=30, oracle_timeout=7.5)
+        assert env.timeouts == [7.5]
+
+    async def test_the_score_lands_in_the_trace(self, tmp_path):
+        env, _oracle, _log = _scoring()
+        writer = TraceWriter(trace_dir=str(tmp_path))
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[writer]), AGENT_ID)
+
+        await runtime.execute("t", task_id="t-1")
+
+        assert writer.run_dir is not None
+        trace = RunTrace(writer.run_dir)
+        (entry,) = trace.oracle_scores()
+        assert (entry.capability_id, entry.status, entry.score) == (
+            "lifecycle_done_cap",
+            "scored",
+            1.0,
+        )
+        assert trace.manifest.oracle_scores == "oracle_scores.json"
+
+    async def test_a_failing_oracle_is_not_scored_and_the_outcome_stands(self, tmp_path):
+        env, _oracle, _log = _scoring(fails=True)
+        writer = TraceWriter(trace_dir=str(tmp_path))
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[writer]), AGENT_ID)
+
+        result = await runtime.execute("t", task_id="t-1")  # raise_on_error: nothing raised
+
+        assert (result.agent_done, result.error) == (AgentDoneStatus.DONE, None)
+        assert writer.run_dir is not None
+        (entry,) = RunTrace(writer.run_dir).oracle_scores()
+        assert (entry.status, entry.reason, entry.detail) == (
+            "not_scored",
+            "error",
+            "RuntimeError: device unreachable",
+        )
+
+    async def test_an_environment_that_raises_anyway_does_not_fail_the_run(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        class _BrokenScoring(_ScoringEnv):
+            __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+            async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+                raise RuntimeError("scoring broke its contract")
+
+        env, _oracle, log = _scoring(_BrokenScoring)
+        hook = _RecordingHook(log)
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
+
+        result = await runtime.execute("t", task_id="t-1")
+
+        assert result.agent_done == AgentDoneStatus.DONE
+        assert hook.end_kwargs["result"] is result
+        assert "reading the task oracles' scores failed" in caplog.text
+        assert log[-1] == "teardown"
+
+    async def test_a_broken_environment_is_still_scored(self):
+        env, _oracle, log = _scoring()
+        env.alive = False
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _EndingLoop("timeout", log), env), AGENT_ID)
+        result = await runtime.execute("t", task_id="t-1", timeout=0.05)
+        assert result.env_status == EnvironmentStatus.FAILED
+        assert log == ["loop ended", "score", "teardown"]
+
+    @pytest.mark.parametrize("failure", ["error", "veto"])
+    async def test_a_failed_setup_is_not_scored(self, failure: str):
+        class _FailingSetup(_ScoringEnv):
+            __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+            async def setup(self, context=None, *, negotiation=None):
+                if failure == "veto":
+                    raise RunAbort("risk-control page at the start URL", source="setup_guard")
+                raise RuntimeError("emulator refused to boot")
+
+        env, _oracle, log = _scoring(_FailingSetup)
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env), AGENT_ID)
+        if failure == "veto":
+            with pytest.raises(RunAbort):
+                await runtime.execute("t", task_id="t-1", raise_on_error=False)
+        else:
+            await runtime.execute("t", task_id="t-1", raise_on_error=False)
+        assert (log, env.timeouts) == (["teardown"], [])
+
+    async def test_an_outside_cancellation_is_not_scored(self):
+        env, _oracle, log = _scoring()
+        hook = _RecordingHook(log)
+        loop = _GatedLoop()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(runtime.execute("t", task_id="t-1", timeout=30))
+        await loop.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert "score" not in log and env.timeouts == []
+        assert hook.end_kwargs["result"].error == "Execution cancelled"
+
+    async def test_a_cancellation_during_scoring_waits_for_the_oracle_then_closes_the_run_out(
+        self, tmp_path
+    ):
+        """The oracle is cancelled and waited for; the run is closed out as cancelled, unscored."""
+        env, oracle, log = _scoring(hangs=True)
+        writer = TraceWriter(trace_dir=str(tmp_path))
+        hook = _RecordingHook(log)
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), ReactLoop(), env, hooks=[writer, hook]), AGENT_ID
+        )
+
+        task = asyncio.create_task(
+            runtime.execute("t", task_id="t-1", timeout=30, oracle_timeout=30)
+        )
+        await asyncio.wait_for(oracle.asked.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert log == [
+            "start(env_events=[])",
+            "score",
+            "score cancelled",
+            "end(env_events=['setup'])",
+            "error",
+            "teardown",
+        ]
+        assert hook.end_kwargs["result"].error == "Execution cancelled"
+        assert writer.run_dir is not None
+        trace = RunTrace(writer.run_dir)
+        assert (trace.oracle_scores(), trace.manifest.oracle_scores) == ([], None)
+
+    async def test_scoring_time_stays_out_of_execution_ms(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import spectragent.core.runtime as runtime_module
+
+        clock = SimpleNamespace(now=10.0)
+        monkeypatch.setattr(runtime_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+        class _SlowOracle(_OracleCap):
+            __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+            async def read_score(self) -> OracleScore | None:
+                clock.now += 13.0
+                return await super().read_score()
+
+        class _TimedLoop(_SlowLoop):
+            def weave(self, agent, **deps):
+                async def run(task, **kw):
+                    clock.now += 3.0
+                    return agent_result(task_id="timed")
+
+                agent.run = run
+                return agent
+
+        log: list[str] = []
+        env = make_env(_ScoringEnv, {"lifecycle_done_cap": _SlowOracle(log)})
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _TimedLoop(), env), AGENT_ID)
+
+        result = await runtime.execute("t")
+
+        assert result.metrics.execution_ms == 3000
+        assert (log, clock.now) == (["score"], 26.0)

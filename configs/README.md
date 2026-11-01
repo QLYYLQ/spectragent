@@ -688,7 +688,7 @@ root: traces/chains/first-live         # everything lands under it (traces/ is g
 evidence: live                         # live | rehearsal: the basis of every recommendation
 tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control flags
 token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
-record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval
+record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval; optional oracle_timeout → --oracle-timeout
 control:   {config: <the recording with archive: []>}                  # optional: the overhead control group
 same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
 branch:    {config: <branch YAML>}

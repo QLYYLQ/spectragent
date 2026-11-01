@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.experiment import ExperimentScope
-from spectragent.core.runtime import AgentRuntime
+from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
@@ -69,6 +69,7 @@ async def _run_in_experiment(
     start_url: str | None,
     timeout: float,
     dry_run: bool,
+    oracle_timeout: float = ORACLE_TIMEOUT_S,
     replay_archive: str | None = None,
     progress: Any = None,
     report: Callable[[dict[str, Any]], None] | None = None,
@@ -116,7 +117,11 @@ async def _run_in_experiment(
 
     try:
         result = await runtime.execute(
-            task=task, timeout=timeout, env_context=context, config_source=config_source
+            task=task,
+            timeout=timeout,
+            oracle_timeout=oracle_timeout,
+            env_context=context,
+            config_source=config_source,
         )
     except BaseException as exc:
         if progress is not None:
@@ -189,6 +194,12 @@ def main(
     )
     parser.add_argument("--timeout", type=float, default=300.0, help="Run timeout in seconds")
     parser.add_argument(
+        "--oracle-timeout",
+        type=float,
+        default=ORACLE_TIMEOUT_S,
+        help="Seconds each task oracle may take to score the task after the run",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Compose, negotiate and check what setup would refuse; launch nothing",
@@ -209,6 +220,7 @@ def main(
             task=args.task,
             start_url=args.start_url,
             timeout=args.timeout,
+            oracle_timeout=args.oracle_timeout,
             dry_run=args.dry_run,
             replay_archive=args.replay_archive,
             progress=progress,

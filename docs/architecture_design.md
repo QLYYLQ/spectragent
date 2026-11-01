@@ -734,7 +734,8 @@ class AgentRuntime:
         return wrapped_agent
 
     # ── execute(task): 一站式驱动 ───────────────────────────────────
-    async def execute(self, task, *, timeout=300, task_id="unknown", benchmark="", subset="",
+    async def execute(self, task, *, timeout=300, oracle_timeout=ORACLE_TIMEOUT_S,
+                      task_id="unknown", benchmark="", subset="",
                       run_id=None, env_context=None, loop_inputs=None, branch=None,
                       action_filter=None, config=None, raise_on_error=True):   # 没有 **kwargs
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
@@ -768,9 +769,10 @@ class AgentRuntime:
                 return result
 
             try:
-                result = await asyncio.wait_for(
-                    prepared_agent.run(task), timeout=timeout
-                )
+                # wait_for(agent.run(task), timeout) 返回或抛出（外部取消除外）之后，结局交出去之前
+                # 先到判分时间点：执行计时停下，织过的环境 read_oracle_scores(timeout_s=oracle_timeout)
+                result = await self._run_to_the_scoring_point(
+                    prepared_agent, task, timeout=timeout, oracle_timeout=oracle_timeout)
             except TimeoutError as timed_out:
                 # 切断 Loop 的那次取消可能带着 Loop 已经定下的结局（RunEnded，见下文）
                 ended = _outcome_under(timed_out)
@@ -837,7 +839,7 @@ class AgentRuntime:
 
 **种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_space=..., execution_limits=..., fragment_formats=...)`（`action_space` 是 Runtime 公开的有效动作空间的副本：prompt 广告的 descriptors 与说明短名含义的绑定，与守卫用的是同一份；`fragment_formats` 是第 2b 步解析出的格式说明）；是否需要限制、需要哪些格式说明，已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
 
-**两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或执行路径结束、进入结束 lifecycle 之前停止；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
+**两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或抛出时停止（走到判分时间点的 run 停在判分之前；setup 失败与外部取消的 run 停在进入结束 lifecycle 之前）；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除判分、结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
 
 **执行内模型资源收尾只有一个入口。** Runtime 在 `prepare()` 从主模型和 `PromptModelOwner.helper_llms` 明确收集本次执行的原始模型，织入后仍保留这一份资源清单；`execute` 最外层 `finally` 调 `close_models`，按对象去重并独立、有界地尝试全部关闭。普通结束 hook 失败不能跳过任何 helper。提示 Hook 提供和绑定领域依赖，不另在 `on_run_end` / `on_run_error` 关闭同一模型；独立 Python 使用通过 `model_session` 管理自己的执行边界。
 
@@ -876,9 +878,9 @@ class AgentRuntime:
 **Loop 结束之后、teardown 之前的判分时间点（用户 2026-10-31 的裁决）。** 有的基准只能对着活体环境判分：AndroidWorld 读设备上的数据库、文件与设置，必须在 agent 停下之后、设备拆掉之前的一个确定时刻跑。所以 Runtime 在 Loop 结束（返回或抛出）之后、`_finish` 之前，调一次织过的环境的 `read_oracle_scores(timeout_s=...)`（§4.3）：判分要进 trace，trace 在 `on_run_end` 里收尾，teardown 又在 `on_run_end` 之后。环境还活着的结束路径都经过它：完成、步数用完、超时、Loop 抛错、否决；环境在 run 里已经坏了也照样调，裁判读不出来就记成没判。setup 失败的 run 走不到 Loop，不判。Runtime 不认识 capability，经 environment 到达裁判；这是一次公开的方法调用，不是旁路（§4.6 "与 emitter.dispatch() 的权衡"）。
 
 - **谁判**：实现了可选 Protocol `TaskOracle`（§4.9）的 capability，Android 的任务裁判就是它（§11.2）。environment 并发问每一个，各限时 `timeout_s`；本 run 没有裁判的 capability 返回 `None`，不进记录。
-- **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。
-- **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛。被取消的 run 没有判分记录，评测器记为没判。
-- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
+- **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。结构化实现的环境若违约抛出 `Exception`，Runtime 只记日志，照常收尾，这个 run 没有判分记录。
+- **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛，Runtime 照外部取消收尾（`error="Execution cancelled"`，Loop 交出的结局不保留，与取消落在别处一样）。被取消的 run 没有判分记录，评测器记为没判。
+- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定，在那之前暂定 60 s（`core/runtime.py::ORACLE_TIMEOUT_S`，标着 `shortcut:`）。它与 `timeout` 走同一条路到 `execute`：`BenchmarkRunner(oracle_timeout=)`、`spectragent bench` 与 `spectragent run` 的 `--oracle-timeout`、度量链每段 `StageSpec` 的 `oracle_timeout`（§4.16，省略时不传，用 bench 的默认）。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
 - **记录**：TraceWriter 经 AOP 拦截 `read_oracle_scores`（`after`，role `env`），把交回的列表写成 §5.3 的判分记录（`oracle_scores.json`）；评测器从这份记录读判分（§4.11），从不碰活体环境。
 
 它不借 `collect_archive` 的时机：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，§4.9 "最后一次收集"），收集也从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻对着环境跑。
@@ -4169,7 +4171,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **路径从哪里算**：规格里的相对路径（`root`、每段的 `config`）相对工作目录，与每个 af CLI 读路径的方式一样（阶段 YAML 自己的相对路径，例如 `matcher.site_rules: configs/replay_rules`，也相对工作目录）；`root` 解析成绝对路径后，链写进阶段 YAML 的路径都是绝对的。
 - **链只改路径**：每段的 YAML 原样读入，链只写这几个字段再落到 `<root>/configs/<段>.yaml`：唯一的 `trace_writer` 的 `trace_dir`（`<root>/traces/<段>`）；`same_path` / `branch` 唯一的 `trace_branches` 加载器的 `data_dir`（`<root>/traces/record`）；导出段唯一的导出器的 `sources_root`（`<root>/traces`）、`sources`（`["record/*", "branch/*"]`）与 `output_dir`（`<root>/datasets/first`，第二次 `second`）。缺这些块（或多于一个）在任何一段开跑之前报错、点名段与缺的块。其余一切（agent、档位、归档器、选步、分支数、`verify`、评测器）都写在段的 YAML 里；对照组的 YAML 自己写 `archive: []`。
 - **段的成败**：`spectragent bench` 退出码 0 或 1（个别任务的基础设施失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；退出码 4（这一段的 sweep 达到了链交给它的 token 额度）且写出了新 run，这一段算跑完、链在这里停下（下面"token 上限"）；别的退出码（2：它的 pre-flight 拒绝了这一段的配置，一个任务也没跑；3：一个 guard 否决了这一段，被否决那一段的 run 不喂给下一段；§4.2）、`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
-- **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, token_limit, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个），`token_limit` 是至少为 1 的整数或 `unlimited`（默认）。CLI：`spectragent flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状，也不知道 token 上限）；退出码 0 完成、1 某段失败（`report` 算不出报告——发布的数据集读不回来——或写不了——`--out` 建不了、写不进——也是 1，报错点名是哪一个，不抛 traceback）、2 规格或参数不对、4 链在 token 上限处停下（`run`；选了报告段时报告照样算出，与 `spectragent bench` 的 4 同一个意思）。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
+- **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, token_limit, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, oracle_timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器；`oracle_timeout` 省略时不传 `--oracle-timeout`，bench 用自己的默认，§4.2 "判分时间点"），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个），`token_limit` 是至少为 1 的整数或 `unlimited`（默认）。CLI：`spectragent flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状，也不知道 token 上限）；退出码 0 完成、1 某段失败（`report` 算不出报告——发布的数据集读不回来——或写不了——`--out` 建不了、写不进——也是 1，报错点名是哪一个，不抛 traceback）、2 规格或参数不对、4 链在 token 上限处停下（`run`；选了报告段时报告照样算出，与 `spectragent bench` 的 4 同一个意思）。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
 - **token 上限**（用户 2026-10-14 的裁决）：`token_limit` 是链的所有运行段合计能用的 token，数的是 trace 里记下的用量——每个 run 的每次调用记录里 provider 报的数（`core/trace/usage.py::recorded_usage`：每个已提交步的调用、再是 trailing 调用；成功、失败与取消都读 `RecordedCallMetrics.usage`，失败的调用照样计费；一次调用的 token 数与步记录同一条规则 `TokenUsage.from_llm_usage`：provider 的 `total_tokens`，没给总数时 prompt 加 completion）。从独立 `call_metrics` 账读取，不需要还原完整提示或图片；记录计划没选 metrics 时用量为未测量。provider 没报用量的调用（被取消的、回复之前就失败的、从不报用量的 provider 的）计入调用数、不加 token，按 `traces/<角色>/<run>: step S call K (状态)` 点名，从不当作 0；调用记录读不回来的 run 不计，点名原因。
   - 有上限时，链开跑之前先数一遍链根下已有的每个 run（四个角色，`metrics.role_token_use`），所以分段跑（`--stages`）时前几次花掉的照样算，重跑一段加的 run 也算。每个运行段把剩下的额度（上限减已用）交给 `spectragent bench --token-limit`（§4.2 "sweep 的 token 上限"：每个任务跑完就加一次，达到额度时那个任务照常跑完、之后的任务不开始、退出码 4）；段跑完后链数这一段新写的 run（`chain.json` 的 `stages.<段>.token_use{runs, tokens, calls, calls_without_usage, skipped}`），加进总数（这一段失败了也加，来历照记）。
   - 这一段的 bench 以退出码 4 结束，或总数达到上限（大于或等于）：链停下，后面的运行段与导出段都不开始；报告段（选了的话）照样用已有的数据算；`chain.json` 写 `stopped_by_token_limit{stage, tokens_used, token_limit, stages_not_started, calls_without_usage}`（顶层另有 `token_limit` 与当时的 `tokens_used`）；`spectragent flywheel run` 打印停在哪里、退出码 4。开跑之前已有的 run 就已经达到上限（例如上一次在上限处停下，规格里的上限没有调高）：选中的运行段与导出段一个也不开始（`stage: null`），报告照跑；只选了报告段时没有要停的段，不算停下。要接着跑，先调高 `token_limit`，再用 `--stages` 只跑没开始的段。
@@ -5547,6 +5549,7 @@ environment:
        │              → 拦截审计 → env.bind_archivers（有消费者时） │
        ├── execute(task): on_run_start → asyncio.wait_for(         │
        │                  agent.run(task), timeout=...)            │
+       │                  → env.read_oracle_scores（判分，§4.2）     │
        │                  → on_run_end                              │
        │                                                           │
        │ AOP 拦截：llm.ainvoke → TraceWriter 登记 LLM 调用             │

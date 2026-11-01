@@ -130,10 +130,12 @@ class TasksSpec(_Spec):
 
 
 class StageSpec(_Spec):
-    """A ``spectragent bench`` stage: its YAML, the per-task timeout, whether it evaluates."""
+    """A ``spectragent bench`` stage: its YAML, the per-task timeouts, whether it evaluates."""
 
     config: Path
     timeout: float = Field(default=300.0, gt=0)
+    #: Seconds each task oracle may take to score a task; ``None``: the bench's default.
+    oracle_timeout: float | None = Field(default=None, gt=0)
     evaluate: bool = False
 
 
@@ -696,6 +698,8 @@ def _run_stage(
         "--log-level",
         log_level,
     ]
+    if stage_spec.oracle_timeout is not None:
+        argv += ["--oracle-timeout", f"{stage_spec.oracle_timeout:g}"]
     if stage in ("record", "control"):
         tasks = spec.tasks
         if tasks.benchmark:
