@@ -5708,15 +5708,15 @@ Android Capability（core/capabilities/android/）
     ├── v1：本地模拟器、按 adb 序列号接上的已连接设备；云手机以后
     └── open() 返回的会话带着回环 AdbEndpoint（host、port、kind、encrypted、needs_adb_key、expires_at）
 
-设备端（我们自己写，随 Android 版本维护）
-├── 无障碍服务 APK（主力；adb install 安装，写 secure 设置开启；最低 Android 11）
-│   ├── UI 树与事件流、元素级动作、手势（点按、滑动、多指）、全局动作（返回、主页、最近任务）
+设备端（我们自己写，随 Android 版本维护；一个 APK，源码在仓库的 android/service/）
+├── 无障碍服务（主力；每个 run 装一次，写 secure 设置开启；最低 Android 11）
+│   ├── UI 树与事件流、元素级动作、带时间的手势（点按、长按、滑动、多指）、全局动作（返回、主页、最近任务）
 │   ├── 截图（API 30+，最快每 333 ms 一张）、文本输入（API 33+）
 │   └── isAccessibilityTool：构建期开关，默认 false
-├── shell 身份助手（app_process）：快速截图、任意按键；安装、开启服务，force-stop 之后重新开启；
-│   也是一种点按注入器（injectInputEvent）
-└── 与主机的通道：adb forward 到一个 localabstract socket；长度前缀消息，带请求 id；先做版本握手；
-    每个会话一个 token；ContentProvider 负责启动引导与健康检查
+├── shell 身份助手（同一个 APK，app_process 起）：快速截图、任意按键；开启与取消开启服务，
+│   force-stop 之后重新开启；也是一种点按注入器（injectInputEvent）
+└── 与主机的通道：主机经 run 的 adb server 直连各自的 localabstract socket；长度前缀的帧，带请求 id；
+    先做版本握手；每个会话一个 token；ContentProvider 负责启动引导与健康检查
 ```
 
 **主机传输层。** ADB 的 host 协议很小：每条请求是 4 位十六进制的长度加内容，一条连接只办一件事（跑 shell 命令、传文件、连到设备上我们自己的服务），并发就开多条。Python 里没有仍在维护的原生 asyncio ADB 客户端（2026-10 查过），所以自己写。每个 run 在私有端口上起自己的 adb server（`adb -P <port>` 或 `ADB_SERVER_SOCKET`）：`adb connect` 会把设备登记进一个按用户、所有运行共享的 server，那违反零全局状态。本地模拟器还要多一步（2026-11-01 实测）：模拟器自己也发 adb 调用，只认它自己环境里的 `ANDROID_ADB_SERVER_PORT`，`adb -P` 管不到它；漏了这一步，它就去连默认的 5037，那里没有 server 就另起一个全局的。所以 provider 起模拟器时把私有端口放进模拟器的环境。
@@ -5749,9 +5749,29 @@ Android Capability（core/capabilities/android/）
 - 复位时不 force-stop 我们自己的包：force-stop 会把服务从启用列表里永久移除，复位只停被测 app；
 - 开启之后用 ping 确认服务真的绑上了，不重读设置：Android 14 起被拒的服务会从设置里悄悄消失，不报错。
 
-setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有这个特性，系统会取消所有无障碍手势，节点动作却照常可用。`isAccessibilityTool` 做成 APK 的构建期开关，默认 `false`：这个声明告诉系统"这是给残障用户用的工具"，声明了限制与提醒会少一些，而它带来的好处是否真的挡住评测任务还没测过；它的两项影响（任务路径上有没有数据敏感视图，24 小时提醒会不会出现在截图里）阶段 2 写 APK 时实测。
+setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有这个特性，系统会取消所有无障碍手势，节点动作却照常可用。两项都是实测事实，记下来，不因此拒绝（`DeviceSide.faketouch`、`DeviceSide.gestures`；试点默认点在屏幕左上角的状态栏上）；2026-11-01 在 API 33 模拟器上两项都为真。`isAccessibilityTool` 做成 APK 的构建期开关，默认 `false`：这个声明告诉系统"这是给残障用户用的工具"，声明了限制与提醒会少一些。它的两项影响 2026-11-01 在 API 33 Google APIs 镜像上用两份只差这个开关的构建实测：
 
-**主机与设备之间的通道。** APK 里的服务绑在一个 `localabstract` socket 上，主机经 `adb forward` 连它：不依赖设备自己的网络（不必为连主机关飞行模式、设 `no_proxy`，也就不与切换网络的任务冲突），也不占设备上每个 app 都看得见的 localhost TCP 端口。消息是长度前缀的帧，带请求 id，服务主动推送的事件走同一条 socket；连上先做版本握手，不匹配就拒绝；每个会话一个鉴权 token，经 adb shell 下发。另留一个 ContentProvider（`adb shell content`）负责启动引导与健康检查：它不需要 forward，服务的 socket 挂了它也还在；每次调用都要起一个 shell 进程，所以不传大块数据。默认不让设备主动连主机，那需要 `adb reverse` 或只在模拟器上有效的 `10.0.2.2`。界面树的线上格式对齐 android_env 的 `AndroidAccessibilityForest`，AndroidControl 数据集存的也是这个格式。
+- 数据敏感视图（`View.setAccessibilityDataSensitive`）是 Android 14 才有的，API 33 上这个开关改不了树。两份构建在 Settings 首页、安全、应用与联系人上采到的节点数与可见节点数都相同（168/86、78/74、47/43、41/39）。AndroidWorld 自己装的第三方 app 不在这台 AVD 上，它们的任务路径没有走。
+- 24 小时提醒会出现在截图里。开关为假时，服务一绑定，系统就定一个按墙钟算的 24 小时闹钟（`RTC_WAKEUP`，AOSP 13 的 `PolicyWarningUIController`）；把设备时钟往后拨 25 小时，提醒随即发出，状态栏上多出一个无障碍图标，此后每张截图都带着它（低重要度通知，不弹横幅，只在状态栏与通知栏里）。开关为真时系统不定这个闹钟，拨钟之后也没有图标。Android 13 只在 Safety Center 关着时发这个通知，这台镜像上它关着。一次只读开机的 run 远不到 24 小时，提醒出不来；改设备日期的任务会把墙钟拨过去，服务一直开着的可写设备过一天也会。
+
+**主机与设备之间的通道（2026-11-01 实施，`device/channel.py`）。** 服务与助手各自绑在一个 `localabstract` socket 上（服务的叫 `spectragent_device`，由启动引导报给主机；助手的名字每次随机），主机经 run 自己的 adb server 直连：一条连接先 `host:transport:<序列号>`，再请求 `localabstract:<名字>`，此后这条连接就是那个 socket 的字节流（实测）。所以不用 `adb forward`：它在主机上开一个本机任何进程都能连的端口，还要记着拆。当初选 forward 的两条理由照样成立：不依赖设备自己的网络（不必为连主机关飞行模式、设 `no_proxy`，也就不与切换网络的任务冲突），也不占设备上每个 app 都看得见的 localhost TCP 端口。没有程序在听的名字，adbd 连不上，server 答 `FAIL closed`。
+
+- **帧**：两个大端 u32（其后的总长、头长）、一个 JSON 对象做头、一段二进制载荷（截图的 PNG），一帧最多 64 MB。设备上谁都能连这个 socket，所以认证之前的 hello 最多 64 KB。
+- **握手**：两边第一帧都是 hello，它的形状永远不变，版本不同的两端总能互相说清楚。主机发协议版本与 token；设备答它自己（组件、包名、versionCode 与 versionName、API 级别、它所运行的 APK 在设备上算出的 SHA-256、系统读到的 `isAccessibilityTool`），或答 `refused`（`protocol` 或 `token`）并关闭；主机也拒绝别的协议版本的设备。版本号 `PROTOCOL_VERSION` 只写一处，在主机的 `channel.py`，APK 的构建从那里读进去。
+- **token**：每个会话一个，主机生成，经 adb shell 下发：服务的那个由 ContentProvider 的 `session` 方法交给 app 进程（只认 shell 与 root 的调用；token 只在内存里，进程重启就要再交），助手的那个在它的 stdin 上，不进命令行。设备按常数时间比较。
+- **请求**：带主机给的递增 id；设备按到达顺序逐个回答一条连接上的请求。调用方放弃（取消、超时）的回答按 id 丢掉，设备照样做完那个请求再开始下一个，所以同一条连接上的下一个请求排在它后面，与会话层"被取消的任务要等它真正退出"相合。
+- **事件**：订阅之后，服务把每个无障碍事件推到同一条连接上，`seq` 从订阅时报的 `next_seq` 起连续编号。事件与回答从设备上同一个有序队列出去，所以服务在回答之前收到的事件都先于回答到达；系统把事件交给服务是异步的，一个动作的事件可能晚于对它的回答，等事件的一方按事件等。无障碍配置的 `notificationTimeout` 是 0：大于 0 时，系统在那段时间里每种事件只交最后一个，等于丢事件。设备上没发出去的事件超过 32 MB（主机不读了）时，它用一个 `overflow` 帧代替下一个事件并关闭连接；主机一到就读，回答从不排在没读的事件后面；消费者落后太多、或编号有缺口，也明确结束。消费者要么按顺序拿到每个事件，要么拿到结束之前的全部事件之后得到 `EventsLost`，不会悄悄缺一个。
+- 另留一个 ContentProvider（`adb shell content call`）负责启动引导与健康检查：不用 socket，服务的 socket 挂了它也还在；每次调用都要起一个 shell 进程，所以不传大块数据。默认不让设备主动连主机，那需要 `adb reverse` 或只在模拟器上有效的 `10.0.2.2`。
+
+**APK 放在哪里、怎么到 run 手里（2026-11-01 实施，`device/apk.py`）。** 源码是 af 仓库里的 Gradle 工程 `android/service/`：纯 Java，只用框架 API，不用 AndroidX，minSdk 30、targetSdk 33。放在 af 仓库里还是另起一个仓库，2026-11-01 问用户时两样他都可以接受（"我感觉都行？"），取了放在仓库里：主机一侧的协议与设备端在同一个提交里一起改，版本握手按构造就对得上。它不放进 Python 包：Gradle 的 `build/`、`.gradle/` 不该进 wheel，也不该让实现发现走到；run 只要构建好的 APK，用不着 JDK 与 SDK。构建是 `uv run python -m spectragent.core.capabilities.android.device.apk build [--accessibility-tool] [-- Gradle 参数]`（JDK 17、平台 33、build-tools 34.0.0；代理这类个人设置经 `--` 交给 Gradle，不进仓库），它把 APK 与一份 sidecar（`spectragent-device.json`：SHA-256、versionCode 与 versionName、协议版本、`isAccessibilityTool`）放进仓库之外的缓存目录（`$XDG_CACHE_HOME`，默认 `~/.cache`，下的 `spectragent/android-service/<SHA-256 前 16 位>/`），打印 APK 的路径，run 的配置写这个路径。构建产物不入库：签名钥匙随仓库提交（它只签一个测试工具，设备只经 adb 拿到它），插件记录 checkout commit 的版本控制信息与加密的依赖报告都关掉，同一个提交在哪台机器上构建，SHA-256 都一样（删掉 build 目录重建，实测相同），所以 SHA-256 就是这份构建的身份。`ServiceApk.load(路径)` 拒绝没有 sidecar、字节与 sidecar 对不上、协议版本或包名不对的 APK；接进 capability 时由 `check_setup` 调它。每个 run 装一次：provider 默认只读开机，改动随 run 丢掉，所以每次只读开机都重新装（约 60 KB，`cmd package install -r -S <字节数>`，APK 经 stdin 送进去，单独量约 1.5 s）；设备上已经是这份构建（在设备上算的 SHA-256 相同）就跳过。可写开机会把 APK 留进 AVD，那台设备也就不再 `fresh`。
+
+**启动与收尾（`device/lifecycle.py`）。** `DeviceSide.start` 依次：安装；起助手（`CLASSPATH=<装好的 APK> app_process /system/bin org.spectragent.device.ShellHelper`），它从 stdin 读 socket 名与 token，听上之后在 stdout 写 `READY`，活到这个 shell 会话结束（stdin 一关它就退出），所以活不过主机的会话；经 ContentProvider 交 token、问服务的 socket 名；由助手把服务追加进 `enabled_accessibility_services`；连服务的 socket 并 ping，直到答上（app 进程在交 token 之后重启过、token 丢了，就再交一次）；最后查 `faketouch` 并试点。全程在一个时限之内，失败时停掉已经起来的部分。`stop` 关两条通道，把这个 run 加进去的服务从设置里拿掉（别的服务留着；原本就开着的不动），结束助手，从不 force-stop 我们的包；它的每一步都有时限。`ensure_bound` 先 ping，答不上（比如任务 force-stop 了所有 app，服务被系统从设置里拿掉）就再交 token、再开启、等 ping；它换了一条服务通道，旧通道上的事件流随之结束，读事件的一方要重新订阅。上面四条硬约束各有测试：APK 的源码里没有 UiAutomation，Android 包里没有一条命令跑 `uiautomator` 或 `force-stop`（读源码）；`stop` 不发 force-stop，确认只靠 ping、从不重读设置（在假设备上看发出的每条命令）；在真模拟器上，force-stop 我们的包确实把服务从设置里拿掉，`ensure_bound` 再把它带回来。
+
+**手势、按键与文字（2026-11-01 实施）。** 两个程序的手势接口相同：每根手指一串带时间的点 `(x, y, t)`，t 是从手势开始算的毫秒，第一个点按下，最后一个点抬起。点按是同一处的两个点，长按是同一处按得久一些，直线滑动是相隔的两个点，速度沿路变化的路径是更多的点；以后拟人化的轨迹（阶段 4，默认关）只需生成这些点，不必改接口，这次没做任何拟人化。助手按计划的时刻注入每个事件：两点之间每 8 ms 一个 MOVE（`input swipe` 的频率），手指不动时不发；按下与 MOVE 异步注入，只等抬起被处理完，否则 app 每帧才取一次输入，一条 350 ms、44 个 MOVE 的路径被拖到约 750 ms（实测，改了之后 372 ms）。服务能多指：每根手指两点时一次派发（`GestureDescription`）；一根手指的多点路径用 `continueStroke` 一段接一段派发，每段各有自己的速度，但每段要等系统报上一段做完才派发，总时长多出每段一次往返（350 ms 的四点路径，1 分钟负载约 6 时实测 390 ms，约 10 时 486 ms）；多根手指的多点路径服务不做。要按时刻走准的路径用助手。按键：助手注入任意 `KEYCODE_` 名字的键；服务只有全局动作（返回、主页、最近任务）。文字：服务的 `set_text` 对有输入焦点的可编辑节点做 `ACTION_SET_TEXT`，整段替换，并报出是哪个节点；`commit_text`（API 33）经服务自己的输入法在光标处提交，当前键盘不变，中文照样能输（实测）。`set_text` 之后文本框会重新开始输入，紧接着的 `commit_text` 可能落在已经换掉的输入连接上，被丢掉而不报错（实测）：键入后端要等文本框重新开始输入之后再提交。
+
+**界面树的采集（2026-11-01 实施）。** 线上格式对齐 android_env 的 `AndroidAccessibilityForest`（AndroidControl 数据集存的也是这个格式）：proto3 的 JSON 形式（proto 的字段名，枚举按名字，取默认值的字段不写），每个节点另加 `is_important`。主机的模型逐个消息对齐（`device/forest.py`），只有节点的 `actions` 在 Python 里叫 `accessibility_actions`：`actions` 是 capability 的动作受体名，受体卫生测试不许包里的模型用它；线上与按别名读写仍是 `actions`。排布照 AndroidWorld 的转发器：各个显示屏依次，每屏的窗口从下到上，每个窗口的节点广度优先，id 从根的 0 起，深度从 0 起。屏幕外的节点：采集里已有 `max_nodes`（默认 5000）个节点之后，用户看不见的节点连同它下面的一切都不采，计入 `omitted_offscreen`（数的是剪掉的子树的根）；看得见的节点总是采。实测两件事，定"界面静止"时要用上：启动一个 activity 之后，窗口管理器已经报它在前台，无障碍的窗口列表还要 1–2 s 才换成它的窗口（这期间是 0 个节点的旧窗口）；冷启动的 app 在进程起来之前一个事件也不发，所以一段时间没有事件不等于界面静止。
+
+**设备端程序的往返（2026-11-01 在本机实测，负载下）。** 与上面阶段 0 同一台机器、同一套方法（每项先空跑一次再量 20 次，报中位数 / p90），模拟器是自建的 AVD（Pixel 6、API 33 Google APIs arm64；先可写开机一次，让首次开机的后台工作做完，之后只读开机）。量的时候机器上还跑着别的 agent 的模拟器，1 分钟负载 5.5–7.7（两条路径那两项约 7–11），所以都是负载下的数。截图：助手 121 / 134 ms（设备上采 17 ms、编 PNG 85 ms）；服务 188 / 289 ms（采 21 ms、编 130 ms），背靠背连拍时为守 333 ms 要先等约 215 ms，合 339 / 356 ms；同一会话里 `screencap -p` 638 / 674 ms；模拟器 gRPC 取 PNG 没有重量，阶段 0 量的是 100 ms。两个程序的截图都与 `screencap` 的逐像素相同（状态栏与导航条之外，实测），PNG 是 2.3 MB（`screencap` 的 1.4 MB）：`Bitmap.compress` 编一张 560–1000 ms 且没有压缩级别可调，所以 APK 自己写 PNG（未过滤的 RGBA 行，zlib 最快一级），以更大的文件换编码时间。界面树：主屏 60 个节点 34 / 37 ms，Settings 首页 168 个节点 69 / 98 ms。点按：服务 1 ms 的手势 4.4 / 5.9 ms、50 ms 的 54 / 57 ms；助手 0 ms 的 5.7 / 7.2 ms、50 ms 的 55 / 56 ms；同一会话里 `input tap` 20 / 27 ms。两点的 350 ms 直线两边都是 352 ms，四点路径见上一段。ping：服务 2.6 ms，助手 2.0 ms。只读开机之后，`DeviceSide.start`（安装、助手、开启、ping、试点）11.6 s。
 
 **阶段 1 先用 adb 内建原语。** `screencap`、`input`、`dumpsys`、`pm`、`am` 等实现同一组桥接 Protocol（屏幕、输入、前台 app、开 app、设备事实，`bridge.py`），阶段 2 在这组 Protocol 之后换成自有的 APK 与助手。界面树从阶段 2 开始（`docs/execution_dag.md`），阶段 1 不调 `uiautomator dump`，也不开启我们自己的无障碍服务。代价是延迟与动画屏上的失败率偏高，`input text` 也打不出中文；AndroidWorld 的任务几乎都是 ASCII 文本，足够打通端到端。
 
@@ -5788,7 +5808,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **动作。** 与浏览器语义和参数都相同的沿用浏览器的相对名：`click_coordinate`、`drag`、`type_coordinate`、`scroll`，以及按编号点击的 `click`（`index` 指名 `android.ui_tree` 里清洗器编了号的元素，用户 2026-11-01 的裁决）：Android 把编号换成那个元素边界中心的一次点按，经配置的点按注入器执行；动作的含义归 capability，不让各 agent 自己把编号换算成坐标。没有界面树的 run（只看截图）协商不到 `click`，与浏览器的 `click` 依赖 `browser.dom` 同一条规则（§4.5"参数的含义"）。Android 独有的另起名：`long_press`、`press_key`（返回、主页、回车这类系统键）、`open_app`（app 名称到包名的解析在 capability 里）。手势的时长（`drag`、`long_press`）是动作实例上的设置，不是给模型的参数（§4.9 "相对名就是参数契约"）。`scroll` 与浏览器同一份参数（用户 2026-10-31 的裁决，§4.5）：可选的起点 `start`，以及可选的 `index`（指名 `android.ui_tree` 里要滚的元素，没协商到树的 run 从描述里删掉，与浏览器的 `index` 依赖 `browser.dom` 同一条规则），两者二选一；给了点，Android 从那一点开始滑，给了编号从那个元素的中心开始滑，都不给时在屏幕中央滑；方向与浏览器同义，用测试钉住，模型方言里按手指方向写的 swipe 由各 agent 的解析器换过来；UI-TARS 写的 `scroll(start_box, direction)`（桌面与移动端都这么写）就落在这个点上，它的 `scroll` 动词随之加一个可选的 `start_box`（§4.1 UI-TARS 编解码）。`wait` 这次仍由 capability 提供（`android.wait`），做组合环境之前用 `loop.done` 那套机制挪到 Loop（先要想清训练导出按前缀认 `wait` 的那条规则，§4.15 "等待动作"）。结束用 Loop 的 `loop.done`（§4.1、§4.5），Android 没有自己的 `done`。UI-TARS 的移动端动词（`long_press`、`open_app`、`press_home`、`press_back`）对应这些动作：它的编解码补上这几个动词（`press_home`、`press_back` 用编解码的固定值参数把 `press_key` 的 `key` 填成 `home`、`back`，§4.1 UI-TARS 编解码），wiring 把对应的动作加为可选（§4.9）。这一行等 Android 注册了这几个动作才加，因为 conscribe 的完整构建遇到没有 capability 注册的相对键就失败；现在已经加上：Android run 的 Available Actions 教这四个动词，浏览器 run 协商不到对应的动作，一个也不教。这张单子漏过一个（2026-11-01 实测）：UI-TARS 自己的提示词（`bytedance/UI-TARS` 的 `codes/ui_tars/prompt.py`）里 `type(content=...)` 不带点（移动端与桌面都是），意思是往焦点框里输入，编解码原来却要求 `type` 带点。用户 2026-11-01 裁决点是可选参数：浏览器与 Android 的 `type_coordinate` 的点都可选，两条轴要么都给、要么都不给；给了点先点按那里，不给点时不点按；两种都在发出任何键之前问设备有没有文本框有焦点，没有就每 0.1 s 再问，最多等 `focus_wait_ms`（默认 3 s：2026-11-01 在 API 33 模拟器上，点设置的搜索栏之后 1.5–1.9 s 搜索框才有焦点，点开对话框之后 0.5–0.9 s），到时仍没有就拒绝（给了点：`No text field took focus at the tapped point: …, so no text was typed.`；不给点：`No text field has focus: …`），与浏览器同一个意思，等焦点也与浏览器的 `type_focus_wait_s` 一样（不给点的输入前面可能有同一次回复里点开输入框的动作）；UI-TARS 的 `type` 动词随之带一个可选的点（§4.1 UI-TARS 编解码）。Android 原来的 `type_text`（往焦点框里输入）与不给点的 `type_coordinate` 重复，删掉。Android 判断有没有文本框有焦点读两份报告（`bridge.py::parse_text_focus`，`ForegroundApps.text_focus`）：`dumpsys window` 里有焦点的窗口（`mCurrentFocus`）就是输入法服务的那个窗口（`imeInputTarget`），并且 `dumpsys input_method` 里输入法当前客户端的 `mServedInputConnection` 不是 `null`（有焦点的视图持有输入连接）。只看连接会错（2026-11-01 在 API 33 模拟器上实测）：通知栏拉下来盖住一个有焦点的搜索框时，有焦点的是通知栏，输入法仍服务搜索框的窗口，搜索框的连接也还在，`input text` 打的字哪里都没去。同一次实测：设置主页与桌面上，输入法服务的就是有焦点的窗口，没有连接；点开设置的搜索之后搜索框有连接，键盘显示或收起都一样；对话框的窗口与它的 activity 同名、id 不同，所以按 id 比。读不出的时候照常输入，与浏览器读不出焦点时一样：输入法客户端没有应答（它的主线程卡住），报告里没有连接这一行；或者有连接，窗口管理器的报告里却没有输入法服务的窗口（Android 11 把这一行叫 `mInputMethodInputTarget`，照平台源码一并读，没有实测）。没有连接本身就是答案，不用看窗口。读一次两份报告约 0.1–0.2 s（`dumpsys input_method` 约 550 KB，大半是键盘自己的状态）；拉起新界面期间，输入法客户端的那份要等 app 的主线程，一次读了 1.2 s。
 
-**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、界面树清洗器与序列化器、配置选的点按注入器、要装的服务 APK 构建（含 `isAccessibilityTool` 取值）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK 版本、`faketouch` 预检结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。
+**实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、界面树清洗器与序列化器、配置选的点按注入器、要装的服务 APK 构建（它的 sidecar：SHA-256、版本、协议版本、`isAccessibilityTool`）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK（服务的 hello 里在设备上算出的 SHA-256 与版本，以及系统读到的 `isAccessibilityTool`）、`faketouch` 预检与试点的结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。
 
 **分支回放（阶段 3）。** 用户 2026-11-01 的裁决：阶段 3 从 Android 录制上分叉只用前缀重放，即从任务起点重放录下的动作（`BranchLoop` 与 `prefix_replay`，§4.1），不做任务中途快照。下面的做法照这个裁决、按同一天的一次对比定（依据见本段末）。
 
@@ -5813,6 +5833,9 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 - 客体 Wi-Fi 一直没有默认路由的那种开机（约 24 次里 3 次）：任务在 `boot_timeout_s`（默认 180 s）之后以环境失败结束，报错带上客体经 `wlan0` 的路由。怎样救回这样的开机（例如关开一次 Wi-Fi）没有测，还没定。
 - 按编号寻址的其他 Android 动作（带 `index` 的 `long_press`，以及按编号输入）还没定，随要接的按编号操作的 agent（例如 AndroidWorld 的 M3A、T3A）再定；它们与 `click` 一样要依赖 `android.ui_tree`。按编号输入用浏览器的相对名 `type` 与它的参数（`index`、`text`、`clear`），不叫 `type_text`（§4.9 "相对名就是参数契约"）。
 - Android 的 `type_coordinate` 给了点时只查点按之后有没有文本框有焦点（上面那两份报告），不查它是不是点到的那个框：报告不说它在哪里。点落在输入框旁的标签上、另一个框仍有焦点时，清空抹掉的是那个框，字也打进那里，动作照样报成功；浏览器在同样情形下拒绝（"No text field took focus at the clicked point"），同一个相对名两边的含义在这一点上还不一致。查焦点在不在点到的位置要读有焦点的节点与它的边界，等阶段 2 的无障碍服务。
+- 助手的快速截图只写了 API 31–33（`SurfaceControl.captureDisplay`），API 30 与 34 起答 `unsupported`（Android 14 把它挪到了 `ScreenCapture`），到要用这些版本时再写；助手的注入在 Android 14 起改走 `InputManagerGlobal`，写了，没有测。
+- 服务做不了多根手指的多点路径（上面"手势、按键与文字"），要用时再定。
+- 界面"静止"怎样定，随 `android.ui_tree` 一起定：窗口列表滞后于窗口管理器、冷启动的 app 不发事件（上面"界面树的采集"），只看事件或只看窗口管理器都不够。
 - 网络归档：Android 没有 CDP 那样的请求拦截口，只能走中间人代理（装系统证书、封 QUIC，证书钉扎的 app 抓不了），AndroidWorld 也用不上。v1 不做；阶段 4 再考虑在模拟器上用 mitmproxy 只采集、按"可回放 / 只采集"分档，到阶段 4 前再确认。
 - 手机 Chrome 与 WebView：还没定，建议不进 v1，放到阶段 4 与组合环境一起设计。
 - 云手机、真机、输入拟人化：阶段 4。
