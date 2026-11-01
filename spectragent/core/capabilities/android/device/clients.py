@@ -103,6 +103,10 @@ class FocusedNode(_Result):
     Attributes:
         bounds_in_screen: Where it is, in screen pixels.
         is_editable: Whether it takes text.
+        window_id: The window it is in.
+        node_hash: The platform's hash of the node (``AccessibilityNodeInfo.hashCode()``),
+            computed from its view's accessibility id and its window: the same
+            for the same view while it lives.
         package_name: Its package, as the tree names it.
         class_name: Its class.
         view_id_resource_name: Its view id, when it has one.
@@ -110,6 +114,8 @@ class FocusedNode(_Result):
 
     bounds_in_screen: ProtoRect
     is_editable: bool
+    window_id: int
+    node_hash: int
     package_name: str | None = None
     class_name: str | None = None
     view_id_resource_name: str | None = None
@@ -118,6 +124,19 @@ class FocusedNode(_Result):
         """Whether the point (*x*, *y*) is inside its bounds, edges included."""
         box = self.bounds_in_screen
         return box.left <= x <= box.right and box.top <= y <= box.bottom
+
+    def same_node(self, other: FocusedNode) -> bool:
+        """Whether *other* names this node: the same window, hash, view id and class.
+
+        Its bounds may differ: a field stays the same field when a keyboard
+        moves it.
+        """
+        return (
+            self.window_id,
+            self.node_hash,
+            self.view_id_resource_name,
+            self.class_name,
+        ) == (other.window_id, other.node_hash, other.view_id_resource_name, other.class_name)
 
 
 class _Focus(_Result):

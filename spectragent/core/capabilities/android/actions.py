@@ -309,17 +309,20 @@ class AndroidTypeCoordinateAction(ActionBase):
     has by then, the action fails without entering anything, as the browser's
     does; a device that cannot tell is typed into as asked.
 
-    With a point, the field with focus must also be the one at the point: our
-    accessibility service reports the node with input focus and its bounds
-    (:meth:`~spectragent.core.capabilities.android.bridge.InputInjection.focused_field`),
-    and the point must be inside them. A tap that misses its field (it lands on
-    the label beside it) while another field keeps focus is refused, as the
-    browser refuses it ("No text field took focus at the clicked point"); so is
-    a tap that opens another screen whose field, taking focus, is elsewhere.
-    The wait covers this check too, since a field takes focus a moment after
-    its tap and the service's report of it can lag the window manager's; a
-    service that names no focused node by then cannot tell where the field is,
-    and the text is entered as asked (``docs/architecture_design.md`` §11.2).
+    With a point, the rule is the browser's too (user ruling 2026-11-02,
+    ``docs/architecture_design.md`` §4.9 "相对名就是参数契约"): our accessibility
+    service names the field with input focus before the tap and again after it
+    (:meth:`~spectragent.core.capabilities.android.bridge.InputInjection.focused_field`).
+    Focus that moved to a text field is typed into, wherever that field is: a
+    tap on Settings' search bar opens a screen whose field, away from the
+    point, takes focus. Focus that stayed on the field that had it, a field the
+    point was not in when tapped, is refused: the tap landed beside it, on a
+    label, and nothing is cleared or typed. Where the field was is read before
+    the tap, since a keyboard that opens moves it. Focus may leave the old
+    field a moment after the tap, so the wait covers that too; a service that
+    names no field with focus by then cannot tell which field it is, and the
+    text is entered as asked. A refusal still reports the tap
+    (``AndroidTextEffect``).
     """
 
     __registry_key__ = "android.type_coordinate"
@@ -333,15 +336,16 @@ class AndroidTypeCoordinateAction(ActionBase):
         PydanticField(
             ge=0,
             description=(
-                "How long typing waits for a text field to have focus, in ms, after its tap "
-                "(or at once, without a point), before it fails without sending a key. Spent "
-                "only while no text field has focus; read again every 0.1 s. A tap that opens "
-                "a screen or a dialog takes a while: on the API 33 emulator, Settings' search "
-                "field had focus 1.5-1.9 s after the tap on its bar, a dialog's field 0.5-0.9 s "
-                "after the tap that opened it."
+                "How long typing waits, in ms, before it fails without entering text: while no "
+                "text field has focus yet (after its tap, or at once without a point) and, with a "
+                "point, while focus stays on the field that had it before the tap, a field the "
+                "point was not in, or the service does not name the field with focus yet. Read "
+                "again every 0.1 s. A tap that opens a screen takes a while: on the API 33 "
+                "emulator, Settings' search field had focus 1.8-2.8 s after a tap on its bar on a "
+                "still page, and up to 4.6 s after a tap right after Settings started."
             ),
         ),
-    ] = 3000
+    ] = 5000
 
     class Params(BaseModel):
         """The browser's ``type_coordinate`` params: the text, and an optional point."""
@@ -379,14 +383,20 @@ class AndroidTypeCoordinateAction(ActionBase):
         device = capability.bridge.input
         no_field = "No text field has focus"
         point: tuple[int, int] | None = None
+        before: FocusedNode | None = None
         tapped: Touch | None = None
         if given.coordinate_x is not None and given.coordinate_y is not None:
             point = (given.coordinate_x, given.coordinate_y)
+            before = await device.focused_field()
             tapped = await touch(capability, "tap", point, point, TAP_MS)
             no_field = "No text field took focus at the tapped point"
-        where = await self._no_field_at(capability, point)
+        where = await self._no_field_at(capability, point, before)
         if where is not None:
-            return ActionResult(success=False, error=f"{no_field}: {where}, so no text was typed.")
+            return ActionResult(
+                success=False,
+                error=f"{no_field}: {where}, so no text was typed.",
+                effect=AndroidTextEffect(effect_id=self.action_id, tap=tapped, text_entered=False),
+            )
         clear = self.clear_by_default if given.clear is None else given.clear
         target = await device.enter_text(given.text, replace=clear)
         return ActionResult(
@@ -394,6 +404,7 @@ class AndroidTypeCoordinateAction(ActionBase):
             effect=AndroidTextEffect(
                 effect_id=self.action_id,
                 tap=tapped,
+                text_entered=True,
                 entered_by=device.typing,
                 replaced=clear,
                 field_package=target.package_name,
@@ -403,9 +414,12 @@ class AndroidTypeCoordinateAction(ActionBase):
         )
 
     async def _no_field_at(
-        self, capability: AndroidCapability, point: tuple[int, int] | None
+        self,
+        capability: AndroidCapability,
+        point: tuple[int, int] | None,
+        before: FocusedNode | None,
     ) -> str | None:
-        """Where focus is when no text would go into a text field (at *point*); ``None``: it would.
+        """Where focus is when no text should go in (at *point*, *before* the tap); ``None``: it should.
 
         Read again every :data:`FOCUS_POLL_S` while that is so, or while the
         service names no field with focus, up to ``focus_wait_ms``; a service
@@ -413,28 +427,35 @@ class AndroidTypeCoordinateAction(ActionBase):
         """
         deadline = time.monotonic() + self.focus_wait_ms / 1000
         while True:
-            where, untold = await self._no_field_now(capability, point)
+            where, untold = await self._no_field_now(capability, point, before)
             if (where is None and not untold) or time.monotonic() >= deadline:
                 return where
             await asyncio.sleep(max(0.0, min(FOCUS_POLL_S, deadline - time.monotonic())))
 
     async def _no_field_now(
-        self, capability: AndroidCapability, point: tuple[int, int] | None
+        self,
+        capability: AndroidCapability,
+        point: tuple[int, int] | None,
+        before: FocusedNode | None,
     ) -> tuple[str | None, bool]:
-        """Where focus is when no text would go into a text field now, and whether the service could not tell."""
+        """Where focus is when no text should go in now, and whether the service could not tell.
+
+        Focus on a text field is refused only when it stayed on the field
+        *before* named, a field the point was not in when tapped.
+        """
         focus = await capability.bridge.apps.text_focus()
         if focus.text_field is False:
             if focus.window is None:
                 return "nothing has focus", False
             return f"focus is in {focus.window}, not on a text field", False
-        if point is None:
-            return None, False
+        if point is None or before is None or not before.is_editable or before.contains(*point):
+            return None, False  # a text field has focus; none had it away from the point before
         node = await capability.bridge.input.focused_field()
         if node is None:
             return None, True
-        if node.contains(*point):
-            return None, False
-        return f"focus is on {_field(node)}, away from the tapped point", False
+        if node.same_node(before):
+            return f"focus stayed on {_field(node)}, away from the tapped point", False
+        return None, False
 
 
 SystemKey = Literal["back", "home", "enter", "delete", "recent_apps"]

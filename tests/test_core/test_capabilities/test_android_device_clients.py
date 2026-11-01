@@ -30,6 +30,7 @@ from spectragent.core.capabilities.android.device.forest import (
     AndroidAccessibilityForest,
     AndroidAccessibilityNodeInfo,
     AndroidAccessibilityWindowInfo,
+    ProtoRect,
 )
 from tests._helpers.fake_adb import FakeAdbServer, SocketServer, scripted
 from tests._helpers.fake_device_side import Answer, Failure, FakeProgram, Method
@@ -291,6 +292,8 @@ async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none()
         {
             "bounds_in_screen": {"left": 30, "top": 120, "right": 1050, "bottom": 246},
             "is_editable": True,
+            "window_id": 13,
+            "node_hash": 1240117,
             "package_name": "com.google.android.settings.intelligence",
             "class_name": "android.widget.EditText",
             "view_id_resource_name": None,
@@ -309,6 +312,10 @@ async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none()
     assert field.is_editable and field.class_name == "android.widget.EditText"
     assert field.contains(540, 183) and field.contains(30, 246)
     assert not field.contains(540, 660), "below it"
+    moved = field.model_copy(update={"bounds_in_screen": ProtoRect(top=900, bottom=1026)})
+    assert field.same_node(moved), "a keyboard moved it: the same field"
+    assert not field.same_node(field.model_copy(update={"node_hash": 7})), "another view"
+    assert not field.same_node(field.model_copy(update={"window_id": 14})), "another window"
 
 
 async def test_service_events_come_back_typed_in_order() -> None:

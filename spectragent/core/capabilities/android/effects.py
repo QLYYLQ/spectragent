@@ -13,9 +13,9 @@ each one with the caller's ``write_point`` (§4.1, "坐标系归框架").
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spectragent.schemas.action import ActionEffect, PointWriter, write_viewport_point
 
@@ -74,24 +74,35 @@ class AndroidTouchEffect(ActionEffect):
 
 
 class AndroidTextEffect(ActionEffect):
-    """Text entered into the field with input focus: which field took it, how, after which tap.
+    """Text entered into the field with input focus, or none: the tap before it, and how it went in.
 
-    ``tap`` is the touch that focused the field, when the action was given a
-    point. ``entered_by`` is the typing backend, by its registry key; ``replaced``
-    whether the text replaced the field's own (``clear``) or went at its
-    cursor. The field is named as the device reports it (the input method knows
-    only its package). The text itself, and its length, are never recorded.
+    ``tap`` is the touch the action made first, when it was given a point; a
+    refused action reports it as well, since the tap happened.
+    ``text_entered``: whether any text went in. When it did, ``entered_by`` is
+    the typing backend, by its registry key, and ``replaced`` whether the text
+    replaced the field's own (``clear``) or went at its cursor; the field is
+    named as the device reports it (the input method knows only its package).
+    The text itself, and its length, are never recorded.
     """
 
     tap: Touch | None = None
-    entered_by: str
-    replaced: bool
+    text_entered: bool
+    entered_by: str | None = None
+    replaced: bool | None = None
     field_package: str | None = None
     field_class: str | None = None
     field_view_id: str | None = None
 
+    @model_validator(mode="after")
+    def _how_only_when_entered(self) -> Self:
+        if self.text_entered != (self.entered_by is not None and self.replaced is not None):
+            raise ValueError("entered_by and replaced are given exactly when text was entered")
+        return self
+
     def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
         head = f"{self.tap.describe(write_point)} " if self.tap is not None else ""
+        if not self.text_entered:
+            return f"{head}No text was entered."
         field = self.field_class.rsplit(".", 1)[-1] if self.field_class else "the field"
         if self.field_view_id:
             field += f" {self.field_view_id}"

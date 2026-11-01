@@ -29,7 +29,11 @@ from spectragent.core.capabilities.android.actions import (
     SystemKey,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
-from spectragent.core.capabilities.android.effects import AndroidTextEffect, AndroidTouchEffect
+from spectragent.core.capabilities.android.effects import (
+    AndroidTextEffect,
+    AndroidTouchEffect,
+    ScreenPoint,
+)
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
 from spectragent.core.capabilities.android.input.text import CommitTextBackend
 from spectragent.core.trace.effects import registered_effect, restore_effects
@@ -262,7 +266,7 @@ async def test_typing_at_a_point_taps_and_enters_the_text_over_the_fields_or_at_
         "helper stroke (5,160)@0 (5,160)@50",
         "service set_text 'x' at the cursor",
     ]
-    assert isinstance(replaced.effect, AndroidTextEffect)
+    assert isinstance(replaced.effect, AndroidTextEffect) and replaced.effect.text_entered
     assert replaced.effect.entered_by == "set_text" and replaced.effect.replaced
     assert replaced.effect.tap is not None and replaced.effect.tap.delivered_by == "shell_injection"
     assert replaced.effect.describe() == (
@@ -291,10 +295,11 @@ async def test_the_commit_text_backend_types_through_the_services_input_method()
     assert typed.effect.field_class is None, "an input method knows only the field's package"
 
 
-async def test_typing_at_a_point_refuses_a_field_with_focus_elsewhere(
+async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_refused(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
-    """The tap missed its field and another keeps focus: the browser refuses this too."""
+    """The tap landed beside the field, on a label, and the field that had focus keeps it
+    (user ruling 2026-11-02): nothing is cleared or typed, and the tap is reported."""
     capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=300)]
     phone.text_field = True  # a field has focus, at (0, 100)-(1080, 250)
 
@@ -303,12 +308,84 @@ async def test_typing_at_a_point_refuses_a_field_with_focus_elsewhere(
 
     assert (result.success, result.error) == (
         False,
-        "No text field took focus at the tapped point: focus is on EditText "
+        "No text field took focus at the tapped point: focus stayed on EditText "
         "android:id/search_src_text of com.google.android.apps.nexuslauncher, away from the "
         "tapped point, so no text was typed.",
     )
-    assert time.monotonic() - started >= 0.3, "the field at the point had its time to take focus"
+    assert time.monotonic() - started >= 0.3, "focus had its time to leave the field"
     assert phone.inputs == ["helper stroke (540,900)@0 (540,900)@50"], "nothing entered"
+    effect = result.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered
+    assert effect.tap is not None and effect.tap.start == ScreenPoint(x=540, y=900)
+    assert effect.describe() == "Tapped (540, 900). No text was entered."
+
+
+async def test_typing_at_a_point_types_into_a_field_that_took_focus_wherever_it_is(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The tap opens a screen whose field, away from the point, takes focus: that types."""
+    phone.text_field = False  # nothing to type into before the tap
+
+    def opens_a_search_screen() -> None:
+        phone.text_field, phone.field_bounds, phone.field_node = True, (0, 100, 1080, 250), 5
+
+    phone.on_tap = opens_a_search_screen
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=660, text="hi")
+
+    assert result.success, result.error
+    assert phone.inputs[-1] == "service set_text 'hi' replace"
+
+
+async def test_typing_at_a_point_types_when_focus_moved_to_another_field(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """Another field had focus before the tap; the one the tap gave focus to takes the text."""
+    phone.text_field, phone.field_bounds, phone.field_node = True, (0, 100, 1080, 250), 1
+
+    def focuses_another_field() -> None:
+        phone.field_bounds, phone.field_node = (0, 2000, 1080, 2150), 2  # away from the point
+
+    phone.on_tap = focuses_another_field
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
+
+    assert result.success, result.error
+
+
+async def test_typing_at_a_point_inside_the_field_that_has_focus_types(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    phone.text_field, phone.field_bounds = True, (0, 100, 1080, 250)
+
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=160, text="hi")
+
+    assert result.success, result.error
+
+
+async def test_typing_at_a_point_in_the_focused_field_types_though_the_keyboard_moves_it(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The point was in the field when tapped; the keyboard the tap opens pushes it up."""
+    phone.text_field, phone.field_bounds = True, (0, 1900, 1080, 2050)
+
+    def keyboard_opens() -> None:
+        phone.field_bounds = (0, 900, 1080, 1050)  # the same field, away from the point now
+
+    phone.on_tap = keyboard_opens
+    result = await act(
+        capability, "type_coordinate", coordinate_x=540, coordinate_y=1950, text="hi"
+    )
+
+    assert result.success, result.error
+    assert phone.inputs[-1] == "service set_text 'hi' replace"
+
+
+@pytest.mark.parametrize(
+    "how",
+    [{"text_entered": True}, {"text_entered": False, "entered_by": "set_text", "replaced": True}],
+)
+def test_a_text_effect_says_how_text_went_in_exactly_when_it_did(how: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="exactly when text was entered"):
+        AndroidTextEffect.model_validate({"effect_id": "android.type_coordinate", **how})
 
 
 async def test_typing_at_a_point_types_as_asked_when_the_service_names_no_field(
@@ -316,23 +393,27 @@ async def test_typing_at_a_point_types_as_asked_when_the_service_names_no_field(
 ) -> None:
     """The service's report lags the window manager's; one that never comes cannot tell."""
     capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=200)]
-    phone.text_field, phone.field_bounds = True, None
+    phone.text_field = True
 
+    def report_lags() -> None:
+        phone.field_bounds = None
+
+    phone.on_tap = report_lags
     result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
 
     assert result.success, result.error
     assert phone.inputs[-1] == "service set_text 'hi' replace"
 
 
-async def test_typing_at_a_point_waits_for_the_field_at_the_point_to_take_focus(
+async def test_typing_at_a_point_waits_for_focus_to_leave_the_field_it_stayed_on(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
-    """Another field has focus at first; the one tapped takes it a moment later."""
+    """Focus leaves the old field a moment after the tap, for the field at the point."""
     phone.text_field, phone.field_bounds = True, (0, 100, 1080, 250)
 
     async def focus_moves() -> None:
         await asyncio.sleep(0.3)
-        phone.field_bounds = (0, 800, 1080, 1000)
+        phone.field_bounds, phone.field_node = (0, 800, 1080, 1000), 2
 
     moving = asyncio.ensure_future(focus_moves())
     result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
@@ -373,6 +454,8 @@ async def test_a_tap_that_gives_no_text_field_focus_types_nothing(
     )
     assert time.monotonic() - started >= 0.3, "the wait was spent before refusing"
     assert phone.inputs == ["helper stroke (5,6)@0 (5,6)@50"]
+    assert isinstance(result.effect, AndroidTextEffect)
+    assert (result.effect.text_entered, result.effect.tap is not None) == (False, True)
 
 
 async def test_typing_without_a_point_types_into_the_field_that_has_focus(

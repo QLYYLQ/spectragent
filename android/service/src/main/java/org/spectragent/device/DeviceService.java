@@ -304,7 +304,9 @@ public final class DeviceService extends AccessibilityService {
 
     /**
      * The node with input focus, as the system resolves it: the focused view of the window that has
-     * input focus. {@code {"focused": null}} when no view has it.
+     * input focus. {@code {"focused": null}} when no view has it. Its window id and the node's hash
+     * ({@code AccessibilityNodeInfo.hashCode()}, computed from the view's accessibility id and its
+     * window, so the same while that view lives) tell whether two answers name the same field.
      */
     private Reply focus() {
         AccessibilityNodeInfo node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
@@ -318,6 +320,8 @@ public final class DeviceService extends AccessibilityService {
                     "bounds_in_screen", Json.obj(
                             "left", bounds.left, "top", bounds.top, "right", bounds.right, "bottom", bounds.bottom),
                     "is_editable", node.isEditable(),
+                    "window_id", node.getWindowId(),
+                    "node_hash", node.hashCode(),
                     "package_name", string(node.getPackageName()),
                     "class_name", string(node.getClassName()),
                     "view_id_resource_name", node.getViewIdResourceName())));

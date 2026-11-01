@@ -23,10 +23,11 @@ runs. The one boot covers, in file order:
 - ``open_app`` with the foreground app checked, and the back and home keys;
 - ``type_coordinate`` without a point: refused on Settings' main page, where
   no text field has focus, and typed into the search field a tap opens;
-- ``type_coordinate`` at a point: refused after a tap on nothing editable, and
-  after its tap on the search bar opens a screen whose field takes focus away
-  from the point (1.5-1.9 s after the tap, measured); typed into that field
-  when tapped at the field itself;
+- ``type_coordinate`` at a point (user ruling 2026-11-02): refused after a tap
+  on nothing editable; typed into the search field its tap on the search bar
+  opens, which takes focus away from the point 2-3 s after the tap
+  (measured); refused after a tap on the status bar, where the search field
+  keeps focus away from the point, the field's text untouched;
 - a scroll down that shows what is further down, measured on the screenshots,
   its effect naming the injector that delivered it;
 - a capture waits for a still screen: after a cold start of Settings it waits
@@ -102,6 +103,8 @@ SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.sett
 SEARCH_BAR = (540, 660)
 #: A point of Settings' main page on no control: the toolbar above its title.
 NOTHING_THERE = (540, 300)
+#: A point on the status bar, between the clock and the icons: a tap there takes no focus.
+STATUS_BAR = (540, 40)
 #: Where the search screen lists the results of a query, between its field and the keyboard.
 RESULTS = (0, 300, 1080, 1400)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
@@ -385,47 +388,69 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     assert _results_appeared(before, after)
 
 
-async def test_typing_at_a_point_refuses_a_tap_on_nothing_and_a_field_away_from_it(
+async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_it_stays_away(
     booted: Booted,
 ) -> None:
-    """The tap on the search bar opens a screen whose field takes focus 1.5-1.9 s later, at its
-    top: away from the point, so refused; tapped at that field itself, it takes the text."""
+    """The tap on the search bar opens a screen whose field takes focus 2-3 s later, away from
+    the point, and that types (user ruling 2026-11-02); a tap on nothing focusable is refused,
+    before and after."""
     await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
-    on_nothing = await _act(
+    refused = await _act(
         booted,
         "type_coordinate",
         coordinate_x=NOTHING_THERE[0],
         coordinate_y=NOTHING_THERE[1],
         text="bluetooth",
     )
-    assert (on_nothing.success, on_nothing.error) == (
+    assert (refused.success, refused.error) == (
         False,
         "No text field took focus at the tapped point: focus is in "
         "com.android.settings/com.android.settings.Settings, not on a text field, "
         "so no text was typed.",
     )
-    elsewhere = await _act(
-        booted, "type_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1], text="x"
-    )
-    assert not elsewhere.success
-    assert elsewhere.error is not None and "away from the tapped point" in elsewhere.error
+    assert (
+        await _act(
+            booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
+        )
+    ).success
     assert (await _foreground(booted)).package in SETTINGS_SEARCH
-    field = await booted.capability.bridge.input.focused_field()
-    assert field is not None and field.is_editable
     empty = await _screenshot(booted)
 
-    box = field.bounds_in_screen
+    await _settings_from_scratch(booted)
     typed = await _act(
         booted,
         "type_coordinate",
-        coordinate_x=(box.left + box.right) // 2,
-        coordinate_y=(box.top + box.bottom) // 2,
+        coordinate_x=SEARCH_BAR[0],
+        coordinate_y=SEARCH_BAR[1],
         text="bluetooth",
     )
     assert typed.success, typed.error
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
     assert _results_appeared(empty, await _screenshot(booted))
+
+    # A tap on the status bar takes no focus: the search field keeps it, away from the point.
+    stayed = await _act(
+        booted, "type_coordinate", coordinate_x=STATUS_BAR[0], coordinate_y=STATUS_BAR[1], text="x"
+    )
+    assert not stayed.success
+    assert stayed.error is not None and "focus stayed on EditText" in stayed.error
+    assert await _search_field_text(booted) == "bluetooth", "nothing was cleared or typed"
+
+
+async def _search_field_text(booted: Booted) -> str | None:
+    """The text of the editable field on screen, as the service's tree has it."""
+    side = booted.capability._side
+    assert side is not None
+    capture = await side.service.tree()
+    texts = [
+        node.text
+        for window in capture.forest.windows
+        for node in window.tree.nodes
+        if node.is_editable and node.is_visible_to_user
+    ]
+    return texts[0] if texts else None
 
 
 async def _skip_unless_measured_layout(booted: Booted) -> None:

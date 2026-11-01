@@ -31,7 +31,7 @@ import struct
 import tempfile
 import time
 import zlib
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +121,10 @@ class ScriptedPhone:
         field_bounds: Where the node with input focus is, as the service
             reports it while :attr:`text_field` is true: ``(left, top, right,
             bottom)``; ``None``: the service names no focused node.
+        field_node: That node's hash, as the service reports it: another
+            number is another field.
+        on_tap: Run when a stroke arrives, after it is recorded: a tap that
+            moves focus, or opens a screen.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
             KEYCODE_..."``, ``"service set_text '...' replace|at the cursor"``,
@@ -140,6 +144,8 @@ class ScriptedPhone:
     text_field: bool | None = False
     window_over: str | None = None
     field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
+    field_node: int = 1
+    on_tap: Callable[[], None] | None = None
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
@@ -240,6 +246,8 @@ class ScriptedPhone:
                     if isinstance(point, list)
                 )
                 self.inputs.append(f"{program} stroke {points}")
+            if self.on_tap is not None:
+                self.on_tap()
             return Answer({"elapsed_ms": 55})
 
         return gesture
@@ -258,6 +266,8 @@ class ScriptedPhone:
         node: dict[str, JsonValue] = {
             "bounds_in_screen": {"left": left, "top": top, "right": right, "bottom": bottom},
             "is_editable": True,
+            "window_id": 7,
+            "node_hash": self.field_node,
             "package_name": self.focused.partition("/")[0],
             "class_name": "android.widget.EditText",
             "view_id_resource_name": "android:id/search_src_text",
