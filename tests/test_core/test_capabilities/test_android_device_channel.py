@@ -79,9 +79,9 @@ async def _streams(
 async def _channel(
     program: FakeProgram, *, token: str = TOKEN, component: Component = "service"
 ) -> AsyncIterator[Channel]:
-    async with _streams(program) as (reader, writer):
-        async with asyncio.timeout(_WAIT_S):
-            channel = await Channel.open(reader, writer, token=token, component=component)
+    async with _streams(program) as (reader, writer), asyncio.timeout(_WAIT_S):
+        # The whole test's body, too: a protocol deadlock fails instead of hanging.
+        channel = await Channel.open(reader, writer, token=token, component=component)
         try:
             yield channel
         finally:
@@ -125,7 +125,7 @@ async def test_the_lengths_are_big_endian_and_count_everything_after_themselves(
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
-        (struct.pack(">II", MAX_FRAME_BYTES + 1, 2) + b"{}", "a frame of"),
+        (struct.pack(">II", MAX_FRAME_BYTES + 1, 2) + b"{}", "^a frame of"),
         (struct.pack(">II", 10, 20) + b"x" * 6, "with a header of 20"),
         (struct.pack(">II", 12, 8) + b"not json", "not JSON"),
         (struct.pack(">II", 6, 2) + b"[]", "a JSON list, not an object"),

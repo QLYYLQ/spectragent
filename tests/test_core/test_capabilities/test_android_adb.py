@@ -134,7 +134,10 @@ async def test_stdin_given_to_a_command_reaches_it_whole_and_is_then_closed() ->
 
     apk = bytes(range(256)) * 600  # several stdin packets
     streams = {SERIAL: lambda command: install if command.startswith("cmd package") else None}
-    async with FakeAdbServer({SERIAL: scripted({})}, streams=streams) as adb:
+    async with (
+        FakeAdbServer({SERIAL: scripted({})}, streams=streams) as adb,
+        asyncio.timeout(_WAIT_S),
+    ):
         result = await AdbClient(adb.host, adb.port).shell(
             SERIAL, f"cmd package install -S {len(apk)}", stdin=apk
         )
@@ -154,7 +157,8 @@ async def test_an_open_session_is_read_as_the_command_writes_and_ends_when_stdin
 
     streams: dict[str, Callable[[str], StreamingCommand | None]] = {SERIAL: lambda _: program}
     async with FakeAdbServer({SERIAL: scripted({})}, streams=streams) as adb:
-        session = await AdbClient(adb.host, adb.port).open_shell(SERIAL, "app_process / Main")
+        async with asyncio.timeout(_WAIT_S):
+            session = await AdbClient(adb.host, adb.port).open_shell(SERIAL, "app_process / Main")
         try:
             async with asyncio.timeout(_WAIT_S):
                 await session.write(b"secret\n")
@@ -179,9 +183,10 @@ async def test_an_abstract_socket_carries_bytes_both_ways() -> None:
 
     listening: dict[str, SocketServer] = {"spectragent_device": echo}
     async with FakeAdbServer({SERIAL: scripted({})}, sockets={SERIAL: listening.get}) as adb:
-        reader, writer = await AdbClient(adb.host, adb.port).connect_abstract(
-            SERIAL, "spectragent_device"
-        )
+        async with asyncio.timeout(_WAIT_S):
+            reader, writer = await AdbClient(adb.host, adb.port).connect_abstract(
+                SERIAL, "spectragent_device"
+            )
         try:
             writer.write(b"ping")
             await writer.drain()
@@ -197,7 +202,8 @@ async def test_an_abstract_socket_carries_bytes_both_ways() -> None:
 async def test_an_abstract_socket_nothing_listens_on_is_refused_as_closed() -> None:
     async with FakeAdbServer({SERIAL: scripted({})}, sockets={SERIAL: lambda _: None}) as adb:
         with pytest.raises(AdbError, match="localabstract:nobody: closed"):
-            await AdbClient(adb.host, adb.port).connect_abstract(SERIAL, "nobody")
+            async with asyncio.timeout(_WAIT_S):
+                await AdbClient(adb.host, adb.port).connect_abstract(SERIAL, "nobody")
 
 
 # ── replies the fake never sends ─────────────────────────────────────

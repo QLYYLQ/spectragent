@@ -59,14 +59,30 @@ def apk(tmp_path: Path) -> ServiceApk:
 
 @asynccontextmanager
 async def _phone(side: FakeDeviceSide) -> AsyncIterator[tuple[FakeAdbServer, AdbClient]]:
-    async with FakeAdbServer(
-        {SERIAL: side.device}, streams={SERIAL: side.streams}, sockets={SERIAL: side.sockets}
-    ) as adb:
+    """The phone behind a fake ADB server; the test's body may take at most :data:`_WAIT_S`."""
+    async with (
+        FakeAdbServer(
+            {SERIAL: side.device}, streams={SERIAL: side.streams}, sockets={SERIAL: side.sockets}
+        ) as adb,
+        asyncio.timeout(_WAIT_S),
+    ):
         yield adb, AdbClient(adb.host, adb.port)
 
 
 def _services(adb: FakeAdbServer) -> list[str]:
     return [request.service for request in adb.requests]
+
+
+async def _helper_exited(side: FakeDeviceSide) -> None:
+    """Until the fake helper has seen its stdin end and exited.
+
+    ``stop()`` closes the helper's shell session and waits for its own reader,
+    never for the program on the device, which exits on its own schedule. Called
+    inside :func:`_phone`, whose time limit bounds the wait: the fake ADB server
+    cancels a helper that is still running when it shuts down.
+    """
+    while side.helper_exits == 0:
+        await asyncio.sleep(0.01)
 
 
 async def test_start_installs_starts_the_helper_and_confirms_the_service_with_a_ping(
@@ -80,6 +96,7 @@ async def test_start_installs_starts_the_helper_and_confirms_the_service_with_a_
             enabled_while_up = side.enabled
         finally:
             await device.stop()
+        await _helper_exited(side)
 
     assert side.installed == APK_BYTES and device.installed_now
     assert enabled_while_up == f"{TALKBACK}:{SERVICE_COMPONENT}", "appended, TalkBack kept"
@@ -131,6 +148,7 @@ async def test_binding_is_confirmed_by_a_ping_and_never_by_reading_the_setting(
     async with _phone(side) as (adb, client):
         with pytest.raises(TimeoutError, match="waiting for the service to answer a ping"):
             await DeviceSide.start(client, SERIAL, apk, timeout_s=1.0)
+        await _helper_exited(side)
 
     assert not any("settings" in service for service in _services(adb))
     assert side.helper_exits == 1, "the failed start stopped the helper"

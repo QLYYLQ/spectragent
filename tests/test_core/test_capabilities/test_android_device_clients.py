@@ -157,12 +157,12 @@ async def _client(
     listening: dict[str, SocketServer] = {"socket": program.serve}
     async with FakeAdbServer({SERIAL: scripted({})}, sockets={SERIAL: listening.get}) as adb:
         reader, writer = await AdbClient(adb.host, adb.port).connect_abstract(SERIAL, "socket")
-        async with asyncio.timeout(_WAIT_S):
+        async with asyncio.timeout(_WAIT_S):  # the whole test's body: a deadlock fails
             channel = await Channel.open(reader, writer, token=TOKEN, component=component)
-        try:
-            yield program, channel
-        finally:
-            await channel.close()
+            try:
+                yield program, channel
+            finally:
+                await channel.close()
 
 
 async def _ok(params: JsonObject) -> Answer:
