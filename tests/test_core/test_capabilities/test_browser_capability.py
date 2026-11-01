@@ -809,6 +809,27 @@ class TestPageLifecycleWiring:
             "Page.navigatedWithinDocument",
         } <= registered
 
+    async def test_the_bridge_keeps_the_kind_of_a_same_document_commit(self) -> None:
+        """A page script's History API change must reach the navigate handler as such."""
+        from agent_cdp import expect
+
+        from spectragent.core.capabilities.browser.watchdogs.events import (
+            NavigatedWithinDocumentEvent,
+        )
+
+        cap, cdp, scope_group = self._make_cap_with_stub()
+        try:
+            await cap._attach_tab("T1")
+            heard = expect(scope_group.get_scope("T1"), NavigatedWithinDocumentEvent)
+            params = {"frameId": "F", "navigationType": "historyApi"}
+            for callback in cdp.event_callbacks["Page.navigatedWithinDocument"]:
+                callback(params, "cdp-sid-1")
+            assert heard.done
+            event = await heard
+            assert (event.frame_id, event.navigation_type) == ("F", "historyApi")
+        finally:
+            await cap.teardown()
+
     def test_close_tab_closes_bridge_first(self) -> None:
         import asyncio
 
