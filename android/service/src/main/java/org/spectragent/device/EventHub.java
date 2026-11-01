@@ -1,5 +1,6 @@
 package org.spectragent.device;
 
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,13 +32,23 @@ final class EventHub {
         return nextSeq;
     }
 
-    /** Numbers one event; encodes it only when a connection subscribed. */
+    /**
+     * Numbers one event; encodes it only when a connection subscribed. An event that cannot be
+     * encoded is logged and not sent: its subscribers see the gap in the numbering, and their
+     * streams end there, explicitly. Nothing is thrown on the thread delivering events.
+     */
     synchronized void publish(Encoder encoder) {
         long seq = nextSeq++;
         if (subscribers.isEmpty()) {
             return;
         }
-        byte[] frame = encoder.encode(seq);
+        byte[] frame;
+        try {
+            frame = encoder.encode(seq);
+        } catch (RuntimeException unencodable) {
+            Log.e("Spectragent", "event " + seq + " could not be encoded; its subscribers see a gap", unencodable);
+            return;
+        }
         for (Connection connection : subscribers) {
             connection.sendEvent(frame, seq);
         }
