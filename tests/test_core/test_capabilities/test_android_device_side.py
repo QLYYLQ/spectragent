@@ -206,6 +206,24 @@ async def test_ensure_bound_enables_the_service_again_after_a_force_stop(apk: Se
     assert side.enabled is None
 
 
+async def test_a_second_recovery_works_after_one_that_ran_out_of_time(apk: ServiceApk) -> None:
+    side = FakeDeviceSide()
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        try:
+            side.force_stop()
+            side.binds = False  # the system does not bind it this time
+            with pytest.raises(TimeoutError, match="did not answer within 0.5 s"):
+                await device.ensure_bound(timeout_s=0.5)
+            side.binds = True
+            assert await device.ensure_bound(timeout_s=_WAIT_S) is True
+            assert (await device.service.ping()).uptime_ms == 1000
+        finally:
+            await device.stop()
+
+    assert side.enabled is None
+
+
 async def test_a_device_without_faketouch_reports_that_it_cancels_gestures(
     apk: ServiceApk,
 ) -> None:

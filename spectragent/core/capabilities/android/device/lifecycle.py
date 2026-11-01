@@ -188,14 +188,15 @@ class DeviceSide:
         Raises:
             DeviceSideError, TimeoutError: As :meth:`start`.
         """
-        try:
-            async with asyncio.timeout(timeout_s):
-                await self.service.ping()
-            return False
-        except (ChannelError, TimeoutError):
-            pass
-        await self.service.close()
-        self._service = None
+        if self._service is not None:
+            try:
+                async with asyncio.timeout(timeout_s):
+                    await self._service.ping()
+                return False
+            except (ChannelError, TimeoutError):
+                pass
+            await self._service.close()
+            self._service = None
         try:
             async with asyncio.timeout(timeout_s):
                 await self._enable_and_confirm()
