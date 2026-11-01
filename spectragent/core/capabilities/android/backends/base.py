@@ -52,7 +52,7 @@ class DeviceNeeds(BaseModel):
     """What a run needs of its device beyond ADB; ``open()`` returns a device that meets it.
 
     Derived from the run's strategies, never configured (module docstring). A
-    provider that cannot meet a need says so in ``check_needs()``, which the
+    provider names what it cannot meet in ``unmet_needs()``, which the
     capability's ``check_setup`` asks before anything starts.
 
     Attributes:
@@ -64,8 +64,10 @@ class DeviceNeeds(BaseModel):
             for about 1.5 s (measured), so it happens before the session is
             handed over.
         guest_wifi: The guest's Wi-Fi has its IPv4 default route. It came
-            about 7 s after the boot completed, and once in eight boots after
-            a wipe it never came (measured).
+            4-7 s after the boot completed; on about 2 of 21 boots it never
+            came, read-only boots of a set-up AVD included (measured).
+        fresh: The run's changes are thrown away when the device is
+            released, so every run starts from the same device.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -73,6 +75,15 @@ class DeviceNeeds(BaseModel):
     emulator_grpc: bool = False
     root: bool = False
     guest_wifi: bool = False
+    fresh: bool = False
+
+    def named(self) -> list[str]:
+        """The needs asked for, by name."""
+        return [name for name, wanted in self if wanted]
+
+
+class UnmetDeviceNeeds(ValueError):
+    """A provider cannot meet what the run needs of its device; the message names each need."""
 
 
 class EmulatorGrpc(BaseModel):
@@ -140,14 +151,18 @@ class BaseAndroidProvider(Protocol):
     @property
     def provider_id(self) -> str: ...
 
-    def check_needs(self, needs: DeviceNeeds) -> None:
-        """Raise, saying why, if this provider cannot meet *needs*; reads only its configuration."""
+    def unmet_needs(self, needs: DeviceNeeds) -> list[str]:
+        """What of *needs* this provider cannot meet, one entry per need, naming its own setting.
+
+        Empty when it meets them all. Reads only its configuration and the host.
+        """
         ...
 
     async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
         """Bring a device up meeting *needs* (none when ``None``) and return where to reach it.
 
-        Raises what :meth:`check_needs` raises before anything starts.
+        Raises:
+            UnmetDeviceNeeds: :meth:`unmet_needs` named one, before anything starts.
         """
         ...
 

@@ -26,10 +26,10 @@ import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pytest
 import pytest_asyncio
+from pydantic import JsonValue
 
 from spectragent import PACKAGE_ROOT
 from spectragent.core.capabilities.android.adb import AdbClient
@@ -105,7 +105,7 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
         env={"PATH": "/usr/bin:/bin", "HOME": str(data)},
     )
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(TASK_ID)
-    raw: dict[str, Any] = {
+    raw: dict[str, JsonValue] = {
         "capability": [
             {
                 "capability_id": "android",

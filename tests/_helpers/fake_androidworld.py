@@ -36,11 +36,14 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlsplit
 
+if TYPE_CHECKING:  # run as a program, this file imports only the standard library
+    from pydantic import JsonValue
+
 #: What each endpoint answers when the behaviour file says nothing about it.
-DEFAULT_ANSWERS: dict[str, dict[str, Any]] = {
+DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
     "/health": {"status": "success"},
     "/suite/reinitialize": {"status": "success", "message": "Task suite re-initialized."},
     "/task/goal": {"goal": "Turn brightness to the max value."},
@@ -51,7 +54,7 @@ DEFAULT_ANSWERS: dict[str, dict[str, Any]] = {
 }
 
 
-def fake_installation(root: Path, behaviour: dict[str, Any] | None = None) -> Path:
+def fake_installation(root: Path, behaviour: dict[str, JsonValue] | None = None) -> Path:
     """An AndroidWorld installation at *root* whose service is this file, behaving as *behaviour* says."""
     from spectragent.core.capabilities.android.oracle.androidworld import (
         FORWARDER_APK,
@@ -76,17 +79,17 @@ def fake_installation(root: Path, behaviour: dict[str, Any] | None = None) -> Pa
     return root
 
 
-def write_behaviour(root: Path, behaviour: dict[str, Any]) -> None:
+def write_behaviour(root: Path, behaviour: dict[str, JsonValue]) -> None:
     (root / "behaviour.json").write_text(json.dumps(behaviour))
 
 
-def requests(root: Path) -> list[dict[str, Any]]:
+def requests(root: Path) -> list[dict[str, JsonValue]]:
     """Every request the service received, in order: method, path and query."""
     log = root / "record" / "requests.jsonl"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.is_file() else []
 
 
-def service(root: Path) -> dict[str, Any]:
+def service(root: Path) -> dict[str, JsonValue]:
     """The service's PID, process group, ``sleep`` child, argv and environment."""
     return json.loads((root / "record" / "service.json").read_text())
 
@@ -150,7 +153,7 @@ def _serve(argv: list[str]) -> None:
 
         do_GET = do_POST = _answer
 
-        def log_message(self, format: str, *args: Any) -> None:
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)

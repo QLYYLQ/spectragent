@@ -11,9 +11,9 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
+from pydantic import JsonValue
 
 from spectragent import PACKAGE_ROOT
 from spectragent.core.capabilities.android.oracle.androidworld import (
@@ -22,6 +22,7 @@ from spectragent.core.capabilities.android.oracle.androidworld import (
 )
 from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     TASK_LIST_FORMAT,
+    UNREPRODUCIBLE,
     instance_seed,
 )
 from spectragent.core.data_loader._common import BenchmarkDataError
@@ -34,8 +35,10 @@ TASK_LIST_WRITER = (
 )
 
 
-def _record(task: str = "SystemBrightnessMax", family: str = "android", **changes: Any) -> dict:
-    record: dict[str, Any] = {
+def _record(
+    task: str = "SystemBrightnessMax", family: str = "android", **changes: JsonValue
+) -> dict[str, JsonValue]:
+    record: dict[str, JsonValue] = {
         "commit": PINNED_COMMIT,
         "family": family,
         "task": task,
@@ -61,7 +64,9 @@ def _data_dir(tmp_path: Path, listing: object, *, split: str = "All") -> Path:
     return data
 
 
-def _loader(tmp_path: Path, *records: dict, subset: str = "All") -> AndroidWorldTaskLoader:
+def _loader(
+    tmp_path: Path, *records: dict[str, JsonValue], subset: str = "All"
+) -> AndroidWorldTaskLoader:
     data = _data_dir(tmp_path, {"format": TASK_LIST_FORMAT, "tasks": list(records)}, split=subset)
     return AndroidWorldTaskLoader(data_dir=str(data), subset=subset)
 
@@ -100,6 +105,31 @@ def test_information_retrieval_tasks_are_left_out_with_the_reason(tmp_path: Path
             "oracle yet"
         )
     }
+
+
+def test_tasks_the_service_cannot_build_again_are_left_out_with_the_oracles_reason(
+    tmp_path: Path,
+) -> None:
+    loader = _loader(tmp_path, _record(), _record("MarkorCreateFolder"))
+
+    assert loader.task_ids() == ["SystemBrightnessMax/42/0"]
+    assert loader.skipped["MarkorCreateFolder/42/0"] == UNREPRODUCIBLE["MarkorCreateFolder"]
+
+
+def test_skipped_tasks_are_counted_in_one_log_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO", logger="spectragent.core.data_loader.task.androidworld")
+    _loader(
+        tmp_path,
+        _record(),
+        _record("SimpleCalendarLocationOfEvent", "information_retrieval"),
+        _record("MarkorCreateFolder"),
+    )
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "androidworld: left out 2 of the 3 listed tasks; the reasons are in the loader's skipped"
+    ]
 
 
 def test_a_list_with_nothing_to_run_is_refused_naming_why(tmp_path: Path) -> None:

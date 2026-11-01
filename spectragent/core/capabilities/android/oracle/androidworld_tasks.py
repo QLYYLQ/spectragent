@@ -21,6 +21,8 @@ reads a list without it.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -29,6 +31,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 TASK_LIST_FORMAT = "androidworld-tasks-1"
 #: The family whose tasks are scored on the agent's answer.
 INFORMATION_RETRIEVAL = "information_retrieval"
+#: Tasks of the pinned commit that the service cannot build again from their
+#: address, so it never builds the listed one: task key → why. The loader
+#: leaves them out and the oracle refuses them, both with these words.
+UNREPRODUCIBLE: Mapping[str, str] = MappingProxyType(
+    {
+        "MarkorCreateFolder": (
+            "it names its folder after the host's clock when the service builds it, so the "
+            "service never builds the listed task"
+        ),
+    }
+)
 
 
 def instance_seed(suite_seed: int, task: str, index: int) -> int:
@@ -64,7 +77,7 @@ class AndroidWorldTask(BaseModel):
             (``/reset?go_home=``); MiniWoB tasks start in their app.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     commit: str
     family: str
@@ -92,7 +105,7 @@ class AndroidWorldTask(BaseModel):
 class AndroidWorldTaskList(BaseModel):
     """A task list file: its format, and its tasks in order."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     format: Literal["androidworld-tasks-1"]
     tasks: list[AndroidWorldTask]

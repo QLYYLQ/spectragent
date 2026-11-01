@@ -3,7 +3,7 @@
 An oracle prepares each task of its benchmark on the booted device, reads the
 task's score from the live device at the Runtime's scoring point (§4.2) and
 ends the task at teardown. ``AndroidCapability`` holds one as its
-``task_oracle`` receptor (``none`` by default), implements ``TaskOracle`` by
+``task_oracle`` receptor (``none`` selects no benchmark), implements ``TaskOracle`` by
 delegating ``read_score`` to it, and passes it the task's data unread: an
 Android task's ``oracle_task`` (``AndroidSetup``) is the oracle's own.
 

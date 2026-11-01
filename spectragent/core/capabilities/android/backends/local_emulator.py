@@ -75,8 +75,11 @@ on macOS, emulator 37.2.13, API 33 Google APIs, 2026-11-01):
   restarting on its own (``FAIL closed``, or no answer), so it is sent again
   while the shell is not root.
 - ``guest_wifi``: an IPv4 default route over ``wlan0`` in any routing table
-  (``default via 10.0.2.2 dev wlan0 table 1016``), which came a few seconds
-  after the boot completed.
+  (``default via 10.0.2.2 dev wlan0 table 1016``), which came 4-7 s after the
+  boot completed. On about 2 of 21 boots it never came, and the boot fails
+  after ``boot_timeout_s`` naming the ``wlan0`` routes the guest had; how to
+  recover such a boot is not decided.
+- ``fresh``: ``read_only``; the provider refuses this need when it is false.
 
 Teardown stops the emulator (SIGTERM; it exited within 1.5 s, measured) and the
 rest of its group, its ``netsimd`` included, then the adb server, then removes
@@ -115,6 +118,7 @@ from spectragent.core.capabilities.android.backends.base import (
     DeviceNeeds,
     EmulatorAccess,
     EmulatorGrpc,
+    UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
 
@@ -347,7 +351,8 @@ class LocalEmulatorProvider(AndroidProviderBase):
             description=(
                 "Boot with -read-only: the AVD's disk images are not written, so every session "
                 "starts from the same device and its changes are discarded at shutdown. False "
-                "writes the session's changes into the AVD, where the next session finds them."
+                "writes the session's changes into the AVD, where the next session finds them; "
+                "a run that needs a fresh device (the androidworld task oracle) is refused then."
             )
         ),
     ] = True
@@ -372,24 +377,27 @@ class LocalEmulatorProvider(AndroidProviderBase):
 
     _runs: dict[str, _Run] = field(default_factory=dict, init=False, repr=False)
 
-    def check_needs(self, needs: DeviceNeeds) -> None:
-        """Refuse the emulator's gRPC endpoint off macOS, where its discovery file was not measured.
-
-        Raises:
-            NotImplementedError: That is what *needs* asks for.
-        """
+    def unmet_needs(self, needs: DeviceNeeds) -> list[str]:
+        """The gRPC endpoint off macOS, where the discovery file was not measured; ``fresh`` unless read-only."""
+        unmet = []
         if needs.emulator_grpc and sys.platform != "darwin":
-            raise NotImplementedError(
-                "the local emulator's gRPC endpoint needs its token from the discovery file "
-                "the emulator writes, and where it writes that file was measured on macOS only"
+            unmet.append(
+                "emulator_grpc: its token is in the discovery file the emulator writes, and "
+                "where it writes that file was measured on macOS only"
             )
+        if needs.fresh and not self.read_only:
+            unmet.append(
+                "fresh: read_only is false, so the run's changes are written into the AVD and "
+                "become the next run's start"
+            )
+        return unmet
 
     async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
         """Boot one device meeting *needs* and return where to reach it.
 
         Raises:
             FileNotFoundError: The SDK or the AVD cannot be found.
-            NotImplementedError: :meth:`check_needs` refused *needs*.
+            UnmetDeviceNeeds: :meth:`unmet_needs` named a need it cannot meet.
             RuntimeError: The adb server or the emulator exited before the
                 device was ready, or adbd refused to run as root; the message
                 carries the end of the emulator's log.
@@ -397,7 +405,12 @@ class LocalEmulatorProvider(AndroidProviderBase):
                 ``boot_timeout_s``.
         """
         needs = needs or DeviceNeeds()
-        self.check_needs(needs)
+        unmet = self.unmet_needs(needs)
+        if unmet:
+            raise UnmetDeviceNeeds(
+                f"the {self.provider_id!r} provider cannot meet what the run needs: "
+                + "; ".join(unmet)
+            )
         sdk = find_sdk(self.sdk_root, os.environ)
         avd_home = find_avd_home(self.avd_home, os.environ)
         if not (avd_home / f"{self.avd}.ini").is_file():
@@ -623,10 +636,17 @@ async def _grpc_endpoint(run: _Run, home: Path, pid: int) -> EmulatorGrpc | _Not
 
 
 async def _wifi_routed(client: AdbClient, serial: str) -> bool | _NotYet:
-    """Whether the guest's Wi-Fi has an IPv4 default route, in any routing table."""
+    """Whether the guest's Wi-Fi has an IPv4 default route, in any routing table.
+
+    When it has none yet, the ``wlan0`` routes it has are what a timeout reports.
+    """
     routes = (await client.shell(serial, "ip -4 route show table all")).stdout.decode(
         errors="replace"
     )
     if _WIFI_DEFAULT_ROUTE.search(routes):
         return True
-    return _NotYet("no routing table had a default route over wlan0")
+    wlan0 = [line.strip() for line in routes.splitlines() if " dev wlan0" in line]
+    return _NotYet(
+        "no routing table had a default route over wlan0; its wlan0 routes were "
+        + ("; ".join(wlan0[-8:]) if wlan0 else "none")
+    )

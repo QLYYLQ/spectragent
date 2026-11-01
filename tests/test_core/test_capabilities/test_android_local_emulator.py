@@ -33,6 +33,7 @@ from spectragent.core.capabilities.android.backends.base import (
     DeviceNeeds,
     EmulatorAccess,
     EmulatorGrpc,
+    UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.backends.local_emulator import (
     DISCOVERY_DIR,
@@ -69,6 +70,7 @@ with open(os.path.join(record, "adb.json"), "w") as out:
     json.dump({{"pid": os.getpid(), "home": home}}, out)
 booted = os.environ.get("FAKE_BOOT", "1").encode()
 routes = b"default dev dummy0 table 1002 proto static scope link \\n"
+routes += b"10.0.2.0/24 dev wlan0 proto kernel scope link src 10.0.2.16 \\n"
 if os.environ.get("FAKE_WIFI", "1") == "1":
     routes += b"default via 10.0.2.2 dev wlan0 table 1016 proto static \\n"
 rooted = False
@@ -113,7 +115,9 @@ asyncio.run(serve())
 #: ``FAKE_EMULATOR_MODE=crash`` prints a line and exits with code 7 once the
 #: sleep is running, instead of reporting anything. Given ``-grpc <port>``, it
 #: prints the line emulator 37.2.13 prints when its gRPC listens and writes its
-#: discovery file under ``$HOME``, with a token (``FAKE_GRPC=silent``: neither).
+#: discovery file under ``$HOME``, with a token (``FAKE_GRPC=silent``: neither;
+#: ``FAKE_GRPC=ipv6``: it listens on ``[::1]``, as it does when the port is taken
+#: on IPv4).
 FAKE_EMULATOR = f"""#!{sys.executable}
 import json, os, signal, socket, subprocess, sys
 record = os.environ["FAKE_RECORD"]
@@ -126,7 +130,8 @@ if os.environ.get("FAKE_EMULATOR_MODE") == "crash":
     sys.exit(7)
 if "-grpc" in sys.argv and os.environ.get("FAKE_GRPC") != "silent":
     port = sys.argv[sys.argv.index("-grpc") + 1]
-    print(f"INFO         | Started GRPC server at 127.0.0.1:{{port}}, security: Local, "
+    host = "[::1]" if os.environ.get("FAKE_GRPC") == "ipv6" else "127.0.0.1"
+    print(f"INFO         | Started GRPC server at {{host}}:{{port}}, security: Local, "
           "auth: +token", flush=True)
     running = os.path.join(os.environ["HOME"], "Library/Caches/TemporaryItems/avd/running")
     os.makedirs(running, exist_ok=True)
@@ -458,7 +463,10 @@ async def test_wifi_that_never_routes_fails_the_boot_in_time_and_nothing_is_left
     provider.boot_timeout_s = 1.5
 
     with pytest.raises(
-        TimeoutError, match=r"emulator-5554's Wi-Fi had no IPv4 default route after 1.5 s"
+        TimeoutError,
+        match=r"emulator-5554's Wi-Fi had no IPv4 default route after 1.5 s \(no routing table "
+        r"had a default route over wlan0; its wlan0 routes were 10\.0\.2\.0/24 dev wlan0 proto "
+        r"kernel scope link src 10\.0\.2\.16\)",
     ):
         await provider.open(DeviceNeeds(guest_wifi=True))
 
@@ -479,13 +487,43 @@ async def test_grpc_that_never_starts_fails_the_boot_in_time(
     assert gone(_recorded(record, "emulator.json")["pid"])
 
 
+@macos_only
+async def test_grpc_on_ipv6_alone_is_reached_where_the_emulator_said(
+    provider: LocalEmulatorProvider, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the port taken on IPv4 the emulator listens on [::1]; the session reports that."""
+    monkeypatch.setenv("FAKE_GRPC", "ipv6")
+
+    session = await provider.open(DeviceNeeds(emulator_grpc=True))
+    await provider.close(session)
+
+    assert session.emulator is not None and session.emulator.grpc is not None
+    assert session.emulator.grpc.host == "[::1]"
+
+
 async def test_the_grpc_endpoint_is_refused_where_its_discovery_file_was_not_measured(
     provider: LocalEmulatorProvider, record: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
 
-    with pytest.raises(NotImplementedError, match="measured on macOS only"):
+    assert provider.unmet_needs(DeviceNeeds(root=True, guest_wifi=True)) == []
+    with pytest.raises(UnmetDeviceNeeds, match="emulator_grpc: .*measured on macOS only"):
         await provider.open(DeviceNeeds(emulator_grpc=True))
+    assert list(record.iterdir()) == [], "nothing was started"
+
+
+async def test_a_fresh_device_is_refused_unless_the_avd_boots_read_only(
+    provider: LocalEmulatorProvider, record: Path
+) -> None:
+    assert provider.unmet_needs(DeviceNeeds(fresh=True)) == [], "read-only by default"
+    provider.read_only = False
+
+    with pytest.raises(
+        UnmetDeviceNeeds,
+        match="'local_emulator' provider cannot meet what the run needs: fresh: read_only is "
+        "false, so the run's changes are written into the AVD and become the next run's start",
+    ):
+        await provider.open(DeviceNeeds(fresh=True))
     assert list(record.iterdir()) == [], "nothing was started"
 
 

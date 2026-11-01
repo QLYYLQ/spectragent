@@ -7,7 +7,8 @@ against the run's emulator, while observations and actions go through
 Spectragent's own bridge. One task is one run:
 
 1. **start**, once the provider booted the device meeting :attr:`device_needs`
-   (the emulator's gRPC behind a token, adbd as root, the guest's Wi-Fi up):
+   (the emulator's gRPC behind a token, adbd as root, the guest's Wi-Fi up,
+   and a fresh device whose changes are thrown away with the run):
    the launcher (``androidworld_service/serve.py``) runs the service under
    AndroidWorld's interpreter, in a process group of its own tied to this
    process (``processes.py``), on a free loopback port, with a whitelisted
@@ -17,9 +18,10 @@ Spectragent's own bridge. One task is one run:
 2. **read_score**, at the Runtime's scoring point: ``/task/score``, within
    the run's ``oracle_timeout``. HTTP 500, a broken answer or a dead service
    raise :class:`AndroidWorldError`, so the environment records "not scored".
-3. **stop**, at teardown: ``/task/tear_down`` (best effort; a failure is
-   logged), then the service's process group: SIGTERM, then SIGKILL for the
-   whole group, its ``adb logcat`` child included.
+3. **stop**, at teardown: ``/task/tear_down`` (best effort, since the device's
+   changes are thrown away with the run; a failure is logged), then the
+   service's process group: SIGTERM, then SIGKILL for the whole group, its
+   ``adb logcat`` child included.
 
 The service handles one request at a time and cannot cancel one in progress:
 a score call cut off by the run's limit goes on, and the tear-down waits
@@ -27,9 +29,11 @@ behind it until its own limit. Every service is the run's own, so nothing
 waits on it afterwards.
 
 The service makes the task again from its address, so a task whose parameters
-read the host's clock cannot be the listed one: ``MarkorCreateFolder`` names
-its folder after the moment it is made (the only one of the pinned commit's
-116 tasks that reads the clock), and the goal check refuses it.
+it cannot rebuild cannot be the listed one: ``MarkorCreateFolder`` names its
+folder after the host's clock when it is made (the only one of the pinned
+commit's 116 tasks that reads the clock). Such tasks are named in
+``UNREPRODUCIBLE``: the loader leaves them out and :meth:`check_setup` refuses
+them, so they never reach a booted device.
 
 Timings measured on the spike (Apple M1 Pro, load 6-14, 2026-11-01): start
 17-32 s, initialize 0.6-8 s, reset 0.1-1.2 s (22-27 s when AndroidWorld
@@ -66,6 +70,7 @@ from spectragent.core.capabilities.android.oracle._registrar import (
 )
 from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     INFORMATION_RETRIEVAL,
+    UNREPRODUCIBLE,
     AndroidWorldTask,
 )
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
@@ -423,7 +428,10 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
         # The service drives the emulator over its gRPC, restarts adbd as root
         # when it attaches (which would drop the device under the bridge), and
         # its accessibility forwarder reaches the host over the guest's Wi-Fi.
-        return DeviceNeeds(emulator_grpc=True, root=True, guest_wifi=True)
+        # It re-takes each app's snapshot from the device it starts on, and
+        # tasks restore their apps from those: a run's changes kept in the AVD
+        # would become every later run's start.
+        return DeviceNeeds(emulator_grpc=True, root=True, guest_wifi=True, fresh=True)
 
     def check_setup(self, task: OracleTask | None) -> None:
         problems = self.installation.problems()
@@ -470,8 +478,9 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             if goal != task.goal:
                 raise AndroidWorldError(
                     f"AndroidWorld built {task.task} #{task.index} (suite seed {task.suite_seed}) with "
-                    f"the goal {goal!r}, and the task list records {task.goal!r}: the list was made "
-                    f"with other code or another seed"
+                    f"the goal {goal!r}, and the task list records {task.goal!r}: either its "
+                    f"parameters cannot be rebuilt from its address, or the checkout or its "
+                    f"dependencies differ from those the list was made with"
                 )
         await service.call("POST", "/task/initialize", address, timeout_s=self.call_timeout_s)
         self._initialized = True
@@ -491,12 +500,10 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
         answer = await service.call(
             "GET", "/task/score", {"task_type": task.task, "task_idx": task.index}, timeout_s=None
         )
+        # Some tasks answer a bool (RetroPlaylistDuration returns False for a
+        # wrongly named playlist); AndroidWorld's own runner counts it as 0 or 1.
         score = answer.get("score")
-        if (
-            isinstance(score, bool)
-            or not isinstance(score, int | float)
-            or not math.isfinite(score)
-        ):
+        if not isinstance(score, int | float) or not math.isfinite(score):
             raise AndroidWorldError(f"GET /task/score answered no finite score: {answer!r}")
         provenance = {
             "family": task.family,
@@ -550,8 +557,9 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
 
         Raises:
             AndroidWorldSetupError: There is none, it is no AndroidWorld task,
-                it comes from another commit, or it is scored on the agent's
-                answer, which does not reach the oracle yet.
+                it comes from another commit, it is scored on the agent's
+                answer, which does not reach the oracle yet, or the service
+                cannot build it again from its address.
         """
         if task is None:
             raise AndroidWorldSetupError(
@@ -574,4 +582,6 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
                 f"{parsed.task} is an information-retrieval task, scored on the agent's answer, "
                 f"and the answer does not reach the oracle yet"
             )
+        if parsed.task in UNREPRODUCIBLE:
+            raise AndroidWorldSetupError(f"{parsed.task} cannot run: {UNREPRODUCIBLE[parsed.task]}")
         return parsed

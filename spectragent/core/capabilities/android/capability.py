@@ -23,9 +23,9 @@ with it, and it drops the capture it came after: whatever reads next sees the
 device after the action. ``android.wait`` touches nothing and does not hold
 the queue.
 
-**The task oracle** (``oracle/``, the ``task_oracle`` receptor, ``none`` by
-default) prepares, scores and ends a benchmark's task on the device. The
-capability hands the provider what the oracle needs of the device
+**The task oracle** (``oracle/``, the ``task_oracle`` receptor; ``none``
+selects no benchmark) prepares, scores and ends a benchmark's task on the
+device. The capability hands the provider what the oracle needs of the device
 (``device_needs``), passes it the task's ``oracle_task`` unread, starts it once
 the device is up, stops it first at teardown, and implements ``TaskOracle`` and
 ``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``").
@@ -50,6 +50,7 @@ from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.backends.base import (
     AndroidProviderSession,
     BaseAndroidProvider,
+    UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.bridge import DeviceBridge
 from spectragent.core.capabilities.android.observations import (
@@ -123,9 +124,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         # registry: every action offered; YAML narrows it, never widens it.
         "actions": ("action", list(ACTION_KEYS)),
         "backend": "android_provider",
-        # Omitted in YAML: ``none``. The strategy is the switch: what the
-        # device must offer comes from it, never from a provider setting.
-        "task_oracle": {"registry": "android_task_oracle", "default": "none"},
+        # The strategy is the switch: what the device must offer comes from
+        # it, never from a provider setting.
+        "task_oracle": ("android_task_oracle", ["none", "androidworld"]),
     }
 
     backend: BaseAndroidProvider  # type: ignore[misc]
@@ -313,13 +314,28 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
     ) -> None:
-        """Refuse now what setup would: the oracle's installation and task, the device it needs."""
-        self.task_oracle.check_setup(context.get("oracle_task"))
+        """Refuse now what setup would: a device the provider cannot give the oracle, then its task.
+
+        Raises:
+            UnmetDeviceNeeds: The provider cannot meet what the oracle needs
+                of the device; names the oracle, the needs and the provider.
+            Exception: The oracle's own refusal of its installation or task.
+        """
+        oracle = self.task_oracle
         try:
             backend = self.backend
         except AttributeError:  # setup refuses a capability without a backend itself
-            return
-        backend.check_needs(self.task_oracle.device_needs)
+            backend = None
+        if backend is not None:
+            needs = oracle.device_needs
+            unmet = backend.unmet_needs(needs)
+            if unmet:
+                raise UnmetDeviceNeeds(
+                    f"task_oracle {oracle.oracle_id!r} needs {', '.join(needs.named())} of the "
+                    f"device, and the {backend.provider_id!r} provider cannot meet: "
+                    + "; ".join(unmet)
+                )
+        oracle.check_setup(context.get("oracle_task"))
 
     async def setup(
         self, *, negotiation: Any = None, oracle_task: Mapping[str, JsonValue] | None = None
@@ -331,8 +347,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """
         await super().setup(negotiation=negotiation)
         oracle = self.task_oracle
-        oracle.check_setup(oracle_task)
         backend = self._backend()
+        self.check_setup({"oracle_task": oracle_task})
         session = await backend.open(oracle.device_needs)
         self._session = session
         try:

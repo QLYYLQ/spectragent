@@ -15,10 +15,15 @@ a file that cannot be read, is not JSON, declares another format, misses or
 adds a field, or lists one task twice raises ``BenchmarkDataError`` and the
 loader publishes nothing.
 
-**Left out, with the reason in** :attr:`AndroidWorldTaskLoader.skipped`:
-information-retrieval tasks (family ``information_retrieval``, 25 of the 116).
-They are scored on the agent's answer, which travels in ``loop.done`` and never
-reaches the capability; how it should reach the oracle is not decided.
+**Left out, with the reason in** :attr:`AndroidWorldTaskLoader.skipped`, and
+counted in one log line:
+
+- information-retrieval tasks (family ``information_retrieval``, 25 of the
+  116). They are scored on the agent's answer, which travels in ``loop.done``
+  and never reaches the capability; how it should reach the oracle is not
+  decided;
+- the tasks AndroidWorld's service cannot build again from their address
+  (``UNREPRODUCIBLE``, with its reason), which the oracle would refuse.
 
 AndroidWorld's own runner gives a task ``int(10 * complexity)`` steps; the
 framework has no per-task step limit (the Loop's ``max_steps`` holds for every
@@ -68,6 +73,7 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
     def _load(self) -> None:
         from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
             INFORMATION_RETRIEVAL,
+            UNREPRODUCIBLE,
             AndroidWorldTaskList,
         )
 
@@ -97,7 +103,9 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
                     "information retrieval: scored on the agent's answer, which does not reach "
                     "the task oracle yet"
                 )
-                logger.info("androidworld: leaving out %s: %s", task_id, skipped[task_id])
+                continue
+            if task.task in UNREPRODUCIBLE:
+                skipped[task_id] = UNREPRODUCIBLE[task.task]
                 continue
             tasks[task_id] = TaskDefinition.model_validate(
                 {
@@ -117,6 +125,13 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             raise BenchmarkDataError(
                 f"{path} has no task this loader runs: "
                 + ("; ".join(f"{key}: {why}" for key, why in skipped.items()) or "it lists none")
+            )
+        if skipped:
+            logger.info(
+                "androidworld: left out %d of the %d listed tasks; the reasons are in the "
+                "loader's skipped",
+                len(skipped),
+                len(listing.tasks),
             )
         self._tasks.update(tasks)
         self._skipped.update(skipped)

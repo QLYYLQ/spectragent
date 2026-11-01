@@ -151,8 +151,8 @@ class FakeServerProvider:
     def provider_id(self) -> str:
         return "fake_server"
 
-    def check_needs(self, needs: DeviceNeeds) -> None:
-        return None
+    def unmet_needs(self, needs: DeviceNeeds) -> list[str]:
+        return []
 
     async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
         self.needs.append(needs or DeviceNeeds())

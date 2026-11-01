@@ -164,6 +164,7 @@ async def booted() -> AsyncIterator[Booted]:
                     "provider_id": "local_emulator",
                     "avd": os.environ[AVD_VARIABLE],
                 },
+                "task_oracle": {"oracle_id": "none"},
             }
         ]
     }

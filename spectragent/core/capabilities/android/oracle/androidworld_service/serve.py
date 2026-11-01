@@ -37,9 +37,16 @@ whole environment when its log level is INFO, which this file never sets.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
 import sys
 from pathlib import Path
+
+#: The android_env these patches replace private names of: the version the
+#: pinned AndroidWorld's requirements.txt pins. In another one a renamed name
+#: would be added, not patched (a missed _restart_server would run adb
+#: kill-server on the run's own server), so the launcher refuses to start.
+ANDROID_ENV = "1.2.3"
 
 
 def _arguments() -> argparse.Namespace:
@@ -56,6 +63,13 @@ def _arguments() -> argparse.Namespace:
 
 
 def _patch(args: argparse.Namespace) -> None:
+    found = importlib.metadata.version("android_env")
+    if found != ANDROID_ENV:
+        raise SystemExit(
+            f"serve.py patches android_env {ANDROID_ENV}, the version the pinned AndroidWorld "
+            f"requires, and this venv has {found}: reinstall it from the checkout's "
+            f"requirements.txt"
+        )
     import grpc
     from absl import logging
     from android_env.components import adb_controller, config_classes

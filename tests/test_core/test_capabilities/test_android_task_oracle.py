@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 import pytest
+from pydantic import JsonValue
 
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
@@ -41,7 +41,7 @@ from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     instance_seed,
 )
 from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
-from spectragent.schemas.oracle_score import OracleReading
+from spectragent.schemas.oracle_score import OracleReading, OracleScore
 from tests._helpers.assembly import make_env
 from tests._helpers.fake_androidworld import fake_installation, requests, service, write_behaviour
 from tests._helpers.process_checks import gone, groups, soon
@@ -49,10 +49,11 @@ from tests._helpers.process_checks import gone, groups, soon
 ADB_SERVER_PORT = 40123
 
 
-def _task(**changes: Any) -> dict[str, Any]:
+def _task(**changes: JsonValue) -> dict[str, JsonValue]:
     """An AndroidWorld task record, as the task list holds it."""
     task, index, suite_seed = changes.get("task", "SystemBrightnessMax"), 0, 42
-    record: dict[str, Any] = {
+    assert isinstance(task, str)
+    record: dict[str, JsonValue] = {
         "commit": PINNED_COMMIT,
         "family": "android",
         "task": task,
@@ -100,7 +101,12 @@ def _oracle(root: Path) -> AndroidWorldOracle:
 
 
 def _calls(root: Path) -> list[tuple[str, str, dict[str, str]]]:
-    return [(entry["method"], entry["path"], entry["query"]) for entry in requests(root)]
+    calls = []
+    for entry in requests(root):
+        method, path, query = entry["method"], entry["path"], entry["query"]
+        assert isinstance(method, str) and isinstance(path, str) and isinstance(query, dict)
+        calls.append((method, path, {name: str(value) for name, value in query.items()}))
+    return calls
 
 
 async def _service_is_gone(root: Path) -> bool:
@@ -161,7 +167,8 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
     finally:
         await oracle.stop()
 
-    argv = started["argv"]
+    argv, environment = started["argv"], started["env"]
+    assert isinstance(argv, list) and isinstance(environment, dict)
     assert argv[:3] == ["-I", "-u", str(LAUNCHER)], "isolated, unbuffered, the launcher"
     pairs = dict(zip(argv[3::2], argv[4::2], strict=True))
     assert pairs == {
@@ -174,7 +181,7 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
         "--grpc-token-file": "/run/pid_1.ini",
         "--forwarder-apk": str(root / "cache" / "a11y" / FORWARDER_APK),
     }
-    env = {name: value for name, value in started["env"].items() if name not in _PYTHON_ADDS}
+    env = {name: value for name, value in environment.items() if name not in _PYTHON_ADDS}
     assert env == {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "en_US.UTF-8",
@@ -184,14 +191,14 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
         "NO_PROXY": "localhost,127.0.0.1,::1",
         "no_proxy": "localhost,127.0.0.1,::1",
     }
-    assert not Path(env["TMPDIR"]).exists(), "its working directory is removed with it"
+    assert not Path(str(env["TMPDIR"])).exists(), "its working directory is removed with it"
 
 
 #: What the shell and the interpreter add to the environment the oracle hands over.
 _PYTHON_ADDS = frozenset({"PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING", "OLDPWD"})
 
 
-async def test_a_minwob_task_reads_its_goal_after_initializing_and_records_it(
+async def test_a_miniwob_task_reads_its_goal_after_initializing_and_records_it(
     root: Path, tmp_path: Path
 ) -> None:
     goal = "Follow the instructions shown on the top of the screen: Click on the Cancel button."
@@ -224,7 +231,9 @@ async def test_a_service_that_builds_another_task_is_refused_and_stopped(
     oracle = _oracle(root)
 
     with pytest.raises(
-        AndroidWorldError, match="the task list records 'Turn brightness to the max"
+        AndroidWorldError,
+        match="the task list records 'Turn brightness to the max value.': either its parameters "
+        "cannot be rebuilt from its address, or the checkout or its dependencies differ",
     ):
         await oracle.start(_device(tmp_path), _task())
     await oracle.stop()  # what the capability's teardown does after a failed setup
@@ -279,7 +288,7 @@ async def test_a_call_that_preparing_the_task_needs_is_bounded(root: Path, tmp_p
     ],
 )
 async def test_a_score_the_service_cannot_give_is_an_ordinary_error(
-    root: Path, tmp_path: Path, rule: dict[str, Any], message: str
+    root: Path, tmp_path: Path, rule: dict[str, JsonValue], message: str
 ) -> None:
     oracle = _oracle(root)
     await oracle.start(_device(tmp_path), _task())
@@ -290,6 +299,22 @@ async def test_a_score_the_service_cannot_give_is_an_ordinary_error(
     finally:
         await oracle.stop()
     assert await _service_is_gone(root)
+
+
+@pytest.mark.parametrize(("answered", "score"), [(False, 0.0), (True, 1.0)])
+async def test_a_bool_score_is_0_or_1_as_androidworlds_runner_counts_it(
+    root: Path, tmp_path: Path, answered: bool, score: float
+) -> None:
+    """RetroPlaylistDuration answers False for a wrongly named playlist: a failure, not "not scored"."""
+    oracle = _oracle(root)
+    await oracle.start(_device(tmp_path), _task())
+    try:
+        write_behaviour(root, {"/task/score": {"json": {"score": answered}}})
+        reading = await oracle.read_score()
+    finally:
+        await oracle.stop()
+
+    assert reading is not None and reading.score == score
 
 
 async def test_a_dead_service_is_an_ordinary_error_that_says_so(root: Path, tmp_path: Path) -> None:
@@ -391,7 +416,7 @@ async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path
 # ── at the scoring point, through the environment ────────────────────
 
 
-async def _environment_scores(oracle: AndroidWorldOracle, timeout_s: float) -> list[Any]:
+async def _environment_scores(oracle: AndroidWorldOracle, timeout_s: float) -> list[OracleScore]:
     capability = AndroidCapability()
     capability.task_oracle = oracle
     env = make_env(AndroidEnvironment, {"android": capability})
@@ -429,7 +454,7 @@ async def test_with_no_oracle_the_environment_records_nothing() -> None:
 
 def test_what_the_androidworld_oracle_needs_of_the_device() -> None:
     assert AndroidWorldOracle(root="/aw").device_needs == DeviceNeeds(
-        emulator_grpc=True, root=True, guest_wifi=True
+        emulator_grpc=True, root=True, guest_wifi=True, fresh=True
     )
 
 
@@ -473,10 +498,14 @@ def test_an_installation_the_service_cannot_start_from_is_refused(
         (_task(commit="f" * 40), "the task list was made with AndroidWorld ffff"),
         (_task(family="information_retrieval"), "an information-retrieval task, scored on"),
         (_task(params={"seed": 1}), "params.seed is 1, and the instance AndroidWorld makes"),
+        (
+            _task(task="MarkorCreateFolder"),
+            "MarkorCreateFolder cannot run: it names its folder after the host's clock",
+        ),
     ],
 )
 def test_a_task_the_oracle_cannot_start_is_refused(
-    root: Path, task: dict[str, Any] | None, message: str
+    root: Path, task: dict[str, JsonValue] | None, message: str
 ) -> None:
     with pytest.raises(AndroidWorldSetupError, match=message):
         _oracle(root).check_setup(task)
