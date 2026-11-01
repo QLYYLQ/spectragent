@@ -365,12 +365,9 @@ class TestTheTaskLoaderSurface:
         )
         assert (loader.require_archive, loader.on_unbranchable) == ((), "skip")
 
-    def test_a_block_that_leaves_the_selector_out_selects_every_step(
-        self, composer: ConfigComposer
-    ) -> None:
-        from spectragent.core.data_loader.task.step_selector import AllSteps
-
-        assert isinstance(composer.compose(_sweep()).single("task_loader").step_selector, AllSteps)
+    def test_the_selector_is_required_in_the_block(self, composer: ConfigComposer) -> None:
+        with pytest.raises(ValidationError, match="step_selector"):
+            composer.top_level_type.model_validate(_sweep())
 
     @pytest.mark.parametrize(
         "loader",

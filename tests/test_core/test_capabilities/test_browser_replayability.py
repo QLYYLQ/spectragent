@@ -147,7 +147,11 @@ class TestRegistryAndGeneratedConfig:
         from spectragent.generated._composed import BrowserCapabilityConfig
 
         omitted = BrowserCapabilityConfig.model_validate(
-            {"backend": {"provider_id": "local_chrome"}}
+            {
+                "backend": {"provider_id": "local_chrome"},
+                "dom_cleaner": {"cleaner_type": "browser_use"},
+                "dom_serializer": {"serializer_type": "text"},
+            }
         )
         assert omitted.replayability.replayability_id == "none"
 

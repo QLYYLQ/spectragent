@@ -546,11 +546,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 "browser.wait",
             ],
         ),
-        # The six strategy receptors below each name their ``default``: the
+        # ``mouse_trajectory``, ``typing_rhythm``, ``replayability`` and
+        # ``network_source`` name their ``default``: the off or neutral
         # strategy ``__init__`` installs for a hand-built capability. A
         # capability block may leave one out, and leaving it out means that
-        # default, recorded in the resolved config like a written block
-        # (docs/architecture_design.md §4.2.1).
+        # default, recorded in the resolved config like a written block.
+        # ``dom_cleaner`` and ``dom_serializer`` decide what the agent sees, so
+        # every block names them (docs/architecture_design.md §4.2.1).
         #
         # ``mouse_trajectory`` is a receptor, not a scalar: the chosen
         # strategy arrives as a *constructed instance* carrying its own
@@ -594,11 +596,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ``BrowserUseDom_CleanerConfig`` existed and nothing could reach it.
         # ``skyvern_hit_test`` (M32): Skyvern plus an in-page hit test per
         # indexed element, recorded as ``hit_test``; ``covered_elements``.
-        "dom_cleaner": {
-            "registry": "dom_cleaner",
-            "keys": ["browser_use", "skyvern", "skyvern_hit_test"],
-            "default": "browser_use",
-        },
+        "dom_cleaner": ("dom_cleaner", ["browser_use", "skyvern", "skyvern_hit_test"]),
         # ``dom_serializer`` is the third instance of that identical
         # defect and closes it: the serializer decides what the *prompt*
         # says the page is, and ``TextSerializer.max_text_length`` /
@@ -608,11 +606,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ``DOMWatchdog`` did ``DOMSerializerRegistrar.get(name)()``.
         # ``tests/.../test_receptor_hygiene.py`` is the structural guard
         # against a fourth.
-        "dom_serializer": {
-            "registry": "dom_serializer",
-            "keys": ["text", "html"],
-            "default": "text",
-        },
+        "dom_serializer": ("dom_serializer", ["text", "html"]),
         # ``replayability`` (§4.14) decides how far a run is pinned for replay:
         # ``none`` (the default, the no-op) or ``pinned`` (seeded randomness, a
         # stepped clock from T0, fixed time zone / locale / user agent / DPR,
@@ -1197,9 +1191,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ``default``, which must name this one. ``ConfigComposer`` setattrs
         # the configured instance over this, shadowing the descriptor.
         self.mouse_trajectory = InstantTrajectory()
-        # Same contract for the keyboard's rhythm and the other strategy
-        # receptors: a hand-built capability gets the default strategy with
-        # its defaults, the strategy the wiring's ``default`` names.
+        # The other strategy receptors: a hand-built capability gets the
+        # default strategy with its defaults. Where the wiring names a
+        # ``default`` (all but the DOM cleaner and serializer, which YAML must
+        # name), it names this same strategy.
         self.typing_rhythm = InstantRhythm()
         # Via the strategy packages' own ``default_*`` factories, not by
         # naming the class here: ``DOMWatchdog`` needs the same default for

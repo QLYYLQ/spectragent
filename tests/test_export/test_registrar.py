@@ -195,18 +195,12 @@ def test_a_wrong_knob_is_refused(
         _compose(composer, entry)
 
 
-@pytest.mark.parametrize("missing", ["student_run_config", "output_dir"])
+@pytest.mark.parametrize("missing", ["student_run_config", "output_dir", "translator"])
 def test_a_required_field_is_required(composer: ConfigComposer, missing: str) -> None:
     entry = copy.deepcopy(ENTRY)
     del entry[missing]
     with pytest.raises(ValidationError):
         _compose(composer, entry)
-
-
-def test_a_block_that_leaves_the_translator_out_gets_identity(composer: ConfigComposer) -> None:
-    entry = copy.deepcopy(ENTRY)
-    del entry["translator"]
-    assert isinstance(_compose(composer, entry).single("exporter").translator, IdentityTranslator)
 
 
 @pytest.mark.parametrize("glob", ["/abs/*", "~/runs/*", "../elsewhere/*", ""])

@@ -1,17 +1,21 @@
 """A strategy block left out of YAML is its owner's Python default (``docs/architecture_design.md`` §4.2.1).
 
-A receptor that holds exactly one strategy, and whose owner installs a default
-strategy when built by hand, names that strategy as its wiring's ``default``.
-A block that leaves the receptor out composes that strategy, and the resolved
-configuration records it as if the block had been written. Pinned against the
-partial build every run composes with (``ConfigComposer.for_config``):
+A receptor that holds exactly one strategy, whose owner installs a default
+strategy when built by hand, and whose default is off, neutral or the only
+option, names that strategy as its wiring's ``default``. A block that leaves
+the receptor out composes that strategy, and the resolved configuration
+records it as if the block had been written. Pinned against the partial build
+every run composes with (``ConfigComposer.for_config``):
 
 - left out or written as the default, a block gives the same resolved config,
-  recorded and full, and the same configuration digest, and ``config explain``
-  shows the default;
+  recorded and full; the full dump is exactly what ``config_hash`` hashes
+  (``AgentRuntime`` hands ``top_level_cfg`` to ``TraceWriter.on_run_start``,
+  which digests ``redact_config(cfg, record_secrets=True)``), and
+  ``config explain`` shows the default;
 - the strategy composed for a left-out block is the one the owner holds when
   built by hand;
-- the table below is every such default the catalog declares;
+- the table below is every such default the catalog declares, and the
+  strategies that choose behaviour stay required;
 - a written block is still checked: an unknown strategy, a misspelled key, a
   stray knob, ``null``.
 """
@@ -32,11 +36,9 @@ from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.replay.archive_source import ArchiveNetworkSource
 from spectragent.core.composer import ComposedRun, ConfigComposer
-from spectragent.core.data_loader.task.trace_branches import TraceBranchesTaskLoader
+from spectragent.core.configuration_catalog import ConfigurationCatalog
 from spectragent.core.loops.branch import BranchLoop
-from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.redaction import redact_config
-from spectragent.export import OpenAIMessagesExporter
 
 #: A configuration, or one block of it.
 Block = dict[str, JsonValue]
@@ -49,23 +51,34 @@ OMITTABLE: dict[tuple[str, str], dict[str, Block]] = {
     ("capability", "browser"): {
         "mouse_trajectory": {"trajectory_type": "instant"},
         "typing_rhythm": {"rhythm_type": "instant"},
-        "dom_cleaner": {"cleaner_type": "browser_use"},
-        "dom_serializer": {"serializer_type": "text"},
         "replayability": {"replayability_id": "none"},
         "network_source": {"source_id": "live"},
     },
     ("network_source", "archive"): {"miss_policy": {"miss_policy_id": "strict"}},
     ("capability", "android"): {"task_oracle": {"oracle_id": "none"}},
-    ("task_loader", "trace_branches"): {"step_selector": {"selector_id": "all"}},
     ("agent_loop", "branch"): {"restorer": {"restorer_id": "prefix_replay"}},
-    ("exporter", "openai_messages"): {"translator": {"translator_id": "identity"}},
+}
+
+#: Strategy receptors that stay required although their owner has a Python
+#: default, because the default chooses behaviour: what the agent sees, how many
+#: branch runs a sweep makes, what a student is trained on.
+REQUIRED: dict[tuple[str, str], tuple[str, ...]] = {
+    ("capability", "browser"): ("dom_cleaner", "dom_serializer"),
+    ("task_loader", "trace_branches"): ("step_selector",),
+    ("exporter", "openai_messages"): ("translator",),
 }
 
 
 def _browser(written: Written) -> Block:
     return {
         "capability": [
-            {"capability_id": "browser", "backend": {"provider_id": "local_chrome"}, **written}
+            {
+                "capability_id": "browser",
+                "backend": {"provider_id": "local_chrome"},
+                "dom_cleaner": {"cleaner_type": "browser_use"},
+                "dom_serializer": {"serializer_type": "text"},
+                **written,
+            }
         ]
     }
 
@@ -77,10 +90,6 @@ def _archive(written: Written) -> Block:
 def _android(written: Written) -> Block:
     backend: Block = {"provider_id": "local_emulator", "avd": "AndroidWorldAvd"}
     return {"capability": [{"capability_id": "android", "backend": backend, **written}]}
-
-
-def _exporter() -> OpenAIMessagesExporter:
-    return OpenAIMessagesExporter(student_run_config="student.yaml", output_dir="out")
 
 
 @dataclass(frozen=True)
@@ -103,40 +112,20 @@ OWNERS: dict[tuple[str, str], _Owner] = {
     ("capability", "android"): _Owner(
         _android, lambda run: run.single("capability"), AndroidCapability
     ),
-    ("task_loader", "trace_branches"): _Owner(
-        lambda written: {"task_loader": [{"benchmark_name": "trace_branches", **written}]},
-        lambda run: run.single("task_loader"),
-        TraceBranchesTaskLoader,
-    ),
     ("agent_loop", "branch"): _Owner(
         lambda written: {"agent_loop": [{"loop_id": "branch", **written}]},
         lambda run: run.single("agent_loop"),
         BranchLoop,
-    ),
-    ("exporter", "openai_messages"): _Owner(
-        lambda written: {
-            "exporter": [
-                {
-                    "exporter_id": "openai_messages",
-                    "student_run_config": "student.yaml",
-                    "output_dir": "out",
-                    **written,
-                }
-            ]
-        },
-        lambda run: run.single("exporter"),
-        _exporter,
     ),
 }
 
 CASES = [(owner, receptor) for owner, receptors in OMITTABLE.items() for receptor in receptors]
 
 
-def _digest(run: ComposedRun) -> str:
-    """The run's ``config_hash``, taken as ``TraceWriter`` takes it."""
-    full = redact_config(run.top_level_cfg, record_secrets=True)
-    recorded = TraceConfig(resolved=redact_config(run.top_level_cfg))
-    return recorded.configuration_digest(resolved=full)
+@pytest.fixture(scope="module")
+def catalog() -> ConfigurationCatalog:
+    """The whole catalog, every package imported."""
+    return ConfigComposer.for_every_package().catalog
 
 
 @pytest.mark.parametrize(
@@ -151,15 +140,16 @@ def test_a_block_left_out_is_recorded_as_its_default(owner: tuple[str, str], rec
     assert redact_config(runs[0].top_level_cfg, record_secrets=True) == redact_config(
         runs[1].top_level_cfg, record_secrets=True
     )
-    assert _digest(runs[0]) == _digest(runs[1])
     # The strategy composed for the left-out block is the one a hand-built owner holds.
     held = getattr(shape.composed(runs[0]), receptor)
     assert type(held) is type(getattr(shape.built(), receptor))
 
 
-def test_the_table_is_every_strategy_default_the_catalog_declares() -> None:
+def test_the_table_is_every_strategy_default_the_catalog_declares(
+    catalog: ConfigurationCatalog,
+) -> None:
     declared: dict[tuple[str, str], dict[str, str]] = {}
-    for layer, entries in ConfigComposer.for_every_package().catalog.components.items():
+    for layer, entries in catalog.components.items():
         for key, definition in entries.items():
             defaults = {
                 name: entry.default_key
@@ -175,6 +165,16 @@ def test_the_table_is_every_strategy_default_the_catalog_declares() -> None:
     assert declared == tabled
 
 
+def test_a_strategy_that_chooses_behaviour_stays_required(catalog: ConfigurationCatalog) -> None:
+    optional = [
+        f"{layer}/{key}.{name}"
+        for (layer, key), names in REQUIRED.items()
+        for name in names
+        if not catalog.components[layer][key].config_model.model_fields[name].is_required()
+    ]
+    assert optional == []
+
+
 @pytest.mark.parametrize(
     ("raw", "error"),
     [
@@ -184,6 +184,8 @@ def test_the_table_is_every_strategy_default_the_catalog_declares() -> None:
         (_browser({"replayabilty": {"replayability_id": "none"}}), "extra_forbidden"),
         (_browser({"replayability": None}), "model_attributes_type"),
         (_archive({"miss_policy": {"miss_policy_id": "lenient"}}), "literal_error"),
+        (_archive({"miss_policy": {"miss_policyid": "strict"}}), "extra_forbidden"),
+        (_archive({"miss_policy": None}), "model_type"),
         (_android({"task_oracle": {"oracle_id": "android_world"}}), "union_tag_invalid"),
         (_android({"task_oracle": None}), "model_attributes_type"),
     ],
@@ -193,7 +195,9 @@ def test_the_table_is_every_strategy_default_the_catalog_declares() -> None:
         "stray-knob",
         "misspelled-receptor",
         "null",
-        "nested-unknown-strategy",
+        "one-strategy-unknown-strategy",
+        "one-strategy-misspelled-discriminator",
+        "one-strategy-null",
         "android-unknown-strategy",
         "android-null",
     ],

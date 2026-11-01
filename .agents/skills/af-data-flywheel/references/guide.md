@@ -805,7 +805,7 @@ A new strategy on an existing axis:
 2. Make sure an import registers it. Each package's `__init__` imports its implementations,
    and an owner's module imports whatever its `__wiring__` lists.
 3. Add the key to the owner's `__wiring__` list when the owner restricts keys. Every
-   flywheel owner does, except `ExporterBase` (`"translator": {"registry": "action_translator", "default": "identity"}`) and
+   flywheel owner does, except `ExporterBase` (`"translator": "action_translator"`) and
    `TraceWriter` (`"archive": "archiver"`), which have no key list to update: their
    receptor takes any *registered* key, and validation still refuses an unregistered one.
 4. Declare knobs as `Annotated` constructor parameters or dataclass fields with real
@@ -833,13 +833,13 @@ A new axis, that is, a new registrar:
   implementation (af-add-a-receptor §2, the `ArchiverRegistrar` case).
 - Add its rows to `AGENTS.md` §2.2 and architecture §6 in the same change; the coverage
   test fails otherwise.
-- A single-instance receptor whose owner has a Python default names it as its wiring's
-  `default` (`default_*()`'s strategy), so existing blocks stay valid: left out, it is
-  that default (architecture §4.2.1); add it to
-  `tests/test_core/test_composer/test_strategy_defaults.py`. One without a Python default
-  is required and reaches every hand-written block of its owner: shipped configs,
-  `configs/README.md`, test configs, skill examples. `rg` an existing receptor key of the
-  same owner to find them all.
+- A single-instance receptor whose `default_*()` strategy is off, neutral or the only
+  option names it as its wiring's `default`, so existing blocks stay valid: left out, it is
+  that default (architecture §4.2.1). One whose default chooses behaviour (a selector, a
+  translator) or that has no default stays required and reaches every hand-written block
+  of its owner: shipped configs, `configs/README.md`, test configs, skill examples. `rg` an
+  existing receptor key of the same owner to find them all. Either way, add it to
+  `tests/test_core/test_composer/test_strategy_defaults.py`.
 
 ### 3.1 Archiver
 
@@ -1211,9 +1211,11 @@ value on an existing one.
   §4.2.1): `replayability` (`none`) and `network_source` (`live`) in a capability block,
   `miss_policy` (`strict`) in a `network_source: {source_id: archive}` block (the replay's
   network source, unrelated to the `trace_writer.archive` list of archivers), `restorer`
-  (`prefix_replay`) in a `branch` loop block, `step_selector` (`all`) in a
-  `trace_branches` block, `translator` (`identity`) in an exporter block. A written block
-  is validated in full.
+  (`prefix_replay`) in a `branch` loop block. A written block is validated in full.
+  `step_selector` in every `trace_branches` block and `translator` in every exporter block
+  stay required although they have Python defaults: left out as `all`, a selector would
+  branch every candidate step (100 runs × 30 steps is 3,000 branch runs), and the
+  translator decides what the student is trained on.
 - "Not enabled" is spelled `none` (the same ruling): `replayability_id: none`,
   `occlusion: none`. The old `off` fails validation, bare or quoted (PyYAML is YAML 1.1 and
   reads a bare `off` as `false`). In a site rule `fuzzy: on` is read as `true`, which is what
@@ -1352,6 +1354,7 @@ value on an existing one.
 | Every browser block fails validation with `Extra inputs are not permitted` on `replayability`, `network_source`, `mouse_trajectory` and the other receptors | A key in `BrowserCapability.__wiring__`, such as a new archiver's, names a class that never registered, and conscribe dropped the capability's whole wiring. Look in the log for `Failed to import module`: `discover()` skips a module whose import raises `ImportError` or `SyntaxError` |
 | Validation says `replayability_id` or `occlusion` is `False` | The old name `off`, unquoted; write `none` |
 | `InlineOnlyLayerError: The top-level 'archiver' section is not accepted ...` | Move the entries into `trace_writer.archive` |
+| `Field required` for `step_selector` or `translator` | Write the receptor block (§4); these two have no YAML default |
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
 | `spectragent bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
 | A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |

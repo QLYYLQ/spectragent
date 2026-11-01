@@ -47,15 +47,20 @@ In `spectragent/generated/_composed.py`, on `BrowserCapabilityConfig` (grep the
 field name — the file is regenerated, so line numbers move):
 
 ```python
-# receptors — nested discriminated union, every knob typed; the wiring's default
-# strategy is the field's default (a block left out is that strategy)
-mouse_trajectory: Union[BezierMouse_TrajectoryConfig, InstantMouse_TrajectoryConfig,
-                        LearnedMouse_TrajectoryConfig, WindmouseMouse_TrajectoryConfig] = Field(default_factory=InstantMouse_TrajectoryConfig, ...)
-dom_cleaner:      Union[BrowserUseDom_CleanerConfig, SkyvernDom_CleanerConfig] = Field(default_factory=BrowserUseDom_CleanerConfig, ...)
-dom_serializer:   Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig] = Field(default_factory=TextDom_SerializerConfig, ...)
+# receptors — each typed by its layer's nested discriminated union (the alias below);
+# a wiring ``default`` becomes the field default, a receptor without one is required
+mouse_trajectory: MouseTrajectoryConfig = Field(default_factory=InstantMouse_TrajectoryConfig, json_schema_extra={'default': {'trajectory_type': 'instant'}})  # wired from: mouse_trajectory
+dom_cleaner: DomCleanerConfig  # wired from: dom_cleaner
+dom_serializer: DomSerializerConfig  # wired from: dom_serializer
 
 # a __wiring__ entry with NO slot — declaration-only, a name and nothing else
-observation: Optional[Literal['browser.browser_meta', 'browser.dom', 'browser.screenshot']] = None
+observation: Optional[Literal['browser.browser_meta', 'browser.capture_state', 'browser.dom', 'browser.platform', 'browser.screenshot']] = None  # wired from: observation
+
+# each alias is defined earlier in the same file
+DomCleanerConfig = Annotated[
+    Union[BrowserUseDom_CleanerConfig, SkyvernDom_CleanerConfig, SkyvernHitTestDom_CleanerConfig],
+    Field(discriminator="cleaner_type"),
+]
 ```
 
 `TextDom_SerializerConfig` carries `max_text_length: int = 200`;
@@ -67,9 +72,10 @@ conscribe 2.0 exposes the same reflection to the builder and the Composer throug
 `conscribe.introspect.wiring_slots`, `receptor_slots` and `init_param_names`. A runtime
 slot is a constructor parameter or non-`ClassVar` annotation. Negotiation entries use
 `{"registry": "observation", "keys": [...], "optional_keys": [...], "declare_only": True}`;
-they never get placeholders or stubs. A single-instance receptor whose owner installs a
-Python default names that strategy as its wiring's `default` (step 4), so YAML may leave
-it out; one without a Python default stays required (architecture §4.2.1).
+they never get placeholders or stubs. A single-instance receptor whose Python default is
+off, neutral or the only option names that strategy as its wiring's `default` (step 4),
+so YAML may leave it out; one whose default chooses behaviour, or that has no default,
+stays required (architecture §4.2.1).
 
 ## 2. The checklist
 
@@ -144,18 +150,20 @@ registrar its `declarations.py` does not declare.
 (`core/capabilities/browser/capability.py:272` for the dict, `:357` for this entry):
 
 ```python
-"dom_serializer": {"registry": "dom_serializer", "keys": ["text", "html"], "default": "text"},
+"dom_serializer": ("dom_serializer", ["text", "html"]),
 ```
 
-The attribute name is the left side; `registry` is the registry it draws from, `keys`
-the allowed keys. `default` is the key of the strategy step 6 installs: a block that
-leaves the receptor out gets that strategy, and the resolved config records it as if the
-block were written (architecture §4.2.1). Give a `default` only when the owner has a
-Python default; a receptor without one (`backend`) stays required, and nobody invents a
-default for it. `tests/test_core/test_composer/test_strategy_defaults.py` lists every
-default and checks it against the Python one, so add yours there. A bare string
-(`"backend": "browser_provider"`, `:362`) means "any registered key", the tuple
-`(registry_name, allowed_keys)` a key subset without a default.
+`(registry_name, allowed_keys)`. The attribute name is the left side; the registry it
+draws from is the right. A bare string (`"backend": "browser_provider"`, `:362`) means
+"any registered key". When the strategy step 6 installs is off, neutral or the only
+option, use the dict form and name it as `default`:
+`"replayability": {"registry": "replayability", "keys": ["none", "pinned"], "default": "none"}`.
+A block that leaves the receptor out then gets that strategy, and the resolved config
+records it as if the block were written (architecture §4.2.1). `dom_serializer` gets no
+`default` although it has a Python one: it decides what the agent sees, so every block
+names it, as it names `backend`, which has no default at all. Nobody invents a default.
+`tests/test_core/test_composer/test_strategy_defaults.py` lists both kinds and checks
+each default against the Python one; add yours there.
 
 **5. The annotation-only class attribute** (`capability.py:372`):
 
@@ -172,7 +180,7 @@ mixin instead (`_BrowserReceptors`, `capability.py:239`; same split as
 (`capability.py:591`): `self.dom_serializer = default_serializer()`. The bare
 annotation is a `WiredField` that raises on read until something injects; this
 shadows it with a real instance attribute, so `BrowserCapability()` in a test still
-works; the wiring's `default` must name the same strategy. Call the **factory**, not the class — `DOMWatchdog`
+works; where the wiring names a `default` (step 4), it names this same strategy. Call the **factory**, not the class — `DOMWatchdog`
 needs the same default (`dom_watchdog.py:100`) and one fact in two files drifts.
 (`mouse_trajectory` still names `InstantTrajectory()` in two places,
 `capability.py:582` and `input/mouse.py:120` — don't copy that.)
@@ -197,7 +205,7 @@ skill for the verification loop and the staleness trap.
 
 **10. Add the YAML block where a configuration should show it.** A new single-instance
 receptor with a `default` leaves every existing block valid: leaving it out means the
-default. One without a default is a **required** field, so every place a block of its
+default. One without a wiring `default` is a **required** field, so every place a block of its
 owner is written by hand then fails validation; `grep -rn 'dom_cleaner' tests/ configs/`
 is the reliable index of those places. Shipped pattern, `configs/browser_use_local.yaml:171`:
 

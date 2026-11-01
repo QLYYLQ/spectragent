@@ -680,15 +680,13 @@ class TestKnobs:
             ).exclude_unloaded_checkpoints
             is True
         )
-        # A block that leaves the selector out selects every step.
-        assert TraceBranchesTask_LoaderConfig.model_validate({}).step_selector.selector_id == "all"
         for bad in (
             {"step_selector": {"selector_id": "every"}},
-            {"step_selector": None},
             {"step_selector": {"selector_id": "all"}, "branches_per_step": 0},
             {"step_selector": {"selector_id": "all"}, "require_eval": {"evaluator": "x"}},
             {"step_selector": {"selector_id": "all"}, "on_unbranchable": "ignore"},
             {"step_selector": {"selector_id": "all"}, "exclude_unloaded_checkpoints": "maybe"},
+            {},
         ):
             with pytest.raises(ValidationError):
                 TraceBranchesTask_LoaderConfig.model_validate(bad)

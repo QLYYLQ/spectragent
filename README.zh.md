@@ -122,10 +122,6 @@ environment:
     capabilities:
       - capability_id: browser
         backend: { provider_id: local_chrome, headless: true }
-        mouse_trajectory: { trajectory_type: instant }
-        typing_rhythm: { rhythm_type: instant }
-        replayability: { replayability_id: none }
-        network_source: { source_id: live }
         dom_cleaner: { cleaner_type: browser_use }
         dom_serializer: { serializer_type: text }
 
@@ -135,7 +131,7 @@ hook:
 ```
 
 - YAML 选择组件。任务文本和起始 URL 来自 CLI 或 task loader，所以一份文件可以服务多个任务。
-- 单实例受体要写出来。每个 capability 块都必须写 `replayability` 和 `network_source`，不录制时也一样；“关闭”写作 `none`。
+- 默认是关闭或中立的策略块可以不写，就像上面没写 `mouse_trajectory`、`typing_rhythm`、`replayability` 和 `network_source`（默认依次是 `instant`、`instant`、`none`、`live`）；trace 照样记下这个默认，与写出来一样（`docs/architecture_design.md` §4.2.1）。`dom_cleaner` 和 `dom_serializer` 决定 agent 看到什么，每个 capability 块都要写。“关闭”写作 `none`。
 - 上面省略了 `actions:`，于是构建全部 16 个动作。写成列表时只构建、广告并允许列出的动作，`[]` 一个也不构建。Agent 需要的动作被去掉时，协商在运行前失败。
 - YAML 和 trace 里的键都是全限定的（`browser.click`）。Agent 声明相对名（`click`），协商把它绑定到唯一提供它的 capability。
 - 改动 `__wiring__` 条目或 `Annotated[...]` 构造参数后，运行 `uv run spectragent config generate`。`spectragent/generated/` 是构建产物。

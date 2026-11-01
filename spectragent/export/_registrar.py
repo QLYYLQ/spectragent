@@ -140,13 +140,12 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
     __abstract__ = True
     __registry_key__: str
     __wiring__: ClassVar[dict[str, Any]] = {
-        "translator": {"registry": "action_translator", "default": "identity"},
+        "translator": "action_translator",
         "thought_rewrite_llms": "llm",
     }
 
     # Annotation only: conscribe installs a ``WiredField`` and the Composer
-    # injects the configured translator (a block that leaves it out gets the
-    # wiring's ``default``); ``__init__`` shadows it with the same default.
+    # injects the configured translator; ``__init__`` shadows it with the default.
     translator: ActionTranslator  # type: ignore[misc]
 
     # ── the job, as attributes (assigned in __init__) ──

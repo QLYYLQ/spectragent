@@ -122,10 +122,6 @@ environment:
     capabilities:
       - capability_id: browser
         backend: { provider_id: local_chrome, headless: true }
-        mouse_trajectory: { trajectory_type: instant }
-        typing_rhythm: { rhythm_type: instant }
-        replayability: { replayability_id: none }
-        network_source: { source_id: live }
         dom_cleaner: { cleaner_type: browser_use }
         dom_serializer: { serializer_type: text }
 
@@ -135,7 +131,7 @@ hook:
 ```
 
 - YAML selects components. Task text and start URL come from the CLI or a task loader, so one file serves many tasks.
-- Single-instance receptors are written out. `replayability` and `network_source` are required in every capability block, even when nothing is recorded; "off" is spelled `none`.
+- A strategy block whose default is off or neutral may be left out, as `mouse_trajectory`, `typing_rhythm`, `replayability` and `network_source` are above (`instant`, `instant`, `none`, `live`); the trace records the default as if the block were written (`docs/architecture_design.md` §4.2.1). `dom_cleaner` and `dom_serializer` decide what the agent sees, so every capability block names them. "Off" is spelled `none`.
 - `actions:` is omitted above, which builds all 16. A list builds, advertises and allows only those actions, and `[]` builds none. An agent that requires a dropped action fails negotiation before the run.
 - Keys in YAML and in the trace are fully qualified (`browser.click`). Agents declare relative names (`click`), and negotiation binds each to the one capability that offers it.
 - After changing a `__wiring__` entry or an `Annotated[...]` constructor field, run `uv run spectragent config generate`. `spectragent/generated/` is build output.
