@@ -1,0 +1,294 @@
+"""The device side for one run: install, the helper, enable, confirm by ping, stop, and §11.2's constraints.
+
+``spectragent/core/capabilities/android/device/lifecycle.py`` drives a
+:class:`~tests._helpers.fake_device_side.FakeDeviceSide` behind the fake ADB
+server, which answers as the APK and Android do. The four hard constraints of
+``docs/architecture_design.md`` §11.2 ("设备端") are tested twice: as what the
+lifecycle sends, and in the sources of the APK and the Android package.
+"""
+
+from __future__ import annotations
+
+import ast
+import asyncio
+import hashlib
+import json
+import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import pytest
+
+import spectragent
+from spectragent.core.capabilities.android.adb import AdbClient
+from spectragent.core.capabilities.android.device.apk import ServiceApk
+from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION
+from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
+from tests._helpers.fake_adb import FakeAdbServer, ShellIO, StreamingCommand
+from tests._helpers.fake_device_side import SERVICE_COMPONENT, FakeDeviceSide
+
+SERIAL = "emulator-5554"
+TALKBACK = "com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService"
+APK_BYTES = b"PK\x03\x04 the device-side APK " + bytes(range(256)) * 300
+#: Long enough for a loaded machine; a protocol deadlock fails instead of hanging.
+_WAIT_S = 10
+REPOSITORY = Path(spectragent.__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def apk(tmp_path: Path) -> ServiceApk:
+    path = tmp_path / "spectragent-device.apk"
+    path.write_bytes(APK_BYTES)
+    sidecar = {
+        "format": "spectragent-device-apk-1",
+        "package": "org.spectragent.device",
+        "version_code": 1,
+        "version_name": "1",
+        "protocol": PROTOCOL_VERSION,
+        "accessibility_tool": False,
+        "sha256": hashlib.sha256(APK_BYTES).hexdigest(),
+    }
+    path.with_suffix(".json").write_text(json.dumps(sidecar))
+    return ServiceApk.load(path)
+
+
+@asynccontextmanager
+async def _phone(side: FakeDeviceSide) -> AsyncIterator[tuple[FakeAdbServer, AdbClient]]:
+    async with FakeAdbServer(
+        {SERIAL: side.device}, streams={SERIAL: side.streams}, sockets={SERIAL: side.sockets}
+    ) as adb:
+        yield adb, AdbClient(adb.host, adb.port)
+
+
+def _services(adb: FakeAdbServer) -> list[str]:
+    return [request.service for request in adb.requests]
+
+
+async def test_start_installs_starts_the_helper_and_confirms_the_service_with_a_ping(
+    apk: ServiceApk,
+) -> None:
+    side = FakeDeviceSide(enabled=TALKBACK)
+    async with _phone(side) as (adb, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        try:
+            assert (await device.service.ping()).uptime_ms == 1000
+            enabled_while_up = side.enabled
+        finally:
+            await device.stop()
+
+    assert side.installed == APK_BYTES and device.installed_now
+    assert enabled_while_up == f"{TALKBACK}:{SERVICE_COMPONENT}", "appended, TalkBack kept"
+    assert side.enabled == TALKBACK, "stop() takes only the service out"
+    assert (device.faketouch, device.gestures) == (True, True)
+    assert side.helper_exits == 1, "the helper's stdin ended with the session, and it exited"
+
+
+async def test_the_helpers_token_goes_on_its_stdin_and_never_on_a_command_line(
+    apk: ServiceApk,
+) -> None:
+    side = FakeDeviceSide()
+    async with _phone(side) as (adb, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+
+    (line,) = side.helper_stdin
+    socket, token = line.decode().split()
+    assert socket.startswith("spectragent_helper_") and len(token) >= 16
+    launches = [service for service in _services(adb) if "app_process" in service]
+    assert len(launches) == 1 and token not in launches[0]
+
+
+async def test_a_device_that_has_this_build_is_not_installed_again(apk: ServiceApk) -> None:
+    side = FakeDeviceSide(installed=APK_BYTES)
+    async with _phone(side) as (adb, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+
+    assert side.installs == 0 and not device.installed_now
+    assert not any(service.startswith("shell,v2:cmd package install") for service in _services(adb))
+
+
+async def test_another_build_on_the_device_is_replaced(apk: ServiceApk) -> None:
+    side = FakeDeviceSide(installed=b"an older build")
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+
+    assert side.installed == APK_BYTES and side.installs == 1
+
+
+async def test_binding_is_confirmed_by_a_ping_and_never_by_reading_the_setting(
+    apk: ServiceApk,
+) -> None:
+    """Constraint 4: the setting is written, the system refuses the service and drops it from the
+    setting without a word (Android 14 and later); only a ping can tell."""
+    side = FakeDeviceSide(binds=False)
+    async with _phone(side) as (adb, client):
+        with pytest.raises(TimeoutError, match="waiting for the service to answer a ping"):
+            await DeviceSide.start(client, SERIAL, apk, timeout_s=1.0)
+
+    assert not any("settings" in service for service in _services(adb))
+    assert side.helper_exits == 1, "the failed start stopped the helper"
+
+
+async def test_a_service_process_that_lost_the_token_is_handed_it_again(apk: ServiceApk) -> None:
+    side = FakeDeviceSide(lose_token_once=True)
+    async with _phone(side) as (adb, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+
+    sessions = [service for service in _services(adb) if "--method session" in service]
+    assert len(sessions) == 2
+
+
+async def test_stop_never_force_stops_our_package(apk: ServiceApk) -> None:
+    """Constraint 3: a force-stop takes the service out of the setting for good; stop() unbinds it
+    through the setting and leaves the package alone."""
+    side = FakeDeviceSide()
+    async with _phone(side) as (adb, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+        await device.stop()  # safe to repeat
+
+    assert side.enabled is None and not side.bound
+    for service in _services(adb):
+        assert not re.search(r"force-stop|pm clear|uninstall|am kill", service), service
+
+
+async def test_a_service_enabled_before_the_run_stays_enabled(apk: ServiceApk) -> None:
+    side = FakeDeviceSide(enabled=SERVICE_COMPONENT)
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+
+    assert side.enabled == SERVICE_COMPONENT
+
+
+async def test_ensure_bound_enables_the_service_again_after_a_force_stop(apk: ServiceApk) -> None:
+    side = FakeDeviceSide()
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        try:
+            assert await device.ensure_bound(timeout_s=_WAIT_S) is False
+            side.force_stop()  # what a task may do to every app
+            assert await device.ensure_bound(timeout_s=_WAIT_S) is True
+            assert side.bound and side.enabled == SERVICE_COMPONENT
+            assert (await device.service.ping()).uptime_ms == 1000
+        finally:
+            await device.stop()
+
+    assert side.enabled is None
+
+
+async def test_a_device_without_faketouch_reports_that_it_cancels_gestures(
+    apk: ServiceApk,
+) -> None:
+    side = FakeDeviceSide(faketouch=False)
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+
+    assert (device.faketouch, device.gestures) == (False, False)
+    assert device.gesture_detail is not None and "gesture_cancelled" in device.gesture_detail
+
+
+async def test_a_helper_that_exits_before_it_is_ready_fails_the_start_with_its_words(
+    apk: ServiceApk,
+) -> None:
+    side = FakeDeviceSide()
+
+    async def crashes(shell: ShellIO) -> int:
+        await shell.write(
+            b"java.lang.NoSuchMethodException: getInternalDisplayToken\n", stderr=True
+        )
+        return 1
+
+    def streams(command: str) -> StreamingCommand | None:
+        return crashes if "app_process" in command else side.streams(command)
+
+    async with FakeAdbServer({SERIAL: side.device}, streams={SERIAL: streams}) as adb:
+        with pytest.raises(
+            DeviceSideError, match="exited with code 1 before it was ready"
+        ) as failed:
+            await DeviceSide.start(AdbClient(adb.host, adb.port), SERIAL, apk, timeout_s=_WAIT_S)
+
+    assert "NoSuchMethodException" in str(failed.value)
+
+
+async def test_health_answers_from_the_provider_while_the_socket_is_down(apk: ServiceApk) -> None:
+    side = FakeDeviceSide()
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        side.force_stop()
+        health = await device.health()
+        await device.stop()
+
+    assert (health.socket, health.service_connected, health.protocol) == (
+        "spectragent_device",
+        False,
+        PROTOCOL_VERSION,
+    )
+
+
+async def test_a_start_that_runs_out_of_time_names_its_step(apk: ServiceApk) -> None:
+    side = FakeDeviceSide()
+
+    async def hangs(shell: ShellIO) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+    def streams(command: str) -> StreamingCommand | None:
+        return hangs if "app_process" in command else side.streams(command)
+
+    async with FakeAdbServer({SERIAL: side.device}, streams={SERIAL: streams}) as adb:
+        with pytest.raises(TimeoutError, match="starting the shell helper"):
+            await DeviceSide.start(AdbClient(adb.host, adb.port), SERIAL, apk, timeout_s=0.5)
+
+
+# ── the constraints, in the sources ───────────────────────────────────
+
+
+def _java_without_comments(path: Path) -> str:
+    text = path.read_text()
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _code_strings(path: Path) -> list[str]:
+    """Every string literal of a Python module that is not a docstring."""
+    tree = ast.parse(path.read_text())
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+
+
+def test_no_device_side_code_opens_a_ui_automation_or_runs_uiautomator() -> None:
+    """Constraints 1 and 2: a UiAutomation in its default mode unbinds every accessibility
+    service while it is connected, and ``uiautomator dump`` uses one."""
+    sources = sorted((REPOSITORY / "android" / "service" / "src").rglob("*.java"))
+    assert sources, "the APK's sources are where the test looks"
+    for source in sources:
+        code = _java_without_comments(source)
+        assert "UiAutomation" not in code and "uiautomator" not in code, source
+
+
+def test_no_host_code_runs_uiautomator_or_force_stops_a_package() -> None:
+    """Constraints 2 and 3, in the Android package: no command it builds runs uiautomator, and
+    none force-stops (a reset stops only the app under test, and that is not this package's)."""
+    package = REPOSITORY / "spectragent" / "core" / "capabilities" / "android"
+    for module in sorted(package.rglob("*.py")):
+        for text in _code_strings(module):
+            assert "uiautomator" not in text and "force-stop" not in text, (module, text)

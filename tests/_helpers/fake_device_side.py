@@ -23,6 +23,9 @@ speaks it the same way, as the APK's service or its helper:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import shlex
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -37,6 +40,7 @@ from spectragent.core.capabilities.android.device.channel import (
     encode_frame,
     read_frame,
 )
+from tests._helpers.fake_adb import ShellIO, ShellResult, SocketServer, StreamingCommand
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,7 @@ class FakeProgram:
         self._accessibility_tool = accessibility_tool
         self._subscribed: list[_Outbound] = []
         self._next_seq = 0
+        self._open: set[asyncio.StreamWriter] = set()
 
     def emit(self, **event: JsonValue) -> int:
         """Push one event to every subscribed connection; returns its ``seq``."""
@@ -147,6 +152,11 @@ class FakeProgram:
                 outbound.send_event(frame, seq)
         return seq
 
+    def hang_up(self) -> None:
+        """Drop every open connection at once, as the program's process dying does."""
+        for writer in self._open:
+            writer.transport.abort()
+
     def lose_event(self) -> None:
         """Number the next event as if one were pushed, and push nothing: a device that lost one."""
         self._next_seq += 1
@@ -155,6 +165,7 @@ class FakeProgram:
         """Serve one connection until the host closes it."""
         outbound = _Outbound(writer, self._max_unsent_events)
         sending = asyncio.ensure_future(outbound.run())
+        self._open.add(writer)
         try:
             refusal = self._refusal(await read_frame(reader))
             if refusal is not None:
@@ -166,6 +177,7 @@ class FakeProgram:
         except ConnectionError:
             pass
         finally:
+            self._open.discard(writer)
             if outbound in self._subscribed:
                 self._subscribed.remove(outbound)
             outbound.send_last()
@@ -230,3 +242,192 @@ class FakeProgram:
         return encode_frame(
             {"kind": "response", "id": request_id, "result": answer.result}, answer.payload
         )
+
+
+#: Where the fake phone keeps the installed APK.
+INSTALLED_PATH = "/data/app/~~kTm2Xl0lQ==/org.spectragent.device-Q2nX9w==/base.apk"
+#: The service as the setting names it.
+SERVICE_COMPONENT = "org.spectragent.device/.DeviceService"
+SERVICE_SOCKET = "spectragent_device"
+
+
+class FakeDeviceSide:
+    """One phone's device side, behind ``tests/_helpers/fake_adb.py``: pass :meth:`device`,
+    :meth:`streams` and :meth:`sockets` for its serial.
+
+    It answers what ``device/lifecycle.py`` sends, as the APK and Android do:
+
+    - ``pm path`` and ``sha256sum`` report the installed APK, and
+      ``cmd package install -r -S <n>`` installs the *n* bytes on its stdin;
+    - ``app_process`` runs the helper: it reads ``<socket> <token>`` on its
+      stdin, listens on that socket (a :class:`FakeProgram`), prints
+      ``READY 1`` and runs until its stdin ends;
+    - the bootstrap provider's ``session`` sets the token the service's hello
+      requires; ``health`` reports;
+    - the helper's ``enable_service`` appends the service to the setting, and
+      the system binds it, so its socket appears, unless *binds* is false: then
+      the service vanishes from the setting again and never listens, as
+      Android 14 drops a service it refuses; ``disable_service`` takes it out
+      and unbinds it;
+    - :meth:`force_stop` does what ``am force-stop`` of the package does: the
+      service leaves the setting and its process, token and socket go.
+    """
+
+    def __init__(
+        self,
+        *,
+        installed: bytes | None = None,
+        enabled: str | None = None,
+        binds: bool = True,
+        faketouch: bool = True,
+        lose_token_once: bool = False,
+    ) -> None:
+        #: The installed APK's bytes; ``None``: not installed.
+        self.installed = installed
+        #: ``enabled_accessibility_services``; ``None``: unset.
+        self.enabled = enabled
+        self.binds = binds
+        self.faketouch = faketouch
+        self.installs = 0
+        self.helper_exits = 0
+        #: What each helper read on its stdin.
+        self.helper_stdin: list[bytes] = []
+        self.helper: FakeProgram | None = None
+        self.helper_socket: str | None = None
+        self.service = FakeProgram(
+            component="service",
+            token="",
+            methods={"ping": self._service_ping, "gesture": self._gesture},
+        )
+        self.bound = False
+        self._lose_token_once = lose_token_once
+
+    def force_stop(self) -> None:
+        """``am force-stop org.spectragent.device``: unbound, out of the setting, its token gone."""
+        self.bound = False
+        self.service.token = ""
+        self._disable()
+
+    async def device(self, command: str) -> ShellResult:
+        if command == "pm path org.spectragent.device":
+            if self.installed is None:
+                return ShellResult(exit_code=1)
+            return ShellResult(stdout=f"package:{INSTALLED_PATH}\n".encode())
+        if command.startswith("sha256sum "):
+            digest = hashlib.sha256(self.installed or b"").hexdigest()
+            return ShellResult(stdout=f"{digest}  {INSTALLED_PATH}\n".encode())
+        if command.startswith("content call --uri content://org.spectragent.device.bootstrap "):
+            return self._provider(shlex.split(command))
+        if command == "pm has-feature android.hardware.faketouch":
+            return ShellResult(stdout=b"true\n" if self.faketouch else b"false\n")
+        name = command.split(maxsplit=1)[0] if command.strip() else command
+        return ShellResult(stderr=f"/system/bin/sh: {name}: not found\n".encode(), exit_code=127)
+
+    def streams(self, command: str) -> StreamingCommand | None:
+        if command.startswith("cmd package install -r -S "):
+            return self._installer(int(command.rsplit(" ", 1)[1]))
+        if command.startswith("CLASSPATH=") and command.endswith(
+            "app_process /system/bin org.spectragent.device.ShellHelper"
+        ):
+            return self._run_helper
+        return None
+
+    def sockets(self, name: str) -> SocketServer | None:
+        if self.helper is not None and name == self.helper_socket:
+            return self.helper.serve
+        if name == SERVICE_SOCKET and self.bound:
+            return self.service.serve
+        return None
+
+    def _provider(self, words: list[str]) -> ShellResult:
+        method = words[words.index("--method") + 1]
+        if method == "session":
+            token = words[words.index("--arg") + 1]
+            # A process that restarted after the bootstrap has lost the token.
+            self.service.token = "lost" if self._lose_token_once else token
+            self._lose_token_once = False
+        elif method != "health":
+            return ShellResult(stderr=b"Error while accessing provider\n", exit_code=1)
+        health = {
+            "protocol": PROTOCOL_VERSION,
+            "package": "org.spectragent.device",
+            "version_code": 1,
+            "version_name": "1",
+            "accessibility_tool": False,
+            "sdk_int": 33,
+            "socket": SERVICE_SOCKET,
+            "service_connected": self.bound,
+            "listening": self.bound,
+            "token_set": bool(self.service.token),
+        }
+        return ShellResult(stdout=f"Result: Bundle[{{json={json.dumps(health)}}}]\n".encode())
+
+    def _installer(self, size: int) -> StreamingCommand:
+        async def install(shell: ShellIO) -> int:
+            data = bytearray()
+            while (chunk := await shell.read_stdin()) is not None:
+                data += chunk
+            if len(data) != size:
+                await shell.write(b"Failure [INSTALL_FAILED_INVALID_APK]\n")
+                return 1
+            self.installed = bytes(data)
+            self.installs += 1
+            await shell.write(b"Success\n")
+            return 0
+
+        return install
+
+    async def _run_helper(self, shell: ShellIO) -> int:
+        line = await shell.read_stdin() or b""
+        self.helper_stdin.append(line)
+        socket, token = line.decode().split()
+        self.helper_socket = socket
+        self.helper = FakeProgram(
+            component="helper",
+            token=token,
+            methods={
+                "enable_service": self._enable_method,
+                "disable_service": self._disable_method,
+            },
+        )
+        await shell.write(b"READY 1\n")
+        while await shell.read_stdin() is not None:  # until the host's session ends
+            pass
+        self.helper = None
+        self.helper_exits += 1
+        return 0
+
+    async def _enable_method(self, params: JsonObject) -> Answer:
+        previous = self.enabled
+        entries = previous.split(":") if previous else []
+        changed = SERVICE_COMPONENT not in entries
+        if changed:
+            self.enabled = ":".join([*entries, SERVICE_COMPONENT])
+        current = self.enabled
+        if self.binds:
+            self.bound = True
+        else:
+            self.enabled = previous  # refused, and gone from the setting without a word
+        return Answer({"previous": previous, "current": current, "changed": changed})
+
+    async def _disable_method(self, params: JsonObject) -> Answer:
+        previous = self.enabled
+        changed = self._disable()
+        return Answer({"previous": previous, "current": self.enabled, "changed": changed})
+
+    def _disable(self) -> bool:
+        """Out of the setting, so unbound: the service stops listening and its connections end."""
+        entries = self.enabled.split(":") if self.enabled else []
+        kept = [entry for entry in entries if entry != SERVICE_COMPONENT]
+        self.enabled = ":".join(kept) or None
+        self.bound = False
+        self.service.hang_up()
+        return len(kept) != len(entries)
+
+    async def _service_ping(self, params: JsonObject) -> Answer:
+        return Answer({"uptime_ms": 1000, "next_seq": 0})
+
+    async def _gesture(self, params: JsonObject) -> Answer:
+        if not self.faketouch:
+            raise Failure("gesture_cancelled", "the system cancelled the gesture")
+        return Answer({"elapsed_ms": 50})
