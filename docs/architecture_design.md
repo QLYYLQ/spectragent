@@ -3625,14 +3625,14 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 - **结果**由 handler 决定，失败时它回复 `{"error": ...}`（与点击、输入同一个约定，`actions/_common.py::handler_error`），`NavigateAction` 据此返回 `success=False`：
   - 按时回应、等到了 `wait_until` → 成功；
   - 按时回应、`wait_until` 没按时到 → 记一条 WARNING（点名 URL、阶段与等了多久），成功：页面已经是新文档，后面的观测照常采集；
-  - 回应里没有 `loaderId`：同文档导航（只改了 fragment），没有新文档可等 → 立即成功；
+  - 回应里没有 `loaderId`：同文档导航（只改了 fragment），没有新文档可等 → 立即成功；但 Chrome 在页面提交它之前就回应（实测，Chrome 155：回应约 1 ms，页面主线程空闲时提交再晚约 2 ms，主线程忙时等手上的任务结束才提交，之前读到的历史当前项还是离开的 URL），所以效果里导航之后的 URL 等主 frame 报告提交（`Page.navigatedWithinDocument`；页面脚本经 History API 改 URL 报的 `navigationType: historyApi` 不算）之后才读，这段等待算在 `action_effect_timeout_s` 里，等不到记 unknown（§4.5"动作效果"）；脚本恰在回应与提交之间设 `location.hash` 时，它报的提交与这次导航的分不开，读到的是脚本的 URL；
   - 没按时回应 → 失败：`navigation to '<url>' did not commit within 30 s`；
   - Chrome 拒绝这条命令（例如它认为无效的 URL）→ 失败，带 Chrome 的错误；
   - 回应带 `errorText`（CDP：只在导航失败时出现）→ 立即失败，带这段文字。
 - **实测**（Chrome 155，本机页面；探针在本地的 `tmp/flywheel/followup/start_pages/probe_nav.py`）：正常页面的回应在提交时到，`load` 随后；一张图片的响应永远不结束时，回应与 `DOMContentLoaded` 照常到，`load` 永远不来；服务器一直不回应时 `Page.navigate` 一直没有回应；连不上的端口回应带 `errorText`，随后提交 Chrome 的出错页（`chrome-error://chromewebdata/`，它也有 `load`）；204 与下载回应带 `errorText: net::ERR_ABORTED` 和一个 `loaderId`，却什么都不提交（没有 `frameNavigated`、没有生命周期事件），所以等它们的生命周期只会等满上限。连不上的主机因此从"成功、页面是出错页"变成"失败、页面仍是出错页"：setup 打开不了起始页时以 `could not open start_url` 结束，不再让 agent 对着出错页花模型调用；agent 自己的导航失败时，下一次观测看到的仍是出错页。
 - **调用方的等待比两段加起来更长**：事件不写 `event_timeout` 时由它自己推出：提交上限 + 生命周期上限 + `NAVIGATION_EVENT_MARGIN_S`（10 s），默认 70 s。handler 的答复因此总在调用方放弃之前到，上面每一种结果都由 handler 决定，而不是看哪个时钟先到。
 - **与观测的落定等待**（上一节）是两份预算：导航的生命周期等待属于动作，落定等待属于观测，`MainFrameLoad` 只记观测为一个文档等过多久。`load` 永远不来的页面因此一共多花：导航的生命周期上限（默认 30 s）一次，之后第一次观测的落定上限（默认 5 s，记为 `capped`、`waiting_for: [load, dom, content]`）一次；之后的观测不再等它的 `load`，只量静默窗口。`load` 在上限之内到了的页面，导航等到它，观测的落定只量静默窗口。
-- **回归**：`test_navigate_lifecycle.py`（fake CDP：提交超时、Chrome 拒绝、`errorText`、同文档导航、生命周期超时只记警告、事件上限由两段推出）；`test_browser_navigate_live.py`（真实 Chrome，本地页面里一张图片的响应永远不结束：setup 在生命周期上限之后记警告并成功，第一次观测在落定上限处采集、第二次不再等 `load`；服务器一直不回应的导航在提交上限之后失败，setup 报 could not open start_url；204 立即失败）。
+- **回归**：`test_navigate_lifecycle.py`（fake CDP：提交超时、Chrome 拒绝、`errorText`、同文档导航、生命周期超时只记警告、事件上限由两段推出）；`test_browser_navigate_live.py`（真实 Chrome，本地页面里一张图片的响应永远不结束：setup 在生命周期上限之后记警告并成功，第一次观测在落定上限处采集、第二次不再等 `load`；服务器一直不回应的导航在提交上限之后失败，setup 报 could not open start_url；204 立即失败）；同文档导航之后的 URL：`test_navigation_effects.py`（fake CDP：提交晚于回应、预算内没提交记 unknown）、`test_browser_effects_navigation_live.py`（真实 Chrome：页面主线程忙时的 fragment 导航）。
 
 #### 页面新开的标签页：焦点跟过去（与归档无关）
 

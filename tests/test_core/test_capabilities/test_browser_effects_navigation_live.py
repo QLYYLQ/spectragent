@@ -5,7 +5,9 @@ through the capability's own actions in one headless Chrome:
 
 - ``navigate`` to ``a.html`` and on to ``b.html``: the URL before and after,
   and the document finished loading; a fragment navigation keeps the
-  fragment; a navigation to a port nothing listens on fails with no effect;
+  fragment, also when the page's main thread is busy as Chrome answers it
+  (the page commits the fragment only once it is free); a navigation to a
+  port nothing listens on fails with no effect;
 - ``go_back`` / ``go_forward`` between ``a.html`` and ``b.html``: the URL
   after is the history entry's once it committed, never the page left;
 - ``switch_tab`` to the tab ``opener.html``'s ``target=_blank`` link opened
@@ -47,6 +49,10 @@ from tests._helpers.effects_site import EffectsSite, centre, effects_site
 pytestmark = pytest.mark.requires_chrome
 
 _TIMEOUT_S = 120
+#: Keeps the page's main thread busy for 200 ms, in a task that starts once the evaluation returned.
+_BUSY_PAGE_JS = (
+    "setTimeout(() => { const end = performance.now() + 200; while (performance.now() < end) {} })"
+)
 
 
 @dataclass
@@ -88,6 +94,15 @@ async def _run(site: EffectsSite) -> Session:
         results["back"] = await _act(cap, "go_back")
         results["forward"] = await _act(cap, "go_forward")
         results["fragment"] = await _act(cap, "navigate", url=site.url("b.html") + "#part")
+        await cap.cdp.send(
+            "Runtime.evaluate",
+            {"expression": _BUSY_PAGE_JS},
+            session_id=cap.default_session_id,
+            timeout=5,
+        )
+        results["fragment, busy page"] = await _act(
+            cap, "navigate", url=site.url("b.html") + "#busy"
+        )
         results["unreachable"] = await _act(cap, "navigate", url="http://127.0.0.1:9/")
 
         assert (await _act(cap, "navigate", url=site.url("opener.html"))).success
@@ -192,6 +207,18 @@ def test_a_fragment_navigation_keeps_the_fragment(session: Session, site: Effect
     effect = _navigation(session.results["fragment"])
     assert effect.after == Location(url=site.url("b.html") + "#part")
     assert effect.document_loaded is True
+
+
+def test_a_fragment_navigation_on_a_busy_page_reports_the_fragment_once_committed(
+    session: Session, site: EffectsSite
+) -> None:
+    """Chrome answers the navigation at once; the busy page commits the fragment 200 ms later."""
+    effect = _navigation(session.results["fragment, busy page"])
+    assert (effect.before, effect.after, effect.document_loaded) == (
+        Location(url=site.url("b.html") + "#part"),
+        Location(url=site.url("b.html") + "#busy"),
+        True,
+    )
 
 
 def test_a_failed_navigation_reports_no_effect(session: Session) -> None:

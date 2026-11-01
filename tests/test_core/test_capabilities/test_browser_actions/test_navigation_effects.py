@@ -6,8 +6,9 @@ keeps a navigation history the way Chrome reports it
 is the current history entry's, ``document_loaded`` is
 ``document.readyState == "complete"`` once the action's own waits are over.
 A history navigation commits after ``Page.navigateToHistoryEntry`` answers,
-so its URL after is read once the entry has become current — and is unknown,
-never the page being left, when that does not happen within the budget.
+and a same-document navigation after ``Page.navigate`` answers, so the URL
+after is read once the navigation committed — and is unknown, never the URL
+being left, when that does not happen within the budget.
 Measuring never changes the outcome: a probe that fails or runs out of
 ``action_effect_timeout_s`` leaves its fact unknown, and a failed action
 reports no effect.
@@ -23,13 +24,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from agent_cdp import ScopeGroup
+from agent_cdp import EventScope, ScopeGroup
 
 from spectragent.core.capabilities.browser.actions.go_back import GoBackAction
 from spectragent.core.capabilities.browser.actions.go_forward import GoForwardAction
 from spectragent.core.capabilities.browser.actions.navigate import NavigateAction
 from spectragent.core.capabilities.browser.effects import Location, NavigationEffect
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import ActionWatchdog
+from spectragent.core.capabilities.browser.watchdogs.events import NavigatedWithinDocumentEvent
 from tests.test_core.test_capabilities.test_browser_actions.conftest import FakeCapability
 
 A, B = "https://a.example/", "https://b.example/"
@@ -38,10 +40,15 @@ A, B = "https://a.example/", "https://b.example/"
 class HistoryTab:
     """A tab's history and document state, answered over a fake CDP connection.
 
-    ``Page.navigate`` commits at once (a URL that differs from the current one
-    only by its fragment commits without a loader, as Chrome's same-document
-    navigation does). ``Page.navigateToHistoryEntry`` answers first and
-    commits after ``commit_after`` more history reads (``None``: never).
+    ``Page.navigate`` to another document commits before it answers. A URL
+    that differs from the current one only by its fragment is a same-document
+    navigation, answered at once without a loader and committed
+    ``within_document_commit_s`` later (``None``: never; ``0``: before the
+    handler sees the reply, as when both reach the client in one read), when
+    :attr:`scope` hears ``NavigatedWithinDocumentEvent``: measured, Chrome
+    answers it before the page commits it, and the page commits it only once
+    its main thread is free. ``Page.navigateToHistoryEntry`` answers first
+    and commits after ``commit_after`` more history reads (``None``: never).
     ``fail`` makes a method raise and ``hang`` makes it never answer.
     """
 
@@ -52,6 +59,7 @@ class HistoryTab:
         *,
         ready: str = "complete",
         commit_after: int | None = 0,
+        within_document_commit_s: float | None = 0.01,
         fail: frozenset[str] = frozenset(),
         hang: frozenset[str] = frozenset(),
         fail_history_reads: int = 0,
@@ -60,18 +68,35 @@ class HistoryTab:
         self.index = index
         self.ready = ready
         self.commit_after = commit_after
+        self.within_document_commit_s = within_document_commit_s
         self.fail = fail
         self.hang = hang
         self.fail_history_reads = fail_history_reads
         self.pending: int | None = None
         self.reads_until_commit = 0
         self.sent: list[str] = []
+        #: Where a same-document commit is announced; :func:`tab` sets it.
+        self.scope: EventScope | None = None
+        self._commits: list[asyncio.Task[None]] = []
 
     def _history(self) -> dict[str, Any]:
         return {
             "currentIndex": self.index,
             "entries": [{"id": 10 + i, "url": url} for i, url in enumerate(self.urls)],
         }
+
+    def _push(self, url: str) -> None:
+        self.urls = [*self.urls[: self.index + 1], url]
+        self.index += 1
+
+    def _commit_within_document(self, url: str) -> None:
+        self._push(url)
+        assert self.scope is not None
+        self.scope.emit(NavigatedWithinDocumentEvent(frame_id="MAIN", navigation_type="fragment"))
+
+    async def _commit_later(self, url: str, after_s: float) -> None:
+        await asyncio.sleep(after_s)
+        self._commit_within_document(url)
 
     async def send(
         self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
@@ -95,9 +120,15 @@ class HistoryTab:
         if method == "Page.navigate":
             url = params["url"]
             same_document = url.split("#")[0] == self.urls[self.index].split("#")[0] and "#" in url
-            self.urls = [*self.urls[: self.index + 1], url]
-            self.index += 1
-            return {} if same_document else {"frameId": "MAIN", "loaderId": "L1"}
+            if not same_document:
+                self._push(url)
+                return {"frameId": "MAIN", "loaderId": "L1"}
+            if self.within_document_commit_s == 0:
+                self._commit_within_document(url)
+            elif self.within_document_commit_s is not None:
+                commit = self._commit_later(url, self.within_document_commit_s)
+                self._commits.append(asyncio.create_task(commit))
+            return {"frameId": "MAIN"}
         if method == "Page.navigateToHistoryEntry":
             target = params["entryId"] - 10
             if self.commit_after is not None:
@@ -113,6 +144,7 @@ async def tab(cdp: HistoryTab, *, effect_timeout_s: float = 1.0) -> AsyncIterato
     """A capability whose focused tab is served by a real scope and ``ActionWatchdog``."""
     group = ScopeGroup("navigation-effects")
     scope = await group.create_scope("tab")
+    cdp.scope = scope
     watchdog = ActionWatchdog(
         cdp,  # type: ignore[arg-type]
         input_platform="linux",
@@ -161,6 +193,7 @@ class TestNavigate:
         assert cdp.sent[navigate + 1 :] == ["Page.getNavigationHistory", "Runtime.evaluate"]
 
     async def test_a_fragment_navigation_includes_the_fragment(self) -> None:
+        """Chrome answers a same-document navigation first; the URL being left is never the answer."""
         cdp = HistoryTab([A], 0)
         async with tab(cdp) as capability:
             result = await NavigateAction().execute({"url": A + "#part"}, capability=capability)  # type: ignore[arg-type]
@@ -169,6 +202,35 @@ class TestNavigate:
         assert effect.describe() == (
             "The URL changed from https://a.example/ to https://a.example/#part; "
             "the document has finished loading."
+        )
+
+    async def test_a_commit_heard_before_the_reply_counts(self) -> None:
+        """The commit can reach the client with the reply, before the handler resumes.
+
+        The handler listens from before it sends ``Page.navigate``, so it does not miss it.
+        """
+        cdp = HistoryTab([A], 0, within_document_commit_s=0)
+        async with tab(cdp) as capability:
+            started = time.monotonic()
+            result = await NavigateAction().execute({"url": A + "#part"}, capability=capability)  # type: ignore[arg-type]
+            took = time.monotonic() - started
+        assert _effect(result).after == Location(url="https://a.example/#part")
+        assert took < 0.5, "a commit already heard is not waited for (budget 1 s)"
+
+    async def test_a_fragment_navigation_that_does_not_commit_within_the_budget_is_unknown(
+        self,
+    ) -> None:
+        cdp = HistoryTab([A], 0, within_document_commit_s=None)
+        async with tab(cdp, effect_timeout_s=0.1) as capability:
+            started = time.monotonic()
+            result = await NavigateAction().execute({"url": A + "#part"}, capability=capability)  # type: ignore[arg-type]
+            took = time.monotonic() - started
+        effect = _effect(result)
+        assert (effect.before, effect.after) == (Location(url=A), "unknown")
+        assert "Page.getNavigationHistory" not in cdp.sent[cdp.sent.index("Page.navigate") :]
+        assert took < 0.6
+        assert effect.describe() == (
+            "The URL after the action is unknown; whether the document finished loading is unknown."
         )
 
     async def test_navigating_to_the_url_already_shown_says_it_stayed(self) -> None:
