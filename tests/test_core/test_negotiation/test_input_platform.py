@@ -36,7 +36,7 @@ from tests._helpers.android_stub import (
     AndroidPlatformObs,
     StubAndroidCapability,
 )
-from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.assembly import AGENT_ID, NoModel, StartSpy, make_env, make_run
 
 
 class _DesktopAgent:
@@ -136,36 +136,6 @@ class TestEveryPlatformFragmentIsAClosedLiteral:
         assert reported_platforms(AndroidPlatformObs) == ("android",)
 
 
-class _StartSpy:
-    hook_id = "input_platform_start_spy"
-    blocking = True
-    priority = 1
-    __intercepts__: ClassVar[list[Any]] = []
-
-    def __init__(self) -> None:
-        self.starts = 0
-
-    async def on_run_start(self, **kw: Any) -> None:
-        self.starts += 1
-
-    async def on_run_end(self, **kw: Any) -> None:
-        pass
-
-    async def on_run_error(self, **kw: Any) -> None:
-        pass
-
-
-class _NoModel:
-    inference_kind = "chat"
-    model = name = "no-model"
-
-    async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
-        raise AssertionError("a refused run calls no model")
-
-    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
-        return ()
-
-
 async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -179,12 +149,12 @@ async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts
         capability = StubAndroidCapability()
         env = make_env(EnvironmentBase, {"android#0": capability})
         monkeypatch.setattr(env, "setup", setup)
-        spy = _StartSpy()
+        spy = StartSpy()
         run = make_run(
             agent=_DesktopAgent(),
             loop=ReactLoop(),
             env=env,
-            llm=_NoModel(),
+            llm=NoModel(),
             memory=SimpleMemory(),
             hooks=[spy],
         )
@@ -194,6 +164,6 @@ async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts
         with pytest.raises(IncompatiblePlatformError, match=r"android\.platform"):
             await runtime.execute("open the settings app")
 
-    assert spy.starts == 0
+    assert spy.starts == []
     assert setups == []
     assert capability.device.captures == 0

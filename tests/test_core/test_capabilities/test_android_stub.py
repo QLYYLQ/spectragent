@@ -19,7 +19,7 @@ completeness check without running the contract.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, ClassVar, get_args
+from typing import Any, get_args
 
 import pytest
 from pydantic import BaseModel
@@ -40,7 +40,7 @@ from tests._helpers.android_stub import (
     StubAndroidCapability,
     android_stub_harness,
 )
-from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.assembly import AGENT_ID, NoModel, StartSpy, make_env, make_run
 from tests._helpers.capability_contract import CaptureHarness
 from tests.test_core.test_capabilities import test_capability_contract as contract
 
@@ -68,22 +68,11 @@ class TestStubFailedObservation(contract.TestAFailedObservationDoesNotScaleWithF
     """A failed screen read costs one read, whatever the agent negotiated."""
 
 
-class _NoModel:
-    inference_kind = "chat"
-    model = name = "no-model"
-
-    async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
-        raise AssertionError("assembly calls no model")
-
-    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
-        return ()
-
-
 def test_ui_tars_assembles_against_the_stub_with_its_wiring_unchanged() -> None:
     """A relative name is a param contract (§4.9), so UI-TARS's demands bind to Android's actions."""
     env = make_env(EnvironmentBase, {"android#0": StubAndroidCapability()})
     run = make_run(
-        agent=UITarsAgent(), loop=ReactLoop(), env=env, llm=_NoModel(), memory=SimpleMemory()
+        agent=UITarsAgent(), loop=ReactLoop(), env=env, llm=NoModel(), memory=SimpleMemory()
     )
     runtime = AgentRuntime.for_agent(run, AGENT_ID)
 
@@ -157,25 +146,6 @@ async def test_ui_tars_runs_on_the_stub_and_its_first_prompt_states_android() ->
     ]
 
 
-class _StartSpy:
-    hook_id = "android_stub_start_spy"
-    blocking = True
-    priority = 1
-    __intercepts__: ClassVar[list[Any]] = []
-
-    def __init__(self) -> None:
-        self.starts = 0
-
-    async def on_run_start(self, **kw: Any) -> None:
-        self.starts += 1
-
-    async def on_run_end(self, **kw: Any) -> None:
-        pass
-
-    async def on_run_error(self, **kw: Any) -> None:
-        pass
-
-
 async def test_a_verb_whose_points_its_action_lacks_is_refused_before_the_run_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -203,12 +173,12 @@ async def test_a_verb_whose_points_its_action_lacks_is_refused_before_the_run_st
         setups.append((args, kwargs))
 
     monkeypatch.setattr(env, "setup", setup)
-    spy = _StartSpy()
+    spy = StartSpy()
     run = make_run(
         agent=UITarsAgent(),
         loop=ReactLoop(),
         env=env,
-        llm=_NoModel(),
+        llm=NoModel(),
         memory=SimpleMemory(),
         hooks=[spy],
     )
@@ -220,7 +190,7 @@ async def test_a_verb_whose_points_its_action_lacks_is_refused_before_the_run_st
     assert "android.click_coordinate" in str(excinfo.value)
     with pytest.raises(ValueError, match=r"click\(\) writes 1 point\(s\)"):
         await runtime.execute("open the clock app")
-    assert spy.starts == 0
+    assert spy.starts == []
     assert setups == []
     assert capability.device.captures == 0
 
