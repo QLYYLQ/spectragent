@@ -30,7 +30,9 @@ request:
   stderr.
 - ``root:`` answers with what the device says to the command ``root:`` (its
   stdout: "restarting adbd as root", "adbd is already running as root") and
-  closes, as adbd answers before it restarts.
+  closes, as adbd answers before it restarts. A non-zero exit code makes it
+  ``FAIL`` with the stderr instead, as the server answered ``FAIL closed``
+  when adbd closed the stream at once.
 - Any other request (``host:version``, ``host:track-devices``; ``shell:``
   without ``v2``; ``sync:`` and ``tcp:``, which the design's client will also
   use) is answered ``FAIL``, so a client that starts using one fails a test
@@ -189,8 +191,11 @@ class FakeAdbServer:
         service, _, command = request.partition(":")
         kind, *options = service.split(",")
         if request == "root:":
-            writer.write(b"OKAY")
-            writer.write((await device(request)).stdout)
+            result = await device(request)
+            if result.exit_code:
+                await _fail(writer, result.stderr.decode())
+                return
+            writer.write(b"OKAY" + result.stdout)
             await writer.drain()
             return
         if not (kind == "shell" and "v2" in options) and not (kind == "exec" and not options):

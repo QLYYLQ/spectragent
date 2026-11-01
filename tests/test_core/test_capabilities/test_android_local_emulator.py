@@ -50,8 +50,10 @@ AVD = "test_avd"
 #: ``adb -P <port> server nodaemon``: a fake ADB server on that port. Until the
 #: emulator has registered (its ``registered`` marker), ``sys.boot_completed`` is
 #: empty; then it is ``$FAKE_BOOT`` (``1`` by default). ``root:`` restarts adbd as
-#: root (``FAKE_ROOT=refused``: a production build's refusal), after which ``id
-#: -u`` says 0. The routing tables have the guest Wi-Fi's default route unless
+#: root, after which ``id -u`` says 0 (``FAKE_ROOT=refused``: a production build's
+#: refusal; ``FAKE_ROOT=restarting``: the first ``root:`` gets ``FAIL closed`` and
+#: the second no answer, as adbd restarting on its own after the boot answered
+#: them). The routing tables have the guest Wi-Fi's default route unless
 #: ``FAKE_WIFI=0``. Every command after the registration is appended to
 #: ``commands.txt``.
 FAKE_ADB = f"""#!{sys.executable}
@@ -70,6 +72,7 @@ routes = b"default dev dummy0 table 1002 proto static scope link \\n"
 if os.environ.get("FAKE_WIFI", "1") == "1":
     routes += b"default via 10.0.2.2 dev wlan0 table 1016 proto static \\n"
 rooted = False
+restarting = [ShellResult(stderr=b"closed", exit_code=1), ShellResult()]
 
 async def device(command):
     global rooted
@@ -80,6 +83,8 @@ async def device(command):
     if command == "root:":
         if os.environ.get("FAKE_ROOT") == "refused":
             return ShellResult(stdout=b"adbd cannot run as root in production builds\\n")
+        if os.environ.get("FAKE_ROOT") == "restarting" and restarting:
+            return restarting.pop(0)
         if rooted:
             return ShellResult(stdout=b"adbd is already running as root\\n")
         rooted = True
@@ -392,7 +397,11 @@ async def test_what_the_run_needs_is_met_before_the_session_is_handed_over(
         )
         assert "run-token" not in repr(session), "the token stays in the emulator's file"
         commands = _commands(record)
-        assert commands.index("root:") < commands.index("id -u"), "root first, then its shell"
+        assert commands[commands.index("root:") - 1 : commands.index("root:") + 2] == [
+            "id -u",
+            "root:",
+            "id -u",
+        ], "root: only while the shell is not root, then the shell again"
         assert commands[-1] == "ip -4 route show table all", "the Wi-Fi wait ends the boot"
     finally:
         await provider.close(session)
@@ -410,6 +419,17 @@ async def test_a_run_that_needs_nothing_boots_without_grpc_or_root(
         assert _commands(record) == ["getprop sys.boot_completed"]
     finally:
         await provider.close(session)
+
+
+async def test_adbd_restarting_on_its_own_after_the_boot_is_asked_again(
+    provider: LocalEmulatorProvider, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_ROOT", "restarting")
+
+    session = await provider.open(DeviceNeeds(root=True))
+    await provider.close(session)
+
+    assert _commands(record).count("root:") == 3, "FAIL closed, no answer, then restarting"
 
 
 async def test_adbd_that_refuses_root_fails_the_boot_and_nothing_is_left(

@@ -71,7 +71,9 @@ on macOS, emulator 37.2.13, API 33 Google APIs, 2026-11-01):
   measured, so this need is refused there.
 - ``root``: adbd restarts as root (``root:``): it answered "restarting adbd
   as root" and dropped the device for 1.5 s; the wait ends when ``id -u``
-  says 0.
+  says 0. Right after the boot completed, ``root:`` sometimes met adbd
+  restarting on its own (``FAIL closed``, or no answer), so it is sent again
+  while the shell is not root.
 - ``guest_wifi``: an IPv4 default route over ``wlan0`` in any routing table
   (``default via 10.0.2.2 dev wlan0 table 1016``), which came a few seconds
   after the boot completed.
@@ -512,22 +514,24 @@ class LocalEmulatorProvider(AndroidProviderBase):
     async def _become_root(
         self, run: _Run, client: AdbClient, serial: str, deadline: float
     ) -> None:
-        """Restart adbd on *serial* as root, then wait until its shell is root."""
-        try:
-            async with asyncio.timeout(_BOOT_QUERY_TIMEOUT_S):
-                answer = await client.root(serial)
-        except TimeoutError:
-            raise TimeoutError(
-                f"{serial}: adbd gave no answer to root: within {_BOOT_QUERY_TIMEOUT_S:g} s"
-            ) from None
-        if "already running as root" in answer:
-            return
-        if "restarting adbd as root" not in answer:
-            raise RuntimeError(f"{serial} refused to run adbd as root: {answer!r}")
+        """Restart adbd on *serial* as root, again each time its shell is still not root.
+
+        Sent right after the boot completed, ``root:`` sometimes reached adbd
+        while it was restarting on its own: the server answered ``FAIL
+        closed``, or adbd closed the stream without a word (three boots in a
+        row of a sweep, measured). So every attempt asks the shell first and
+        sends ``root:`` only while it is not root; only a build that says it
+        cannot run as root is refused.
+        """
 
         async def rooted() -> bool | _NotYet:
             uid = (await client.shell(serial, "id -u")).stdout.strip().decode(errors="replace")
-            return True if uid == "0" else _NotYet(f"its shell was uid {uid!r}")
+            if uid == "0":
+                return True
+            answer = await client.root(serial)
+            if "cannot run as root" in answer:
+                raise RuntimeError(f"{serial} refused to run adbd as root: {answer!r}")
+            return _NotYet(f"its shell was uid {uid!r} and root: answered {answer!r}")
 
         await self._until(run, deadline, f"{serial} was not running adbd as root", rooted)
 
