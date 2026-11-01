@@ -19,6 +19,9 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
 - text committed through the service's input method at the cursor, Chinese
   included, and text set on the focused field;
 - events, in order and numbered without gaps;
+- the service refuses a wrong token, closes a hello over 64 KB without an
+  answer, and closes at once a connection past its limit;
+- the helper's disable and enable keep another service's entry in the setting;
 - a force-stop of the package (what a task may do) takes the service out of
   the setting, and ``ensure_bound`` brings it back;
 - ``stop`` takes the service out of the setting and the socket goes; the
@@ -36,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import struct
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
@@ -47,6 +51,7 @@ from spectragent.core.capabilities.android.adb import AdbClient, AdbError
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
 from spectragent.core.capabilities.android.bridge import ForegroundApp, parse_foreground
 from spectragent.core.capabilities.android.device.apk import PACKAGE, SERVICE_COMPONENT, ServiceApk
+from spectragent.core.capabilities.android.device.channel import Channel, HandshakeRefused
 from spectragent.core.capabilities.android.device.clients import (
     ServiceEvent,
     ServiceEvents,
@@ -67,6 +72,10 @@ SETTINGS = "com.android.settings"
 SETTINGS_SEARCH = "com.google.android.settings.intelligence"
 #: How long the UI may take to show what an action did.
 _SHOWN_S = 15.0
+#: The connections the service keeps open at once (``Server.MAX_CONNECTIONS``).
+MAX_CONNECTIONS = 8
+#: Another service's entry in the setting, which neither disable nor enable may touch.
+OTHER_SERVICE = "com.example.kept/com.example.kept.KeptService"
 _POLL_S = 0.3
 
 Node = AndroidAccessibilityNodeInfo
@@ -495,6 +504,61 @@ async def test_events_arrive_in_order_numbered_without_gaps(up: Up) -> None:
 
     seqs = [event.seq for event in received]
     assert seqs == list(range(seqs[0], seqs[0] + len(seqs)))
+
+
+# ── what anything on the device may send ──────────────────────────────
+
+
+async def test_a_wrong_token_is_refused(up: Up) -> None:
+    reader, writer = await up.adb.connect_abstract(up.serial, "spectragent_device")
+    with pytest.raises(HandshakeRefused) as refused:
+        async with asyncio.timeout(_SHOWN_S):
+            await Channel.open(reader, writer, token="not-this-sessions-token", component="service")
+
+    assert refused.value.reason == "token"
+
+
+async def test_a_hello_over_64_kb_closes_the_stream_unanswered(up: Up) -> None:
+    """Anything on the device can connect, so a hello's size is capped before the token is read."""
+    reader, writer = await up.adb.connect_abstract(up.serial, "spectragent_device")
+    try:
+        writer.write(struct.pack(">II", 65 * 1024 + 4, 65 * 1024))
+        await writer.drain()
+        async with asyncio.timeout(_SHOWN_S):
+            assert await reader.read() == b""
+    finally:
+        writer.close()
+
+
+async def test_a_connection_past_the_limit_is_closed_at_once(up: Up) -> None:
+    """Each connection holds two threads until its hello times out (10 s), so their number is
+    capped; with the device side's own channel, these are one too many."""
+    held: list[asyncio.StreamWriter] = []
+    try:
+        for _ in range(MAX_CONNECTIONS):
+            reader, writer = await up.adb.connect_abstract(up.serial, "spectragent_device")
+            held.append(writer)
+        async with asyncio.timeout(5):
+            assert await reader.read() == b"", "closed long before its hello would time out"
+    finally:
+        for writer in held:
+            writer.close()
+
+    assert (await up.side.service.ping()).uptime_ms > 0
+
+
+async def test_disabling_and_enabling_keep_another_services_entry(up: Up) -> None:
+    before = (await _shell(up, "settings get secure enabled_accessibility_services")).strip()
+    await _shell(up, f"settings put secure enabled_accessibility_services {OTHER_SERVICE}:{before}")
+    try:
+        disabled = await up.side.helper.disable_service()
+        enabled = await up.side.helper.enable_service()
+        assert await up.side.ensure_bound(timeout_s=30) is True
+    finally:
+        await _shell(up, f"settings put secure enabled_accessibility_services {before}")
+
+    assert (disabled.changed, disabled.current) == (True, OTHER_SERVICE)
+    assert (enabled.changed, enabled.current) == (True, f"{OTHER_SERVICE}:{SERVICE_COMPONENT}")
 
 
 # ── the service unbound, and stopped ──────────────────────────────────
