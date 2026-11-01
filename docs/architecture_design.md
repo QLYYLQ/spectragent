@@ -892,7 +892,7 @@ class AgentRuntime:
 - **谁判**：实现了可选 Protocol `TaskOracle`（§4.9）的 capability，Android 的任务裁判就是它（§11.2）。environment 并发问每一个，各限时 `timeout_s`；本 run 没有裁判的 capability 返回 `None`，不进记录。
 - **判分失败从不让 run 失败**：裁判超时或抛错，environment 替它交回一份"没判"（`not_scored`，带原因与诊断），这次调用从不抛 `Exception`。判分也从不改 run 的结局（`agent_done`）。结构化实现的环境若违约抛出 `Exception`，Runtime 只记日志，照常收尾，这个 run 没有判分记录。
 - **取消先走**：外部取消时 Runtime 不调裁判；取消落在判分途中时，environment 取消还没完成的裁判、等它们收场，再原样重抛，Runtime 照外部取消收尾（`error="Execution cancelled"`，Loop 交出的结局不保留，与取消落在别处一样）。被取消的 run 没有判分记录，评测器记为没判。
-- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认值在 Android 阶段 1 量过 AndroidWorld 的判分耗时之后定，在那之前暂定 60 s（`core/runtime.py::ORACLE_TIMEOUT_S`，标着 `shortcut:`）。它与 `timeout` 走同一条路到 `execute`：`BenchmarkRunner(oracle_timeout=)`、`spectragent bench` 与 `spectragent run` 的 `--oracle-timeout`、度量链每段 `StageSpec` 的 `oracle_timeout`（§4.16，省略时不传，用 bench 的默认）。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
+- **时限**：`timeout_s` 是 `execute` 的 `oracle_timeout`，与只罩 `agent.run` 的 `timeout` 分开；默认 60 s（`core/runtime.py::ORACLE_TIMEOUT_S`），按 2026-11-01 量的 AndroidWorld 判分耗时定：端到端 run 里每次判分 36–57 ms，此前调研的 88 次调用中位数 0.1 s、p90 6.1 s、最长 18.2 s（一次短信任务的判分等了一次失败的 `uiautomator dump`），60 s 是最慢那次的三倍多。它与 `timeout` 走同一条路到 `execute`：`BenchmarkRunner(oracle_timeout=)`、`spectragent bench` 与 `spectragent run` 的 `--oracle-timeout`、度量链每段 `StageSpec` 的 `oracle_timeout`（§4.16，省略时不传，用 bench 的默认）。判分的耗时不进 `execution_ms`（它在 Loop 结束时就停了），记在判分记录里。
 - **记录**：TraceWriter 经 AOP 拦截 `read_oracle_scores`（`after`，role `env`），把交回的列表写成 §5.3 的判分记录（`oracle_scores.json`）；评测器从这份记录读判分（§4.11），从不碰活体环境。
 
 它不借 `collect_archive` 的时机：capability 分不出哪一次收集是最后一次（收尾那次在 `on_run_end` 里，§4.9 "最后一次收集"），收集也从不驱动环境（§4.6 "记录器从环境拉取证据"），判分却要在确定的时刻对着环境跑。
