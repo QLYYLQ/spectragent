@@ -137,7 +137,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
     """
 
     __registry_key__ = "branch"
-    __wiring__: ClassVar[dict[str, Any]] = {"restorer": ("restorer", ["prefix_replay"])}
+    __wiring__: ClassVar[dict[str, Any]] = {
+        "restorer": {"registry": "restorer", "keys": ["prefix_replay"], "default": "prefix_replay"}
+    }
     __loop_inputs__ = {
         "checkpoint": LoopInput(
             Checkpoint, description="The source run's directory and the step to branch at."

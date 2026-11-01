@@ -76,6 +76,7 @@ RestorerRegistrar = create_registrar(
     "restorer",
     Restorer,
     discriminator_field="restorer_id",
+    inline_only=True,
 )
 
 

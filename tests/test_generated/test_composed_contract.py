@@ -41,7 +41,7 @@ for path in sorted(Path("configs").glob("*.yaml")) + sorted(Path("configs/flywhe
     assert runtime.model_validate(raw).model_dump(mode="json") == ComposedConfig.model_validate(raw).model_dump(mode="json"), path
 
 raw = yaml.safe_load(Path("configs/ui_tars_local.yaml").read_text())
-bad_inputs = [{"hooks": []}, {"archiver": []}, {"archiver": None}, {"archiver": [{"archiver_id": "browser.network"}]}, {"step_selector": [{"selector_id": "explicit", "steps": []}]}]
+bad_inputs = [{"hooks": []}, {"archiver": []}, {"archiver": None}, {"archiver": [{"archiver_id": "browser.network"}]}, {"task_loader": [{"benchmark_name": "trace_branches", "step_selector": {"selector_id": "explicit", "steps": []}}]}]
 for field in ("dom_max_elements", "dom_max_serialized_chars"):
     bad = copy.deepcopy(raw)
     bad["environment"][0]["capabilities"][0][field] = 0

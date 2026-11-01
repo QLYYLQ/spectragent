@@ -124,9 +124,14 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         # registry: every action offered; YAML narrows it, never widens it.
         "actions": ("action", list(ACTION_KEYS)),
         "backend": "android_provider",
-        # The strategy is the switch: what the device must offer comes from
-        # it, never from a provider setting.
-        "task_oracle": ("android_task_oracle", ["none", "androidworld"]),
+        # Omitted in YAML: ``none``, the oracle ``__init__`` installs. The
+        # strategy is the switch: what the device must offer comes from it,
+        # never from a provider setting.
+        "task_oracle": {
+            "registry": "android_task_oracle",
+            "keys": ["none", "androidworld"],
+            "default": "none",
+        },
     }
 
     backend: BaseAndroidProvider  # type: ignore[misc]

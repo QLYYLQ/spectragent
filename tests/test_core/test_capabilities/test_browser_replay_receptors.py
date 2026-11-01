@@ -195,10 +195,11 @@ class TestTheGeneratedConfig:
         capability = generated.BrowserCapabilityConfig.model_fields["network_source"]
         arms = set(get_args(capability.annotation))
         assert arms == {generated.ArchiveNetwork_SourceConfig, generated.LiveNetwork_SourceConfig}
-        assert capability.is_required()
+        # Left out, each is its owner's default: ``live``, and ``strict`` in an archive block.
+        assert capability.default_factory is generated.LiveNetwork_SourceConfig
         archive = generated.ArchiveNetwork_SourceConfig.model_fields
         assert archive["miss_policy"].annotation is generated.StrictMiss_PolicyConfig
-        assert archive["miss_policy"].is_required()
+        assert archive["miss_policy"].default_factory is generated.StrictMiss_PolicyConfig
         # Typed, not degraded to Any / dict: the codegen imports the knob's type.
         assert archive["matcher"].annotation is MatcherConfig
         assert archive["matcher"].annotation is not typing.Any
@@ -230,7 +231,7 @@ class TestTheGeneratedConfig:
         [
             ({"source_id": "arhcive"}, "source_id"),
             ({**_ARCHIVE, "miss_policy": {"miss_policy_id": "strickt"}}, "miss_policy"),
-            ({k: v for k, v in _ARCHIVE.items() if k != "miss_policy"}, "miss_policy"),
+            ({**_ARCHIVE, "miss_policy": None}, "miss_policy"),
             ({**_ARCHIVE, "matcher": {"levelz": ["exact"]}}, "levelz"),
             ({**_ARCHIVE, "matcher": {"levels": ["fuzzzy"]}}, "levels"),
             ({**_ARCHIVE, "matcher": {"levels": []}}, "levels"),
@@ -248,14 +249,15 @@ class TestTheGeneratedConfig:
         with pytest.raises(ValidationError, match=complaint):
             _capability_config(network_source)
 
-    def test_the_block_is_required(self) -> None:
+    def test_a_block_left_out_is_the_default(self) -> None:
         from spectragent.generated._composed import BrowserCapabilityConfig
 
         block = {
             k: v for k, v in _CAPABILITY.items() if k not in ("capability_id", "network_source")
         }
-        with pytest.raises(ValidationError, match="network_source"):
-            BrowserCapabilityConfig.model_validate(block)
+        assert BrowserCapabilityConfig.model_validate(block).network_source.source_id == "live"
+        archive = {k: v for k, v in _ARCHIVE.items() if k != "miss_policy"}
+        assert _capability_config(archive).network_source.miss_policy.miss_policy_id == "strict"
 
 
 class TestTheComposerInjectsInstances:

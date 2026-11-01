@@ -950,7 +950,8 @@ class ConfigComposer:
         return cls(registrars=collect_registrars())          # 完整构建
 
     def __init__(self, *, registrars, coverage="complete"):
-        # 不发现：调用方先导入（上面两个工厂）。没有已导入实现的层不进 schema。
+        # 不发现：调用方先导入（上面两个工厂）。没有已导入实现的层不进 schema，
+        # 没有块能收下的只能内联的层也不进（下文"只能内联的层"）。
         self._registrars = {layer: r for layer, r in registrars.items() if r.get_all()}
         self._composed = build_composed_config(             # 2) 生成 schema
             self._registrars, inline_wiring=True, coverage=coverage
@@ -991,7 +992,7 @@ class ConfigComposer:
 
 名字在任何导入之前读，而且只从 schema 放 capability 块与 agent 块的位置读：顶层 `capability` 段与 `agent` 段的每一项，以及每个 environment 的 `capabilities` 受体（`EnvironmentBase` 声明的；environment 自己的类在它的 capability 包里，这时还没导入）。只读这些块的判别字段 `capability_id` 与 `agent_id`，从不读自由字段：hook 的 `parameters`、provider 的 `extra_body` 里写的同名键不点名任何包。读到的名字用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。点名了 agent 家族却没点名任何 capability 时，抛 `ComposeError`（issue `agent_without_capability`），点名这个 agent 与现有的 capability 包，让人加一个带 capability 的 environment 块：agent 的观测与动作都来自 capability，v1 也没有不要环境的 Loop（§4.1）。没点名的包是发现的排除项：发现不遍历它们，也不读它们的 `declarations.py`，`collect_registrars(capabilities)` 只读点名的包的声明（框架代码也只在用到时才导入 browser 的模块，下面"框架代码只在用到时导入 browser 的模块"）。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
 
-这次组装的目录是框架轴加上点名的 capability 声明的轴；一层要在这次点名、遍历的包里有实现才进目录，没有的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。进程此前导入过、但这次没点名的 capability 包或 agent 家族里的实现不算：目录有哪些层只由这次点名的包决定，resolved 配置的 dump 与它的 `config_hash` 因此不随导入历史变化（不然同一个实验在长期运行的进程里会多出 `archiver: []` 这样的空段，被查看器分成两组）。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`ConfigComposer.validate` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`；只能内联的层（archiver）则说它的实例写在哪里（`hook[trace_writer].archive`），不让人去点名 capability 之后又碰上 `inline_only_layer`。conscribe 对进了目录的每个类都解析 `__wiring__`，键对照的是整个进程的注册表。部分构建（下一段）只放宽 `declare_only` 条目与默认什么都不选的受体；一个受体写明要某个 capability 的键（`("capability", ["browser"])`）仍然必须解析，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
+这次组装的目录是框架轴加上点名的 capability 声明的轴；一层要在这次点名、遍历的包里有实现才进目录，没有的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层）；只能内联的层还要目录里有能收下它的块（下文"只能内联的层"），conscribe 的 `EmptyLayerError` 只留给生成。进程此前导入过、但这次没点名的 capability 包或 agent 家族里的实现不算：目录有哪些层只由这次点名的包决定，resolved 配置的 dump 与它的 `config_hash` 因此不随导入历史变化（不然同一个实验在长期运行的进程里会多出 `archiver: []` 这样的空段，被查看器分成两组）。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`ConfigComposer.validate` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`；只能内联的层（archiver）则说它的实例写在哪里（`hook[trace_writer].archive`），不让人去点名 capability 之后又碰上 `inline_only_layer`。conscribe 对进了目录的每个类都解析 `__wiring__`，键对照的是整个进程的注册表。部分构建（下一段）只放宽 `declare_only` 条目与默认什么都不选的受体；一个受体写明要某个 capability 的键（`("capability", ["browser"])`）仍然必须解析，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
 
 **一次组装用部分构建（conscribe ≥ 2.2 的 `coverage="partial"`）。** 只导入点名的包，目录就只有一部分实现；`for_config` 因此明确声明这是部分构建，conscribe 只改两条规则：
 
@@ -1016,7 +1017,8 @@ class ConfigComposer:
 - 纯协商声明（agent 的 `observation` / `action`，capability 的 `observation` / `archiver`）使用 dict wiring：`{"registry": "observation", "keys": [...], "optional_keys": [...], "declare_only": True}`。不产生描述符或存根，不内联成实例配置；仍生成可选 `Literal` 字段供校验。YAML 填入合法名称时 Composer 仍以 `UnresolvedWiringError`（"negotiation-only entry"）拒绝，因为该值没有运行时接收者。
 - 顶层 `action:` 段里写 Loop 自己的动作（`loop.*`，如 `loop.done`）时，Composer 同样以 `UnresolvedWiringError`（issue `loop_action`）拒绝：它由 Loop 提供并执行，没有配置，也没有受体会收下这个实例（capability 的 `actions` 只收自己的键），否则就是一个被悄悄丢掉的条目（§4.5 "Loop 提供的动作"）。
 - 普通 list / dict 受体省略或写 `null` 时，第二遍 `_resolve_deferred` 从目标层的实例池中取允许的实现；池为空时保留主人自己的默认值，主人没有默认值才设空容器。`[]` 永远是显式空，`capability.actions: []` 不构造任何动作。
-- **只能内联的层**由 `create_registrar(..., inline_only=True)` 声明：`ArchiverRegistrar` 是当前唯一用例。conscribe 在运行时模型、生成 Python 与 JSON Schema 中一致禁止顶层 `archiver:`，包括 `[]` 与 `null`；Pydantic 错误类型 `inline_only_layer`，位置 `archiver`，提示 `hook[trace_writer].archive`。Composer 使用 `result.top_level_layers` 遍历可写顶层段，内联层受体省略或 `null` 时保留主人的默认值，绝不从实例池中取别的 hook 的归档器。删除本地 `__inline_only__` 声明和重复的拒绝逻辑。归档仍只有 `trace_writer.archive` 一个开关。
+- **单实例策略受体省略即默认（用户 2026-11-01 的裁决）。** 只持一个策略的受体，主人已经有 Python 侧默认（构造时装上的那个策略，多数经 `default_*()`），而且这个默认是关闭（`none`）、中立（`live`、`instant`）或唯一的选项时，`__wiring__` 用 conscribe 字典形式的 `default` 写出同一个键（`{"registry": "replayability", "keys": ["none", "pinned"], "default": "none"}`）：YAML 可以不写这个块，不写就是这个默认。生成的字段是 `Field(default_factory=<默认键的每键配置>)`，省略的块校验成与写出 `{<判别字段>: <默认键>}` 相同的配置，所以 resolved 配置照样记下这个默认，`config_hash` 与写出时相同；`config explain` 的 resolved 里有它，输入证据把它标成 `default`。写了的块照常校验：未知的策略报 `union_tag_invalid`，拼错的判别字段报 `union_tag_not_found`，多出的旋钮或拼错的受体名报 `extra_forbidden`，`null` 报 `model_attributes_type`；只有一个策略的轴（`miss_policy`、`restorer`）不是联合，未知的策略报 `literal_error`，拼错的判别字段报 `extra_forbidden`，`null` 报 `model_type`。现在可以省略的受体与它们的默认：browser capability 的 `mouse_trajectory: instant`、`typing_rhythm: instant`、`replayability: none`、`network_source: live`；`archive` 网络来源的 `miss_policy: strict`（唯一的选项）；Android capability 的 `task_oracle: none`；`branch` Loop 的 `restorer: prefix_replay`（唯一的选项）。默认会替人做选择的受体，主人有 Python 默认也仍然必填：browser 的 `dom_cleaner` 与 `dom_serializer` 决定 agent 看到什么；`trace_branches` 加载器的 `step_selector` 若省略即 `all`，忘写一个块就把每个候选步都分叉（100 个 run × 30 步就是 3,000 个分叉 run）；导出器的 `translator` 决定学生学的是什么动作。主人没有 Python 默认的受体同样必填，不为它们编造默认：两个 capability 的 `backend`，agent 的 `agent_loop`、`llm`、`memory`，评测器的判卷 `llm`，`jev` 的 `decision_model`。Python 默认与 `default` 是写在两处的同一个事实，`tests/test_core/test_composer/test_strategy_defaults.py` 核对两者是同一个策略，也核对测试里的表就是目录里声明的全部默认、上面四个替人做选择的受体仍然必填。这些受体的层只能内联、没有顶层段（下一条），所以省略的块从不换成实例池里的别的实例（与 list / dict 受体不同）：resolved 配置记下的就是用到的默认。默认键的注册表与主人在同一个包里（或都是框架轴），所以点名主人的一次组装里，默认的策略总有实现。
+- **只能内联的层**由 `create_registrar(..., inline_only=True)` 声明。只能写在块里的策略，写在顶层会被拒绝（用户 2026-11-01 的裁决，"这两个我都认同"；此前只有 `ArchiverRegistrar`）：实例只由别的块里的受体收下、从不经入口从顶层读的层都只能内联。它们是 `archiver`（`hook[trace_writer].archive`）；browser 的 `browser_provider`（`backend`）、`mouse_trajectory`、`typing_rhythm`、`dom_cleaner`、`dom_serializer`、`replayability`、`network_source`，以及 `archive` 网络来源里的 `miss_policy`；Android 的 `android_provider`（`backend`）与 `android_task_oracle`（`task_oracle`）；agent 的 `agent_loop` 与 `memory`；框架的 `step_selector`（`trace_branches` 加载器）、`restorer`（`branch` Loop）与 `action_translator`（导出器的 `translator`）。以前这些层的顶层段照样被构造，却没有谁用它，run 悄悄用块里写的值或默认值；现在 conscribe 在运行时模型、生成 Python 与 JSON Schema 中一致禁止这些顶层段，包括 `[]` 与 `null`：Pydantic 错误类型 `inline_only_layer`，位置是层名，提示写明实例该写在哪个块里（`capability[browser].replayability`、`agent[ui_tars].agent_loop[branch].restorer`）。这条规则延伸到 agent 的 `agent_loop` 与 `memory`，办法是把一次构建里没有块能收下的只能内联的层留在目录外（用户 2026-11-01 的裁决："关于judge，目前暂时走A就行，目前的judge没有复杂到必须复查/演算"）：conscribe 要求从顶层能走到收下这一层的块，否则报 `ConfigDeclarationError`；所以 Composer 在"这次点名的包里有实现"之后，从顶层层里点名的实现出发，沿每个受体走到它接受的键（顶层段接受这一层的每个键），走不到的只能内联的层不进目录。没有点名 agent 家族就没有 `agent_loop` 块，`branch` Loop 的 `restorer` 也就没有块收下；点名的家族的 agent 只许 `react` 时也没有 `branch` 块，`restorer` 同样不进目录。只有这次点名的包里的实现算数，与上一遍同一个理由，所以进程此前导入过的家族不会让它进目录。所以不点名 agent 家族的组装（导出、lookahead 的判卷、`jev`、只写评测器的配置、只有 Android capability 的测试配置）没有 `agent_loop`、`memory` 与 `restorer` 这三层，写它们的顶层段按"这次组装没有这一层"被拒（`ComposeError`，issue `no_implementation`，说这份配置点名的东西都不收下这一层）；点名了家族的组装里它们只能内联。仍是顶层层的是入口读的层（`agent`、`environment`、`capability`、`hook`、`task_loader`、`eval_loader`、`evaluator`、`exporter`、`replay_reviewer`）、`llm`（lookahead 的判卷模型从顶层段读，导出器的 `thought_rewrite_llms` 省略时从池里取）与 `action`（`capability.actions` 省略时从池里取），以及 `decision_model`。2026-11-01 起 resolved 配置里这些层的顶层段从 `[]` 变成 `null`（与 `archiver` 一样），留在目录外的层不再出现，所以 `config_hash` 在这一天变一次；录下的数据可以丢，不做兼容。Composer 使用 `result.top_level_layers` 遍历可写顶层段，内联层受体省略或 `null` 时保留主人的默认值，绝不从实例池中取别的块的实例。删除本地 `__inline_only__` 声明和重复的拒绝逻辑。归档仍只有 `trace_writer.archive` 一个开关。
 - **配置面的拼写规则**（用户 2026-10-13 的裁决；注册名、选项值与旋钮都遵守）：
   - "不启用"拼作 `none`（`replayability: none`、导出的 `occlusion: none`、`shift_dates: none`、`thought_source: none`）；默认值本身做一件正常事的保留描述性名字（`live`、`instant`、`identity`）；`isolation: none_acknowledged` 是书面承认会漏流量，保留。注册名与选项值都不许是 YAML 1.1 读成布尔或 null 的词（on / off / yes / no / true / false / null / ~，任何大小写）：所有入口都用 PyYAML 的 `safe_load`，它按 YAML 1.1 读，裸写的这些词到校验时已经是 `False` 或 `None`。`tests/test_core/test_composer/test_yaml_safe_values.py` 扫描每个注册表的全部键，以及运行配置、链规格、站点规则三份 schema 里的全部选项值
   - `null` 只表示"这个可选项没设"（可选的子块与覆盖值：`require_eval`、`user_agent`、`length`……），默认为 null 的旋钮都在说明里写明没设时是什么（`None (the default): ...`）。数值上限不用 null：不限写 `unlimited`，默认值写出真实的值（`dom_max_elements`、`dom_max_serialized_chars` 默认 `unlimited`，导出的 `max_document_misses` 默认 `0`）；共用的拼写与读法在 `schemas/_types.py`（`UNLIMITED`、`Unlimited`、`limit_value()`，代码内部仍用 `None` 表示不限）。类型写成 `Annotated[int, Field(ge=1)] | Unlimited`：界写在 `int` 那一支上（写在外层 pydantic 会拿它去比 `"unlimited"`）。conscribe 2.0 在运行时模型、生成的 `_composed.py` 和 JSON Schema 中都保留嵌套的界。"按 provider 自己的策略"这类默认写成显式的词：`reasoning_effort: auto`
@@ -1026,7 +1028,7 @@ class ConfigComposer:
 
 **与 AgentRuntime 的边界**：`AgentRuntime` 只接收 `ComposedRun`，**不**直接看 conscribe schema、**不**自己解析 YAML。`ConfigComposer` 通过 conscribe 的公开反射接口读取受体和容器形态，不复制上游的反射规则。普通用户 `BaseModel` 子配置保持已校验的模型实例传入构造函数；只有嵌套判别器块按字段展开。增删 wiring grammar、调整 discover 路径只动 Composer 与 `core/registries.py`；加一根框架轴只动 `core/registries.py` 的框架列表，capability 内部的新策略轴只动这个包自己的 `declarations.py`。
 
-**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer.for_config(raw)` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器按它自己点名的包再组装一次（`for_config`）。
+**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 是这个根的可选顶层层（与 `evaluator` 同一先例，§4.15），翻译器只写在它的 `translator` 块里（`action_translator` 只能内联，上文），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer.for_config(raw)` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器按它自己点名的包再组装一次（`for_config`）。
 
 **生成与验证（conscribe 2.0）。** 唯一入口仍为 `spectragent config generate`。严格 discover 排除 `spectragent.generated` 与 `spectragent.scripts`，无需先删除旧产物；所有已收集层必须非空。先记录注册表指纹，再构建、渲染完整源代码和 schema（Pydantic 渲染可能规范化数值约束），渲染成功后逐文件原子替换，最后写指纹。存根调用 `write_layer_stubs(prune=True)`，只清理上游识别的过期生成存根；所有现有受体均在源码中声明，所以当前不需要 `.pyi`。测试将 conscribe 警告视作错误，用公开 `isolated_registries` 隔离假实现，并在干净进程中比较运行时模型、生成 Python、JSON Schema 及所有发布 YAML 的校验结果。
 
@@ -2737,8 +2739,8 @@ class BrowserCapability(CapabilityBase):
         # 归档 provides（全限定键，M29 起）：没有 slot；requires 在 trace hook 的 archive 列表里
         "archiver": ("archiver", ["browser.network", "browser.storage", "browser.dom_raw",
                                   "browser.frames", "browser.replay_log"]),
-        # 回放档位受体（M29，§4.14）：策略即开关，none 是默认；YAML 必须写一个
-        "replayability": ("replayability", ["none", "pinned"]),
+        # 回放档位受体（M29，§4.14）：策略即开关，none 是默认；YAML 不写就是 none（§4.2.1）
+        "replayability": {"registry": "replayability", "keys": ["none", "pinned"], "default": "none"},
         "backend": "browser_provider",
     }
 
@@ -3379,7 +3381,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 
 #### `replayability`：回放档位（`ReplayabilityRegistrar`）
 
-`core/capabilities/browser/replay/`：`replayability.py`（Protocol、注册表、基类、`ReplayabilityPlan`、`default_replayability()`）、`none.py`、`pinned.py`、`shims.py`。它是 `BrowserCapability.__wiring__["replayability"]` 上的受体：类级注解加 Python 默认（`none`），与 `typing_rhythm` 同一种形状。单实例受体在生成的 schema 里是必填的，所以**每一个手写的 capability 块**都写 `replayability: {replayability_id: none}`。这一档原名 `off`，用户 2026-10-13 的裁决改成 `none`：YAML 1.1（PyYAML）把裸的 `off` 读成 `false`，以前必须加引号（§4.2.1 的拼写规则）。
+`core/capabilities/browser/replay/`：`replayability.py`（Protocol、注册表、基类、`ReplayabilityPlan`、`default_replayability()`）、`none.py`、`pinned.py`、`shims.py`。它是 `BrowserCapability.__wiring__["replayability"]` 上的受体：类级注解加 Python 默认（`none`），与 `typing_rhythm` 同一种形状。`__wiring__` 的 `default` 也是 `none`，所以 capability 块可以不写 `replayability`，不写就是 `none`，resolved 配置照样记下它（§4.2.1 "单实例策略受体省略即默认"）。这一档原名 `off`，用户 2026-10-13 的裁决改成 `none`：YAML 1.1（PyYAML）把裸的 `off` 读成 `false`，以前必须加引号（§4.2.1 的拼写规则）。
 
 ```python
 @runtime_checkable
@@ -3682,13 +3684,13 @@ iqiyi.com 的 tab 经 `localStorage` 互相同步，开到五个 tab（其中三
 
 #### 回放：网络来源与 miss 策略（M30）
 
-两根 browser 内部的策略轴，都在 `core/capabilities/browser/replay/`，与 `replayability` 同一种受体形状（策略即开关，单实例受体在生成的 schema 里必填）：
+两根 browser 内部的策略轴，都在 `core/capabilities/browser/replay/`，与 `replayability` 同一种受体形状（策略即开关，省略即默认，§4.2.1 "单实例策略受体省略即默认"）：
 
-- **`NetworkSourceRegistrar`**（`network_source`，判别字段 `source_id`；`network_source.py`：`NetworkSourceProtocol` / 注册表 / `NetworkSourceBase` / `default_network_source()`）。`BrowserCapability.__wiring__["network_source"] = ("network_source", ["archive", "live"])`，类级注解加 Python 默认（`live`）。**每一个手写的 capability 块**写 `network_source: {source_id: live}`。
+- **`NetworkSourceRegistrar`**（`network_source`，判别字段 `source_id`；`network_source.py`：`NetworkSourceProtocol` / 注册表 / `NetworkSourceBase` / `default_network_source()`）。`BrowserCapability.__wiring__["network_source"] = {"registry": "network_source", "keys": ["archive", "live"], "default": "live"}`，类级注解加 Python 默认（`live`）。capability 块不写 `network_source` 就是 `live`。
   - `live`（`live.py`，默认）：什么都不拦截，没有旋钮；`intercepts` 为 `False`。
-  - `archive`（`archive_source.py`，`ArchiveNetworkSource`）：从一个已录制 run 的归档回放网络。**它从不把请求放到线上**：这是 `archive` 来源自己的规则，不是框架的定律（用户 2026-10-13 的裁决）。要"miss 时转去真实网络"，那是一个新的网络来源（`NetworkSourceRegistrar` 的新键），不是 `archive` 的旋钮，也不是 miss 策略：miss 策略的决定只有 fulfill 与 fail 两种应答。**不是 dataclass**、手写 `__init__`：它带一个受体 `miss_policy`（`__wiring__ = {"miss_policy": ("miss_policy", ["strict"])}`，类级注解 + `default_miss_policy()`）。旋钮：`matcher: MatcherConfig`（嵌套的 pydantic 子配置：`levels: tuple[Literal["exact", "normalized", "fuzzy"], ...] = ("exact", "normalized")`（至少一级、不重复）、`fuzzy_threshold: float = 0.5`（[0, 1]）、`site_rules: str | None = None`，即规则目录；使用 pydantic dataclass，生成代码导入原类型并保留校验；conscribe 2.0 同样支持用户的 `BaseModel` 类型，不再需要绕开它）、`isolation: Literal["required", "none_acknowledged"] = "required"`、`shift_dates: Literal["none", "all"] = "none"`、`max_fulfill_body_bytes`（默认 64 MiB，校验上限 72 MiB：Chrome 读入的一条 CDP 消息 ≤ 100 MiB，base64 之后约 75 MiB 的 body）、`fulfill_timeout_s`（默认 10 s）、`log_mode: full | summary`（默认 `full`，逐事件），`log_repeat_limit`（默认 3，仅 `summary` 模式使用）。
+  - `archive`（`archive_source.py`，`ArchiveNetworkSource`）：从一个已录制 run 的归档回放网络。**它从不把请求放到线上**：这是 `archive` 来源自己的规则，不是框架的定律（用户 2026-10-13 的裁决）。要"miss 时转去真实网络"，那是一个新的网络来源（`NetworkSourceRegistrar` 的新键），不是 `archive` 的旋钮，也不是 miss 策略：miss 策略的决定只有 fulfill 与 fail 两种应答。**不是 dataclass**、手写 `__init__`：它带一个受体 `miss_policy`（`__wiring__ = {"miss_policy": {"registry": "miss_policy", "keys": ["strict"], "default": "strict"}}`，类级注解 + `default_miss_policy()`）。旋钮：`matcher: MatcherConfig`（嵌套的 pydantic 子配置：`levels: tuple[Literal["exact", "normalized", "fuzzy"], ...] = ("exact", "normalized")`（至少一级、不重复）、`fuzzy_threshold: float = 0.5`（[0, 1]）、`site_rules: str | None = None`，即规则目录；使用 pydantic dataclass，生成代码导入原类型并保留校验；conscribe 2.0 同样支持用户的 `BaseModel` 类型，不再需要绕开它）、`isolation: Literal["required", "none_acknowledged"] = "required"`、`shift_dates: Literal["none", "all"] = "none"`、`max_fulfill_body_bytes`（默认 64 MiB，校验上限 72 MiB：Chrome 读入的一条 CDP 消息 ≤ 100 MiB，base64 之后约 75 MiB 的 body）、`fulfill_timeout_s`（默认 10 s）、`log_mode: full | summary`（默认 `full`，逐事件），`log_repeat_limit`（默认 3，仅 `summary` 模式使用）。
 - **`MissPolicyRegistrar`**（`miss_policy`，判别字段 `miss_policy_id`；`miss_policy.py`）：v1 只有 `strict`（`strict.py`），这根轴存在是因为用户要求留口子。`decide(miss) -> MissDecision`：请求类别（`document` / `benign` / `subresource`）、怎么应答、是否标 `diverged`。
-- 生成配置是三层嵌套的判别联合：capability → `network_source` → `miss_policy`（`archive` 块里必须写 `miss_policy: {miss_policy_id: strict}`）。`network_source` 与 `miss_policy` 都由 browser 的 `declarations.py` 声明，经它进 `collect_registrars()`（§4.2.1）。
+- 生成配置是三层嵌套的判别联合：capability → `network_source` → `miss_policy`（`archive` 块不写 `miss_policy` 就是 `strict`）。`network_source` 与 `miss_policy` 都由 browser 的 `declarations.py` 声明，经它进 `collect_registrars()`（§4.2.1）。
 
 ```yaml
 network_source:
@@ -3696,7 +3698,7 @@ network_source:
   isolation: required            # 默认；none_acknowledged = 明说不隔离
   shift_dates: none              # none | all；独立于 base_time，四组合均合法
   matcher: {levels: [exact, normalized], fuzzy_threshold: 0.5, site_rules: configs/replay_rules}
-  miss_policy: {miss_policy_id: strict}
+  miss_policy: {miss_policy_id: strict}   # 默认，可以不写
 ```
 
 **隔离由来源推出，provider 上没有并列的布尔**（不做 `local_chrome.network_isolation` 这样的开关：`source: live` + 隔离开着会让每个请求莫名失败，`source: archive` + 隔离关着只靠单向检查才能发现）。`isolation: required` 时 capability 把 `chrome_switches.NETWORK_ISOLATION_ARGS`（`--host-resolver-rules=MAP * ~NOTFOUND` 与 `--no-proxy-server`）接在档位的开关之后经 `LAUNCH_ARGS` 交给声明了 `NETWORK_ISOLATION` 的 provider（§4.9.x；v1 只有 `local_chrome`），provider 的 `isolation_conflicts()` 报出会让隔离失效的旋钮；不支持的 provider 在 `prepare()` 报错（`check_setup`）、点名 provider 与来源，除非写了 `isolation: none_acknowledged`；那时不传隔离开关，只靠 Fetch 拦截（会有 Fetch 看不见的外联，下面"回放实测"）。`--no-proxy-server` 是必需的：macOS 上 Chrome 用系统代理、不读 `http_proxy`，有代理时 resolver 规则只作用于代理主机，一个 localhost 代理就能绕过黑洞。
@@ -3980,9 +3982,9 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 
 **学生一侧是暂定的，导出冻结（用户 2026-10-13 的裁决）。** 这一期交付的是 teacher 轨迹：录制、回放、分叉。学生一侧（消息怎么组装、"学生看截图、输出坐标"）挪到下一期再定。导出包（`spectragent/export/`、`spectragent export`、`configs/flywheel/export_sft.yaml`、`configs/flywheel/ui_tars_student.yaml`）冻结：不加功能，不做新的设计决定；只为横切的改动（改名、manifest 与台账的变化、null 的规则）跟着调整，让它的测试保持全绿。本节写的是冻结时的形状。**例外（用户 2026-10-25 的裁决）**：导出可以后处理 teacher 在没落定的采集上做的等待动作（下面"等待动作"）；除此之外照旧冻结。
 
-#### 配置：运行根的两个可选层
+#### 配置：运行根的可选层
 
-导出不另立根（§4.2.1 实测）：`ExporterRegistrar`（`exporter_id`，`spectragent/export/_registrar.py`）与 `ActionTranslatorRegistrar`（`translator_id`，`spectragent/export/translate/_registrar.py`）进 `collect_registrars()`，是运行根的两个可选顶层层。导出用的 YAML 有一个 `exporter:` 块（`configs/flywheel/export_sft.yaml`），可选地再有运行根自己的 `eval_loader:` / `task_loader:` 块，去污染与泄漏扫描经它们读基准数据（见"基准数据"）：
+导出不另立根（§4.2.1 实测）：`ExporterRegistrar`（`exporter_id`，`spectragent/export/_registrar.py`）与 `ActionTranslatorRegistrar`（`translator_id`，`spectragent/export/translate/_registrar.py`）都进 `collect_registrars()`；`exporter` 是运行根的可选顶层层，`action_translator` 只能内联，翻译器只写在导出器的 `translator` 块里（§4.2.1 "只能内联的层"）。导出用的 YAML 有一个 `exporter:` 块（`configs/flywheel/export_sft.yaml`），可选地再有运行根自己的 `eval_loader:` / `task_loader:` 块，去污染与泄漏扫描经它们读基准数据（见"基准数据"）：
 
 ```yaml
 exporter:
@@ -4022,7 +4024,7 @@ exporter:
 
 `length` 与学生要一致：学生每轮都留截图（`memory: simple`），样本长度随段增长：发布的学生 30 步的整段在 1280×720 上光图像就约 36k token（`qwen_vl`），所以发布的预算是 65536；训练器的上下文更短时要换步数更少的学生，否则导出按名字失败（`test_validate.py` 用发布的两份配置渲染一整段核对）。
 
-- **`ExporterBase`**（不是 dataclass，手写关键字 `__init__`，与 `trace_branches` 同一写法）：上面每个任务字段都是 `__init__` 的 `Annotated` 参数：`sources_root: str | None`、`sources: list[str] | None`、`filters: ExportFilters | None`、`split: SplitSettings | None`、`decontamination: Decontamination | None`、`student_run_config: str`（必填）、`thought_source: Literal["teacher", "none"]`、`thought_index_refs: Literal["drop", "keep"]`、`wait_actions: Literal["keep", "drop_when_capped"]`（默认 `keep`，类型 `settings.py::WaitActions`）、`thought_rewrite_cache: str | None`、`length: LengthBudget | None`、`output_dir: str`（必填），以及 v1 所有导出器共有的 `sample: Literal["per_step"]`、`image_store: Literal["files"]`。`sources` 使用不可变元组默认值，生成配置直接显示真实的数组默认值。嵌套旋钮是 pydantic dataclass，各在 `spectragent/export/settings.py`（`ExportFilters`、`SplitSettings`、`Decontamination`、`BenchmarkRef`、`LengthBudget`）。conscribe 2.0 直接导入这些类型，已注解的受体不再生成遮蔽模块的存根；`require_eval` 复用 `core/data_loader/task/require_eval.py::RequireEval`（M31 的同一个类型、同一个语义）。`translator` 是单实例受体：`__wiring__ = {"translator": "action_translator"}`、类级注解、Python 默认 `default_translator()`（`identity`）。`thought_rewrite_llms` 是第二个受体：`__wiring__` 接 `llm` 注册表，`__init__` 的参数 `Annotated[list[BaseChatModel] | None, Field(max_length=1)]`，与 `prompt_contribution` 的 `helper_llms` 同一形状（至多一个的列表：单实例受体不能省略），只服务等待动作的 thought 改写；它与 `thought_rewrite_cache` 在 `wait_actions: drop_when_capped` 且 `thought_source: teacher` 时必填，其余时候写了就拒绝，构造时检查（组装即失败，`settings.py::thought_rewrite_problem` 一处规则，`ExportRunner` 对注入后的值再查一遍）。自己没有旋钮的导出器不写 `__init__`（conscribe 读到的就是基类的签名）；有自己旋钮的导出器要写出完整签名。`af-regenerate-and-verify` 的检查 1 证明任务字段与 `translator: Union[...]` 都在生成的每键配置上（`tests/test_export/test_registrar.py`）。
+- **`ExporterBase`**（不是 dataclass，手写关键字 `__init__`，与 `trace_branches` 同一写法）：上面每个任务字段都是 `__init__` 的 `Annotated` 参数：`sources_root: str | None`、`sources: list[str] | None`、`filters: ExportFilters | None`、`split: SplitSettings | None`、`decontamination: Decontamination | None`、`student_run_config: str`（必填）、`thought_source: Literal["teacher", "none"]`、`thought_index_refs: Literal["drop", "keep"]`、`wait_actions: Literal["keep", "drop_when_capped"]`（默认 `keep`，类型 `settings.py::WaitActions`）、`thought_rewrite_cache: str | None`、`length: LengthBudget | None`、`output_dir: str`（必填），以及 v1 所有导出器共有的 `sample: Literal["per_step"]`、`image_store: Literal["files"]`。`sources` 使用不可变元组默认值，生成配置直接显示真实的数组默认值。嵌套旋钮是 pydantic dataclass，各在 `spectragent/export/settings.py`（`ExportFilters`、`SplitSettings`、`Decontamination`、`BenchmarkRef`、`LengthBudget`）。conscribe 2.0 直接导入这些类型，已注解的受体不再生成遮蔽模块的存根；`require_eval` 复用 `core/data_loader/task/require_eval.py::RequireEval`（M31 的同一个类型、同一个语义）。`translator` 是单实例受体：`__wiring__ = {"translator": "action_translator"}`、类级注解、Python 默认 `default_translator()`（`identity`）。`thought_rewrite_llms` 是第二个受体：`__wiring__` 接 `llm` 注册表，`__init__` 的参数 `Annotated[list[BaseChatModel] | None, Field(max_length=1)]`，与 `prompt_contribution` 的 `helper_llms` 同一形状（至多一个的列表：没有默认策略的单实例受体必填，空列表才写得出"不配"），只服务等待动作的 thought 改写；它与 `thought_rewrite_cache` 在 `wait_actions: drop_when_capped` 且 `thought_source: teacher` 时必填，其余时候写了就拒绝，构造时检查（组装即失败，`settings.py::thought_rewrite_problem` 一处规则，`ExportRunner` 对注入后的值再查一遍）。自己没有旋钮的导出器不写 `__init__`（conscribe 读到的就是基类的签名）；有自己旋钮的导出器要写出完整签名。`af-regenerate-and-verify` 的检查 1 证明任务字段与 `translator: Union[...]` 都在生成的每键配置上（`tests/test_export/test_registrar.py`）。
 - **`Exporter` Protocol**（`_registrar.py`）：`exporter_id`、只读的 `translator`、上面的任务字段、`root()`（sources 根的绝对路径）与 `format(rendered: RenderedSample, images: ImageStore) -> ExportRecord`。`ImageStore.put(data, media_type) -> <数据集里的相对路径>`、`ExportRecord{sample_id, record, images}` 也在 `_registrar.py`，`RenderedSample` 在 `render.py`（它不 import `_registrar`）。Protocol 里的 `translator` 写成只读 property：生成的存根把受体类型写成 `ActionTranslatorBase`，可变属性在 Protocol 里是不变型的。
 - **翻译器旋钮**：`ActionTranslatorBase.untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"] = "drop_step"`；`index_to_coordinate` 另有 `occlusion: Literal["none", "check"] = "check"`、`occlusion_unknown: Literal["raise", "untranslatable"] = "raise"`。翻译器没有受体，旋钮是手写 `__init__` 的关键字参数。
 - **CLI**：`spectragent export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer.for_config(raw)` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
@@ -5293,14 +5295,14 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `CapabilityRegistrar` | `capability_id` (flat) | 能力 = ActionGroup + Resolver 合体；持 backend wired field | ✅（BrowserCapability、AndroidCapability；docker / tool_sandbox / desktop_vm / gpu_profiling 待） |
 | `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern` / `browser_use` / `airtop` / `agentbay` / `hyperbrowser`。文件位于 `core/capabilities/browser/backends/` | ✅ |
 | `AndroidProviderRegistrar` | `provider_id` (flat) | Android capability 的 backend：`local_emulator`（从 AVD 无头启动官方模拟器，每 run 一个私有 adb server 与实验密钥，§11.2）。文件位于 `core/capabilities/android/backends/` | ✅（android 内部） |
-| `AndroidTaskOracleRegistrar` | `oracle_id` (flat) | Android 的任务裁判：`none`（不选基准；与 browser 的单实例受体一样必填，每个手写的 capability 块都写 `task_oracle: {oracle_id: none}`）/ `androidworld`（AndroidWorld 自己的服务在它自己的 venv 里、进程外负责每个任务的开局、判分与收尾），`core/capabilities/android/oracle/`；`AndroidCapability.__wiring__["task_oracle"]` 受体，`read_score`（`TaskOracle`）与 `check_setup` 都问它；设备在 ADB 之外要提供的（模拟器 gRPC、root 的 adbd、客体 Wi-Fi、随 run 丢掉改动的设备）由它推出、交给 provider 的 `open()`，provider 上没有并列的开关（§11.2 "任务裁判与 `AndroidSetup`"） | ✅（android 内部） |
+| `AndroidTaskOracleRegistrar` | `oracle_id` (flat) | Android 的任务裁判：`none`（不选基准，也是默认：capability 块不写 `task_oracle` 就是 `none`，§4.2.1 "单实例策略受体省略即默认"）/ `androidworld`（AndroidWorld 自己的服务在它自己的 venv 里、进程外负责每个任务的开局、判分与收尾），`core/capabilities/android/oracle/`；`AndroidCapability.__wiring__["task_oracle"]` 受体，`read_score`（`TaskOracle`）与 `check_setup` 都问它；设备在 ADB 之外要提供的（模拟器 gRPC、root 的 adbd、客体 Wi-Fi、随 run 丢掉改动的设备）由它推出、交给 provider 的 `open()`，provider 上没有并列的开关（§11.2 "任务裁判与 `AndroidSetup`"） | ✅（android 内部） |
 | `DockerProviderRegistrar` | `provider_id` (flat) | Docker capability 的 backend（`local_docker` / `ssh_docker` ...） | P2 占位待实现 |
 | `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（3 种；协议兼容性在 `prepare()` 校验，SummaryMemory 待实现） |
 | `RestorerRegistrar` | `restorer_id` (flat) | 检查点恢复策略：把环境恢复到源 run 第 t 步之前的状态（`prefix_replay`；快照恢复 `capability_checkpoint` 是已知的下一个），`core/loops/restore/`；`BranchLoop.__wiring__["restorer"]` 受体，进 `collect_registrars()`（§4.1） | M31 |
 | `HookRegistrar` | `hook_id` (flat) | Lifecycle hooks (AOP) | ✅（trace_writer / live_monitor） |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | 评测策略 | 🚧 partial |
 | `ExporterRegistrar` | `exporter_id` (flat) | 训练导出的格式（v1 `openai_messages`；以后 `llamafactory` / `ms_swift` / `trl`），`spectragent/export/_registrar.py`；`ExporterBase` 持导出任务字段与 `translator` 受体，运行根的可选顶层层（与 `evaluator` 同一先例），进 `collect_registrars()`（§4.15） | M32 |
-| `ActionTranslatorRegistrar` | `translator_id` (flat) | 训练导出时把 teacher 的动作空间换成学生的（`identity` / `index_to_coordinate`），`spectragent/export/translate/_registrar.py`；`ExporterBase.__wiring__["translator"]` 受体，进 `collect_registrars()`（§4.15） | M32 |
+| `ActionTranslatorRegistrar` | `translator_id` (flat) | 训练导出时把 teacher 的动作空间换成学生的（`identity` / `index_to_coordinate`），`spectragent/export/translate/_registrar.py`；`ExporterBase.__wiring__["translator"]` 受体，只能内联（只写在导出器的 `translator` 块里），进 `collect_registrars()`（§4.15） | M32 |
 | `TaskLoaderRegistrar` | `benchmark_name` (flat) | 任务数据加载 | ✅ |
 | `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all` / `last`（M33：每个源 run 最后一个候选，原路径回放段用，§4.16），`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `collect_registrars()`（§4.10） | M31；`last` M33 |
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
@@ -5308,9 +5310,9 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
 | `TaskSetupRegistrar` | `setup_type` (flat) | 任务 setup 类（`SetupBase` 子类），契约与注册表在 `schemas/task.py`；每个 capability 包注册自己的 setup 类，并在 `declarations.py` 里声明为 `TASK_SETUP`；`TaskDefinition.setup` 按 `setup_type` 在已注册的 setup 里分派（§4.10）。不是 YAML 配置层（与 `ObservationRegistrar` 同一先例） | ✅ `browser`、`android` |
 | `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，只作标签的截图 `browser.frames`，回放的 `browser.replay_log`（§4.14），进 `collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
-| `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
-| `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
-| `MissPolicyRegistrar` | `miss_policy_id` (flat) | 回放 miss 的应答策略（v1 只有 `strict`），`core/capabilities/browser/replay/miss_policy.py`；`ArchiveNetworkSource.__wiring__["miss_policy"]` 受体（嵌套在 `network_source` 里），`archive` 块里必填（§4.14 "回放"） | ✅ M30（browser 内部） |
+| `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，capability 块不写就是 `none`（§4.2.1、§4.14） | ✅（browser 内部，M29） |
+| `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；capability 块不写就是 `live`（§4.2.1、§4.14 "回放"） | ✅ M30（browser 内部） |
+| `MissPolicyRegistrar` | `miss_policy_id` (flat) | 回放 miss 的应答策略（v1 只有 `strict`），`core/capabilities/browser/replay/miss_policy.py`；`ArchiveNetworkSource.__wiring__["miss_policy"]` 受体（嵌套在 `network_source` 里），`archive` 块不写就是 `strict`（§4.2.1、§4.14 "回放"） | ✅ M30（browser 内部） |
 | `NegotiationResultRegistrar` | `result_type` (flat) | 协商结果类型；内置 `observation` / `action` / `archive` 自动注册，自定义协商协议注册自己的结果类型并作为 `target_class` 传给 `negotiate()` | ✅ |
 | `DOMCleanerRegistrar` | `cleaner_type` (flat) | DOM 清洗策略：`browser_use` / `skyvern` / `skyvern_hit_test`（M32：skyvern 加页内命中测试，§4.12） | ✅（browser 内部） |
 | `DOMSerializerRegistrar` | `serializer_type` (flat) | DOM 序列化策略 | ✅（browser 内部） |
@@ -5366,21 +5368,19 @@ agent:
     # browser_use.dom | browser_use.dom_vision —— 决定什么进模型上下文、以及有哪些点击动词。
     # max_steps / max_actions_per_step 归 loop，agent 不持有第二份。
     flash_mode: false
-
-agent_loop:
-  - loop_id: react
-    max_steps: 100
-    max_actions_per_step: 1
-
-llm:
-  - model_type: openai
-    provider:
-      name: direct
+    # Loop、模型与 memory 都写在 agent 块里：agent_loop 与 memory 只能内联，
+    # llm 是 agent 必填的单实例受体（§4.2.1）
+    agent_loop:
+      loop_id: react
+      max_steps: 100
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
       model: gpt-4o
-
-memory:
-  - memory_id: sliding_window
-    window_size: 20
+      provider: {name: direct}
+    memory:
+      memory_id: sliding_window
+      window_size: 20
 
 capability:
   - capability_id: browser
@@ -5389,6 +5389,11 @@ capability:
     viewport_height: 720
     # observation: / archiver: 是 provides 声明（没有 slot）：不在这里填值，
     # 填了会被 Composer 以 UnresolvedWiringError 拒绝（§4.2.1）
+    # 没写的策略块就是各自的默认：mouse_trajectory / typing_rhythm 是 instant，
+    # replayability 是 none，network_source 是 live（§4.2.1 "单实例策略受体省略即默认"）；
+    # 决定 agent 看到什么的两个块必填
+    dom_cleaner: {cleaner_type: browser_use}
+    dom_serializer: {serializer_type: text}
     backend:
       provider_id: local_chrome     # 切 backend 只改这一行
       headless: true                # provider 自身的 conscribe 字段
@@ -5436,7 +5441,7 @@ hook:
       - archiver_id: browser.dom_raw
 ```
 
-评测配置不写 `archive`，归档关闭（顶层 `archiver:` 段会被拒绝）；但每个手写的 capability 块都写 `replayability: {replayability_id: none}` 与 `network_source: {source_id: live}`（单实例受体必填，与 `mouse_trajectory`、`typing_rhythm` 一样）。
+评测配置不写 `archive`，归档关闭（顶层 `archiver:` 段会被拒绝）；也可以不写 `replayability` 与 `network_source`，不写就是 `none` 与 `live`，与 `mouse_trajectory`、`typing_rhythm` 一样（§4.2.1 "单实例策略受体省略即默认"）。
 
 **回放 run（M30，§4.14 "回放"；发布的完整配置在 `configs/flywheel/replay_*.yaml`）**。它与录制配置只差网络来源、T0 与 fixture 用的路由开关；源 run 目录是每个任务不同的输入，经任务上下文的 `replay_archive` 送到 `prepare()` 的检查与 setup（`spectragent run --replay-archive DIR`；不给它，`prepare()` 就拒绝这份配置），不写在配置里：
 
@@ -5464,8 +5469,7 @@ hook:
 ```yaml
 agent:
   - agent_id: swe_agent
-agent_loop:
-  - loop_id: codeact          # 同一个 agent，换 loop
+    agent_loop: {loop_id: codeact}   # 同一个 agent，换 loop；llm 与 memory 也写在这里
 capability:
   - capability_id: docker
     backend:
@@ -5479,8 +5483,7 @@ environment:
 ```yaml
 agent:
   - agent_id: gaia_agent
-agent_loop:
-  - loop_id: plan_execute
+    agent_loop: {loop_id: plan_execute}
 capability:
   - capability_id: browser
     backend: { provider_id: local_chrome }
@@ -5767,7 +5770,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **任务裁判与 `AndroidSetup`。** `androidworld` 负责 AndroidWorld 每个任务的开局、判分与收尾，也管着 AndroidWorld 的服务进程：独立的 venv，钉住 AndroidWorld 的 commit（它钉死的依赖几乎肯定与 Spectragent 的锁文件冲突），teardown 时关掉。它在进程外：AndroidWorld 的 FastAPI 服务负责初始化、判分与拆除，观测与动作走我们自己的桥（这个服务没有界面树的端点，树由我们提供）。Android 的开局要求类 `AndroidSetup` 由 Android 包自己登记（§4.10）；选了 `androidworld` 时，AndroidWorld 的任务数据（任务类名与参数，含种子）对 capability 是不透明的，经 setup 原样交给裁判。判分要读设备上的数据库、文件与设置，所以 `AndroidCapability` 实现 `TaskOracle`（§4.9）：Runtime 的判分时间点（§4.2）经它读出判分，写成判分记录（§5.3），评测器从记录读（§4.11）；选 `none` 时 `read_score` 返回 `None`，不留记录。阶段 3 再加 `android.state_dump` 归档器，在 run 开头与结尾各转储一次设备状态，让离线重新实现的判定能对变体重评。AndroidWorld 的服务不进 Docker，在它自己的 venv 里对接原生 arm64 模拟器：检出钉在 commit `55ddaf5edc6f6c25673aed343907d5b9dca66f84`（`oracle/androidworld.py::PINNED_COMMIT`），服务由启动器起、补丁只在运行时打，每个 run 的模拟器都只读开机（2026-11-01 验证，本地的 `tmp/androidworld/NOTES.md`，不入库），怎样接见下面四段。
 
-**裁判的受体与设备的需要（2026-11-01 实施）。** 任务裁判是 `AndroidCapability` 的 `task_oracle` 受体（`AndroidTaskOracleRegistrar`，判别字段 `oracle_id`，`core/capabilities/android/oracle/`），与 browser 的单实例受体一样必填：每个手写的 capability 块都写 `task_oracle: {oracle_id: none}` 或 `androidworld`。capability 调它四处：`check_setup(oracle_task)`（`AndroidCapability` 因此实现 `SetupCheck`，`prepare()` 里问，setup 再问一遍）、设备起来之后的 `start(会话, oracle_task)`、判分时间点的 `read_score()`（`AndroidCapability.read_score` 原样转交，`TaskOracle`）、teardown 最先的 `stop()`（在设备队列清空与 provider 释放之前；setup 半途失败之后、重复调用都安全）。`AndroidSetup.oracle_task` 是任务给裁判的数据，经 setup 的同名键原样交给裁判，capability 不读它；`none` 拒绝带着裁判数据的任务，否则这个任务不开局、不判分地跑完，什么都不说。裁判在 ADB 之外对设备的需要（`DeviceNeeds`：`emulator_grpc`、`root`、`guest_wifi`、`fresh`）是裁判自己的属性 `device_needs`，capability 把它交给 provider 的 `open(needs)`。provider 满足不了的由它的 `unmet_needs(needs)` 逐项说出；capability 的 `check_setup` 先问 provider、再问裁判，拒绝时同时点名裁判、需要与 provider（§4.14 "点名 provider 与来源" 的先例），`open()` 动手之前也先问它。provider 上因此没有并列的开关，与 §4.14 隔离由网络来源推出是同一条规则：选了 `androidworld`，设备就带着这三样起来，选 `none` 就都不带。`local_emulator` 在 `open()` 返回之前、同一个 `boot_timeout_s` 之内满足它们（2026-11-01 在本机实测）：`emulator_grpc` 是 `-grpc <每 run 挑的空闲端口> -grpc-use-token`，地址取模拟器日志里 "Started GRPC server at" 那一行，token 留在模拟器写在 run 的 `HOME` 下的发现文件里（`Library/Caches/TemporaryItems/avd/running/pid_<模拟器 PID>.ini`，PID 就是 provider 起的那个进程），会话只带这个文件的路径（`EmulatorAccess.grpc`），token 本身不抄到别处；macOS 以外发现文件写在哪里没有测，这一项在那里被拒。`root` 发 `root:`，adbd 答 "restarting adbd as root" 之后设备对所有客户端断开约 1.5 s，等到 `id -u` 是 0；所以它在会话交出去之前做，AndroidWorld 的服务自己的 `adb root` 就不再让设备断开。刚开机完时 `root:` 有时撞上 adbd 自己在重启（服务器答 `FAIL closed`，或者 adbd 一个字不答就关掉，一次 sweep 里连着三次），所以只要 shell 还不是 root 就再发。`guest_wifi` 等到某张路由表里有一条经 `wlan0` 的 IPv4 默认路由（实测是 `default via 10.0.2.2 dev wlan0 table 1016`；表号随网卡的序号变，所以不写死），开机完成后 4–7 s 来；约 24 次开机里有 3 次一直没来（只读开机、装好的 AVD 也一样），任务在 `boot_timeout_s` 之后失败，报错带上客体当时经 `wlan0` 的路由。`fresh` 是 run 的改动在释放设备时丢掉：`local_emulator` 以 `read_only` 满足它，`read_only: false` 时拒绝它。会话另带 `EmulatorAccess`：控制台端口、模拟器与 run 的 adb server 共用的 `HOME`、那个 server 跑的 adb。第二个 adb 客户端照它起：`adb emu` 在客户端自己的 `HOME` 下找控制台 token，版本不同的 adb 客户端会重启 server。
+**裁判的受体与设备的需要（2026-11-01 实施）。** 任务裁判是 `AndroidCapability` 的 `task_oracle` 受体（`AndroidTaskOracleRegistrar`，判别字段 `oracle_id`，`core/capabilities/android/oracle/`），与 browser 的单实例策略受体一样省略即默认：capability 块不写 `task_oracle` 就是 `none`，选基准时写 `androidworld`（§4.2.1 "单实例策略受体省略即默认"）。capability 调它四处：`check_setup(oracle_task)`（`AndroidCapability` 因此实现 `SetupCheck`，`prepare()` 里问，setup 再问一遍）、设备起来之后的 `start(会话, oracle_task)`、判分时间点的 `read_score()`（`AndroidCapability.read_score` 原样转交，`TaskOracle`）、teardown 最先的 `stop()`（在设备队列清空与 provider 释放之前；setup 半途失败之后、重复调用都安全）。`AndroidSetup.oracle_task` 是任务给裁判的数据，经 setup 的同名键原样交给裁判，capability 不读它；`none` 拒绝带着裁判数据的任务，否则这个任务不开局、不判分地跑完，什么都不说。裁判在 ADB 之外对设备的需要（`DeviceNeeds`：`emulator_grpc`、`root`、`guest_wifi`、`fresh`）是裁判自己的属性 `device_needs`，capability 把它交给 provider 的 `open(needs)`。provider 满足不了的由它的 `unmet_needs(needs)` 逐项说出；capability 的 `check_setup` 先问 provider、再问裁判，拒绝时同时点名裁判、需要与 provider（§4.14 "点名 provider 与来源" 的先例），`open()` 动手之前也先问它。provider 上因此没有并列的开关，与 §4.14 隔离由网络来源推出是同一条规则：选了 `androidworld`，设备就带着这三样起来，选 `none` 就都不带。`local_emulator` 在 `open()` 返回之前、同一个 `boot_timeout_s` 之内满足它们（2026-11-01 在本机实测）：`emulator_grpc` 是 `-grpc <每 run 挑的空闲端口> -grpc-use-token`，地址取模拟器日志里 "Started GRPC server at" 那一行，token 留在模拟器写在 run 的 `HOME` 下的发现文件里（`Library/Caches/TemporaryItems/avd/running/pid_<模拟器 PID>.ini`，PID 就是 provider 起的那个进程），会话只带这个文件的路径（`EmulatorAccess.grpc`），token 本身不抄到别处；macOS 以外发现文件写在哪里没有测，这一项在那里被拒。`root` 发 `root:`，adbd 答 "restarting adbd as root" 之后设备对所有客户端断开约 1.5 s，等到 `id -u` 是 0；所以它在会话交出去之前做，AndroidWorld 的服务自己的 `adb root` 就不再让设备断开。刚开机完时 `root:` 有时撞上 adbd 自己在重启（服务器答 `FAIL closed`，或者 adbd 一个字不答就关掉，一次 sweep 里连着三次），所以只要 shell 还不是 root 就再发。`guest_wifi` 等到某张路由表里有一条经 `wlan0` 的 IPv4 默认路由（实测是 `default via 10.0.2.2 dev wlan0 table 1016`；表号随网卡的序号变，所以不写死），开机完成后 4–7 s 来；约 24 次开机里有 3 次一直没来（只读开机、装好的 AVD 也一样），任务在 `boot_timeout_s` 之后失败，报错带上客体当时经 `wlan0` 的路由。`fresh` 是 run 的改动在释放设备时丢掉：`local_emulator` 以 `read_only` 满足它，`read_only: false` 时拒绝它。会话另带 `EmulatorAccess`：控制台端口、模拟器与 run 的 adb server 共用的 `HOME`、那个 server 跑的 adb。第二个 adb 客户端照它起：`adb emu` 在客户端自己的 `HOME` 下找控制台 token，版本不同的 adb 客户端会重启 server。
 
 **`androidworld` 裁判（2026-11-01 实施）。** 一个任务是一个 run。`start`：启动器在 AndroidWorld 自己的解释器里起它的服务（`<root>/.venv/bin/python -I -u`），在 run 自己的、系在 Python 进程上的进程组里（`processes.py`），听一个空闲的回环端口，环境只放白名单（`PATH`、`LANG`、模拟器的 `HOME`、裁判自己的 `TMPDIR`、`GRPC_ENABLE_FORK_SUPPORT=0`、回环的 `NO_PROXY`）：android_env 的日志级别是 INFO 时把整个环境写进日志。等 `/health` 有界（`start_timeout_s`，实测 17–32 s，重拍应用快照在内）。然后开局：`/suite/reinitialize`（任务的 family 与套件种子，`n_task_combinations = index + 1`：实例的种子只由套件种子、任务与下标决定）；目标在开局之前就定了的任务，先拿 `/task/goal` 比对任务列表记下的目标，不同就拒绝（参数按地址重建不出来，或者检出与依赖和生成列表时的不同）；`/task/initialize`；`/reset?go_home=`。每一次调用限时 `call_timeout_s`。`read_score`：`/task/score`，只受 run 的 `oracle_timeout` 限制；分数可以是数或布尔（`RetroPlaylistDuration` 对名字不对的歌单答 `False`，AndroidWorld 自己的 runner 把它当 0）；HTTP 500、不是 JSON 对象、没有有限的分数、服务连不上，都抛普通的 `AndroidWorldError`（消息带服务日志的最后几行，因为日志随 run 删掉），environment 记成 `not_scored`；裁判从不吞 `CancelledError`。交回的 `OracleReading` 的 `oracle_version` 是钉住的 commit，来源是 family、任务键、下标、套件种子、实例种子与参数的 sha256；目标在设备上生成的任务另带设备给的目标。`stop`：`/task/tear_down`（尽力而为，失败记 WARNING：设备的改动随 run 丢掉，这由 `fresh` 保证），再停服务的进程组：SIGTERM，5 s 后对整组 SIGKILL，它的 `adb logcat` 子进程在内。服务一次只处理一个请求，也取消不了进行中的那个：被 `oracle_timeout` 切断的判分还在服务里跑，tear-down 排在它后面，直到自己的限时；每个服务都是 run 自己的，之后没有谁再等它。`check_setup` 拒绝，一次报全：`root` 不是目录、没有 venv 的解释器、没有检出（`src/server/android_server.py`）、检出的 commit 不是钉住的那个（直接读 `.git`，不需要 git）、没有缓存的无障碍转发器 APK、任务没有或不是 AndroidWorld 任务、任务列表由别的 commit 生成、任务是信息检索任务、任务在 `UNREPRODUCIBLE` 里（服务按地址重建不出列表记下的那一个）。裁判对设备的需要里有 `fresh`：服务开局时从设备重拍每个应用的快照，任务从这些快照复位应用，改动若留在 AVD 里，一个 run 删掉的联系人或一次失败的 tear-down 就成了之后每个 run 的开局。
 

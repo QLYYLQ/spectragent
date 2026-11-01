@@ -10,6 +10,7 @@ AndroidProviderRegistrar = create_registrar(
     "android_provider",
     BaseAndroidProvider,
     discriminator_field="provider_id",
+    inline_only=True,
 )
 
 

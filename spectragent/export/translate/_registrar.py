@@ -108,6 +108,7 @@ ActionTranslatorRegistrar = create_registrar(
     "action_translator",
     ActionTranslator,
     discriminator_field="translator_id",
+    inline_only=True,
 )
 
 

@@ -123,6 +123,7 @@ MissPolicyRegistrar = create_registrar(
     "miss_policy",
     MissPolicyProtocol,
     discriminator_field="miss_policy_id",
+    inline_only=True,
 )
 
 

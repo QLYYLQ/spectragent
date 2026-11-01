@@ -18,8 +18,15 @@ from spectragent.export import (
 
 
 def _compose(block: dict[str, object]) -> object:
-    raw = {"action_translator": [block]}
-    return ConfigComposer.for_config(raw).compose(raw).single("action_translator")
+    """The translator an exporter block holds: the layer takes no top-level section."""
+    exporter = {
+        "exporter_id": "openai_messages",
+        "student_run_config": "student.yaml",
+        "output_dir": "out",
+        "translator": block,
+    }
+    raw = {"exporter": [exporter]}
+    return ConfigComposer.for_config(raw).compose(raw).single("exporter").translator
 
 
 def test_the_shipped_translators() -> None:

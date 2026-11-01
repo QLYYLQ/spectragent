@@ -361,7 +361,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
   ```
 
 - `pinned` 档位要求每个 run 从新建的 profile 启动：`user_data_dir`、不是 `Default` 的 `profile_directory`、`extra_args` 里的 `--user-data-dir` 都会被拒。profile 目录只由 YAML 决定，环境变量 `CHROME_USER_DATA_DIR` 不再起作用。provider 上与档位矛盾的旋钮也会被拒，值相同的放行：`deterministic_rendering: true`（它的 V8 种子与档位的 `random_seed` 不同时），与档位不同的 `force_device_scale_factor` 或 `user_agent`，`extra_args` 里由档位负责、值不同的开关。`random_seed` 至少是 1。评测 run 和 anti-bot 实验保持 `none`：pinned 会改变站点的行为，本身也是 anti-bot 能识别的特征。
-- 每个手写的 capability 块都要写下面两个块。它们是生成 schema 里必填的单实例受体，不录制的配置也要写：
+- capability 块不写下面两个块时，就是这两行的值，resolved 配置照样记下它们（architecture §4.2.1）；录制与回放才改写它们。`archive` 块里的 `miss_policy` 同样可以不写，不写就是 `strict`：
 
   ```yaml
   replayability: { replayability_id: none }     # 录制用 pinned
@@ -558,6 +558,7 @@ task_loader:
 Loop 一侧：
 
 ```yaml
+# agent[0].agent_loop：Loop 只写在 agent 块里
 agent_loop:
   loop_id: branch
   max_steps: 30
@@ -643,6 +644,7 @@ hook:
 - `note` 可省，原样记进 trace。
 
 ```yaml
+# agent[0].agent_loop：Loop 只写在 agent 块里
 agent_loop:
   loop_id: branch
   history_source: restored         # 必须：source 会在开跑前被拒
@@ -895,8 +897,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ## 排错
 
 - `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'none', 'pinned'`：YAML 里写了裸的 `off`（旧名字），改成 `replayability_id: none`。翻译器的 `occlusion: off` 同理，改成 `occlusion: none`。
-- `The top-level 'archiver' section is not accepted: archiver instances are written only inline, under trace_writer.archive. ...`：把顶层 `archiver:` 段里的条目挪进 `trace_writer` 的 `archive` 列表。
-- 校验错误 `environment.0.capabilities.0.replayability`（或 `network_source`）下面写着 `Field required`：capability 块缺必填的受体块，补上 `replayability` 和 `network_source`。`network_source: archive` 块里还要写 `miss_policy: { miss_policy_id: strict }`。
+- `layer 'archiver' is inline-only; write its instances under: hook[trace_writer].archive`（别的只能内联的层同理，例如 `layer 'replayability' is inline-only; write its instances under: capability[browser].replayability`）：这一层不能写成顶层段，把条目挪进消息点名的那个块，归档器挪进 `trace_writer` 的 `archive` 列表（architecture §4.2.1）。没点名任何 agent 家族的配置里，顶层的 `agent_loop`、`memory` 或 `restorer` 段报的是这次组装没有这一层，同样挪进 agent 块。
 - `UnresolvedWiringError: environment[0].capabilities[0].archiver: ...`：归档器写进了 capability 块，挪到 `trace_writer.archive`。
 - `IncompatibleArchiveError`：`trace_writer.archive` 里同一个键写了两次、两个 hook 都带了归档列表，或者环境里没有提供这个归档器的 capability。每个归档器只写一次，只写在一个 trace_writer 上；消息点名请求方和环境实际提供的归档器。
 - `BrowserCooperationError: BrowserCapability cannot run this configuration (N problem(s); ...)`：每一行是一个协作问题，点名两边。常见的有：云 provider 没有 `NETWORK_CAPTURE`，换 `local_chrome`；`browser.network require_replayable=true ↔ replayability: none`，录制改用 pinned，或给 `browser.network` 写 `require_replayable: false`；profile 不是新建的，去掉 `user_data_dir`、非默认的 `profile_directory` 或 `extra_args` 里的 `--user-data-dir`；pinned 与 provider 的旋钮冲突；`base_time: from_archive` 配了 `live` 来源；`network_source: archive ↔ task context: no replay_archive`，给 `--replay-archive`（只适用于 react 回放配置），或者经 `trace_branches` 任务运行；`live` 来源却给了 `replay_archive`；回放没有绑定 `browser.replay_log`，或者绑了 `browser.network`（都是把 `browser.network` 换成 `browser.replay_log`）；`live` 来源绑了 `browser.replay_log`；`isolation: required` 与代理或路由开关冲突；以 `start_url '<起始页>' ↔ browser setup` 开头的一行说任务的起始页不是一个完整的 http(s) URL（没有协议头、写成了文字或几个站点），改任务数据或 `--start-url`，或者换一个任务。

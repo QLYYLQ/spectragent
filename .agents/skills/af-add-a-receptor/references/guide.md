@@ -47,14 +47,20 @@ In `spectragent/generated/_composed.py`, on `BrowserCapabilityConfig` (grep the
 field name — the file is regenerated, so line numbers move):
 
 ```python
-# receptors — nested discriminated union, required, every knob typed
-mouse_trajectory: Union[BezierMouse_TrajectoryConfig, InstantMouse_TrajectoryConfig,
-                        LearnedMouse_TrajectoryConfig, WindmouseMouse_TrajectoryConfig] = ...
-dom_cleaner:      Union[BrowserUseDom_CleanerConfig, SkyvernDom_CleanerConfig] = ...
-dom_serializer:   Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig] = ...
+# receptors — each typed by its layer's nested discriminated union (the alias below);
+# a wiring ``default`` becomes the field default, a receptor without one is required
+mouse_trajectory: MouseTrajectoryConfig = Field(default_factory=InstantMouse_TrajectoryConfig, json_schema_extra={'default': {'trajectory_type': 'instant'}})  # wired from: mouse_trajectory
+dom_cleaner: DomCleanerConfig  # wired from: dom_cleaner
+dom_serializer: DomSerializerConfig  # wired from: dom_serializer
 
 # a __wiring__ entry with NO slot — declaration-only, a name and nothing else
-observation: Optional[Literal['browser.browser_meta', 'browser.dom', 'browser.screenshot']] = None
+observation: Optional[Literal['browser.browser_meta', 'browser.capture_state', 'browser.dom', 'browser.platform', 'browser.screenshot']] = None  # wired from: observation
+
+# each alias is defined earlier in the same file
+DomCleanerConfig = Annotated[
+    Union[BrowserUseDom_CleanerConfig, SkyvernDom_CleanerConfig, SkyvernHitTestDom_CleanerConfig],
+    Field(discriminator="cleaner_type"),
+]
 ```
 
 `TextDom_SerializerConfig` carries `max_text_length: int = 200`;
@@ -66,8 +72,10 @@ conscribe 2.0 exposes the same reflection to the builder and the Composer throug
 `conscribe.introspect.wiring_slots`, `receptor_slots` and `init_param_names`. A runtime
 slot is a constructor parameter or non-`ClassVar` annotation. Negotiation entries use
 `{"registry": "observation", "keys": [...], "optional_keys": [...], "declare_only": True}`;
-they never get placeholders or stubs. A default-free single-instance receptor remains
-required; explicit defaults and optional annotations follow conscribe's documented rules.
+they never get placeholders or stubs. A single-instance receptor whose Python default is
+off, neutral or the only option names that strategy as its wiring's `default` (step 4),
+so YAML may leave it out; one whose default chooses behaviour, or that has no default,
+stays required (architecture §4.2.1).
 
 ## 2. The checklist
 
@@ -78,14 +86,15 @@ Worked example: `dom_serializer`, the most recent one, end to end.
 
 ```python
 @runtime_checkable
-class DOMSerializerProtocol(Protocol):          # :16
+class DOMSerializerProtocol(Protocol):          # :23
     def serialize(self, state: DOMState) -> str: ...
 
-DOMSerializerRegistrar = create_registrar(       # :24
+DOMSerializerRegistrar = create_registrar(       # :43
     "dom_serializer", DOMSerializerProtocol, discriminator_field="serializer_type",
+    inline_only=True,  # only the capability's receptor holds a serializer (§7)
 )
 
-class DOMSerializerBase(metaclass=DOMSerializerRegistrar.Meta):   # :31
+class DOMSerializerBase(metaclass=DOMSerializerRegistrar.Meta):   # :51
     __abstract__ = True
     __registry_key__: str
     @property
@@ -147,7 +156,15 @@ registrar its `declarations.py` does not declare.
 
 `(registry_name, allowed_keys)`. The attribute name is the left side; the registry it
 draws from is the right. A bare string (`"backend": "browser_provider"`, `:362`) means
-"any registered key".
+"any registered key". When the strategy step 6 installs is off, neutral or the only
+option, use the dict form and name it as `default`:
+`"replayability": {"registry": "replayability", "keys": ["none", "pinned"], "default": "none"}`.
+A block that leaves the receptor out then gets that strategy, and the resolved config
+records it as if the block were written (architecture §4.2.1). `dom_serializer` gets no
+`default` although it has a Python one: it decides what the agent sees, so every block
+names it, as it names `backend`, which has no default at all. Nobody invents a default.
+`tests/test_core/test_composer/test_strategy_defaults.py` lists both kinds and checks
+each default against the Python one; add yours there.
 
 **5. The annotation-only class attribute** (`capability.py:372`):
 
@@ -155,8 +172,8 @@ draws from is the right. A bare string (`"backend": "browser_provider"`, `:362`)
 dom_serializer: DOMSerializerProtocol  # type: ignore[misc]
 ```
 
-An annotation-only slot keeps the YAML receptor required; an explicit class default
-changes the generated default. conscribe 2.0 preserves class and dataclass defaults. If the owner exposes the name as a `property`, put the annotation on a
+An annotation-only slot has no default of its own: the wiring's `default` (step 4)
+decides whether YAML may leave the receptor out. conscribe 2.0 preserves class and dataclass defaults. If the owner exposes the name as a `property`, put the annotation on a
 mixin instead (`_BrowserReceptors`, `capability.py:239`; same split as
 `agents/_registrar.py::AgentReceptors`).
 
@@ -164,7 +181,7 @@ mixin instead (`_BrowserReceptors`, `capability.py:239`; same split as
 (`capability.py:591`): `self.dom_serializer = default_serializer()`. The bare
 annotation is a `WiredField` that raises on read until something injects; this
 shadows it with a real instance attribute, so `BrowserCapability()` in a test still
-works while YAML stays required. Call the **factory**, not the class — `DOMWatchdog`
+works; where the wiring names a `default` (step 4), it names this same strategy. Call the **factory**, not the class — `DOMWatchdog`
 needs the same default (`dom_watchdog.py:100`) and one fact in two files drifts.
 (`mouse_trajectory` still names `InstantTrajectory()` in two places,
 `capability.py:582` and `input/mouse.py:120` — don't copy that.)
@@ -187,10 +204,11 @@ one entry point (`pyproject.toml:76`); AGENTS.md §3.4 used to name nine
 `generate_config.py` files that no longer exist. See the **af-regenerate-and-verify**
 skill for the verification loop and the staleness trap.
 
-**10. Add the YAML block and fix every hand-written one.** A new single-instance
-receptor is a **required** field, so every place a capability block is written by hand
-now fails validation. `grep -rn 'dom_cleaner' tests/ configs/` is the reliable index of
-those places. Shipped pattern, `configs/browser_use_local.yaml:171`:
+**10. Add the YAML block where a configuration should show it.** A new single-instance
+receptor with a `default` leaves every existing block valid: leaving it out means the
+default. One without a wiring `default` is a **required** field, so every place a block of its
+owner is written by hand then fails validation; `grep -rn 'dom_cleaner' tests/ configs/`
+is the reliable index of those places. Shipped pattern, `configs/browser_use_local.yaml:171`:
 
 ```yaml
 dom_serializer:
@@ -372,17 +390,15 @@ and scans only on first use. conscribe does not change this lifecycle requiremen
   block. `tests/test_core/test_composer/test_yaml_safe_values.py` refuses every one of
   them (any case) across all registry keys and every schema option value. "Not enabled"
   is spelled `none` (architecture §4.2.1): the replayability tier that used to be `off` is
-  `none`, so every block writes `replayability: { replayability_id: none }` unquoted.
+  `none`, so a block writes `replayability: { replayability_id: none }` unquoted.
   A no-op strategy that does a normal thing keeps a descriptive name (`instant`, `live`).
 - **A required single-instance receptor ripples through every hand-written block.**
-  Adding `replayability` made it mandatory in the generated schema, so the same change
-  edited every capability block that writes one by hand (the set
-  `rg -l typing_rhythm configs tests .agents` finds: shipped configs, `configs/README.md`,
-  the test configs, this guide's example), and the shipped-config gate
-  (`test_shipped_config_integration.py`) proves each new value arrives. `network_source`
-  (M30) rippled the same way (`rg -l replayability_id` is the index now), and every
-  hand-built `ConfigComposer(registrars={...})` map in the tests had to gain the new
-  layer too, or the capability's slot fails to compose (`UnresolvedWiringError`).
+  `replayability` and `network_source` (M30) were required when they were added, so those
+  changes edited every capability block that wrote one by hand (`rg -l replayability_id`
+  is the index); they now name a `default` and may be left out (architecture §4.2.1).
+  Every hand-built `ConfigComposer(registrars={...})` map in the tests must still gain a
+  new layer, default or not, or the capability's slot fails to compose
+  (`UnresolvedWiringError`).
 - **A strategy can carry its own receptor** (`ArchiveNetworkSource.miss_policy`). The
   composed union nests through every collected layer. Constructor-only optional list or
   dict slots are supported; they no longer need duplicate class annotations for shape.
@@ -399,10 +415,15 @@ and scans only on first use. conscribe does not change this lifecycle requiremen
   wired action), and only an owner with no default of its own gets an empty container
   (`environment.capabilities`). `[]` always means empty: `actions: []` builds no action.
   Pinned in `tests/test_core/test_composer/test_inline_only.py`.
-- **An inline-only layer is declared on its registrar**, with `inline_only=True`.
-  `ArchiverRegistrar` uses it; `TraceWriter.archive` stays ordinary wiring. The Composer
-  never adopts these instances from a pool. conscribe refuses a top-level `archiver:`
-  value, even `[]` or `null`, using the Pydantic error `inline_only_layer` and a message
-  naming `hook[trace_writer].archive`. No local `__inline_only__` attribute or custom
-  exception is needed. Capability archive provides use `declare_only=True` and remain
-  non-writable negotiation declarations.
+- **An inline-only layer is declared on its registrar**, with `inline_only=True`. A new
+  strategy axis whose instances only a receptor consumes is one: `archiver`, the providers,
+  every strategy axis, `agent_loop` and `memory` already are (architecture §4.2.1). The
+  receptor stays ordinary wiring, and the Composer never adopts these instances from a
+  pool. conscribe refuses a top-level section of the layer, even `[]` or `null`, using the
+  Pydantic error `inline_only_layer` and a message naming the owner's block
+  (`hook[trace_writer].archive`, `capability[browser].replayability`). The Composer leaves
+  the layer out of a build where no block reachable from the top level holds it
+  (`agent_loop`, `memory` and `restorer` in a run that names no agent family), so a run
+  that names no owner simply lacks the layer. No local `__inline_only__` attribute or custom exception is needed.
+  Capability archive provides use `declare_only=True` and remain non-writable
+  negotiation declarations.

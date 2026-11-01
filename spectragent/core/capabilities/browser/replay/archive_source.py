@@ -77,10 +77,14 @@ class ArchiveNetworkSource(NetworkSourceBase):
     """Serve the network from a recorded archive; never go to the network."""
 
     __registry_key__ = "archive"
-    __wiring__: ClassVar[dict[str, Any]] = {"miss_policy": ("miss_policy", ["strict"])}
+    __wiring__: ClassVar[dict[str, Any]] = {
+        "miss_policy": {"registry": "miss_policy", "keys": ["strict"], "default": "strict"}
+    }
 
     # Annotation only: conscribe installs a ``WiredField`` and the Composer
-    # injects the configured policy; ``__init__`` shadows it with the default.
+    # injects the configured policy (an ``archive`` block that leaves it out
+    # gets the wiring's ``default``); ``__init__`` shadows it with the same
+    # default.
     miss_policy: MissPolicyProtocol  # type: ignore[misc]
 
     # ── the knobs, as attributes (assigned in __init__) ──

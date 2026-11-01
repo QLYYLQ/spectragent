@@ -44,6 +44,7 @@ DOMSerializerRegistrar = create_registrar(
     "dom_serializer",
     DOMSerializerProtocol,
     discriminator_field="serializer_type",
+    inline_only=True,
 )
 
 

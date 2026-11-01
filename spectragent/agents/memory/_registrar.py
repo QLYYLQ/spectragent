@@ -10,6 +10,7 @@ MemoryRegistrar = create_registrar(
     "memory",
     BaseMemoryManager,
     discriminator_field="memory_id",
+    inline_only=True,
 )
 
 
