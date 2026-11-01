@@ -215,7 +215,11 @@ def emulator_environment(
 
 @dataclass
 class _ConsoleReport:
-    """A loopback listener the emulator reports the console port it bound to (``-report-console``)."""
+    """A loopback listener the emulator reports the console port it bound to (``-report-console``).
+
+    A connection that sends anything but a port number is not the emulator's
+    and is ignored; a report that never comes is the boot deadline's to name.
+    """
 
     server: asyncio.Server
     console_port: asyncio.Future[int]
@@ -230,18 +234,14 @@ class _ConsoleReport:
 
         async def receive(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             try:
-                text = (await asyncio.wait_for(reader.read(), _REPORT_READ_S)).decode().strip()
-            except (TimeoutError, UnicodeDecodeError, ConnectionError) as exc:
-                text = f"<{type(exc).__name__}>"
+                sent = await asyncio.wait_for(reader.read(), _REPORT_READ_S)
+            except (TimeoutError, ConnectionError):
+                return
             finally:
                 writer.close()
-            if not console_port.done():
-                if text.isdigit():
-                    console_port.set_result(int(text))
-                else:
-                    console_port.set_exception(
-                        RuntimeError(f"the emulator reported {text!r} as its console port")
-                    )
+            text = sent.decode(errors="replace").strip()
+            if text.isascii() and text.isdigit() and not console_port.done():
+                console_port.set_result(int(text))
 
         return cls(await asyncio.start_server(receive, HOST, 0), console_port)
 

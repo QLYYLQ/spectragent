@@ -30,6 +30,7 @@ from spectragent import REPO_ROOT
 from spectragent.core.capabilities.android.backends.base import AdbEndpoint
 from spectragent.core.capabilities.android.backends.local_emulator import (
     LocalEmulatorProvider,
+    _ConsoleReport,
     emulator_command,
     emulator_environment,
     find_avd_home,
@@ -397,6 +398,26 @@ def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() 
         "ADB_USB": "0",
         "ADB_MDNS": "0",
     }
+
+
+async def test_the_console_port_is_taken_from_the_first_report_that_is_a_port_number() -> None:
+    """A stray local connection, or digits that are not ASCII, neither fail nor stall the boot."""
+    report = await _ConsoleReport.listen()
+    try:
+        for sent in (
+            b"",
+            "\u0665\u0665\u0665\u0664".encode(),
+            b"\xff\xfe",
+            b"not a port",
+            b"5556\n",
+        ):
+            _, writer = await asyncio.open_connection("127.0.0.1", report.port)
+            writer.write(sent)
+            writer.close()
+            await writer.wait_closed()
+        assert await asyncio.wait_for(report.console_port, 5) == 5556
+    finally:
+        report.close()
 
 
 def test_the_sdk_is_the_configured_one_else_the_first_named_by_the_environment(
