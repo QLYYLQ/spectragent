@@ -1,15 +1,32 @@
-"""Browser provider protocol."""
+"""Browser provider protocol, and the session a provider's ``open()`` returns."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from pydantic import BaseModel, Field
+
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
-from spectragent.schemas.provider_session import ProviderSession
 
 if TYPE_CHECKING:
     from spectragent.core.capabilities.browser.shared_browser import SharedBrowser
+
+
+class ProviderSession(BaseModel):
+    """One browser session a provider opened: its CDP endpoint and the provider's launch facts.
+
+    Each capability's providers return their own session type
+    (``docs/architecture_design.md`` §11.2): this one carries what a browser
+    provider hands the browser capability, a CDP URL. ``metadata`` holds the
+    provider's own facts about the launch (``local_chrome``: ``pid``,
+    ``command_line``, ``launch_flags``, §4.9.x).
+    """
+
+    session_id: str
+    provider_id: str
+    cdp_url: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 @runtime_checkable

@@ -286,7 +286,7 @@ class _FakeProvider:
         self.close_calls: list[object] = []
 
     async def open(self, **kwargs):
-        from spectragent.schemas.provider_session import ProviderSession
+        from spectragent.core.capabilities.browser.backends.base import ProviderSession
 
         self.open_calls.append(kwargs)
         return ProviderSession(
@@ -453,7 +453,7 @@ class TestBackendIoC:
         """A provider with a Skyvern-shaped signature must not TypeError."""
         import asyncio
 
-        from spectragent.schemas.provider_session import ProviderSession
+        from spectragent.core.capabilities.browser.backends.base import ProviderSession
 
         class _StrictProvider:
             """Mirrors SkyvernProvider.open — keyword-only, no **kwargs."""

@@ -11,6 +11,7 @@ import pytest
 from agent_cdp import BaseEvent, ConnectionType, Participation, ScopeGroup, expect
 
 from spectragent.core.capabilities.browser.actions.click_coordinate import ClickCoordinateAction
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 from spectragent.core.capabilities.browser.sessions import TabSessions
@@ -28,7 +29,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     SelectDropdownEvent,
 )
 from spectragent.core.capabilities.browser.watchdogs.popups_watchdog import PopupsWatchdog
-from spectragent.schemas.provider_session import ProviderSession
 
 
 class _CDP:

@@ -21,6 +21,7 @@ import pytest
 from agent_cdp import EventScope, ScopeGroup
 
 from spectragent.core.capabilities.browser import recorder as recorder_module
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
@@ -44,7 +45,6 @@ from spectragent.core.capabilities.browser.recorder import (
 )
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.schemas.action import Action
-from spectragent.schemas.provider_session import ProviderSession
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient
 
 # ── helpers ───────────────────────────────────────────────────────────
