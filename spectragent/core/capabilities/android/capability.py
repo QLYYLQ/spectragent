@@ -488,8 +488,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 wait_s=self.queue_wait_s,
                 run_s=3 * self.query_timeout_s + self.screenshot_timeout_s,
             )
-            self._events = await side.service.events()
-            self._newest_event_ms = None
+            if self._reads_events:
+                self._events = await side.service.events()
+                self._newest_event_ms = None
             await oracle.start(session, oracle_task)
             await device.run(
                 self._keep_service,
@@ -563,20 +564,27 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 "shell_injection) and a typing_backend (typing_id: set_text or commit_text)"
             ) from None
 
+    @property
+    def _reads_events(self) -> bool:
+        """Whether a capture reads the service's events: only the wait for a still screen does."""
+        return self.settle_max_wait_s > 0
+
     async def _keep_service(self) -> None:
         """Confirm the service with a ping, bind it again when it does not answer, and subscribe afresh.
 
         A job's first step, inside the job (module docstring): one ping when
         all is well. A stream that ended on an open channel is closed with
-        its channel, since a channel subscribes once.
+        its channel, since a channel subscribes once. With the wait for a
+        still screen off nothing reads events, so none is subscribed to: they
+        would pile up unread until the stream ended.
         """
         side = self._side
         if side is None:
             return
-        if self._events is None and side.service_connected:
+        if self._reads_events and self._events is None and side.service_connected:
             await side.service.close()
         rebound = await side.ensure_bound(timeout_s=self.service_start_timeout_s)
-        if rebound or self._events is None:
+        if self._reads_events and (rebound or self._events is None):
             self._events = await side.service.events()
             self._newest_event_ms = None
 

@@ -731,6 +731,30 @@ async def test_the_service_is_bound_again_when_something_on_the_device_unbinds_i
     assert state.settle.outcome == "settled", "the new channel's events are read"
 
 
+@pytest.mark.parametrize(("settle_max_wait_s", "subscriptions"), [(0.0, 0), (2.0, 1)])
+async def test_events_are_subscribed_to_only_when_the_wait_reads_them(
+    settle_max_wait_s: float, subscriptions: int
+) -> None:
+    """Unread, they would pile up to the stream's limit and end it without a word."""
+    phone = ScriptedPhone()
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb, settle_max_wait_s=settle_max_wait_s, settle_quiet_ms=50
+        ) as capability,
+    ):
+        for cycle in (1, 2):
+            await capability.begin_observation(cycle)
+            await capability.resolve_fragment(SCREENSHOT)
+            await capability.execute_action(
+                Action(name="android.press_key", params={"key": "home"})
+            )
+
+        assert phone.service_calls("subscribe") == subscriptions
+        assert phone.side.service.calls.count(("ping", {})) >= 4, "each job confirmed the service"
+        assert phone.side.tokens_written == 1, "and never had to bind it again"
+
+
 async def test_an_event_stream_that_ended_is_subscribed_afresh_on_a_new_channel() -> None:
     """A channel subscribes once, so a stream that lost an event ends, and the next job opens another."""
     phone = ScriptedPhone(focused="com.android.settings/.Settings")
