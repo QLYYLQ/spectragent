@@ -1,0 +1,176 @@
+"""The AndroidWorld task loader reads a task list strictly and leaves out what it cannot score.
+
+The list is what ``androidworld_service/task_list.py`` writes in AndroidWorld's
+own venv (``docs/architecture_design.md`` §11.2); its record is the Android
+task's ``oracle_task``, which the ``androidworld`` oracle accepts unchanged.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from spectragent import PACKAGE_ROOT
+from spectragent.core.capabilities.android.oracle.androidworld import (
+    PINNED_COMMIT,
+    AndroidWorldOracle,
+)
+from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
+    TASK_LIST_FORMAT,
+    instance_seed,
+)
+from spectragent.core.data_loader._common import BenchmarkDataError
+from spectragent.core.data_loader.task import AndroidWorldTaskLoader
+from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
+from tests._helpers.fake_androidworld import fake_installation
+
+TASK_LIST_WRITER = (
+    PACKAGE_ROOT / "core/capabilities/android/oracle/androidworld_service/task_list.py"
+)
+
+
+def _record(task: str = "SystemBrightnessMax", family: str = "android", **changes: Any) -> dict:
+    record: dict[str, Any] = {
+        "commit": PINNED_COMMIT,
+        "family": family,
+        "task": task,
+        "index": 0,
+        "suite_seed": 42,
+        "params": {"seed": instance_seed(42, task, 0)},
+        "goal": f"Do {task}.",
+        "goal_made_at_initialize": False,
+        "complexity": 1.2,
+        "start_on_home_screen": True,
+    }
+    record.update(changes)
+    return record
+
+
+def _data_dir(tmp_path: Path, listing: object, *, split: str = "All") -> Path:
+    data = tmp_path / "androidworld"
+    data.mkdir(exist_ok=True)
+    (data / f"{split}.json").write_text(
+        listing if isinstance(listing, str) else json.dumps(listing)
+    )
+    (data / "data_info.json").write_text(json.dumps({"split": {split: f"{split}.json"}}))
+    return data
+
+
+def _loader(tmp_path: Path, *records: dict, subset: str = "All") -> AndroidWorldTaskLoader:
+    data = _data_dir(tmp_path, {"format": TASK_LIST_FORMAT, "tasks": list(records)}, split=subset)
+    return AndroidWorldTaskLoader(data_dir=str(data), subset=subset)
+
+
+def test_it_registers_as_the_androidworld_benchmark() -> None:
+    assert TaskLoaderRegistrar.get("androidworld") is AndroidWorldTaskLoader
+
+
+def test_each_listed_task_is_an_android_task_whose_record_is_its_oracle_task(
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    loader = _loader(tmp_path, record)
+
+    (task_id,) = loader.task_ids()
+    task = loader[task_id]
+    assert task_id == "SystemBrightnessMax/42/0"
+    assert (task.benchmark, task.env_type, task.task_text) == (
+        "androidworld",
+        "android",
+        "Do SystemBrightnessMax.",
+    )
+    assert task.tags == ["android"] and task.metadata == {"complexity": 1.2}
+    assert loader.get_task_context(task_id).env == {"oracle_task": record}
+
+
+def test_information_retrieval_tasks_are_left_out_with_the_reason(tmp_path: Path) -> None:
+    loader = _loader(
+        tmp_path, _record(), _record("SimpleCalendarLocationOfEvent", "information_retrieval")
+    )
+
+    assert loader.task_ids() == ["SystemBrightnessMax/42/0"]
+    assert dict(loader.skipped) == {
+        "SimpleCalendarLocationOfEvent/42/0": (
+            "information retrieval: scored on the agent's answer, which does not reach the task "
+            "oracle yet"
+        )
+    }
+
+
+def test_a_list_with_nothing_to_run_is_refused_naming_why(tmp_path: Path) -> None:
+    with pytest.raises(BenchmarkDataError, match="no task this loader runs: .*information"):
+        _loader(tmp_path, _record("SimpleCalendarLocationOfEvent", "information_retrieval"))
+
+
+@pytest.mark.parametrize(
+    ("listing", "message"),
+    [
+        ("not json", "is not an AndroidWorld task list"),
+        ({"format": "androidworld-tasks-0", "tasks": []}, "format"),
+        ({"format": TASK_LIST_FORMAT, "tasks": [_record(goal=None)]}, "goal"),
+        ({"format": TASK_LIST_FORMAT, "tasks": [{**_record(), "extra": 1}]}, "extra"),
+        ({"format": TASK_LIST_FORMAT, "tasks": [_record(params={"seed": 7})]}, "params.seed is 7"),
+        ({"format": TASK_LIST_FORMAT, "tasks": [_record(), _record()]}, "more than once"),
+        ({"tasks": [_record()]}, "format"),
+    ],
+)
+def test_a_list_that_breaks_the_format_is_refused_and_nothing_is_published(
+    tmp_path: Path, listing: object, message: str
+) -> None:
+    data = _data_dir(tmp_path, listing)
+
+    with pytest.raises(BenchmarkDataError, match=message):
+        AndroidWorldTaskLoader(data_dir=str(data))
+
+
+def test_the_subset_picks_the_split_file(tmp_path: Path) -> None:
+    _data_dir(tmp_path, {"format": TASK_LIST_FORMAT, "tasks": [_record()]})
+    data = _data_dir(
+        tmp_path,
+        {"format": TASK_LIST_FORMAT, "tasks": [_record("click-button", "miniwob")]},
+        split="miniwob",
+    )
+    (data / "data_info.json").write_text(
+        json.dumps({"split": {"All": "All.json", "miniwob": "miniwob.json"}})
+    )
+
+    loader = AndroidWorldTaskLoader(data_dir=str(data), subset="miniwob")
+    assert loader.task_ids() == ["click-button/42/0"]
+
+
+def test_the_oracle_accepts_the_task_the_loader_hands_over(tmp_path: Path) -> None:
+    loader = _loader(tmp_path, _record())
+    oracle = AndroidWorldOracle(root=str(fake_installation(tmp_path / "aw")))
+
+    oracle.check_setup(loader.get_task_context("SystemBrightnessMax/42/0").env["oracle_task"])
+
+
+def test_the_writer_and_the_reader_name_one_format() -> None:
+    assert f'FORMAT = "{TASK_LIST_FORMAT}"' in TASK_LIST_WRITER.read_text()
+
+
+def test_reading_a_list_imports_no_android_implementation(tmp_path: Path) -> None:
+    """Every run imports this loader with the framework; a run that names no Android must not
+    pay for the capability, its bridge or the oracle that starts processes (§4.2.1)."""
+    data = _data_dir(tmp_path, {"format": TASK_LIST_FORMAT, "tasks": [_record()]})
+    probe = (
+        "import json, sys\n"
+        "from spectragent.core.data_loader.task import AndroidWorldTaskLoader\n"
+        f"assert len(AndroidWorldTaskLoader(data_dir={str(data)!r})) == 1\n"
+        "print(json.dumps(sorted(sys.modules)))\n"
+    )
+    loaded = set(
+        json.loads(
+            subprocess.run(
+                [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+            ).stdout
+        )
+    )
+    android = "spectragent.core.capabilities.android"
+    assert f"{android}.oracle.androidworld_tasks" in loaded, "the probe read a list"
+    assert not {f"{android}.capability", f"{android}.oracle.androidworld"} & loaded

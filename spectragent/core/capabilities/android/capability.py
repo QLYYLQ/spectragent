@@ -22,18 +22,28 @@ cycle captures again. Only the negotiated fragments are captured.
 with it, and it drops the capture it came after: whatever reads next sees the
 device after the action. ``android.wait`` touches nothing and does not hold
 the queue.
+
+**The task oracle** (``oracle/``, the ``task_oracle`` receptor, ``none`` by
+default) prepares, scores and ends a benchmark's task on the device. The
+capability hands the provider what the oracle needs of the device
+(``device_needs``), passes it the task's ``oracle_task`` unread, starts it once
+the device is up, stops it first at teardown, and implements ``TaskOracle`` and
+``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``").
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, cast
 
 from pydantic import Field as PydanticField
+from pydantic import JsonValue
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.base import BaseAction
+from spectragent.core.archive._registrar import ArchiverBase
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.android.actions import ACTIONS
 from spectragent.core.capabilities.android.adb import AdbClient
@@ -52,6 +62,14 @@ from spectragent.core.capabilities.android.observations import (
     AndroidPlatformObs,
     AndroidScreenshotObs,
 )
+from spectragent.core.capabilities.android.oracle import (  # noqa: F401 — registration
+    androidworld,
+    none,
+)
+from spectragent.core.capabilities.android.oracle._registrar import (
+    AndroidTaskOracle,
+    default_task_oracle,
+)
 from spectragent.core.capabilities.android.session import (
     DeviceBusyError,
     DeviceSession,
@@ -63,6 +81,7 @@ from spectragent.core.capabilities.android.settle import Drawing, wait_until_sti
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.image import image_size
+from spectragent.schemas.oracle_score import OracleReading
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +123,13 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         # registry: every action offered; YAML narrows it, never widens it.
         "actions": ("action", list(ACTION_KEYS)),
         "backend": "android_provider",
+        # Omitted in YAML: ``none``. The strategy is the switch: what the
+        # device must offer comes from it, never from a provider setting.
+        "task_oracle": {"registry": "android_task_oracle", "default": "none"},
     }
 
     backend: BaseAndroidProvider  # type: ignore[misc]
+    task_oracle: AndroidTaskOracle  # type: ignore[misc]
 
     settle_quiet_ms: int
     settle_max_wait_s: float
@@ -236,6 +259,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._cycle = 0
         self._capture = None
         self.actions = actions
+        self.task_oracle = default_task_oracle()
 
     # ── actions ───────────────────────────────────────────────────────
 
@@ -282,11 +306,34 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
-    async def setup(self, *, negotiation: Any = None) -> None:
-        """Bring the device up through the backend and read the facts that do not change."""
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+    ) -> None:
+        """Refuse now what setup would: the oracle's installation and task, the device it needs."""
+        self.task_oracle.check_setup(context.get("oracle_task"))
+        try:
+            backend = self.backend
+        except AttributeError:  # setup refuses a capability without a backend itself
+            return
+        backend.check_needs(self.task_oracle.device_needs)
+
+    async def setup(
+        self, *, negotiation: Any = None, oracle_task: Mapping[str, JsonValue] | None = None
+    ) -> None:
+        """Bring the device up as the task oracle needs it, read the facts that do not change, start the oracle.
+
+        *oracle_task* is the task's data for its oracle (``AndroidSetup``),
+        handed over unread.
+        """
         await super().setup(negotiation=negotiation)
+        oracle = self.task_oracle
+        oracle.check_setup(oracle_task)
         backend = self._backend()
-        session = await backend.open()
+        session = await backend.open(oracle.device_needs)
         self._session = session
         try:
             bridge = DeviceBridge.over_adb(
@@ -308,24 +355,34 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 wait_s=self.queue_wait_s,
                 run_s=3 * self.query_timeout_s,
             )
+            await oracle.start(session, oracle_task)
             self._bridge, self._device = bridge, device
         except BaseException:
             await self.teardown()
             raise
 
     async def teardown(self) -> None:
-        """Let the device's queue drain, then release it through the backend. Safe to repeat."""
+        """Stop the task oracle, let the device's queue drain, release the device. Safe to repeat."""
         device, session = self._device, self._session
         self._device = self._bridge = None
         self._session = None
         self._capture = None
-        if device is not None:
-            try:
-                await device.flush(wait_s=self.queue_wait_s)
-            except DeviceBusyError:
-                logger.warning("releasing device %s while a job of it still runs", device.serial)
-        if session is not None:
-            await self._backend().close(session)
+        try:
+            await self.task_oracle.stop()
+        finally:
+            if device is not None:
+                try:
+                    await device.flush(wait_s=self.queue_wait_s)
+                except DeviceBusyError:
+                    logger.warning(
+                        "releasing device %s while a job of it still runs", device.serial
+                    )
+            if session is not None:
+                await self._backend().close(session)
+
+    async def read_score(self) -> OracleReading | None:
+        """This task's score from the task oracle; ``None`` with ``none`` (``TaskOracle``)."""
+        return await self.task_oracle.read_score()
 
     @property
     def is_alive(self) -> bool:

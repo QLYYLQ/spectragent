@@ -10,21 +10,28 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from pydantic import JsonValue
+
 from spectragent.schemas.task import SetupBase
 
 
 class AndroidSetup(SetupBase):
-    """An Android task's requirements of its device: none yet.
+    """An Android task's requirements of its device.
 
-    The device boots from the AVD the provider's configuration names, so a task
-    asks nothing of the capability's ``setup()`` and its context is empty. A
-    task oracle that prepares a task's starting state on the device
-    (``docs/architecture_design.md`` §11.2, "任务裁判与 ``AndroidSetup``") adds
-    its own fields here.
+    The device boots from the AVD the provider's configuration names. A
+    benchmark task carries its data for the capability's task oracle in
+    ``oracle_task``: AndroidWorld's family, task key, index, suite seed and
+    parameters, seed included (``docs/architecture_design.md`` §11.2, "任务裁判与
+    ``AndroidSetup``"). The capability passes it to its oracle unread, and the
+    oracle refuses data that is not its own; ``None`` is a task no oracle
+    prepares.
     """
 
     __registry_key__ = "android"
     __env_types__: ClassVar[tuple[str, ...]] = ("android",)
+    __raw_keys__: ClassVar[tuple[str, ...]] = ("oracle_task",)
+
+    oracle_task: dict[str, JsonValue] | None = None
 
     def to_context(self) -> dict[str, Any]:
-        return {}
+        return {} if self.oracle_task is None else {"oracle_task": self.oracle_task}
