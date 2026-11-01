@@ -975,7 +975,8 @@ class ActionWatchdog(BrowserWatchdog):
             return {"error": str(e)}
         finally:
             if before is not None:
-                await budget.run(before.release, "release field")
+                # Cleanup, not a measurement: a spent budget must not keep it.
+                await before.release()
 
     async def _insert_text_at_focus(
         self,
@@ -1083,7 +1084,7 @@ class ActionWatchdog(BrowserWatchdog):
                     finally:
                         # The reading not kept: the one replaced, or one that
                         # could not say where focus is.
-                        await budget.run(again.release, "release field")
+                        await again.release()
                     if adopted:
                         refused = await verdict(field)
             if refused is not None:
@@ -1120,7 +1121,7 @@ class ActionWatchdog(BrowserWatchdog):
             value_changed = await field.after()
             focus_after = await focused_element(self._cdp, self._session_id, budget)
         finally:
-            await budget.run(field.release, "release field")
+            await field.release()
         return {
             "typed": True,
             "length": len(text),
@@ -1660,7 +1661,7 @@ class ActionWatchdog(BrowserWatchdog):
             logger.error("SendKeys failed: %s", e)
             return {"error": f"{type(e).__name__}: {e}"}
         finally:
-            await budget.run(field.release, "release field")
+            await field.release()
         types_a_character = (
             chord.char_text is not None
             and chord.char_text.isprintable()

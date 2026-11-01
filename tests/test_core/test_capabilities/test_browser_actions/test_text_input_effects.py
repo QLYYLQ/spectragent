@@ -806,6 +806,26 @@ class TestMeasuringNeverDecidesTheOutcome:
         assert "focus" not in cdp.kinds()
         assert [c.method for c in cdp.inputs()] == ["Input.insertText"]
 
+    @pytest.mark.parametrize("act", ["type", "type_coordinate", "send_keys"])
+    async def test_what_the_probes_hold_is_let_go_once_the_budget_is_spent(self, act: str) -> None:
+        # The field's reading answers only after the budget is out. Letting go
+        # of the elements the probes hold is cleanup, not a measurement.
+        cdp = ProbeCDP(
+            field="node",
+            before="node",
+            inside=True,
+            readings=name_field("0:1"),
+            answer_after_s={"field_read": [0.3]},
+        )
+        if act == "type":
+            await type_into(cdp, action_effect_timeout_s=0.1)
+        elif act == "type_coordinate":
+            await type_at(cdp, action_effect_timeout_s=0.1, type_focus_wait_s=0.05)
+        else:
+            await press(cdp, "Escape", action_effect_timeout_s=0.1)
+        released = {c.params["objectId"] for c in cdp.calls if c.method == "Runtime.releaseObject"}
+        assert released == ({"field", "before"} if act == "type_coordinate" else {"field"})
+
     async def test_a_send_keys_probe_that_fails_leaves_the_key_pressed(self) -> None:
         cdp = ProbeCDP(fail={"field_ref", "focus"})
         effect = text_input(await press(cdp, "Escape"))
