@@ -64,7 +64,7 @@ class DeviceNeeds(BaseModel):
             for about 1.5 s (measured), so it happens before the session is
             handed over.
         guest_wifi: The guest's Wi-Fi has its IPv4 default route. It came
-            4-7 s after the boot completed; on about 2 of 21 boots it never
+            4-7 s after the boot completed; on about 3 of 24 boots it never
             came, read-only boots of a set-up AVD included (measured).
         fresh: The run's changes are thrown away when the device is
             released, so every run starts from the same device.
