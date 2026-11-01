@@ -80,6 +80,7 @@ AndroidTaskOracleRegistrar = create_registrar(
     "android_task_oracle",
     AndroidTaskOracle,
     discriminator_field="oracle_id",
+    inline_only=True,
 )
 
 

@@ -82,6 +82,7 @@ NetworkSourceRegistrar = create_registrar(
     "network_source",
     NetworkSourceProtocol,
     discriminator_field="source_id",
+    inline_only=True,
 )
 
 

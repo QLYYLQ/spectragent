@@ -10,6 +10,7 @@ BrowserProviderRegistrar = create_registrar(
     "browser_provider",
     BaseBrowserProvider,
     discriminator_field="provider_id",
+    inline_only=True,
 )
 
 

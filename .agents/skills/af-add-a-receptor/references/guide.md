@@ -89,8 +89,9 @@ Worked example: `dom_serializer`, the most recent one, end to end.
 class DOMSerializerProtocol(Protocol):          # :16
     def serialize(self, state: DOMState) -> str: ...
 
-DOMSerializerRegistrar = create_registrar(       # :24
+DOMSerializerRegistrar = create_registrar(       # :43
     "dom_serializer", DOMSerializerProtocol, discriminator_field="serializer_type",
+    inline_only=True,  # only the capability's receptor holds a serializer (§7)
 )
 
 class DOMSerializerBase(metaclass=DOMSerializerRegistrar.Meta):   # :31
@@ -414,10 +415,14 @@ and scans only on first use. conscribe does not change this lifecycle requiremen
   wired action), and only an owner with no default of its own gets an empty container
   (`environment.capabilities`). `[]` always means empty: `actions: []` builds no action.
   Pinned in `tests/test_core/test_composer/test_inline_only.py`.
-- **An inline-only layer is declared on its registrar**, with `inline_only=True`.
-  `ArchiverRegistrar` uses it; `TraceWriter.archive` stays ordinary wiring. The Composer
-  never adopts these instances from a pool. conscribe refuses a top-level `archiver:`
-  value, even `[]` or `null`, using the Pydantic error `inline_only_layer` and a message
-  naming `hook[trace_writer].archive`. No local `__inline_only__` attribute or custom
+- **An inline-only layer is declared on its registrar**, with `inline_only=True`. A new
+  strategy axis whose instances only a receptor consumes is one: `archiver`, the providers
+  and every browser, Android and framework strategy axis already are (architecture
+  §4.2.1). The receptor stays ordinary wiring, and the Composer never adopts these
+  instances from a pool. conscribe refuses a top-level section of the layer, even `[]` or
+  `null`, using the Pydantic error `inline_only_layer` and a message naming the owner's
+  block (`hook[trace_writer].archive`, `capability[browser].replayability`). A build that
+  holds the layer must hold its owner too (`ConfigDeclarationError` otherwise), so keep
+  the axis in its owner's package. No local `__inline_only__` attribute or custom
   exception is needed. Capability archive provides use `declare_only=True` and remain
   non-writable negotiation declarations.

@@ -165,6 +165,7 @@ MouseTrajectoryRegistrar = create_registrar(
     "mouse_trajectory",
     MouseTrajectoryProtocol,
     discriminator_field="trajectory_type",
+    inline_only=True,
 )
 
 

@@ -43,6 +43,7 @@ StepSelectorRegistrar = create_registrar(
     "step_selector",
     StepSelector,
     discriminator_field="selector_id",
+    inline_only=True,
 )
 
 

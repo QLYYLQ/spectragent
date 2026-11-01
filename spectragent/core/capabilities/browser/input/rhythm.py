@@ -88,6 +88,7 @@ TypingRhythmRegistrar = create_registrar(
     "typing_rhythm",
     TypingRhythmProtocol,
     discriminator_field="rhythm_type",
+    inline_only=True,
 )
 
 

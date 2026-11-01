@@ -123,6 +123,7 @@ ReplayabilityRegistrar = create_registrar(
     "replayability",
     ReplayabilityProtocol,
     discriminator_field="replayability_id",
+    inline_only=True,
 )
 
 

@@ -12,6 +12,7 @@ DecisionModelRegistrar = create_registrar(
     BaseDecisionModel,
     discriminator_fields=["model_type", "provider"],
     key_separator=".",
+    inline_only=True,
 )
 
 

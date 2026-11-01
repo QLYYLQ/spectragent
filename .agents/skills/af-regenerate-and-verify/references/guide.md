@@ -39,10 +39,15 @@ and `TaskSetupRegistrar` are deliberately not config layers.
 Also document a new registrar in `docs/architecture_design.md` §6 and `AGENTS.md` §2.2.
 The registrar coverage test checks names and discriminators against the source.
 
-Only `ArchiverRegistrar` is currently inline-only. Its models participate in the build,
-but its instances may only be written under `hook[trace_writer].archive`. Use
+Every layer whose instances only a receptor inside another block consumes is inline-only:
+`archiver`, the providers, the strategy layers, `miss_policy`, `step_selector`,
+`restorer`, `action_translator` and `decision_model` (architecture §4.2.1 has the list).
+Their models participate in the build, but their instances may only be written in the
+owner's block (`hook[trace_writer].archive`, `capability[browser].replayability`). Use
 `result.top_level_layers`, not `model_fields`, to enumerate writable root sections:
-conscribe keeps a hidden rejection field for an inline-only layer.
+conscribe keeps a hidden rejection field for an inline-only layer. A build that holds an
+inline-only layer must also hold a receptor for it, so a new one lives in its owner's
+package (or both are framework axes).
 
 ## Fingerprints and clean interpreters
 

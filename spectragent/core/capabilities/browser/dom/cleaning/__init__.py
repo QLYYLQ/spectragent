@@ -92,6 +92,7 @@ DOMCleanerRegistrar = create_registrar(
     "dom_cleaner",
     DOMCleanerProtocol,
     discriminator_field="cleaner_type",
+    inline_only=True,
 )
 
 

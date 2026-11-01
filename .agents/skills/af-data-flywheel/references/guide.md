@@ -1066,7 +1066,7 @@ any of them with the user before starting.
 
 | | |
 |---|---|
-| Registrar | `ActionTranslatorRegistrar` (`translator_id`), `spectragent/export/translate/_registrar.py`; collected as `action_translator` |
+| Registrar | `ActionTranslatorRegistrar` (`translator_id`), `spectragent/export/translate/_registrar.py`; collected as `action_translator`, an inline-only layer: a translator is written only in an exporter's `translator` block |
 | Design section | Architecture §4.15 ("翻译器") |
 | Protocol, base | `ActionTranslator.translate(sample, trace) -> Translation`. `ActionTranslatorBase` is not a dataclass: knobs are keyword parameters of a hand-written `__init__`, `untranslatable` included. A translator without knobs of its own writes no `__init__`; one with knobs writes the whole signature. `default_translator()` is `identity` |
 | Owner | `ExporterBase.__wiring__["translator"]`, any registered key; import the module in `spectragent/export/__init__.py` |
@@ -1089,7 +1089,7 @@ any of them with the user before starting.
 | | |
 |---|---|
 | Registrar | `ExporterRegistrar` (`exporter_id`), `spectragent/export/_registrar.py`; collected as `exporter`, an optional top-level layer of the run root |
-| Design section | Architecture §4.15 ("配置：运行根的两个可选层", "格式化：`openai_messages`") |
+| Design section | Architecture §4.15 ("配置：运行根的可选层", "格式化：`openai_messages`") |
 | Protocol, base | `Exporter`: `exporter_id`, a read-only `translator` and `thought_rewrite_llms` (the second receptor, `llm`, a constructor parameter), the job fields, `root()`, `format(rendered, images) -> ExportRecord`. `ExporterBase` hand-writes a keyword `__init__` with every job field; `translator` is annotation-only with a Python default |
 | Owner | none; the exporter is the export document's top-level block, and `ExportRunner.from_run` takes exactly one |
 | Tests to copy | `tests/test_export/test_registrar.py`, `test_openai_messages.py`, `test_runner.py`, `test_validate.py`, `test_export_boundaries.py` |
@@ -1198,10 +1198,9 @@ value on an existing one.
   time. A run binds at most one archive consumer.
 - `trace_writer.archive` is the one switch for archiving (the user's ruling of 2026-10-13).
   Omitted, `null` or `[]`, nothing is recorded. Archivers are listed only there:
-  `TraceWriter.__inline_only__` makes the Composer refuse a top-level `archiver:` section
-  (`InlineOnlyLayerError`, whose message says to list them under `trace_writer.archive`),
-  and an omitted `archive` never adopts archivers another block built (architecture
-  §4.2.1). A hook whose `archive` is
+  `ArchiverRegistrar` is inline-only, so conscribe refuses a top-level `archiver:` section
+  (`inline_only_layer`, whose message names `hook[trace_writer].archive`), and an omitted
+  `archive` never adopts archivers another block built (architecture §4.2.1). A hook whose `archive` is
   empty is not an archive consumer: no negotiation, no `bind_archivers`, no
   `collect_archive`, no `env/`. Two hooks with non-empty archives, one archiver in two
   hooks, and one key listed twice are each a problem in one `IncompatibleArchiveError` at
@@ -1353,7 +1352,7 @@ value on an existing one.
 | Validation: `Input tag 'network' found using 'archiver_id' does not match any of the expected tags` | Archive keys are never relative: write `browser.network`. Unlike action and fragment names, nothing binds a relative archiver name, because the key is the registry key itself and its prefix is the providing capability. The same message names a mistyped key, or an archiver whose class never registered (next row) |
 | Every browser block fails validation with `Extra inputs are not permitted` on `replayability`, `network_source`, `mouse_trajectory` and the other receptors | A key in `BrowserCapability.__wiring__`, such as a new archiver's, names a class that never registered, and conscribe dropped the capability's whole wiring. Look in the log for `Failed to import module`: `discover()` skips a module whose import raises `ImportError` or `SyntaxError` |
 | Validation says `replayability_id` or `occlusion` is `False` | The old name `off`, unquoted; write `none` |
-| `InlineOnlyLayerError: The top-level 'archiver' section is not accepted ...` | Move the entries into `trace_writer.archive` |
+| `inline_only_layer`: `layer 'replayability' is inline-only; write its instances under: capability[browser].replayability` (or another block-only layer: `archiver`, a provider, a strategy, `miss_policy`, `step_selector`, `restorer`, `action_translator`) | Move the entries into the block the message names (architecture §4.2.1) |
 | `Field required` for `step_selector` or `translator` | Write the receptor block (§4); these two have no YAML default |
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
 | `spectragent bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
