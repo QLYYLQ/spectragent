@@ -14,9 +14,17 @@ import java.util.Set;
 import java.util.function.Supplier;
 import org.json.JSONObject;
 
-/** Listens on an abstract Unix socket and serves each host connection on a thread of its own. */
+/**
+ * Listens on an abstract Unix socket and serves each host connection on a thread of its own.
+ *
+ * <p>Any app on the device can connect to the name, and each connection holds two threads until
+ * its hello times out, so at most {@link #MAX_CONNECTIONS} are open at once: one more is closed as
+ * soon as it is accepted, before it is read from.
+ */
 final class Server {
     private static final String TAG = "Spectragent";
+    /** The host needs one or two; the rest of the room is for the moment a closed one lingers. */
+    static final int MAX_CONNECTIONS = 8;
 
     private final String name;
     private final Handler handler;
@@ -83,6 +91,11 @@ final class Server {
             }
             Connection connection = new Connection(socket, handler, events, token, hello);
             synchronized (connections) {
+                if (connections.size() >= MAX_CONNECTIONS) {
+                    Log.w(TAG, name + " has " + MAX_CONNECTIONS + " connections open; closed another");
+                    connection.close();
+                    continue;
+                }
                 connections.add(connection);
             }
             Thread serving = new Thread(() -> {

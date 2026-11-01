@@ -5756,7 +5756,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **主机与设备之间的通道（2026-11-01 实施，`device/channel.py`）。** 服务与助手各自绑在一个 `localabstract` socket 上（服务的叫 `spectragent_device`，由启动引导报给主机；助手的名字每次随机），主机经 run 自己的 adb server 直连：一条连接先 `host:transport:<序列号>`，再请求 `localabstract:<名字>`，此后这条连接就是那个 socket 的字节流（实测）。所以不用 `adb forward`：它在主机上开一个本机任何进程都能连的端口，还要记着拆。当初选 forward 的两条理由照样成立：不依赖设备自己的网络（不必为连主机关飞行模式、设 `no_proxy`，也就不与切换网络的任务冲突），也不占设备上每个 app 都看得见的 localhost TCP 端口。没有程序在听的名字，adbd 连不上，server 答 `FAIL closed`。
 
-- **帧**：两个大端 u32（其后的总长、头长）、一个 JSON 对象做头、一段二进制载荷（截图的 PNG），一帧最多 64 MB。设备上谁都能连这个 socket，所以认证之前的 hello 最多 64 KB。
+- **帧**：两个大端 u32（其后的总长、头长）、一个 JSON 对象做头、一段二进制载荷（截图的 PNG），一帧最多 64 MB。设备上谁都能连这个 socket，所以认证之前的 hello 最多 64 KB，每个程序同时最多开 8 条连接（每条连接在 hello 超时之前占两个线程），多出来的一接受就关掉。
 - **握手**：两边第一帧都是 hello，它的形状永远不变，版本不同的两端总能互相说清楚。主机发协议版本与 token；设备答它自己（组件、包名、versionCode 与 versionName、API 级别、它所运行的 APK 在设备上算出的 SHA-256、系统读到的 `isAccessibilityTool`），或答 `refused`（`protocol` 或 `token`）并关闭；主机也拒绝别的协议版本的设备。版本号 `PROTOCOL_VERSION` 只写一处，在主机的 `channel.py`，APK 的构建从那里读进去。
 - **token**：服务与助手每个会话各一个，主机生成，经 adb shell 的 stdin 下发，两个都从不出现在命令行上（`ps` 把命令行给 shell 与 root 用户看）：服务的那个由 `content write --uri content://org.spectragent.device.bootstrap/session` 从 stdin 写给 ContentProvider，它读管道、交给 app 进程（只认 shell 与 root 的调用；token 只在内存里，进程重启就要再交）；助手的那个在它自己的 stdin 上。设备按常数时间比较。
 - **请求**：带主机给的递增 id；设备按到达顺序逐个回答一条连接上的请求。调用方放弃（取消、超时）的回答按 id 丢掉，设备照样做完那个请求再开始下一个，所以同一条连接上的下一个请求排在它后面，与会话层"被取消的任务要等它真正退出"相合。
