@@ -47,11 +47,22 @@ android {
         buildConfig true
     }
 
-    // A key committed on purpose, password and all. It signs a test tool, not a
-    // product, and one key for every build keeps two things true: a build of one
-    // commit has one SHA-256 on every machine, and installing a newer build over
-    // an older one never fails on a changed signature. A device only ever gets
-    // this APK through adb, which it trusts anyway.
+    // The default key is committed on purpose, password and all. It signs a test
+    // tool for emulators, CI and tests, and one key for every build keeps two things
+    // true: a build of one commit has one SHA-256 on every machine, and installing a
+    // newer build over an older one never fails on a changed signature. Anyone can
+    // sign with it, so an APK signed with it must never be installed on a real
+    // device (docs/architecture_design.md §11.2): anyone who reaches that device's
+    // adb could install a build of their own over it, and it would keep our
+    // accessibility grant. A build for a real device is signed with a keystore kept
+    // outside the repository, named by the environment, never by the command line:
+    // SPECTRAGENT_KEYSTORE (its path), SPECTRAGENT_KEY_ALIAS,
+    // SPECTRAGENT_KEYSTORE_PASSWORD and SPECTRAGENT_KEY_PASSWORD (the store's when
+    // unset).
+    def ownKeystore = System.getenv("SPECTRAGENT_KEYSTORE")
+    if (ownKeystore && !(System.getenv("SPECTRAGENT_KEY_ALIAS") && System.getenv("SPECTRAGENT_KEYSTORE_PASSWORD"))) {
+        throw new GradleException("SPECTRAGENT_KEYSTORE needs SPECTRAGENT_KEY_ALIAS and SPECTRAGENT_KEYSTORE_PASSWORD")
+    }
     signingConfigs {
         committed {
             storeFile file("signing/spectragent-device.p12")
@@ -60,12 +71,20 @@ android {
             keyAlias "spectragent-device"
             keyPassword "spectragent"
         }
+        if (ownKeystore) {
+            own {
+                storeFile file(ownKeystore)
+                storePassword System.getenv("SPECTRAGENT_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SPECTRAGENT_KEY_ALIAS")
+                keyPassword System.getenv("SPECTRAGENT_KEY_PASSWORD") ?: System.getenv("SPECTRAGENT_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.committed
+            signingConfig ownKeystore ? signingConfigs.own : signingConfigs.committed
             // The plugin would record the checkout's commit in the APK, so one source
             // would hash differently from commit to commit, and in a worktree.
             vcsInfo.include false

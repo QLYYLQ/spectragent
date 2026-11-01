@@ -22,7 +22,10 @@ import pytest
 
 import spectragent
 from spectragent.core.capabilities.android.adb import AdbClient
-from spectragent.core.capabilities.android.device.apk import ServiceApk
+from spectragent.core.capabilities.android.device.apk import (
+    TEST_KEY_CERTIFICATE_SHA256,
+    ServiceApk,
+)
 from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
 from tests._helpers.fake_adb import FakeAdbServer, ShellIO, StreamingCommand
@@ -41,13 +44,14 @@ def apk(tmp_path: Path) -> ServiceApk:
     path = tmp_path / "spectragent-device.apk"
     path.write_bytes(APK_BYTES)
     sidecar = {
-        "format": "spectragent-device-apk-1",
+        "format": "spectragent-device-apk-2",
         "package": "org.spectragent.device",
         "version_code": 1,
         "version_name": "1",
         "protocol": PROTOCOL_VERSION,
         "accessibility_tool": False,
         "sha256": hashlib.sha256(APK_BYTES).hexdigest(),
+        "signing_certificate_sha256": TEST_KEY_CERTIFICATE_SHA256,
     }
     path.with_suffix(".json").write_text(json.dumps(sidecar))
     return ServiceApk.load(path)

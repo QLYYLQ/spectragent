@@ -245,6 +245,7 @@ async def test_the_service_is_up_on_the_build_it_was_given(up: Up) -> None:
     hello = up.side.service.hello
 
     assert up.side.installed_now, "a read-only boot starts without the APK"
+    assert up.apk.signed_with_test_key, "the default build signs with the committed key"
     assert hello.apk_sha256 == up.apk.info.sha256 == up.side.helper.hello.apk_sha256
     assert hello.accessibility_tool == up.apk.info.accessibility_tool
     assert (await up.side.service.ping()).uptime_ms > 0
