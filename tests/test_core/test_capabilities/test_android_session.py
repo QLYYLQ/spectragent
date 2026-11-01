@@ -9,16 +9,26 @@ the capture fan-out.
 Where a test needs time to pass (a job outliving another's limit), it sleeps
 for that time: the delay is the point. Everything else waits on events, with a
 generous bound so a deadlock fails instead of hanging.
+
+A job that gave up on a call to a device-side program pings that program's
+channel before the device is handed on (§11.2, "主机与设备之间的通道"); those
+tests talk to a :class:`~tests._helpers.fake_device_side.FakeProgram` through the
+fake ADB server, as the capability talks to the APK's helper.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import TypeVar
 
 import pytest
 
+from spectragent.core.capabilities.android.adb import AdbClient
+from spectragent.core.capabilities.android.device.channel import Channel, JsonObject
+from spectragent.core.capabilities.android.device.clients import HelperClient
 from spectragent.core.capabilities.android.session import (
     CaptureError,
     DeviceBusyError,
@@ -28,6 +38,8 @@ from spectragent.core.capabilities.android.session import (
     Source,
     fan_out,
 )
+from tests._helpers.fake_adb import FakeAdbServer, SocketServer, scripted
+from tests._helpers.fake_device_side import Answer, FakeProgram
 
 T = TypeVar("T")
 
@@ -380,3 +392,183 @@ class TestFanOut:
         with pytest.raises(asyncio.CancelledError):
             await capture
         assert sorted(stopped) == ["a", "b"]
+
+
+class _SlowHelper:
+    """A helper whose ``slow`` call runs on until released, as a long press runs on the device."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        #: What happened on the device, in order.
+        self.log: list[str] = []
+        self.program = FakeProgram(
+            component="helper",
+            token="token",
+            methods={"slow": self._slow, "ping": self._ping},
+        )
+
+    async def _slow(self, params: JsonObject) -> Answer:
+        self.log.append("slow started")
+        await self.release.wait()
+        self.log.append("slow finished")
+        return Answer()
+
+    async def _ping(self, params: JsonObject) -> Answer:
+        self.log.append("ping")
+        return Answer({"uptime_ms": 1})
+
+
+@asynccontextmanager
+async def _helper(slow: _SlowHelper) -> AsyncIterator[HelperClient]:
+    listening: dict[str, SocketServer] = {"helper": slow.program.serve}
+    async with (
+        FakeAdbServer({SERIAL: scripted({})}, sockets={SERIAL: listening.get}) as adb,
+        asyncio.timeout(_WAIT_S),
+    ):
+        reader, writer = await AdbClient(adb.host, adb.port).connect_abstract(SERIAL, "helper")
+        client = HelperClient(await Channel.open(reader, writer, token="token", component="helper"))
+        try:
+            yield client
+        finally:
+            await client.close()
+
+
+class TestACallGivenUpOn:
+    async def test_the_next_job_starts_only_once_the_device_finished_it(self) -> None:
+        """Without the ping the next job would start while the abandoned call still ran."""
+        slow = _SlowHelper()
+        async with _helper(slow) as helper:
+            session = DeviceSession(SERIAL, paths=lambda: [helper], confirm_s=_WAIT_S)
+
+            async def calls_slow() -> None:
+                await helper.channel.call("slow")
+
+            async def next_job() -> None:
+                slow.log.append("next job")
+
+            first = _queue(session, calls_slow, "long press", run_s=0.1)
+            second = _queue(session, next_job, "capture")
+            while "slow started" not in slow.log:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.3)  # the first job's run limit passes meanwhile
+            assert "next job" not in slow.log, "the device is still held for the confirmation"
+            slow.release.set()
+
+            with pytest.raises(DeviceJobTimeout):
+                await _bounded(first)
+            await _bounded(second)
+
+        assert slow.log == ["slow started", "slow finished", "ping", "next job"]
+        assert helper.abandoned == 0
+
+    async def test_a_source_that_ran_out_of_time_is_confirmed_too(self) -> None:
+        """A capture that ends normally, with one source given up on, still confirms it."""
+        slow = _SlowHelper()
+        async with _helper(slow) as helper:
+            session = DeviceSession(SERIAL, paths=lambda: [helper], confirm_s=_WAIT_S)
+
+            async def capture() -> dict[str, object]:
+                try:
+                    return await fan_out(
+                        {"screenshot": Source(lambda: helper.channel.call("slow"), 0.1)}
+                    )
+                except CaptureError:
+                    return {}
+
+            capturing = _queue(session, capture, "capture")
+            while "slow started" not in slow.log:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.3)
+            assert not capturing.done(), "the capture holds the device until the source is done"
+            slow.release.set()
+
+            assert await _bounded(capturing) == {}
+        assert slow.log == ["slow started", "slow finished", "ping"]
+
+    async def test_a_confirmation_that_gets_no_answer_hands_the_device_on_after_its_limit(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        slow = _SlowHelper()
+        async with _helper(slow) as helper:
+            session = DeviceSession(SERIAL, paths=lambda: [helper], confirm_s=0.2)
+
+            async def calls_slow() -> None:
+                await helper.channel.call("slow")
+
+            with caplog.at_level(logging.WARNING), pytest.raises(DeviceJobTimeout):
+                await _bounded(session.run(calls_slow, what="drag", wait_s=1, run_s=0.1))
+            assert await _bounded(session.run(_return_one, what="next", wait_s=1, run_s=1)) == 1
+            slow.release.set()
+
+        assert "drag on device emulator-5554 gave up on a call" in caplog.text
+
+    async def test_a_job_whose_caller_cancels_it_confirms_too_and_its_caller_sees_the_cancel(
+        self,
+    ) -> None:
+        """The confirmation runs while the cancellation unwinds, as at a Runtime timeout."""
+        slow = _SlowHelper()
+        async with _helper(slow) as helper:
+            session = DeviceSession(SERIAL, paths=lambda: [helper], confirm_s=_WAIT_S)
+
+            async def calls_slow() -> None:
+                await helper.channel.call("slow")
+
+            async def next_job() -> None:
+                slow.log.append("next job")
+
+            first = _queue(session, calls_slow, "long press")
+            second = _queue(session, next_job, "capture")
+            while "slow started" not in slow.log:
+                await asyncio.sleep(0.01)
+            first.cancel()
+            await asyncio.sleep(0.2)
+            assert not first.done(), "the cancelled job confirms its call before it unwinds"
+            slow.release.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await _bounded(first)
+            await _bounded(second)
+        assert slow.log == ["slow started", "slow finished", "ping", "next job"]
+
+    async def test_a_confirmation_cancelled_again_still_hands_the_device_on(self) -> None:
+        """The next job then starts, and confirms the call still running before it hands on."""
+        slow = _SlowHelper()
+        async with _helper(slow) as helper:
+            session = DeviceSession(SERIAL, paths=lambda: [helper], confirm_s=_WAIT_S)
+
+            async def calls_slow() -> None:
+                await helper.channel.call("slow")
+
+            async def next_job() -> None:
+                slow.log.append("next job")
+
+            first = _queue(session, calls_slow, "long press")
+            while "slow started" not in slow.log:
+                await asyncio.sleep(0.01)
+            first.cancel()
+            await asyncio.sleep(0.1)
+            first.cancel()  # again, while it confirms
+            with pytest.raises(asyncio.CancelledError):
+                await _bounded(first)
+            second = _queue(session, next_job, "capture")
+            while "next job" not in slow.log:
+                await asyncio.sleep(0.01)
+            slow.release.set()
+            await _bounded(second)
+        assert slow.log == ["slow started", "next job", "slow finished", "ping", "ping"]
+
+    async def test_a_job_that_gave_up_on_nothing_sends_no_ping(self) -> None:
+        slow = _SlowHelper()
+        slow.release.set()
+        async with _helper(slow) as helper:
+            session = DeviceSession(SERIAL, paths=lambda: [helper], confirm_s=_WAIT_S)
+
+            async def calls_slow() -> None:
+                await helper.channel.call("slow")
+
+            await _bounded(session.run(calls_slow, what="tap", wait_s=1, run_s=_WAIT_S))
+        assert slow.log == ["slow started", "slow finished"]
+
+
+async def _return_one() -> int:
+    return 1

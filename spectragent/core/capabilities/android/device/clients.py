@@ -201,6 +201,11 @@ class ServiceClient:
         """How the service described itself: the installed build, measured on the device."""
         return self.channel.hello
 
+    @property
+    def abandoned(self) -> int:
+        """Calls given up on that may still run on the device (:attr:`Channel.abandoned`)."""
+        return self.channel.abandoned
+
     async def ping(self) -> Ping:
         return Ping.model_validate((await self.channel.call("ping")).result)
 
@@ -280,6 +285,11 @@ class HelperClient:
     @property
     def hello(self) -> Hello:
         return self.channel.hello
+
+    @property
+    def abandoned(self) -> int:
+        """Calls given up on that may still run on the device (:attr:`Channel.abandoned`)."""
+        return self.channel.abandoned
 
     async def ping(self) -> Ping:
         return Ping.model_validate((await self.channel.call("ping")).result)

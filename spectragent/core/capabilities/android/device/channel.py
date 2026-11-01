@@ -33,6 +33,9 @@ payload when the method has one, or ``{"kind": "response", "id": I, "error":
 device answers one connection's requests one at a time, in order. An answer
 whose caller gave up (cancelled, timed out) is dropped by its id; the device
 still finishes that request before it starts the next one on the connection.
+Until that answer arrives the channel counts the request as abandoned
+(:attr:`Channel.abandoned`): it may still be running on the device, and any
+request answered after it was not.
 
 **Events.** After ``subscribe``, answered ``{"next_seq": S}``, the service
 pushes ``{"kind": "event", "seq": S, ...}`` frames on the same stream,
@@ -305,6 +308,8 @@ class Channel:
         self._writer = writer
         self._ids = itertools.count(1)
         self._pending: dict[int, _Pending] = {}
+        #: Requests sent whose callers gave up before their answers came.
+        self._abandoned: set[int] = set()
         self._send_lock = asyncio.Lock()
         self._events: EventStream | None = None
         self._ended: ChannelClosed | None = None
@@ -342,6 +347,15 @@ class Channel:
     @property
     def closed(self) -> bool:
         return self._ended is not None
+
+    @property
+    def abandoned(self) -> int:
+        """How many requests sent here may still run on the device though their callers gave up.
+
+        Each counts until its late answer arrives; 0 once the channel closed.
+        Any request answered from now on was answered after all of them.
+        """
+        return 0 if self.closed else len(self._abandoned)
 
     async def call(self, method: str, params: Mapping[str, JsonValue] | None = None) -> Reply:
         """Send one request and return the device's answer.
@@ -407,14 +421,22 @@ class Channel:
         )
         answer: asyncio.Future[Reply] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = _Pending(method, answer, on_result)
+        sent = False
         try:
             async with self._send_lock:
                 try:
                     self._writer.write(frame)
+                    sent = True  # in the transport's buffer: it reaches the device
                     await self._writer.drain()
                 except OSError as exc:
                     raise ChannelClosed(f"{method}: the channel broke: {exc}") from None
             return await answer
+        except asyncio.CancelledError:
+            # Cancelling the waiting task cancels the future it awaits: no answer came.
+            answered = answer.done() and not answer.cancelled()
+            if sent and not answered and self._ended is None:
+                self._abandoned.add(request_id)
+            raise
         finally:
             self._pending.pop(request_id, None)
 
@@ -433,7 +455,10 @@ class Channel:
         kind = header.get("kind")
         if kind == "response":
             request_id = header.get("id")
-            pending = self._pending.get(request_id) if isinstance(request_id, int) else None
+            if not isinstance(request_id, int):
+                return
+            self._abandoned.discard(request_id)
+            pending = self._pending.get(request_id)
             if pending is None or pending.answer.done():
                 return  # its caller gave up
             error = header.get("error")
@@ -470,6 +495,7 @@ class Channel:
         """Settle every waiter with *end*, the first reason the channel ended."""
         if self._ended is None:
             self._ended = end
+        self._abandoned.clear()
         for pending in self._pending.values():
             if not pending.answer.done():
                 pending.answer.set_exception(ChannelClosed(f"{pending.method}: {self._ended}"))
