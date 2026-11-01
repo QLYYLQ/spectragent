@@ -427,9 +427,15 @@ class LifecycleEvent(BaseEvent[None]):
 
 
 class NavigatedWithinDocumentEvent(BaseEvent[None]):
-    """``Page.navigatedWithinDocument`` — the page committed a same-document navigation."""
+    """``Page.navigatedWithinDocument`` — the page committed a same-document navigation.
+
+    ``navigation_type`` is Chrome's ``navigationType``: ``fragment`` (a new
+    fragment), ``historyApi`` (a page script's ``history.pushState`` or
+    ``replaceState``) or ``other``; ``None`` when Chrome does not say.
+    """
 
     frame_id: str | None = None
+    navigation_type: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

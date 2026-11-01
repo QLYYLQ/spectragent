@@ -3625,7 +3625,7 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 - **结果**由 handler 决定，失败时它回复 `{"error": ...}`（与点击、输入同一个约定，`actions/_common.py::handler_error`），`NavigateAction` 据此返回 `success=False`：
   - 按时回应、等到了 `wait_until` → 成功；
   - 按时回应、`wait_until` 没按时到 → 记一条 WARNING（点名 URL、阶段与等了多久），成功：页面已经是新文档，后面的观测照常采集；
-  - 回应里没有 `loaderId`：同文档导航（只改了 fragment），没有新文档可等 → 立即成功；但 Chrome 在页面提交它之前就回应（实测，Chrome 155：回应约 1 ms，页面主线程空闲时提交再晚约 2 ms，主线程忙时等手上的任务结束才提交，之前读到的历史当前项还是离开的 URL），所以效果里导航之后的 URL 等页面报告提交（`Page.navigatedWithinDocument`）之后才读，这段等待算在 `action_effect_timeout_s` 里，等不到记 unknown（§4.5"动作效果"）；
+  - 回应里没有 `loaderId`：同文档导航（只改了 fragment），没有新文档可等 → 立即成功；但 Chrome 在页面提交它之前就回应（实测，Chrome 155：回应约 1 ms，页面主线程空闲时提交再晚约 2 ms，主线程忙时等手上的任务结束才提交，之前读到的历史当前项还是离开的 URL），所以效果里导航之后的 URL 等主 frame 报告提交（`Page.navigatedWithinDocument`；页面脚本经 History API 改 URL 报的 `navigationType: historyApi` 不算）之后才读，这段等待算在 `action_effect_timeout_s` 里，等不到记 unknown（§4.5"动作效果"）；脚本恰在回应与提交之间设 `location.hash` 时，它报的提交与这次导航的分不开，读到的是脚本的 URL；
   - 没按时回应 → 失败：`navigation to '<url>' did not commit within 30 s`；
   - Chrome 拒绝这条命令（例如它认为无效的 URL）→ 失败，带 Chrome 的错误；
   - 回应带 `errorText`（CDP：只在导航失败时出现）→ 立即失败，带这段文字。

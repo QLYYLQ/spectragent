@@ -721,13 +721,17 @@ async def same_document_committed(
     Chrome answers ``Page.navigate`` for a same-document navigation (a new
     fragment; the reply has no ``loaderId``) before the page commits it, and
     the history's current entry changes only when it does. *commit* is the
-    page's report of it (``Page.navigatedWithinDocument``), awaited here.
-    Measured (Chrome 155, headless): the reply ~1 ms after the command, the
-    commit ~2 ms after the reply on an idle page, and only once the current
-    task ends on a page whose main thread is busy; a history read right after
-    the reply then still names the URL being left. ``"unknown"`` when it has
-    not committed by the end of the budget: the tab's URL then is the one
-    being left.
+    page's report of it (the main frame's ``Page.navigatedWithinDocument``;
+    one of ``navigationType`` ``historyApi`` is a page script's
+    ``history.pushState`` or ``replaceState`` and does not count), awaited
+    here. Measured (Chrome 155, headless): the reply ~1 ms after the command,
+    the commit ~2 ms after the reply on an idle page, and only once the
+    current task ends on a page whose main thread is busy; a history read
+    right after the reply then still names the URL being left. ``"unknown"``
+    when it has not committed by the end of the budget: the tab's URL then is
+    the one being left. A script that sets ``location.hash`` between the reply
+    and the commit reports a commit of the same kind, and the URL read then is
+    the script's.
     """
     if await budget.run(lambda: commit, "same-document commit") is NO_ANSWER:
         return UNKNOWN

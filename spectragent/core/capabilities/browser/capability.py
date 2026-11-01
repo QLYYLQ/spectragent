@@ -3982,7 +3982,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         )
         bridge.bridge(
             "Page.navigatedWithinDocument",
-            lambda p: NavigatedWithinDocumentEvent(frame_id=p.get("frameId")),
+            lambda p: NavigatedWithinDocumentEvent(
+                frame_id=p.get("frameId"), navigation_type=p.get("navigationType")
+            ),
         )
         self._tab_sessions.bind(cdp_session_id)
 

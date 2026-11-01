@@ -436,7 +436,15 @@ class TestNavigationOutcomes:
         assert time.monotonic() - started < 1.0
         assert any(isinstance(e, NavigationCompleteEvent) for e in scope.emitted)
 
-    async def test_a_sub_frame_s_same_document_commit_is_not_this_navigation_s(self) -> None:
+    @pytest.mark.parametrize(
+        ("frame_id", "navigation_type"),
+        [("OTHER_FRAME", "fragment"), ("MAIN", "historyApi")],
+        ids=["sub_frame", "history_api"],
+    )
+    async def test_another_same_document_commit_is_not_this_navigation_s(
+        self, frame_id: str, navigation_type: str
+    ) -> None:
+        """A sub-frame's commit, or a page script's ``history.pushState``, does not end the wait."""
         cdp = _FakeCDP(loader_id=None)
         wd, scope = _watchdog(cdp)
         navigation = asyncio.create_task(
@@ -447,11 +455,11 @@ class TestNavigationOutcomes:
                 break
             await asyncio.sleep(0.005)
         assert not navigation.done(), navigation
-        scope.fire(NavigatedWithinDocumentEvent(frame_id="OTHER_FRAME"))
+        scope.fire(NavigatedWithinDocumentEvent(frame_id=frame_id, navigation_type=navigation_type))
         for _ in range(10):
             await asyncio.sleep(0)
-        assert not navigation.done(), "still waiting for the main frame's commit"
-        scope.fire(NavigatedWithinDocumentEvent(frame_id="MAIN"))
+        assert not navigation.done(), "still waiting for this navigation's commit"
+        scope.fire(NavigatedWithinDocumentEvent(frame_id="MAIN", navigation_type="fragment"))
         assert (await navigation)["navigated"] is True
 
 

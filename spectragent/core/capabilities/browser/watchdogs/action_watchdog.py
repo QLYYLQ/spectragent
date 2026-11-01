@@ -1334,11 +1334,15 @@ class ActionWatchdog(BrowserWatchdog):
 
             waiter = expect(self._scope, target_evt, include=matches)
         # A same-document navigation commits after Chrome's reply; its URL
-        # after waits for this (``same_document_committed``).
+        # after waits for this (``same_document_committed``). A History API
+        # change is a page script's, never this navigation's commit.
         within_document = expect(
             self._scope,
             NavigatedWithinDocumentEvent,
-            include=lambda e: main_frame_id is None or e.frame_id in (None, main_frame_id),
+            include=lambda e: (
+                e.navigation_type != "historyApi"
+                and (main_frame_id is None or e.frame_id in (None, main_frame_id))
+            ),
         )
 
         # 3. Emit start, then fire Page.navigate (the commit), then wait for
