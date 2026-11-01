@@ -151,8 +151,8 @@ class ProbeCDP:
         shadow_root: str | None = None,
         answer_after_s: dict[str, Iterable[float]] | None = None,
         before: str = "null",
-        inside: Any = False,
-        stayed: Sequence[Any] = (False,),
+        inside: object = False,
+        stayed: Sequence[object] = (False,),
     ) -> None:
         self.calls: list[Call] = []
         self.shadow_root = shadow_root

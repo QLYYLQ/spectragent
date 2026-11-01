@@ -668,7 +668,7 @@ class TestTypingAtAPointGoesWhereFocusWent:
         ids=["box unread", "box unclear", "identity unread", "identity unclear"],
     )
     async def test_a_reading_that_cannot_tell_types_as_asked(
-        self, inside: Any, stayed: Any
+        self, inside: object, stayed: object
     ) -> None:
         cdp = ProbeCDP(
             field="node",

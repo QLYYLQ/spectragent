@@ -647,7 +647,7 @@ class FieldProbe:
         if object_id is None:
             return None
 
-        async def read() -> Any:
+        async def read() -> object:
             reply = await self.cdp.send(
                 "Runtime.callFunctionOn",
                 {
@@ -669,7 +669,7 @@ class FieldProbe:
         if object_id is None or before_id is None:
             return None
 
-        async def read() -> Any:
+        async def read() -> object:
             reply = await self.cdp.send(
                 "Runtime.callFunctionOn",
                 {
