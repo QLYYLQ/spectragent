@@ -428,7 +428,11 @@ def test_explain_says_what_a_run_cannot_provide(probe_root: Path) -> None:
     assert "agent/ui_tars" in explained["declared"]
     assert explained["unresolved"] == [
         ["ui_tars", "observation", ["capture_state"]],
-        ["ui_tars", "action", ["scroll", "send_keys", "drag", "wait"]],
+        [
+            "ui_tars",
+            "action",
+            ["scroll", "send_keys", "drag", "wait", "long_press", "open_app", "press_key"],
+        ],
     ]
 
 

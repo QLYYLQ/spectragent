@@ -97,7 +97,7 @@ def _every_verb_space(coordinate_space: CoordinateSpace = "screenshot_pixels") -
     android = {d.name: d for d in AndroidCapability().get_action_descriptors()}
     return space_of(
         [
-            *browser_descriptors(*sorted(required | optional)),
+            *browser_descriptors(*sorted((required | optional) - set(_ANDROID_ONLY))),
             *(android[f"android.{name}"] for name in _ANDROID_ONLY),
         ],
         coordinate_space=coordinate_space,

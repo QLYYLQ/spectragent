@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import typing
-from typing import Any
 
 import pytest
 
@@ -44,7 +43,7 @@ from tests._helpers.android_device import (
     android_capability,
     png,
 )
-from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.assembly import AGENT_ID, NoModel, make_env, make_run
 from tests._helpers.fake_adb import FakeAdbServer, ShellResult
 
 
@@ -240,22 +239,11 @@ async def test_the_android_environment_routes_android_actions_to_the_capability(
     assert result.success and phone.inputs == ["input tap 7 8"]
 
 
-class _NoModel:
-    inference_kind = "chat"
-    model = name = "no-model"
-
-    async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
-        raise AssertionError("assembly calls no model")
-
-    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
-        return ()
-
-
 def test_ui_tars_assembles_against_the_android_capability_with_its_wiring_unchanged() -> None:
     """A relative name is a param contract (§4.9), so UI-TARS's demands bind to Android's actions."""
     env = make_env(EnvironmentBase, {"android#0": AndroidCapability()})
     run = make_run(
-        agent=UITarsAgent(), loop=ReactLoop(), env=env, llm=_NoModel(), memory=SimpleMemory()
+        agent=UITarsAgent(), loop=ReactLoop(), env=env, llm=NoModel(), memory=SimpleMemory()
     )
     runtime = AgentRuntime.for_agent(run, AGENT_ID)
 
@@ -263,15 +251,16 @@ def test_ui_tars_assembles_against_the_android_capability_with_its_wiring_unchan
 
     actions, observation = runtime.negotiated_actions, runtime.negotiated_observation
     assert actions is not None and observation is not None
-    bindings = actions.action_bindings
-    assert {
-        name: bindings[name]
-        for name in ("click_coordinate", "type_coordinate", "scroll", "wait", "done")
-    } == {
+    # Every action UI-TARS wires but send_keys: Android offers no key chords.
+    assert actions.action_bindings == {
         "click_coordinate": "android.click_coordinate",
         "type_coordinate": "android.type_coordinate",
         "scroll": "android.scroll",
+        "drag": "android.drag",
         "wait": "android.wait",
+        "long_press": "android.long_press",
+        "open_app": "android.open_app",
+        "press_key": "android.press_key",
         "done": "loop.done",
     }
     fragments = observation.fragment_bindings
