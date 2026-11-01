@@ -249,6 +249,13 @@ INSTALLED_PATH = "/data/app/~~kTm2Xl0lQ==/org.spectragent.device-Q2nX9w==/base.a
 #: The service as the setting names it.
 SERVICE_COMPONENT = "org.spectragent.device/.DeviceService"
 SERVICE_SOCKET = "spectragent_device"
+#: The line ``content`` prints on stderr, before the stack trace, when the provider throws.
+PROVIDER_ERROR = "Error while accessing provider:org.spectragent.device.bootstrap"
+
+
+def _thrown(exception: str) -> ShellResult:
+    """What ``content`` answers when the provider throws: the error on stderr, and still exit 0."""
+    return ShellResult(stderr=f"{PROVIDER_ERROR}\n{exception}\n".encode())
 
 
 class FakeDeviceSide:
@@ -263,8 +270,10 @@ class FakeDeviceSide:
       stdin, listens on that socket (a :class:`FakeProgram`), prints
       ``READY 1`` and runs until its stdin ends;
     - ``content write`` to the bootstrap provider's ``/session`` sets, from its
-      stdin, the token the service's hello requires; ``content call`` with
-      ``health`` reports;
+      stdin, the token the service's hello requires, unless
+      *token_write_throws*; ``content call`` with ``health`` reports. When the
+      provider throws, ``content`` prints the error on stderr and still exits 0,
+      as the real tool does;
     - the helper's ``enable_service`` appends the service to the setting, and
       the system binds it, so its socket appears, unless *binds* is false: then
       the service vanishes from the setting again and never listens, as
@@ -283,6 +292,7 @@ class FakeDeviceSide:
         binds: bool = True,
         faketouch: bool = True,
         lose_token_once: bool = False,
+        token_write_throws: bool = False,
     ) -> None:
         #: The installed APK's bytes; ``None``: not installed.
         self.installed = installed
@@ -307,6 +317,7 @@ class FakeDeviceSide:
         #: How many times the service's token was written to the provider.
         self.tokens_written = 0
         self._lose_token_once = lose_token_once
+        self._token_write_throws = token_write_throws
 
     def force_stop(self) -> None:
         """``am force-stop org.spectragent.device``: unbound, out of the setting, its token gone."""
@@ -348,8 +359,9 @@ class FakeDeviceSide:
         return None
 
     def _provider(self, words: list[str]) -> ShellResult:
-        if words[words.index("--method") + 1] != "health":
-            return ShellResult(stderr=b"Error while accessing provider\n", exit_code=1)
+        method = words[words.index("--method") + 1]
+        if method != "health":
+            return _thrown(f"java.lang.IllegalArgumentException: no method {method}")
         health = {
             "protocol": PROTOCOL_VERSION,
             "package": "org.spectragent.device",
@@ -368,6 +380,10 @@ class FakeDeviceSide:
         data = bytearray()
         while (chunk := await shell.read_stdin()) is not None:
             data += chunk
+        if self._token_write_throws:
+            thrown = _thrown("java.io.FileNotFoundException: no pipe for the token")
+            await shell.write(thrown.stderr, stderr=True)
+            return thrown.exit_code
         # A process that restarted after the bootstrap has lost the token.
         self.service.token = "lost" if self._lose_token_once else data.decode().strip()
         self._lose_token_once = False

@@ -33,7 +33,13 @@ from spectragent.core.capabilities.android.device.channel import (
 )
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
 from tests._helpers.fake_adb import FakeAdbServer, ShellIO, StreamingCommand
-from tests._helpers.fake_device_side import SERVICE_COMPONENT, Answer, Failure, FakeDeviceSide
+from tests._helpers.fake_device_side import (
+    PROVIDER_ERROR,
+    SERVICE_COMPONENT,
+    Answer,
+    Failure,
+    FakeDeviceSide,
+)
 
 SERIAL = "emulator-5554"
 TALKBACK = "com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService"
@@ -169,6 +175,20 @@ async def test_a_service_process_that_lost_the_token_is_handed_it_again(apk: Ser
         await device.stop()
 
     assert side.tokens_written == 2
+
+
+async def test_a_provider_that_throws_on_the_token_fails_the_start_with_its_error(
+    apk: ServiceApk,
+) -> None:
+    """``content`` exits 0 when the provider throws; its error on stderr is what tells. Taken for
+    a success, the start would wait for a ping the service refuses, until its time ran out."""
+    side = FakeDeviceSide(token_write_throws=True)
+    async with _phone(side) as (_, client):
+        with pytest.raises(DeviceSideError, match=f"did not take the token: {PROVIDER_ERROR}"):
+            await DeviceSide.start(client, SERIAL, apk, timeout_s=2.0)
+        await _helper_exited(side)
+
+    assert side.helper_exits == 1, "the failed start stopped the helper"
 
 
 async def test_stop_never_force_stops_our_package(apk: ServiceApk) -> None:

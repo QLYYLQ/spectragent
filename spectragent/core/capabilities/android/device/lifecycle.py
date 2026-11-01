@@ -77,6 +77,9 @@ _POLL_S = 0.1
 _STOP_STEP_S = 10.0
 #: ``Result: Bundle[{json={...}}]``, as ``content call`` prints the provider's answer.
 _BUNDLE = re.compile(r"Bundle\[\{json=(\{.*\})\}\]", re.DOTALL)
+#: ``content`` catches whatever the provider throws, prints this and the stack trace on stderr,
+#: and still exits 0 (AOSP ``Content.java``; seen on API 30, 31 and 33).
+_PROVIDER_ERROR = b"Error while accessing provider"
 
 
 class DeviceSideError(RuntimeError):
@@ -381,7 +384,7 @@ class DeviceSide:
             f"content write --uri {PROVIDER_URI}/session",
             stdin=self._service_token.encode(),
         )
-        if result.exit_code != 0:
+        if result.exit_code != 0 or _PROVIDER_ERROR in result.stderr:
             said = (result.stdout + result.stderr).decode(errors="replace").strip()
             raise DeviceSideError(f"the bootstrap provider did not take the token: {said}")
 

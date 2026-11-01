@@ -22,6 +22,8 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
 - the service refuses a wrong token, closes a connection from an app's uid
   before reading it, closes a hello over 64 KB without an answer, and closes
   at once a connection past its limit;
+- a provider error leaves ``content`` with exit code 0 and the error on
+  stderr, which is how the host tells a failed token write;
 - the helper's disable and enable keep another service's entry in the setting;
 - a force-stop of the package (what a task may do) takes the service out of
   the setting, and ``ensure_bound`` brings it back;
@@ -74,7 +76,7 @@ from spectragent.core.capabilities.android.device.clients import (
     TreeCapture,
 )
 from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityNodeInfo
-from spectragent.core.capabilities.android.device.lifecycle import DeviceSide
+from spectragent.core.capabilities.android.device.lifecycle import PROVIDER_URI, DeviceSide
 
 pytestmark = [
     pytest.mark.requires_android_emulator,
@@ -650,6 +652,18 @@ async def test_a_hello_over_64_kb_closes_the_stream_unanswered(up: Up) -> None:
             assert await reader.read() == b""
     finally:
         writer.close()
+
+
+async def test_a_provider_error_exits_0_with_the_error_on_stderr(up: Up) -> None:
+    """What the host relies on to tell a failed token write (``device/lifecycle.py``): the
+    ``content`` tool catches the provider's exception, prints it on stderr and still exits 0.
+    The provider opens only ``/session``, so writing elsewhere makes it throw."""
+    result = await up.adb.shell(
+        up.serial, f"content write --uri {PROVIDER_URI}/elsewhere", stdin=b"x"
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr.startswith(f"Error while accessing provider:{PACKAGE}.bootstrap".encode())
 
 
 async def test_a_connection_past_the_limit_is_closed_at_once(up: Up) -> None:
