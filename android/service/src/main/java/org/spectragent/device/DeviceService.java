@@ -25,7 +25,8 @@ import org.json.JSONObject;
  * so an answered ping proves the binding (docs/architecture_design.md §11.2).
  *
  * <p>Methods: {@code ping}; {@code tree} (the window forest, {@link Forest}); {@code screenshot}
- * (API 30+, PNG, at most one per {@link #SCREENSHOT_INTERVAL_MS}: a request sooner waits);
+ * (API 30+, PNG, at most one per {@link #SCREENSHOT_INTERVAL_MS}: a request sooner waits, and one
+ * the system still finds too soon is sent again until {@link #SCREENSHOT_TIMEOUT_MS});
  * {@code gesture} (timed strokes, {@link Strokes}, up to the system's limits); {@code global_action} (back,
  * home, recents); {@code set_text} (ACTION_SET_TEXT on the field with input focus) and
  * {@code commit_text} (API 33, through the service's own input method, at the cursor); and
@@ -34,8 +35,13 @@ import org.json.JSONObject;
 public final class DeviceService extends AccessibilityService {
     static final String SOCKET = "spectragent_device";
     private static final String TAG = "Spectragent";
-    /** The system refuses a screenshot within 333 ms of the last one; a little more, to be sure. */
-    private static final long SCREENSHOT_INTERVAL_MS = 340;
+    /**
+     * The system refuses a screenshot sooner than this after the last one: 1000 ms on API 30 and
+     * 333 ms from API 31 (AccessibilityService's request interval); a little more, to be sure.
+     */
+    private static final long SCREENSHOT_INTERVAL_MS = Build.VERSION.SDK_INT >= 31 ? 340 : 1010;
+    /** How long a screenshot the system found too soon waits before it is asked again. */
+    private static final long SCREENSHOT_RETRY_MS = 50;
     private static final long SCREENSHOT_TIMEOUT_MS = 10_000;
     /** How long past its own duration a gesture may take to be reported done. */
     private static final long GESTURE_GRACE_MS = 5_000;
@@ -129,9 +135,10 @@ public final class DeviceService extends AccessibilityService {
             sleep(waited);
             long started = SystemClock.uptimeMillis();
             ScreenshotResult shot = takeScreenshotNow();
-            if (shot.error == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
-                sleep(SCREENSHOT_INTERVAL_MS);
-                waited += SCREENSHOT_INTERVAL_MS;
+            while (shot.error == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT
+                    && SystemClock.uptimeMillis() - started < SCREENSHOT_TIMEOUT_MS) {
+                sleep(SCREENSHOT_RETRY_MS);
+                waited += SCREENSHOT_RETRY_MS;
                 shot = takeScreenshotNow();
             }
             if (shot.error != 0) {

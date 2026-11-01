@@ -5711,7 +5711,7 @@ Android Capability（core/capabilities/android/）
 设备端（我们自己写，随 Android 版本维护；一个 APK，源码在仓库的 android/service/）
 ├── 无障碍服务（主力；每个 run 装一次，写 secure 设置开启；最低 Android 11）
 │   ├── UI 树与事件流、元素级动作、带时间的手势（点按、长按、滑动、多指）、全局动作（返回、主页、最近任务）
-│   ├── 截图（API 30+，最快每 333 ms 一张）、文本输入（API 33+）
+│   ├── 截图（API 30+，最快每 333 ms 一张，API 30 上 1000 ms）、文本输入（API 33+）
 │   └── isAccessibilityTool：构建期开关，默认 false
 ├── shell 身份助手（同一个 APK，app_process 起）：快速截图、任意按键；开启与取消开启服务，
 │   force-stop 之后重新开启；也是一种点按注入器（injectInputEvent）
