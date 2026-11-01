@@ -2,6 +2,7 @@ package org.spectragent.device;
 
 import android.accessibilityservice.AccessibilityService;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.SystemClock;
 import android.text.Spanned;
 import android.text.style.ClickableSpan;
@@ -31,6 +32,9 @@ import java.util.Map;
  * with it (the service's flags). Nodes off the screen are kept as well, up to a limit: once the
  * capture holds maxNodes nodes, a node that is not visible to the user is left out with everything
  * under it, and counted in {@code omitted_offscreen}. Visible nodes are always kept.
+ *
+ * <p>Before API 33 the framework pools nodes and windows, and each one obtained must be recycled:
+ * the capture keeps every one it obtained and recycles them all at its end.
  */
 final class Forest {
     private Forest() {}
@@ -39,9 +43,18 @@ final class Forest {
         final int maxNodes;
         int nodes;
         int omittedOffscreen;
+        /** Every node the capture obtained, recycled at its end before API 33. */
+        final List<AccessibilityNodeInfo> obtained = new ArrayList<>();
 
         Budget(int maxNodes) {
             this.maxNodes = maxNodes;
+        }
+
+        AccessibilityNodeInfo keep(AccessibilityNodeInfo node) {
+            if (node != null) {
+                obtained.add(node);
+            }
+            return node;
         }
     }
 
@@ -55,10 +68,23 @@ final class Forest {
         json.name("forest").beginObject();
         json.name("windows").beginArray();
         SparseArray<List<AccessibilityWindowInfo>> displays = service.getWindowsOnAllDisplays();
-        for (int d = 0; d < displays.size(); d++) {
-            List<AccessibilityWindowInfo> windows = displays.valueAt(d);
-            for (int w = windows.size() - 1; w >= 0; w--) {
-                window(json, windows.get(w), budget);
+        try {
+            for (int d = 0; d < displays.size(); d++) {
+                List<AccessibilityWindowInfo> windows = displays.valueAt(d);
+                for (int w = windows.size() - 1; w >= 0; w--) {
+                    window(json, windows.get(w), budget);
+                }
+            }
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                for (AccessibilityNodeInfo node : budget.obtained) {
+                    node.recycle();
+                }
+                for (int d = 0; d < displays.size(); d++) {
+                    for (AccessibilityWindowInfo window : displays.valueAt(d)) {
+                        window.recycle();
+                    }
+                }
             }
         }
         json.endArray();
@@ -89,7 +115,7 @@ final class Forest {
         flag(json, "is_focused", window.isFocused());
         flag(json, "is_in_picture_in_picture_mode", window.isInPictureInPictureMode());
         json.name("tree").beginObject();
-        AccessibilityNodeInfo root = window.getRoot();
+        AccessibilityNodeInfo root = budget.keep(window.getRoot());
         if (root != null) {
             json.name("nodes").beginArray();
             tree(json, root, budget);
@@ -115,7 +141,7 @@ final class Forest {
             int[] admitted = new int[count];
             int kept = 0;
             for (int c = 0; c < count; c++) {
-                AccessibilityNodeInfo child = node.getChild(c);
+                AccessibilityNodeInfo child = budget.keep(node.getChild(c));
                 if (child == null || ids.containsKey(child)) {
                     continue;
                 }
@@ -133,13 +159,13 @@ final class Forest {
             children.add(Arrays.copyOf(admitted, kept));
         }
         for (int i = 0; i < nodes.size(); i++) {
-            node(json, nodes.get(i), i, depths.get(i), children.get(i), ids);
+            node(json, nodes.get(i), i, depths.get(i), children.get(i), ids, budget);
         }
     }
 
     /** One node, its fields in the proto's order, then is_important. */
     private static void node(JsonWriter json, AccessibilityNodeInfo node, int id, int depth, int[] childIds,
-            Map<AccessibilityNodeInfo, Integer> ids) throws IOException {
+            Map<AccessibilityNodeInfo, Integer> ids, Budget budget) throws IOException {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         json.beginObject();
@@ -186,8 +212,8 @@ final class Forest {
         }
         clickableSpans(json, node, id);
         number(json, "depth", depth);
-        number(json, "labeled_by_id", idOf(node.getLabeledBy(), ids));
-        number(json, "label_for_id", idOf(node.getLabelFor(), ids));
+        number(json, "labeled_by_id", idOf(budget.keep(node.getLabeledBy()), ids));
+        number(json, "label_for_id", idOf(budget.keep(node.getLabelFor()), ids));
         number(json, "drawing_order", node.getDrawingOrder());
         text(json, "tooltip_text", node.getTooltipText());
         flag(json, "is_important", node.isImportantForAccessibility());

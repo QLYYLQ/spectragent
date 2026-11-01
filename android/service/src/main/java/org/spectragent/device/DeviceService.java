@@ -293,18 +293,24 @@ public final class DeviceService extends AccessibilityService {
     private Reply setText(JSONObject params) throws Failure {
         String text = text(params);
         AccessibilityNodeInfo field = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        if (field == null || !field.isEditable()) {
-            throw new Failure("no_focused_field", "no editable field has input focus");
+        try {
+            if (field == null || !field.isEditable()) {
+                throw new Failure("no_focused_field", "no editable field has input focus");
+            }
+            Bundle arguments = new Bundle();
+            arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+            if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                throw new Failure("set_text_failed", "the focused field refused the text");
+            }
+            return Reply.of(Json.obj(
+                    "package_name", string(field.getPackageName()),
+                    "class_name", string(field.getClassName()),
+                    "view_id_resource_name", field.getViewIdResourceName()));
+        } finally {
+            if (field != null && Build.VERSION.SDK_INT < 33) {
+                field.recycle(); // pooled before API 33
+            }
         }
-        Bundle arguments = new Bundle();
-        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
-        if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
-            throw new Failure("set_text_failed", "the focused field refused the text");
-        }
-        return Reply.of(Json.obj(
-                "package_name", string(field.getPackageName()),
-                "class_name", string(field.getClassName()),
-                "view_id_resource_name", field.getViewIdResourceName()));
     }
 
     private Reply commitText(JSONObject params) throws Failure {
