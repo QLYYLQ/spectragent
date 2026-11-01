@@ -442,8 +442,11 @@ class TestNavigationOutcomes:
         navigation = asyncio.create_task(
             wd._on_navigate(NavigateToUrlEvent(url="https://a.example/#part"))
         )
-        while not any(m == "Page.navigate" for m, _p, _s in cdp.sent):
-            await asyncio.sleep(0)
+        for _ in range(50):
+            if navigation.done() or any(m == "Page.navigate" for m, _p, _s in cdp.sent):
+                break
+            await asyncio.sleep(0.005)
+        assert not navigation.done(), navigation
         scope.fire(NavigatedWithinDocumentEvent(frame_id="OTHER_FRAME"))
         for _ in range(10):
             await asyncio.sleep(0)
