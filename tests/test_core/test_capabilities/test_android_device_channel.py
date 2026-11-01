@@ -70,8 +70,13 @@ def _program(
 async def _streams(
     program: FakeProgram,
 ) -> AsyncIterator[tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
+    """A connection to *program*; the test's whole body may take at most :data:`_WAIT_S`, so a
+    protocol deadlock fails instead of hanging."""
     listening: dict[str, SocketServer] = {SOCKET: program.serve}
-    async with FakeAdbServer({SERIAL: scripted({})}, sockets={SERIAL: listening.get}) as adb:
+    async with (
+        FakeAdbServer({SERIAL: scripted({})}, sockets={SERIAL: listening.get}) as adb,
+        asyncio.timeout(_WAIT_S),
+    ):
         yield await AdbClient(adb.host, adb.port).connect_abstract(SERIAL, SOCKET)
 
 
@@ -79,8 +84,7 @@ async def _streams(
 async def _channel(
     program: FakeProgram, *, token: str = TOKEN, component: Component = "service"
 ) -> AsyncIterator[Channel]:
-    async with _streams(program) as (reader, writer), asyncio.timeout(_WAIT_S):
-        # The whole test's body, too: a protocol deadlock fails instead of hanging.
+    async with _streams(program) as (reader, writer):
         channel = await Channel.open(reader, writer, token=token, component=component)
         try:
             yield channel
