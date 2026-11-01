@@ -13,9 +13,9 @@ is every input platform, Android with a phone's touch keyboard rules;
 :data:`BROWSER_PLATFORMS` is a desktop browser's, since a mobile browser is
 not designed (``docs/architecture_design.md`` §11.2). An Agent declares the set
 of the rendering it calls as ``__input_platforms__``, and
-``AgentRuntime.prepare()`` refuses a run whose platform fragment may report a
-platform outside it (``core/negotiation/platform.py``), before anything is set
-up.
+``AgentRuntime.prepare()`` refuses, before anything is set up, a run whose
+platform fragment may report a platform outside it, or whose agent declares
+none (``core/negotiation/platform.py``).
 
 Negotiation normally guarantees the fragment. An old trace or a hand-built
 observation without it, or with a platform the rendering does not state, must

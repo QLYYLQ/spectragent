@@ -3,10 +3,11 @@
 ``core/negotiation/platform.py``. The agent declares the input platforms its
 prompt renders (``__input_platforms__``), the capability's platform fragment
 the ones it may report (a closed ``Literal`` on ``operating_system``), and
-``AgentRuntime.prepare()`` compares the two. Before this check an Android run
-of a desktop-only renderer passed ``prepare()``, set the environment up, took a
-screenshot and only then failed rendering the first prompt
-(``docs/architecture_design.md`` §11.2, ``android.platform``).
+``AgentRuntime.prepare()`` compares the two; an agent whose run negotiates a
+platform and that declares nothing is refused as well. Before this check an
+Android run of a desktop-only renderer passed ``prepare()``, set the
+environment up, took a screenshot and only then failed rendering the first
+prompt (``docs/architecture_design.md`` §11.2, ``android.platform``).
 """
 
 from __future__ import annotations
@@ -39,10 +40,9 @@ from tests._helpers.android_stub import (
 from tests._helpers.assembly import AGENT_ID, NoModel, StartSpy, make_env, make_run
 
 
-class _DesktopAgent:
-    """A vision agent whose prompt renders a desktop browser's platform only."""
+class _VisionAgent:
+    """A vision agent whose prompt renders a desktop browser's platform, declaring nothing."""
 
-    __input_platforms__: ClassVar[frozenset[InputPlatform]] = BROWSER_PLATFORMS
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset()
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": ("observation", ["screenshot", "platform"]),
@@ -54,6 +54,12 @@ class _DesktopAgent:
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         return []
+
+
+class _DesktopAgent(_VisionAgent):
+    """The same agent, declaring the desktop platforms its prompt renders."""
+
+    __input_platforms__: ClassVar[frozenset[InputPlatform]] = BROWSER_PLATFORMS
 
 
 def _register_open_platform() -> str:
@@ -92,8 +98,16 @@ class TestTheTwoDeclarationsAreCompared:
         with pytest.raises(IncompatiblePlatformError, match="no registered fragment class"):
             check_input_platform(_DesktopAgent(), {PLATFORM_FIELD: "nowhere.platform"}, name="x")
 
-    def test_nothing_is_checked_without_a_declaration_or_a_platform(self) -> None:
-        check_input_platform(object(), {PLATFORM_FIELD: "nowhere.platform"}, name="silent")
+    def test_an_agent_that_declares_no_platforms_is_refused(self) -> None:
+        with ANDROID_STUB.activate(), pytest.raises(IncompatiblePlatformError) as excinfo:
+            check_input_platform(_VisionAgent(), {PLATFORM_FIELD: PLATFORM}, name="vision")
+        assert str(excinfo.value).startswith(
+            "vision negotiates the platform fragment android.platform (AndroidPlatformObs) but "
+            "declares no __input_platforms__"
+        )
+
+    def test_nothing_is_checked_when_no_platform_is_negotiated(self) -> None:
+        check_input_platform(_VisionAgent(), {"screenshot": "browser.screenshot"}, name="vision")
         check_input_platform(_DesktopAgent(), {"screenshot": "browser.screenshot"}, name="x")
 
     def test_a_declaration_that_is_not_a_set_of_names_is_refused(self) -> None:
@@ -136,10 +150,11 @@ class TestEveryPlatformFragmentIsAClosedLiteral:
         assert reported_platforms(AndroidPlatformObs) == ("android",)
 
 
+@pytest.mark.parametrize("agent_class", [_DesktopAgent, _VisionAgent])
 async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts(
-    monkeypatch: pytest.MonkeyPatch,
+    agent_class: type[_VisionAgent], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Refused in ``prepare()``: no trace opened, nothing set up, no screen read."""
+    """Refused in ``prepare()``, declared or not: no trace opened, nothing set up, no screen read."""
     setups: list[Any] = []
 
     async def setup(*args: Any, **kwargs: Any) -> None:
@@ -151,7 +166,7 @@ async def test_a_desktop_only_prompt_on_android_is_refused_before_the_run_starts
         monkeypatch.setattr(env, "setup", setup)
         spy = StartSpy()
         run = make_run(
-            agent=_DesktopAgent(),
+            agent=agent_class(),
             loop=ReactLoop(),
             env=env,
             llm=NoModel(),

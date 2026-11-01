@@ -84,13 +84,20 @@ class TestTheRenderings:
 
 
 def _platform_agents() -> list[type]:
-    """Every registered agent whose observation wiring names the ``platform`` fragment."""
+    """Every registered agent whose observation wiring names a platform fragment.
+
+    By the local name (``platform``) or a full key that pins one
+    (``browser.platform``).
+    """
     discover("spectragent.agents")
     agents = [
         cls
         for cls in AgentRegistrar.get_all().values()
         if cls.__module__.startswith("spectragent.")
-        and "platform" in set().union(*extract_wiring(cls, "observation"))
+        and any(
+            key.rpartition(".")[2] == "platform"
+            for key in set().union(*extract_wiring(cls, "observation"))
+        )
     ]
     return sorted(agents, key=lambda cls: cls.__registry_key__)
 

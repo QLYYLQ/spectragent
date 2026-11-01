@@ -18,16 +18,17 @@ fixed before a run starts, say whether that can work:
 fragment that may report a platform the agent cannot render is refused there,
 by name, before a trace is opened and before the environment is set up
 (AGENTS.md §2.3, "What setup would refuse, ``prepare()`` refuses"), not at the
-first prompt after setup and a first screenshot. The renderer's own
+first prompt after setup and a first screenshot. An agent whose run
+negotiates a platform fragment and that declares nothing is refused too:
+nothing could say whether its prompt renders what the fragment reports. A
+run that negotiates no platform fragment is not checked. The renderer's own
 ``ValueError`` stays as the backstop for an observation built outside a run.
-An agent that declares nothing is not checked; every registered agent that
-renders the platform declares it (``tests/test_agents/test_rendering/test_platform.py``).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, Literal, get_args, get_origin
+from typing import Literal, get_args, get_origin
 
 from spectragent.schemas.observation._registrar import ObservationRegistrar
 from spectragent.schemas.observation.platform import InputPlatform
@@ -67,11 +68,11 @@ def _listed(platforms: Iterable[str]) -> str:
     )
 
 
-def check_input_platform(agent: Any, fragment_bindings: Mapping[str, str], *, name: str) -> None:
+def check_input_platform(agent: object, fragment_bindings: Mapping[str, str], *, name: str) -> None:
     """Refuse a run whose platform fragment may report a platform *agent*'s prompt cannot render.
 
-    Nothing to check when *agent*'s class declares no ``__input_platforms__``,
-    or the run negotiates no platform fragment.
+    Nothing to check when the run negotiates no platform fragment. When it
+    does, *agent*'s class must declare ``__input_platforms__``.
 
     Args:
         agent: The configured agent; its class carries ``__input_platforms__``.
@@ -80,21 +81,28 @@ def check_input_platform(agent: Any, fragment_bindings: Mapping[str, str], *, na
         name: How the refusal names the agent.
 
     Raises:
-        IncompatiblePlatformError: The declaration is not a set of platform
-            names; the negotiated fragment is no registered class whose
-            ``operating_system`` is a closed ``Literal``; or that ``Literal``
-            holds a platform the declaration does not.
+        IncompatiblePlatformError: The agent declares no platforms, or not as
+            a set of platform names; the negotiated fragment is no registered
+            class whose ``operating_system`` is a closed ``Literal``; or that
+            ``Literal`` holds a platform the declaration does not.
     """
-    declared = getattr(type(agent), "__input_platforms__", None)
     key = fragment_bindings.get(PLATFORM_FIELD)
-    if declared is None or key is None:
+    if key is None:
         return
+    fragment = ObservationRegistrar.get_or_none(key)
+    shown = fragment.__name__ if fragment is not None else "no registered fragment class"
+    declared = getattr(type(agent), "__input_platforms__", None)
+    if declared is None:
+        raise IncompatiblePlatformError(
+            f"{name} negotiates the platform fragment {key} ({shown}) but declares no "
+            f"__input_platforms__, so nothing says whether its prompt renders what that fragment "
+            f"reports. Declare the platforms its prompt renders, as the rendering it calls states "
+            f"them (agents/rendering/platform.py)."
+        )
     if not isinstance(declared, (set, frozenset)) or not all(isinstance(p, str) for p in declared):
         raise IncompatiblePlatformError(
             f"{name}: __input_platforms__ must be a set of input platform names, got {declared!r}"
         )
-    fragment = ObservationRegistrar.get_or_none(key)
-    shown = fragment.__name__ if fragment is not None else "no registered fragment class"
     reported = reported_platforms(fragment)
     if reported is None:
         raise IncompatiblePlatformError(

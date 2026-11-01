@@ -368,8 +368,8 @@ class AgentRuntime:
                 be bound to this run's environment — raised before
                 anything is woven, and before ``on_run_start``.
             IncompatiblePlatformError: The run's platform fragment may report
-                an input platform the agent's prompt cannot render
-                (``negotiation.platform.check_input_platform``).
+                an input platform the agent's prompt cannot render, or the
+                agent declares none (``negotiation.platform.check_input_platform``).
             ValueError: A setup context key no capability accepts (or any
                 key, in a run with no environment). Also UI-TARS's refusal,
                 from its ``check_action_space`` (``ActionSpaceCheck``), of a
@@ -424,9 +424,9 @@ class AgentRuntime:
 
         # Step 2c: The input platform the agent's prompt states, from the
         # platform fragment negotiated above. A fragment that may report one
-        # the prompt cannot render is refused now, by name, rather than at
-        # the first prompt, after setup and a first screenshot
-        # (``core/negotiation/platform.py``).
+        # the prompt cannot render, or an agent that declares none, is refused
+        # now, by name, rather than at the first prompt, after setup and a
+        # first screenshot (``core/negotiation/platform.py``).
         check_input_platform(
             agent,
             negotiated_obs.fragment_bindings,
