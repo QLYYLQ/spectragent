@@ -246,6 +246,13 @@ class TestPointsAreTheActionsOwn:
         assert list(narrow.verbs) == ["wait"]
         assert narrow.example_call() == "wait()"
 
+    def test_the_agent_refuses_the_same_space_when_the_runtime_asks(self) -> None:
+        """``AgentRuntime.prepare()`` asks before the run starts (``ActionSpaceCheck``)."""
+        bare = ActionDescriptor(name="browser.click_coordinate", description="Click.")
+        with pytest.raises(ValueError, match=r"click\(\) writes 1 point\(s\)"):
+            UITarsAgent().check_action_space(space_of([bare]))
+        UITarsAgent().check_action_space(_codec().space)
+
 
 class TestMalformedRepliesKeepTheirWords:
     @pytest.mark.parametrize(

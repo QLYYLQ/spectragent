@@ -307,7 +307,16 @@ class UITarsAgent(AgentBase):
             self, registry, required, optional, shown=self.show_capture_state
         )
 
-    # ── Lifecycle hook called by AgentRuntime ──────────────────
+    # ── Lifecycle hooks called by AgentRuntime ─────────────────
+
+    def check_action_space(self, action_space: ActionSpace) -> None:
+        """Refuse in ``AgentRuntime.prepare()`` a space the codec cannot bind (``ActionSpaceCheck``).
+
+        Builds the codec :meth:`prepare` later builds from the same space and
+        discards it: a verb whose points differ from its action's raises its
+        ``ValueError`` here, before the run starts.
+        """
+        UITarsCodec(action_space)
 
     def prepare(
         self,

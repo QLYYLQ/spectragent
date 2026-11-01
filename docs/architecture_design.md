@@ -525,8 +525,8 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
 
 **UI-TARS：胶水 agent 与无状态编解码**（用户 2026-10-23 的裁决：agent 是胶水；导出与分叉调用无状态的模型编解码）。UI-TARS 分成两个模块：
 
-- **Agent**（`agents/ui_tars/agent.py::UITarsAgent`）：`__wiring__` 声明观测与动词对应的动作（相对名），`coordinate_space` 声明模型写点的网格，`__input_platforms__` 声明它的提示词渲染的平台（四个都渲染，§11.2 `android.platform`），`prepare` 构建系统提示（模板 `computer_use` / `grounding` / `mobile_use`；Available Actions 由编解码绑定到本 run 的动词生成，签名取动词的、说明与参数类型取 descriptor 的；输出合同按 Loop 的 `max_actions_per_step`；Coordinates 段按 `coordinate_space`），`build_react_prompt` / `build_restored_history` 构建每步消息。四个 ReAct slot（`parse_react_output`、`parse_react_thought`、`format_react_output`、`format_action_fact`）各一行，调编解码。Agent 的状态只剩本 run 的编解码、系统提示快照，以及本次执行第一次观测声明的平台。
-- **编解码**（`agents/ui_tars/codec.py`）：UI-TARS 模型训练时的文本协议，回复文本 ↔（thought，模型网格上的框架动作列表），以及动作 → 模型文本。**每个动词一条声明**（`VERBS`）：动词名、它执行的动作（相对 id，经本 run 的绑定解析，`executed_descriptor`）、按提示教的顺序列出的关键字参数（教的写法、UI-TARS 模型的其他写法如 `start_box` / `end_box`、值的种类 `point` / `text` / `choice` / `keys`、提示里的示例值、填哪个动作参数、是否必填）。同一条声明驱动读（回复 → 动作）、写（动作 → 调用）与提示里的签名，取代原来十四个手写的读写函数。**点参数不写参数名**：一个点参数按顺序填它的动作声明的点（`ActionDescriptor.point_params`，§4.5"参数的含义"），所以哪些参数是点只在动作上写一次；动词写的点数与动作声明的点数不同时，编解码在建的时候（`prepare`）就拒绝（`ValueError`，点名动词与动作），否则这个 run 会把网格上的点当成 capability 的单位执行；必填的点与可选的点分开对数。可选的点在动词里也是可选的：`scroll` 动词带一个可选的 `start_box`（桌面与移动端的 UI-TARS 都写 `scroll(start_box, direction)`），写了就填动作的起点 `start`，没写就不填（用户 2026-10-31 的裁决，§4.5）。**任务结论**：`finished` 没有表达结论的参数，读出的动作没有结论（`reported_success` 为 `None`），带结论（true 或 false）的动作写不出来；说完成了的结论由导出层去掉（§4.15 round-trip 第 4 条）。动作参数里没有任何参数填的（`type` 的 `clear`、`scroll` 的 `amount`、`wait` 的 `seconds`）同样写不出来，抛 `UnrepresentableActionError`。
+- **Agent**（`agents/ui_tars/agent.py::UITarsAgent`）：`__wiring__` 声明观测与动词对应的动作（相对名），`coordinate_space` 声明模型写点的网格，`__input_platforms__` 声明它的提示词渲染的平台（四个都渲染，§11.2 `android.platform`），`check_action_space` 在 `AgentRuntime.prepare()` 里用本 run 的有效动作空间建一次编解码（下一条），`prepare` 构建系统提示（模板 `computer_use` / `grounding` / `mobile_use`；Available Actions 由编解码绑定到本 run 的动词生成，签名取动词的、说明与参数类型取 descriptor 的；输出合同按 Loop 的 `max_actions_per_step`；Coordinates 段按 `coordinate_space`），`build_react_prompt` / `build_restored_history` 构建每步消息。四个 ReAct slot（`parse_react_output`、`parse_react_thought`、`format_react_output`、`format_action_fact`）各一行，调编解码。Agent 的状态只剩本 run 的编解码、系统提示快照，以及本次执行第一次观测声明的平台。
+- **编解码**（`agents/ui_tars/codec.py`）：UI-TARS 模型训练时的文本协议，回复文本 ↔（thought，模型网格上的框架动作列表），以及动作 → 模型文本。**每个动词一条声明**（`VERBS`）：动词名、它执行的动作（相对 id，经本 run 的绑定解析，`executed_descriptor`）、按提示教的顺序列出的关键字参数（教的写法、UI-TARS 模型的其他写法如 `start_box` / `end_box`、值的种类 `point` / `text` / `choice` / `keys`、提示里的示例值、填哪个动作参数、是否必填）。同一条声明驱动读（回复 → 动作）、写（动作 → 调用）与提示里的签名，取代原来十四个手写的读写函数。**点参数不写参数名**：一个点参数按顺序填它的动作声明的点（`ActionDescriptor.point_params`，§4.5"参数的含义"），所以哪些参数是点只在动作上写一次；动词写的点数与动作声明的点数不同时，编解码在建的时候就拒绝（`ValueError`，点名动词与动作），否则这个 run 会把网格上的点当成 capability 的单位执行；必填的点与可选的点分开对数。这一条在 `AgentRuntime.prepare()` 里就查：UI-TARS 实现 Agent 的可选检查 `check_action_space(action_space)`（`core/action_guard.py::ActionSpaceCheck`），Runtime 定完坐标系、查过截图几何之后用本 run 的有效动作空间调它，它建一次编解码就丢掉；所以点数不符在 `on_run_start` 与环境 setup 之前、`spectragent bench` 的预检里就被拒绝，不再等到 `prepare()` 之后的 `seed_messages()`，那里建编解码时的同一个 `ValueError` 留作兜底。可选的点在动词里也是可选的：`scroll` 动词带一个可选的 `start_box`（桌面与移动端的 UI-TARS 都写 `scroll(start_box, direction)`），写了就填动作的起点 `start`，没写就不填（用户 2026-10-31 的裁决，§4.5）。**任务结论**：`finished` 没有表达结论的参数，读出的动作没有结论（`reported_success` 为 `None`），带结论（true 或 false）的动作写不出来；说完成了的结论由导出层去掉（§4.15 round-trip 第 4 条）。动作参数里没有任何参数填的（`type` 的 `clear`、`scroll` 的 `amount`、`wait` 的 `seconds`）同样写不出来，抛 `UnrepresentableActionError`。
 - **无状态。** `UITarsCodec(space, writes_thought=...)` 是不可变对象，Agent 在 `prepare` 里按本 run 的有效 `ActionSpace` 建一次（`grounding` 模板不教 thought，所以不写 thought）：`read_actions(text)`、`write(actions, thought=...)`、`write_call(action)`、`write_fact(action)` 只读参数与这个对象，任何顺序、任何人调用都一样；`read_thought(text)` 是模块函数，不需要 run（导出在 teacher 的类上调 `parse_react_thought`）。`prepare` 之前的编解码不绑定任何动词（每个动词都是 unknown verb）。点始终是模型网格上的数，换算是框架的（上文"坐标系归框架"）。
 - **谁调用。** 实时 Loop、`BranchLoop` 重放源回复（经 Agent 的 `parse_react_output` slot，与实时步同一个入口、同一个 AOP 边界）、训练导出（学生的 `format_react_output` / `parse_react_output` / `format_action_fact`）都经 slot 调到这同一个编解码。导出与分叉不直接 import 编解码模块：它们对任何 agent 都成立（BrowserUse、Skyvern 用各自的格式解析），slot 已经只是一行调用，绕过 slot 只会把 UI-TARS 写进框架；导出包冻结（§4.15）。
 
@@ -716,6 +716,14 @@ class AgentRuntime:
         action_space, act_fn = build_guarded_act(
             wrapped_env.act, narrowed, action_filter, loop_act=wrapped_loop.execute_action,
         )
+
+        # 5b. 坐标系（§4.1"坐标系归框架"）：按 Agent 的 coordinate_space 定坐标系，截图报不了几何 → ScreenshotGeometryError；
+        #     Agent 实现了可选的 check_action_space（ActionSpaceCheck）就用这个动作空间问它
+        #     （UI-TARS：动词与动作的点数不符 → ValueError）
+        action_space = framed_action_space(action_space, declared_space(agent))
+        check_frame_geometry(action_space, negotiated_obs.fragment_bindings, agent=...)
+        if isinstance(agent, ActionSpaceCheck):
+            agent.check_action_space(action_space)
 
         # 6. Loop weave — patch wrapped_agent.run = closure(loop._execute)
         loop.weave(
