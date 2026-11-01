@@ -10,6 +10,9 @@ run's bindings route it to Android's action, and the phone receives a command.
   the desktop systems, and refused the first step after setup and a screenshot.
 - The mobile verbs are taught, and ``press_home()`` and ``long_press(...)``
   reach the phone as a key press and as a swipe that does not move.
+- ``type(content=...)`` without a point, as UI-TARS's own prompt writes it,
+  types into the field that has focus; where none has, nothing reaches the
+  phone and the next prompt carries the refusal.
 - A verb whose points its action lacks is refused in ``prepare()``, before
   anything reaches the phone.
 """
@@ -23,9 +26,10 @@ import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.core.capabilities.android.actions import AndroidTypeCoordinateAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
@@ -62,9 +66,18 @@ class _ScriptedModel:
 
 
 def _android(adb: FakeAdbServer) -> AndroidCapability:
-    """The capability for *adb*'s phone, which the run sets up; a capture waits for no still screen."""
+    """The capability for *adb*'s phone, which the run sets up; a capture waits for no still screen.
+
+    Typing reads whether a text field has focus once, without waiting for one.
+    """
     capability = AndroidCapability(settle_max_wait_s=0)
     capability.backend = FakeServerProvider(adb.host, adb.port)
+    capability.actions = [
+        AndroidTypeCoordinateAction(focus_wait_ms=0)
+        if isinstance(action, AndroidTypeCoordinateAction)
+        else action
+        for action in capability.actions
+    ]
     return capability
 
 
@@ -140,6 +153,32 @@ async def test_long_press_holds_where_its_point_lands_on_the_screen() -> None:
     assert result.agent_done == "done", result.error
     # (250/1000 * 1080, 750/1000 * 2400); a long press is a swipe that does not move.
     assert phone.inputs == ["input swipe 270 1800 270 1800 1000"]
+
+
+async def test_type_without_a_point_types_into_the_field_that_has_focus() -> None:
+    phone = ScriptedPhone(text_field=True)
+    model = _ScriptedModel("Action: type(content='hello')", "Action: finished()")
+    async with FakeAdbServer({SERIAL: phone}) as adb:
+        result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb)
+
+    assert result.agent_done == "done", result.error
+    assert phone.inputs == [
+        "input keycombination KEYCODE_CTRL_LEFT KEYCODE_A && input keyevent KEYCODE_DEL",
+        "input text hello",
+    ]
+
+
+async def test_type_without_a_point_where_no_text_field_has_focus_reaches_nothing() -> None:
+    phone = ScriptedPhone()
+    model = _ScriptedModel("Action: type(content='hello')", "Action: finished()")
+    async with FakeAdbServer({SERIAL: phone}) as adb:
+        result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb)
+
+    assert result.agent_done == "done", result.error
+    assert phone.inputs == []
+    step = [m for m in model.calls[1] if isinstance(m, UserMessage)][-1]
+    assert isinstance(step.content, list) and isinstance(step.content[0], ContentPartTextParam)
+    assert "No text field has focus: focus is in " in step.content[0].text
 
 
 async def test_a_verb_whose_points_its_action_lacks_is_refused_before_the_run_starts(

@@ -40,7 +40,7 @@ from spectragent.core.loops.react import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.action_space import ActionSpace
-from tests._helpers.action_spaces import browser_descriptors, space_of
+from tests._helpers.action_spaces import browser_descriptors, space_for, space_of
 
 #: Resolved from this file, not from the CWD.
 SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
@@ -48,7 +48,9 @@ SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_
 _VARIANTS = list(agent_prompt_variants("ui_tars"))
 
 #: The registered descriptors: a UI-TARS verb's points fill the points its
-#: action declares, so a hand-built descriptor without them is refused.
+#: action declares, so a hand-built descriptor without them is refused. A space
+#: of them is framed on the agent's grid (``space_for``), as a run frames it:
+#: unframed, ``type``'s optional point would be left out.
 _NEGOTIATED = browser_descriptors("click_coordinate", "type_coordinate", "done")
 
 _MAXIMUM = re.compile(r"maximum of (\d+) actions")
@@ -62,7 +64,7 @@ def _prompt(variant: Any, max_actions_per_step: int) -> str:
     agent = UITarsAgent(prompt_template=variant)
     content = agent.prepare(
         task="t",
-        action_space=space_of(_NEGOTIATED),
+        action_space=space_for(agent, _NEGOTIATED),
         execution_limits=ExecutionLimits(max_actions_per_step=max_actions_per_step),
     )[0].content
     assert isinstance(content, str)
@@ -124,7 +126,7 @@ def test_a_budget_below_one_is_a_config_error_not_a_prompt() -> None:
     with pytest.raises(ValueError, match="max_actions_per_step=0"):
         UITarsAgent().prepare(
             task="t",
-            action_space=space_of(_NEGOTIATED),
+            action_space=space_for(UITarsAgent(), _NEGOTIATED),
             execution_limits=ExecutionLimits(max_actions_per_step=0),
         )
 
@@ -238,7 +240,7 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
     memory.add_messages(
         agent.prepare(
             task="t",
-            action_space=space_of(_NEGOTIATED),
+            action_space=space_for(agent, _NEGOTIATED),
             execution_limits=ExecutionLimits(max_actions_per_step=loop.max_actions_per_step),
         )
     )

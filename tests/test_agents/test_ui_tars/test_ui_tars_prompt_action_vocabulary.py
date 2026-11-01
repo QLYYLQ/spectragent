@@ -300,6 +300,28 @@ class TestPromptVocabulary:
         assert event.text == "hello world"
         assert (event.coordinate_x, event.coordinate_y) == (10, 20)
 
+    async def test_typing_without_a_point_reaches_the_action_without_one(self, harness) -> None:
+        """UI-TARS's own ``type(content=...)``: the action clicks nothing and types into the focus."""
+        agent, guard, extra = harness
+        (await _rendered(agent, extra["space"], _VARIANTS[0]))
+        (action,) = agent.parse_react_output("Action: type(content='hello world')")
+        result = await guard(action)
+        assert result.success, result.error
+        event = extra["scope"].emitted[-1]
+        assert (event.coordinate_x, event.coordinate_y, event.text) == (None, None, "hello world")
+
+    async def test_every_variant_teaches_typing_with_its_optional_point(self, harness) -> None:
+        """The signature writes the point; the action's description says what leaving it out does."""
+        agent, _guard, extra = harness
+        for variant in _VARIANTS:
+            prompt = await _rendered(agent, extra["space"], variant)
+            assert (
+                "- type(content='text to type', point='(x, y)')\n"
+                "  Type into a text field. With a point, click there first to focus the field; "
+                "without one, type into the field that already has focus.\n"
+                "  executes: text: str\n"
+            ) in prompt, variant
+
     async def test_no_mobile_only_verb_survives_in_any_template(self, harness) -> None:
         """``long_press`` / ``open_app`` / ``press_home`` / ``press_back``.
 
@@ -326,11 +348,19 @@ class TestPromptVocabulary:
         )[0].content
         assert isinstance(prompt, str)
         described = {d.name: d.description for d in descriptors}
-        held, key, app = (
-            described[f"android.{name}"] for name in ("long_press", "press_key", "open_app")
+        held, key, app, typed = (
+            described[f"android.{name}"]
+            for name in ("long_press", "press_key", "open_app", "type_coordinate")
         )
         # A point is no "executes" line: the Coordinates section says what it is.
         assert f"- long_press(point='(x, y)')\n  {held}\n- " in prompt
+        assert typed == (
+            "Type into a text field. With a point, tap there first to focus the field; "
+            "without one, type into the field that already has focus."
+        )
+        assert (
+            f"- type(content='text to type', point='(x, y)')\n  {typed}\n  executes: text: str\n"
+        ) in prompt
         assert (
             f"- press_home()\n  {key}\n  executes: key='home'\n"
             f"- press_back()\n  {key}\n  executes: key='back'\n"

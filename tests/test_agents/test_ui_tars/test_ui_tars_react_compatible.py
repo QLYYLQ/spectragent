@@ -411,12 +411,11 @@ class TestParseReactOutput:
             "text": "hello world",
         }
 
-    async def test_type_without_a_point_is_a_loud_parse_error(self) -> None:
-        from spectragent.core.loops.errors import ParseError
-
+    async def test_type_without_a_point_types_into_the_field_that_has_focus(self) -> None:
+        """UI-TARS's own prompt writes ``type(content=...)``; the point is optional (2026-11-01)."""
         agent = await _looking_at_screen()
-        with pytest.raises(ParseError, match=r"a point is missing; write point='\(x, y\)'"):
-            agent.parse_react_output("Action: type(content='hello')")
+        (action,) = agent.parse_react_output("Action: type(content='hello')")
+        assert (action.name, action.params) == ("type_coordinate", {"text": "hello"})
 
     async def test_type_without_content_is_a_loud_parse_error(self) -> None:
         """``clear_by_default`` would wipe the field and report success."""

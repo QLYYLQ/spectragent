@@ -93,14 +93,15 @@ _PROBE_PACKAGE = {
         class ProbeTypeCoordinate(ActionBase):
             __registry_key__ = "probe.type_coordinate"
 
+            # The relative name's params, as the browser's: the point is optional.
             class Params(BaseModel):
                 model_config = ConfigDict(extra="forbid")
-                coordinate_x: Annotated[int, PointAxis("coordinate", "x")]
-                coordinate_y: Annotated[int, PointAxis("coordinate", "y")]
+                coordinate_x: Annotated[int | None, PointAxis("coordinate", "x")] = None
+                coordinate_y: Annotated[int | None, PointAxis("coordinate", "y")] = None
                 text: str
 
             def descriptor(self, **context: Any) -> ActionDescriptor:
-                return self.describe("Click a point, then type.", **context)
+                return self.describe("Type, clicking a point first when given one.", **context)
 
             async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
                 return ActionResult(success=True)

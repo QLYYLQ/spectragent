@@ -10,7 +10,9 @@ the scripted phone (``tests/_helpers/android_device.py``), which keeps the
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, get_args
 
 import pytest
@@ -26,7 +28,7 @@ from spectragent.core.capabilities.android.actions import (
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.schemas.action import Action, ActionResult
 from tests._helpers.android_device import SERIAL, ScriptedPhone, android_capability
-from tests._helpers.fake_adb import FakeAdbServer
+from tests._helpers.fake_adb import FakeAdbServer, ShellResult
 
 #: The actions that mean what the browser's of the same relative name mean.
 SHARED = ("click_coordinate", "drag", "type_coordinate", "scroll", "wait")
@@ -68,7 +70,6 @@ def test_a_shared_action_takes_exactly_the_browser_actions_params(name: str) -> 
             {"coordinate_x", "coordinate_y"},
             (("coordinate_x", "coordinate_y"),),
         ),
-        ("type_text", {"text"}, {"text"}, ()),
         ("press_key", {"key"}, {"key"}, ()),
         ("open_app", {"app_name"}, {"app_name"}, ()),
     ],
@@ -157,10 +158,25 @@ async def test_a_scroll_starts_at_its_start_point_and_goes_its_amount(
     assert phone.inputs == ["input swipe 300 2000 300 1400 500"]
 
 
+@dataclass
+class _FieldTakingFocus(ScriptedPhone):
+    """A phone whose text field takes focus once the input method has been asked *late* times."""
+
+    late: int = 2
+    #: How many times the input method was asked.
+    asked: int = 0
+
+    async def __call__(self, command: str) -> ShellResult:
+        if command == "dumpsys input_method":
+            self.asked += 1
+            self.text_field = self.asked > self.late
+        return await super().__call__(command)
+
+
 async def test_typing_at_a_point_taps_clears_and_types(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
-    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=0)]
+    phone.text_field = True
 
     assert (
         await act(capability, "type_coordinate", coordinate_x=5, coordinate_y=6, text="hi there")
@@ -180,10 +196,107 @@ async def test_typing_at_a_point_taps_clears_and_types(
     ]
 
 
-async def test_text_the_keyboard_map_lacks_fails_the_action_and_says_why(
-    capability: AndroidCapability,
+@pytest.mark.parametrize("point", [{"coordinate_x": 5, "coordinate_y": 6}, {}], ids=["tap", "none"])
+async def test_typing_waits_for_a_field_that_takes_focus_a_moment_later(
+    point: dict[str, int],
 ) -> None:
-    result = await act(capability, "type_text", text="你好")
+    """After the tap that opens it, or after an earlier action that did."""
+    phone = _FieldTakingFocus()
+    async with FakeAdbServer({SERIAL: phone}) as adb, android_capability(adb) as capability:
+        result = await act(capability, "type_coordinate", text="hi", **point)
+
+    assert (result.success, result.error) == (True, None)
+    assert phone.asked == 3
+    assert phone.inputs[-2:] == [
+        "input keycombination KEYCODE_CTRL_LEFT KEYCODE_A && input keyevent KEYCODE_DEL",
+        "input text hi",
+    ]
+
+
+async def test_a_tap_that_gives_no_text_field_focus_types_nothing(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=300)]
+
+    started = time.monotonic()
+    result = await act(capability, "type_coordinate", coordinate_x=5, coordinate_y=6, text="hi")
+
+    assert (result.success, result.error) == (
+        False,
+        "No text field took focus at the tapped point: focus is in "
+        "com.google.android.apps.nexuslauncher/"
+        "com.google.android.apps.nexuslauncher.NexusLauncherActivity, not on a text field, "
+        "so no text was typed.",
+    )
+    assert time.monotonic() - started >= 0.3, "the wait was spent before refusing"
+    assert phone.inputs == ["input tap 5 6"]
+
+
+async def test_typing_without_a_point_types_into_the_field_that_has_focus(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    phone.text_field = True
+
+    assert (await act(capability, "type_coordinate", text="hi there")).success
+    assert (await act(capability, "type_coordinate", text="x", clear=False)).success
+
+    assert phone.inputs == [
+        "input keycombination KEYCODE_CTRL_LEFT KEYCODE_A && input keyevent KEYCODE_DEL",
+        "input text 'hi there'",
+        "input text x",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text_field", "window_over", "where"),
+    [
+        (
+            False,
+            None,
+            "focus is in com.google.android.apps.nexuslauncher/"
+            "com.google.android.apps.nexuslauncher.NexusLauncherActivity, not on a text field",
+        ),
+        # The field keeps its input connection under the shade, and the text would go to the shade.
+        (True, "NotificationShade", "focus is in NotificationShade, not on a text field"),
+    ],
+    ids=["no text field", "the notification shade over a text field"],
+)
+async def test_typing_without_a_point_sends_nothing_when_no_text_field_has_focus(
+    capability: AndroidCapability,
+    phone: ScriptedPhone,
+    text_field: bool,
+    window_over: str | None,
+    where: str,
+) -> None:
+    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=0)]
+    phone.text_field, phone.window_over = text_field, window_over
+
+    result = await act(capability, "type_coordinate", text="hi")
+
+    assert (result.success, result.error) == (
+        False,
+        f"No text field has focus: {where}, so no text was typed.",
+    )
+    assert phone.inputs == []
+
+
+async def test_typing_where_the_device_cannot_tell_types_as_asked(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The input method's client did not answer: only a measured "no text field" refuses."""
+    phone.text_field = None
+
+    assert (await act(capability, "type_coordinate", text="hi", clear=False)).success
+
+    assert phone.inputs == ["input text hi"]
+
+
+async def test_text_the_keyboard_map_lacks_fails_the_action_and_says_why(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    phone.text_field = True
+
+    result = await act(capability, "type_coordinate", text="你好", clear=False)
 
     assert not result.success
     assert result.error is not None and "virtual keyboard map" in result.error

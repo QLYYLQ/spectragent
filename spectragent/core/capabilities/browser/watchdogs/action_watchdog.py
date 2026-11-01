@@ -894,28 +894,28 @@ class ActionWatchdog(BrowserWatchdog):
             return {"error": str(e)}
 
     async def _on_type_at_coordinate(self, event: TypeAtCoordinateEvent) -> dict[str, Any] | None:
-        """Type into whatever is at (x, y) — the vision-only path.
+        """Type into whatever is at (x, y), or into the focus as it is — the vision-only path.
 
         A vision-only agent negotiates no DOM fragment, so the
         selector_map is empty and ``DOM.focus`` has nothing to aim at.
         Clicking the coordinate is what moves focus; everything after it
         (the check that a text field took focus, select-all + Backspace,
         ``Input.insertText``) is focus-relative already and is shared
-        verbatim with :meth:`_on_type_text`.
+        verbatim with :meth:`_on_type_text`. Without a point nothing is
+        clicked: the field that has focus is judged the same way, focus that
+        lands a moment later included (an earlier action of the same reply
+        may have clicked a widget that focuses its field after a delay).
 
         The focusing click measures nothing: this action's effect is the
         typing's (``TextInputEffect``), measured from the focus it left.
         """
         budget = self._effect_budget()
-        clicked = await self._click_at(
-            event.coordinate_x,
-            event.coordinate_y,
-            "left",
-            1,
-            label=f"({event.coordinate_x}, {event.coordinate_y})",
-        )
-        if "error" in clicked:
-            return clicked
+        x, y = event.coordinate_x, event.coordinate_y
+        point = (x, y) if x is not None and y is not None else None
+        if point is not None:
+            clicked = await self._click_at(*point, "left", 1, label=f"({point[0]}, {point[1]})")
+            if "error" in clicked:
+                return clicked
         try:
             return await self._insert_text_at_focus(
                 event.text,
@@ -923,7 +923,11 @@ class ActionWatchdog(BrowserWatchdog):
                 budget=budget,
                 # No coordinates in the text: the action line already says where, on the
                 # grid the agent writes, and a CSS-pixel copy here would contradict it.
-                no_field="No text field took focus at the clicked point",
+                no_field=(
+                    "No text field took focus at the clicked point"
+                    if point is not None
+                    else "No text field has focus"
+                ),
             )
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)
@@ -954,9 +958,9 @@ class ActionWatchdog(BrowserWatchdog):
         measured. A select-all with nothing editable focused selects the whole
         page's text, and the text then goes nowhere.
 
-        Focus the page moves a moment after the click or ``DOM.focus`` (a
-        widget that focuses its input on a timer or after an opening
-        animation) is waited for: the focus is read again every
+        Focus the page moves a moment after the click, the ``DOM.focus`` or
+        an earlier action (a widget that focuses its input on a timer or
+        after an opening animation) is waited for: the focus is read again every
         :data:`FOCUS_POLL_S` for up to ``type_focus_wait_s``, which the wait
         spends from *budget* while the rest of it stays for the probes after
         the wait. Only the pauses and the reads of where focus is belong to

@@ -39,6 +39,7 @@ from spectragent.core.actions.params import (
     param_fragments,
     point_params,
 )
+from tests._helpers.action_spaces import space_of
 
 #: The shipped actions only. The registry is process-global and test helpers
 #: register their own fakes into it on import (``tests/_helpers/archive_fakes.py``
@@ -121,9 +122,11 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "text": "str",
         "clear": "bool (optional, default=true)",
     },
+    # The point made optional on purpose (user ruling 2026-11-01): without one
+    # the text goes into the field that has focus.
     "browser.type_coordinate": {
-        "coordinate_x": "int -- CSS px from the viewport's left edge",
-        "coordinate_y": "int -- CSS px from the viewport's top edge",
+        "coordinate_x": "int (optional) -- CSS px from the viewport's left edge",
+        "coordinate_y": "int (optional) -- CSS px from the viewport's top edge",
         "text": "str",
         "clear": "bool (optional, default=true)",
     },
@@ -148,12 +151,11 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "Physical px from the screen's top edge",
     },
     "android.type_coordinate": {
-        "coordinate_x": _ANDROID_X,
-        "coordinate_y": _ANDROID_Y,
+        "coordinate_x": "int (optional) -- Physical px from the screen's left edge",
+        "coordinate_y": "int (optional) -- Physical px from the screen's top edge",
         "text": "str",
         "clear": "bool (optional, default=true)",
     },
-    "android.type_text": {"text": "str"},
     "android.wait": {"seconds": "float (optional, default=1.0, max=30.0)"},
 }
 
@@ -521,6 +523,50 @@ def test_the_start_is_the_scrolls_one_optional_point() -> None:
     assert descriptor.optional_points == (("start_x", "start_y"),)
     assert "start_x" in descriptor.params and "index" not in descriptor.params
     assert scroll.requires_fragments() == frozenset()
+
+
+# ── A typing action's optional point ──────────────────────────────────
+
+
+#: The typing actions that share one param contract (user ruling 2026-11-01).
+_TYPINGS = ("browser.type_coordinate", "android.type_coordinate")
+
+
+@pytest.mark.parametrize("typing", _TYPINGS)
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"text": "a"},
+        {"text": "a", "clear": False},
+        {"text": "a", "coordinate_x": 10, "coordinate_y": 20},
+        {"text": "a", "coordinate_x": 0, "coordinate_y": 0},
+    ],
+)
+def test_typing_takes_a_point_or_none(typing: str, params: dict[str, Any]) -> None:
+    assert ActionRegistrar.get(typing).Params.model_validate(params)
+
+
+@pytest.mark.parametrize("typing", _TYPINGS)
+@pytest.mark.parametrize(
+    "params", [{"text": "a", "coordinate_x": 10}, {"text": "a", "coordinate_y": 20}]
+)
+def test_a_typing_point_is_both_axes(typing: str, params: dict[str, Any]) -> None:
+    with pytest.raises(
+        ValidationError, match="a typing point needs both coordinate_x and coordinate_y"
+    ):
+        ActionRegistrar.get(typing).Params.model_validate(params)
+
+
+@pytest.mark.parametrize("typing", _TYPINGS)
+def test_the_typing_point_is_dropped_when_its_agent_declares_no_grid(typing: str) -> None:
+    """As ``scroll``'s start: the action stays, and types into the field that has focus."""
+    descriptor = _action(typing).descriptor()
+    assert descriptor.optional_points == (("coordinate_x", "coordinate_y"),)
+    (plain,) = space_of([descriptor]).descriptors
+    assert plain.point_params == () and set(plain.params) == {"text", "clear"}
+    assert set((plain.params_schema or {})["properties"]) == {"text", "clear"}
+    (framed,) = space_of([descriptor], coordinate_space="normalized_1000").descriptors
+    assert framed.point_params == (("coordinate_x", "coordinate_y"),)
 
 
 @pytest.mark.parametrize("key", _KEYS)

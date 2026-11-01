@@ -4,13 +4,13 @@ A relative name is a param contract (``docs/architecture_design.md`` §4.9,
 "相对名就是参数契约"): negotiation binds names, never params, so an action that
 means what a browser action means takes its relative name and exactly its
 params. Five do: ``click_coordinate``, ``drag``, ``type_coordinate``, ``scroll``
-and ``wait``. Four are Android's own (§11.2, "动作"): ``long_press``,
-``type_text`` (into the focused field), ``press_key`` (system keys) and
-``open_app`` (by name; the name-to-package table is this action's, never an
-agent's). Points are physical screen pixels, the space ``input`` takes and the
-screenshot's viewport. A gesture's duration is a setting on the action
-instance, never a model param. There is no ``done``: the Loop's ``loop.done``
-ends a run (§4.5).
+and ``wait``; typing into the focused field is ``type_coordinate`` without a
+point (user ruling 2026-11-01). Three are Android's own (§11.2, "动作"):
+``long_press``, ``press_key`` (system keys) and ``open_app`` (by name; the
+name-to-package table is this action's, never an agent's). Points are physical
+screen pixels, the space ``input`` takes and the screenshot's viewport. A
+gesture's duration is a setting on the action instance, never a model param.
+There is no ``done``: the Loop's ``loop.done`` ends a run (§4.5).
 
 ``scroll``'s ``index`` names an element of ``android.ui_tree``, which arrives
 with a later stage; until then no run negotiates the tree, so the param is
@@ -21,6 +21,7 @@ browser: ``down`` shows what is further down, so the finger moves up.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
@@ -32,6 +33,7 @@ from spectragent.core.actions.params import AddressesElement, PointAxis
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
+    from spectragent.core.capabilities.android.bridge import TextFocus
     from spectragent.core.capabilities.android.capability import AndroidCapability
 
 _X = "Physical px from the screen's left edge"
@@ -231,19 +233,32 @@ class AndroidScrollAction(ActionBase):
         return ActionResult(success=True)
 
 
+#: How often typing reads again whether a text field has focus while it waits
+#: for one; each reading is two reports of the device, about 0.1-0.2 s.
+FOCUS_POLL_S = 0.1
+
+
 @dataclass
 class AndroidTypeCoordinateAction(ActionBase):
-    """Tap a text field, then type into it.
+    """Type into a text field: tap it first when given a point, else the one that has focus.
 
-    Unlike the browser's ``type_coordinate`` it cannot check that the tap gave a
-    text field focus, because adb's built-in commands do not say which view has
-    it. When the point misses the field (it lands on the label beside it), the
-    clear wipes whatever field still has focus, the text goes there, and the
-    action reports success; the browser refuses that case ("No text field took
-    focus at the clicked point"). The gap is recorded in
-    ``docs/architecture_design.md`` §11.2 with the open question of how UI-TARS's
-    ``type`` maps on Android and whether this action stays, which waits on a
-    ruling; no focus check is written until it is settled.
+    The point is optional, both axes or neither, as on the browser (user ruling
+    2026-11-01). Either way, before any key is sent the device is asked whether
+    a text field has focus (:meth:`~spectragent.core.capabilities.android.bridge.
+    ForegroundApps.text_focus`), again every :data:`FOCUS_POLL_S` while it
+    answers that none has, for up to ``focus_wait_ms``: a field may take focus a
+    moment after the tap, or after an earlier action that opened it. When none
+    has by then, the action fails without sending a key, as the browser's does;
+    a device that cannot tell is typed into as asked.
+
+    What the device reports says whether a text field has focus, not where that
+    field is. So with a point, a tap that misses its field (it lands on the
+    label beside it) while another field keeps focus still types into that
+    other field and reports success, where the browser refuses ("No text field
+    took focus at the clicked point"). Checking that the field with focus is
+    the one at the point waits for the accessibility service of stage 2, which
+    reads the focused node and its bounds (``docs/architecture_design.md``
+    §11.2).
     """
 
     __registry_key__ = "android.type_coordinate"
@@ -255,22 +270,42 @@ class AndroidTypeCoordinateAction(ActionBase):
         int,
         PydanticField(
             ge=0,
-            description="Pause between the tap and the typing, in ms, for the field to take focus",
+            description=(
+                "How long typing waits for a text field to have focus, in ms, after its tap "
+                "(or at once, without a point), before it fails without sending a key. Spent "
+                "only while no text field has focus; read again every 0.1 s. A tap that opens "
+                "a screen or a dialog takes a while: on the API 33 emulator, Settings' search "
+                "field had focus 1.5-1.9 s after the tap on its bar, a dialog's field 0.5-0.9 s "
+                "after the tap that opened it."
+            ),
         ),
-    ] = 500
+    ] = 3000
 
     class Params(BaseModel):
+        """The browser's ``type_coordinate`` params: the text, and an optional point."""
+
         model_config = ConfigDict(extra="forbid")
 
-        coordinate_x: Annotated[int, PointAxis("coordinate", "x"), PydanticField(description=_X)]
-        coordinate_y: Annotated[int, PointAxis("coordinate", "y"), PydanticField(description=_Y)]
+        coordinate_x: Annotated[
+            int | None, PointAxis("coordinate", "x"), PydanticField(description=_X)
+        ] = None
+        coordinate_y: Annotated[
+            int | None, PointAxis("coordinate", "y"), PydanticField(description=_Y)
+        ] = None
         text: str
         #: Omitted means ``clear_by_default``.
         clear: bool | None = None
 
+        @model_validator(mode="after")
+        def _both_axes(self) -> Self:
+            if (self.coordinate_x is None) != (self.coordinate_y is None):
+                raise ValueError("a typing point needs both coordinate_x and coordinate_y")
+            return self
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe(
-            "Tap a text field on the screen to focus it, then type into it.",
+            "Type into a text field. With a point, tap there first to focus the field; "
+            "without one, type into the field that already has focus.",
             hints={"clear": f"default={str(self.clear_by_default).lower()}"},
             **context,
         )
@@ -280,34 +315,33 @@ class AndroidTypeCoordinateAction(ActionBase):
     ) -> ActionResult:
         given = self.Params.model_validate(params)
         device = capability.bridge.input
-        await device.tap(given.coordinate_x, given.coordinate_y)
-        await asyncio.sleep(self.focus_wait_ms / 1000)
+        no_field = "No text field has focus"
+        if given.coordinate_x is not None and given.coordinate_y is not None:
+            await device.tap(given.coordinate_x, given.coordinate_y)
+            no_field = "No text field took focus at the tapped point"
+        focus = await self._text_focus(capability)
+        if focus.text_field is False:
+            where = (
+                "nothing has focus"
+                if focus.window is None
+                else f"focus is in {focus.window}, not on a text field"
+            )
+            return ActionResult(success=False, error=f"{no_field}: {where}, so no text was typed.")
         clear = self.clear_by_default if given.clear is None else given.clear
         if clear:
             await device.clear_focused_field()
         await device.type_text(given.text)
         return ActionResult(success=True)
 
-
-@dataclass
-class AndroidTypeTextAction(ActionBase):
-    """Type into the field that has focus."""
-
-    __registry_key__ = "android.type_text"
-
-    class Params(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-
-        text: str
-
-    def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe("Type text into the text field that has focus.", **context)
-
-    async def execute(
-        self, params: dict[str, Any], *, capability: AndroidCapability
-    ) -> ActionResult:
-        await capability.bridge.input.type_text(self.Params.model_validate(params).text)
-        return ActionResult(success=True)
+    async def _text_focus(self, capability: AndroidCapability) -> TextFocus:
+        """The device's text focus, read again while no text field has it, up to ``focus_wait_ms``."""
+        apps = capability.bridge.apps
+        deadline = time.monotonic() + self.focus_wait_ms / 1000
+        focus = await apps.text_focus()
+        while focus.text_field is False and time.monotonic() < deadline:
+            await asyncio.sleep(max(0.0, min(FOCUS_POLL_S, deadline - time.monotonic())))
+            focus = await apps.text_focus()
+        return focus
 
 
 SystemKey = Literal["back", "home", "enter", "delete", "recent_apps"]
@@ -485,7 +519,6 @@ ACTIONS: tuple[type[ActionBase], ...] = (
     AndroidDragAction,
     AndroidScrollAction,
     AndroidTypeCoordinateAction,
-    AndroidTypeTextAction,
     AndroidPressKeyAction,
     AndroidOpenAppAction,
     AndroidWaitAction,

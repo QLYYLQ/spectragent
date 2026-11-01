@@ -20,6 +20,7 @@ run's action space and reads only its arguments and itself, so:
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Annotated, Any, Literal
 
@@ -84,6 +85,11 @@ _SCREENSHOT = ScreenshotObs(
 def _codec(**kwargs: Any) -> UITarsCodec:
     """A codec for UI-TARS's space, framed on its grid as a run frames it."""
     return UITarsCodec(wired_space(UITarsAgent, coordinate_space="screenshot_pixels"), **kwargs)
+
+
+def _android_codec() -> UITarsCodec:
+    """The codec of a UI-TARS run on the Android capability, which holds all its actions."""
+    return UITarsCodec(space_for(UITarsAgent(), AndroidCapability().get_action_descriptors()))
 
 
 def _every_verb_space(coordinate_space: CoordinateSpace = "screenshot_pixels") -> ActionSpace:
@@ -226,6 +232,29 @@ class TestEveryVerbRoundTrips:
         (back,) = codec.read_actions(f"Action: {text}")
         assert back.params == {"direction": "down"}
 
+    @pytest.mark.parametrize("make", [_codec, _android_codec], ids=["browser", "android"])
+    def test_a_type_without_a_point_is_read_and_written_without_one(
+        self, make: Callable[[], UITarsCodec]
+    ) -> None:
+        """UI-TARS's own ``type(content=...)``: no point, so into the field that has focus."""
+        codec = make()
+        (typed,) = codec.read_actions("Action: type(content='hello')")
+        assert typed == Action(name="type_coordinate", params={"text": "hello"})
+        full = codec.verbs["type"].descriptor.name
+        assert codec.write_call(typed.model_copy(update={"name": full})) == (
+            "type(content='hello')"
+        )
+
+    @pytest.mark.parametrize("spelling", ["point", "start_box"])
+    def test_a_type_with_a_point_keeps_it(self, spelling: str) -> None:
+        codec = _codec()
+        params = {"coordinate_x": 3, "coordinate_y": 4, "text": "hello"}
+        (typed,) = codec.read_actions(f"Action: type(content='hello', {spelling}='(3, 4)')")
+        assert typed.params == params
+        assert codec.write_call(Action(name="browser.type_coordinate", params=params)) == (
+            "type(content='hello', point='(3, 4)')"
+        )
+
     def test_the_grounding_template_writes_no_thought(self) -> None:
         codec = _codec(writes_thought=False)
         assert codec.write([_action(codec, "wait")], thought="why") == "Action: wait()"
@@ -283,6 +312,17 @@ class TestPointsAreTheActionsOwn:
         with pytest.raises(ValueError, match=r"writes 1 point\(s\) and 0 optional"):
             BoundVerb.bind(writes_one, _pan())
 
+    @pytest.mark.parametrize("make", [_codec, _android_codec], ids=["browser", "android"])
+    def test_types_optional_point_fills_the_actions_optional_point(
+        self, make: Callable[[], UITarsCodec]
+    ) -> None:
+        """On both capabilities, so the agent's check in ``prepare()`` passes on both."""
+        bound = make().verbs["type"]
+        ((argument, pair),) = bound.points
+        assert (argument.name, argument.required) == ("point", False)
+        assert pair == ("coordinate_x", "coordinate_y")
+        assert bound.descriptor.optional_points == (pair,)
+
     def test_a_verb_whose_action_the_run_lacks_is_not_offered(self) -> None:
         narrow = UITarsCodec(space_of(browser_descriptors("wait")))
         assert list(narrow.verbs) == ["wait"]
@@ -325,16 +365,11 @@ def _press_key(params: type[BaseModel]) -> ActionDescriptor:
 class TestMobileVerbs:
     """``long_press``, ``open_app``, ``press_home`` and ``press_back`` run as Android's actions."""
 
-    @staticmethod
-    def _mobile_codec() -> UITarsCodec:
-        """The codec of a UI-TARS run on the Android capability, which holds all its actions."""
-        return UITarsCodec(space_for(UITarsAgent(), AndroidCapability().get_action_descriptors()))
-
     def test_a_browser_run_binds_none_of_them(self) -> None:
         assert not set(_MOBILE_VERBS) & set(_codec().verbs)
 
     def test_a_run_holding_androids_actions_binds_each_to_its_action(self) -> None:
-        verbs = self._mobile_codec().verbs
+        verbs = _android_codec().verbs
         assert {verb: verbs[verb].descriptor.name for verb in _MOBILE_VERBS} == {
             "long_press": "android.long_press",
             "open_app": "android.open_app",
@@ -343,7 +378,7 @@ class TestMobileVerbs:
         }
 
     def test_long_press_holds_where_its_point_is(self) -> None:
-        codec = self._mobile_codec()
+        codec = _android_codec()
         held = Action(name="long_press", params={"coordinate_x": 10, "coordinate_y": 20})
         assert codec.read_actions("Action: long_press(point='(10, 20)')") == [held]
         # UI-TARS's mobile prompt spells the point start_box.
@@ -353,7 +388,7 @@ class TestMobileVerbs:
         )
 
     def test_open_app_names_the_app(self) -> None:
-        codec = self._mobile_codec()
+        codec = _android_codec()
         opened = Action(name="open_app", params={"app_name": "Clock"})
         assert codec.read_actions("Action: open_app(app_name='Clock')") == [opened]
         assert codec.write_call(opened) == "open_app(app_name='Clock')"
@@ -362,7 +397,7 @@ class TestMobileVerbs:
 
     @pytest.mark.parametrize(("verb", "key"), [("press_home", "home"), ("press_back", "back")])
     def test_a_key_verb_presses_the_key_it_fixes(self, verb: str, key: str) -> None:
-        codec = self._mobile_codec()
+        codec = _android_codec()
         assert codec.verbs[verb].verb.signature == f"{verb}()"
         assert codec.read_actions(f"Action: {verb}()") == [
             Action(name="press_key", params={"key": key})
@@ -372,14 +407,14 @@ class TestMobileVerbs:
 
     def test_the_fixed_key_is_no_argument_of_the_call(self) -> None:
         with pytest.raises(ParseError) as excinfo:
-            self._mobile_codec().read_actions("Action: press_home(key='back')")
+            _android_codec().read_actions("Action: press_home(key='back')")
         assert excinfo.value.detail == (
             "Action line 1, press_home(key='back'): press_home() does not take key; "
             "write it as press_home()"
         )
 
     def test_a_key_no_verb_fixes_cannot_be_written(self) -> None:
-        codec = self._mobile_codec()
+        codec = _android_codec()
         enter = Action(name="android.press_key", params={"key": "enter"})
         with pytest.raises(UnrepresentableActionError) as excinfo:
             codec.write_call(enter)
@@ -417,7 +452,7 @@ class TestMobileVerbs:
         assert "press_home" not in prompt
 
     def test_a_bound_verb_writes_only_the_value_it_fixes(self) -> None:
-        bound = self._mobile_codec().verbs["press_home"]
+        bound = _android_codec().verbs["press_home"]
         assert bound.write({"key": "home"}) == "press_home()"
         with pytest.raises(ValueError, match=r"press_home\(\) always sets key='home'"):
             bound.write({"key": "back"})
@@ -474,10 +509,6 @@ class TestMalformedRepliesKeepTheirWords:
             (
                 "Action: type(point='(1, 2)')",
                 "Action line 1, type(point='(1, 2)'): type needs content='text to type'",
-            ),
-            (
-                "Action: type(content='x')",
-                "Action line 1, type(content='x'): a point is missing; write point='(x, y)'",
             ),
             (
                 "Action: scroll(direction='sideways')",

@@ -185,18 +185,21 @@ class TypeTextEvent(BaseEvent[dict[str, Any] | None]):
 
 
 class TypeAtCoordinateEvent(BaseEvent[dict[str, Any] | None]):
-    """Type text into whatever sits at absolute screen coordinates.
+    """Type text into whatever sits at absolute screen coordinates, or into the focus as it is.
 
     Separate from :class:`TypeTextEvent` for the same reason
     :class:`ClickCoordinateEvent` is separate from
     :class:`ClickElementEvent`: a vision-only agent has no selector_map,
     so there is no ``backend_node_id`` to resolve and no DOM node to
     focus. The handler clicks the coordinate to move focus there and then
-    reuses the focus-relative clear + ``Input.insertText`` sequence.
+    reuses the focus-relative clear + ``Input.insertText`` sequence;
+    without coordinates it clicks nothing.
     """
 
-    coordinate_x: int
-    coordinate_y: int
+    #: Where to click first, CSS px of the viewport; ``None``: type into the
+    #: field that has focus.
+    coordinate_x: int | None = None
+    coordinate_y: int | None = None
     text: str
     clear: bool = True
     event_timeout: float = 60.0
