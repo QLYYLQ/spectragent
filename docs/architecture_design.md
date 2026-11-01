@@ -1234,7 +1234,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
 - `align_next_observation(recorded, *, media_seek_timeout_s, media_end_lead_s) -> None`（2026-10-20 裁决的媒体对齐）：按 capability 顺序扇出到每个实现了 `RestorationAlignment` 的 capability，没有实现者时什么也不做。它不在这里改环境：capability 只记下"下一次观测要对齐到 `recorded`"，对齐在那一次观测的采集里、落定之后、截图之前执行，做了什么由紧接着的 `verify_restoration` 作为证据交回（§4.14）。预约只管紧接着的那一次观测：`verify_restoration` 会清掉没用上的预约，所以它不会漏到检查点之后的观测里。只有恢复器调用它，而且只在 `media: align` 时。
 
-**判分的路由（用户 2026-10-31 的裁决，§4.2）**（`core/environments/_registrar.py`）：`read_oracle_scores(*, timeout_s)` 给每个实现了 §4.9 `TaskOracle` 的 capability 一个任务，并发跑，每个限时 `timeout_s`；返回 `None` 的（本 run 没有裁判）不进列表，超时或抛 `Exception` 的换成一份 `status: not_scored` 的 `OracleScore`（`reason` 是 `timeout` 或 `error`，`detail` 是诊断）；全部跑完才按 capability 顺序返回，从不抛 `Exception`。`CancelledError` 原样传播：先取消还没结束的裁判、等它们收场，再重抛，不留孤儿任务（与 `collect_archive` 同一做法）。没有实现者时返回空列表。Protocol 上有这个方法，Runtime 对每个走到判分时间点的 run 都调它，所以结构化实现 `Environment` 的环境也要实现它。
+**判分的路由（用户 2026-10-31 的裁决，§4.2）**（`core/environments/_registrar.py`）：`read_oracle_scores(*, timeout_s)` 给每个实现了 §4.9 `TaskOracle` 的 capability 一个任务，并发跑，每个限时 `timeout_s`；返回 `None` 的（本 run 没有裁判）不进列表，超时或抛 `Exception` 的换成一份 `status: not_scored` 的 `OracleScore`（`reason` 是 `timeout` 或 `error`，`detail` 是诊断：超时写明限时，抛错写异常类名与消息）；`timeout` 只指 environment 自己的限时到了，裁判在限时之内自己抛出的 `TimeoutError` 是 `error`。交回的不是 `OracleScore`、或 `capability_id` 不是它自己的，同样换成 `error` 的没判（与 `collect_archive` 的契约检查同一做法）。全部跑完才按 capability 顺序返回，从不抛 `Exception`。`CancelledError` 原样传播：先取消还没结束的裁判、等它们收场，再重抛，不留孤儿任务（与 `collect_archive` 同一做法）。没有实现者时返回空列表。Protocol 上有这个方法，Runtime 对每个走到判分时间点的 run 都调它，所以结构化实现 `Environment` 的环境也要实现它。
 
 **fragment 的格式说明**（`core/environments/_registrar.py`，§4.4 "观测格式由提供方描述"）：`fragment_formats() -> dict[str, str]`：按 capability 顺序合并每个实现了 §4.9 `FragmentFormats` 的 capability 交出的说明（全限定键 → 文字）；没实现的 capability 什么都不描述。capability 只为自己的 fragment 说话：交出的键不在 `<capability_id>.` 前缀下时抛 `ValueError`，不让它替别的 capability 的 fragment 写说明。只读配置：`AgentRuntime.prepare()` 第 2b 步在 setup 之前调它，而且只在 Agent 引用的 fragment 这个 run 确实激活了时才调。
 
@@ -2578,7 +2578,7 @@ class TaskOracle(Protocol):
 ```
 
 - 为什么需要：有的基准只能对着活体环境判分（AndroidWorld 读设备上的数据库、文件与设置），只有 capability 够得着那个环境。判分作为证据进 trace（§5.3 的判分记录），评测器读它，不另开"活体评测器"。
-- 判了的 `OracleScore` 由裁判自己填（分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。
+- 判了的 `OracleScore` 由裁判自己填（自己的 `capability_id`、这次读的开始时间与耗时、分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。`OracleScore` 在 `schemas/oracle_score.py`，capability 构造它不必 import trace 层（§5.3、§10）。
 - 与 `SetupCheck`、`RestorationAlignment` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。Android 的任务裁判实现它（§11.2）。
 
 #### 4.9.x Capability ↔ Backend 生命周期
@@ -4787,7 +4787,7 @@ traces/
 
 `complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 6，旧数据和 fixtures 重建，不保留兼容路径。
 
-**判分记录（`oracle_scores.json`，用户 2026-10-31 的裁决）。** TraceWriter 收到 `read_oracle_scores` 的返回（§4.2）就交给持久化，在 `on_run_end` 写 `result.json` 之前提交，manifest 的 `oracle_scores` 指向它；空列表不写文件。它不受 RecordingPlan 的通道选择影响：它很小，评测离不开它。写不进去是一条记录问题（`incomplete_reason` 点名 `oracle_scores`），与 agent 的结局无关。读侧是 `RunTrace.oracle_scores() -> list[OracleScore]`，没有记录时是空列表，评测器记为没判。
+**判分记录（`oracle_scores.json`，用户 2026-10-31 的裁决）。** TraceWriter 收到 `read_oracle_scores` 的返回（§4.2）就交给持久化，在 `on_run_end` 写 `result.json` 之前提交，manifest 的 `oracle_scores` 指向它；空列表不写文件。它不受 RecordingPlan 的通道选择影响：它很小，评测离不开它。写不进去是一条记录问题（`incomplete_reason` 点名 `oracle_scores`），与 agent 的结局无关。读侧是 `RunTrace.oracle_scores() -> list[OracleScore]`，没有记录时是空列表，评测器记为没判。`OracleScore` 不在 `core/trace/models.py`，在 `schemas/oracle_score.py`：构造它的是 capability（判了的那份）与 environment（没判的那份），capability 不 import trace 层（§10），与 `schemas/restoration.py`、`schemas/agent_result.py` 是同一种跨层记录（`tests/test_schemas/test_oracle_score.py` 守着它不 import `spectragent.core`）。
 
 **记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 7`）：
 
@@ -4834,15 +4834,16 @@ class TraceManifest(BaseModel):
     prompt_images: list[str] = Field(default_factory=list)   # 已提交的 prompt 图片：messages/images/<sha256><后缀>，每张一次，按提交顺序
     oracle_scores: str | None = None         # oracle_scores.json；没有判分记录为 None
 
-class OracleScore(BaseModel):          # oracle_scores.json 的一条：一个 capability 的任务裁判对本任务的判分（§4.2）
+class OracleScore(BaseModel):          # 在 schemas/oracle_score.py，不在本模块（见上文"判分记录"）；frozen
+    # oracle_scores.json 的一条：一个 capability 的任务裁判对本任务的判分（§4.2）
     capability_id: str
     status: Literal["scored", "not_scored"]
-    score: float | None = None         # 判了：基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；scored 时必有
+    score: float | None = None         # 判了：基准自己的分（AndroidWorld 是 0–1，组合任务有部分分）；恰在 scored 时有值，有限数
     oracle: str | None = None          # 裁判身份，如 "androidworld"；scored 时必有，裁判没交回时为 None
     oracle_version: str | None = None  # 裁判版本，如钉住的 AndroidWorld commit
     provenance: dict[str, str] = Field(default_factory=dict)   # 判的是什么：基准的任务 id、参数摘要……，裁判自己给
-    started_at: float                  # 墙钟 Unix 时间，与 StepRecord.timestamp 可比
-    duration_ms: int
+    started_at: float                  # 墙钟 Unix 时间，与 StepRecord.timestamp 可比；有限数
+    duration_ms: int                   # ≥ 0
     reason: Literal["timeout", "error"] | None = None   # 恰在 not_scored 时有值
     detail: str | None = None          # 没判的诊断：异常类名与消息
 
@@ -5572,7 +5573,7 @@ environment:
 - browser 的归档器、回放档位与离线回放（`core/capabilities/browser/archive/`、`replay/`、`recorder.py`）只从框架 import `core.archive`（类型、`ArchiverBase`、`privacy`、回放读侧的 `ArchiveReader` / `open_archive`），不 import `core.trace` / `core.hooks`，因为 capability 不知道 WAL；`core.hooks.trace_writer` 也不 import 任何具体归档器，归档器配置经注册表进入它的生成配置；
 - 新的归档与协商模型里没有 `price` / `cost` / `usd` / `dollar` 字段：只记 token，不记钱（2026-09-19）。
 
-**分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立：`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。
+**分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立：`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。判分同理：`TaskOracle` 的实现与 `core/environments/*` 只认 `schemas/oracle_score.py` 的 `OracleScore`，它不 import `spectragent.core`；trace 层也从那里读它（§5.3 "判分记录"）。
 
 **导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`core/registries.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。导出的叶子规则有且只有一个例外：度量闸门的链（`spectragent/flywheel/chain.py`）把 `spectragent export` 当作一段来调，只 import `spectragent.export.cli`（测试按模块名钉住）。
 

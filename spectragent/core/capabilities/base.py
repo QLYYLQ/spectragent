@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 if TYPE_CHECKING:
@@ -379,6 +380,33 @@ class SetupCheck(Protocol):
 
         Reads configuration and its arguments only: no backend, no connection,
         no state written.
+        """
+        ...
+
+
+@runtime_checkable
+class TaskOracle(Protocol):
+    """Optional: this task's score, read from the live environment once the Loop has ended.
+
+    Some benchmarks can only be scored against the environment itself
+    (AndroidWorld reads databases, files and settings on the device), and only
+    the capability reaches it. ``AgentRuntime`` calls the woven environment's
+    ``read_oracle_scores`` after the Loop returned or raised, before the
+    close-out and the teardown (``docs/architecture_design.md`` §4.2
+    "判分时间点"); the environment asks every capability implementing this,
+    concurrently and each within the run's ``oracle_timeout``, and the trace
+    records the answers as evidence evaluators read (§5.3). Not part of
+    :class:`BaseCapability`; ``CapabilityBase`` gives no default.
+    """
+
+    async def read_score(self) -> OracleScore | None:
+        """Score this task against the live environment; ``None`` when this run has no oracle.
+
+        Reads only: executes no action and tears nothing down. The oracle fills
+        a scored entry itself: this capability's ``capability_id``, when its
+        read started and how long it took, the score, its identity and version,
+        and what it judged. The environment enforces the time limit and turns a
+        timeout or an exception into a not-scored entry.
         """
         ...
 

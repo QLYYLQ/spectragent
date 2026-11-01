@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, ClassVar, cast
 
@@ -36,6 +37,7 @@ from spectragent.core.capabilities.base import (
     RestorationSupport,
     SetupCheck,
     SetupContextPreparation,
+    TaskOracle,
 )
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
@@ -49,6 +51,7 @@ from spectragent.schemas.observation.dynamic_model import (
     build_observation_model_from_result,
 )
 from spectragent.schemas.observation.failure import FragmentFailure
+from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 logger = logging.getLogger(__name__)
@@ -651,6 +654,82 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 f"from collect_archive(), not an ArchiveBatch"
             )
         return batch
+
+    # ── Scoring: the task oracles, after the Loop ─────────────
+
+    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+        """Ask every task oracle for this task's score; the entries in capability order.
+
+        One task per capability implementing
+        :class:`~spectragent.core.capabilities.base.TaskOracle`, run
+        **concurrently**, each limited to *timeout_s*, and every task is waited
+        for before anything is returned. A ``None`` (no oracle in this run) is
+        left out. An oracle that runs out of time, raises, or breaks the
+        contract (hands back something other than an :class:`OracleScore`, or a
+        score under another capability's id) comes back as a ``not_scored``
+        entry saying why. Nothing here raises ``Exception``: scoring never
+        fails the run (``docs/architecture_design.md`` §4.3 "判分的路由"). No
+        oracle: an empty list, and no capability is asked anything.
+
+        A cancellation propagates unchanged, after every oracle still running
+        was cancelled and waited for, as in :meth:`collect_archive`.
+        """
+        oracles = [cap for cap in self.capabilities.values() if isinstance(cap, TaskOracle)]
+        if not oracles:
+            return []
+        tasks = [asyncio.ensure_future(self._score_one(cap, timeout_s)) for cap in oracles]
+        try:
+            outcomes = await asyncio.gather(*tasks)
+        except BaseException:
+            # Only a cancellation reaches here — ``_score_one`` returns every
+            # ``Exception``. ``gather`` lets the siblings of a child that raised
+            # ``CancelledError`` keep running; cancel whatever is still pending
+            # and wait it out, so no oracle outlives this call.
+            for task in tasks:
+                task.cancel()
+            await asyncio.wait(tasks)
+            raise
+        return [score for score in outcomes if score is not None]
+
+    @staticmethod
+    async def _score_one(cap: BaseCapability, timeout_s: float) -> OracleScore | None:
+        """One oracle's score, or the not-scored entry standing in for it.
+
+        Catches ``Exception`` only: a ``CancelledError`` (a ``BaseException``)
+        propagates. The limit is this method's own clock, so an oracle that
+        raises ``TimeoutError`` itself, inside the limit, failed with an
+        ``error``; ``timeout`` means the limit cut it off.
+        """
+        # Only capabilities that passed the isinstance check above are asked.
+        oracle = cast(TaskOracle, cap)
+        started_at, started = time.time(), time.monotonic()
+        limit = asyncio.timeout(timeout_s)
+        try:
+            async with limit:
+                score = await oracle.read_score()
+            if score is not None and not isinstance(score, OracleScore):
+                raise TypeError(
+                    f"read_score() returned {type(score).__name__}, not an OracleScore or None"
+                )
+            if score is not None and score.capability_id != cap.capability_id:
+                raise ValueError(
+                    f"read_score() returned a score under capability {score.capability_id!r}"
+                )
+            return score
+        except Exception as exc:  # per-oracle isolation
+            timed_out = limit.expired()
+            return OracleScore(
+                capability_id=cap.capability_id,
+                status="not_scored",
+                started_at=started_at,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                reason="timeout" if timed_out else "error",
+                detail=(
+                    f"no score within {timeout_s:g} s (oracle_timeout)"
+                    if timed_out
+                    else f"{type(exc).__name__}: {exc}"
+                ),
+            )
 
     # ── Observation delegation ────────────────────────────────
 
