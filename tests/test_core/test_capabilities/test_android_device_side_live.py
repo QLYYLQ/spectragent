@@ -643,13 +643,14 @@ async def test_a_connection_from_an_apps_uid_is_closed_before_it_is_read(
 
 
 async def test_a_hello_over_64_kb_closes_the_stream_unanswered(up: Up) -> None:
-    """Anything on the device can connect, so a hello's size is capped before the token is read."""
+    """A hello's size is capped before the token is read. Without the cap the connection would
+    still close, at its 10 s hello timeout, so the test waits only half of that."""
     reader, writer = await up.adb.connect_abstract(up.serial, "spectragent_device")
     try:
         writer.write(struct.pack(">II", 65 * 1024 + 4, 65 * 1024))
         await writer.drain()
-        async with asyncio.timeout(_SHOWN_S):
-            assert await reader.read() == b""
+        async with asyncio.timeout(5):
+            assert await reader.read() == b"", "closed long before its hello would time out"
     finally:
         writer.close()
 
