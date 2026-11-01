@@ -26,6 +26,7 @@ import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.core.capabilities.android.actions import AndroidTypeCoordinateAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, UserMessage
@@ -65,9 +66,18 @@ class _ScriptedModel:
 
 
 def _android(adb: FakeAdbServer) -> AndroidCapability:
-    """The capability for *adb*'s phone, which the run sets up; a capture waits for no still screen."""
+    """The capability for *adb*'s phone, which the run sets up; a capture waits for no still screen.
+
+    Typing reads whether a text field has focus once, without waiting for one.
+    """
     capability = AndroidCapability(settle_max_wait_s=0)
     capability.backend = FakeServerProvider(adb.host, adb.port)
+    capability.actions = [
+        AndroidTypeCoordinateAction(focus_wait_ms=0)
+        if isinstance(action, AndroidTypeCoordinateAction)
+        else action
+        for action in capability.actions
+    ]
     return capability
 
 

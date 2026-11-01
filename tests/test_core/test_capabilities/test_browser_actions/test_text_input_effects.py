@@ -284,15 +284,29 @@ class TestTypingNeedsATextField:
         refused(await type_at(cdp, clear=False), NOTHING_FOCUSED)
         assert keys_and_text(cdp) == []
 
-    async def test_without_a_point_nothing_focused_is_refused_without_waiting(self) -> None:
-        # Nothing is clicked, so nothing could move focus: the first reading stands.
+    async def test_without_a_point_a_field_that_gets_focus_a_moment_later_is_typed_into(
+        self,
+    ) -> None:
+        # An earlier action of the same reply clicked a widget that focuses its
+        # input on a timer; the typing that follows it names no point.
+        cdp = ProbeCDP(field=["null", "null", "node"], readings=name_field("0:1", "3:2"))
+        effect = text_input(await type_at(cdp, point=None))
+        assert (effect.target, effect.keys, effect.value_changed) == (
+            NAME,
+            ("Control+A", "Backspace"),
+            True,
+        )
+        assert cdp.kinds().count("field_ref") == 3
+        assert "Input.dispatchMouseEvent" not in [c.method for c in cdp.inputs()]
+
+    async def test_without_a_point_nothing_focused_is_refused_once_the_wait_is_out(self) -> None:
         cdp = ProbeCDP(field="null")
         started = time.monotonic()
         effect = refused(
             await type_at(cdp, point=None, type_focus_wait_s=0.2), NOTHING_FOCUSED_WITHOUT_A_POINT
         )
-        assert time.monotonic() - started < 0.2
-        assert cdp.kinds().count("field_ref") == 1
+        assert 0.2 <= time.monotonic() - started < 0.5
+        assert cdp.kinds().count("field_ref") > 1
         assert cdp.inputs() == []
         assert (effect.target, effect.focus_after) == ("nothing", "nothing")
 

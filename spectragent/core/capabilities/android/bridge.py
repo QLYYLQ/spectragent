@@ -45,8 +45,11 @@ _FOCUSED_APP = re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ (?P<component>[
 #: the window (its id, user and title) and its title.
 _CURRENT_FOCUS = re.compile(r"mCurrentFocus=Window\{(?P<window>\S+ u\d+ (?P<title>[^}]*))\}")
 #: ``imeInputTarget in display# 0 Window{388b3c9 u0 com.android.settings/...}``: the
-#: window the input method serves.
-_IME_INPUT_TARGET = re.compile(r"imeInputTarget in display# \d+ Window\{(?P<window>[^}]*)\}")
+#: window the input method serves. Android 11 names it ``mInputMethodInputTarget``, as
+#: its platform source prints it (not measured here).
+_IME_INPUT_TARGET = re.compile(
+    r"(?:imeInputTarget|mInputMethodInputTarget) in display# \d+ Window\{(?P<window>[^}]*)\}"
+)
 #: ``mServedInputConnection=null``, or the input connection the input method client's
 #: focused view holds (``RemoteInputConnectionImpl{...}``).
 _SERVED_CONNECTION = re.compile(r"^ +mServedInputConnection=(?P<connection>\S+)", re.MULTILINE)
@@ -335,31 +338,39 @@ def parse_foreground(report: str) -> ForegroundApp:
 def parse_text_focus(windows: str, methods: str) -> TextFocus:
     """Whether a text field has focus, from a ``dumpsys window`` and a ``dumpsys input_method`` report.
 
-    A text field has focus when the window that has focus (``mCurrentFocus``)
-    is the one the input method serves (``imeInputTarget``), and the view with
-    focus there holds an input connection: the input method client's
-    ``mServedInputConnection`` is not ``null``. Each alone misleads, measured on
-    the emulator (API 33, 2026-11-01): on Settings' main page and the home
-    screen the input method serves the focused window and its view holds no
-    connection; once a tap opens Settings' search, its field holds one,
-    keyboard shown or hidden; with the notification shade pulled over that
-    field the shade has focus, the input method still serves the search
-    window, the field still holds its connection, and ``input text`` went
-    nowhere. The first window and client of each report count: the default
-    display's, the input method's current client. ``text_field`` is ``None``
-    when the input method's report names no served connection at all (its
-    client did not answer).
+    A text field has focus when the view with focus in the input method's
+    client holds an input connection (its ``mServedInputConnection`` is not
+    ``null``), and that client's window is the one with focus: the window that
+    has focus (``mCurrentFocus``) is the one the input method serves
+    (``imeInputTarget``). Each alone misleads, measured on the emulator (API 33,
+    2026-11-01): on Settings' main page and the home screen the input method
+    serves the focused window and its view holds no connection; once a tap
+    opens Settings' search, its field holds one, keyboard shown or hidden; with
+    the notification shade pulled over that field the shade has focus, the
+    input method still serves the search window, the field still holds its
+    connection, and ``input text`` went nowhere. The first window and client of
+    each report count: the default display's, the input method's current
+    client.
+
+    ``text_field`` is ``None`` when a report leaves the answer open: the input
+    method's names no served connection (its client did not answer), or the
+    window manager's names no window the input method serves while there is a
+    connection. No connection is an answer without the window: no field of the
+    input method's client takes the text.
     """
     focus = _CURRENT_FOCUS.search(windows)
     if focus is None:
         return TextFocus(window=None, text_field=False)
-    target = _IME_INPUT_TARGET.search(windows)
-    if target is None or target["window"] != focus["window"]:
-        return TextFocus(window=focus["title"], text_field=False)
+    window = focus["title"]
     served = _SERVED_CONNECTION.search(methods)
     if served is None:
-        return TextFocus(window=focus["title"], text_field=None)
-    return TextFocus(window=focus["title"], text_field=served["connection"] != "null")
+        return TextFocus(window=window, text_field=None)
+    if served["connection"] == "null":
+        return TextFocus(window=window, text_field=False)
+    target = _IME_INPUT_TARGET.search(windows)
+    if target is None:
+        return TextFocus(window=window, text_field=None)
+    return TextFocus(window=window, text_field=target["window"] == focus["window"])
 
 
 def _package(package: str) -> str:

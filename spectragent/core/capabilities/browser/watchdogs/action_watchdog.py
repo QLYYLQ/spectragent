@@ -902,8 +902,9 @@ class ActionWatchdog(BrowserWatchdog):
         (the check that a text field took focus, select-all + Backspace,
         ``Input.insertText``) is focus-relative already and is shared
         verbatim with :meth:`_on_type_text`. Without a point nothing is
-        clicked: the field that has focus is judged the same way, and
-        focus is not waited for, since nothing was done that could move it.
+        clicked: the field that has focus is judged the same way, focus that
+        lands a moment later included (an earlier action of the same reply
+        may have clicked a widget that focuses its field after a delay).
 
         The focusing click measures nothing: this action's effect is the
         typing's (``TextInputEffect``), measured from the focus it left.
@@ -927,7 +928,6 @@ class ActionWatchdog(BrowserWatchdog):
                     if point is not None
                     else "No text field has focus"
                 ),
-                wait_for_focus=point is not None,
             )
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)
@@ -941,7 +941,6 @@ class ActionWatchdog(BrowserWatchdog):
         budget: ProbeBudget,
         no_field: str,
         session_id: str | None = None,
-        wait_for_focus: bool = True,
     ) -> dict[str, Any]:
         """Clear (optionally) and enter *text* into the focused text field.
 
@@ -959,9 +958,9 @@ class ActionWatchdog(BrowserWatchdog):
         measured. A select-all with nothing editable focused selects the whole
         page's text, and the text then goes nowhere.
 
-        Focus the page moves a moment after the click or ``DOM.focus`` (a
-        widget that focuses its input on a timer or after an opening
-        animation) is waited for: the focus is read again every
+        Focus the page moves a moment after the click, the ``DOM.focus`` or
+        an earlier action (a widget that focuses its input on a timer or
+        after an opening animation) is waited for: the focus is read again every
         :data:`FOCUS_POLL_S` for up to ``type_focus_wait_s``, which the wait
         spends from *budget* while the rest of it stays for the probes after
         the wait. Only the pauses and the reads of where focus is belong to
@@ -971,9 +970,7 @@ class ActionWatchdog(BrowserWatchdog):
         that cannot be told, and be typed into, depending on when the wait
         happened to end. A reading that cannot even say where focus is (it
         failed or ran out) is dropped, and the last one that could stands, for
-        the verdict and the effect alike. Without *wait_for_focus* (nothing was
-        done that could move focus: ``type_coordinate`` without a point) the
-        first reading is the verdict. A reading that cannot tell whether the
+        the verdict and the effect alike. A reading that cannot tell whether the
         focused element takes text — the element's own reading failed, focus
         is in a frame of another site, in a closed shadow root or embedded
         content — does not stop the typing: only a measured "no text field"
@@ -1007,7 +1004,7 @@ class ActionWatchdog(BrowserWatchdog):
         try:
             await field.before()
             refused = _no_text_entry(field)
-            if refused is not None and wait_for_focus:
+            if refused is not None:
                 # The wait spends at most ``type_focus_wait_s`` of the budget;
                 # the rest is kept for the probes after it.
                 wait_until = time.monotonic() + self._focus_wait_s

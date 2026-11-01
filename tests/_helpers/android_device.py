@@ -59,7 +59,8 @@ class ScriptedPhone:
         screencap_fails: ``screencap`` fails from now on.
         text_field: A text field of the activity in front has focus: the input
             method serves its window, and the view with focus holds an input
-            connection.
+            connection. ``None``: the input method's client does not answer, so
+            its report names no connection.
         window_over: A window over the activity that has focus instead of it,
             by its title (``NotificationShade``): the input method still serves
             the activity's window, as the emulator reported.
@@ -74,7 +75,7 @@ class ScriptedPhone:
         default_factory=lambda: {"com.android.settings": "com.android.settings/.Settings"}
     )
     screencap_fails: bool = False
-    text_field: bool = False
+    text_field: bool | None = False
     window_over: str | None = None
     inputs: list[str] = field(default_factory=list)
 
@@ -150,7 +151,7 @@ def _window_report(focused: str, window_over: str | None) -> bytes:
     ).encode()
 
 
-def _input_method_report(text_field: bool) -> bytes:
+def _input_method_report(text_field: bool | None) -> bytes:
     """The input method client's lines of ``dumpsys input_method``, around the one the bridge reads."""
     connection = (
         "RemoteInputConnectionImpl{connection=dzl@450171d finished=false "
@@ -159,15 +160,21 @@ def _input_method_report(text_field: bool) -> bytes:
         if text_field
         else "null"
     )
+    client = (
+        # What the platform source prints when the client's dump does not come back.
+        "Timeout waiting for dump\n"
+        if text_field is None
+        else "  mActive=true mRestartOnNextWindowFocus=false mBindSequence=6\n"
+        f"  mServedInputConnection={connection}\n"
+        "  mServedInputConnectionHandler=null\n"
+    )
     return (
         "Current Input Method Manager state:\n"
         "  mShowRequested=false mShowExplicitlyRequested=false mShowForced=false "
         "mInputShown=false\n"
         " \n"
         "Input method client state for android.view.inputmethod.InputMethodManager@ac641eb:\n"
-        "  mActive=true mRestartOnNextWindowFocus=false mBindSequence=6\n"
-        f"  mServedInputConnection={connection}\n"
-        "  mServedInputConnectionHandler=null\n"
+        + client
     ).encode()
 
 

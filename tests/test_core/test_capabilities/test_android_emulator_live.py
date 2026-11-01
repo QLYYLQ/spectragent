@@ -16,6 +16,9 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
 - ``open_app`` with the foreground app checked, and the back and home keys;
 - ``type_coordinate`` without a point: refused on Settings' main page, where
   no text field has focus, and typed into the search field a tap opens;
+- ``type_coordinate`` at a point: refused after a tap on nothing editable, and
+  typed into the search field its tap on the search bar opens, which takes
+  focus well after the tap (1.5-1.9 s, measured), within ``focus_wait_ms``;
 - a scroll down that shows what is further down, measured on the screenshots;
 - a clean teardown: no process of the run is left, nothing listens on its
   private adb port, its directory is gone, nothing listens on adb's default port
@@ -78,6 +81,10 @@ SETTINGS = "com.android.settings"
 SETTINGS_SEARCH = "com.google.android.settings.intelligence"
 #: Where Settings' search bar is on a 1080 x 2400 screen.
 SEARCH_BAR = (540, 660)
+#: A point of Settings' main page on no control: the toolbar above its title.
+NOTHING_THERE = (540, 300)
+#: Where the search screen lists the results of a query, between its field and the keyboard.
+RESULTS = (0, 300, 1080, 1400)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
 #: The console auth token an emulator started with the user's HOME keeps there.
 USER_TOKEN = Path.home() / ".emulator_console_auth_token"
@@ -323,10 +330,55 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     assert typed.success, typed.error
     after = await _screenshot(booted)
 
-    # The results the query brings appear between the search field and the keyboard.
-    results = (0, 300, 1080, 1400)
-    changed = ImageChops.difference(before.crop(results), after.crop(results)).histogram()
-    assert sum(changed[32:]) > 10_000
+    assert _results_appeared(before, after)
+
+
+async def test_typing_at_a_point_waits_for_the_field_its_tap_opens_and_refuses_a_tap_on_nothing(
+    booted: Booted,
+) -> None:
+    """The tap on the search bar opens a screen whose field takes focus 1.5-1.9 s later."""
+    if booted.capability.screen_size != (1080, 2400):
+        pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
+    await _settings_from_scratch(booted)
+
+    refused = await _act(
+        booted,
+        "type_coordinate",
+        coordinate_x=NOTHING_THERE[0],
+        coordinate_y=NOTHING_THERE[1],
+        text="bluetooth",
+    )
+    assert (refused.success, refused.error) == (
+        False,
+        "No text field took focus at the tapped point: focus is in "
+        "com.android.settings/com.android.settings.Settings, not on a text field, "
+        "so no text was typed.",
+    )
+    assert (
+        await _act(
+            booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
+        )
+    ).success
+    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    empty = await _screenshot(booted)
+
+    await _settings_from_scratch(booted)
+    typed = await _act(
+        booted,
+        "type_coordinate",
+        coordinate_x=SEARCH_BAR[0],
+        coordinate_y=SEARCH_BAR[1],
+        text="bluetooth",
+    )
+    assert typed.success, typed.error
+    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    assert _results_appeared(empty, await _screenshot(booted))
+
+
+def _results_appeared(before: Image.Image, after: Image.Image) -> bool:
+    """Whether a query's results appeared between the search field and the keyboard."""
+    changed = ImageChops.difference(before.crop(RESULTS), after.crop(RESULTS)).histogram()
+    return sum(changed[32:]) > 10_000
 
 
 async def test_a_scroll_down_shows_what_is_further_down(booted: Booted) -> None:

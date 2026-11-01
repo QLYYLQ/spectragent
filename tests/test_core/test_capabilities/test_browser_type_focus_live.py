@@ -24,7 +24,8 @@ each case on a freshly loaded page:
   it gets the clear's keys without Chrome's select-all command, so it empties
   itself and nothing on the page is selected;
 - ``type_coordinate`` without a point (user ruling 2026-11-01): typed into the
-  text field a click focused; refused the same way, sending nothing, with
+  text field a click focused, and into the field a widget focuses a moment
+  after the click that opens it; refused the same way, sending nothing, with
   nothing focused and with a button focused.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
@@ -222,6 +223,7 @@ def _session() -> Session:
                 await by_index("input by index", 2, "text_input")
 
                 await into_focus("input, no point", centre("text_input"))
+                await into_focus("late, no point", centre("text_opener"))
                 await into_focus("nothing, no point", None)
                 await into_focus("button, no point", centre("text_button"))
         return session
@@ -307,6 +309,8 @@ def test_a_read_only_field_is_refused_and_said_to_be_one(session: Session) -> No
         ("frame editor", "frame_editor"),
         ("late", "late"),
         ("input by index", "input"),
+        # Typing without a point right after the click that opens it: the wait covers it.
+        ("late, no point", "late"),
     ],
 )
 def test_a_text_field_takes_the_text(session: Session, label: str, where: str) -> None:

@@ -92,9 +92,9 @@ _SERVED = (
 _NOT_SERVED = "  mServedInputConnection=null\n"
 
 
-def _windows(focus: str, target: str | None) -> str:
+def _windows(focus: str, target: str | None, *, line: str = "imeInputTarget") -> str:
     """The two lines of ``dumpsys window`` that say which window has focus and which the input method serves."""
-    served = f"  imeInputTarget in display# 0 Window{{{target}}}\n" if target else ""
+    served = f"  {line} in display# 0 Window{{{target}}}\n" if target else ""
     return f"  mCurrentFocus=Window{{{focus}}}\n  mFocusedApp=null\n{served}"
 
 
@@ -133,9 +133,19 @@ def _client(served: str) -> str:
         (
             _windows(_SETTINGS, None),
             _client(_SERVED),
+            TextFocus(window="com.android.settings/com.android.settings.Settings", text_field=None),
+        ),
+        (
+            _windows(_SETTINGS, None),
+            _client(_NOT_SERVED),
             TextFocus(
                 window="com.android.settings/com.android.settings.Settings", text_field=False
             ),
+        ),
+        (
+            _windows(_SEARCH, _SEARCH, line="mInputMethodInputTarget"),
+            _client(_SERVED),
+            TextFocus(window=_SEARCH.split(" u0 ")[1], text_field=True),
         ),
         (
             "  mCurrentFocus=null\n  mFocusedApp=null\n",
@@ -154,7 +164,9 @@ def _client(served: str) -> str:
         "a page with no text field",
         "the notification shade over a focused field",
         "a dialog over the window the input method serves",
-        "a window the input method has never served",
+        "a connection, and no window the input method serves",
+        "no connection, and no window the input method serves",
+        "the target as Android 11 names it",
         "no window",
         "a client that did not answer",
     ],
