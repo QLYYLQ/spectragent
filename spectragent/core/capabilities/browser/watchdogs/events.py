@@ -384,14 +384,16 @@ class ExecuteJavaScriptEvent(BaseEvent[dict[str, Any]]):
 #
 # These are bridged from CDP messages by ``BrowserCapability._attach_tab``:
 #
-#   Page.loadEventFired       → PageLoadEvent
-#   Page.domContentEventFired → DOMContentLoadedEvent
-#   Page.lifecycleEvent       → LifecycleEvent
+#   Page.loadEventFired          → PageLoadEvent
+#   Page.domContentEventFired    → DOMContentLoadedEvent
+#   Page.lifecycleEvent          → LifecycleEvent
+#   Page.navigatedWithinDocument → NavigatedWithinDocumentEvent
 #
 # ``Page.enable`` and ``Page.setLifecycleEventsEnabled`` must be sent per
 # session for any of these to fire — that wiring also lives in _attach_tab.
 # Consumers (currently ``ActionWatchdog._on_navigate``) wait on these to
-# make ``NavigateToUrlEvent.wait_until`` actually mean something.
+# make ``NavigateToUrlEvent.wait_until`` actually mean something, and to
+# read a same-document navigation's URL only once the page committed it.
 
 
 class PageLoadEvent(BaseEvent[None]):
@@ -422,6 +424,12 @@ class LifecycleEvent(BaseEvent[None]):
     frame_id: str | None = None
     loader_id: str | None = None
     timestamp: float | None = None
+
+
+class NavigatedWithinDocumentEvent(BaseEvent[None]):
+    """``Page.navigatedWithinDocument`` — the page committed a same-document navigation."""
+
+    frame_id: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -82,6 +82,7 @@ from spectragent.core.capabilities.browser.effect_probes import (
     release_object,
     reload_committed,
     resolve_object,
+    same_document_committed,
     selection_facts,
 )
 from spectragent.core.capabilities.browser.effects import (
@@ -126,6 +127,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     GoBackEvent,
     GoForwardEvent,
     LifecycleEvent,
+    NavigatedWithinDocumentEvent,
     NavigateToUrlEvent,
     NavigationCompleteEvent,
     NavigationStartedEvent,
@@ -1249,8 +1251,9 @@ class ActionWatchdog(BrowserWatchdog):
         Two waits, one after the other (``docs/architecture_design.md`` §4.14,
         "``browser.navigate``"):
 
-        1. **The commit.** Chrome answers ``Page.navigate`` once the
-           navigation committed or failed; a server that never answers gets
+        1. **The commit.** Chrome answers ``Page.navigate`` once a
+           cross-document navigation committed or failed (a same-document
+           one before the page commits it); a server that never answers gets
            no reply at all. The reply is awaited for at most
            ``event.commit_timeout_s``. No reply in time, a command Chrome
            refuses (an invalid URL), or an ``errorText`` in the reply (an
@@ -1279,12 +1282,15 @@ class ActionWatchdog(BrowserWatchdog):
         :class:`~spectragent.core.capabilities.browser.effects.NavigationEffect`
         (``docs/architecture_design.md`` §4.5, "动作效果") — the current
         history entry's URL before anything else happens and after both
-        waits, and whether the document shown then finished loading. They are
+        waits (a same-document navigation's once the page committed it:
+        :func:`~spectragent.core.capabilities.browser.effect_probes.same_document_committed`),
+        and whether the document shown then finished loading. They are
         measured within ``action_effect_timeout_s``; a probe that fails or
         runs out leaves its fact unknown and never changes the answer.
 
-        The lifecycle waiter is registered **synchronously** before
-        ``Page.navigate`` is sent so we don't race the CDP response.
+        The lifecycle waiter and the same-document commit's are registered
+        **synchronously** before ``Page.navigate`` is sent, so neither races
+        the CDP response.
 
         Filters applied to the lifecycle event:
 
@@ -1306,6 +1312,9 @@ class ActionWatchdog(BrowserWatchdog):
 
         # 1. Pick lifecycle event class + base predicate from wait_until.
         lifecycle_target = self._lifecycle_target(event.wait_until)
+        main_frame_id = (
+            self._main_frame_id_getter() if self._main_frame_id_getter is not None else None
+        )
 
         # Arm synchronously before sending the command. The lifecycle budget
         # starts after commit, so this listener deliberately has no own deadline.
@@ -1313,9 +1322,6 @@ class ActionWatchdog(BrowserWatchdog):
         expected_loader: str | None = None
         if lifecycle_target is not None:
             target_evt, base_predicate = lifecycle_target
-            main_frame_id = (
-                self._main_frame_id_getter() if self._main_frame_id_getter is not None else None
-            )
 
             def matches(e: Any) -> bool:
                 if not base_predicate(e):
@@ -1327,6 +1333,13 @@ class ActionWatchdog(BrowserWatchdog):
                 return expected_loader is None or e_loader is None or e_loader == expected_loader
 
             waiter = expect(self._scope, target_evt, include=matches)
+        # A same-document navigation commits after Chrome's reply; its URL
+        # after waits for this (``same_document_committed``).
+        within_document = expect(
+            self._scope,
+            NavigatedWithinDocumentEvent,
+            include=lambda e: main_frame_id is None or e.frame_id in (None, main_frame_id),
+        )
 
         # 3. Emit start, then fire Page.navigate (the commit), then wait for
         #    the phase, then emit complete.
@@ -1387,7 +1400,12 @@ class ActionWatchdog(BrowserWatchdog):
                     url=event.url,
                 )
             )
-            after = await current_location(self._cdp, self._session_id, budget)
+            if loader_id:
+                after = await current_location(self._cdp, self._session_id, budget)
+            else:
+                after = await same_document_committed(
+                    self._cdp, self._session_id, within_document, budget
+                )
             loaded = await document_loaded(self._cdp, self._session_id, budget)
             return {
                 "navigated": True,
@@ -1396,6 +1414,7 @@ class ActionWatchdog(BrowserWatchdog):
         finally:
             if waiter is not None:
                 waiter.close()
+            within_document.close()
 
     def _navigation_failed(
         self, event: NavigateToUrlEvent, what: str, *, error_text: str | None = None

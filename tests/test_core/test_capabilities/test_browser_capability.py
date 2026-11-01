@@ -800,12 +800,13 @@ class TestPageLifecycleWiring:
         asyncio.run(cap._attach_tab("T1"))
 
         assert "cdp-sid-1" in cap._bridges
-        # Bridge subscribed to all three Page-domain events.
+        # Bridge subscribed to all four Page-domain events.
         registered = set(cdp.event_callbacks)
         assert {
             "Page.loadEventFired",
             "Page.domContentEventFired",
             "Page.lifecycleEvent",
+            "Page.navigatedWithinDocument",
         } <= registered
 
     def test_close_tab_closes_bridge_first(self) -> None:
@@ -824,6 +825,7 @@ class TestPageLifecycleWiring:
             "Page.loadEventFired",
             "Page.domContentEventFired",
             "Page.lifecycleEvent",
+            "Page.navigatedWithinDocument",
         ):
             cbs = cdp.event_callbacks.get(method, [])
             assert cbs == [], f"Expected {method} callbacks emptied after close_tab, got {cbs}"
@@ -844,6 +846,7 @@ class TestPageLifecycleWiring:
             "Page.loadEventFired",
             "Page.domContentEventFired",
             "Page.lifecycleEvent",
+            "Page.navigatedWithinDocument",
         ):
             assert cdp.event_callbacks.get(method, []) == []
 

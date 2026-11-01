@@ -278,6 +278,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     DocumentStamp,
     DOMContentLoadedEvent,
     LifecycleEvent,
+    NavigatedWithinDocumentEvent,
     PageLoadEvent,
     describe_stamps,
     documents_disagree,
@@ -3826,12 +3827,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         Page lifecycle wiring (M13.5): once attached we send ``Page.enable``
         and ``Page.setLifecycleEventsEnabled`` so ``Page.loadEventFired`` /
-        ``Page.domContentEventFired`` / ``Page.lifecycleEvent`` actually
-        fire on this session, and we build a :class:`CDPEventBridge` that
-        translates each into the matching agent-cdp ``BaseEvent``. This is
-        what lets ``ActionWatchdog._on_navigate`` honour
-        ``NavigateToUrlEvent.wait_until``. We also stash the main frame
-        id so navigate handlers can filter sub-frame lifecycle noise.
+        ``Page.domContentEventFired`` / ``Page.lifecycleEvent`` /
+        ``Page.navigatedWithinDocument`` actually fire on this session, and
+        we build a :class:`CDPEventBridge` that translates each into the
+        matching agent-cdp ``BaseEvent``. This is what lets
+        ``ActionWatchdog._on_navigate`` honour ``NavigateToUrlEvent.wait_until``
+        and read a same-document navigation's URL once it committed. We also
+        stash the main frame id so navigate handlers can filter sub-frame
+        lifecycle noise.
         """
         if self._cdp is None or self._scope_group is None:
             raise RuntimeError("BrowserCapability not set up")
@@ -3976,6 +3979,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 loader_id=p.get("loaderId"),
                 timestamp=p.get("timestamp"),
             ),
+        )
+        bridge.bridge(
+            "Page.navigatedWithinDocument",
+            lambda p: NavigatedWithinDocumentEvent(frame_id=p.get("frameId")),
         )
         self._tab_sessions.bind(cdp_session_id)
 

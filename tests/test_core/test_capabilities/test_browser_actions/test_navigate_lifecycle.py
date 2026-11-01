@@ -12,7 +12,8 @@ Validates that ``_on_navigate``:
   - fails a navigation that never commits (no reply within the commit
     bound), one the browser refuses, and one the browser reports failed
     (``errorText``), answering ``{"error": ...}`` without a lifecycle wait
-  - does not wait for a same-document navigation (no ``loaderId``)
+  - does not wait for a same-document navigation (no ``loaderId``) to load,
+    only for the page to commit it, which Chrome reports after its reply
   - is always answered before its caller gives up: the event's own timeout
     is derived from both waits, which the old equal 30 s clocks never were.
 
@@ -37,6 +38,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     DOMContentLoadedEvent,
     LifecycleEvent,
+    NavigatedWithinDocumentEvent,
     NavigateToUrlEvent,
     NavigationCompleteEvent,
     NavigationStartedEvent,
@@ -251,8 +253,10 @@ class TestOnNavigateLifecycleWiring:
                 wait_until="",
             ),
         )
-        # No connect() was called.
-        assert scope.handlers == []
+        # No lifecycle waiter: the one connected is a same-document commit's.
+        assert [event_type for event_type, _handler in scope.handlers] == [
+            NavigatedWithinDocumentEvent
+        ]
         # NavigationCompleteEvent emitted as soon as Page.navigate returned.
         assert any(isinstance(e, NavigationCompleteEvent) for e in scope.emitted)
         assert any(isinstance(e, NavigationStartedEvent) for e in scope.emitted)
@@ -406,15 +410,46 @@ class TestNavigationOutcomes:
         assert complete.error_text == error_text
 
     async def test_a_same_document_navigation_does_not_wait(self) -> None:
-        """No ``loaderId`` in the reply: the document did not change, so nothing loads."""
-        wd, scope = _watchdog(_FakeCDP(loader_id=None))
+        """No ``loaderId`` in the reply: the document did not change, so nothing loads.
+
+        Its commit, which Chrome reports after the reply, is all it waits for.
+        """
+        cdp = _FakeCDP(loader_id=None)
+        wd, scope = _watchdog(cdp)
+
+        async def _commit_after_navigate() -> None:
+            for _ in range(50):
+                if any(m == "Page.navigate" for m, _p, _s in cdp.sent):
+                    break
+                await asyncio.sleep(0.005)
+            scope.fire(NavigatedWithinDocumentEvent(frame_id="MAIN"))
+
         started = time.monotonic()
-        answer = await wd._on_navigate(
-            NavigateToUrlEvent(url="https://a.example/#part", lifecycle_timeout_ms=5000)
-        )
-        assert answer["navigated"] is True
+        async with asyncio.TaskGroup() as tg:
+            navigation = tg.create_task(
+                wd._on_navigate(
+                    NavigateToUrlEvent(url="https://a.example/#part", lifecycle_timeout_ms=5000)
+                )
+            )
+            tg.create_task(_commit_after_navigate())
+        assert navigation.result()["navigated"] is True
         assert time.monotonic() - started < 1.0
         assert any(isinstance(e, NavigationCompleteEvent) for e in scope.emitted)
+
+    async def test_a_sub_frame_s_same_document_commit_is_not_this_navigation_s(self) -> None:
+        cdp = _FakeCDP(loader_id=None)
+        wd, scope = _watchdog(cdp)
+        navigation = asyncio.create_task(
+            wd._on_navigate(NavigateToUrlEvent(url="https://a.example/#part"))
+        )
+        while not any(m == "Page.navigate" for m, _p, _s in cdp.sent):
+            await asyncio.sleep(0)
+        scope.fire(NavigatedWithinDocumentEvent(frame_id="OTHER_FRAME"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not navigation.done(), "still waiting for the main frame's commit"
+        scope.fire(NavigatedWithinDocumentEvent(frame_id="MAIN"))
+        assert (await navigation)["navigated"] is True
 
 
 async def test_through_a_real_scope_a_late_load_is_answered_before_the_caller_gives_up(

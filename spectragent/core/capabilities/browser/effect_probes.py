@@ -19,8 +19,9 @@ This module holds the measurements every executor shares:
 - :class:`FieldProbe` — the focused control before input, held by reference
   so its value can be compared after input without the value leaving the page,
   and whether it takes typed text at all (:data:`TextEntry`).
-- :func:`current_location` / :func:`history_entry_committed` — the URL of the
-  tab's current navigation-history entry, now or once a history navigation
+- :func:`current_location` / :func:`history_entry_committed` /
+  :func:`same_document_committed` — the URL of the tab's current
+  navigation-history entry, now or once a history or same-document navigation
   committed; :func:`document_loaded` — whether its document finished loading;
   :func:`tab_facts` — which tab a session is, and its URL.
 - :func:`selection_facts` — a dropdown's selected option, from the
@@ -709,6 +710,30 @@ async def history_entry_committed(
     return answer if isinstance(answer, Location) else UNKNOWN
 
 
+async def same_document_committed(
+    cdp: CDPCommandProtocol,
+    session_id: str | None,
+    commit: Awaitable[object],
+    budget: ProbeBudget,
+) -> Location | Literal["unknown"]:
+    """Wait within the budget for a same-document navigation's *commit*; then the tab's URL.
+
+    Chrome answers ``Page.navigate`` for a same-document navigation (a new
+    fragment; the reply has no ``loaderId``) before the page commits it, and
+    the history's current entry changes only when it does. *commit* is the
+    page's report of it (``Page.navigatedWithinDocument``), awaited here.
+    Measured (Chrome 155, headless): the reply ~1 ms after the command, the
+    commit ~2 ms after the reply on an idle page, and only once the current
+    task ends on a page whose main thread is busy; a history read right after
+    the reply then still names the URL being left. ``"unknown"`` when it has
+    not committed by the end of the budget: the tab's URL then is the one
+    being left.
+    """
+    if await budget.run(lambda: commit, "same-document commit") is NO_ANSWER:
+        return UNKNOWN
+    return await current_location(cdp, session_id, budget)
+
+
 def _main_loader(tree: Any) -> str | None:
     """The main frame's ``loaderId`` in a ``Page.getFrameTree`` reply: its committed document."""
     frame = ((tree or {}).get("frameTree") or {}).get("frame") if isinstance(tree, dict) else None
@@ -891,6 +916,7 @@ __all__ = [
     "release_object",
     "reload_committed",
     "resolve_object",
+    "same_document_committed",
     "selection_facts",
     "tab_facts",
 ]
