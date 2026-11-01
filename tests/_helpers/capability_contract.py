@@ -1,11 +1,11 @@
 """The observation-cycle contract every Capability has to satisfy.
 
 Six capabilities are planned (browser, docker, tool_sandbox, desktop_vm,
-android, gpu_profiling) and exactly one exists. The cycle rule — one
+android, gpu_profiling); browser and android exist. The cycle rule — one
 ``observe()`` is one cycle; every fragment of a cycle comes from one
 capture; the next cycle re-captures — used to live only inside
 ``BrowserCapability``, as a docstring plus a "have I served this key
-before" guess. Anyone writing the second capability would have had to read
+before" guess. Anyone writing another capability would have had to read
 that file and reinvent it, and the failure mode when they got it wrong is
 a trace that lies: an agent shown a screenshot from before the click it is
 reacting to, with nothing on disk to say so.

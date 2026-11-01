@@ -372,9 +372,9 @@ class TestPartialFailureIsIsolated:
 class TestRealCapabilitySurvivesAPeersFailure:
     """The multi-capability clause, run against each shipped capability.
 
-    A stub stands in for the second capability because there is only one
-    real one so far; what is being pinned is the environment's behaviour
-    around a real resolver, not the stub's.
+    A stub stands in for the peer, so the peer can be made to fail on
+    demand; what is being pinned is the environment's behaviour around a
+    real resolver, not the stub's.
     """
 
     async def test_peer_failure_leaves_this_capability_observed(
