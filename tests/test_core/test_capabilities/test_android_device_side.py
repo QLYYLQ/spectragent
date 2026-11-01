@@ -105,19 +105,23 @@ async def test_start_installs_starts_the_helper_and_confirms_the_service_with_a_
     assert side.helper_exits == 1, "the helper's stdin ended with the session, and it exited"
 
 
-async def test_the_helpers_token_goes_on_its_stdin_and_never_on_a_command_line(
+async def test_each_program_has_its_own_token_and_neither_is_ever_on_a_command_line(
     apk: ServiceApk,
 ) -> None:
+    """``ps`` shows a command line to the shell and root users; the tokens go on stdin."""
     side = FakeDeviceSide()
     async with _phone(side) as (adb, client):
         device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        service_token = side.service.token
         await device.stop()
 
     (line,) = side.helper_stdin
-    socket, token = line.decode().split()
-    assert socket.startswith("spectragent_helper_") and len(token) >= 16
-    launches = [service for service in _services(adb) if "app_process" in service]
-    assert len(launches) == 1 and token not in launches[0]
+    socket, helper_token = line.decode().split()
+    assert socket.startswith("spectragent_helper_")
+    assert len(helper_token) >= 16 and len(service_token) >= 16
+    assert helper_token != service_token
+    for service in _services(adb):
+        assert helper_token not in service and service_token not in service, service
 
 
 async def test_a_device_that_has_this_build_is_not_installed_again(apk: ServiceApk) -> None:
@@ -160,8 +164,7 @@ async def test_a_service_process_that_lost_the_token_is_handed_it_again(apk: Ser
         device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
         await device.stop()
 
-    sessions = [service for service in _services(adb) if "--method session" in service]
-    assert len(sessions) == 2
+    assert side.tokens_written == 2
 
 
 async def test_stop_never_force_stops_our_package(apk: ServiceApk) -> None:

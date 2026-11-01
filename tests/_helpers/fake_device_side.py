@@ -262,8 +262,9 @@ class FakeDeviceSide:
     - ``app_process`` runs the helper: it reads ``<socket> <token>`` on its
       stdin, listens on that socket (a :class:`FakeProgram`), prints
       ``READY 1`` and runs until its stdin ends;
-    - the bootstrap provider's ``session`` sets the token the service's hello
-      requires; ``health`` reports;
+    - ``content write`` to the bootstrap provider's ``/session`` sets, from its
+      stdin, the token the service's hello requires; ``content call`` with
+      ``health`` reports;
     - the helper's ``enable_service`` appends the service to the setting, and
       the system binds it, so its socket appears, unless *binds* is false: then
       the service vanishes from the setting again and never listens, as
@@ -300,6 +301,8 @@ class FakeDeviceSide:
             methods={"ping": self._service_ping, "gesture": self._gesture},
         )
         self.bound = False
+        #: How many times the service's token was written to the provider.
+        self.tokens_written = 0
         self._lose_token_once = lose_token_once
 
     def force_stop(self) -> None:
@@ -324,6 +327,8 @@ class FakeDeviceSide:
         return ShellResult(stderr=f"/system/bin/sh: {name}: not found\n".encode(), exit_code=127)
 
     def streams(self, command: str) -> StreamingCommand | None:
+        if command == "content write --uri content://org.spectragent.device.bootstrap/session":
+            return self._take_token
         if command.startswith("cmd package install -r -S "):
             return self._installer(int(command.rsplit(" ", 1)[1]))
         if command.startswith("CLASSPATH=") and command.endswith(
@@ -340,13 +345,7 @@ class FakeDeviceSide:
         return None
 
     def _provider(self, words: list[str]) -> ShellResult:
-        method = words[words.index("--method") + 1]
-        if method == "session":
-            token = words[words.index("--arg") + 1]
-            # A process that restarted after the bootstrap has lost the token.
-            self.service.token = "lost" if self._lose_token_once else token
-            self._lose_token_once = False
-        elif method != "health":
+        if words[words.index("--method") + 1] != "health":
             return ShellResult(stderr=b"Error while accessing provider\n", exit_code=1)
         health = {
             "protocol": PROTOCOL_VERSION,
@@ -361,6 +360,16 @@ class FakeDeviceSide:
             "token_set": bool(self.service.token),
         }
         return ShellResult(stdout=f"Result: Bundle[{{json={json.dumps(health)}}}]\n".encode())
+
+    async def _take_token(self, shell: ShellIO) -> int:
+        data = bytearray()
+        while (chunk := await shell.read_stdin()) is not None:
+            data += chunk
+        # A process that restarted after the bootstrap has lost the token.
+        self.service.token = "lost" if self._lose_token_once else data.decode().strip()
+        self._lose_token_once = False
+        self.tokens_written += 1
+        return 0
 
     def _installer(self, size: int) -> StreamingCommand:
         async def install(shell: ShellIO) -> int:

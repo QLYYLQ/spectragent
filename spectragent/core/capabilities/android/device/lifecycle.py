@@ -23,11 +23,14 @@ The steps of :meth:`DeviceSide.start`, all within one ``timeout_s``:
   its stdin. A read-only boot throws the install away with the run, so each run
   on one installs again and the AVD stays as it was.
 - **The helper.** ``app_process`` runs ``ShellHelper`` from the installed APK,
-  with its socket's name and the session's token on its stdin, never on its
-  command line, and it prints ``READY`` once it listens. It lives as long as
-  this shell session: closing the session ends its stdin and it exits.
-- **Bootstrap.** ``content call`` to the bootstrap provider hands the app's
-  process the session's token and reports the service's socket.
+  with its socket's name and its token on its stdin, and it prints ``READY``
+  once it listens. It lives as long as this shell session: closing the session
+  ends its stdin and it exits.
+- **Bootstrap.** ``content write`` to the bootstrap provider hands the app's
+  process the service's token on stdin, and ``content call`` reports the
+  service's socket. The service and the helper have a token each, and neither
+  token is ever on a command line, where ``ps`` shows it to the shell and root
+  users.
 - **Enable.** The helper appends the service to ``enabled_accessibility_services``.
 - **Confirm.** Connect to the service's socket and ping until it answers. A
   token refusal means the app's process restarted and lost the token, which is
@@ -112,7 +115,8 @@ class DeviceSide:
         self.gestures: bool | None = None
         #: Why the test tap did not complete, as the service said.
         self.gesture_detail: str | None = None
-        self._token = secrets.token_urlsafe(24)
+        self._service_token = secrets.token_urlsafe(24)
+        self._helper_token = secrets.token_urlsafe(24)
         self._helper_socket = f"spectragent_helper_{secrets.token_hex(8)}"
         self._service_socket: str | None = None
         self._helper_shell: ShellSession | None = None
@@ -239,7 +243,14 @@ class DeviceSide:
 
     async def health(self) -> ProviderHealth:
         """The bootstrap provider's report, which it gives while the service's socket is down."""
-        return await self._provider("health")
+        result = await self.adb.shell(
+            self.serial, f"content call --uri {PROVIDER_URI} --method health"
+        )
+        found = _BUNDLE.search(result.stdout.decode(errors="replace"))
+        if result.exit_code != 0 or found is None:
+            said = (result.stdout + result.stderr).decode(errors="replace").strip()
+            raise DeviceSideError(f"the bootstrap provider did not report its health: {said}")
+        return ProviderHealth.model_validate_json(found[1])
 
     # ── the steps ─────────────────────────────────────────────────────
 
@@ -292,11 +303,11 @@ class DeviceSide:
         self._helper_shell = shell
         ready: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._helper_reading = asyncio.ensure_future(self._read_helper(shell, ready))
-        await shell.write(f"{self._helper_socket} {self._token}\n".encode())
+        await shell.write(f"{self._helper_socket} {self._helper_token}\n".encode())
         await ready
         reader, writer = await self.adb.connect_abstract(self.serial, self._helper_socket)
         return HelperClient(
-            await Channel.open(reader, writer, token=self._token, component="helper")
+            await Channel.open(reader, writer, token=self._helper_token, component="helper")
         )
 
     async def _read_helper(self, shell: ShellSession, ready: asyncio.Future[str]) -> None:
@@ -318,9 +329,9 @@ class DeviceSide:
             ready.set_exception(DeviceSideError(f"{ended} before it was ready:\n{lines}"))
 
     async def _enable_and_confirm(self) -> None:
-        self._step = "handing the session's token to the bootstrap provider"
-        health = await self._provider("session", self._token)
-        self._service_socket = health.socket
+        self._step = "handing the service's token to the bootstrap provider"
+        await self._hand_over_token()
+        self._service_socket = (await self.health()).socket
         self._step = "enabling the service"
         if (await self.helper.enable_service()).changed:
             self._enabled_service = True
@@ -334,8 +345,9 @@ class DeviceSide:
                     raise DeviceSideError(
                         f"the service on {self.serial} refused: {refused}"
                     ) from None
-                # The app's process restarted after the bootstrap and lost the token.
-                await self._provider("session", self._token)
+                # The app's process restarted after the bootstrap and lost the token,
+                # or had not finished reading it yet.
+                await self._hand_over_token()
                 last = str(refused)
             except (AdbError, OSError, ChannelError) as exc:
                 last = f"{type(exc).__name__}: {exc}"
@@ -346,7 +358,7 @@ class DeviceSide:
         assert self._service_socket is not None  # set by the bootstrap
         reader, writer = await self.adb.connect_abstract(self.serial, self._service_socket)
         service = ServiceClient(
-            await Channel.open(reader, writer, token=self._token, component="service")
+            await Channel.open(reader, writer, token=self._service_token, component="service")
         )
         try:
             await service.ping()
@@ -355,16 +367,16 @@ class DeviceSide:
             raise
         return service
 
-    async def _provider(self, method: str, arg: str | None = None) -> ProviderHealth:
-        command = f"content call --uri {PROVIDER_URI} --method {method}"
-        if arg is not None:
-            command += f" --arg {shlex.quote(arg)}"
-        result = await self.adb.shell(self.serial, command)
-        found = _BUNDLE.search(result.stdout.decode(errors="replace"))
-        if result.exit_code != 0 or found is None:
+    async def _hand_over_token(self) -> None:
+        """Write the service's token to the provider through stdin: no command line carries it."""
+        result = await self.adb.shell(
+            self.serial,
+            f"content write --uri {PROVIDER_URI}/session",
+            stdin=self._service_token.encode(),
+        )
+        if result.exit_code != 0:
             said = (result.stdout + result.stderr).decode(errors="replace").strip()
-            raise DeviceSideError(f"the bootstrap provider did not answer {method}: {said}")
-        return ProviderHealth.model_validate_json(found[1])
+            raise DeviceSideError(f"the bootstrap provider did not take the token: {said}")
 
     async def _has_feature(self, feature: str) -> bool | None:
         answer = (await self.adb.shell(self.serial, f"pm has-feature {feature}")).stdout
