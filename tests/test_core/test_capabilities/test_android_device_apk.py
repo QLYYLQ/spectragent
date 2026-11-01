@@ -32,12 +32,16 @@ from spectragent.core.capabilities.android.device.apk import (
 from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION
 
 APK_BYTES = b"PK\x03\x04 an APK"
+#: The directory the build keeps it in.
+BUILD = hashlib.sha256(APK_BYTES).hexdigest()[:16]
 
 
 def _write(
     tmp_path: Path, *, data: bytes = APK_BYTES, changes: Mapping[str, JsonValue] | None = None
 ) -> Path:
-    apk = tmp_path / "spectragent-device.apk"
+    """An APK and its sidecar where the build keeps them: in the directory its SHA-256 names."""
+    apk = tmp_path / BUILD / "spectragent-device.apk"
+    apk.parent.mkdir(exist_ok=True)
     apk.write_bytes(data)
     sidecar: dict[str, JsonValue] = {
         "format": "spectragent-device-apk-2",
@@ -57,7 +61,7 @@ def _write(
 def test_an_apk_whose_sidecar_matches_it_loads_with_what_the_sidecar_says(tmp_path: Path) -> None:
     apk = ServiceApk.load(_write(tmp_path))
 
-    assert apk.path == tmp_path / "spectragent-device.apk"
+    assert apk.path == tmp_path / BUILD / "spectragent-device.apk"
     assert (apk.info.version_code, apk.info.accessibility_tool, apk.info.protocol) == (
         3,
         True,
@@ -100,6 +104,18 @@ def test_a_sidecar_that_does_not_fit_this_host_is_refused(
 ) -> None:
     with pytest.raises(ServiceApkError, match=message):
         ServiceApk.load(_write(tmp_path, changes=changes))
+
+
+def test_an_apk_outside_the_directory_its_build_names_is_refused(tmp_path: Path) -> None:
+    """A run records only the APK's path; the path names the build through that directory."""
+    built = _write(tmp_path)
+    moved = tmp_path / "elsewhere" / built.name
+    moved.parent.mkdir()
+    for path in (built, built.with_suffix(".json")):
+        path.rename(moved.parent / path.name)
+
+    with pytest.raises(ServiceApkError, match=f"not in the directory its build names .{BUILD}."):
+        ServiceApk.load(moved)
 
 
 def test_an_apk_that_is_not_the_build_its_sidecar_describes_is_refused(tmp_path: Path) -> None:

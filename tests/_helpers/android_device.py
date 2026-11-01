@@ -44,7 +44,10 @@ from spectragent.core.capabilities.android.backends.base import (
     DeviceNeeds,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
-from spectragent.core.capabilities.android.device.apk import TEST_KEY_CERTIFICATE_SHA256
+from spectragent.core.capabilities.android.device.apk import (
+    TEST_KEY_CERTIFICATE_SHA256,
+    build_directory,
+)
 from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION, JsonObject
 from spectragent.core.capabilities.android.input._registrar import (
     AndroidTapInjector,
@@ -71,8 +74,13 @@ def png(width: int, height: int) -> bytes:
 
 
 def fake_service_apk(directory: Path) -> Path:
-    """An APK of :data:`APK_BYTES` with the sidecar the build writes beside it, in *directory*."""
-    path = directory / "spectragent-device.apk"
+    """An APK of :data:`APK_BYTES` with the sidecar the build writes beside it, under *directory*.
+
+    In a directory named by its SHA-256, as the build keeps it.
+    """
+    sha256 = hashlib.sha256(APK_BYTES).hexdigest()
+    path = directory / build_directory(sha256) / "spectragent-device.apk"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(APK_BYTES)
     sidecar = {
         "format": "spectragent-device-apk-2",
@@ -81,7 +89,7 @@ def fake_service_apk(directory: Path) -> Path:
         "version_name": "1",
         "protocol": PROTOCOL_VERSION,
         "accessibility_tool": False,
-        "sha256": hashlib.sha256(APK_BYTES).hexdigest(),
+        "sha256": sha256,
         "signing_certificate_sha256": TEST_KEY_CERTIFICATE_SHA256,
     }
     path.with_suffix(".json").write_text(json.dumps(sidecar))

@@ -33,8 +33,10 @@ The sidecar (``<apk stem>.json``) records what the run's identity needs: the
 SHA-256, the versions, the protocol, ``isAccessibilityTool`` and the SHA-256 of
 the signing certificate, read from the APK with ``apksigner``.
 :meth:`ServiceApk.load` refuses an APK without one, an APK whose bytes are not
-the ones the sidecar describes, and one built for another protocol than this
-host speaks.
+the ones the sidecar describes, one built for another protocol than this host
+speaks, and one outside the directory its build names: a run's configuration
+records the APK's path, and the path names the build only through that
+directory.
 """
 
 from __future__ import annotations
@@ -124,8 +126,8 @@ class ServiceApk:
         Raises:
             ServiceApkError: There is no APK or no sidecar at *path*, the
                 sidecar is not one, the APK's bytes are not the ones the
-                sidecar describes, or it was built for another protocol or
-                package.
+                sidecar describes, it was built for another protocol or
+                package, or its directory is not named by its SHA-256.
         """
         apk = Path(path).expanduser()
         rebuild = f"build one with `uv run python -m {__name__} build`"
@@ -153,7 +155,18 @@ class ServiceApk:
                 f"the APK at {apk} speaks protocol {info.protocol} and this host speaks "
                 f"{PROTOCOL_VERSION}; {rebuild} from this checkout"
             )
+        if apk.parent.name != build_directory(info.sha256):
+            raise ServiceApkError(
+                f"the APK at {apk} is not in the directory its build names "
+                f"({build_directory(info.sha256)}): a run records only the APK's path, so the "
+                f"path must name the build; use the path `build` prints"
+            )
         return cls(apk, info)
+
+
+def build_directory(sha256: str) -> str:
+    """The name of the directory a build's APK is kept in: the first 16 digits of its SHA-256."""
+    return sha256[:16]
 
 
 def project_dir() -> Path:
@@ -245,7 +258,7 @@ def build(
     (element,) = metadata.elements
     built = outputs / element.output_file
     sha256 = _sha256(built)
-    directory = cache / sha256[:16]
+    directory = cache / build_directory(sha256)
     directory.mkdir(parents=True, exist_ok=True)
     apk = directory / APK_NAME
     shutil.copyfile(built, apk)
