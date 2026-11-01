@@ -3,21 +3,25 @@
 A fake SDK stands in for the real one, so these run anywhere: its ``adb`` serves
 ``tests/_helpers/fake_adb.py`` on the port it is given (answering
 ``sys.boot_completed``) and writes a key pair under ``$HOME/.android`` as adb
-does; its ``emulator`` reports a console port as ``-report-console`` asks,
-records how it was started and, when stopped, whether the run's adb server
-still answered. The real emulator is booted by ``test_android_emulator_live.py``.
+does; its ``emulator`` leaves a ``sleep`` of its own in its process group, as
+the real one leaves ``netsimd``, reports a console port as ``-report-console``
+asks, records how it was started and, when stopped, whether the run's adb
+server still answered. The real emulator is booted by
+``test_android_emulator_live.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import pytest
@@ -65,17 +69,20 @@ async def serve():
 asyncio.run(serve())
 """
 
-#: ``emulator ...``: reports console port 5554 where ``-report-console`` says,
-#: records its argv, environment and process group, registers with the adb
-#: server (the marker the fake reads) and waits; on SIGTERM it records whether
-#: the run's adb server still answered, then exits. ``FAKE_EMULATOR_MODE=crash``
-#: prints a line and exits with code 7 instead of reporting anything.
+#: ``emulator ...``: starts a ``sleep 60`` that stays in its process group and
+#: outlives it unless the group is swept, records its argv, environment, process
+#: group and that sleep, reports console port 5554 where ``-report-console``
+#: says, registers with the adb server (the marker the fake reads) and waits; on
+#: SIGTERM it records whether the run's adb server still answered, then exits.
+#: ``FAKE_EMULATOR_MODE=crash`` prints a line and exits with code 7 once the
+#: sleep is running, instead of reporting anything.
 FAKE_EMULATOR = f"""#!{sys.executable}
-import json, os, signal, socket, sys
+import json, os, signal, socket, subprocess, sys
 record = os.environ["FAKE_RECORD"]
+leftover = subprocess.Popen(["sleep", "60"])
 with open(os.path.join(record, "emulator.json"), "w") as out:
     json.dump({{"argv": sys.argv[1:], "env": dict(os.environ), "pid": os.getpid(),
-               "group": os.getpgid(0)}}, out)
+               "group": os.getpgid(0), "leftover": leftover.pid}}, out)
 print("emulator: could not open the AVD", flush=True)
 if os.environ.get("FAKE_EMULATOR_MODE") == "crash":
     sys.exit(7)
@@ -159,6 +166,15 @@ def _groups() -> set[int]:
     return {int(group) for group in listing.stdout.split()}
 
 
+async def _soon(condition: Callable[[], bool]) -> bool:
+    """Whether *condition* holds within 5 s: a killed orphan is reaped by init, not at once."""
+    for _ in range(100):
+        if condition():
+            return True
+        await asyncio.sleep(0.05)
+    return condition()
+
+
 async def test_a_session_boots_through_the_runs_own_server_and_close_releases_everything(
     provider: LocalEmulatorProvider, record: Path, tmp_path: Path, sdk: Path
 ) -> None:
@@ -194,7 +210,8 @@ async def test_a_session_boots_through_the_runs_own_server_and_close_releases_ev
         "the emulator is stopped while the run's adb server is still up"
     )
     assert _gone(emulator["pid"]) and _gone(_recorded(record, "adb.json")["pid"])
-    assert emulator["group"] not in _groups(), "nothing of the emulator's process group is left"
+    assert await _soon(lambda: _gone(emulator["leftover"])), "the group is swept, not only stopped"
+    assert await _soon(lambda: emulator["group"] not in _groups()), "nothing of the group is left"
     assert list((tmp_path / "runs").iterdir()) == [], "the run directory is removed"
 
 
@@ -211,6 +228,9 @@ async def test_an_emulator_that_exits_before_booting_is_reported_and_nothing_is_
 
     assert "could not open the AVD" in str(failed.value), "the end of the emulator's log"
     assert _gone(_recorded(record, "adb.json")["pid"])
+    # The emulator was gone before the release; the watcher still held its group.
+    emulator = _recorded(record, "emulator.json")
+    assert await _soon(lambda: _gone(emulator["leftover"])), "what it left in its group is swept"
     assert list((tmp_path / "runs").iterdir()) == []
 
 
@@ -287,20 +307,25 @@ async def test_a_run_killed_outright_takes_its_emulator_and_adb_server_with_it(
         env={**os.environ, "TMPDIR": str(tmp_path / "runs")},
     )
     assert child.stdout is not None
+    groups: set[int] = set()
     try:
-        groups = json.loads(await asyncio.wait_for(child.stdout.readline(), 30))
-        assert set(groups) <= _groups(), "both programs are running"
-    finally:
+        groups = set(json.loads(await asyncio.wait_for(child.stdout.readline(), 30)))
+        assert groups <= _groups(), "both programs are running"
         child.kill()  # this test's own child: no teardown runs in it
         await child.wait()
 
-    for _ in range(100):  # the watchers kill their groups at once; at most 10 s
-        if not set(groups) & _groups():
-            break
-        await asyncio.sleep(0.1)
-    assert not set(groups) & _groups(), "the emulator's and the adb server's groups are gone"
-    assert _gone(_recorded(record, "emulator.json")["pid"])
-    assert _gone(_recorded(record, "adb.json")["pid"])
+        assert await _soon(lambda: not groups & _groups()), (
+            "the emulator's and the adb server's groups are gone"
+        )
+        assert _gone(_recorded(record, "emulator.json")["pid"])
+        assert _gone(_recorded(record, "adb.json")["pid"])
+    finally:
+        if child.returncode is None:
+            child.kill()
+            await child.wait()
+        for group in groups & _groups():  # only when the watchers failed to
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(group, signal.SIGKILL)
 
 
 async def test_a_missing_avd_is_named_with_the_avds_that_are_there(
