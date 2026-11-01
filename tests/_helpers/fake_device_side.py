@@ -281,7 +281,10 @@ class FakeDeviceSide:
       wrote the setting, and its ``disable_service`` takes out only what it
       added, which unbinds the service;
     - :meth:`force_stop` does what ``am force-stop`` of the package does: the
-      service leaves the setting and its process, token and socket go.
+      service leaves the setting and its process, token and socket go. With
+      *crashes_on_force_stop*, the system also holds it as crashed, as API 30
+      does: enabling it again binds nothing until the setting has been seen
+      without it.
     """
 
     def __init__(
@@ -293,6 +296,7 @@ class FakeDeviceSide:
         faketouch: bool = True,
         lose_token_once: bool = False,
         token_write_throws: bool = False,
+        crashes_on_force_stop: bool = False,
     ) -> None:
         #: The installed APK's bytes; ``None``: not installed.
         self.installed = installed
@@ -318,12 +322,16 @@ class FakeDeviceSide:
         self.tokens_written = 0
         self._lose_token_once = lose_token_once
         self._token_write_throws = token_write_throws
+        self._crashes_on_force_stop = crashes_on_force_stop
+        #: Whether the system holds the service as crashed, and so binds it in no case.
+        self.crashed = False
 
     def force_stop(self) -> None:
         """``am force-stop org.spectragent.device``: unbound, out of the setting, its token gone."""
         self.bound = False
         self.service.token = ""
         self._disable()
+        self.crashed = self._crashes_on_force_stop
 
     async def device(self, command: str) -> ShellResult:
         if command == "pm path org.spectragent.device":
@@ -433,7 +441,9 @@ class FakeDeviceSide:
             self.enabled = ":".join([*entries, SERVICE_COMPONENT])
             self.added = True
         current = self.enabled
-        if self.binds:
+        if self.crashed:
+            pass  # in the setting, and not bound
+        elif self.binds:
             self.bound = True
         else:
             self.enabled = previous  # refused, and gone from the setting without a word
@@ -445,6 +455,8 @@ class FakeDeviceSide:
             return Answer({"previous": previous, "current": previous, "changed": False})
         changed = self._disable()
         self.added = False
+        if changed:
+            self.crashed = False  # the system has seen the setting without it
         return Answer({"previous": previous, "current": self.enabled, "changed": changed})
 
     def _disable(self) -> bool:

@@ -22,6 +22,7 @@ import pytest
 
 import spectragent
 from spectragent.core.capabilities.android.adb import AdbClient
+from spectragent.core.capabilities.android.device import lifecycle
 from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApk,
@@ -228,6 +229,26 @@ async def test_ensure_bound_enables_the_service_again_after_a_force_stop(apk: Se
             await device.stop()
 
     assert side.enabled is None
+
+
+async def test_a_service_held_as_crashed_is_taken_out_of_the_setting_and_put_back(
+    apk: ServiceApk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a force-stop on API 30 the system holds the service as crashed: enabling it again
+    binds nothing until the setting has been seen without it (measured)."""
+    monkeypatch.setattr(lifecycle, "_REBIND_S", 0.2)
+    side = FakeDeviceSide(enabled=TALKBACK, crashes_on_force_stop=True)
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        try:
+            side.force_stop()
+            assert await device.ensure_bound(timeout_s=_WAIT_S) is True
+            assert (await device.service.ping()).uptime_ms == 1000
+            assert side.enabled == f"{TALKBACK}:{SERVICE_COMPONENT}"
+        finally:
+            await device.stop()
+
+    assert side.enabled == TALKBACK
 
 
 async def test_a_second_recovery_works_after_one_that_ran_out_of_time(apk: ServiceApk) -> None:

@@ -40,7 +40,11 @@ The steps of :meth:`DeviceSide.start`, all within one ``timeout_s``:
 - **Enable.** The helper appends the service to ``enabled_accessibility_services``.
 - **Confirm.** Connect to the service's socket and ping until it answers. A
   token refusal means the app's process restarted and lost the token, which is
-  then handed over again.
+  then handed over again. A service that has not come up :data:`_REBIND_S`
+  after it was enabled is taken out of the setting and put back: the system
+  holds a service whose process died while it was bound as crashed (on API 30
+  a force-stop leaves it so), and binds it again only once it has seen it
+  leave the setting.
 - **Gestures.** Whether the device declares ``android.hardware.faketouch``, then
   one test tap: without the feature the system cancels every accessibility
   gesture while node actions still work. Both outcomes are measured facts
@@ -75,6 +79,9 @@ _POLL_S = 0.1
 #: How long stop() waits for each step on the device: taking the service out of
 #: the setting, and the helper's last output once its stdin closed.
 _STOP_STEP_S = 10.0
+#: How long the service may take to come up after it was enabled before it is taken out of the
+#: setting and put back (the module's docstring says why).
+_REBIND_S = 10.0
 #: ``Result: Bundle[{json={...}}]``, as ``content call`` prints the provider's answer.
 _BUNDLE = re.compile(r"Bundle\[\{json=(\{.*\})\}\]", re.DOTALL)
 #: ``content`` catches whatever the provider throws, prints this and the stack trace on stderr,
@@ -189,7 +196,8 @@ class DeviceSide:
         """Ping the service; when it does not answer, enable it again and wait for a ping.
 
         For a service the system unbound since: a force-stop of our package (a
-        task may do one) takes it out of the setting. Returns whether it had to;
+        task may do one) takes it out of the setting, and on API 30 leaves it
+        held as crashed, which the confirm step deals with. Returns whether it had to;
         then :attr:`service` is a new channel, and an event stream of the old
         one has ended (``ChannelClosed``), so whoever read events subscribes
         again.
@@ -345,6 +353,8 @@ class DeviceSide:
         self._step = "enabling the service"
         self._enable_sent = True
         await self.helper.enable_service()
+        clock = asyncio.get_running_loop()
+        enabled_at = clock.time()
         self._step = "waiting for the service to answer a ping"
         while True:
             try:
@@ -361,6 +371,11 @@ class DeviceSide:
                 last = str(refused)
             except (AdbError, OSError, ChannelError) as exc:
                 last = f"{type(exc).__name__}: {exc}"
+                if clock.time() - enabled_at >= _REBIND_S:
+                    # Perhaps held as crashed: out of the setting, then back in.
+                    await self.helper.disable_service()
+                    await self.helper.enable_service()
+                    enabled_at = clock.time()
             self._step = f"waiting for the service to answer a ping (last: {last})"
             await asyncio.sleep(_POLL_S)
 
