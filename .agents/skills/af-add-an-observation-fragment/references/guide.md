@@ -435,7 +435,7 @@ across the slice — otherwise the trace would suggest several independent probl
 where there was one.
 
 This is pinned by `assert_a_failed_cycle_costs_one_capture`
-(`tests/_helpers/capability_contract.py:209`). No happy-path test catches it.
+(`tests/_helpers/capability_contract.py:217`). No happy-path test catches it.
 
 ## 6. Multi-capability reality
 
@@ -521,7 +521,7 @@ data. It used to hand over `b""`, which the trace committed as a 0-byte artifact
 that its reader then refused, failing every screenshot of the run. The environment
 decides what your failure costs by consulting what the run declared required;
 softening it in the capability removes that decision from the only place that can make it.
-(`_expect_failure` in the contract suite, `capability_contract.py:254`, fails a
+(`_expect_failure` in the contract suite, `capability_contract.py:262`, fails a
 harness whose `resolve_fragment` returns after `break_capture()`.)
 
 **The one exception: an optional fact inside a batched capture.** The browser serves
@@ -588,24 +588,27 @@ Six clauses, at `capability_contract.py`:
 
 | Assertion | Line | Pins |
 |---|---|---|
-| `assert_one_cycle_is_one_capture` | 99 | two reads of N fragments in one cycle = 1 capture, same objects |
-| `assert_next_cycle_resamples` | 119 | crossing a boundary re-captures; no object survives |
-| `assert_begin_observation_clears_the_cache` | 140 | cycle 1 reads only key A, cycle 2 reads only key B — the "have I served this key" heuristic passes everything else and fails this |
-| `assert_fragments_carry_capture_time` | 180 | `captured_at` is a float inside the real resolve window |
-| `assert_a_failed_cycle_costs_one_capture` | 209 | failing a cycle that read N fragments costs what failing one that read 1 costs |
-| `assert_foreign_action_policy_is_declared` | 269 | `__invalidated_by_foreign_actions__` is a declared bool, not an assumption |
+| `assert_one_cycle_is_one_capture` | 110 | two reads of N fragments in one cycle = 1 capture, same objects |
+| `assert_next_cycle_resamples` | 130 | crossing a boundary re-captures; no object survives |
+| `assert_begin_observation_clears_the_cache` | 150 | cycle 1 reads only key A, cycle 2 reads only key B — the "have I served this key" heuristic passes everything else and fails this |
+| `assert_fragments_carry_capture_time` | 188 | `captured_at` is a float inside the real resolve window |
+| `assert_a_failed_cycle_costs_one_capture` | 217 | failing a cycle that read N fragments costs what failing one that read 1 costs |
+| `assert_foreign_action_policy_is_declared` | 277 | `__invalidated_by_foreign_actions__` is a declared bool, not an assumption |
 
 ### Opting a capability in
 
-Write a `CaptureHarness` factory (`capability_contract.py:60`) and add it to
-`HARNESS_FACTORIES` (`:357`). `browser_harness` (`:323`) is the model. A harness
-needs:
+Write a harness factory and add it to `HARNESS_FACTORIES` (`capability_contract.py:391`).
+The factory is an async context manager yielding a `CaptureHarness` (`:72`): decorate an
+`async def` with `@asynccontextmanager` and `yield` the harness, so it can hold a fake
+transport open while the clause runs and close it afterwards. `browser_harness` (`:330`)
+and `android_harness` (`:362`) are the models. A harness needs:
 
 - `capability` — an instance wired to a **fake transport**. A contract test that
-  needs a real Chrome is a contract test nobody runs; `browser_harness` reaches
-  into `_scopes` / `_default_session_id` and installs a counting stub scope.
+  needs a real Chrome or emulator is a contract test nobody runs; `browser_harness`
+  reaches into `_scopes` / `_default_session_id` and installs a counting stub scope,
+  and `android_harness` runs the real `setup()` against a fake ADB server.
 - `fragments` — **at least two** keys served from one capture (enforced in
-  `__post_init__`, `:88`).
+  `__post_init__`, `:99`).
 - `captures()` — count **attempts**, not successes. Clause 5 is about a retry
   budget being spent more than once; `browser_harness` counts CDP emissions.
 - `break_capture()` — make every capture from now on fail. Required, not
@@ -614,7 +617,7 @@ needs:
   different clause, checked at the environment level.
 
 `test_every_registered_capability_has_a_contract_harness`
-(`test_capability_contract.py:86`) fails the moment a new capability is
+(`test_capability_contract.py:80`) fails the moment a new capability is
 registered and names the file to edit.
 
 Two test-writing traps, both paid for already:
@@ -623,11 +626,11 @@ Two test-writing traps, both paid for already:
   is an `Annotated` field, and a custom `__init__` hides it from conscribe's
   config extractor, which `tests/test_generated/test_no_dropped_annotated_fields.py`
   fails on. Set attributes after construction — the `prime()` pattern
-  (`test_capability_contract.py:130`).
+  (`test_capability_contract.py:146`).
 - The capability registry is global and shared with test fixtures. Enumerating it
   at *collection* time goes red when another module registers a stub. Filter to
   `cls.__module__.startswith("spectragent.")` and loop at run time
-  (`test_capability_contract.py:97`).
+  (`test_capability_contract.py:91`).
 
 Clauses 1 and 5 assume a capability whose fragments **share** a capture. One that
 genuinely captures per fragment should come to this file and change it, not
