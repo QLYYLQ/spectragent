@@ -65,6 +65,8 @@ environment:
         typing_rhythm: { rhythm_type: instant }
         replayability: { replayability_id: none }
         network_source: { source_id: live }
+        dom_cleaner: { cleaner_type: browser_use }   # required: what the agent sees
+        dom_serializer: { serializer_type: text }
         screenshot_format: png      # jpeg + screenshot_quality shrinks a
                                     # vision step's image ~2-4x
         backend:                    # ← execution-layer config (IoC)
@@ -154,7 +156,7 @@ Screenshots are captured and recorded by **both** members: `online_mind2web` and
 
 | `cleaner_type` | what it does | knobs |
 |---|---|---|
-| `browser_use` (default) | CDP `DOM.getDocument` + `DOMSnapshot` + accessibility tree; paint-order occlusion drops elements another element fully covers | `descendants_occlude`, `max_occlusion_nodes`, `include_shadow_dom`, `enable_compound_components` |
+| `browser_use` | CDP `DOM.getDocument` + `DOMSnapshot` + accessibility tree; paint-order occlusion drops elements another element fully covers | `descendants_occlude`, `max_occlusion_nodes`, `include_shadow_dom`, `enable_compound_components` |
 | `skyvern` | a page-side JS extraction, frames and shadow roots included; no paint order, so a link a sticky header covers is still indexed | `max_text_length`, `include_purgeable` |
 | `skyvern_hit_test` | `skyvern`, then the page itself is asked per indexed element whether a click at its centre (or at one of a 5x5 grid of points inside it) reaches it; the answer is recorded on the element as `hit_test` | the two above, plus `covered_elements: drop \| keep` |
 
@@ -415,6 +417,7 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 ```
 
 ```yaml
+# agent[0].agent_loop: a loop is written only in its agent's block
 agent_loop:
   loop_id: branch
   max_steps: 30

@@ -18,8 +18,9 @@ stands (an empty container is what ``[]`` says). A receptor targeting an
 ``inline_only`` registrar is never adopted at all: it is filled from
 its own config block or keeps the owner's default, and its layer's
 top-level section is refused, naming where the instances go
-(``docs/architecture_design.md`` §4.2.1; ``trace_writer.archive`` is the
-case: archiving has one switch).
+(``docs/architecture_design.md`` §4.2.1: ``trace_writer.archive``, the
+capability's strategies, the agent's ``agent_loop`` and ``memory``). An
+inline-only layer that no block of the build can hold is left out.
 """
 
 from __future__ import annotations
@@ -297,12 +298,17 @@ class ConfigComposer:
         other capability packages and agent families, which an earlier import
         may have left registered) does not keep a layer in: which layers a run
         holds, and so its resolved config and hash, follows what it names.
+        An inline-only layer that no block of the remaining layers can hold
+        is left out too (``agent_loop`` in a run that names no agent family).
         """
-        self._registrars = {
-            layer: registrar
-            for layer, registrar in registrars.items()
-            if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
-        }
+        self._registrars = _held(
+            {
+                layer: registrar
+                for layer, registrar in registrars.items()
+                if any(not _inside(cls.__module__, unnamed) for cls in registrar.get_all().values())
+            },
+            unnamed,
+        )
         self._left_out = {
             layer: registrar
             for layer, registrar in registrars.items()
@@ -402,11 +408,11 @@ class ConfigComposer:
             return _Problem(
                 layer,
                 f"the {layer!r} layer takes no top-level section: its instances are written "
-                f"under {where}, and come from the package of a capability the configuration "
-                f"names",
+                f"under {where}, and they or the block that holds them come from the package "
+                f"of a capability or agent family the configuration names",
                 True,
                 f"Leave it out, or write its instances under {where} and name the capability "
-                f"that provides them",
+                f"or agent family they need",
             )
         return _Problem(
             layer,
@@ -946,6 +952,34 @@ def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
 def _inside(module: str, packages: Collection[str]) -> bool:
     """Whether *module* is one of *packages* or lies below one."""
     return any(module == package or module.startswith(f"{package}.") for package in packages)
+
+
+def _held(registrars: dict[str, Any], unnamed: Collection[str]) -> dict[str, Any]:
+    """*registrars* without the inline-only layers no block of another kept layer can hold.
+
+    Repeated until nothing more is left out: without ``agent_loop`` the
+    ``branch`` loop's ``restorer`` has no holder either. Only implementations
+    outside the *unnamed* packages hold a layer, as only they keep one in.
+    """
+    while True:
+        held = {
+            entry.spec.registry_name
+            for layer, registrar in registrars.items()
+            for cls in registrar.get_all().values()
+            if not _inside(cls.__module__, unnamed)
+            for entry in wiring_slots(cls).values()
+            if entry.slot is not None
+            and not entry.declare_only
+            and entry.spec.registry_name != layer
+        }
+        unheld = {
+            layer
+            for layer, registrar in registrars.items()
+            if registrar.inline_only and layer not in held
+        }
+        if not unheld:
+            return registrars
+        registrars = {layer: r for layer, r in registrars.items() if layer not in unheld}
 
 
 def _unimplemented(layer: object, name: object) -> str:

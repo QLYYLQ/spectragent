@@ -92,6 +92,17 @@ def _android(written: Written) -> Block:
     return {"capability": [{"capability_id": "android", "backend": backend, **written}]}
 
 
+def _branch(written: Written) -> Block:
+    """A UI-TARS agent on a ``branch`` loop: the loop is written only in an agent block."""
+    agent: Block = {
+        "agent_id": "ui_tars",
+        "agent_loop": {"loop_id": "branch", **written},
+        "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+        "memory": {"memory_id": "simple"},
+    }
+    return {**_browser({}), "agent": [agent]}
+
+
 @dataclass(frozen=True)
 class _Owner:
     """One owner of the table: its YAML, the composed owner and the owner built by hand."""
@@ -113,9 +124,7 @@ OWNERS: dict[tuple[str, str], _Owner] = {
         _android, lambda run: run.single("capability"), AndroidCapability
     ),
     ("agent_loop", "branch"): _Owner(
-        lambda written: {"agent_loop": [{"loop_id": "branch", **written}]},
-        lambda run: run.single("agent_loop"),
-        BranchLoop,
+        _branch, lambda run: run.single("agent").agent_loop, BranchLoop
     ),
 }
 

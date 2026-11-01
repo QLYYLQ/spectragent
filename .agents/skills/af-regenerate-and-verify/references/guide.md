@@ -40,14 +40,14 @@ Also document a new registrar in `docs/architecture_design.md` §6 and `AGENTS.m
 The registrar coverage test checks names and discriminators against the source.
 
 Every layer whose instances only a receptor inside another block consumes is inline-only:
-`archiver`, the providers, the strategy layers, `miss_policy`, `step_selector`,
-`restorer`, `action_translator` and `decision_model` (architecture §4.2.1 has the list).
-Their models participate in the build, but their instances may only be written in the
-owner's block (`hook[trace_writer].archive`, `capability[browser].replayability`). Use
-`result.top_level_layers`, not `model_fields`, to enumerate writable root sections:
-conscribe keeps a hidden rejection field for an inline-only layer. A build that holds an
-inline-only layer must also hold a receptor for it, so a new one lives in its owner's
-package (or both are framework axes).
+`archiver`, the providers, every strategy axis, `agent_loop` and `memory` (architecture
+§4.2.1 has the list). Their models participate in the build, but their instances may only
+be written in the owner's block (`hook[trace_writer].archive`,
+`capability[browser].replayability`). Use `result.top_level_layers`, not `model_fields`, to
+enumerate writable root sections: conscribe keeps a hidden rejection field for an
+inline-only layer. conscribe also refuses a build that holds an inline-only layer and no
+receptor for it, so the Composer leaves such a layer out, repeating until nothing changes:
+a run that names no agent family has no `agent_loop`, `memory` or `restorer`.
 
 ## Fingerprints and clean interpreters
 

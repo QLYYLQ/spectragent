@@ -54,6 +54,7 @@ AgentLoopRegistrar = create_registrar(
     "agent_loop",
     AgentLoop,
     discriminator_field="loop_id",
+    inline_only=True,
 )
 
 

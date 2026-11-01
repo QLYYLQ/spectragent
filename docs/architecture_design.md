@@ -950,7 +950,8 @@ class ConfigComposer:
         return cls(registrars=collect_registrars())          # 完整构建
 
     def __init__(self, *, registrars, coverage="complete"):
-        # 不发现：调用方先导入（上面两个工厂）。没有已导入实现的层不进 schema。
+        # 不发现：调用方先导入（上面两个工厂）。没有已导入实现的层不进 schema，
+        # 没有块能收下的只能内联的层也不进（下文"只能内联的层"）。
         self._registrars = {layer: r for layer, r in registrars.items() if r.get_all()}
         self._composed = build_composed_config(             # 2) 生成 schema
             self._registrars, inline_wiring=True, coverage=coverage
@@ -991,7 +992,7 @@ class ConfigComposer:
 
 名字在任何导入之前读，而且只从 schema 放 capability 块与 agent 块的位置读：顶层 `capability` 段与 `agent` 段的每一项，以及每个 environment 的 `capabilities` 受体（`EnvironmentBase` 声明的；environment 自己的类在它的 capability 包里，这时还没导入）。只读这些块的判别字段 `capability_id` 与 `agent_id`，从不读自由字段：hook 的 `parameters`、provider 的 `extra_body` 里写的同名键不点名任何包。读到的名字用 `pkgutil` 对照现有的包。点名了一个没有包的 capability 或家族，抛 `UnknownPackageError`（`ComposeError`，issue `unknown_capability_package` / `unknown_agent_family`），点名这个值在配置里的位置与现有的包，这时什么都还没导入。点名了 agent 家族却没点名任何 capability 时，抛 `ComposeError`（issue `agent_without_capability`），点名这个 agent 与现有的 capability 包，让人加一个带 capability 的 environment 块：agent 的观测与动作都来自 capability，v1 也没有不要环境的 Loop（§4.1）。没点名的包是发现的排除项：发现不遍历它们，也不读它们的 `declarations.py`，`collect_registrars(capabilities)` 只读点名的包的声明（框架代码也只在用到时才导入 browser 的模块，下面"框架代码只在用到时导入 browser 的模块"）。一个长期运行的进程里此前导入过的实现仍在注册表里，所以这次组装的 schema 至少包含点名的包，不保证不多。
 
-这次组装的目录是框架轴加上点名的 capability 声明的轴；一层要在这次点名、遍历的包里有实现才进目录，没有的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层），conscribe 的 `EmptyLayerError` 只留给生成。进程此前导入过、但这次没点名的 capability 包或 agent 家族里的实现不算：目录有哪些层只由这次点名的包决定，resolved 配置的 dump 与它的 `config_hash` 因此不随导入历史变化（不然同一个实验在长期运行的进程里会多出 `archiver: []` 这样的空段，被查看器分成两组）。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`ConfigComposer.validate` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`；只能内联的层（archiver）则说它的实例写在哪里（`hook[trace_writer].archive`），不让人去点名 capability 之后又碰上 `inline_only_layer`。conscribe 对进了目录的每个类都解析 `__wiring__`，键对照的是整个进程的注册表。部分构建（下一段）只放宽 `declare_only` 条目与默认什么都不选的受体；一个受体写明要某个 capability 的键（`("capability", ["browser"])`）仍然必须解析，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
+这次组装的目录是框架轴加上点名的 capability 声明的轴；一层要在这次点名、遍历的包里有实现才进目录，没有的层不进目录、不报错（只写 `evaluator:` 的配置没有 capability、agent 与 environment 层）；只能内联的层还要目录里有能收下它的块（下文"只能内联的层"），conscribe 的 `EmptyLayerError` 只留给生成。进程此前导入过、但这次没点名的 capability 包或 agent 家族里的实现不算：目录有哪些层只由这次点名的包决定，resolved 配置的 dump 与它的 `config_hash` 因此不随导入历史变化（不然同一个实验在长期运行的进程里会多出 `archiver: []` 这样的空段，被查看器分成两组）。配置写了一个这样被留在目录外的层（只写 `environment: [{env_type: browser}]`、不写 capability），`ConfigComposer.validate` 抛 `ComposeError`（issue `no_implementation`），说配置点名的包里没有一个实现这一层，并列出现有的 capability 包与 agent 家族，而不是 pydantic 的 `Extra inputs are not permitted`；只能内联的层（archiver）则说它的实例写在哪里（`hook[trace_writer].archive`），不让人去点名 capability 之后又碰上 `inline_only_layer`。conscribe 对进了目录的每个类都解析 `__wiring__`，键对照的是整个进程的注册表。部分构建（下一段）只放宽 `declare_only` 条目与默认什么都不选的受体；一个受体写明要某个 capability 的键（`("capability", ["browser"])`）仍然必须解析，所以框架包里不能有连向某个 capability 自己的键的类：`BrowserEnvironment` 因此在 browser 包里（`core/capabilities/browser/environment.py`），与 `AndroidEnvironment` 在 Android 包里是同一条规则（§11.2）。
 
 **一次组装用部分构建（conscribe ≥ 2.2 的 `coverage="partial"`）。** 只导入点名的包，目录就只有一部分实现；`for_config` 因此明确声明这是部分构建，conscribe 只改两条规则：
 
@@ -1017,7 +1018,7 @@ class ConfigComposer:
 - 顶层 `action:` 段里写 Loop 自己的动作（`loop.*`，如 `loop.done`）时，Composer 同样以 `UnresolvedWiringError`（issue `loop_action`）拒绝：它由 Loop 提供并执行，没有配置，也没有受体会收下这个实例（capability 的 `actions` 只收自己的键），否则就是一个被悄悄丢掉的条目（§4.5 "Loop 提供的动作"）。
 - 普通 list / dict 受体省略或写 `null` 时，第二遍 `_resolve_deferred` 从目标层的实例池中取允许的实现；池为空时保留主人自己的默认值，主人没有默认值才设空容器。`[]` 永远是显式空，`capability.actions: []` 不构造任何动作。
 - **单实例策略受体省略即默认（用户 2026-11-01 的裁决）。** 只持一个策略的受体，主人已经有 Python 侧默认（构造时装上的那个策略，多数经 `default_*()`），而且这个默认是关闭（`none`）、中立（`live`、`instant`）或唯一的选项时，`__wiring__` 用 conscribe 字典形式的 `default` 写出同一个键（`{"registry": "replayability", "keys": ["none", "pinned"], "default": "none"}`）：YAML 可以不写这个块，不写就是这个默认。生成的字段是 `Field(default_factory=<默认键的每键配置>)`，省略的块校验成与写出 `{<判别字段>: <默认键>}` 相同的配置，所以 resolved 配置照样记下这个默认，`config_hash` 与写出时相同；`config explain` 的 resolved 里有它，输入证据把它标成 `default`。写了的块照常校验：未知的策略报 `union_tag_invalid`，拼错的判别字段报 `union_tag_not_found`，多出的旋钮或拼错的受体名报 `extra_forbidden`，`null` 报 `model_attributes_type`；只有一个策略的轴（`miss_policy`、`restorer`）不是联合，未知的策略报 `literal_error`，拼错的判别字段报 `extra_forbidden`，`null` 报 `model_type`。现在可以省略的受体与它们的默认：browser capability 的 `mouse_trajectory: instant`、`typing_rhythm: instant`、`replayability: none`、`network_source: live`；`archive` 网络来源的 `miss_policy: strict`（唯一的选项）；Android capability 的 `task_oracle: none`；`branch` Loop 的 `restorer: prefix_replay`（唯一的选项）。默认会替人做选择的受体，主人有 Python 默认也仍然必填：browser 的 `dom_cleaner` 与 `dom_serializer` 决定 agent 看到什么；`trace_branches` 加载器的 `step_selector` 若省略即 `all`，忘写一个块就把每个候选步都分叉（100 个 run × 30 步就是 3,000 个分叉 run）；导出器的 `translator` 决定学生学的是什么动作。主人没有 Python 默认的受体同样必填，不为它们编造默认：两个 capability 的 `backend`，agent 的 `agent_loop`、`llm`、`memory`，评测器的判卷 `llm`，`jev` 的 `decision_model`。Python 默认与 `default` 是写在两处的同一个事实，`tests/test_core/test_composer/test_strategy_defaults.py` 核对两者是同一个策略，也核对测试里的表就是目录里声明的全部默认、上面四个替人做选择的受体仍然必填。这些受体的层只能内联、没有顶层段（下一条），所以省略的块从不换成实例池里的别的实例（与 list / dict 受体不同）：resolved 配置记下的就是用到的默认。默认键的注册表与主人在同一个包里（或都是框架轴），所以点名主人的一次组装里，默认的策略总有实现。
-- **只能内联的层**由 `create_registrar(..., inline_only=True)` 声明。实例只由别的块里的受体收下、从不经入口从顶层读的层都只能内联（用户 2026-11-01 的裁决；此前只有 `ArchiverRegistrar`）：`archiver`（`hook[trace_writer].archive`）；browser 的 `browser_provider`（`backend`）、`mouse_trajectory`、`typing_rhythm`、`dom_cleaner`、`dom_serializer`、`replayability`、`network_source`，以及 `archive` 网络来源里的 `miss_policy`；Android 的 `android_provider`（`backend`）与 `android_task_oracle`（`task_oracle`）；框架的 `step_selector`（`trace_branches` 加载器）、`restorer`（`branch` Loop）、`action_translator`（导出器的 `translator`）与 `decision_model`（`jev` 的 `decision_model`）。以前这些层的顶层段照样被构造，却没有谁用它，run 悄悄用块里写的值或默认值；现在 conscribe 在运行时模型、生成 Python 与 JSON Schema 中一致禁止这些顶层段，包括 `[]` 与 `null`：Pydantic 错误类型 `inline_only_layer`，位置是层名，提示写明实例该写在哪个块里（`capability[browser].replayability`、`capability[browser].network_source[archive].miss_policy`）。一次构建要有收下这一层的受体，否则 conscribe 报 `ConfigDeclarationError`；这些层的主人与它在同一个包里（或两者都是框架轴），所以点名这一层的组装总有主人。`agent_loop` 与 `memory` 也只由 agent 块收下，但主人 agent 在家族包里，不点名家族的组装（只写 `evaluator:`、`exporter:` 或 `replay_reviewer:` 的配置）有这一层却没有主人，所以它们仍是顶层层。仍是顶层层的还有入口读的层（`agent`、`environment`、`capability`、`hook`、`task_loader`、`eval_loader`、`evaluator`、`exporter`、`replay_reviewer`）、`llm`（lookahead 的判卷模型从顶层段读，`helper_llms` 这样的列表受体省略时从池里取）与 `action`（`capability.actions` 省略时从池里取）。resolved 配置里这些层的顶层段从 `[]` 变成 `null`（与 `archiver` 一样），所以这次改动让 `config_hash` 变一次；录下的数据可以丢，不做兼容。Composer 使用 `result.top_level_layers` 遍历可写顶层段，内联层受体省略或 `null` 时保留主人的默认值，绝不从实例池中取别的块的实例。删除本地 `__inline_only__` 声明和重复的拒绝逻辑。归档仍只有 `trace_writer.archive` 一个开关。
+- **只能内联的层**由 `create_registrar(..., inline_only=True)` 声明。只能写在块里的策略，写在顶层会被拒绝（用户 2026-11-01 的裁决，"这两个我都认同"；此前只有 `ArchiverRegistrar`）：实例只由别的块里的受体收下、从不经入口从顶层读的层都只能内联。它们是 `archiver`（`hook[trace_writer].archive`）；browser 的 `browser_provider`（`backend`）、`mouse_trajectory`、`typing_rhythm`、`dom_cleaner`、`dom_serializer`、`replayability`、`network_source`，以及 `archive` 网络来源里的 `miss_policy`；Android 的 `android_provider`（`backend`）与 `android_task_oracle`（`task_oracle`）；agent 的 `agent_loop` 与 `memory`；框架的 `step_selector`（`trace_branches` 加载器）、`restorer`（`branch` Loop）与 `action_translator`（导出器的 `translator`）。以前这些层的顶层段照样被构造，却没有谁用它，run 悄悄用块里写的值或默认值；现在 conscribe 在运行时模型、生成 Python 与 JSON Schema 中一致禁止这些顶层段，包括 `[]` 与 `null`：Pydantic 错误类型 `inline_only_layer`，位置是层名，提示写明实例该写在哪个块里（`capability[browser].replayability`、`agent[ui_tars].agent_loop[branch].restorer`）。这条规则延伸到 agent 的 `agent_loop` 与 `memory`，办法是把一次构建里没有块能收下的只能内联的层留在目录外（用户 2026-11-01 的裁决："关于judge，目前暂时走A就行，目前的judge没有复杂到必须复查/演算"）：conscribe 对一个没有受体收下的只能内联的层报 `ConfigDeclarationError`，所以 Composer 在"这次点名的包里有实现"之后再筛一遍，留下的层里没有块能收下的只能内联的层不进目录，反复到不再变（没有 `agent_loop`，`branch` Loop 的 `restorer` 也就没有块收下）。只有这次点名的包里的实现算收下，与上一遍同一个理由。所以不点名 agent 家族的组装（导出、lookahead 的判卷、`jev`、只写评测器的配置、只有 Android capability 的测试配置）没有 `agent_loop`、`memory` 与 `restorer` 这三层，写它们的顶层段按"这次组装没有这一层"被拒（`ComposeError`，issue `no_implementation`）；点名了家族的组装里它们只能内联。其余只能内联的层与收下它的块在同一个包里（或两者都是框架轴），点名这一层的组装总有块收下它。仍是顶层层的是入口读的层（`agent`、`environment`、`capability`、`hook`、`task_loader`、`eval_loader`、`evaluator`、`exporter`、`replay_reviewer`）、`llm`（lookahead 的判卷模型从顶层段读，导出器的 `thought_rewrite_llms` 省略时从池里取）与 `action`（`capability.actions` 省略时从池里取），以及 `decision_model`。2026-11-01 起 resolved 配置里这些层的顶层段从 `[]` 变成 `null`（与 `archiver` 一样），留在目录外的层不再出现，所以 `config_hash` 在这一天变一次；录下的数据可以丢，不做兼容。Composer 使用 `result.top_level_layers` 遍历可写顶层段，内联层受体省略或 `null` 时保留主人的默认值，绝不从实例池中取别的块的实例。删除本地 `__inline_only__` 声明和重复的拒绝逻辑。归档仍只有 `trace_writer.archive` 一个开关。
 - **配置面的拼写规则**（用户 2026-10-13 的裁决；注册名、选项值与旋钮都遵守）：
   - "不启用"拼作 `none`（`replayability: none`、导出的 `occlusion: none`、`shift_dates: none`、`thought_source: none`）；默认值本身做一件正常事的保留描述性名字（`live`、`instant`、`identity`）；`isolation: none_acknowledged` 是书面承认会漏流量，保留。注册名与选项值都不许是 YAML 1.1 读成布尔或 null 的词（on / off / yes / no / true / false / null / ~，任何大小写）：所有入口都用 PyYAML 的 `safe_load`，它按 YAML 1.1 读，裸写的这些词到校验时已经是 `False` 或 `None`。`tests/test_core/test_composer/test_yaml_safe_values.py` 扫描每个注册表的全部键，以及运行配置、链规格、站点规则三份 schema 里的全部选项值
   - `null` 只表示"这个可选项没设"（可选的子块与覆盖值：`require_eval`、`user_agent`、`length`……），默认为 null 的旋钮都在说明里写明没设时是什么（`None (the default): ...`）。数值上限不用 null：不限写 `unlimited`，默认值写出真实的值（`dom_max_elements`、`dom_max_serialized_chars` 默认 `unlimited`，导出的 `max_document_misses` 默认 `0`）；共用的拼写与读法在 `schemas/_types.py`（`UNLIMITED`、`Unlimited`、`limit_value()`，代码内部仍用 `None` 表示不限）。类型写成 `Annotated[int, Field(ge=1)] | Unlimited`：界写在 `int` 那一支上（写在外层 pydantic 会拿它去比 `"unlimited"`）。conscribe 2.0 在运行时模型、生成的 `_composed.py` 和 JSON Schema 中都保留嵌套的界。"按 provider 自己的策略"这类默认写成显式的词：`reasoning_effort: auto`
@@ -5367,21 +5368,19 @@ agent:
     # browser_use.dom | browser_use.dom_vision —— 决定什么进模型上下文、以及有哪些点击动词。
     # max_steps / max_actions_per_step 归 loop，agent 不持有第二份。
     flash_mode: false
-
-agent_loop:
-  - loop_id: react
-    max_steps: 100
-    max_actions_per_step: 1
-
-llm:
-  - model_type: openai
-    provider:
-      name: direct
+    # Loop、模型与 memory 都写在 agent 块里：agent_loop 与 memory 只能内联，
+    # llm 是 agent 必填的单实例受体（§4.2.1）
+    agent_loop:
+      loop_id: react
+      max_steps: 100
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
       model: gpt-4o
-
-memory:
-  - memory_id: sliding_window
-    window_size: 20
+      provider: {name: direct}
+    memory:
+      memory_id: sliding_window
+      window_size: 20
 
 capability:
   - capability_id: browser
@@ -5470,8 +5469,7 @@ hook:
 ```yaml
 agent:
   - agent_id: swe_agent
-agent_loop:
-  - loop_id: codeact          # 同一个 agent，换 loop
+    agent_loop: {loop_id: codeact}   # 同一个 agent，换 loop；llm 与 memory 也写在这里
 capability:
   - capability_id: docker
     backend:
@@ -5485,8 +5483,7 @@ environment:
 ```yaml
 agent:
   - agent_id: gaia_agent
-agent_loop:
-  - loop_id: plan_execute
+    agent_loop: {loop_id: plan_execute}
 capability:
   - capability_id: browser
     backend: { provider_id: local_chrome }

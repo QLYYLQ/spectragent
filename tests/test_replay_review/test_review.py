@@ -654,30 +654,25 @@ def test_shipped_reviewer_config_and_wrong_chat_model(path):
         ConfigComposer.for_config(root).compose(root)
 
 
-def test_the_decision_model_is_written_in_the_reviewer_block_and_never_adopted():
-    decision = {
-        "model_type": "typesafe",
-        "provider": {"name": "direct"},
-        "model": "jev-1.14.0",
-        "timeout": 17,
-    }
+def test_top_level_adoption_is_per_axis_and_missing_receptor_is_refused():
     root = {
         "llm": [{"model_type": "openai", "provider": {"name": "direct"}, "model": "chat"}],
-        "decision_model": [decision],
+        "decision_model": [
+            {
+                "model_type": "typesafe",
+                "provider": {"name": "direct"},
+                "model": "jev-1.14.0",
+                "timeout": 17,
+            }
+        ],
         "replay_reviewer": [{"reviewer_id": "jev", **reviewer_block()}],
     }
     root["replay_reviewer"][0]["policy"]["thresholds"]["accept_information_min"] = 0.93
-    # The decision_model layer takes no top-level section; the refusal names
-    # the reviewer's block, where the model belongs.
-    with pytest.raises(ValidationError) as refused:
+    # A required single receptor must be inline, even when a top-level
+    # instance exists. Collection receptors adopt only their own axis.
+    with pytest.raises(ValidationError, match="decision_model"):
         ConfigComposer.for_config(root).compose(root)
-    assert any(
-        error["type"] == "inline_only_layer"
-        and "replay_reviewer[jev].decision_model" in error["msg"]
-        for error in refused.value.errors()
-    )
-    del root["decision_model"]
-    root["replay_reviewer"][0]["decision_model"] = decision
+    root["replay_reviewer"][0]["decision_model"] = root["decision_model"].pop()
     run = ConfigComposer.for_config(root).compose(root)
     reviewer = run.single("replay_reviewer")
     assert reviewer.decision_model is run.single("decision_model")
@@ -1202,9 +1197,10 @@ def test_chat_list_rejects_decision_and_empty_list_retains_its_meaning():
                 "helper_llms": [],
             }
         ],
+        "decision_model": [{"model_type": "typesafe", "provider": {"name": "direct"}}],
     }
     assert ConfigComposer.for_config(root).compose(root).single("hook").helper_llms == []
-    root["hook"][0]["helper_llms"] = [{"model_type": "typesafe", "provider": {"name": "direct"}}]
+    root["hook"][0]["helper_llms"] = root["decision_model"]
     with pytest.raises(ValidationError):
         ConfigComposer.for_config(root).compose(root)
 
