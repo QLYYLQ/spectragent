@@ -31,6 +31,7 @@ import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
 
@@ -43,13 +44,15 @@ _NOT_INHERITED = (
     "ANDROID_ADB_SERVER_ADDRESS",
     "ANDROID_ADB_SERVER_PORT",
 )
+#: Turns off a server's scans of the default emulator ports, of USB and of the network.
+NO_SCANS: Mapping[str, str] = MappingProxyType({"ADB_EMU": "0", "ADB_USB": "0", "ADB_MDNS": "0"})
 _POLL_S = 0.05
 
 
 def server_environment(home: Path, base: Mapping[str, str]) -> dict[str, str]:
     """The environment of a server whose ``HOME`` (and so key) is *home*, built on *base*."""
     env = {name: value for name, value in base.items() if name not in _NOT_INHERITED}
-    env.update(HOME=str(home), ADB_EMU="0", ADB_USB="0", ADB_MDNS="0")
+    env.update(HOME=str(home), **NO_SCANS)
     return env
 
 

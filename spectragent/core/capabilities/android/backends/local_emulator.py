@@ -19,17 +19,25 @@ adb 1.0.41, 2026-11-01):
   command sent through adb (``adb emu ...``) reads the token from the adb
   client's own ``HOME``: with two different homes such commands fail without a
   word. It also writes nothing into the user's home, its discovery file
-  ``pid_<PID>.ini`` included. ``ANDROID_AVD_HOME`` keeps pointing at the AVDs.
+  ``pid_<PID>.ini`` included; ``ANDROID_EMULATOR_DISCOVERY_DIR``, which would
+  move that file and the gRPC token in it elsewhere, is not passed on.
+  ``ANDROID_AVD_HOME`` keeps pointing at the AVDs.
 - ``TMPDIR`` is the run's ``tmp`` directory. ``netsimd``, which carries the
   guest's network, is shared by every emulator started with one ``TMPDIR``
   (``$TMPDIR/netsim.ini``) and lives in the process group of the emulator that
   started it, so a shared one would die with the first run's group and cut the
-  others' network mid-task.
+  others' network mid-task. ``ANDROID_TMP``, the emulator's own temp directory
+  variable, is not passed on.
 - ``ANDROID_HOME`` is the configured SDK, and ``ANDROID_SDK_ROOT`` is not passed
   on: the emulator reads them before its own location.
 - ``NO_PROXY`` / ``no_proxy`` start with the loopback addresses: the
   emulator's internal gRPC over localhost would otherwise follow
-  ``http_proxy`` / ``https_proxy``.
+  ``http_proxy`` / ``https_proxy``. ``no_grpc_proxy``, which gRPC reads before
+  ``no_proxy``, is not passed on.
+- ``ADB_EMU``, ``ADB_USB`` and ``ADB_MDNS`` are ``0``, as for the run's
+  server: should the emulator's own adb calls start a server, the run's having
+  died during the boot, it scans neither USB nor the network and asks no phone
+  to trust the run's key.
 
 The emulator runs headless (``-no-window -no-audio -no-boot-anim``, software
 rendering ``-gpu swiftshader_indirect``) and never saves a snapshot
@@ -72,7 +80,7 @@ from typing import Annotated
 from pydantic import Field
 
 from spectragent.core.capabilities.android.adb import AdbClient, AdbError
-from spectragent.core.capabilities.android.adb_server import HOST, PrivateAdbServer
+from spectragent.core.capabilities.android.adb_server import HOST, NO_SCANS, PrivateAdbServer
 from spectragent.core.capabilities.android.backends._registrar import AndroidProviderBase
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
@@ -83,16 +91,20 @@ from spectragent.core.capabilities.android.processes import ProcessGroup, finish
 #: What the emulator's NO_PROXY starts with.
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
 #: Variables of this process the emulator must not inherit: each would point
-#: it at another home, another SDK, another set of AVDs or another adb server.
+#: it at another home, SDK, set of AVDs, adb server, temp or discovery
+#: directory, or take localhost out of its proxy exceptions.
 _NOT_INHERITED = (
     "ANDROID_USER_HOME",
     "ANDROID_SDK_HOME",
     "ANDROID_SDK_ROOT",
     "ANDROID_EMULATOR_HOME",
     "ANDROID_AVD_HOME",
+    "ANDROID_EMULATOR_DISCOVERY_DIR",
+    "ANDROID_TMP",
     "ANDROID_ADB_SERVER_ADDRESS",
     "ANDROID_ADB_SERVER_PORT",
     "ADB_SERVER_SOCKET",
+    "no_grpc_proxy",
 )
 _BOOT_POLL_S = 0.5
 _BOOT_QUERY_TIMEOUT_S = 5.0
@@ -196,6 +208,7 @@ def emulator_environment(
         TMPDIR=str(tmpdir),
         NO_PROXY=no_proxy,
         no_proxy=no_proxy,
+        **NO_SCANS,
     )
     return env
 

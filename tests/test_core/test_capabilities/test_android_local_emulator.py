@@ -365,9 +365,13 @@ def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() 
         "ANDROID_USER_HOME": "/Users/someone/.android",
         "ANDROID_SDK_HOME": "/Users/someone",
         "ANDROID_ADB_SERVER_ADDRESS": "elsewhere",
+        "ANDROID_EMULATOR_DISCOVERY_DIR": "/Users/someone/shared",
+        "ANDROID_TMP": "/tmp/shared",
         "ADB_SERVER_SOCKET": "tcp:localhost:5037",
+        "ADB_USB": "1",
         "TMPDIR": "/var/folders/xy/T/",
         "NO_PROXY": "intranet.example",
+        "no_grpc_proxy": "intranet.example",
     }
 
     env = emulator_environment(
@@ -389,6 +393,9 @@ def test_the_emulator_environment_names_the_runs_sdk_server_home_avds_and_tmp() 
         "TMPDIR": "/runs/r1/tmp",
         "NO_PROXY": "localhost,127.0.0.1,::1,intranet.example",
         "no_proxy": "localhost,127.0.0.1,::1,intranet.example",
+        "ADB_EMU": "0",
+        "ADB_USB": "0",
+        "ADB_MDNS": "0",
     }
 
 
