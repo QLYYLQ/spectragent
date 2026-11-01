@@ -86,7 +86,7 @@ def _real_android_stepped_aside() -> Iterator[None]:
     with isolated_registries():  # puts the real classes back on exit
         for key in (SCREENSHOT, CAPTURE_STATE, PLATFORM):
             ObservationRegistrar.unregister(key, missing_ok=True)
-        for key in ACTIONS:
+        for key in (*ACTIONS, *MOBILE_ACTIONS):
             ActionRegistrar.unregister(key, missing_ok=True)
         CapabilityRegistrar.unregister("android", missing_ok=True)
         yield
@@ -252,7 +252,7 @@ with _real_android_stepped_aside(), _STUB:
 
 # ── actions only Android has, under the names of §11.2, described, never executed ──
 
-with ANDROID_STUB:
+with _real_android_stepped_aside(), _STUB:
 
     @dataclass
     class AndroidLongPressAction(ActionBase):
