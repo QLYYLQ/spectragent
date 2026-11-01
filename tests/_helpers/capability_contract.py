@@ -11,8 +11,10 @@ a trace that lies: an agent shown a screenshot from before the click it is
 reacting to, with nothing on disk to say so.
 
 So the rule lives here, as assertions, and every capability is run through
-them. A new capability author writes a :class:`CaptureHarness` factory,
-adds it to :data:`HARNESS_FACTORIES`, and inherits the whole suite —
+them. A new capability author writes a harness factory (an async context
+manager yielding a :class:`CaptureHarness`, so it can hold a fake device
+open while the clauses run), adds it to :data:`HARNESS_FACTORIES`, and
+inherits the whole suite —
 ``tests/test_core/test_capabilities/test_capability_contract.py`` fails
 until they do.
 
@@ -44,17 +46,26 @@ per resolve.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from spectragent.core.capabilities.android.observations import (
+    CAPTURE_STATE,
+    FOREGROUND_APP,
+    PLATFORM,
+    SCREENSHOT,
+)
 from spectragent.core.capabilities.base import BaseCapability
 
-# Imported for its side effect of registering the capability, so
-# ``CapabilityRegistrar.get_all()`` sees it in the completeness guard.
+# Imported for their side effect of registering the capabilities, so
+# ``CapabilityRegistrar.get_all()`` sees them in the completeness guard.
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import BrowserStateSummary
+from tests._helpers.android_device import SERIAL, ScriptedPhone, android_capability
+from tests._helpers.fake_adb import FakeAdbServer
 
 
 @dataclass
@@ -315,7 +326,8 @@ class _CountingBrowserScope:
         )
 
 
-def browser_harness() -> CaptureHarness:
+@asynccontextmanager
+async def browser_harness() -> AsyncIterator[CaptureHarness]:
     """A ``BrowserCapability`` whose CDP round trips are counted, not made.
 
     Reaches into the capability's internals (``_scopes``,
@@ -334,7 +346,7 @@ def browser_harness() -> CaptureHarness:
     def break_capture() -> None:
         scope.broken = True
 
-    return CaptureHarness(
+    yield CaptureHarness(
         capability=cap,
         fragments=("browser.dom", "browser.screenshot"),
         # Emissions, not successful captures: one BrowserStateRequestEvent
@@ -346,10 +358,37 @@ def browser_harness() -> CaptureHarness:
     )
 
 
+@asynccontextmanager
+async def android_harness() -> AsyncIterator[CaptureHarness]:
+    """An ``AndroidCapability`` set up over the fake ADB server, every fragment negotiated.
+
+    The real bridge, session and transport run; only the device is scripted
+    (``tests/_helpers/android_device.py``). A capture is counted by its
+    ``screencap``, failed ones included, and breaking the capture makes
+    ``screencap`` fail, which fails the screenshot source and with it the
+    whole capture.
+    """
+    phone = ScriptedPhone()
+    async with FakeAdbServer({SERIAL: phone}) as adb, android_capability(adb) as capability:
+
+        def break_capture() -> None:
+            phone.screencap_fails = True
+
+        yield CaptureHarness(
+            capability=capability,
+            fragments=(SCREENSHOT, FOREGROUND_APP, PLATFORM, CAPTURE_STATE),
+            captures=lambda: sum(
+                1 for request in adb.requests if request.service == "shell,v2:screencap -p"
+            ),
+            break_capture=break_capture,
+        )
+
+
 #: capability_id → harness factory. **Add your capability here.**
 #:
 #: A fresh harness per test: these assertions drive cycles, and a shared
 #: instance would carry one test's cycle number into the next.
-HARNESS_FACTORIES: dict[str, Callable[[], CaptureHarness]] = {
+HARNESS_FACTORIES: dict[str, Callable[[], AbstractAsyncContextManager[CaptureHarness]]] = {
+    "android": android_harness,
     "browser": browser_harness,
 }

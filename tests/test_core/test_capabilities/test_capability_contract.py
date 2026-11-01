@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from typing import Any, ClassVar, Literal
 
 import pytest
@@ -45,9 +46,10 @@ CAPABILITY_IDS = sorted(HARNESS_FACTORIES)
 
 
 @pytest.fixture(params=CAPABILITY_IDS)
-def harness(request: pytest.FixtureRequest) -> CaptureHarness:
+async def harness(request: pytest.FixtureRequest) -> AsyncIterator[CaptureHarness]:
     """A fresh harness per test, for each registered capability."""
-    return HARNESS_FACTORIES[request.param]()
+    async with HARNESS_FACTORIES[request.param]() as harness:
+        yield harness
 
 
 # ── The shared contract, run against every capability ─────────────────

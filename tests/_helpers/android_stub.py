@@ -28,17 +28,21 @@ Its device is a script (:class:`StubDevice`): one capture reads the screen
 once and all three fragments come from it; a failed capture fails the rest of
 its cycle without capturing again (``tests/_helpers/capability_contract.py``).
 
-Every class registers inside :data:`ANDROID_STUB`, a conscribe
-``isolated_registries`` capture: a test activates it with
-``ANDROID_STUB.activate()``, and no other test's schema sees an ``android``
-key. Delete this module when the real capability lands; its contract harness
-then goes into ``HARNESS_FACTORIES``.
+Every class registers inside a conscribe ``isolated_registries`` capture: a
+test activates it with ``ANDROID_STUB.activate()``, and no other test's schema
+sees the stub's keys. The real capability (``spectragent/core/capabilities/android/``)
+registers the same keys, and a key holds one class, so the real classes step
+aside, inside an isolation block that puts them back, both while the stub is
+defined and while it is active. This module goes when the tests that still
+use it move to the real capability.
 """
 
 from __future__ import annotations
 
 import struct
 import zlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -46,11 +50,11 @@ from conscribe.testing import isolated_registries
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
 
-from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
 from spectragent.core.actions.params import AddressesElement, PointAxis
-from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.capabilities._registrar import CapabilityBase, CapabilityRegistrar
 from spectragent.schemas.action import ActionDescriptor
-from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
     FailedVisibleResources,
@@ -72,7 +76,32 @@ ACTIONS = (
 #: The Android-only actions UI-TARS's mobile verbs run as; no browser action shares a name.
 MOBILE_ACTIONS = ("android.long_press", "android.open_app", "android.press_key")
 
-ANDROID_STUB = isolated_registries()
+#: The stub's registrations, captured once at import.
+_STUB = isolated_registries()
+
+
+@contextmanager
+def _real_android_stepped_aside() -> Iterator[None]:
+    """A block in which no real Android class holds a key the stub registers."""
+    with isolated_registries():  # puts the real classes back on exit
+        for key in (SCREENSHOT, CAPTURE_STATE, PLATFORM):
+            ObservationRegistrar.unregister(key, missing_ok=True)
+        for key in ACTIONS:
+            ActionRegistrar.unregister(key, missing_ok=True)
+        CapabilityRegistrar.unregister("android", missing_ok=True)
+        yield
+
+
+class _AndroidStub:
+    """The stub, re-applied per test over whatever real Android classes are registered."""
+
+    @contextmanager
+    def activate(self) -> Iterator[None]:
+        with _real_android_stepped_aside(), _STUB.activate():
+            yield
+
+
+ANDROID_STUB = _AndroidStub()
 
 
 def _png_header(width: int, height: int) -> bytes:
@@ -83,7 +112,7 @@ def _png_header(width: int, height: int) -> bytes:
 
 # ── fragments ──────────────────────────────────────────────────────
 
-with ANDROID_STUB:
+with _real_android_stepped_aside(), _STUB:
 
     class AndroidScreenshotObs(FragmentBase):
         """``android.screenshot``: the screen, and the sizes a point on it needs."""
@@ -125,7 +154,7 @@ with ANDROID_STUB:
 
 # ── actions: the browser's relative names and params, described, never executed ──
 
-with ANDROID_STUB:
+with _real_android_stepped_aside(), _STUB:
 
     @dataclass
     class AndroidClickCoordinateAction(ActionBase):
@@ -305,7 +334,7 @@ class _Cycle:
     error: Exception | None = None
 
 
-with ANDROID_STUB:
+with _real_android_stepped_aside(), _STUB:
 
     class StubAndroidCapability(CapabilityBase):
         """``android``: three fragments from one screen read, seven actions described."""

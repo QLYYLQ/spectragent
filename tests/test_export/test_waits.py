@@ -174,13 +174,13 @@ def _texts(message: dict[str, Any]) -> str:
 # ── what counts as a wait, and which waits go ──────────────────
 
 
-def test_only_the_browser_wait_declares_that_it_only_waits() -> None:
+def test_only_the_wait_actions_declare_that_they_only_wait() -> None:
     ours = {
         key
         for key, cls in ActionRegistrar.get_all().items()
         if cls.__module__.startswith("spectragent.")
     }
-    assert {key for key in ours if is_wait_action(key)} == {"browser.wait"}
+    assert {key for key in ours if is_wait_action(key)} == {"android.wait", "browser.wait"}
     assert not is_wait_action("wait")  # a short name is not what a trace records
     assert not is_wait_action("nothing.registered")
 

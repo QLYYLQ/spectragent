@@ -84,7 +84,7 @@ All registrars use `conscribe.create_registrar(...)`. The ones marked ✅ alread
 | `DecisionModelRegistrar` | `model_type.provider` (nested) | `core/llm/decision_registrar.py` | Decision-only `decision_model` axis; `typesafe.direct` / `typesafe.openrouter`, shared model identity and lifecycle with Chat (§4.7) |
 | `ReplayReviewerRegistrar` | `reviewer_id` (flat) | `replay_review/_registrar.py` | Independent `replay_reviewer` jobs; `jev` owns a Decision receptor and separate results (§4.18) |
 | `EnvironmentRegistrar` | `env_type` (flat) | `core/environments/_registrar.py` | ✅ skeleton + prefix routing |
-| `CapabilityRegistrar` | `capability_id` (flat) | `core/capabilities/_registrar.py` | ✅ browser; docker/tool_sandbox/desktop_vm/android/gpu_profiling pending |
+| `CapabilityRegistrar` | `capability_id` (flat) | `core/capabilities/_registrar.py` | ✅ browser, android; docker/tool_sandbox/desktop_vm/gpu_profiling pending |
 | `ActionRegistrar` | `action_id` (flat) | `core/actions/_registrar.py` | ✅ + negotiation |
 | `ObservationRegistrar` | `fragment_id` (flat) | `schemas/observation/` | ✅ with `__source__` |
 | `TaskSetupRegistrar` | `setup_type` (flat) | `schemas/task.py` | ✅ not a config layer (the `ObservationRegistrar` precedent); each capability package registers its own task setup class (a `SetupBase` subclass) and names it `TASK_SETUP` in its `declarations.py`; `TaskDefinition.setup` dispatches on `setup_type` among the registered setups; `browser` (`core/capabilities/browser/task_setup.py`), `android` (`core/capabilities/android/task_setup.py`) |
