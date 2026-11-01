@@ -173,6 +173,7 @@ async def android_capability(
     fragments: Iterable[str] | None = None,
     settle_max_wait_s: float = 0.0,
     settle_quiet_ms: int = 300,
+    query_timeout_s: float = 5.0,
 ) -> AsyncIterator[AndroidCapability]:
     """An ``AndroidCapability`` set up over *adb*, negotiated to *fragments* (all when ``None``).
 
@@ -180,7 +181,9 @@ async def android_capability(
     otherwise, so a capture is one round trip per source.
     """
     capability = AndroidCapability(
-        settle_max_wait_s=settle_max_wait_s, settle_quiet_ms=settle_quiet_ms
+        settle_max_wait_s=settle_max_wait_s,
+        settle_quiet_ms=settle_quiet_ms,
+        query_timeout_s=query_timeout_s,
     )
     capability.backend = FakeServerProvider(adb.host, adb.port)
     await capability.setup(negotiation=None if fragments is None else frozenset(fragments))

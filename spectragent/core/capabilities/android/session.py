@@ -145,7 +145,7 @@ async def fan_out(sources: Mapping[str, Source[T]]) -> dict[str, T]:
             named with its reason, and the first failure is the cause.
     """
     names = list(sources)
-    results = await asyncio.gather(*(_ask(sources[name]) for name in names), return_exceptions=True)
+    results = await asyncio.gather(*(ask(sources[name]) for name in names), return_exceptions=True)
     answers: dict[str, T] = {}
     failures: list[str] = []
     first: BaseException | None = None
@@ -160,7 +160,8 @@ async def fan_out(sources: Mapping[str, Source[T]]) -> dict[str, T]:
     return answers
 
 
-async def _ask(source: Source[T]) -> T:
+async def ask(source: Source[T]) -> T:
+    """Ask one *source*; when its timeout passes, raise a ``TimeoutError`` that says how long it was."""
     limit = asyncio.timeout(source.timeout_s)
     try:
         async with limit:

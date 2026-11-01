@@ -26,7 +26,6 @@ the queue.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, cast
@@ -57,6 +56,7 @@ from spectragent.core.capabilities.android.session import (
     DeviceBusyError,
     DeviceSession,
     Source,
+    ask,
     fan_out,
 )
 from spectragent.core.capabilities.android.settle import Drawing, wait_until_still
@@ -426,12 +426,12 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
 
     async def _drawing(self) -> Drawing:
         """One poll of the wait for a still screen: the focused app and its frames so far."""
-        async with asyncio.timeout(self.query_timeout_s):
-            front = await self.bridge.apps.foreground()
-        if front.package is None:
+        apps = self.bridge.apps
+        front = await ask(Source(apps.foreground, self.query_timeout_s))
+        package = front.package
+        if package is None:
             return None, None
-        async with asyncio.timeout(self.query_timeout_s):
-            return front.package, await self.bridge.apps.frames_drawn(front.package)
+        return package, await ask(Source(lambda: apps.frames_drawn(package), self.query_timeout_s))
 
     async def _screenshot(self) -> FragmentBase:
         screen = self.bridge.screen

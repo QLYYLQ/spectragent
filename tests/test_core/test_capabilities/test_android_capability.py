@@ -10,6 +10,7 @@ wiring unchanged. The phone is ``tests/_helpers/android_device.py``.
 
 from __future__ import annotations
 
+import asyncio
 import typing
 from typing import Any
 
@@ -44,7 +45,7 @@ from tests._helpers.android_device import (
     png,
 )
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
-from tests._helpers.fake_adb import FakeAdbServer
+from tests._helpers.fake_adb import FakeAdbServer, ShellResult
 
 
 def _services(adb: FakeAdbServer) -> list[str]:
@@ -165,6 +166,34 @@ async def test_with_the_wait_on_a_capture_waits_for_the_app_to_stop_drawing() ->
     assert isinstance(state, AndroidCaptureStateObs) and state.settle is not None
     assert (state.settle.outcome, state.settle.loaded) == ("settled", None)
     assert state.settle.waited_ms >= 50
+
+
+async def test_a_poll_of_the_wait_that_gets_no_answer_is_recorded_with_its_limit() -> None:
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+
+    async def window_hangs(command: str) -> ShellResult:
+        if command == "dumpsys window":
+            await asyncio.Event().wait()
+        return await phone(command)
+
+    async with (
+        FakeAdbServer({SERIAL: window_hangs}) as adb,
+        android_capability(
+            adb,
+            fragments={SCREENSHOT, CAPTURE_STATE},
+            settle_max_wait_s=5,
+            settle_quiet_ms=50,
+            query_timeout_s=0.2,
+        ) as capability,
+    ):
+        await capability.begin_observation(1)
+        state = await capability.resolve_fragment(CAPTURE_STATE)
+
+    assert isinstance(state, AndroidCaptureStateObs) and state.settle is not None
+    assert (state.settle.outcome, state.settle.detail) == (
+        "unknown",
+        "TimeoutError: no answer within 0.2 s",
+    )
 
 
 def test_a_quiet_period_the_wait_could_never_reach_is_refused() -> None:
