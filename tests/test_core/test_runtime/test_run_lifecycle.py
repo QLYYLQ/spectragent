@@ -790,20 +790,36 @@ class TestCancellation:
 
         assert hook.calls == ["end(error='Execution cancelled')"]
 
-    async def test_a_reused_runtime_closes_a_cancelled_second_run_out(self):
-        """The close-out guard is per run: one finished run must not disarm the next."""
+    async def test_a_reused_runtime_closes_a_cancelled_second_run_out(self, monkeypatch):
+        """The close-out guard is per run: one finished run must not disarm the next.
+
+        Nor must its clock: the first run's scoring point stopped the execution
+        clock, and the second run, cancelled before it is scored, is timed from
+        its own start to its close-out. On a fake clock, because the real gap
+        between two runs can be under a millisecond, which the whole-millisecond
+        ``execution_ms`` would round away.
+        """
+        from types import SimpleNamespace
+
+        import spectragent.core.runtime as runtime_module
+
+        clock = SimpleNamespace(now=10.0)
+        monkeypatch.setattr(runtime_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
         hook = _RecordingHook([])
         loop = _SecondRunHangsLoop()
         runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, _make_env(), hooks=[hook]), AGENT_ID)
         await runtime.execute("first", task_id="t-1")
+        clock.now += 60.0  # the next task starts a minute later
 
         task = asyncio.create_task(runtime.execute("second", task_id="t-2", timeout=30))
         await loop.hanging.wait()
+        clock.now += 2.0
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
         assert hook.end_kwargs["result"].error == "Execution cancelled"
+        assert hook.end_kwargs["result"].metrics.execution_ms == 2000
         assert isinstance(hook.error_kwargs["error"], asyncio.CancelledError)
         # start, end for the first run; start, end, error for the second.
         assert [entry.split("(")[0] for entry in hook.log] == [
