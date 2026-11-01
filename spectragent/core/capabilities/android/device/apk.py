@@ -265,11 +265,16 @@ class _OutputMetadata(BaseModel):
     elements: tuple[_OutputElement, ...]
 
 
-def _signing_certificate(apk: Path, environment: Mapping[str, str]) -> str:
-    """The SHA-256 of the certificate that signed *apk*, as the SDK's apksigner reads it."""
+def android_sdk(environment: Mapping[str, str]) -> Path:
+    """The Android SDK: ``ANDROID_HOME`` or ``ANDROID_SDK_ROOT``, else where Android Studio puts it."""
     sdk = environment.get("ANDROID_HOME") or environment.get("ANDROID_SDK_ROOT")
     default = "Library/Android/sdk" if sys.platform == "darwin" else "Android/Sdk"
-    apksigner = Path(sdk or Path.home() / default) / "build-tools" / BUILD_TOOLS / "apksigner"
+    return Path(sdk) if sdk else Path.home() / default
+
+
+def _signing_certificate(apk: Path, environment: Mapping[str, str]) -> str:
+    """The SHA-256 of the certificate that signed *apk*, as the SDK's apksigner reads it."""
+    apksigner = android_sdk(environment) / "build-tools" / BUILD_TOOLS / "apksigner"
     result = subprocess.run(
         [str(apksigner), "verify", "--print-certs", str(apk)],
         env=dict(environment),

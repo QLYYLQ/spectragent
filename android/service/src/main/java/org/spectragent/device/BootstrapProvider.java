@@ -29,8 +29,6 @@ import java.util.regex.Pattern;
  */
 public final class BootstrapProvider extends ContentProvider {
     private static final String TAG = "Spectragent";
-    private static final int ROOT_UID = 0;
-    private static final int SHELL_UID = 2000;
     private static final String SESSION = "/session";
     /** What a session token is: long enough to be a secret. */
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{16,128}");
@@ -93,7 +91,7 @@ public final class BootstrapProvider extends ContentProvider {
 
     private static void checkCaller() {
         int caller = Binder.getCallingUid();
-        if (caller != ROOT_UID && caller != SHELL_UID) {
+        if (!Server.isHostUid(caller)) {
             throw new SecurityException("only the shell and root users use this provider, not uid " + caller);
         }
     }

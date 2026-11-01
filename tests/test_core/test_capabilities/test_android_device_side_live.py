@@ -19,8 +19,9 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
 - text committed through the service's input method at the cursor, Chinese
   included, and text set on the focused field;
 - events, in order and numbered without gaps;
-- the service refuses a wrong token, closes a hello over 64 KB without an
-  answer, and closes at once a connection past its limit;
+- the service refuses a wrong token, closes a connection from an app's uid
+  before reading it, closes a hello over 64 KB without an answer, and closes
+  at once a connection past its limit;
 - the helper's disable and enable keep another service's entry in the setting;
 - a force-stop of the package (what a task may do) takes the service out of
   the setting, and ``ensure_bound`` brings it back;
@@ -39,9 +40,12 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import shutil
 import struct
+import subprocess
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -50,8 +54,19 @@ from PIL import Image, ImageChops
 from spectragent.core.capabilities.android.adb import AdbClient, AdbError
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
 from spectragent.core.capabilities.android.bridge import ForegroundApp, parse_foreground
-from spectragent.core.capabilities.android.device.apk import PACKAGE, SERVICE_COMPONENT, ServiceApk
-from spectragent.core.capabilities.android.device.channel import Channel, HandshakeRefused
+from spectragent.core.capabilities.android.device.apk import (
+    BUILD_TOOLS,
+    PACKAGE,
+    SERVICE_COMPONENT,
+    ServiceApk,
+    android_sdk,
+)
+from spectragent.core.capabilities.android.device.channel import (
+    PROTOCOL_VERSION,
+    Channel,
+    HandshakeRefused,
+    encode_frame,
+)
 from spectragent.core.capabilities.android.device.clients import (
     ServiceEvent,
     ServiceEvents,
@@ -77,6 +92,46 @@ MAX_CONNECTIONS = 8
 #: Another service's entry in the setting, which neither disable nor enable may touch.
 OTHER_SERVICE = "com.example.kept/com.example.kept.KeptService"
 _POLL_S = 0.3
+#: The uids ``su`` runs the probe as, on the emulator's userdebug image: the shell user, as which
+#: adbd connects for the host, and an app's.
+SHELL_UID, APP_UID = 2000, 10000
+PROBE_PATH = "/data/local/tmp/spectragent-probe.dex"
+#: A client of an abstract socket, to connect as a peer the host never is: once connected it prints
+#: ``connected``, sends its stdin, and prints what comes back. The image has no such tool (toybox
+#: nc 0.8.6 knows only socket files), so the test builds it with the JDK and the SDK that build the
+#: APK.
+PROBE_SOURCE = """
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+
+public final class Probe {
+    public static void main(String[] args) throws Exception {
+        ByteArrayOutputStream sent = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        for (int read; (read = System.in.read(buffer)) != -1; ) {
+            sent.write(buffer, 0, read);
+        }
+        LocalSocket socket = new LocalSocket();
+        socket.connect(new LocalSocketAddress(args[0]));
+        System.out.println("connected");
+        try {
+            socket.getOutputStream().write(sent.toByteArray());
+            InputStream in = socket.getInputStream();
+            for (int read; (read = in.read(buffer)) != -1; ) {
+                System.out.write(buffer, 0, read);
+            }
+        } catch (IOException closed) {
+            // closed from the other end
+        } finally {
+            System.out.flush();
+            socket.close();
+        }
+    }
+}
+"""
 
 Node = AndroidAccessibilityNodeInfo
 
@@ -516,6 +571,73 @@ async def test_a_wrong_token_is_refused(up: Up) -> None:
             await Channel.open(reader, writer, token="not-this-sessions-token", component="service")
 
     assert refused.value.reason == "token"
+
+
+def _probe_dex(directory: Path) -> bytes:
+    """:data:`PROBE_SOURCE` as a dex, built with javac and the SDK's d8 (skips without them)."""
+    sdk = android_sdk(os.environ)
+    android_jar = sdk / "platforms" / "android-33" / "android.jar"
+    d8 = sdk / "build-tools" / BUILD_TOOLS / "d8"
+    java_home = os.environ.get("JAVA_HOME")
+    javac = str(Path(java_home) / "bin" / "javac") if java_home else shutil.which("javac")
+    if not (android_jar.is_file() and d8.is_file() and javac):
+        pytest.skip(f"the probe needs javac, {android_jar} and {d8}")
+    source = directory / "Probe.java"
+    source.write_text(PROBE_SOURCE)
+    for command in (
+        [
+            javac,
+            "--release",
+            "8",
+            "-classpath",
+            str(android_jar),
+            "-d",
+            str(directory),
+            str(source),
+        ],
+        [
+            str(d8),
+            "--min-api",
+            "30",
+            "--lib",
+            str(android_jar),
+            "--output",
+            str(directory),
+            str(directory / "Probe.class"),
+        ],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=120)
+    return (directory / "classes.dex").read_bytes()
+
+
+async def test_a_connection_from_an_apps_uid_is_closed_before_it_is_read(
+    up: Up, tmp_path: Path
+) -> None:
+    """The host arrives only through adbd, as the shell user or root; a peer of any other uid is
+    closed as soon as it is accepted. A hello with a wrong token shows it: the shell user's is
+    read and refused, an app's goes unread.
+
+    Both run under ``su``: SELinux keeps the ``shell`` domain (``adb shell`` itself) from
+    connecting to an app's socket at all, adbd excepted (seen on API 33)."""
+    if f"uid={APP_UID}" not in await _shell(up, f"su {APP_UID} id"):
+        pytest.skip("no su to run the probe as an app's uid")
+    dex = await asyncio.to_thread(_probe_dex, tmp_path)
+    await up.adb.shell(up.serial, f"cat > {PROBE_PATH} && chmod 644 {PROBE_PATH}", stdin=dex)
+    hello = encode_frame(
+        {"kind": "hello", "protocol": PROTOCOL_VERSION, "token": "not-this-sessions-token"}
+    )
+    probe = f"env CLASSPATH={PROBE_PATH} app_process / Probe spectragent_device"
+    try:
+        async with asyncio.timeout(_SHOWN_S):
+            as_shell = await up.adb.shell(up.serial, f"su {SHELL_UID} {probe}", stdin=hello)
+            as_app = await up.adb.shell(up.serial, f"su {APP_UID} {probe}", stdin=hello)
+    finally:
+        await _shell(up, f"rm -f {PROBE_PATH}")
+
+    assert as_shell.stdout.startswith(b"connected\n"), as_shell.stderr.decode(errors="replace")
+    assert b'"reason":"token"' in as_shell.stdout
+    assert as_app.stdout == b"connected\n", "an app's hello was read"
+    assert (await up.side.service.ping()).uptime_ms > 0
 
 
 async def test_a_hello_over_64_kb_closes_the_stream_unanswered(up: Up) -> None:

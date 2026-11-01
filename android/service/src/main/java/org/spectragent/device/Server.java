@@ -2,6 +2,7 @@ package org.spectragent.device;
 
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
+import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
@@ -17,9 +18,11 @@ import org.json.JSONObject;
 /**
  * Listens on an abstract Unix socket and serves each host connection on a thread of its own.
  *
- * <p>Any app on the device can connect to the name, and each connection holds two threads until
- * its hello times out, so at most {@link #MAX_CONNECTIONS} are open at once: one more is closed as
- * soon as it is accepted, before it is read from.
+ * <p>Any app on the device can connect to the name, but the host arrives only through adbd, so a
+ * connection whose peer is not the shell or root user ({@link #isHostUid}) is closed as soon as it
+ * is accepted. Behind that, each connection holds two threads until its hello times out, so at
+ * most {@link #MAX_CONNECTIONS} are open at once, and one more is closed as soon as it is accepted,
+ * before it is read from.
  */
 final class Server {
     private static final String TAG = "Spectragent";
@@ -34,6 +37,15 @@ final class Server {
     private final Set<Connection> connections = new HashSet<>();
     private LocalServerSocket listening;
     private volatile boolean stopped;
+
+    /**
+     * Whether a uid may use the device side: the shell user, as which adbd runs, or root, after
+     * {@code adb root}. The host arrives only through adbd; the bootstrap provider applies the same
+     * rule to its callers.
+     */
+    static boolean isHostUid(int uid) {
+        return uid == Process.SHELL_UID || uid == Process.ROOT_UID;
+    }
 
     /** Events is null for the helper, which pushes none. */
     Server(String name, Handler handler, EventHub events, Supplier<String> token, JSONObject hello) {
@@ -89,6 +101,12 @@ final class Server {
                 }
                 return;
             }
+            int uid = peerUid(socket);
+            if (!isHostUid(uid)) {
+                Log.w(TAG, name + " closed a connection from uid " + uid + ": only the shell and root users connect");
+                closeQuietly(socket);
+                continue;
+            }
             Connection connection = new Connection(socket, handler, events, token, hello);
             synchronized (connections) {
                 if (connections.size() >= MAX_CONNECTIONS) {
@@ -109,6 +127,23 @@ final class Server {
             }, "spectragent-connection");
             serving.setDaemon(true);
             serving.start();
+        }
+    }
+
+    /** The uid of the process at the other end, or -1 when the system does not say. */
+    private static int peerUid(LocalSocket socket) {
+        try {
+            return socket.getPeerCredentials().getUid();
+        } catch (IOException unknown) {
+            return -1;
+        }
+    }
+
+    private static void closeQuietly(LocalSocket socket) {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // closed already
         }
     }
 }
