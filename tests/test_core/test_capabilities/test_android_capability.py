@@ -99,8 +99,9 @@ async def test_setup_starts_the_device_side_and_teardown_stops_it_and_releases_t
 
         await capability.teardown()
         await capability.teardown()  # a second teardown does nothing
-        while phone.side.helper_exits == 0:  # it exits once its stdin ended
-            await asyncio.sleep(0.01)
+        async with asyncio.timeout(5):  # a helper that never exits fails, not hangs
+            while phone.side.helper_exits == 0:  # it exits once its stdin ended
+                await asyncio.sleep(0.01)
 
     assert provider.closed == ["fake-session"]
     assert not capability.is_alive
@@ -634,8 +635,9 @@ async def test_setup_refuses_a_device_whose_service_runs_another_build(tmp_path:
         provider = configured(capability, adb)
         with pytest.raises(DeviceSideError, match="runs the APK with SHA-256 1111"):
             await capability.setup()
-        while phone.side.helper_exits == 0:
-            await asyncio.sleep(0.01)
+        async with asyncio.timeout(5):  # a helper that never exits fails, not hangs
+            while phone.side.helper_exits == 0:
+                await asyncio.sleep(0.01)
 
     assert provider.closed == ["fake-session"] and not capability.is_alive
     assert phone.side.enabled is None, "the device side was stopped"

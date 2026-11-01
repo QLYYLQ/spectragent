@@ -8,10 +8,10 @@ The capability is composed from YAML, as a run composes it, with the
 injector and ``set_text`` as its typing backend, which every API level from 30
 runs. The one boot covers, in file order:
 
-- the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): the
-  emulator hands the guest the run's own key (its log's "Sending adb public
-  key" carries the run's ``adbkey.pub``) and the user's ``~/.android/adbkey*``
-  stay as they were;
+- the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): from
+  API 31 the emulator hands the guest the run's own key (its log's "Sending
+  adb public key" carries the run's ``adbkey.pub``), on the API 30 image it
+  hands over none, and the user's ``~/.android/adbkey*`` stay as they were;
 - the emulator's ``HOME`` is the run's: its console auth token is there, and a
   console command sent through adb with that ``HOME`` reaches the emulator;
 - the run's own ``netsimd``: its ``netsim.ini`` is in the run's ``TMPDIR``, the
@@ -263,12 +263,19 @@ async def _settings_from_scratch(booted: Booted) -> None:
 async def test_the_emulator_got_the_runs_own_key_and_the_users_keys_are_untouched(
     booted: Booted,
 ) -> None:
+    """Emulator 37.2.13 hands the key over only through the boot property
+    ``androidboot.qemu.adb.pubkey``, and logs it; the API 30 image takes none (2026-11-02)."""
+    platform = await _observe(booted, PLATFORM)
+    assert isinstance(platform, AndroidPlatformObs) and platform.sdk_int is not None
     log = (booted.run_directory / "emulator.log").read_text(errors="replace")
     sent = re.search(r"Sending adb public key \[(\S+)", log)
-    assert sent is not None, "the emulator's log names the key it hands the guest"
     run_key = (booted.run_directory / ".android" / "adbkey.pub").read_text().split()[0]
 
-    assert sent[1] == run_key
+    if platform.sdk_int >= 31:
+        assert sent is not None, "the emulator's log names the key it hands the guest"
+        assert sent[1] == run_key
+    else:
+        assert sent is None, "the API 30 image is handed no key"
     assert _key_state() == booted.user_keys
 
 
