@@ -23,6 +23,7 @@ fingerprints. Generated packages are excluded from discovery.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import warnings
@@ -218,6 +219,35 @@ def _chrome_skip_reason() -> str | None:
     return None
 
 
+#: The AVD the Android emulator tests boot. They are opt-in: a boot costs about
+#: 20 s and a few GB of memory, and the AVD is the machine owner's to name.
+TEST_AVD_VARIABLE = "SPECTRAGENT_TEST_AVD"
+
+
+def _android_emulator_skip_reason() -> str | None:
+    """Why the emulator tests cannot run here, or ``None`` if they can.
+
+    Resolved the way the ``local_emulator`` provider resolves the SDK and the
+    AVD, so a test skips exactly when a run would fail to find them.
+    """
+    from spectragent.core.capabilities.android.backends.local_emulator import (
+        find_avd_home,
+        find_sdk,
+    )
+
+    avd = os.environ.get(TEST_AVD_VARIABLE)
+    if not avd:
+        return f"set {TEST_AVD_VARIABLE} to the name of an AVD to boot"
+    try:
+        find_sdk(None, os.environ)
+    except FileNotFoundError as exc:
+        return str(exc)
+    avd_home = find_avd_home(None, os.environ)
+    if not (avd_home / f"{avd}.ini").is_file():
+        return f"no AVD named {avd!r} in {avd_home}"
+    return None
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
@@ -231,11 +261,19 @@ def pytest_configure(config: pytest.Config) -> None:
         "executable is found (CHROME_EXECUTABLE_PATH or the platform's "
         "install locations). Deselect with -m 'not requires_chrome'.",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_android_emulator: boots the Android emulator from the AVD "
+        f"${TEST_AVD_VARIABLE} names; skipped unless it is set and the SDK and the AVD "
+        "are found. Deselect with -m 'not requires_android_emulator'.",
+    )
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     chrome_reason: str | None = None
     chrome_checked = False
+    emulator_reason: str | None = None
+    emulator_checked = False
     for item in items:
         for mark in item.iter_markers(name="requires_benchmark_data"):
             reason = _benchmark_data_skip_reason(mark.args)
@@ -247,3 +285,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 chrome_reason, chrome_checked = _chrome_skip_reason(), True
             if chrome_reason is not None:
                 item.add_marker(pytest.mark.skip(reason=chrome_reason))
+        if item.get_closest_marker("requires_android_emulator") is not None:
+            if not emulator_checked:
+                emulator_reason, emulator_checked = _android_emulator_skip_reason(), True
+            if emulator_reason is not None:
+                item.add_marker(pytest.mark.skip(reason=emulator_reason))

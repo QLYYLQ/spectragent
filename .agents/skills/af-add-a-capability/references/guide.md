@@ -47,38 +47,45 @@ the click it is reacting to, with nothing on disk to say so.
 
 `tests/_helpers/capability_contract.py` holds the assertions.
 `tests/test_core/test_capabilities/test_capability_contract.py` runs them.
-You write **one factory** and inherit the whole suite:
+You write **one factory** and inherit the whole suite. A factory is an async context
+manager: the fixture enters it for each clause and leaves it afterwards, so a harness can
+hold a fake server or device open while the clause runs and close it after.
 
 ```python
 # tests/_helpers/capability_contract.py
-def docker_harness() -> CaptureHarness:
-    cap = DockerCapability()
-    fake = _CountingExecTransport()          # counts round trips; never runs docker
-    cap._exec = fake
-    cap.apply_negotiation({"docker.terminal", "docker.filesystem"})
-    return CaptureHarness(
-        capability=cap,
-        fragments=("docker.terminal", "docker.filesystem"),
-        captures=lambda: fake.calls,          # ATTEMPTS, not successes
-        break_capture=fake.make_it_fail,      # required, not optional
-    )
+@asynccontextmanager
+async def docker_harness() -> AsyncIterator[CaptureHarness]:
+    async with _CountingExecTransport() as fake:   # counts round trips; never runs docker
+        cap = DockerCapability()
+        cap._exec = fake
+        cap.apply_negotiation({"docker.terminal", "docker.filesystem"})
+        yield CaptureHarness(
+            capability=cap,
+            fragments=("docker.terminal", "docker.filesystem"),
+            captures=lambda: fake.calls,          # ATTEMPTS, not successes
+            break_capture=fake.make_it_fail,      # required, not optional
+        )
 
-HARNESS_FACTORIES: dict[str, Callable[[], CaptureHarness]] = {   # line 357
+HARNESS_FACTORIES: dict[str, Callable[[], AbstractAsyncContextManager[CaptureHarness]]] = {  # line 391
+    "android": android_harness,
     "browser": browser_harness,
     "docker": docker_harness,                                     # ← add yours
 }
 ```
 
 `test_every_registered_capability_has_a_contract_harness`
-(`test_capability_contract.py:86`) fails the moment your class registers and names the
+(`test_capability_contract.py:80`) fails the moment your class registers and names the
 file to edit. Do not delete or skip it.
 
-`CaptureHarness` (`capability_contract.py:60-93`) demands four things, each for a reason:
+`CaptureHarness` (`capability_contract.py:72-104`) demands four things, each for a reason:
 
 - **`capability`** — already "set up" *as far as resolving goes*: no network, no
-  container, no emulator. `browser_harness` (line 323) reaches into `cap._scopes` and
-  `cap._default_session_id` rather than calling `setup()`. A contract test that needs a
-  real Chrome is a contract test nobody runs; the suite is 25 tests in 0.21 s today.
+  container, no emulator. `browser_harness` (line 330) reaches into `cap._scopes` and
+  `cap._default_session_id` rather than calling `setup()`; `android_harness` (line 362)
+  runs the real `setup()`, bridge and ADB client against a fake ADB server
+  (`tests/_helpers/fake_adb.py`) that it keeps open until the clause ends. A contract test
+  that needs a real Chrome or emulator is a contract test nobody runs; the suite was 34
+  tests in under 2 s on 2026-11-01.
 - **`fragments`** — at least two keys served **from one capture**. `__post_init__` rejects
   fewer: the contract is about what several fragments of one cycle share.
 - **`captures()`** — count *attempts*, not successes. Clause 5 is precisely about a retry
@@ -90,21 +97,21 @@ file to edit. Do not delete or skip it.
 
 | Assertion (`capability_contract.py`) | What it pins |
 |---|---|
-| `assert_one_cycle_is_one_capture` :99 | Reading N fragments twice inside one cycle costs **one** capture, and returns the *same objects* |
-| `assert_next_cycle_resamples` :119 | Crossing a cycle boundary re-captures; no fragment survives it |
-| `assert_begin_observation_clears_the_cache` :140 | Cycle 1 reads only fragment A, cycle 2 only fragment B — the boundary is the **announcement**, not your read history |
-| `assert_fragments_carry_capture_time` :180 | Every fragment has a real `captured_at` inside the window it was resolved in |
-| `assert_a_failed_cycle_costs_one_capture` :209 | A failed cycle reading N fragments costs what a failed cycle reading 1 fragment costs |
-| `assert_foreign_action_policy_is_declared` :269 | `__invalidated_by_foreign_actions__` is a declared bool, not an environment-side assumption |
+| `assert_one_cycle_is_one_capture` :110 | Reading N fragments twice inside one cycle costs **one** capture, and returns the *same objects* |
+| `assert_next_cycle_resamples` :130 | Crossing a cycle boundary re-captures; no fragment survives it |
+| `assert_begin_observation_clears_the_cache` :150 | Cycle 1 reads only fragment A, cycle 2 only fragment B — the boundary is the **announcement**, not your read history |
+| `assert_fragments_carry_capture_time` :188 | Every fragment has a real `captured_at` inside the window it was resolved in |
+| `assert_a_failed_cycle_costs_one_capture` :217 | A failed cycle reading N fragments costs what a failed cycle reading 1 fragment costs |
+| `assert_foreign_action_policy_is_declared` :277 | `__invalidated_by_foreign_actions__` is a declared bool, not an environment-side assumption |
 
 Plus the multi-capability half, which only an `Environment` can exercise, in
-`test_capability_contract.py`: concurrency (`:249`), partial-failure isolation (`:317`),
-your real capability surviving a peer's failure (`:396`), a failed observation not scaling
-with fragment count through the real `observe()` (`:428`), and the foreign-action policy
-(`:488`).
+`test_capability_contract.py`: concurrency (`:243`), partial-failure isolation (`:305`),
+your real capability surviving a peer's failure (`:372`), a failed observation not scaling
+with fragment count through the real `observe()` (`:404`), and the foreign-action policy
+(`:462`).
 
-The suite has teeth, deliberately: `_WrongCapability` (`:549`) implements the two ways of
-getting this wrong as runnable code, and `TestTheContractHasTeeth` (`:613`) asserts each
+The suite has teeth, deliberately: `_WrongCapability` (`:521`) implements the two ways of
+getting this wrong as runnable code, and `TestTheContractHasTeeth` (`:585`) asserts each
 clause fails the mistake it exists to catch. Note which clause catches which — a
 capability that ignores `begin_observation` **passes** `assert_one_cycle_is_one_capture`,
 and the "served-key heuristic" **passes** `assert_next_cycle_resamples`. No single clause
@@ -112,7 +119,7 @@ is sufficient.
 
 > **If your capability genuinely captures per fragment** (one round trip per fragment, no
 > sharing), clauses 1 and 5 do not fit as written. The module docstring says so
-> explicitly (`capability_contract.py:37-42`): come change the suite, do not quietly
+> explicitly (`capability_contract.py:39-44`): come change the suite, do not quietly
 > report one capture per resolve.
 
 ### If your capability provides archivers — the archive contract
@@ -471,7 +478,7 @@ caller that reads one fragment twice.
 
 **If you capture per fragment:** the default no-op (`_registrar.py:236`) is correct. Skip
 to Step 4 — but read the failure-path clause anyway, and re-read
-`capability_contract.py:37-42` about the suite's assumption.
+`capability_contract.py:39-44` about the suite's assumption.
 
 **If one round trip yields several fragments:** override it, and take on two obligations.
 
@@ -519,7 +526,7 @@ run declared *required*: a required fragment raises `ObservationFailedError`
 (`environments/errors.py:15`), an optional one lands in the observation as a
 `FragmentFailure` (`schemas/observation/failure.py`) and the rest survives. Softening it
 inside the capability removes that decision from the only place that can make it. The
-contract suite asserts this directly — `_expect_failure` (`capability_contract.py:254`)
+contract suite asserts this directly — `_expect_failure` (`capability_contract.py:262`)
 fails your harness if `resolve_fragment` returns after `break_capture()`.
 
 ---
@@ -832,7 +839,7 @@ Before you call a capability done:
 - **A test stub capability must not define its own `__init__`.** `CapabilityBase.id` is an
   `Annotated` field, and a custom `__init__` hides it from conscribe's config extractor,
   which `tests/test_generated/test_no_dropped_annotated_fields.py` fails on. Set attributes
-  after construction — the `prime()` pattern at `test_capability_contract.py:152-159`.
+  after construction — the `prime()` pattern at `test_capability_contract.py:146-153`.
 - **`capabilities/_registrar.py` deliberately has no `from __future__ import
   annotations`** (`:11-17`). `CapabilityBase.id` must stay a real `Annotated[...]` object
   so subclasses' dataclass-generated `__init__` carries a resolvable annotation. Do not
@@ -843,7 +850,7 @@ Before you call a capability done:
   to propagate (`environments/_registrar.py:665-676`). Copy that shape.
 - **A hand-built negotiation result defaults to `required_fragments=frozenset()`** — i.e.
   nothing is required, so every failure is recorded rather than raised. Fine in a test
-  (`_negotiated` at `test_capability_contract.py:234`); a *production* caller that builds
+  (`_negotiated` at `test_capability_contract.py:228`); a *production* caller that builds
   one by hand silently degrades. `observe()` reads the field directly, never through
   `getattr(..., frozenset())`, precisely so this fails closed (`:390-394`).
 - **`getattr(obs, "x", None) is not None` does NOT guard an optional fragment slot.** The

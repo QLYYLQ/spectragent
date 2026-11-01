@@ -96,6 +96,7 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.backends.base import (
     BaseBrowserProvider,
+    ProviderSession,
     SharedBrowserProvider,
 )
 from spectragent.core.capabilities.browser.backends.browser_defaults import (
@@ -284,7 +285,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.browser_storage import BrowserStorageState
-from spectragent.schemas.provider_session import ProviderSession
 from spectragent.schemas.restoration import MediaAlignment, RestorationEvidence, Retarget
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 

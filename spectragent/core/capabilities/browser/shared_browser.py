@@ -8,9 +8,8 @@ from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
+from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider, ProviderSession
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
-from spectragent.schemas.provider_session import ProviderSession
 
 if TYPE_CHECKING:
     from spectragent.core.capabilities.browser.recorder_broker import (

@@ -20,6 +20,7 @@ from typing import Annotated, Any, ClassVar
 from pydantic import Field
 
 from spectragent.core.capabilities.browser.backends._registrar import BrowserProviderBase
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CAPTCHA_SOLVE,
     CDP,
@@ -27,7 +28,6 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     PROFILE,
     PROXY,
 )
-from spectragent.schemas.provider_session import ProviderSession
 
 
 @dataclass

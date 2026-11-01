@@ -13,11 +13,11 @@ import pytest
 
 from spectragent.core.capabilities.browser.backends.agentbay_lite import AgentBayProvider
 from spectragent.core.capabilities.browser.backends.airtop_lite import AirtopProvider
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.backends.browser_use_lite import BrowserUseProvider
 from spectragent.core.capabilities.browser.backends.hyperbrowser_lite import HyperbrowserProvider
 from spectragent.core.capabilities.browser.backends.lexmount import LexmountProvider
 from spectragent.core.capabilities.browser.backends.skyvern_lite import SkyvernProvider
-from spectragent.schemas.provider_session import ProviderSession
 
 
 class FakeSDK:

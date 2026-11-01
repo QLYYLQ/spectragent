@@ -44,6 +44,7 @@ import httpx
 from pydantic import Field
 
 from spectragent.core.capabilities.browser.backends._registrar import BrowserProviderBase
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import (
     BrowserDefaults,
     expected_browser_defaults,
@@ -69,7 +70,6 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.shared_browser import SharedBrowser
 from spectragent.core.experiment import ExperimentScope, InstanceIdentity
-from spectragent.schemas.provider_session import ProviderSession
 
 logger = logging.getLogger(__name__)
 

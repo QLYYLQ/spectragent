@@ -18,6 +18,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
@@ -43,7 +44,6 @@ from spectragent.core.capabilities.browser.replay.shims import (
     SHIM_TEMPLATE,
     render_shim,
 )
-from spectragent.schemas.provider_session import ProviderSession
 
 PINNED_DEFAULT_ARGS = (
     "--js-flags=--random-seed=1",

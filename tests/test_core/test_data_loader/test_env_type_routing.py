@@ -158,7 +158,7 @@ class TestSetupClassForEnv:
         assert setup_class_for_env("browser") is BrowserSetup
 
     def test_an_unknown_env_type_names_the_known_ones(self) -> None:
-        with pytest.raises(ValueError, match=r"env_type='mobile'.*known: browser"):
+        with pytest.raises(ValueError, match=r"env_type='mobile' \(known: [^)]*\bbrowser\b"):
             setup_class_for_env("mobile")
 
     def test_a_registered_setup_is_found_without_reading_every_package(

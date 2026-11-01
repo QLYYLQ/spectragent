@@ -24,6 +24,12 @@ from collections.abc import Callable
 
 from conscribe import discover
 
+from spectragent.core.capabilities.android.observations import (
+    AndroidCaptureStateObs,
+    AndroidForegroundAppObs,
+    AndroidPlatformObs,
+    AndroidScreenshotObs,
+)
 from spectragent.core.capabilities.browser.dom.budget import DOMBudgetReport
 from spectragent.core.capabilities.browser.dom.models import (
     FRAME_HANDLE_BASE,
@@ -44,7 +50,11 @@ from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
-from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
+from spectragent.schemas.observation.capture_state import (
+    FailedVisibleResources,
+    PointerState,
+    SettleState,
+)
 from spectragent.schemas.observation.fragments import (
     ActionResultObs,
     HistoryObs,
@@ -286,6 +296,38 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
                 status="unknown", detail="the probe got no answer within 1s"
             ),
         ),
+    },
+    "android.screenshot": {
+        "png": lambda: AndroidScreenshotObs(
+            image_bytes=PNG_BYTES,
+            image_width=1080,
+            image_height=2400,
+            viewport_width=1080,
+            viewport_height=2400,
+            producer="screencap",
+        ),
+    },
+    "android.foreground_app": {
+        "app": lambda: AndroidForegroundAppObs(
+            package="com.android.settings",
+            activity="com.android.settings.Settings",
+            window="com.android.settings/com.android.settings.Settings",
+        ),
+        "nothing_focused": AndroidForegroundAppObs,
+    },
+    "android.platform": {
+        "measured": lambda: AndroidPlatformObs(
+            fingerprint="google/sdk_gphone64_arm64/emu64a:13/TE1A.240213.009/12342917:userdebug/dev-keys",
+            input_method="com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME",
+            faketouch=True,
+        ),
+        "unreported": AndroidPlatformObs,
+    },
+    "android.capture_state": {
+        "capped": lambda: AndroidCaptureStateObs(
+            settle=SettleState(outcome="capped", waited_ms=2000, loaded=None, pending=("frames",))
+        ),
+        "no_wait": AndroidCaptureStateObs,
     },
     "loop.action_result": {
         "failed": lambda: ActionResultObs(

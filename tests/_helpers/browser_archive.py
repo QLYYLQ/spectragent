@@ -39,6 +39,7 @@ from spectragent.core.capabilities.browser.archive import (
     NetworkArchiver,
     StorageArchiver,
 )
+from spectragent.core.capabilities.browser.backends.base import ProviderSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
@@ -48,7 +49,6 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
 )
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.provider_session import ProviderSession
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient
 
 

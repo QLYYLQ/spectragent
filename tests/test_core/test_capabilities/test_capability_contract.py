@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from typing import Any, ClassVar, Literal
 
 import pytest
@@ -45,9 +46,10 @@ CAPABILITY_IDS = sorted(HARNESS_FACTORIES)
 
 
 @pytest.fixture(params=CAPABILITY_IDS)
-def harness(request: pytest.FixtureRequest) -> CaptureHarness:
+async def harness(request: pytest.FixtureRequest) -> AsyncIterator[CaptureHarness]:
     """A fresh harness per test, for each registered capability."""
-    return HARNESS_FACTORIES[request.param]()
+    async with HARNESS_FACTORIES[request.param]() as harness:
+        yield harness
 
 
 # ── The shared contract, run against every capability ─────────────────
@@ -370,9 +372,9 @@ class TestPartialFailureIsIsolated:
 class TestRealCapabilitySurvivesAPeersFailure:
     """The multi-capability clause, run against each shipped capability.
 
-    A stub stands in for the second capability because there is only one
-    real one so far; what is being pinned is the environment's behaviour
-    around a real resolver, not the stub's.
+    A stub stands in for the peer, so the peer can be made to fail on
+    demand; what is being pinned is the environment's behaviour around a
+    real resolver, not the stub's.
     """
 
     async def test_peer_failure_leaves_this_capability_observed(
