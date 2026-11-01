@@ -106,6 +106,23 @@ class TestTheQueue:
                 await _bounded(session.run(outer, what="outer", wait_s=1.0, run_s=1.0))
         assert await _bounded(session.run(inner, what="after", wait_s=1.0, run_s=1.0)) == "inner"
 
+    async def test_a_job_may_submit_to_another_device(self) -> None:
+        """Holding one device's turn says nothing about another device's."""
+        first, second = DeviceSession(SERIAL), DeviceSession("emulator-5556")
+
+        async def inner() -> str:
+            return "inner"
+
+        async def submits_to_the_other_device() -> str:
+            return await second.run(inner, what="inner", wait_s=_WAIT_S, run_s=_WAIT_S)
+
+        assert (
+            await _bounded(
+                first.run(submits_to_the_other_device, what="outer", wait_s=1.0, run_s=1.0)
+            )
+            == "inner"
+        )
+
     async def test_waiting_for_a_turn_is_not_taken_from_the_run_limit(self) -> None:
         """Lesson two: the wait limit and the run limit are separate."""
         session = DeviceSession(SERIAL)
