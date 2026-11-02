@@ -24,42 +24,35 @@ is worked out under its own interpreter, for the same instance:
 
 from __future__ import annotations
 
-import os
 import subprocess
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from pydantic import JsonValue
 
-from spectragent import PACKAGE_ROOT
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.capabilities.android.oracle.androidworld import Installation
-from spectragent.core.composer import ConfigComposer
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.llm.messages import BaseMessage
-from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace import RunTrace
 from spectragent.schemas.task import TaskContext, TaskDefinition
+from tests._helpers.android_runs import (
+    ScriptedModel,
+    androidworld_capability,
+    installation,
+    installation_problem,
+    write_task_list,
+)
 from tests._helpers.assembly import AGENT_ID, make_run
 
-ANDROIDWORLD_VARIABLE = "SPECTRAGENT_TEST_ANDROIDWORLD"
-APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 #: Scored on the title of the calendar event at one time of one day. AndroidWorld
 #: compares titles loosely, and this one is long enough that one stray
 #: character does not change the score.
 TASK = "SimpleCalendarEventOnDateAtTime"
 TASK_ID = f"{TASK}/42/0"
-TASK_LIST_WRITER = (
-    PACKAGE_ROOT / "core/capabilities/android/oracle/androidworld_service/task_list.py"
-)
 #: Prints the answer AndroidWorld expects of the instance ``task_list.py`` lists
 #: (suite seed 42, index 0), as its task makes it at initialize: ``random``
 #: seeded with the instance's seed, then the task's proto filled in.
@@ -76,41 +69,10 @@ proto_utils.initialize_proto(task.task, task.params)
 print(", ".join(str(value) for value in proto_utils.get_expected_answer(task.task)))
 """
 
-
-def _installation_problem() -> str | None:
-    root = os.environ.get(ANDROIDWORLD_VARIABLE)
-    if not root:
-        return f"set {ANDROIDWORLD_VARIABLE} to an AndroidWorld installation"
-    if not os.environ.get(APK_VARIABLE):
-        return f"set {APK_VARIABLE} to the device-side APK"
-    problems = Installation(Path(root).expanduser()).problems()
-    return "; ".join(problems) or None
-
-
 pytestmark = [
     pytest.mark.requires_android_emulator,
-    pytest.mark.skipif(_installation_problem() is not None, reason=str(_installation_problem())),
+    pytest.mark.skipif(installation_problem() is not None, reason=str(installation_problem())),
 ]
-
-
-class _ScriptedModel:
-    """Answers each call with the next reply of its script; no model is called."""
-
-    inference_kind = "chat"
-    model = name = "scripted"
-
-    def __init__(self, *replies: str) -> None:
-        self.replies = list(replies)
-
-    async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: object = None
-    ) -> ChatInvokeCompletion:
-        if not self.replies:
-            raise AssertionError("the script has no reply left")
-        return ChatInvokeCompletion(completion=self.replies.pop(0), usage=None)
-
-    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
-        return ()
 
 
 @dataclass(frozen=True)
@@ -124,24 +86,16 @@ class Listed:
 
 @pytest.fixture(scope="module")
 def listed(tmp_path_factory: pytest.TempPathFactory) -> Listed:
-    installation = Installation(Path(os.environ[ANDROIDWORLD_VARIABLE]).expanduser())
+    aw = installation()
     data = tmp_path_factory.mktemp("androidworld")
-    bare = {"PATH": "/usr/bin:/bin", "HOME": str(data)}
-    subprocess.run(
-        [str(installation.python), "-I", str(TASK_LIST_WRITER), "--src", str(installation.src)]
-        + ["--out", str(data), "--tasks", TASK],
-        check=True,
-        capture_output=True,
-        timeout=120,
-        env=bare,
-    )
+    write_task_list(data, TASK)
     expected = subprocess.run(
-        [str(installation.python), "-I", "-c", EXPECTED_ANSWER, str(installation.src), TASK],
+        [str(aw.python), "-I", "-c", EXPECTED_ANSWER, str(aw.src), TASK],
         check=True,
         capture_output=True,
         text=True,
         timeout=120,
-        env=bare,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(data)},
     ).stdout.strip()
     loader = AndroidWorldTaskLoader(data_dir=str(data))
     assert expected and loader.skipped == {}, "an information-retrieval task the loader keeps"
@@ -150,33 +104,14 @@ def listed(tmp_path_factory: pytest.TempPathFactory) -> Listed:
 
 async def _run(listed: Listed, answer: str, traces: Path) -> RunTrace:
     """One run whose agent ends at once with *answer*; its trace."""
-    raw: dict[str, JsonValue] = {
-        "capability": [
-            {
-                "capability_id": "android",
-                "backend": {
-                    "provider_id": "local_emulator",
-                    "avd": os.environ["SPECTRAGENT_TEST_AVD"],
-                },
-                "service_apk": os.environ[APK_VARIABLE],
-                "tap_injector": {"injector_id": "shell_injection"},
-                "typing_backend": {"typing_id": "set_text"},
-                "task_oracle": {
-                    "oracle_id": "androidworld",
-                    "root": os.environ[ANDROIDWORLD_VARIABLE],
-                },
-            }
-        ]
-    }
-    capability = ConfigComposer.for_config(raw).compose(raw).single("capability")
-    assert isinstance(capability, AndroidCapability)
+    capability = androidworld_capability()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
     writer = TraceWriter(trace_dir=str(traces))
     run = make_run(
         agent=UITarsAgent(prompt_template="mobile_use"),
         loop=ReactLoop(max_steps=3),
         env=env,
-        llm=_ScriptedModel(f"Action: finished(content={answer!r})"),
+        llm=ScriptedModel(f"Action: finished(content={answer!r})"),
         memory=SimpleMemory(),
         hooks=[writer],
     )

@@ -21,7 +21,6 @@ phone receives a stroke, a key or text.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -31,8 +30,7 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.android.actions import AndroidTypeCoordinateAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, UserMessage
-from spectragent.core.llm.views import ChatInvokeCompletion
+from spectragent.core.llm.messages import ContentPartTextParam, UserMessage
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import ActionDescriptor
@@ -43,33 +41,12 @@ from tests._helpers.android_device import (
     fake_service_apk,
     phone_server,
 )
+from tests._helpers.android_runs import ScriptedModel
 from tests._helpers.assembly import AGENT_ID, NoModel, StartSpy, make_env, make_run
 from tests._helpers.fake_adb import FakeAdbServer
 
 #: A verb the prompt's Available Actions teaches: ``- click(point='(x, y)')``.
 _TAUGHT_VERB = re.compile(r"^- (\w+)\(", re.MULTILINE)
-
-
-class _ScriptedModel:
-    """Answers each call with the next reply of its script, and keeps the messages of every call."""
-
-    inference_kind = "chat"
-    model = name = "scripted"
-
-    def __init__(self, *replies: str) -> None:
-        self.replies = list(replies)
-        self.calls: list[list[BaseMessage]] = []
-
-    async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: object = None
-    ) -> ChatInvokeCompletion:
-        self.calls.append(list(messages))
-        if not self.replies:
-            raise AssertionError("the script has no reply left")
-        return ChatInvokeCompletion(completion=self.replies.pop(0), usage=None)
-
-    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
-        return ()
 
 
 @pytest.fixture
@@ -94,7 +71,7 @@ def _android(adb: FakeAdbServer, apk: Path) -> AndroidCapability:
 
 
 async def _run(
-    agent: UITarsAgent, model: _ScriptedModel, adb: FakeAdbServer, apk: Path
+    agent: UITarsAgent, model: ScriptedModel, adb: FakeAdbServer, apk: Path
 ) -> AgentResult:
     env = make_env(AndroidEnvironment, {"android#0": _android(adb, apk)})
     run = make_run(agent=agent, loop=ReactLoop(), env=env, llm=model, memory=SimpleMemory())
@@ -104,7 +81,7 @@ async def _run(
 async def test_its_first_prompt_states_android(apk: Path) -> None:
     """Past ``prepare()``, setup and the first screenshot, where the renderer once refused android."""
     phone = ScriptedPhone()
-    model = _ScriptedModel("Action: finished(content='opened')")
+    model = ScriptedModel("Action: finished(content='opened')")
     async with phone_server(phone) as adb:
         result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb, apk)
 
@@ -125,7 +102,7 @@ async def test_its_first_prompt_states_android(apk: Path) -> None:
 
 async def test_available_actions_teach_the_mobile_verbs(apk: Path) -> None:
     """Every verb whose action Android offers, in its order; no ``hotkey``, as it offers no chords."""
-    model = _ScriptedModel("Action: finished()")
+    model = ScriptedModel("Action: finished()")
     async with phone_server(ScriptedPhone()) as adb:
         result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb, apk)
 
@@ -149,7 +126,7 @@ async def test_available_actions_teach_the_mobile_verbs(apk: Path) -> None:
 async def test_press_home_presses_the_home_key_on_the_phone(apk: Path) -> None:
     """``press_home()`` runs as ``android.press_key`` with ``key='home'``, Android's home key."""
     phone = ScriptedPhone()
-    model = _ScriptedModel("Action: press_home()", "Action: finished()")
+    model = ScriptedModel("Action: press_home()", "Action: finished()")
     async with phone_server(phone) as adb:
         result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb, apk)
 
@@ -160,7 +137,7 @@ async def test_press_home_presses_the_home_key_on_the_phone(apk: Path) -> None:
 async def test_long_press_holds_where_its_point_lands_on_the_screen(apk: Path) -> None:
     """The point is written on the 0-1000 grid and held at the screen pixel it names."""
     phone = ScriptedPhone()  # 1080 x 2400
-    model = _ScriptedModel("Action: long_press(start_box='(250, 750)')", "Action: finished()")
+    model = ScriptedModel("Action: long_press(start_box='(250, 750)')", "Action: finished()")
     agent = UITarsAgent(prompt_template="mobile_use", coordinate_space="normalized_1000")
     async with phone_server(phone) as adb:
         result = await _run(agent, model, adb, apk)
@@ -172,7 +149,7 @@ async def test_long_press_holds_where_its_point_lands_on_the_screen(apk: Path) -
 
 async def test_type_without_a_point_types_into_the_field_that_has_focus(apk: Path) -> None:
     phone = ScriptedPhone(text_field=True)
-    model = _ScriptedModel("Action: type(content='hello')", "Action: finished()")
+    model = ScriptedModel("Action: type(content='hello')", "Action: finished()")
     async with phone_server(phone) as adb:
         result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb, apk)
 
@@ -184,7 +161,7 @@ async def test_type_without_a_point_where_no_text_field_has_focus_reaches_nothin
     apk: Path,
 ) -> None:
     phone = ScriptedPhone()
-    model = _ScriptedModel("Action: type(content='hello')", "Action: finished()")
+    model = ScriptedModel("Action: type(content='hello')", "Action: finished()")
     async with phone_server(phone) as adb:
         result = await _run(UITarsAgent(prompt_template="mobile_use"), model, adb, apk)
 

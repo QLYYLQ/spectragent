@@ -19,50 +19,30 @@ Measured 2026-11-02 on AndroidWorld's AVD: 0.0 unsolved, 1.0 solved.
 
 from __future__ import annotations
 
-import os
-import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from pydantic import JsonValue
 
-from spectragent import PACKAGE_ROOT
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
-from spectragent.core.capabilities.android.oracle.androidworld import Installation
-from spectragent.core.composer import ConfigComposer
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.schemas.action import Action
+from tests._helpers.android_runs import (
+    FORWARDER,
+    androidworld_capability,
+    installation_problem,
+    write_task_list,
+)
 
-ANDROIDWORLD_VARIABLE = "SPECTRAGENT_TEST_ANDROIDWORLD"
-APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 TASK = "ClockStopWatchRunning"
-TASK_LIST_WRITER = (
-    PACKAGE_ROOT / "core/capabilities/android/oracle/androidworld_service/task_list.py"
-)
-FORWARDER = (
-    "com.google.androidenv.accessibilityforwarder/"
-    "com.google.androidenv.accessibilityforwarder.AccessibilityForwarder"
-)
-
-
-def _installation_problem() -> str | None:
-    root = os.environ.get(ANDROIDWORLD_VARIABLE)
-    if not root:
-        return f"set {ANDROIDWORLD_VARIABLE} to an AndroidWorld installation"
-    if not os.environ.get(APK_VARIABLE):
-        return f"set {APK_VARIABLE} to the device-side APK"
-    return "; ".join(Installation(Path(root).expanduser()).problems()) or None
-
 
 pytestmark = [
     pytest.mark.requires_android_emulator,
-    pytest.mark.skipif(_installation_problem() is not None, reason=str(_installation_problem())),
+    pytest.mark.skipif(installation_problem() is not None, reason=str(installation_problem())),
     pytest.mark.asyncio(loop_scope="module"),
 ]
 
@@ -76,36 +56,10 @@ class Prepared:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Prepared]:
-    installation = Installation(Path(os.environ[ANDROIDWORLD_VARIABLE]).expanduser())
     data = tmp_path_factory.mktemp("androidworld")
-    subprocess.run(
-        [str(installation.python), "-I", str(TASK_LIST_WRITER), "--src", str(installation.src)]
-        + ["--out", str(data), "--tasks", TASK],
-        check=True,
-        capture_output=True,
-        timeout=180,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(data)},
-    )
+    write_task_list(data, TASK)
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(f"{TASK}/42/0")
-    raw: dict[str, JsonValue] = {
-        "capability": [
-            {
-                "capability_id": "android",
-                "backend": {
-                    "provider_id": "local_emulator",
-                    "avd": os.environ["SPECTRAGENT_TEST_AVD"],
-                },
-                "service_apk": os.environ[APK_VARIABLE],
-                "tap_injector": {"injector_id": "shell_injection"},
-                "typing_backend": {"typing_id": "set_text"},
-                "ui_tree_cleaner": {"cleaner_id": "androidworld"},
-                "ui_tree_serializer": {"serializer_id": "m3a"},
-                "task_oracle": {"oracle_id": "androidworld", "root": str(installation.root)},
-            }
-        ]
-    }
-    capability = ConfigComposer.for_config(raw).compose(raw).single("capability")
-    assert isinstance(capability, AndroidCapability)
+    capability = androidworld_capability()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
     env.check_setup(context.env)
     await env.setup(context.env)
