@@ -44,7 +44,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ClassVar
 
 from agent_cdp import (
@@ -193,6 +193,29 @@ def _focused_field_verdict(reply: Any) -> bool | None:
 #: How often the focused element is read again while typing waits for focus
 #: to land on a text field (``BrowserCapability.type_focus_wait_s``).
 FOCUS_POLL_S = 0.05
+
+
+def _focus_stayed_away(before: FieldProbe) -> Callable[[FieldProbe], Awaitable[str | None]]:
+    """The judge of a clicked ``type_coordinate`` (user ruling 2026-11-02): why focus stayed away.
+
+    Given only when the point was measured outside the field *before* held
+    belongs to, as drawn, before the click. Refuses the field a probe reads
+    when it is that element;
+    anything else, focus that moved or a reading that cannot tell, is no
+    reason to refuse.
+    """
+
+    async def away(field: FieldProbe) -> str | None:
+        if await field.holds_same_element(before) is not True:
+            return None
+        named = (
+            field.target.text()
+            if isinstance(field.target, ElementFacts)
+            else "the element that had it"
+        )
+        return f"focus stayed on {named}, away from the clicked point"
+
+    return away
 
 
 def _no_text_entry(field: FieldProbe) -> str | None:
@@ -906,17 +929,41 @@ class ActionWatchdog(BrowserWatchdog):
         lands a moment later included (an earlier action of the same reply
         may have clicked a widget that focuses its field after a delay).
 
+        With a point, the focused element is held before the click, and
+        whether the point is in its field measured then, since the page may
+        move it afterwards. The field is the one the person sees: the
+        element's largest ancestor holding no other text field (a code
+        editor's wrapper around its hidden textarea, the box an input shares
+        with its label or icon). The point is in it where what is drawn on top
+        there belongs to it and the point is in its box (only the first, for
+        a box with no area or a field that is the page's root element), or on
+        the element's own ``<label>``. The rule is the one every capability's
+        ``type_coordinate`` keeps (user rulings of 2026-11-02,
+        ``docs/architecture_design.md`` §4.9): focus that moved to a text field
+        is typed into, wherever it is (a click on an opener that focuses a
+        field elsewhere); focus that stayed on the element that had it, with
+        the point outside its field, is refused (the click landed on the
+        caption of another field, whose press keeps focus where it was), and
+        nothing is cleared or typed. Focus may leave the old element a moment
+        after the click, so the focus wait covers that too.
+
         The focusing click measures nothing: this action's effect is the
         typing's (``TextInputEffect``), measured from the focus it left.
         """
         budget = self._effect_budget()
         x, y = event.coordinate_x, event.coordinate_y
         point = (x, y) if x is not None and y is not None else None
-        if point is not None:
-            clicked = await self._click_at(*point, "left", 1, label=f"({point[0]}, {point[1]})")
-            if "error" in clicked:
-                return clicked
+        before: FieldProbe | None = None
+        away: Callable[[FieldProbe], Awaitable[str | None]] | None = None
         try:
+            if point is not None:
+                before = FieldProbe(self._cdp, self._element_session(None), budget)
+                await before.locate(before_click=True)
+                if await before.field_holds_point(*point) is False:
+                    away = _focus_stayed_away(before)
+                clicked = await self._click_at(*point, "left", 1, label=f"({point[0]}, {point[1]})")
+                if "error" in clicked:
+                    return clicked
             return await self._insert_text_at_focus(
                 event.text,
                 event.clear,
@@ -928,10 +975,15 @@ class ActionWatchdog(BrowserWatchdog):
                     if point is not None
                     else "No text field has focus"
                 ),
+                away=away,
             )
         except Exception as e:
             logger.error("Type at coordinate failed: %s", e)
             return {"error": str(e)}
+        finally:
+            if before is not None:
+                # Cleanup, not a measurement: a spent budget must not keep it.
+                await before.release()
 
     async def _insert_text_at_focus(
         self,
@@ -941,6 +993,7 @@ class ActionWatchdog(BrowserWatchdog):
         budget: ProbeBudget,
         no_field: str,
         session_id: str | None = None,
+        away: Callable[[FieldProbe], Awaitable[str | None]] | None = None,
     ) -> dict[str, Any]:
         """Clear (optionally) and enter *text* into the focused text field.
 
@@ -957,6 +1010,10 @@ class ActionWatchdog(BrowserWatchdog):
         *no_field* and says what has focus instead, plus the effect it
         measured. A select-all with nothing editable focused selects the whole
         page's text, and the text then goes nowhere.
+
+        *away*, given with a clicked point that was outside the field of the
+        element that had focus before the click, refuses a text field too: it
+        says why when focus stayed on that element, and ``None`` otherwise.
 
         Focus the page moves a moment after the click, the ``DOM.focus`` or
         an earlier action (a widget that focuses its input on a timer or
@@ -1001,9 +1058,16 @@ class ActionWatchdog(BrowserWatchdog):
         sid = self._element_session(session_id)
         field = FieldProbe(self._cdp, sid, budget)
         keys: tuple[str, ...] = ()
+
+        async def verdict(probe: FieldProbe) -> str | None:
+            refused = _no_text_entry(probe)
+            if refused is None and away is not None:
+                refused = await away(probe)
+            return refused
+
         try:
             await field.before()
-            refused = _no_text_entry(field)
+            refused = await verdict(field)
             if refused is not None:
                 # The wait spends at most ``type_focus_wait_s`` of the budget;
                 # the rest is kept for the probes after it.
@@ -1027,9 +1091,9 @@ class ActionWatchdog(BrowserWatchdog):
                     finally:
                         # The reading not kept: the one replaced, or one that
                         # could not say where focus is.
-                        await budget.run(again.release, "release field")
+                        await again.release()
                     if adopted:
-                        refused = _no_text_entry(field)
+                        refused = await verdict(field)
             if refused is not None:
                 error = f"{no_field}: {refused}, so no text was typed."
                 logger.info("Not typing: %s", error)
@@ -1064,7 +1128,7 @@ class ActionWatchdog(BrowserWatchdog):
             value_changed = await field.after()
             focus_after = await focused_element(self._cdp, self._session_id, budget)
         finally:
-            await budget.run(field.release, "release field")
+            await field.release()
         return {
             "typed": True,
             "length": len(text),
@@ -1604,7 +1668,7 @@ class ActionWatchdog(BrowserWatchdog):
             logger.error("SendKeys failed: %s", e)
             return {"error": f"{type(e).__name__}: {e}"}
         finally:
-            await budget.run(field.release, "release field")
+            await field.release()
         types_a_character = (
             chord.char_text is not None
             and chord.char_text.isprintable()

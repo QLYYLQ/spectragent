@@ -35,10 +35,41 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   same widget marked ``aria-readonly`` ``#text_locked`` (``Locked``), a light-DOM
   component ``<x-select>`` ``#text_component`` with role ``combobox``
   (``City``), a ``div`` ``#text_closed`` hosting a closed shadow root filled by
-  a text field (``window.__closedField``; the host delegates focus to it), and
-  a paragraph of text; :data:`FIELDS_EMPTY_POINT` is on none of them. A
+  a text field (``window.__closedField``; the host delegates focus to it), a
+  text field ``#text_first`` (``First name``, holding ``Grace``), a text field
+  ``#text_last`` (``Last name``) and beside it its caption ``#text_last_label``
+  (``Last name``), plain text whose press keeps focus where it was (as an
+  editor's toolbar keeps it in the editor), three fields drawn larger than
+  the element that takes the text — a code editor ``#text_code`` whose lines
+  (``#text_code_line1`` to ``#text_code_line3``) keep focus in its hidden
+  one-line textarea ``#text_code_input`` (``Code``), as CodeMirror does, and
+  are drawn below the editor's own box, which has no height (content
+  positioned out of its ancestors' boxes, as a page leaves its body with no
+  height when all it holds is absolutely positioned); a box
+  ``#text_labelled_box`` holding the text field ``#text_labelled``
+  (``Email``) and its own ``<label for>`` ``#text_labelled_label``; a box
+  ``#text_iconed_box`` holding the text field ``#text_iconed`` (``Find``) and
+  an icon ``#text_icon`` whose press focuses it — two text fields
+  ``#text_given`` (``Given name``) and ``#text_family`` (``Family name``),
+  each beside its own ``<label for>`` (``#text_given_label``,
+  ``#text_family_label``) with no box of their own, a text field
+  ``#text_menu`` (``Flavour``, holding ``Ada``) whose box ``#text_menu_row``
+  also holds a dropdown's catcher ``#text_menu_catcher``: shown while the
+  field has focus, transparent, fixed over the whole page, its press keeping
+  focus where it was; a box ``#text_shadow_pair`` holding a text field
+  ``#text_shadow_first`` (``Shadow first``, holding ``Ada``), a caption
+  ``#text_shadow_caption`` whose press keeps focus where it was, and a host
+  ``#text_shadow_host`` whose open shadow root holds another text field; the
+  same with a same-site ``<iframe>`` ``#text_frame_last`` holding the other
+  field (``#text_frame_pair``, ``#text_frame_first`` (``Frame first``, holding
+  ``Ada``), ``#text_frame_caption``); and a paragraph of text;
+  :data:`FIELDS_EMPTY_POINT` is on none of them. A
   capture-phase listener keeps the ``key`` of every keydown the page's own
   document sees in ``window.__keys``;
+- ``editor_alone.html`` — the page's only text field: a code editor
+  ``#alone_code`` like ``fields.html``'s, under a note ``#alone_note`` that
+  gives the page some height, its lines (``#alone_line1``, ``#alone_line3``)
+  drawn below the page's own box, so the field is the page's root element;
 - ``far.html`` — a button ``#far`` (``Far button``) at :data:`FAR_LEFT` px from
   the left of a page wider than the viewport, so its centre starts outside it;
   ``far_hidden.html`` is the same page with horizontal overflow hidden, as some
@@ -103,6 +134,38 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "text_locked": (400, 300, 300, 32),
     "text_component": (400, 350, 300, 32),
     "text_closed": (400, 400, 300, 32),
+    "text_first": (400, 450, 300, 32),
+    "text_last_label": (400, 500, 100, 32),
+    "text_last": (510, 500, 190, 32),
+    "text_code": (720, 300, 300, 0),
+    "text_code_input": (720, 300, 2, 16),
+    "text_code_line1": (720, 300, 300, 32),
+    "text_code_line2": (720, 332, 300, 32),
+    "text_code_line3": (720, 364, 300, 32),
+    "text_labelled_box": (720, 420, 300, 32),
+    "text_labelled_label": (720, 420, 70, 32),
+    "text_labelled": (800, 420, 220, 32),
+    "text_iconed_box": (720, 470, 300, 40),
+    "text_icon": (724, 474, 32, 32),
+    "text_iconed": (760, 474, 256, 32),
+    "text_given_label": (720, 530, 90, 24),
+    "text_given": (820, 530, 200, 24),
+    "text_family_label": (720, 560, 90, 24),
+    "text_family": (820, 560, 200, 24),
+    "text_menu_row": (1040, 20, 220, 32),
+    "text_menu": (1040, 20, 220, 32),
+    "text_shadow_pair": (1040, 80, 220, 120),
+    "text_shadow_first": (1040, 80, 220, 32),
+    "text_shadow_caption": (1040, 125, 220, 24),
+    "text_shadow_host": (1040, 160, 220, 32),
+    "text_frame_pair": (1040, 230, 220, 120),
+    "text_frame_first": (1040, 230, 220, 32),
+    "text_frame_caption": (1040, 275, 220, 24),
+    "text_frame_last": (1040, 310, 220, 40),
+    "alone_code": (100, 200, 400, 0),
+    "alone_input": (100, 200, 2, 16),
+    "alone_line1": (100, 200, 400, 32),
+    "alone_line3": (100, 264, 400, 32),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -111,6 +174,16 @@ _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
 def _box(name: str) -> str:
     left, top, width, height = BOXES[name]
     return f"position:absolute;left:{left}px;top:{top}px;width:{width}px;height:{height}px;"
+
+
+def _box_in(name: str, parent: str) -> str:
+    """``name``'s box positioned inside ``parent``'s, which is itself positioned."""
+    left, top, width, height = BOXES[name]
+    parent_left, parent_top, _, _ = BOXES[parent]
+    return (
+        f"position:absolute;left:{left - parent_left}px;top:{top - parent_top}px;"
+        f"width:{width}px;height:{height}px;"
+    )
 
 
 def centre(name: str) -> tuple[int, int]:
@@ -262,8 +335,24 @@ def _pages() -> dict[str, tuple[str, bytes]]:
             )
         },
         "fields.html": ("text/html; charset=utf-8", _fields_page()),
+        "editor_alone.html": ("text/html; charset=utf-8", _editor_alone_page()),
         "ok.png": ("image/png", _png((30, 120, 200))),
     }
+
+
+def _editor_alone_page() -> bytes:
+    return _page(
+        "Editor",
+        '<p id="alone_note" style="margin:0;height:40px">A note above the editor.</p>'
+        f'<div id="alone_code" style="{_box("alone_code")}cursor:text" '
+        "onmousedown=\"event.preventDefault(); document.getElementById('alone_input').focus()\">"
+        f'<textarea id="alone_input" aria-label="Alone" '
+        f'style="{_box_in("alone_input", "alone_code")}opacity:0;padding:0;border:0;'
+        'resize:none;overflow:hidden"></textarea>'
+        f'<div id="alone_line1" style="{_box_in("alone_line1", "alone_code")}">line one</div>'
+        f'<div id="alone_line3" style="{_box_in("alone_line3", "alone_code")}">line three</div>'
+        "</div>",
+    )
 
 
 def _fields_page() -> bytes:
@@ -301,6 +390,62 @@ def _fields_page() -> bytes:
         f'<x-select id="text_component" role="combobox" tabindex="0" aria-label="City" '
         f'style="{_box("text_component")}display:block;border:1px solid #888">Beijing</x-select>'
         f'<div id="text_closed" style="{_box("text_closed")}"></div>'
+        f'<input id="text_first" aria-label="First name" value="Grace" '
+        f'style="{_box("text_first")}">'
+        f'<span id="text_last_label" onmousedown="event.preventDefault()" '
+        f'style="{_box("text_last_label")}">Last name</span>'
+        f'<input id="text_last" aria-label="Last name" style="{_box("text_last")}">'
+        f'<div id="text_code" style="{_box("text_code")}cursor:text" '
+        'onmousedown="event.preventDefault(); '
+        "document.getElementById('text_code_input').focus()\">"
+        f'<textarea id="text_code_input" aria-label="Code" '
+        f'style="{_box_in("text_code_input", "text_code")}opacity:0;padding:0;border:0;'
+        'resize:none;overflow:hidden"></textarea>'
+        f'<div id="text_code_line1" style="{_box_in("text_code_line1", "text_code")}">'
+        "line one</div>"
+        f'<div id="text_code_line2" style="{_box_in("text_code_line2", "text_code")}">'
+        "line two</div>"
+        f'<div id="text_code_line3" style="{_box_in("text_code_line3", "text_code")}">'
+        "line three</div></div>"
+        f'<div id="text_labelled_box" style="{_box("text_labelled_box")}">'
+        f'<label id="text_labelled_label" for="text_labelled" '
+        f'style="{_box_in("text_labelled_label", "text_labelled_box")}">Email</label>'
+        f'<input id="text_labelled" '
+        f'style="{_box_in("text_labelled", "text_labelled_box")}"></div>'
+        f'<div id="text_iconed_box" style="{_box("text_iconed_box")}outline:1px solid #888">'
+        f'<span id="text_icon" style="{_box_in("text_icon", "text_iconed_box")}" '
+        'onmousedown="event.preventDefault(); '
+        "document.getElementById('text_iconed').focus()\">Q</span>"
+        f'<input id="text_iconed" aria-label="Find" '
+        f'style="{_box_in("text_iconed", "text_iconed_box")}border:0"></div>'
+        f'<label id="text_given_label" for="text_given" style="{_box("text_given_label")}">'
+        "Given name</label>"
+        f'<input id="text_given" style="{_box("text_given")}">'
+        f'<label id="text_family_label" for="text_family" style="{_box("text_family_label")}">'
+        "Family name</label>"
+        f'<input id="text_family" style="{_box("text_family")}">'
+        f'<div id="text_menu_row" style="{_box("text_menu_row")}">'
+        f'<input id="text_menu" aria-label="Flavour" value="Ada" '
+        f'style="{_box_in("text_menu", "text_menu_row")}" '
+        "onfocus=\"document.getElementById('text_menu_catcher').style.display = 'block'\" "
+        "onblur=\"document.getElementById('text_menu_catcher').style.display = 'none'\">"
+        '<div id="text_menu_catcher" onmousedown="event.preventDefault()" '
+        'style="display:none;position:fixed;left:0;top:0;right:0;bottom:0;z-index:10"></div>'
+        "</div>"
+        f'<div id="text_shadow_pair" style="{_box("text_shadow_pair")}">'
+        f'<input id="text_shadow_first" aria-label="Shadow first" value="Ada" '
+        f'style="{_box_in("text_shadow_first", "text_shadow_pair")}">'
+        f'<span id="text_shadow_caption" onmousedown="event.preventDefault()" '
+        f'style="{_box_in("text_shadow_caption", "text_shadow_pair")}">Shadow last</span>'
+        f'<div id="text_shadow_host" style="{_box_in("text_shadow_host", "text_shadow_pair")}">'
+        "</div></div>"
+        f'<div id="text_frame_pair" style="{_box("text_frame_pair")}">'
+        f'<input id="text_frame_first" aria-label="Frame first" value="Ada" '
+        f'style="{_box_in("text_frame_first", "text_frame_pair")}">'
+        f'<span id="text_frame_caption" onmousedown="event.preventDefault()" '
+        f'style="{_box_in("text_frame_caption", "text_frame_pair")}">Frame last</span>'
+        f'<iframe id="text_frame_last" srcdoc="{escape(frame_input)}" '
+        f'style="{_box_in("text_frame_last", "text_frame_pair")}border:0"></iframe></div>'
         f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
         "<script>window.__keys = [];"
         " addEventListener('keydown', e => window.__keys.push(e.key), true);"
@@ -314,7 +459,10 @@ def _fields_page() -> bytes:
         "  .attachShadow({mode: 'closed', delegatesFocus: true});"
         ' closed.innerHTML = \'<input aria-label="Closed" style="width:100%;height:100%;'
         "box-sizing:border-box;margin:0\">';"
-        " window.__closedField = closed.querySelector('input');</script>",
+        " window.__closedField = closed.querySelector('input');"
+        " document.getElementById('text_shadow_host').attachShadow({mode: 'open'}).innerHTML ="
+        ' \'<input aria-label="Shadow last" style="width:100%;height:100%;box-sizing:border-box">\';'
+        "</script>",
     )
 
 

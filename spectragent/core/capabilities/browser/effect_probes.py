@@ -265,6 +265,111 @@ _FOCUS_EXPRESSION = (
 _FOCUSED_REF_EXPRESSION = (
     "(() => {" + DEEP_FOCUS_JS + "const f = deepFocus(); return f.opaque ? 'opaque' : f.el; })()"
 )
+#: The same, read before a ``type_coordinate`` click; marked so a reader of
+#: the calls can tell it from the reads after the click.
+_FOCUSED_BEFORE_CLICK_EXPRESSION = (
+    "(() => { /* spectragent focus before the click */"
+    + DEEP_FOCUS_JS
+    + "const f = deepFocus(); return f.opaque ? 'opaque' : f.el; })()"
+)
+
+#: ``composedParent(n)``: *n*'s parent element, through an open shadow root
+#: (to its host) and out of a same-origin frame's document (to the frame
+#: element); ``null`` at the top.
+_COMPOSED_PARENT_JS = r"""
+function composedParent(n) {
+  if (n.parentElement) return n.parentElement;
+  const root = n.parentNode;
+  if (root && root.host) return root.host;
+  const doc = n.ownerDocument;
+  if (doc && n === doc.documentElement) {
+    try { return doc.defaultView.frameElement; } catch (e) { return null; }
+  }
+  return null;
+}
+"""
+
+#: ``fieldAsDrawn(el)``: the field *el* belongs to as the person sees it (user
+#: ruling 2026-11-02, ``docs/architecture_design.md`` §4.9): its largest
+#: ancestor holding no other text field, walking up with ``composedParent``.
+#: A text field is what ``textEntry`` says takes typed text (``'text'``,
+#: ``'widget'``); it is looked for in the whole same-origin page, open shadow
+#: roots and frames included. An editor holding *el* and anything inside *el*
+#: are part of it, not another field. So a code editor's wrapper around its
+#: hidden one-line textarea is the field, and so is the box an input shares
+#: with its own label or icon; two inputs side by side are two fields.
+_FIELD_AS_DRAWN_JS = r"""
+function fieldAsDrawn(focused) {
+  const chain = [];
+  for (let n = focused; n && chain.length < 4096; n = composedParent(n)) chain.push(n);
+  const at = new Map(chain.map((n, i) => [n, i]));
+  let limit = chain.length;
+  const look = root => {
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) look(el.shadowRoot);
+      if (el.localName === 'iframe' || el.localName === 'frame') {
+        let inner = null;
+        try { inner = el.contentDocument; } catch (e) { inner = null; }
+        if (inner) look(inner);
+      }
+      if (at.has(el)) continue;
+      if (el.isContentEditable && el.parentElement && el.parentElement.isContentEditable) continue;
+      const entry = textEntry(el);
+      if (entry !== 'text' && entry !== 'widget') continue;
+      let n = el;
+      for (let hops = 0; n && !at.has(n) && hops < 4096; hops += 1) n = composedParent(n);
+      if (n && at.get(n) > 0) limit = Math.min(limit, at.get(n));
+    }
+  };
+  look(chain[chain.length - 1].ownerDocument);
+  return chain[limit - 1];
+}
+"""
+
+#: Whether the field ``this`` belongs to as drawn (``fieldAsDrawn``) holds the
+#: viewport point ``(x, y)``, in CSS px (``docs/architecture_design.md`` §4.9):
+#: what is drawn on top at the point (``deepHit``, through open shadow roots
+#: and same-origin frames) is the field or inside it, and the point is in the
+#: field's box (edges included, in the tab's viewport, through the
+#: same-origin frames ``deepFocus`` finds focus in). A box with no area, or a
+#: field that is the page's root element, leaves only the first: content
+#: positioned out of its ancestors' boxes has nothing else to be measured by
+#: (a page that holds only absolutely positioned content gives its root no
+#: height, as a CodeMirror editor alone on its page does). Something drawn
+#: over the point that is not the field (another field's caption, a page's
+#: fixed header) is outside, and so is the field's own overlay drawn past its
+#: box (a dropdown's full-screen catcher). A point on a ``<label>`` whose
+#: control is ``this`` counts as in the field too (user ruling 2026-11-02): a
+#: label beside its input, sharing only an ancestor that holds other fields,
+#: still names that field.
+_FIELD_HOLDS_POINT_FN = (
+    "function(x, y) { /* spectragent field holds the point */"
+    + _TEXT_ENTRY_JS
+    + _COMPOSED_PARENT_JS
+    + _FIELD_AS_DRAWN_JS
+    + DEEP_HIT_JS
+    + " const field = fieldAsDrawn(this);"
+    " const r = field.getBoundingClientRect();"
+    " let left = r.left, top = r.top, right = r.right, bottom = r.bottom;"
+    " let win = field.ownerDocument.defaultView;"
+    " for (let hops = 0; win && win.frameElement && hops < 64; hops += 1) {"
+    "   const frame = win.frameElement, box = frame.getBoundingClientRect();"
+    "   const dx = box.left + frame.clientLeft, dy = box.top + frame.clientTop;"
+    "   left += dx; right += dx; top += dy; bottom += dy;"
+    "   win = frame.ownerDocument.defaultView; }"
+    " const hit = deepHit(x, y).el;"
+    " let belongs = false;"
+    " for (let n = hit, hops = 0; n && hops < 4096 && !belongs; hops += 1) {"
+    "   belongs = n === field; n = composedParent(n); }"
+    " const inBox = left <= x && x <= right && top <= y && y <= bottom;"
+    " const noArea = right <= left || bottom <= top;"
+    " const root = field === field.ownerDocument.documentElement;"
+    " if (belongs && (inBox || noArea || root)) return true;"
+    " const label = hit && hit.closest ? hit.closest('label') : null;"
+    " return !!label && label.control === this; }"
+)
+#: Whether ``this`` is the element *before* held.
+_SAME_ELEMENT_FN = "function(before) { /* spectragent focus stayed */ return this === before; }"
 
 #: What :class:`FieldProbe` reads off its element: facts, the sensitivity
 #: attributes, whether it takes typed text, and a hash of the current value
@@ -519,13 +624,19 @@ class FieldProbe:
         await self.locate()
         await self.read_focused()
 
-    async def locate(self) -> None:
-        """Find where focus is (``located``), holding a focused element by reference."""
+    async def locate(self, *, before_click: bool = False) -> None:
+        """Find where focus is (``located``), holding a focused element by reference.
+
+        *before_click*: the read a ``type_coordinate`` makes before its click,
+        to tell afterwards whether focus stayed (:meth:`field_holds_point`,
+        :meth:`holds_same_element`).
+        """
+        expression = _FOCUSED_BEFORE_CLICK_EXPRESSION if before_click else _FOCUSED_REF_EXPRESSION
 
         async def focused_ref() -> Any:
             reply = await self.cdp.send(
                 "Runtime.evaluate",
-                {"expression": _FOCUSED_REF_EXPRESSION, "returnByValue": False},
+                {"expression": expression, "returnByValue": False},
                 session_id=self.session_id,
             )
             if not isinstance(reply, dict) or reply.get("exceptionDetails"):
@@ -602,6 +713,60 @@ class FieldProbe:
             )
 
         answer = await self.budget.run(describe, "shadow roots")
+        return answer if isinstance(answer, bool) else None
+
+    async def field_holds_point(self, x: int, y: int) -> bool | None:
+        """Whether the field the held element belongs to, as drawn, holds the viewport point *(x, y)*.
+
+        The field as drawn is the element's largest ancestor holding no other
+        text field (``fieldAsDrawn``, user ruling 2026-11-02). The point is in
+        it where what is drawn on top there belongs to it and the point is in
+        its box, measured in the tab's viewport in CSS px through the
+        same-origin frames focus was found in (``_FIELD_HOLDS_POINT_FN``), or
+        on the element's own label. ``None`` when this probe holds no element
+        (nothing has focus, or it is in a frame of another site) or the
+        reading failed.
+        """
+        object_id = self._object_id
+        if object_id is None:
+            return None
+
+        async def read() -> object:
+            reply = await self.cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": _FIELD_HOLDS_POINT_FN,
+                    "objectId": object_id,
+                    "arguments": [{"value": x}, {"value": y}],
+                    "returnByValue": True,
+                },
+                session_id=self.session_id,
+            )
+            return evaluation_value(reply)
+
+        answer = await self.budget.run(read, "field box")
+        return answer if isinstance(answer, bool) else None
+
+    async def holds_same_element(self, before: FieldProbe) -> bool | None:
+        """Whether this probe holds the element *before* held; ``None`` when either holds none or the reading failed."""
+        object_id, before_id = self._object_id, before._object_id
+        if object_id is None or before_id is None:
+            return None
+
+        async def read() -> object:
+            reply = await self.cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": _SAME_ELEMENT_FN,
+                    "objectId": object_id,
+                    "arguments": [{"objectId": before_id}],
+                    "returnByValue": True,
+                },
+                session_id=self.session_id,
+            )
+            return evaluation_value(reply)
+
+        answer = await self.budget.run(read, "same element")
         return answer if isinstance(answer, bool) else None
 
     async def after(self) -> bool | Unmeasured:

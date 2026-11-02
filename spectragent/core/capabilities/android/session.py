@@ -20,23 +20,42 @@ cancellation. The four lessons agent-cdp 0.5 taught are this module's tests
 - :meth:`DeviceSession.flush` confirms that every job submitted before it has
   finished.
 
+**A call given up on is confirmed done before the device is handed on.** A job
+that gave up on a call to a device-side program (its run limit, its caller's
+cancellation, a capture source's own timeout) has left that call running on the
+device: the channel drops the late answer, and only later requests on that same
+channel wait for it (``device/channel.py``). The service, the helper and adb's
+own shell are separate paths, so the next job could otherwise act through
+another path while the abandoned call still runs: a long press cut short on the
+service while the next capture's helper screenshot is taken at once. So before
+a job releases the device, every path that counts abandoned calls is pinged
+once, within ``confirm_s``; its answer means the device finished every request
+sent on it before (``docs/architecture_design.md`` §11.2). A path that does not
+answer in time is logged, and the device is released anyway.
+
 **The fan-out.** One capture asks its sources (the screenshot, the foreground
 app, ...) at once, each within its own timeout, and hands over every answer or
 none (:func:`fan_out`).
 
-Event streams (accessibility events, logcat) join this layer with the
-device-side service of a later stage.
+The service's accessibility events are read where they are used: the
+capability subscribes, and its wait for a still screen reads them
+(``settle.py``). Logcat is not read yet.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+import logging
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Protocol, TypeVar
+
+from spectragent.core.capabilities.android.device.channel import ChannelError
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class DeviceBusyError(TimeoutError):
@@ -46,9 +65,9 @@ class DeviceBusyError(TimeoutError):
 class DeviceJobTimeout(TimeoutError):
     """A job ran past its run limit; it was cancelled, and its coroutine had exited when this was raised.
 
-    A request it had sent to a device-side program may still be running on the
-    device: the channel drops the late answer, and only later requests on that
-    same channel wait for it (``device/channel.py``).
+    A request it had sent to a device-side program was confirmed done on the
+    device before this was raised, unless that confirmation ran out of time
+    (the module docstring).
     """
 
 
@@ -56,15 +75,46 @@ class ReentrantJobError(RuntimeError):
     """A job submitted another job to its own device, which would wait for it forever."""
 
 
+class DevicePath(Protocol):
+    """A path to a device-side program: a client of the service or the helper (``device/clients.py``)."""
+
+    @property
+    def abandoned(self) -> int:
+        """How many calls given up on may still run on the device."""
+        ...
+
+    async def ping(self) -> object:
+        """Answer once the device has finished every earlier request on this path."""
+        ...
+
+
+def _no_paths() -> Iterable[DevicePath]:
+    return ()
+
+
 class DeviceSession:
     """The serial work queue of one device.
 
     Each session keeps its own context variable for "this task holds my turn";
     there is no module-level one.
+
+    Args:
+        serial: The device's serial, for messages.
+        paths: The device's paths to its device-side programs as they are now;
+            asked each time a job ends.
+        confirm_s: How long the ping that confirms a call given up on may take.
     """
 
-    def __init__(self, serial: str) -> None:
+    def __init__(
+        self,
+        serial: str,
+        *,
+        paths: Callable[[], Iterable[DevicePath]] = _no_paths,
+        confirm_s: float = 5.0,
+    ) -> None:
         self.serial = serial
+        self._paths = paths
+        self._confirm_s = confirm_s
         # asyncio.Lock wakes its waiters first come, first served: the queue's order.
         self._turn = asyncio.Lock()
         #: Whether the current task, or a task it started, holds this device's turn.
@@ -111,8 +161,30 @@ class DeviceSession:
                 ) from None
             raise
         finally:
-            self._holding.reset(holding)
-            self._turn.release()
+            try:
+                await self._confirm_abandoned(what)
+            finally:
+                self._holding.reset(holding)
+                self._turn.release()
+
+    async def _confirm_abandoned(self, what: str) -> None:
+        """Ping every path with a call given up on, each within ``confirm_s`` (module docstring)."""
+        for path in list(self._paths()):
+            if not path.abandoned:
+                continue
+            try:
+                async with asyncio.timeout(self._confirm_s):
+                    await path.ping()
+            except (ChannelError, TimeoutError) as exc:
+                logger.warning(
+                    "%s on device %s gave up on a call that was not confirmed done within "
+                    "%g s (%s: %s); the device is handed on anyway",
+                    what,
+                    self.serial,
+                    self._confirm_s,
+                    type(exc).__name__,
+                    exc,
+                )
 
     async def flush(self, *, wait_s: float) -> None:
         """Return once every job submitted before this call has finished or been withdrawn.

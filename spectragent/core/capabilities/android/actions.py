@@ -8,9 +8,15 @@ and ``wait``; typing into the focused field is ``type_coordinate`` without a
 point (user ruling 2026-11-01). Three are Android's own (§11.2, "动作"):
 ``long_press``, ``press_key`` (system keys) and ``open_app`` (by name; the
 name-to-package table is this action's, never an agent's). Points are physical
-screen pixels, the space ``input`` takes and the screenshot's viewport. A
+screen pixels, the space touches take and the screenshot's viewport. A
 gesture's duration is a setting on the action instance, never a model param.
 There is no ``done``: the Loop's ``loop.done`` ends a run (§4.5).
+
+Every touch is one finger's timed stroke (``device/clients.py``) that the
+capability's configured tap injector delivers, and the action reports it in its
+effect (``effects.py``), injector included (§11.2, "实验身份"). A tap holds the
+finger down for :data:`~spectragent.core.capabilities.android.device.clients.TAP_MS`.
+Keys go through the shell helper; text through the configured typing backend.
 
 ``scroll``'s ``index`` names an element of ``android.ui_tree``, which arrives
 with a later stage; until then no run negotiates the tree, so the param is
@@ -30,14 +36,41 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import AddressesElement, PointAxis
+from spectragent.core.capabilities.android.device.clients import TAP_MS, FocusedNode, Stroke
+from spectragent.core.capabilities.android.effects import (
+    AndroidTextEffect,
+    AndroidTouchEffect,
+    Gesture,
+    ScreenPoint,
+    Touch,
+)
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
-    from spectragent.core.capabilities.android.bridge import TextFocus
     from spectragent.core.capabilities.android.capability import AndroidCapability
 
 _X = "Physical px from the screen's left edge"
 _Y = "Physical px from the screen's top edge"
+
+
+async def touch(
+    capability: AndroidCapability,
+    gesture: Gesture,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    duration_ms: int,
+) -> Touch:
+    """Deliver one straight stroke through the capability's tap injector and say what it was."""
+    device = capability.bridge.input
+    elapsed_ms = await device.stroke(Stroke.line(start, end, duration_ms))
+    return Touch(
+        gesture=gesture,
+        start=ScreenPoint(x=start[0], y=start[1]),
+        end=ScreenPoint(x=end[0], y=end[1]),
+        duration_ms=duration_ms,
+        elapsed_ms=elapsed_ms,
+        delivered_by=device.injector,
+    )
 
 
 @dataclass
@@ -45,6 +78,7 @@ class AndroidClickCoordinateAction(ActionBase):
     """Tap one point of the screen."""
 
     __registry_key__ = "android.click_coordinate"
+    Effect = AndroidTouchEffect
 
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -58,9 +92,12 @@ class AndroidClickCoordinateAction(ActionBase):
     async def execute(
         self, params: dict[str, Any], *, capability: AndroidCapability
     ) -> ActionResult:
-        point = self.Params.model_validate(params)
-        await capability.bridge.input.tap(point.coordinate_x, point.coordinate_y)
-        return ActionResult(success=True)
+        given = self.Params.model_validate(params)
+        point = (given.coordinate_x, given.coordinate_y)
+        tapped = await touch(capability, "tap", point, point, TAP_MS)
+        return ActionResult(
+            success=True, effect=AndroidTouchEffect(effect_id=self.action_id, touch=tapped)
+        )
 
 
 @dataclass
@@ -68,6 +105,7 @@ class AndroidLongPressAction(ActionBase):
     """Press and hold one point of the screen."""
 
     __registry_key__ = "android.long_press"
+    Effect = AndroidTouchEffect
 
     duration_ms: Annotated[
         int,
@@ -97,8 +135,10 @@ class AndroidLongPressAction(ActionBase):
     ) -> ActionResult:
         given = self.Params.model_validate(params)
         point = (given.coordinate_x, given.coordinate_y)
-        await capability.bridge.input.swipe(point, point, duration_ms=self.duration_ms)
-        return ActionResult(success=True)
+        pressed = await touch(capability, "long_press", point, point, self.duration_ms)
+        return ActionResult(
+            success=True, effect=AndroidTouchEffect(effect_id=self.action_id, touch=pressed)
+        )
 
 
 @dataclass
@@ -106,6 +146,7 @@ class AndroidDragAction(ActionBase):
     """Touch one point, move to another, lift."""
 
     __registry_key__ = "android.drag"
+    Effect = AndroidTouchEffect
 
     duration_ms: Annotated[
         int,
@@ -133,12 +174,16 @@ class AndroidDragAction(ActionBase):
         self, params: dict[str, Any], *, capability: AndroidCapability
     ) -> ActionResult:
         given = self.Params.model_validate(params)
-        await capability.bridge.input.swipe(
+        dragged = await touch(
+            capability,
+            "drag",
             (given.start_x, given.start_y),
             (given.end_x, given.end_y),
-            duration_ms=self.duration_ms,
+            self.duration_ms,
         )
-        return ActionResult(success=True)
+        return ActionResult(
+            success=True, effect=AndroidTouchEffect(effect_id=self.action_id, touch=dragged)
+        )
 
 
 #: What a scroll's start does, in the parenthesis of its two params: framing
@@ -151,6 +196,7 @@ class AndroidScrollAction(ActionBase):
     """Swipe to scroll: from the start point, or from the middle of the screen."""
 
     __registry_key__ = "android.scroll"
+    Effect = AndroidTouchEffect
 
     default_amount: Annotated[
         int,
@@ -229,8 +275,10 @@ class AndroidScrollAction(ActionBase):
             "left": (distance, 0),
         }[given.direction]
         end = (min(max(start[0] + dx, 0), width - 1), min(max(start[1] + dy, 0), height - 1))
-        await capability.bridge.input.swipe(start, end, duration_ms=self.duration_ms)
-        return ActionResult(success=True)
+        swiped = await touch(capability, "swipe", start, end, self.duration_ms)
+        return ActionResult(
+            success=True, effect=AndroidTouchEffect(effect_id=self.action_id, touch=swiped)
+        )
 
 
 #: How often typing reads again whether a text field has focus while it waits
@@ -238,30 +286,54 @@ class AndroidScrollAction(ActionBase):
 FOCUS_POLL_S = 0.1
 
 
+def _field(node: FocusedNode) -> str:
+    """A focused node for an error: its class, its view id, its package; never where it is."""
+    name = node.class_name.rsplit(".", 1)[-1] if node.class_name else "a node"
+    if node.view_id_resource_name:
+        name += f" {node.view_id_resource_name}"
+    if node.package_name:
+        name += f" of {node.package_name}"
+    return name
+
+
 @dataclass
 class AndroidTypeCoordinateAction(ActionBase):
     """Type into a text field: tap it first when given a point, else the one that has focus.
 
     The point is optional, both axes or neither, as on the browser (user ruling
-    2026-11-01). Either way, before any key is sent the device is asked whether
-    a text field has focus (:meth:`~spectragent.core.capabilities.android.bridge.
+    2026-11-01). Either way, before any text is entered the device is asked
+    whether a text field has focus (:meth:`~spectragent.core.capabilities.android.bridge.
     ForegroundApps.text_focus`), again every :data:`FOCUS_POLL_S` while it
     answers that none has, for up to ``focus_wait_ms``: a field may take focus a
     moment after the tap, or after an earlier action that opened it. When none
-    has by then, the action fails without sending a key, as the browser's does;
-    a device that cannot tell is typed into as asked.
+    has by then, the action fails without entering anything, as the browser's
+    does; a device that cannot tell is typed into as asked.
 
-    What the device reports says whether a text field has focus, not where that
-    field is. So with a point, a tap that misses its field (it lands on the
-    label beside it) while another field keeps focus still types into that
-    other field and reports success, where the browser refuses ("No text field
-    took focus at the clicked point"). Checking that the field with focus is
-    the one at the point waits for the accessibility service of stage 2, which
-    reads the focused node and its bounds (``docs/architecture_design.md``
-    §11.2).
+    With a point, the rule is the browser's too (user ruling 2026-11-02,
+    ``docs/architecture_design.md`` §4.9 "相对名就是参数契约"): our accessibility
+    service names the field with input focus before the tap and again after it
+    (:meth:`~spectragent.core.capabilities.android.bridge.InputInjection.focused_field`).
+    Focus that moved to a text field is typed into, wherever that field is: a
+    tap on Settings' search bar opens a screen whose field, away from the
+    point, takes focus. Focus that stayed on the field that had it, with the
+    point outside that field when tapped, is refused: the tap landed on the
+    caption of another field, and nothing is cleared or typed. The field is
+    the one the person sees (user ruling 2026-11-02): the focused node's
+    largest ancestor whose subtree holds no other editable node, such as the
+    layout an EditText shares with its label or hint, which the service
+    reports with the focused node before the tap (a keyboard that opens moves
+    it afterwards); a tap on the view that labels the field
+    (``android:labelFor``) counts as in it too. A tap is in the field only
+    where the field's own window is on top: the status bar drawn over an
+    app's full-screen root is not part of a field there. Focus may leave the
+    old field a moment after the tap, so the wait covers that too; a service
+    that names no field with focus by then cannot tell which field it is, and
+    the text is entered as asked. A refusal still reports the tap
+    (``AndroidTextEffect``).
     """
 
     __registry_key__ = "android.type_coordinate"
+    Effect = AndroidTextEffect
 
     clear_by_default: Annotated[
         bool, PydanticField(description="Whether to clear the target field first")
@@ -271,15 +343,18 @@ class AndroidTypeCoordinateAction(ActionBase):
         PydanticField(
             ge=0,
             description=(
-                "How long typing waits for a text field to have focus, in ms, after its tap "
-                "(or at once, without a point), before it fails without sending a key. Spent "
-                "only while no text field has focus; read again every 0.1 s. A tap that opens "
-                "a screen or a dialog takes a while: on the API 33 emulator, Settings' search "
-                "field had focus 1.5-1.9 s after the tap on its bar, a dialog's field 0.5-0.9 s "
-                "after the tap that opened it."
+                "How long typing waits, in ms, while no text field has focus yet (after its tap, "
+                "or at once without a point) and, with a point, while focus stays on the field "
+                "that had it before the tap, with the point outside that field as drawn, or the "
+                "service does not name the field with focus yet. Read again every 0.1 s. When "
+                "the wait runs out, typing fails without entering text, except where the service "
+                "still names no field: it cannot tell then, and enters the text as asked. A tap "
+                "that opens a screen takes a while: on the API 33 emulator, Settings' search "
+                "field had focus 1.8-2.8 s after a tap on its bar on a still page, and up to "
+                "4.6 s after a tap right after Settings started."
             ),
         ),
-    ] = 3000
+    ] = 5000
 
     class Params(BaseModel):
         """The browser's ``type_coordinate`` params: the text, and an optional point."""
@@ -316,32 +391,83 @@ class AndroidTypeCoordinateAction(ActionBase):
         given = self.Params.model_validate(params)
         device = capability.bridge.input
         no_field = "No text field has focus"
+        point: tuple[int, int] | None = None
+        before: FocusedNode | None = None
+        tapped: Touch | None = None
         if given.coordinate_x is not None and given.coordinate_y is not None:
-            await device.tap(given.coordinate_x, given.coordinate_y)
+            point = (given.coordinate_x, given.coordinate_y)
+            before = await device.focused_field(field_bounds=True, at=point)
+            tapped = await touch(capability, "tap", point, point, TAP_MS)
             no_field = "No text field took focus at the tapped point"
-        focus = await self._text_focus(capability)
-        if focus.text_field is False:
-            where = (
-                "nothing has focus"
-                if focus.window is None
-                else f"focus is in {focus.window}, not on a text field"
+        where = await self._no_field_at(capability, point, before)
+        if where is not None:
+            return ActionResult(
+                success=False,
+                error=f"{no_field}: {where}, so no text was typed.",
+                effect=AndroidTextEffect(effect_id=self.action_id, tap=tapped, text_entered=False),
             )
-            return ActionResult(success=False, error=f"{no_field}: {where}, so no text was typed.")
         clear = self.clear_by_default if given.clear is None else given.clear
-        if clear:
-            await device.clear_focused_field()
-        await device.type_text(given.text)
-        return ActionResult(success=True)
+        target = await device.enter_text(given.text, replace=clear)
+        return ActionResult(
+            success=True,
+            effect=AndroidTextEffect(
+                effect_id=self.action_id,
+                tap=tapped,
+                text_entered=True,
+                entered_by=device.typing,
+                replaced=clear,
+                field_package=target.package_name,
+                field_class=target.class_name,
+                field_view_id=target.view_id_resource_name,
+            ),
+        )
 
-    async def _text_focus(self, capability: AndroidCapability) -> TextFocus:
-        """The device's text focus, read again while no text field has it, up to ``focus_wait_ms``."""
-        apps = capability.bridge.apps
+    async def _no_field_at(
+        self,
+        capability: AndroidCapability,
+        point: tuple[int, int] | None,
+        before: FocusedNode | None,
+    ) -> str | None:
+        """Where focus is when no text should go in (at *point*, *before* the tap); ``None``: it should.
+
+        Read again every :data:`FOCUS_POLL_S` while that is so, or while the
+        service names no field with focus, up to ``focus_wait_ms``; a service
+        that still names none then cannot tell, and the answer is ``None``.
+        """
         deadline = time.monotonic() + self.focus_wait_ms / 1000
-        focus = await apps.text_focus()
-        while focus.text_field is False and time.monotonic() < deadline:
+        while True:
+            where, untold = await self._no_field_now(capability, point, before)
+            if (where is None and not untold) or time.monotonic() >= deadline:
+                return where
             await asyncio.sleep(max(0.0, min(FOCUS_POLL_S, deadline - time.monotonic())))
-            focus = await apps.text_focus()
-        return focus
+
+    async def _no_field_now(
+        self,
+        capability: AndroidCapability,
+        point: tuple[int, int] | None,
+        before: FocusedNode | None,
+    ) -> tuple[str | None, bool]:
+        """Where focus is when no text should go in now, and whether the service could not tell.
+
+        Focus on a text field is refused only when it stayed on the field
+        *before* named, with the point outside that field as drawn when tapped.
+        """
+        focus = await capability.bridge.apps.text_focus()
+        if focus.text_field is False:
+            if focus.window is None:
+                return "nothing has focus", False
+            return f"focus is in {focus.window}, not on a text field", False
+        if point is None or before is None or before.field_holds(*point) is not False:
+            # A text field has focus, and no field had it before the tap with
+            # the point measured outside it: none, one the point was in, or
+            # one whose bounds the service could not give.
+            return None, False
+        node = await capability.bridge.input.focused_field()
+        if node is None:
+            return None, True
+        if node.same_node(before):
+            return f"focus stayed on {_field(node)}, away from the tapped point", False
+        return None, False
 
 
 SystemKey = Literal["back", "home", "enter", "delete", "recent_apps"]

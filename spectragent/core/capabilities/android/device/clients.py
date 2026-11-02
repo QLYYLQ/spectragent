@@ -44,7 +44,10 @@ from spectragent.core.capabilities.android.device.channel import (
     JsonObject,
     Reply,
 )
-from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
+from spectragent.core.capabilities.android.device.forest import (
+    AndroidAccessibilityForest,
+    ProtoRect,
+)
 
 #: How long a tap's finger stays down unless asked otherwise.
 TAP_MS = 50
@@ -53,6 +56,8 @@ TAP_MS = 50
 MAX_NODES = 5000
 GlobalAction = Literal["back", "home", "recents"]
 Point = tuple[float, float]
+#: The program that takes a screenshot.
+ScreenshotProducer = Literal["accessibility_service", "shell_helper"]
 
 
 class _Result(BaseModel):
@@ -90,6 +95,84 @@ class TextTarget(_Result):
     package_name: str | None = None
     class_name: str | None = None
     view_id_resource_name: str | None = None
+
+
+class FocusedNode(_Result):
+    """The node with input focus: the focused view of the window that has input focus.
+
+    Attributes:
+        bounds_in_screen: Where it is, in screen pixels.
+        field_bounds_in_screen: Where the field it belongs to is, as the
+            person sees it: its largest ancestor whose subtree holds no other
+            editable node (the layout an EditText shares with its label, a
+            search view with its icons; user ruling 2026-11-02). Given only
+            when asked for, for an editable node, and ``None`` when the service
+            gave up walking a tree too large.
+        label_bounds_in_screen: Where the view that labels it is
+            (``android:labelFor``, the platform's ``getLabeledBy()``), asked
+            for with the field's bounds; ``None`` when none does. A tap on it
+            counts as a tap in the field (user ruling 2026-11-02).
+        window_at_point: The window on top at the point the read was asked
+            about with the field's bounds (the highest layer whose bounds
+            hold it); ``None`` when no point was given or no window holds it.
+            Another window than :attr:`window_id` there, such as the status
+            bar over an app's full-screen root, means a tap there is not in
+            the field.
+        is_editable: Whether it takes text.
+        window_id: The window it is in.
+        node_hash: The platform's hash of the node (``AccessibilityNodeInfo.hashCode()``),
+            computed from its view's accessibility id and its window: the same
+            for the same view while it lives.
+        package_name: Its package, as the tree names it.
+        class_name: Its class.
+        view_id_resource_name: Its view id, when it has one.
+    """
+
+    bounds_in_screen: ProtoRect
+    is_editable: bool
+    window_id: int
+    field_bounds_in_screen: ProtoRect | None = None
+    label_bounds_in_screen: ProtoRect | None = None
+    window_at_point: int | None = None
+    node_hash: int
+    package_name: str | None = None
+    class_name: str | None = None
+    view_id_resource_name: str | None = None
+
+    def field_holds(self, x: float, y: float) -> bool | None:
+        """Whether the point (*x*, *y*) is in the field or on its own label, edges included.
+
+        The point must be the one the read was asked about, whose window on
+        top (:attr:`window_at_point`) must be the field's own. ``None`` when
+        the field's bounds are not known and the point is not on its label.
+        """
+
+        def inside(box: ProtoRect) -> bool:
+            return box.left <= x <= box.right and box.top <= y <= box.bottom
+
+        if self.window_at_point is not None and self.window_at_point != self.window_id:
+            return False
+        label, field = self.label_bounds_in_screen, self.field_bounds_in_screen
+        if label is not None and inside(label):
+            return True
+        return None if field is None else inside(field)
+
+    def same_node(self, other: FocusedNode) -> bool:
+        """Whether *other* names this node: the same window, hash, view id and class.
+
+        Its bounds may differ: a field stays the same field when a keyboard
+        moves it.
+        """
+        return (
+            self.window_id,
+            self.node_hash,
+            self.view_id_resource_name,
+            self.class_name,
+        ) == (other.window_id, other.node_hash, other.view_id_resource_name, other.class_name)
+
+
+class _Focus(_Result):
+    focused: FocusedNode | None
 
 
 class SettingChange(_Result):
@@ -145,7 +228,7 @@ class Screenshot:
     png: bytes
     width: int
     height: int
-    producer: Literal["accessibility_service", "shell_helper"]
+    producer: ScreenshotProducer
     capture_ms: int
     encode_ms: int
     waited_ms: int
@@ -201,6 +284,11 @@ class ServiceClient:
         """How the service described itself: the installed build, measured on the device."""
         return self.channel.hello
 
+    @property
+    def abandoned(self) -> int:
+        """Calls given up on that may still run on the device (:attr:`Channel.abandoned`)."""
+        return self.channel.abandoned
+
     async def ping(self) -> Ping:
         return Ping.model_validate((await self.channel.call("ping")).result)
 
@@ -236,30 +324,51 @@ class ServiceClient:
     async def global_action(self, action: GlobalAction) -> None:
         await self.channel.call("global_action", {"action": action})
 
-    async def set_text(self, text: str) -> TextTarget:
-        """Replace the text of the field that has input focus (``ACTION_SET_TEXT``).
+    async def focus(
+        self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
+    ) -> FocusedNode | None:
+        """The node with input focus, as the system resolves it; ``None`` when no view has it.
+
+        With *field_bounds*, an editable node comes with the bounds of the
+        field it belongs to and of its own label (``FocusedNode.
+        field_bounds_in_screen``, ``label_bounds_in_screen``), which the
+        service finds by walking the tree around it; given a point *at* as
+        well, with the window on top there (``FocusedNode.window_at_point``).
+        """
+        params: JsonObject = {"field_bounds": field_bounds}
+        if at is not None:
+            params["x"], params["y"] = at
+        return _Focus.model_validate((await self.channel.call("focus", params)).result).focused
+
+    async def set_text(self, text: str, *, replace: bool = True) -> TextTarget:
+        """Set *text* on the editable field that has input focus (``ACTION_SET_TEXT``).
+
+        With *replace*, it replaces the field's whole text; without, it
+        replaces the field's selection, or goes at its cursor (at its end
+        when it has none), and the cursor follows it.
 
         Raises:
             RemoteError: ``no_focused_field`` when no editable field has input
-                focus, ``set_text_failed`` when the field refused.
+                focus, ``set_text_failed`` when the field refused,
+                ``password_field`` without *replace* on a password field,
+                whose text the service cannot read.
         """
-        return TextTarget.model_validate(
-            (await self.channel.call("set_text", {"text": text})).result
-        )
+        params: JsonObject = {"text": text, "replace": replace}
+        return TextTarget.model_validate((await self.channel.call("set_text", params)).result)
 
-    async def commit_text(self, text: str) -> TextTarget:
-        """Insert *text* at the cursor through the service's own input method (API 33).
+    async def commit_text(self, text: str, *, replace: bool = False) -> TextTarget:
+        """Commit *text* through the service's own input method (API 33): at the cursor, or over the whole text.
 
-        The current keyboard stays the current keyboard. Only the field's
-        package is known.
+        With *replace*, the field's whole text is selected first, through the
+        same input connection, and the text replaces it. The current keyboard
+        stays the current keyboard. Only the field's package is known.
 
         Raises:
             RemoteError: ``no_focused_field`` when no field started input with
                 the service's input method, ``unsupported`` before API 33.
         """
-        return TextTarget.model_validate(
-            (await self.channel.call("commit_text", {"text": text})).result
-        )
+        params: JsonObject = {"text": text, "replace": replace}
+        return TextTarget.model_validate((await self.channel.call("commit_text", params)).result)
 
     async def events(self, *, max_buffered: int = 100_000) -> ServiceEvents:
         """Start the event stream; once per channel (:meth:`Channel.subscribe`)."""
@@ -280,6 +389,11 @@ class HelperClient:
     @property
     def hello(self) -> Hello:
         return self.channel.hello
+
+    @property
+    def abandoned(self) -> int:
+        """Calls given up on that may still run on the device (:attr:`Channel.abandoned`)."""
+        return self.channel.abandoned
 
     async def ping(self) -> Ping:
         return Ping.model_validate((await self.channel.call("ping")).result)
@@ -333,9 +447,7 @@ class _GestureResult(_Result):
     elapsed_ms: int
 
 
-def _screenshot(
-    reply: Reply, producer: Literal["accessibility_service", "shell_helper"]
-) -> Screenshot:
+def _screenshot(reply: Reply, producer: ScreenshotProducer) -> Screenshot:
     result: JsonObject = reply.result
     timing = _ScreenshotResult.model_validate(result)
     return Screenshot(

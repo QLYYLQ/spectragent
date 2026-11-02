@@ -29,6 +29,9 @@ _BROWSER: Block = {
 _ANDROID: Block = {
     "capability_id": "android",
     "backend": {"provider_id": "local_emulator", "avd": "AndroidWorldAvd"},
+    "service_apk": "spectragent-device.apk",
+    "tap_injector": {"injector_id": "shell_injection"},
+    "typing_backend": {"typing_id": "set_text"},
 }
 _UI_TARS: Block = {
     "agent_id": "ui_tars",
@@ -54,6 +57,8 @@ BLOCK_ONLY: dict[str, tuple[Block, str]] = {
     "network_source": (_ON_BROWSER, "capability[browser].network_source"),
     "miss_policy": (_ON_BROWSER, "capability[browser].network_source[archive].miss_policy"),
     "android_provider": (_ON_ANDROID, "capability[android].backend"),
+    "android_tap_injector": (_ON_ANDROID, "capability[android].tap_injector"),
+    "android_typing_backend": (_ON_ANDROID, "capability[android].typing_backend"),
     "android_task_oracle": (_ON_ANDROID, "capability[android].task_oracle"),
     "agent_loop": (_AGENT, "agent[ui_tars].agent_loop"),
     "memory": (_AGENT, "agent[ui_tars].memory"),

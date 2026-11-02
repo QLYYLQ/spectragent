@@ -18,7 +18,12 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
   whose speed changes keeps its timing on both;
 - the global actions back, home and recents, and the helper's keys;
 - text committed through the service's input method at the cursor, Chinese
-  included (API 33), and text set on the focused field;
+  included, and over the field's whole text (API 33); text set on the focused
+  field, over its text and at its cursor;
+- the node with input focus, reported with its bounds, and when asked with
+  the bounds of the field as drawn: on the search screen, whose only text
+  field it is, more than the field's own; and with the window on top at a
+  point, the field's own on the field and the status bar's above it;
 - events, in order and numbered without gaps;
 - the service refuses a wrong token, closes a connection from an app's uid
   before reading it, closes a hello over 64 KB without an answer, and closes
@@ -543,6 +548,25 @@ async def test_text_is_committed_at_the_cursor_through_the_services_input_method
     )
 
 
+async def test_committed_text_replaces_the_fields_whole_text(up: Up) -> None:
+    """The whole text is selected through the same input connection, then committed over."""
+    if up.side.service.hello.sdk_int < 33:
+        pytest.skip("an accessibility service has an input method of its own from API 33")
+    await _focused_search_field(up)
+    await up.side.service.commit_text("wifi")
+    await _node(
+        up, "the field reading 'wifi'", lambda node: _search_field(node) and node.text == "wifi"
+    )
+
+    await up.side.service.commit_text("bluetooth", replace=True)
+
+    await _node(
+        up,
+        "the field reading 'bluetooth' alone",
+        lambda node: _search_field(node) and node.text == "bluetooth",
+    )
+
+
 async def test_text_is_set_on_the_focused_field(up: Up) -> None:
     await _focused_search_field(up)
 
@@ -555,6 +579,57 @@ async def test_text_is_set_on_the_focused_field(up: Up) -> None:
         "the field reading 'bluetooth'",
         lambda node: _search_field(node) and node.text == "bluetooth",
     )
+
+
+async def test_text_set_at_the_cursor_goes_after_what_the_field_holds(up: Up) -> None:
+    await _focused_search_field(up)
+    await up.side.service.set_text("blue")
+    await _node(
+        up, "the field reading 'blue'", lambda node: _search_field(node) and node.text == "blue"
+    )
+
+    await up.side.service.set_text("tooth", replace=False)
+
+    await _node(
+        up,
+        "the field reading 'bluetooth'",
+        lambda node: _search_field(node) and node.text == "bluetooth",
+    )
+
+
+async def test_the_node_with_input_focus_comes_with_its_bounds(up: Up) -> None:
+    await _focused_search_field(up)
+    # The search screen opens with an animation that still moves the field (7 px, 2026-11-02).
+    await _still(up)
+    field = await _node(
+        up,
+        "the search field with input focus",
+        lambda node: _search_field(node) and node.is_focused,
+    )
+
+    focused = await up.side.service.focus()
+
+    assert focused is not None and focused.is_editable
+    assert focused.package_name == field.package_name
+    assert focused.bounds_in_screen == field.bounds_in_screen
+    assert focused.field_bounds_in_screen is None, "not asked for"
+    drawn = await up.side.service.focus(field_bounds=True)
+    assert drawn is not None and drawn.field_bounds_in_screen is not None
+    own, whole = drawn.bounds_in_screen, drawn.field_bounds_in_screen
+    assert whole.left <= own.left and whole.top <= own.top, "it holds the field"
+    assert whole.right >= own.right and whole.bottom >= own.bottom, "it holds the field"
+    assert whole.bottom - whole.top > own.bottom - own.top, "the only text field on its screen"
+    centre = ((own.left + own.right) // 2, (own.top + own.bottom) // 2)
+    on_field = await up.side.service.focus(field_bounds=True, at=centre)
+    on_status_bar = await up.side.service.focus(field_bounds=True, at=(own.left + 10, 20))
+    assert on_field is not None and on_field.window_at_point == on_field.window_id
+    assert on_status_bar is not None and on_status_bar.window_at_point not in (
+        None,
+        on_status_bar.window_id,
+    ), "the status bar is another window"
+    await _home(up)
+    home = await up.side.service.focus()
+    assert home is None or not home.is_editable, "the home screen has no text field with focus"
 
 
 # ── events ────────────────────────────────────────────────────────────

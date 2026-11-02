@@ -158,6 +158,15 @@ class BaseAndroidProvider(Protocol):
         """
         ...
 
+    def api_level(self) -> int | None:
+        """The API level of the device :meth:`open` brings up, as configuration says before it starts.
+
+        ``None`` when this provider cannot say before the device is up; the
+        device-side programs report it then. Reads only its configuration and
+        the host, so ``check_setup`` can refuse what the level rules out.
+        """
+        ...
+
     async def open(self, needs: DeviceNeeds | None = None) -> AndroidProviderSession:
         """Bring a device up meeting *needs* (none when ``None``) and return where to reach it.
 

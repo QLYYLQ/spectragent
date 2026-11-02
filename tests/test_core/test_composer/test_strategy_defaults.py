@@ -59,11 +59,13 @@ OMITTABLE: dict[tuple[str, str], dict[str, Block]] = {
     ("agent_loop", "branch"): {"restorer": {"restorer_id": "prefix_replay"}},
 }
 
-#: Strategy receptors that stay required although their owner has a Python
-#: default, because the default chooses behaviour: what the agent sees, how many
-#: branch runs a sweep makes, what a student is trained on.
+#: Strategy receptors that stay required because a default would choose
+#: behaviour: what the agent sees, how many branch runs a sweep makes, what a
+#: student is trained on (each owner has a Python default nonetheless), and how
+#: a touch and text reach a phone (Android's owner has none).
 REQUIRED: dict[tuple[str, str], tuple[str, ...]] = {
     ("capability", "browser"): ("dom_cleaner", "dom_serializer"),
+    ("capability", "android"): ("tap_injector", "typing_backend"),
     ("task_loader", "trace_branches"): ("step_selector",),
     ("exporter", "openai_messages"): ("translator",),
 }
@@ -88,8 +90,14 @@ def _archive(written: Written) -> Block:
 
 
 def _android(written: Written) -> Block:
-    backend: Block = {"provider_id": "local_emulator", "avd": "AndroidWorldAvd"}
-    return {"capability": [{"capability_id": "android", "backend": backend, **written}]}
+    block: Block = {
+        "capability_id": "android",
+        "backend": {"provider_id": "local_emulator", "avd": "AndroidWorldAvd"},
+        "service_apk": "spectragent-device.apk",
+        "tap_injector": {"injector_id": "shell_injection"},
+        "typing_backend": {"typing_id": "set_text"},
+    }
+    return {"capability": [{**block, **written}]}
 
 
 def _branch(written: Written) -> Block:
@@ -121,7 +129,9 @@ OWNERS: dict[tuple[str, str], _Owner] = {
         _archive, lambda run: run.single("capability").network_source, ArchiveNetworkSource
     ),
     ("capability", "android"): _Owner(
-        _android, lambda run: run.single("capability"), AndroidCapability
+        _android,
+        lambda run: run.single("capability"),
+        lambda: AndroidCapability(service_apk="spectragent-device.apk"),
     ),
     ("agent_loop", "branch"): _Owner(
         _branch, lambda run: run.single("agent").agent_loop, BranchLoop

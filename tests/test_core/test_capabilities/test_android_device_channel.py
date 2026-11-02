@@ -222,15 +222,19 @@ async def test_the_answer_to_a_cancelled_call_is_dropped_and_the_next_call_gets_
         call = asyncio.ensure_future(channel.call("slow"))
         async with asyncio.timeout(_WAIT_S):
             await started.wait()
+        assert channel.abandoned == 0
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
+        assert channel.abandoned == 1, "it still runs on the device"
         release.set()
         async with asyncio.timeout(_WAIT_S):
             reply = await channel.call("ping", {"n": 3})
+        assert channel.abandoned == 0, "its late answer came before the ping's"
 
     assert reply.result == {"pong": 3}
     assert [method for method, _ in program.calls] == ["slow", "ping"]
+    assert channel.abandoned == 0
 
 
 async def test_a_payload_comes_back_with_its_answer() -> None:

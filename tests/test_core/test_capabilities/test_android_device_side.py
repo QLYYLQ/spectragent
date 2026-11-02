@@ -26,6 +26,7 @@ from spectragent.core.capabilities.android.device import lifecycle
 from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApk,
+    build_directory,
 )
 from spectragent.core.capabilities.android.device.channel import (
     PROTOCOL_VERSION,
@@ -52,7 +53,9 @@ REPOSITORY = Path(spectragent.__file__).resolve().parent.parent
 
 @pytest.fixture
 def apk(tmp_path: Path) -> ServiceApk:
-    path = tmp_path / "spectragent-device.apk"
+    build = build_directory(hashlib.sha256(APK_BYTES).hexdigest())
+    path = tmp_path / build / "spectragent-device.apk"
+    path.parent.mkdir()
     path.write_bytes(APK_BYTES)
     sidecar = {
         "format": "spectragent-device-apk-2",

@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,7 +14,10 @@ import android.util.Log;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -28,9 +32,11 @@ import org.json.JSONObject;
  * (API 30+, PNG, at most one per {@link #SCREENSHOT_INTERVAL_MS}: a request sooner waits, and one
  * the system still finds too soon is sent again until {@link #SCREENSHOT_TIMEOUT_MS});
  * {@code gesture} (timed strokes, {@link Strokes}, up to the system's limits); {@code global_action} (back,
- * home, recents); {@code set_text} (ACTION_SET_TEXT on the field with input focus) and
- * {@code commit_text} (API 33, through the service's own input method, at the cursor); and
- * {@code subscribe}, after which every accessibility event is pushed.
+ * home, recents); {@code focus} (the node with input focus and where it is on the screen);
+ * {@code set_text} (ACTION_SET_TEXT on the field with input focus: its whole text, or the text at
+ * its selection) and {@code commit_text} (API 33, through the service's own input method: at the
+ * cursor, or over the field's whole text); and {@code subscribe}, after which every accessibility
+ * event is pushed.
  */
 public final class DeviceService extends AccessibilityService {
     static final String SOCKET = "spectragent_device";
@@ -108,6 +114,8 @@ public final class DeviceService extends AccessibilityService {
                 return gesture(params);
             case "global_action":
                 return globalAction(params);
+            case "focus":
+                return focus(params);
             case "set_text":
                 return setText(params);
             case "commit_text":
@@ -297,17 +305,95 @@ public final class DeviceService extends AccessibilityService {
         return Reply.of(new JSONObject());
     }
 
+    /**
+     * The node with input focus, as the system resolves it: the focused view of the window that has
+     * input focus. {@code {"focused": null}} when no view has it. Its window id and the node's hash
+     * ({@code AccessibilityNodeInfo.hashCode()}, computed from the view's accessibility id and its
+     * window, so the same while that view lives) tell whether two answers name the same field.
+     *
+     * <p>With {@code "field_bounds": true}, an editable node also comes with the bounds of the field
+     * as the person sees it ({@code field_bounds_in_screen}): its largest ancestor whose subtree
+     * holds no other editable node, such as the layout an EditText shares with its label or hint,
+     * or a search view with its icons. Null when the walk looked at {@link #MAX_FIELD_NODES} nodes
+     * without finishing. Asked for only before a tap: the walk looks at every node it passes. The
+     * bounds of the node's own label ({@code getLabeledBy()}, a view that names it with {@code
+     * android:labelFor}) come with them as {@code label_bounds_in_screen}, null when it has none.
+     * Given the tap's point ({@code "x"}, {@code "y"}) as well, the reply names the window on top
+     * there ({@code window_at_point}, see {@link #windowAt}): a tap that lands on another window,
+     * such as the status bar over an app's full-screen root, is not a tap in the field.
+     */
+    private Reply focus(JSONObject params) {
+        boolean withField = params.optBoolean("field_bounds", false);
+        Integer windowAtPoint = withField && params.has("x") && params.has("y")
+                ? windowAt(params.optInt("x"), params.optInt("y"))
+                : null;
+        AccessibilityNodeInfo node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        if (node == null) {
+            return Reply.of(Json.obj("focused", null));
+        }
+        try {
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            Rect field = withField && node.isEditable() ? fieldBounds(node) : null;
+            Rect label = withField && node.isEditable() ? labelBounds(node) : null;
+            return Reply.of(Json.obj("focused", Json.obj(
+                    "bounds_in_screen", rect(bounds),
+                    "field_bounds_in_screen", field == null ? null : rect(field),
+                    "label_bounds_in_screen", label == null ? null : rect(label),
+                    "window_at_point", windowAtPoint,
+                    "is_editable", node.isEditable(),
+                    "window_id", node.getWindowId(),
+                    "node_hash", node.hashCode(),
+                    "package_name", string(node.getPackageName()),
+                    "class_name", string(node.getClassName()),
+                    "view_id_resource_name", node.getViewIdResourceName())));
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                node.recycle(); // pooled before API 33
+            }
+        }
+    }
+
+    /**
+     * ACTION_SET_TEXT on the editable field with input focus. With {@code "replace": true} (the
+     * default) the text replaces the field's whole text; with false it replaces the field's
+     * selection, or goes at the cursor, which then follows it. A password field hides its text from
+     * the service, so text cannot go at its cursor.
+     */
     private Reply setText(JSONObject params) throws Failure {
         String text = text(params);
+        boolean replace = params.optBoolean("replace", true);
         AccessibilityNodeInfo field = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         try {
             if (field == null || !field.isEditable()) {
                 throw new Failure("no_focused_field", "no editable field has input focus");
             }
+            int cursor = -1;
+            if (!replace) {
+                if (field.isPassword()) {
+                    throw new Failure("password_field", "a password field hides its text, so text cannot go at its cursor");
+                }
+                CharSequence current = field.isShowingHintText() || field.getText() == null ? "" : field.getText();
+                int start = field.getTextSelectionStart();
+                int end = field.getTextSelectionEnd();
+                if (start < 0 || end < 0 || start > current.length() || end > current.length()) {
+                    start = end = current.length(); // no cursor: at the end
+                }
+                int from = Math.min(start, end);
+                int to = Math.max(start, end);
+                cursor = from + text.length();
+                text = current.subSequence(0, from) + text + current.subSequence(to, current.length());
+            }
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
                 throw new Failure("set_text_failed", "the focused field refused the text");
+            }
+            if (cursor >= 0) {
+                Bundle selection = new Bundle();
+                selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor);
+                selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor);
+                field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection);
             }
             return Reply.of(Json.obj(
                     "package_name", string(field.getPackageName()),
@@ -325,7 +411,7 @@ public final class DeviceService extends AccessibilityService {
         if (Build.VERSION.SDK_INT < 33) {
             throw new Failure("unsupported", "commit_text needs Android 13 (API 33); this device runs API " + Build.VERSION.SDK_INT);
         }
-        return Reply.of(Api33.commitText(this, text));
+        return Reply.of(Api33.commitText(this, text, params.optBoolean("replace", false)));
     }
 
     private static String text(JSONObject params) throws Failure {
@@ -362,6 +448,126 @@ public final class DeviceService extends AccessibilityService {
                 "removed_count", event.getRemovedCount(),
                 "scroll_delta_x", event.getScrollDeltaX(),
                 "scroll_delta_y", event.getScrollDeltaY());
+    }
+
+    /** How many nodes {@link #fieldBounds} fetches, at most, before it gives no answer. */
+    private static final int MAX_FIELD_NODES = 2000;
+
+    /**
+     * The bounds of the largest ancestor of {@code focused} whose subtree holds no editable node
+     * other than {@code focused}: the field as drawn. Each step up looks only into the subtrees of
+     * the new ancestor's other children. Null when that took more than {@link #MAX_FIELD_NODES}
+     * nodes. Every node it obtains is recycled before API 33.
+     */
+    private static Rect fieldBounds(AccessibilityNodeInfo focused) {
+        Rect bounds = new Rect();
+        focused.getBoundsInScreen(bounds);
+        List<AccessibilityNodeInfo> obtained = new ArrayList<>();
+        try {
+            int[] looked = {0};
+            AccessibilityNodeInfo from = focused;
+            for (AccessibilityNodeInfo parent = focused.getParent(); parent != null; parent = parent.getParent()) {
+                obtained.add(parent);
+                Boolean other = holdsAnotherEditable(parent, from, obtained, looked);
+                if (other == null) {
+                    return null;
+                }
+                if (other) {
+                    break;
+                }
+                parent.getBoundsInScreen(bounds);
+                from = parent;
+            }
+            return bounds;
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                for (AccessibilityNodeInfo node : obtained) {
+                    node.recycle(); // pooled before API 33
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a subtree of {@code ancestor}'s children other than {@code from} holds an editable
+     * node; null once the nodes fetched, counted in {@code looked[0]} before each fetch, pass
+     * {@link #MAX_FIELD_NODES}.
+     */
+    private static Boolean holdsAnotherEditable(
+            AccessibilityNodeInfo ancestor, AccessibilityNodeInfo from, List<AccessibilityNodeInfo> obtained,
+            int[] looked) {
+        ArrayDeque<AccessibilityNodeInfo> pending = new ArrayDeque<>();
+        for (int i = 0; i < ancestor.getChildCount(); i++) {
+            if (++looked[0] > MAX_FIELD_NODES) {
+                return null;
+            }
+            AccessibilityNodeInfo child = ancestor.getChild(i);
+            if (child != null) {
+                obtained.add(child);
+                if (!child.equals(from)) {
+                    pending.add(child);
+                }
+            }
+        }
+        while (!pending.isEmpty()) {
+            AccessibilityNodeInfo node = pending.poll();
+            if (node.isEditable()) {
+                return true;
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                if (++looked[0] > MAX_FIELD_NODES) {
+                    return null;
+                }
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    obtained.add(child);
+                    pending.add(child);
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The id of the window on top at the point, the one of highest layer whose bounds hold it;
+     * null when none does. Every window obtained is recycled before API 33.
+     */
+    private Integer windowAt(int x, int y) {
+        Integer id = null;
+        int layer = Integer.MIN_VALUE;
+        Rect bounds = new Rect();
+        for (AccessibilityWindowInfo window : getWindows()) {
+            window.getBoundsInScreen(bounds);
+            if (bounds.contains(x, y) && (id == null || window.getLayer() > layer)) {
+                id = window.getId();
+                layer = window.getLayer();
+            }
+            if (Build.VERSION.SDK_INT < 33) {
+                window.recycle(); // pooled before API 33
+            }
+        }
+        return id;
+    }
+
+    /** The bounds of the view that labels {@code node} ({@code android:labelFor}); null when none does. */
+    private static Rect labelBounds(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo label = node.getLabeledBy();
+        if (label == null) {
+            return null;
+        }
+        try {
+            Rect bounds = new Rect();
+            label.getBoundsInScreen(bounds);
+            return bounds;
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                label.recycle(); // pooled before API 33
+            }
+        }
+    }
+
+    private static JSONObject rect(Rect rect) {
+        return Json.obj("left", rect.left, "top", rect.top, "right", rect.right, "bottom", rect.bottom);
     }
 
     private static String string(CharSequence value) {

@@ -43,7 +43,6 @@ from spectragent.agents.prompts import agent_prompt_variants
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.agents.ui_tars.codec import BoundVerb, UITarsCodec
 from spectragent.core.action_guard import build_guarded_act, executed_name
-from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.environment import BrowserEnvironment
@@ -54,6 +53,7 @@ from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_spaces import space_for
+from tests._helpers.android_device import unset_capability
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -340,7 +340,7 @@ class TestPromptVocabulary:
         """The same verbs, bound where the run holds their actions: each listed, a fixed key shown."""
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         agent.prompt_template = "mobile_use"
-        descriptors = AndroidCapability().get_action_descriptors()
+        descriptors = unset_capability().get_action_descriptors()
         prompt = agent.prepare(
             task="t",
             action_space=space_for(agent, descriptors),

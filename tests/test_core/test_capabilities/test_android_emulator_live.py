@@ -1,25 +1,42 @@
 """The Android capability on a real emulator, booted once for the whole module.
 
 Opt-in (marker ``requires_android_emulator``): set ``SPECTRAGENT_TEST_AVD`` to
-the name of an AVD. The capability is composed from YAML, as a run composes
-it, with the ``local_emulator`` provider. The one boot covers, in file order:
+the name of an AVD and ``SPECTRAGENT_TEST_SERVICE_APK`` to an APK built by
+``uv run python -m spectragent.core.capabilities.android.device.apk build``.
+The capability is composed from YAML, as a run composes it, with the
+``local_emulator`` provider, the accessibility service's gestures as its tap
+injector and ``set_text`` as its typing backend, which every API level from 30
+runs. The one boot covers, in file order:
 
-- the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): the
-  emulator hands the guest the run's own key (its log's "Sending adb public
-  key" carries the run's ``adbkey.pub``) and the user's ``~/.android/adbkey*``
-  stay as they were;
+- the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): from
+  API 31 the emulator hands the guest the run's own key (its log's "Sending
+  adb public key" carries the run's ``adbkey.pub``), on the API 30 image it
+  hands over none, and the user's ``~/.android/adbkey*`` stay as they were;
 - the emulator's ``HOME`` is the run's: its console auth token is there, and a
   console command sent through adb with that ``HOME`` reaches the emulator;
 - the run's own ``netsimd``: its ``netsim.ini`` is in the run's ``TMPDIR``, the
   user's ``$TMPDIR/netsim.ini`` stays as it was, and the guest joins its Wi-Fi;
-- the screenshot's geometry;
+- the device side is up: the platform fragment reports the APK the device
+  runs, the faketouch check and the test tap; the screenshot comes from the
+  helper where its screenshot works (API 31-33), else from the service, with
+  the screen's geometry;
 - ``open_app`` with the foreground app checked, and the back and home keys;
 - ``type_coordinate`` without a point: refused on Settings' main page, where
   no text field has focus, and typed into the search field a tap opens;
-- ``type_coordinate`` at a point: refused after a tap on nothing editable, and
-  typed into the search field its tap on the search bar opens, which takes
-  focus well after the tap (1.5-1.9 s, measured), within ``focus_wait_ms``;
-- a scroll down that shows what is further down, measured on the screenshots;
+- ``type_coordinate`` at a point (user rulings of 2026-11-02): refused after a
+  tap on nothing editable; typed into the search field its tap on the search
+  bar opens, which takes focus away from the point 2-3 s after the tap
+  (measured); refused after a tap on the status bar, another window drawn
+  over the search screen, the field's text untouched; typed into the Add
+  network dialog's "Network name" field after a tap on that field's own
+  label, which leaves focus in it: the label is inside the field as drawn;
+  with WPA/WPA2-Personal chosen, the dialog holds a password field too, and a
+  tap on the "Password" label, outside the "Network name" field as drawn, is
+  refused with the name untouched;
+- a scroll down that shows what is further down, measured on the screenshots,
+  its effect naming the injector that delivered it;
+- a capture waits for a still screen: after a cold start of Settings it waits
+  for the window manager, the frames and the events, and reports how;
 - a clean teardown: no process of the run is left, nothing listens on its
   private adb port, its directory is gone, nothing listens on adb's default port
   5037 that did not before, every other emulator and ``netsimd`` (another
@@ -27,9 +44,9 @@ it, with the ``local_emulator`` provider. The one boot covers, in file order:
   the run added nothing to the top level of the user's home and left the
   user's ``~/.emulator_console_auth_token`` as it was.
 
-The tap point on Settings' search bar was read off a Pixel 6 profile
-(1080 x 2400, 420 dpi) with the API 33 Google APIs image; on another screen the
-test that taps there skips.
+The points on Settings' pages were read off a Pixel 6 profile (1080 x 2400,
+420 dpi) with the API 33 Google APIs image; on another screen or image the tests
+that tap them skip.
 """
 
 from __future__ import annotations
@@ -59,10 +76,16 @@ from spectragent.core.capabilities.android.backends.local_emulator import (
     find_sdk,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.device.apk import ServiceApk
+from spectragent.core.capabilities.android.effects import AndroidTouchEffect
 from spectragent.core.capabilities.android.observations import (
+    CAPTURE_STATE,
     FOREGROUND_APP,
+    PLATFORM,
     SCREENSHOT,
+    AndroidCaptureStateObs,
     AndroidForegroundAppObs,
+    AndroidPlatformObs,
     AndroidScreenshotObs,
 )
 from spectragent.core.composer import ConfigComposer
@@ -77,12 +100,16 @@ pytestmark = [
 
 #: The AVD to boot; the marker skips this module when it is unset (``tests/conftest.py``).
 AVD_VARIABLE = "SPECTRAGENT_TEST_AVD"
+APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 SETTINGS = "com.android.settings"
-SETTINGS_SEARCH = "com.google.android.settings.intelligence"
+#: Settings' search: Google's on the API 31 and 33 images, AOSP's on API 30's.
+SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.settings.intelligence")
 #: Where Settings' search bar is on a 1080 x 2400 screen.
 SEARCH_BAR = (540, 660)
 #: A point of Settings' main page on no control: the toolbar above its title.
 NOTHING_THERE = (540, 300)
+#: A point on the status bar, between the clock and the icons: a tap there takes no focus.
+STATUS_BAR = (540, 40)
 #: Where the search screen lists the results of a query, between its field and the keyboard.
 RESULTS = (0, 300, 1080, 1400)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
@@ -162,6 +189,11 @@ def _listening(port: int) -> bool:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def booted() -> AsyncIterator[Booted]:
+    apk = os.environ.get(APK_VARIABLE)
+    if not apk:
+        pytest.skip(
+            f"set {APK_VARIABLE} to an APK built by `uv run python -m {ServiceApk.__module__} build`"
+        )
     user_keys, user_netsim, listening = _key_state(), _file_state(USER_NETSIM), _listening(5037)
     user_home, user_token = set(os.listdir(Path.home())), _file_state(USER_TOKEN)
     raw = {
@@ -172,6 +204,9 @@ async def booted() -> AsyncIterator[Booted]:
                     "provider_id": "local_emulator",
                     "avd": os.environ[AVD_VARIABLE],
                 },
+                "service_apk": apk,
+                "tap_injector": {"injector_id": "accessibility_gesture"},
+                "typing_backend": {"typing_id": "set_text"},
                 "task_oracle": {"oracle_id": "none"},
             }
         ]
@@ -227,7 +262,7 @@ async def _screenshot(booted: Booted) -> Image.Image:
 async def _settings_from_scratch(booted: Booted) -> None:
     """Settings, freshly started, in front: no page left open by an earlier test."""
     client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
-    for package in (SETTINGS, SETTINGS_SEARCH):
+    for package in (SETTINGS, *SETTINGS_SEARCH):
         await client.shell(booted.session.serial, f"am force-stop {package}")
     assert (await _act(booted, "open_app", app_name="Settings")).success
     assert (await _foreground(booted)).package == SETTINGS
@@ -236,12 +271,19 @@ async def _settings_from_scratch(booted: Booted) -> None:
 async def test_the_emulator_got_the_runs_own_key_and_the_users_keys_are_untouched(
     booted: Booted,
 ) -> None:
+    """Emulator 37.2.13 hands the key over only through the boot property
+    ``androidboot.qemu.adb.pubkey``, and logs it; the API 30 image takes none (2026-11-02)."""
+    platform = await _observe(booted, PLATFORM)
+    assert isinstance(platform, AndroidPlatformObs) and platform.sdk_int is not None
     log = (booted.run_directory / "emulator.log").read_text(errors="replace")
     sent = re.search(r"Sending adb public key \[(\S+)", log)
-    assert sent is not None, "the emulator's log names the key it hands the guest"
     run_key = (booted.run_directory / ".android" / "adbkey.pub").read_text().split()[0]
 
-    assert sent[1] == run_key
+    if platform.sdk_int >= 31:
+        assert sent is not None, "the emulator's log names the key it hands the guest"
+        assert sent[1] == run_key
+    else:
+        assert sent is None, "the API 30 image is handed no key"
     assert _key_state() == booted.user_keys
 
 
@@ -280,14 +322,33 @@ async def test_the_run_has_a_netsimd_of_its_own_and_the_guest_is_online(booted: 
     assert "Wifi is connected to" in status, status
 
 
-async def test_a_screenshot_reports_the_screens_geometry(booted: Booted) -> None:
+async def test_the_device_side_is_up_on_the_configured_build(booted: Booted) -> None:
+    platform = await _observe(booted, PLATFORM)
+    assert isinstance(platform, AndroidPlatformObs)
+    apk = ServiceApk.load(os.environ[APK_VARIABLE])
+
+    assert platform.service_apk_sha256 == apk.info.sha256
+    assert platform.service_apk_signing_certificate_sha256 == apk.info.signing_certificate_sha256
+    assert (platform.faketouch, platform.gestures) == (True, True)
+    assert platform.sdk_int is not None and platform.sdk_int >= 30
+    expected_tool = apk.info.accessibility_tool if platform.sdk_int >= 31 else None
+    assert platform.accessibility_tool == expected_tool
+
+
+async def test_a_screenshot_comes_from_the_fastest_program_and_reports_the_screens_geometry(
+    booted: Booted,
+) -> None:
+    platform = await _observe(booted, PLATFORM)
     shot = await _observe(booted, SCREENSHOT)
+    assert isinstance(platform, AndroidPlatformObs) and platform.sdk_int is not None
     assert isinstance(shot, AndroidScreenshotObs) and shot.image_bytes is not None
     size = booted.capability.screen_size
 
     assert image_size(shot.image_bytes) == (shot.image_width, shot.image_height) == size
     assert (shot.viewport_width, shot.viewport_height) == size
-    assert shot.producer == "screencap"
+    expected = "shell_helper" if 31 <= platform.sdk_int <= 33 else "accessibility_service"
+    assert shot.producer == expected
+    assert shot.capture_ms is not None and shot.encode_ms is not None
 
 
 async def test_open_app_brings_settings_to_the_front_and_back_and_home_leave_it(
@@ -309,8 +370,7 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     booted: Booted,
 ) -> None:
     """Refused where no text field has focus; typed into Settings' search once a tap opens it."""
-    if booted.capability.screen_size != (1080, 2400):
-        pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
+    await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
     refused = await _act(booted, "type_coordinate", text="bluetooth")
@@ -324,7 +384,7 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
             booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
         )
     ).success
-    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
     before = await _screenshot(booted)
     typed = await _act(booted, "type_coordinate", text="bluetooth")
     assert typed.success, typed.error
@@ -333,12 +393,13 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     assert _results_appeared(before, after)
 
 
-async def test_typing_at_a_point_waits_for_the_field_its_tap_opens_and_refuses_a_tap_on_nothing(
+async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_it_cannot(
     booted: Booted,
 ) -> None:
-    """The tap on the search bar opens a screen whose field takes focus 1.5-1.9 s later."""
-    if booted.capability.screen_size != (1080, 2400):
-        pytest.skip("the search bar's point was measured on a 1080 x 2400 screen")
+    """The tap on the search bar opens a screen whose field takes focus 2-3 s later, away from
+    the point, and that types (user ruling 2026-11-02); a tap on nothing focusable is refused,
+    and so is a tap on the status bar, another window drawn over the search screen."""
+    await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
     refused = await _act(
@@ -359,7 +420,7 @@ async def test_typing_at_a_point_waits_for_the_field_its_tap_opens_and_refuses_a
             booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
         )
     ).success
-    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
     empty = await _screenshot(booted)
 
     await _settings_from_scratch(booted)
@@ -371,8 +432,125 @@ async def test_typing_at_a_point_waits_for_the_field_its_tap_opens_and_refuses_a
         text="bluetooth",
     )
     assert typed.success, typed.error
-    assert (await _foreground(booted)).package == SETTINGS_SEARCH
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
     assert _results_appeared(empty, await _screenshot(booted))
+
+    # The search field is its screen's only text field, so its field is the whole window; the
+    # status bar is another window drawn over it there.
+    stayed = await _act(
+        booted, "type_coordinate", coordinate_x=STATUS_BAR[0], coordinate_y=STATUS_BAR[1], text="x"
+    )
+    assert not stayed.success
+    assert stayed.error is not None and "focus stayed on EditText" in stayed.error
+    assert await _field_text(booted) == "bluetooth", "nothing was cleared or typed"
+
+
+async def test_typing_at_a_point_on_a_fields_own_label_types_into_that_field(
+    booted: Booted,
+) -> None:
+    """The Add network dialog focuses its "Network name" field, with the label above it. A tap
+    on the label leaves focus in the field, away from the field's own bounds but inside the
+    field as drawn (user ruling 2026-11-02: here the whole dialog, whose only text field it
+    is), so the text goes in."""
+    await _skip_unless_measured_layout(booted)
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, "am force-stop com.android.settings")
+    await client.shell(booted.session.serial, "am start -W -a android.settings.WIFI_SETTINGS")
+    add = await _text_at(booted, "Add network")
+    assert (
+        await _act(booted, "click_coordinate", coordinate_x=add[0], coordinate_y=add[1])
+    ).success
+    side = booted.capability._side
+    assert side is not None
+    async with asyncio.timeout(10):
+        while (focused := await side.service.focus(field_bounds=True)) is None:
+            await asyncio.sleep(0.1)
+    label = await _text_at(booted, "Network name")
+    assert focused.is_editable and focused.view_id_resource_name == "com.android.settings:id/ssid"
+    assert not (focused.bounds_in_screen.top <= label[1] <= focused.bounds_in_screen.bottom)
+    assert focused.field_holds(*label), "the label is inside the field as drawn"
+
+    typed = await _act(
+        booted, "type_coordinate", coordinate_x=label[0], coordinate_y=label[1], text="CafeNet"
+    )
+
+    assert typed.success, typed.error
+    assert await _field_text(booted) == "CafeNet"
+
+
+async def test_typing_at_a_point_on_another_fields_label_is_refused(booted: Booted) -> None:
+    """With WPA/WPA2-Personal chosen, the Add network dialog holds "Network name" and "Password"
+    fields, so the walk from the name stops below their shared layout. A tap on the "Password"
+    label (a text view, which takes no focus) is outside the name's field: refused."""
+    await _skip_unless_measured_layout(booted)
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, "am force-stop com.android.settings")
+    await client.shell(booted.session.serial, "am start -W -a android.settings.WIFI_SETTINGS")
+    for text in ("Add network", "None", "WPA/WPA2-Personal"):
+        point = await _text_at(booted, text)
+        tapped = await _act(
+            booted, "click_coordinate", coordinate_x=point[0], coordinate_y=point[1]
+        )
+        assert tapped.success, tapped.error
+    name = await _text_at(booted, "Enter the SSID")
+    named = await _act(
+        booted, "type_coordinate", coordinate_x=name[0], coordinate_y=name[1], text="CafeNet"
+    )
+    assert named.success, named.error
+    label = await _text_at(booted, "Password")
+
+    refused = await _act(
+        booted, "type_coordinate", coordinate_x=label[0], coordinate_y=label[1], text="x"
+    )
+
+    assert not refused.success
+    assert refused.error is not None and "focus stayed on EditText" in refused.error
+    name_now = await _field_text(booted, "com.android.settings:id/ssid")
+    assert name_now == "CafeNet", "nothing was cleared or typed"
+
+
+async def _text_at(booted: Booted, text: str) -> tuple[int, int]:
+    """The centre of the visible node whose text is *text*, once the service's tree has it."""
+    side = booted.capability._side
+    assert side is not None
+    async with asyncio.timeout(10):
+        while True:
+            capture = await side.service.tree()
+            for window in capture.forest.windows:
+                for node in window.tree.nodes:
+                    if node.text == text and node.is_visible_to_user:
+                        box = node.bounds_in_screen
+                        return (box.left + box.right) // 2, (box.top + box.bottom) // 2
+            await asyncio.sleep(0.2)
+
+
+async def _field_text(booted: Booted, view_id: str | None = None) -> str | None:
+    """The text of the editable field on screen (the one with *view_id*), as the service's tree has it."""
+    side = booted.capability._side
+    assert side is not None
+    capture = await side.service.tree()
+    texts = [
+        node.text
+        for window in capture.forest.windows
+        for node in window.tree.nodes
+        if node.is_editable
+        and node.is_visible_to_user
+        and (view_id is None or node.view_id_resource_name == view_id)
+    ]
+    return texts[0] if texts else None
+
+
+async def _skip_unless_measured_layout(booted: Booted) -> None:
+    """The points on Settings' pages were read off the API 33 image on a 1080 x 2400 screen.
+
+    On the API 30 and 31 images, Settings' first page is laid out otherwise:
+    the search bar's point opened another page there, and the empty point a
+    suggestion card (2026-11-02).
+    """
+    platform = await _observe(booted, PLATFORM)
+    assert isinstance(platform, AndroidPlatformObs)
+    if booted.capability.screen_size != (1080, 2400) or platform.sdk_int != 33:
+        pytest.skip("the points on Settings' pages were measured on the API 33 image, 1080 x 2400")
 
 
 def _results_appeared(before: Image.Image, after: Image.Image) -> bool:
@@ -385,10 +563,31 @@ async def test_a_scroll_down_shows_what_is_further_down(booted: Booted) -> None:
     await _settings_from_scratch(booted)
     before = await _screenshot(booted)
 
-    assert (await _act(booted, "scroll", direction="down")).success
+    scrolled = await _act(booted, "scroll", direction="down")
+    assert scrolled.success, scrolled.error
     after = await _screenshot(booted)
 
     assert _content_shift(before, after) > 100, "the content moved up the screen"
+    assert isinstance(scrolled.effect, AndroidTouchEffect)
+    assert scrolled.effect.touch.delivered_by == "accessibility_gesture"
+
+
+async def test_a_capture_after_a_cold_start_waits_for_a_still_screen(booted: Booted) -> None:
+    """``am start`` returns once Settings is shown; the capture after it waits, and says how."""
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, f"am force-stop {SETTINGS}")
+    assert (await _act(booted, "press_key", key="home")).success
+    assert (await _act(booted, "open_app", app_name="Settings")).success
+
+    state = await _observe(booted, CAPTURE_STATE)
+
+    assert isinstance(state, AndroidCaptureStateObs) and state.settle is not None
+    print(f"after a cold start of Settings: {state.settle}")
+    assert state.settle.outcome in ("settled", "capped"), state.settle.detail
+    again = await _observe(booted, CAPTURE_STATE)
+    assert isinstance(again, AndroidCaptureStateObs) and again.settle is not None
+    print(f"right after: {again.settle}")
+    assert again.settle.outcome == "settled", "nothing changed since"
 
 
 def _content_shift(before: Image.Image, after: Image.Image) -> int:

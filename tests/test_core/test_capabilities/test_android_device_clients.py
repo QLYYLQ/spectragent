@@ -30,6 +30,7 @@ from spectragent.core.capabilities.android.device.forest import (
     AndroidAccessibilityForest,
     AndroidAccessibilityNodeInfo,
     AndroidAccessibilityWindowInfo,
+    ProtoRect,
 )
 from tests._helpers.fake_adb import FakeAdbServer, SocketServer, scripted
 from tests._helpers.fake_device_side import Answer, Failure, FakeProgram, Method
@@ -261,7 +262,9 @@ async def test_service_screenshots_tree_text_and_global_actions_come_back_typed(
         service = ServiceClient(channel)
         capture = await service.tree(max_nodes=300)
         target = await service.set_text("蓝牙 bluetooth")
+        await service.set_text("at the cursor", replace=False)
         committed = await service.commit_text("more")
+        await service.commit_text("over it all", replace=True)
         shot = await service.screenshot()
         await service.global_action("recents")
 
@@ -274,9 +277,56 @@ async def test_service_screenshots_tree_text_and_global_actions_come_back_typed(
         120,
         90,
     )
-    assert program.calls[0] == ("tree", {"max_nodes": 300})
-    assert program.calls[1] == ("set_text", {"text": "蓝牙 bluetooth"})
+    assert program.calls[:5] == [
+        ("tree", {"max_nodes": 300}),
+        ("set_text", {"text": "蓝牙 bluetooth", "replace": True}),
+        ("set_text", {"text": "at the cursor", "replace": False}),
+        ("commit_text", {"text": "more", "replace": False}),
+        ("commit_text", {"text": "over it all", "replace": True}),
+    ]
     assert program.calls[-1] == ("global_action", {"action": "recents"})
+
+
+async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none() -> None:
+    asked: list[JsonObject] = []
+    nodes: list[JsonObject | None] = [
+        {
+            "bounds_in_screen": {"left": 30, "top": 120, "right": 1050, "bottom": 246},
+            "field_bounds_in_screen": {"left": 0, "top": 63, "right": 1080, "bottom": 300},
+            "label_bounds_in_screen": {"left": 30, "top": 400, "right": 300, "bottom": 450},
+            "window_at_point": 13,
+            "is_editable": True,
+            "window_id": 13,
+            "node_hash": 1240117,
+            "package_name": "com.google.android.settings.intelligence",
+            "class_name": "android.widget.EditText",
+            "view_id_resource_name": None,
+        },
+        None,
+    ]
+
+    async def focus(params: JsonObject) -> Answer:
+        asked.append(params)
+        return Answer({"focused": nodes.pop(0)})
+
+    async with _client("service", {"focus": focus}) as (_, channel):
+        service = ServiceClient(channel)
+        field, nothing = await service.focus(field_bounds=True, at=(540, 70)), await service.focus()
+
+    assert asked == [{"field_bounds": True, "x": 540, "y": 70}, {"field_bounds": False}]
+    assert field is not None and nothing is None
+    assert field.is_editable and field.class_name == "android.widget.EditText"
+    assert field.field_holds(540, 70) and field.field_holds(1080, 300), "the field as drawn"
+    assert field.field_holds(540, 660) is False, "below it"
+    assert field.field_holds(100, 420), "on its own label, outside the field as drawn"
+    unbounded = field.model_copy(update={"field_bounds_in_screen": None})
+    assert unbounded.field_holds(540, 183) is None and unbounded.field_holds(100, 420)
+    covered = field.model_copy(update={"window_at_point": 3})
+    assert covered.field_holds(540, 70) is False, "another window is on top at the point"
+    moved = field.model_copy(update={"bounds_in_screen": ProtoRect(top=900, bottom=1026)})
+    assert field.same_node(moved), "a keyboard moved it: the same field"
+    assert not field.same_node(field.model_copy(update={"node_hash": 7})), "another view"
+    assert not field.same_node(field.model_copy(update={"window_id": 14})), "another window"
 
 
 async def test_service_events_come_back_typed_in_order() -> None:

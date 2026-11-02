@@ -2,9 +2,10 @@
 
 Opt-in, like ``test_android_emulator_live.py`` (marker
 ``requires_android_emulator``): ``SPECTRAGENT_TEST_AVD`` names the AVD
-AndroidWorld's one-time setup prepared, and ``SPECTRAGENT_TEST_ANDROIDWORLD``
+AndroidWorld's one-time setup prepared, ``SPECTRAGENT_TEST_ANDROIDWORLD``
 the AndroidWorld installation (its venv, its checkout at the pinned commit,
-its cached forwarder; ``docs/architecture_design.md`` §11.2). In file order:
+its cached forwarder; ``docs/architecture_design.md`` §11.2), and
+``SPECTRAGENT_TEST_SERVICE_APK`` the device-side APK. In file order:
 
 - ``task_list.py`` writes the task list for ``SystemBrightnessMax`` under
   AndroidWorld's interpreter, and the ``androidworld`` loader reads it;
@@ -12,6 +13,8 @@ its cached forwarder; ``docs/architecture_design.md`` §11.2). In file order:
   the device with what the oracle needs and starts the service, which
   prepares the task;
 - the touch and pointer overlays are off, so screenshots do not carry them;
+- our accessibility service is bound beside AndroidWorld's forwarder, which
+  AndroidWorld's service wrote over the setting when it started;
 - the unsolved task scores 0 and, once the brightness is set over adb, 1, with
   the oracle's version and the task in the score's provenance;
 - teardown leaves no service, emulator or adb server, and nothing listens on
@@ -56,10 +59,20 @@ TASK_LIST_WRITER = (
 )
 
 
+APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
+#: AndroidWorld's accessibility forwarder, as the setting names it.
+FORWARDER = (
+    "com.google.androidenv.accessibilityforwarder/"
+    "com.google.androidenv.accessibilityforwarder.AccessibilityForwarder"
+)
+
+
 def _installation_problem() -> str | None:
     root = os.environ.get(ANDROIDWORLD_VARIABLE)
     if not root:
         return f"set {ANDROIDWORLD_VARIABLE} to an AndroidWorld installation"
+    if not os.environ.get(APK_VARIABLE):
+        return f"set {APK_VARIABLE} to the device-side APK"
     problems = Installation(Path(root).expanduser()).problems()
     return "; ".join(problems) or None
 
@@ -113,6 +126,9 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
                     "provider_id": "local_emulator",
                     "avd": os.environ["SPECTRAGENT_TEST_AVD"],
                 },
+                "service_apk": os.environ[APK_VARIABLE],
+                "tap_injector": {"injector_id": "shell_injection"},
+                "typing_backend": {"typing_id": "set_text"},
                 "task_oracle": {"oracle_id": "androidworld", "root": str(installation.root)},
             }
         ]
@@ -152,6 +168,15 @@ async def _shell(prepared: Prepared, command: str) -> str:
 async def test_the_touch_and_pointer_overlays_are_off(prepared: Prepared) -> None:
     assert await _shell(prepared, "settings get system show_touches") == "0"
     assert await _shell(prepared, "settings get system pointer_location") == "0"
+
+
+async def test_our_service_is_bound_beside_androidworlds_forwarder(prepared: Prepared) -> None:
+    enabled = await _shell(prepared, "settings get secure enabled_accessibility_services")
+    side = prepared.capability._side
+    assert side is not None
+
+    assert FORWARDER in enabled.split(":") and "org.spectragent.device/.DeviceService" in enabled
+    assert (await side.service.ping()).uptime_ms > 0
 
 
 async def test_the_task_scores_0_unsolved_and_1_once_solved(prepared: Prepared) -> None:

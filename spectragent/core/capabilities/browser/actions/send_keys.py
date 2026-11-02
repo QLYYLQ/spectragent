@@ -133,7 +133,7 @@ class SendKeysAction(SettleableAction, ActionBase):
         try:
             await field.before()
         finally:
-            await budget.run(field.release, "release field")
+            await field.release()  # cleanup, never charged to the budget
         if shortcut.yields_to_text and field.entry != "none":
             return None
         try:
