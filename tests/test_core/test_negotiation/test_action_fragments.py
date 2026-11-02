@@ -19,6 +19,7 @@ import pytest
 import spectragent.core.capabilities.android.actions  # noqa: F401 — registers them
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.agents.memory.simple import SimpleMemory
+from spectragent.cli.configuration_errors import contract_details
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
@@ -89,6 +90,43 @@ def test_a_required_action_whose_fragment_the_run_lacks_is_refused_naming_the_fr
         "required by clicks and needs fragment(s) ['android.ui_tree'], which this run's "
         "observation negotiation did not activate."
     )
+
+
+class _ClicksAndNavigates:
+    """Needs element indexes and a URL bar: Android offers the first, never the second."""
+
+    __registry_key__ = "clicks_and_navigates"
+    __wiring__: ClassVar[dict[str, Any]] = {"action": ("action", ["click", "navigate", "done"])}
+
+
+def test_a_missing_action_nobody_offers_is_listed_beside_one_that_lacks_its_fragment() -> None:
+    """One refusal names every missing action, so the run does not fail again for the next."""
+    with pytest.raises(IncompatibleActionError) as refused:
+        negotiate_action(
+            _ClicksAndNavigates(), ReactLoop(), _Env(*ANDROID), fragments=SCREENSHOT_ONLY
+        )
+
+    error = refused.value
+    assert not isinstance(error, ActionFragmentError)
+    assert error.missing == {"click", "navigate"}
+    assert error.fragments == {"click": frozenset({"android.ui_tree"})}
+    assert str(error).startswith(
+        "Required actions not provided by environment. Missing: ['click', 'navigate']. "
+        "'click' is offered as android.click but needs fragment(s) ['android.ui_tree'], which "
+        "this run's observation negotiation did not activate. "
+    )
+    assert contract_details(error)["fragments"] == {"click": ["android.ui_tree"]}
+
+
+def test_the_cli_says_which_fragment_an_offered_action_lacks() -> None:
+    with pytest.raises(ActionFragmentError) as refused:
+        negotiate_action(_Clicks(), ReactLoop(), _Env(*ANDROID), fragments=SCREENSHOT_ONLY)
+
+    details = contract_details(refused.value)
+
+    assert details["contract"] == "actions" and details["missing"] == ["click"]
+    assert details["fragments"] == {"click": ["android.ui_tree"]}
+    assert "android.click" in details["provided"], "offered by the environment, not missing from it"
 
 
 def test_without_an_observation_negotiation_every_action_is_on_offer() -> None:

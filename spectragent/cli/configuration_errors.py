@@ -80,6 +80,9 @@ def contract_details(exc: Exception) -> dict[str, Any]:
         }
         if isinstance(exc, IncompatibleFragmentError | IncompatibleArchiveError):
             result["requested_by"] = {key: list(value) for key, value in exc.requested_by.items()}
+        if isinstance(exc, IncompatibleActionError) and exc.fragments:
+            # Offered by the environment, left out for a fragment the run lacks.
+            result["fragments"] = {key: sorted(value) for key, value in exc.fragments.items()}
         return result
     if isinstance(exc, CircularWiringError):
         return {"contract": "acyclic_wiring", "cycle": list(exc.cycle)}

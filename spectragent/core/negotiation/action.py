@@ -60,6 +60,12 @@ class IncompatibleActionError(Exception):
     provider that failed: the environment, or the Loop (``loop 'react'``)
     when it does not provide a registered ``loop.*`` action the agent
     requires.
+
+    Some missing keys may be offered by the environment and left out only
+    because their required param addresses a fragment this run lacks
+    (*lacking*: declared key → the action and the fragments). They are named
+    in the message and in :attr:`fragments`, so they do not read as actions
+    nobody offers.
     """
 
     def __init__(
@@ -69,12 +75,19 @@ class IncompatibleActionError(Exception):
         requested_by: Mapping[str, Sequence[str]] | None = None,
         *,
         provider: str = "environment",
+        lacking: Mapping[str, tuple[str, frozenset[str]]] | None = None,
     ) -> None:
         requested_by = {
             key: tuple(sources) for key, sources in sorted((requested_by or {}).items())
         }
         attribution = "; ".join(
             f"{key} ← {' and '.join(sources)}" for key, sources in requested_by.items()
+        )
+        lacking = dict(sorted((lacking or {}).items()))
+        unmet = "".join(
+            f"{declared!r} is offered as {action} but needs fragment(s) {sorted(keys)}, which "
+            "this run's observation negotiation did not activate. "
+            for declared, (action, keys) in lacking.items()
         )
         # The ablation hint is about a capability's ``actions:`` list, which
         # a Loop does not have.
@@ -90,6 +103,7 @@ class IncompatibleActionError(Exception):
         super().__init__(
             f"Required actions not provided by {provider}. "
             f"Missing: {sorted(missing)}. "
+            + unmet
             + (f"Requested by: {attribution}. " if attribution else "")
             + f"{provider[:1].upper()}{provider[1:]} provides: {sorted(provided)}."
             + hint
@@ -100,16 +114,21 @@ class IncompatibleActionError(Exception):
         #: Who failed to provide: ``environment``, or the Loop
         #: (``loop 'react'``) when it does not provide a required loop action.
         self.provider = provider
+        #: Declared key → the fragments its action needs and the run lacks,
+        #: for the missing keys the environment offers.
+        self.fragments = {declared: keys for declared, (_, keys) in lacking.items()}
 
 
 class ActionFragmentError(IncompatibleActionError):
-    """A required action whose required param addresses a fragment this run did not negotiate.
+    """Required actions missing only because their required params address fragments this run lacks.
 
     ``android.click``'s ``index`` names an element of ``android.ui_tree``: in a
     run without the tree there is nothing for it to name, so the action is not
     on offer (``docs/architecture_design.md`` §4.5 "参数的含义"). The agent's
     declaration is the line to change, so ``missing`` holds the key as it
-    declared it; ``fragments`` maps it to the fragments its action lacks.
+    declared it; ``fragments`` maps it to the fragments its action lacks. Raised
+    only when every missing key is of this kind; otherwise the plain
+    :class:`IncompatibleActionError` lists them all.
     """
 
     def __init__(
@@ -118,7 +137,9 @@ class ActionFragmentError(IncompatibleActionError):
         provided: set[str],
         requested_by: Mapping[str, Sequence[str]],
     ) -> None:
-        super().__init__(missing=set(lacking), provided=provided, requested_by=requested_by)
+        super().__init__(
+            missing=set(lacking), provided=provided, requested_by=requested_by, lacking=lacking
+        )
         lines = []
         for declared, (action, fragments) in sorted(lacking.items()):
             who = " and ".join(requested_by.get(declared, ())) or "the agent"
@@ -132,8 +153,6 @@ class ActionFragmentError(IncompatibleActionError):
             + ". An element index means nothing without the fragment its elements come from: "
             "require the fragment in the agent's observation wiring, or do not require the action.",
         )
-        #: Declared key → the fragments its action needs and the run lacks.
-        self.fragments = {declared: fragments for declared, (_, fragments) in lacking.items()}
 
 
 class AmbiguousActionError(AmbiguousKeyError):
@@ -258,24 +277,28 @@ def _action_rules(
                 requested_by=requested_by(unprovided, parties),
                 provider=f"loop {loop_source!r}" if loop_source else "the loop",
             )
-        # Missing because the run lacks the fragment its param addresses.
-        fragmentless = resolve_demand(
-            required=demand.missing,
-            optional=(),
-            universe=set(lacking),
-            separator=ACTION_KEY_SEPARATOR,
-            ambiguity_error=AmbiguousActionError,
-        ).bindings
-        if fragmentless:
+        # Offered, but left out because the run lacks the fragment a param addresses.
+        fragmentless = {
+            declared: (key, lacking[key])
+            for declared, key in resolve_demand(
+                required=demand.missing,
+                optional=(),
+                universe=set(lacking),
+                separator=ACTION_KEY_SEPARATOR,
+                ambiguity_error=AmbiguousActionError,
+            ).bindings.items()
+        }
+        if fragmentless and fragmentless.keys() == demand.missing:
             raise ActionFragmentError(
-                lacking={declared: (key, lacking[key]) for declared, key in fragmentless.items()},
-                provided=offered,
+                lacking=fragmentless,
+                provided=env_provides,
                 requested_by=requested_by(fragmentless, parties),
             )
         raise IncompatibleActionError(
             missing=set(demand.missing),
             provided=env_provides,
             requested_by=requested_by(demand.missing, parties),
+            lacking=fragmentless,
         )
     active = demand.resolved
     grouped = group_by_short_name(active, ACTION_KEY_SEPARATOR)
