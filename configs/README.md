@@ -428,10 +428,15 @@ agent_loop:
   restorer:
     restorer_id: prefix_replay      # the default: a block that leaves restorer out gets it
     verify: strict                  # warn: record a failed check and go on
-    screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
     pace: none                      # recorded_llm_latency: wait as long as the source waited;
                                     # recorded_timeline: keep to the source's timeline (below)
-    media: align                    # none: leave media where the replay put it (control arm)
+
+# environment[0].capabilities[0]: what the browser checks and aligns is the browser's own
+# (docs/architecture_design.md §4.9); an ordinary run never reads these
+  - capability_id: browser
+    retarget_tolerance_px: 2.0      # how far a recorded element may move and still be re-found
+    screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
+    align_media: true               # false: leave media where the replay put it (control arm)
     media_time_tolerance_s: 1.0     # seconds a media position may differ and still pass
     media_seek_timeout_s: 2.0       # seconds an alignment seek (and play) may take
     media_end_lead_s: 0.5           # a video recorded at its end is played into it from this far before
@@ -455,8 +460,9 @@ task_loader:
   is a candidate; the `step_selector` picks among them. The trace's own ledger is a hard
   condition: a trace never closed (`writing`) gives no candidate, an `incomplete` one every
   step before its hole. A task id is `<source_run_id>/s<t>/b<i>`; its context carries the source's
-  setup context (`start_url` …), `replay_archive` (the source run directory, absolute) and
-  the `checkpoint` — nothing on the command line. `agent_outcome` (how the agent ended,
+  setup context (`start_url` …), `replay_archive` (the source run directory, absolute; only
+  when the source recorded `browser.network`) and the `checkpoint` — nothing on the command
+  line. `agent_outcome` (how the agent ended,
   `any` by default) / `require_eval` filter sources; a source that cannot be branched (an
   unreadable trace — an older trace format included — itself a branch or a replay run, no
   `browser.network` archive or environment fingerprint, no unredacted setup context and no
@@ -485,18 +491,20 @@ task_loader:
   the agent's parser and checked against the recording. The browser replays the source's
   archive; `prefix_replay` re-executes the recorded actions (element indexes re-found by
   position and signature within `retarget_tolerance_px`, tab ids by their position in the
-  order the tabs opened and their URL) and verifies every step: URL, interactive-element
-  signatures, media playback state, screenshot hash distance, main-frame document misses,
-  action outcomes. With `media: align` (the default) each restored observation, the
+  order the tabs opened and their URL) and verifies every step: the browser measures and
+  judges its own evidence (URL, interactive-element signatures, media playback state,
+  screenshot hash distance, main-frame document misses, against the limits in its block)
+  and the restorer adds the action outcomes. With the browser's `align_media: true`
+  (the default) each restored observation, the
   checkpoint's included, first moves every matched video or audio element to the position
   and play state recorded with that step's screenshot — inside the capture, after the page
   settles and right before the screenshot — and each action is kept with the step's check;
   a seek that does not complete in `media_seek_timeout_s` (or lands elsewhere) is undone
   and the step fails `media_mismatch`. A video the recording showed at its end is sought
   `media_end_lead_s` before it and played through to its natural end, so the player shows
-  its end screen; the lead must be shorter than `media_seek_timeout_s`, or the restorer is
+  its end screen; the lead must be shorter than `media_seek_timeout_s`, or the capability is
   refused at construction, naming both. Nothing is aligned after the checkpoint, and with
-  `media: none` the media state is still compared. A tab
+  `align_media: false` the media state is still compared. A tab
   the recording's actions opened is followed again by the same rule (`new_tabs`, above), so
   the restored observation is of the same tab. The restored steps are recorded as
   `origin: restored` with their check; step *t* and the `continue_steps` after it are the
