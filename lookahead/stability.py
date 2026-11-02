@@ -13,7 +13,7 @@ pixels changed; four-neighbour cells form a region). It counts as *changed*
 when one region's own cell area is at least ``min_change_area`` of the image
 (default 0.5 %: a blinking caret or a ticking clock stays below it, a playing
 preview does not). Every comparison reports the changed-pixel fraction and
-every region with its area. The 64-bit dHash distance (the restorer's) is
+every region with its area. The 64-bit dHash distance (the browser's restoration check's) is
 reported beside it and decides nothing: it is blind to local changes, such as
 a video preview that changed 6-8 % of the pixels at distance 0.
 
@@ -129,7 +129,8 @@ ORIGINS = ("policy", "restored")
 DEFAULT_ORIGINS = frozenset({"policy"})
 #: A region at least this share of the image (its cells' own area) makes a change.
 DEFAULT_MIN_CHANGE_AREA = 0.005
-#: The restorer's default dHash limit: used only to say what the dHash alone would miss.
+#: The browser's default dHash limit (``screenshot_max_distance``): used only to say what the
+#: dHash alone would miss.
 DHASH_LIMIT = 5
 #: The previous-action label of a run's first observation.
 START = "(start)"

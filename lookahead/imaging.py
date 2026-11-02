@@ -1,7 +1,7 @@
-"""Comparing two screenshots: the restorer's 64-bit dHash and a 32-px grid of changed regions.
+"""Comparing two screenshots: the browser's 64-bit dHash and a 32-px grid of changed regions.
 
 The dHash and its Hamming distance are spectragent's own, public in the
-browser restoration module (the restorer's screenshot distance); both
+browser restoration module (the browser's restoration screenshot distance); both
 comparisons also take images already decoded, for a reader that changes
 them first (the stability review masks media areas out of both). The grid
 difference is the method ``spectragent flywheel diagnose`` states in its

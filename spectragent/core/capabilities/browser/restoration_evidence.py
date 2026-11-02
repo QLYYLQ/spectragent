@@ -126,9 +126,9 @@ class MediaEvidence(BaseModel):
     name the embedded frames whose own media read did not answer on each
     side: what media they hold is unknown, so the step cannot be restored.
     ``alignment`` is ``None`` when no alignment was requested for the
-    restored observation (``media: none``); otherwise one entry per recorded
-    element it considered, and ``alignment_detail`` says why it is empty
-    when it is.
+    restored observation (the capability's ``align_media: false``); otherwise
+    one entry per recorded element it considered, and ``alignment_detail``
+    says why it is empty when it is.
     """
 
     model_config = ConfigDict(frozen=True)

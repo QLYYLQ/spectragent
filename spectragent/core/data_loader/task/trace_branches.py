@@ -331,7 +331,8 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         return list(self._tasks)
 
     def get_task_context(self, task_id: str) -> TaskContext:
-        """The branch task's three parts: env (source setup + ``replay_archive``), loop, branch.
+        """The branch task's three parts: env (source setup, and ``replay_archive`` when the
+        source recorded a network archive), loop, branch.
 
         An unknown ``task_id`` yields an empty ``TaskContext()``, as for every loader.
         """

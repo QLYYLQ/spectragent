@@ -431,15 +431,18 @@ agent_loop:
     pace: none                      # recorded_llm_latency: wait as long as the source waited;
                                     # recorded_timeline: keep to the source's timeline (below)
 
-# environment[0].capabilities[0]: what the browser checks and aligns is the browser's own
+# the browser block: what the browser checks and aligns is its own
 # (docs/architecture_design.md §4.9); an ordinary run never reads these
-  - capability_id: browser
-    retarget_tolerance_px: 2.0      # how far a recorded element may move and still be re-found
-    screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
-    align_media: true               # false: leave media where the replay put it (control arm)
-    media_time_tolerance_s: 1.0     # seconds a media position may differ and still pass
-    media_seek_timeout_s: 2.0       # seconds an alignment seek (and play) may take
-    media_end_lead_s: 0.5           # a video recorded at its end is played into it from this far before
+environment:
+  - env_type: browser
+    capabilities:
+      - capability_id: browser
+        retarget_tolerance_px: 2.0  # how far a recorded element may move and still be re-found
+        screenshot_max_distance: 5  # largest Hamming distance of the 64-bit screenshot dHashes
+        align_media: true           # false: leave media where the replay put it (control arm)
+        media_time_tolerance_s: 1.0 # seconds a media position may differ and still pass
+        media_seek_timeout_s: 2.0   # seconds an alignment seek (and play) may take
+        media_end_lead_s: 0.5       # a video recorded at its end is played into it from this far before
 
 task_loader:
   - benchmark_name: trace_branches

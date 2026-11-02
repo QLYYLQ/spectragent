@@ -43,7 +43,8 @@ machine. Freeze their contents for the round. Important browser/archive defaults
 in the YAML; the runbook also identifies unchanged and inactive defaults.
 
 Forks use strict isolated archive serving, exact/normalized matching, the frozen site rules,
-`verify: warn`, `media: align`, `pace: recorded_timeline`, and one terminal observation.
+`verify: warn`, `pace: recorded_timeline`, the browser's `align_media: true`, and one
+terminal observation.
 Timeline recovered 266/466 checkpoints versus 243/466 with none in the paired ten-site round,
 at about 3.34 times the summed execution duration. Those are checkpoint checks, not task
 success or wall-clock cost; there was no paired latency arm. The default keeps timeline and
