@@ -49,7 +49,10 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   ``#text_labelled_box`` holding the text field ``#text_labelled``
   (``Email``) and its own ``<label for>`` ``#text_labelled_label``; a box
   ``#text_iconed_box`` holding the text field ``#text_iconed`` (``Find``) and
-  an icon ``#text_icon`` whose press focuses it — and a paragraph of text;
+  an icon ``#text_icon`` whose press focuses it — two text fields
+  ``#text_given`` (``Given name``) and ``#text_family`` (``Family name``),
+  each beside its own ``<label for>`` (``#text_given_label``,
+  ``#text_family_label``) with no box of their own, and a paragraph of text;
   :data:`FIELDS_EMPTY_POINT` is on none of them. A
   capture-phase listener keeps the ``key`` of every keydown the page's own
   document sees in ``window.__keys``;
@@ -131,6 +134,10 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "text_iconed_box": (720, 470, 300, 40),
     "text_icon": (724, 474, 32, 32),
     "text_iconed": (760, 474, 256, 32),
+    "text_given_label": (720, 530, 90, 24),
+    "text_given": (820, 530, 200, 24),
+    "text_family_label": (720, 560, 90, 24),
+    "text_family": (820, 560, 200, 24),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -367,6 +374,12 @@ def _fields_page() -> bytes:
         "document.getElementById('text_iconed').focus()\">Q</span>"
         f'<input id="text_iconed" aria-label="Find" '
         f'style="{_box_in("text_iconed", "text_iconed_box")}border:0"></div>'
+        f'<label id="text_given_label" for="text_given" style="{_box("text_given_label")}">'
+        "Given name</label>"
+        f'<input id="text_given" style="{_box("text_given")}">'
+        f'<label id="text_family_label" for="text_family" style="{_box("text_family_label")}">'
+        "Family name</label>"
+        f'<input id="text_family" style="{_box("text_family")}">'
         f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
         "<script>window.__keys = [];"
         " addEventListener('keydown', e => window.__keys.push(e.key), true);"

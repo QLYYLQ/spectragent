@@ -934,7 +934,8 @@ class ActionWatchdog(BrowserWatchdog):
         move it afterwards. The field is the one the person sees: the
         element's largest ancestor holding no other text field (a code
         editor's wrapper around its hidden textarea, the box an input shares
-        with its label or icon). The rule is the one every capability's
+        with its label or icon); a click on the element's own ``<label>``
+        counts as in it too. The rule is the one every capability's
         ``type_coordinate`` keeps (user rulings of 2026-11-02,
         ``docs/architecture_design.md`` §4.9): focus that moved to a text field
         is typed into, wherever it is (a click on an opener that focuses a

@@ -35,7 +35,9 @@ each case on a freshly loaded page:
   focused field itself are typed into; so is a press that keeps focus where
   it was inside the field as drawn: another line of a code editor whose focus
   sits in a hidden one-line textarea, the focused input's own label, an icon
-  in the input's box.
+  in the input's box; and a press on the focused input's own ``<label for>``
+  beside it, with no box of their own (user ruling 2026-11-02). A press on the
+  label of another field moves focus to that field, which takes the text.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
 (``TestTypingNeedsATextField``, ``TestTypingAtAPointGoesWhereFocusWent``).
@@ -80,6 +82,8 @@ UNTOUCHED = {
     "code": "",
     "labelled": "",
     "iconed": "",
+    "given": "",
+    "family": "",
 }
 #: The page's state: its selection, the keys its document saw, and every field's content.
 STATE = """(() => {
@@ -105,6 +109,8 @@ STATE = """(() => {
       code: $('text_code_input').value,
       labelled: $('text_labelled').value,
       iconed: $('text_iconed').value,
+      given: $('text_given').value,
+      family: $('text_family').value,
     },
   };
 })()"""
@@ -264,6 +270,8 @@ def _session() -> Session:
                 await at("code, another line", centre("text_code_line3"), focused="text_code_line1")
                 await at("its own label", centre("text_labelled_label"), focused="text_labelled")
                 await at("an icon in its box", centre("text_icon"), focused="text_iconed")
+                await at("its label beside it", centre("text_given_label"), focused="text_given")
+                await at("another field's label", centre("text_family_label"), focused="text_given")
         return session
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
@@ -487,6 +495,8 @@ def test_focus_that_moved_or_a_point_in_the_focused_field_takes_the_text(
         # The press blurs the input, and the label focuses it again.
         ("its own label", "labelled"),
         ("an icon in its box", "iconed"),
+        # A label beside its input: their only shared ancestor holds other fields.
+        ("its label beside it", "given"),
     ],
 )
 def test_a_press_that_keeps_focus_inside_the_field_as_drawn_takes_the_text(
@@ -498,3 +508,13 @@ def test_a_press_that_keeps_focus_inside_the_field_as_drawn_takes_the_text(
     assert isinstance(effect, TextInputEffect)
     assert (effect.text_entered, effect.value_changed) == (True, True)
     assert case.state["fields"] == {**UNTOUCHED, where: TEXT}
+
+
+def test_a_press_on_another_fields_label_moves_focus_there_and_types(session: Session) -> None:
+    # Chrome's label activation focuses that label's own field: focus moved.
+    case = session.cases["another field's label"]
+    assert case.result.success, case.result.error
+    effect = case.result.effect
+    assert isinstance(effect, TextInputEffect)
+    assert effect.target == ElementFacts(role="textbox", name="Family name")
+    assert case.state["fields"] == {**UNTOUCHED, "family": TEXT}

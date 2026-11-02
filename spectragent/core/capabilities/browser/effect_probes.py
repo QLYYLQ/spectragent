@@ -333,6 +333,9 @@ function fieldAsDrawn(focused) {
 #: (``deepHit``). The second covers what a box leaves out: content positioned
 #: out of its ancestors' boxes, as a page whose content is all absolutely
 #: positioned leaves its body no height (a CodeMirror editor on its own page).
+#: A point on a ``<label>`` whose control is ``this`` counts as in the field
+#: too (user ruling 2026-11-02): a label beside its input, sharing only an
+#: ancestor that holds other fields, still names that field.
 _FIELD_HOLDS_POINT_FN = (
     "function(x, y) { /* spectragent field holds the point */"
     + _TEXT_ENTRY_JS
@@ -349,10 +352,12 @@ _FIELD_HOLDS_POINT_FN = (
     "   left += dx; right += dx; top += dy; bottom += dy;"
     "   win = frame.ownerDocument.defaultView; }"
     " if (left <= x && x <= right && top <= y && y <= bottom) return true;"
-    " for (let n = deepHit(x, y).el, hops = 0; n && hops < 4096; hops += 1) {"
+    " const hit = deepHit(x, y).el;"
+    " for (let n = hit, hops = 0; n && hops < 4096; hops += 1) {"
     "   if (n === field) return true;"
     "   n = composedParent(n); }"
-    " return false; }"
+    " const label = hit && hit.closest ? hit.closest('label') : null;"
+    " return !!label && label.control === this; }"
 )
 #: Whether ``this`` is the element *before* held.
 _SAME_ELEMENT_FN = "function(before) { /* spectragent focus stayed */ return this === before; }"
