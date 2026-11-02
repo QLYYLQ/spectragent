@@ -67,17 +67,26 @@ def forwarder_tree(
     """One window's nodes as a service without ``FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`` reads them: each, and whether it is a leaf there.
 
     That service reads the window's root, every view important for
-    accessibility, and every node an accessibility node provider builds (the
-    content of a WebView, the days of a date picker), whatever importance the
-    provider reports; a view that is not important is left out, and its
-    children take its place under its parent (``ViewGroup.addChildrenForAccessibility``).
-    Measured on the API 33 emulator (2026-11-02): every one of a WebView's
-    5,111 nodes and of a date picker's 92 day cells reported ``is_important``
-    false. What tells a provider's node from a view is its drawing order: the
-    platform gives every laid-out view a drawing order of 1 or more
-    (``View.populateAccessibilityNodeInfoDrawingOrderInParent``) and a provider
-    leaves it 0, as on every node measured; a view that is not laid out has 0
-    too, and is read as a provider's.
+    accessibility, and the nodes an accessibility node provider builds (the
+    content of a WebView, the days of a date picker) under every host view it
+    reads, whatever importance they report; a view that is not important is
+    left out, and its children take its place under its parent
+    (``ViewGroup.addChildrenForAccessibility``). Measured on the API 33 emulator
+    (2026-11-02): every one of a WebView's 5,111 nodes and of a date picker's 92
+    day cells reported ``is_important`` false. What tells a provider's node
+    from a view is its drawing order: the platform gives every laid-out view a
+    drawing order of 1 or more (``View.populateAccessibilityNodeInfoDrawingOrderInParent``)
+    and a provider leaves it 0, as on every node measured; a view that is not
+    laid out has 0 too, and is read as a provider's.
+
+    Whether a host is read the full tree cannot say: a WebView's host node is
+    the provider's too, with no importance and drawing order 0, and the layouts
+    above it report not important whether or not one of them hides it. In an
+    ordinary layout the service reads it (``uiautomator dump --compressed`` of
+    Settings' licence page lists the WebView and its content under the root,
+    past three such layouts), so a provider's node is read wherever it is
+    found, past left-out views too; under an open drawer (``noHideDescendants``)
+    that lists content the service does not read (§11.2, open).
 
     The order is that service's walk, which AndroidWorld's forwarder makes:
     breadth first from the root, children in order. A node that takes a left-out

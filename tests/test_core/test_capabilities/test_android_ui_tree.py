@@ -168,6 +168,45 @@ def test_a_node_a_provider_built_is_read_whatever_importance_it_reports() -> Non
     assert days == [str(day) for day in range(1, 32)]
 
 
+def _web_view(host: int, content: int, text: str) -> list[dict[str, JsonValue]]:
+    """A WebView as its provider builds it: the host and its content, no importance, drawing order 0."""
+    return [
+        _node(
+            host, content, is_important=False, class_name="android.webkit.WebView", drawing_order=0
+        ),
+        _node(content, text=text, is_important=False, drawing_order=0),
+    ]
+
+
+def test_web_content_under_left_out_layouts_is_read_even_where_a_drawer_hides_it() -> None:
+    """A provider's nodes are read only when their host is, and our full tree cannot say when.
+
+    On Settings' licence page the WebView sits under three layouts that are not
+    important; ``uiautomator dump --compressed``, which reads the tree as the
+    forwarder does, lists it under the root with its content (measured on the
+    API 33 emulator, 2026-11-02). Under an open drawer (``noHideDescendants``
+    on the content) the forwarder reads no content. Our full tree records both
+    alike: the host's node, built by the provider, reports neither importance
+    nor drawing order, and the layouts above report not important either way.
+    So both keep the content, which is right on the page and lists the hidden
+    content under the drawer (``docs/architecture_design.md`` §11.2, open).
+    """
+    page = [
+        _node(0, 1, drawing_order=0),
+        _node(1, 2, is_important=False),
+        *_web_view(2, 3, "Libraries"),
+    ]
+    drawer = [
+        _node(0, 1, 4, drawing_order=0),
+        _node(1, 2, is_important=False),
+        *_web_view(2, 3, "Article"),
+        _node(4, text="Inbox"),
+    ]
+
+    assert _elements(*page) == [(0, "Libraries")]
+    assert _elements(*drawer) == [(0, "Inbox"), (1, "Article")], "the forwarder reads only Inbox"
+
+
 def test_elements_are_numbered_in_the_order_the_forwarder_reads_them() -> None:
     """Breadth first over the tree the forwarder reads: a node that takes a left-out view's place
     sits a level higher there, ahead of a sibling the full tree's walk would have put first."""
