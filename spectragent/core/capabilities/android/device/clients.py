@@ -108,6 +108,10 @@ class FocusedNode(_Result):
             search view with its icons; user ruling 2026-11-02). Given only
             when asked for, for an editable node, and ``None`` when the service
             gave up walking a tree too large.
+        label_bounds_in_screen: Where the view that labels it is
+            (``android:labelFor``, the platform's ``getLabeledBy()``), asked
+            for with the field's bounds; ``None`` when none does. A tap on it
+            counts as a tap in the field (user ruling 2026-11-02).
         is_editable: Whether it takes text.
         window_id: The window it is in.
         node_hash: The platform's hash of the node (``AccessibilityNodeInfo.hashCode()``),
@@ -122,17 +126,26 @@ class FocusedNode(_Result):
     is_editable: bool
     window_id: int
     field_bounds_in_screen: ProtoRect | None = None
+    label_bounds_in_screen: ProtoRect | None = None
     node_hash: int
     package_name: str | None = None
     class_name: str | None = None
     view_id_resource_name: str | None = None
 
     def field_holds(self, x: float, y: float) -> bool | None:
-        """Whether the point (*x*, *y*) is inside the field's bounds, edges included; ``None``: not known."""
-        box = self.field_bounds_in_screen
-        if box is None:
-            return None
-        return box.left <= x <= box.right and box.top <= y <= box.bottom
+        """Whether the point (*x*, *y*) is in the field or on its own label, edges included.
+
+        ``None`` when the field's bounds are not known and the point is not
+        on its label.
+        """
+
+        def inside(box: ProtoRect) -> bool:
+            return box.left <= x <= box.right and box.top <= y <= box.bottom
+
+        label, field = self.label_bounds_in_screen, self.field_bounds_in_screen
+        if label is not None and inside(label):
+            return True
+        return None if field is None else inside(field)
 
     def same_node(self, other: FocusedNode) -> bool:
         """Whether *other* names this node: the same window, hash, view id and class.

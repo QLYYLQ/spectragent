@@ -128,6 +128,8 @@ class ScriptedPhone:
             bounds, a field with nothing around it.
         drawn_bounds_given: Whether the service gives those bounds when asked;
             ``False``: it gave up walking the tree.
+        label_bounds: Where the view that labels that node is, given with the
+            field's bounds; ``None``: no view labels it.
         focus_reads: Whether each read of the focus asked for the field's
             bounds, in order.
         on_tap: Run when a stroke arrives, after it is recorded: a tap that
@@ -154,6 +156,7 @@ class ScriptedPhone:
     field_node: int = 1
     drawn_bounds: tuple[int, int, int, int] | None = None
     drawn_bounds_given: bool = True
+    label_bounds: tuple[int, int, int, int] | None = None
     focus_reads: list[bool] = field(default_factory=list)
     on_tap: Callable[[], None] | None = None
     inputs: list[str] = field(default_factory=list)
@@ -279,9 +282,14 @@ class ScriptedPhone:
         if asked and self.drawn_bounds_given:
             d_left, d_top, d_right, d_bottom = self.drawn_bounds or self.field_bounds
             drawn = {"left": d_left, "top": d_top, "right": d_right, "bottom": d_bottom}
+        label: JsonValue = None
+        if asked and self.label_bounds is not None:
+            l_left, l_top, l_right, l_bottom = self.label_bounds
+            label = {"left": l_left, "top": l_top, "right": l_right, "bottom": l_bottom}
         node: dict[str, JsonValue] = {
             "bounds_in_screen": {"left": left, "top": top, "right": right, "bottom": bottom},
             "field_bounds_in_screen": drawn,
+            "label_bounds_in_screen": label,
             "is_editable": True,
             "window_id": 7,
             "node_hash": self.field_node,

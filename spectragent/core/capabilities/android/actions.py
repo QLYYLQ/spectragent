@@ -322,7 +322,8 @@ class AndroidTypeCoordinateAction(ActionBase):
     largest ancestor whose subtree holds no other editable node, such as the
     layout an EditText shares with its label or hint, which the service
     reports with the focused node before the tap (a keyboard that opens moves
-    it afterwards). Focus may leave the old field a moment after the tap, so
+    it afterwards); a tap on the view that labels the field
+    (``android:labelFor``) counts as in it too. Focus may leave the old field a moment after the tap, so
     the wait covers that too; a service that names no field with focus by
     then cannot tell which field it is, and the text is entered as asked. A
     refusal still reports the tap (``AndroidTextEffect``).

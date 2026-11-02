@@ -340,6 +340,20 @@ async def test_typing_at_a_point_on_the_label_of_the_focused_field_types(
     assert time.monotonic() - started < 1.0, "no wait for focus to leave"
 
 
+async def test_typing_at_a_point_on_the_focused_fields_own_label_beside_it_types(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """A label beside its field, sharing only a layout with other fields: the view that labels
+    the focused field still names it (user ruling 2026-11-02)."""
+    phone.text_field = True
+    phone.field_bounds, phone.label_bounds = (300, 300, 1080, 400), (0, 300, 280, 400)
+
+    result = await act(capability, "type_coordinate", coordinate_x=140, coordinate_y=350, text="hi")
+
+    assert result.success, result.error
+    assert phone.inputs[-1] == "service set_text 'hi' replace"
+
+
 async def test_typing_at_a_point_types_as_asked_when_the_service_cannot_give_the_field(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:

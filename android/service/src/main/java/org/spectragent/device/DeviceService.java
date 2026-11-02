@@ -314,7 +314,9 @@ public final class DeviceService extends AccessibilityService {
      * as the person sees it ({@code field_bounds_in_screen}): its largest ancestor whose subtree
      * holds no other editable node, such as the layout an EditText shares with its label or hint,
      * or a search view with its icons. Null when the walk looked at {@link #MAX_FIELD_NODES} nodes
-     * without finishing. Asked for only before a tap: the walk looks at every node it passes.
+     * without finishing. Asked for only before a tap: the walk looks at every node it passes. The
+     * bounds of the node's own label ({@code getLabeledBy()}, a view that names it with {@code
+     * android:labelFor}) come with them as {@code label_bounds_in_screen}, null when it has none.
      */
     private Reply focus(JSONObject params) {
         boolean withField = params.optBoolean("field_bounds", false);
@@ -326,9 +328,11 @@ public final class DeviceService extends AccessibilityService {
             Rect bounds = new Rect();
             node.getBoundsInScreen(bounds);
             Rect field = withField && node.isEditable() ? fieldBounds(node) : null;
+            Rect label = withField && node.isEditable() ? labelBounds(node) : null;
             return Reply.of(Json.obj("focused", Json.obj(
                     "bounds_in_screen", rect(bounds),
                     "field_bounds_in_screen", field == null ? null : rect(field),
+                    "label_bounds_in_screen", label == null ? null : rect(label),
                     "is_editable", node.isEditable(),
                     "window_id", node.getWindowId(),
                     "node_hash", node.hashCode(),
@@ -510,6 +514,23 @@ public final class DeviceService extends AccessibilityService {
             }
         }
         return false;
+    }
+
+    /** The bounds of the view that labels {@code node} ({@code android:labelFor}); null when none does. */
+    private static Rect labelBounds(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo label = node.getLabeledBy();
+        if (label == null) {
+            return null;
+        }
+        try {
+            Rect bounds = new Rect();
+            label.getBoundsInScreen(bounds);
+            return bounds;
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                label.recycle(); // pooled before API 33
+            }
+        }
     }
 
     private static JSONObject rect(Rect rect) {
