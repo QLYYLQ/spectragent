@@ -29,7 +29,7 @@ carries a price either: token counts are the only cost the framework records.
 
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, ClassVar, Final, Literal, get_args
+from typing import ClassVar, Final, Literal, get_args
 
 from pydantic import (
     BaseModel,
@@ -189,7 +189,7 @@ class RestorationCheck(BaseModel):
 
     @field_validator("evidence", mode="before")
     @classmethod
-    def _evidence_is_typed(cls, value: Any) -> Any:
+    def _evidence_is_typed(cls, value: object) -> object:
         """Evidence arrives as its capability's own model, never as a bare mapping.
 
         Only the capability registry knows which class a ``capability_id``
