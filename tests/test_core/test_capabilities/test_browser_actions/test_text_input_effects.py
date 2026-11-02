@@ -592,10 +592,12 @@ class TestTypingAtAPointGoesWhereFocusWent:
     """``type_coordinate`` with a point (user ruling 2026-11-02, ``docs/architecture_design.md`` §4.9).
 
     The focused element is held before the click, and whether the point is in
-    its box is measured then. Focus that moved to a text field is typed into,
-    wherever it is; focus that stayed on the element that had it, one the
-    point was not in, is refused, and nothing is cleared or typed. Without a
-    point nothing is held and nothing changes.
+    its field as drawn (its largest ancestor holding no other text field) is
+    measured then; real Chrome measures that field in
+    ``test_browser_type_focus_live.py``. Focus that moved to a text field is
+    typed into, wherever it is; focus that stayed on the element that had it,
+    with the point outside its field, is refused, and nothing is cleared or
+    typed. Without a point nothing is held and nothing changes.
     """
 
     async def test_focus_that_stayed_on_a_field_away_from_the_point_is_refused(self) -> None:

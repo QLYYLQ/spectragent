@@ -198,8 +198,9 @@ FOCUS_POLL_S = 0.05
 def _focus_stayed_away(before: FieldProbe) -> Callable[[FieldProbe], Awaitable[str | None]]:
     """The judge of a clicked ``type_coordinate`` (user ruling 2026-11-02): why focus stayed away.
 
-    Given only when the point was measured outside the element *before* held,
-    before the click. Refuses the field a probe reads when it is that element;
+    Given only when the point was measured outside the field *before* held
+    belongs to, as drawn, before the click. Refuses the field a probe reads
+    when it is that element;
     anything else, focus that moved or a reading that cannot tell, is no
     reason to refuse.
     """
@@ -929,16 +930,19 @@ class ActionWatchdog(BrowserWatchdog):
         may have clicked a widget that focuses its field after a delay).
 
         With a point, the focused element is held before the click, and
-        whether the point is in its box measured then, since the page may move
-        it afterwards. The rule is the one every capability's
-        ``type_coordinate`` keeps (user ruling 2026-11-02,
+        whether the point is in its field measured then, since the page may
+        move it afterwards. The field is the one the person sees: the
+        element's largest ancestor holding no other text field (a code
+        editor's wrapper around its hidden textarea, the box an input shares
+        with its label or icon). The rule is the one every capability's
+        ``type_coordinate`` keeps (user rulings of 2026-11-02,
         ``docs/architecture_design.md`` §4.9): focus that moved to a text field
         is typed into, wherever it is (a click on an opener that focuses a
-        field elsewhere); focus that stayed on the element that had it, an
-        element the point was not in, is refused (the click landed on a label
-        whose press keeps focus where it was), and nothing is cleared or
-        typed. Focus may leave the old element a moment after the click, so
-        the focus wait covers that too.
+        field elsewhere); focus that stayed on the element that had it, with
+        the point outside its field, is refused (the click landed on the
+        caption of another field, whose press keeps focus where it was), and
+        nothing is cleared or typed. Focus may leave the old element a moment
+        after the click, so the focus wait covers that too.
 
         The focusing click measures nothing: this action's effect is the
         typing's (``TextInputEffect``), measured from the focus it left.
@@ -952,7 +956,7 @@ class ActionWatchdog(BrowserWatchdog):
             if point is not None:
                 before = FieldProbe(self._cdp, self._element_session(None), budget)
                 await before.locate(before_click=True)
-                if await before.holds_point(*point) is False:
+                if await before.field_holds_point(*point) is False:
                     away = _focus_stayed_away(before)
                 clicked = await self._click_at(*point, "left", 1, label=f"({point[0]}, {point[1]})")
                 if "error" in clicked:
@@ -1004,9 +1008,9 @@ class ActionWatchdog(BrowserWatchdog):
         measured. A select-all with nothing editable focused selects the whole
         page's text, and the text then goes nowhere.
 
-        *away*, given with a clicked point that was not in the element that
-        had focus before the click, refuses a text field too: it says why when
-        focus stayed on that element, and ``None`` otherwise.
+        *away*, given with a clicked point that was outside the field of the
+        element that had focus before the click, refuses a text field too: it
+        says why when focus stayed on that element, and ``None`` otherwise.
 
         Focus the page moves a moment after the click, the ``DOM.focus`` or
         an earlier action (a widget that focuses its input on a timer or

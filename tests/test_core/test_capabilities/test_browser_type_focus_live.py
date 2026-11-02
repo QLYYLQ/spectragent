@@ -27,12 +27,15 @@ each case on a freshly loaded page:
   text field a click focused, and into the field a widget focuses a moment
   after the click that opens it; refused the same way, sending nothing, with
   nothing focused and with a button focused;
-- ``type_coordinate`` at a point while a filled field has focus (user ruling
+- ``type_coordinate`` at a point while a field has focus (user rulings of
   2026-11-02, ``docs/architecture_design.md`` §4.9): a press on the caption
-  beside another field keeps focus in the filled field, away from the point,
-  and is refused, the field keeping its text; a press on a button that
+  beside another field keeps focus in the filled field, outside its field as
+  drawn, and is refused, the field keeping its text; a press on a button that
   focuses a field elsewhere, a press into another field and a press into the
-  focused field itself are typed into.
+  focused field itself are typed into; so is a press that keeps focus where
+  it was inside the field as drawn: another line of a code editor whose focus
+  sits in a hidden one-line textarea, the focused input's own label, an icon
+  in the input's box.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
 (``TestTypingNeedsATextField``, ``TestTypingAtAPointGoesWhereFocusWent``).
@@ -74,6 +77,9 @@ UNTOUCHED = {
     "closed": "",
     "first": "Grace",
     "last": "",
+    "code": "",
+    "labelled": "",
+    "iconed": "",
 }
 #: The page's state: its selection, the keys its document saw, and every field's content.
 STATE = """(() => {
@@ -96,6 +102,9 @@ STATE = """(() => {
       closed: window.__closedField.value,
       first: $('text_first').value,
       last: $('text_last').value,
+      code: $('text_code_input').value,
+      labelled: $('text_labelled').value,
+      iconed: $('text_iconed').value,
     },
   };
 })()"""
@@ -252,6 +261,9 @@ def _session() -> Session:
                 await at("opener, a field focused", centre("text_opener"), focused="text_first")
                 await at("another field", centre("text_last"), focused="text_first")
                 await at("the focused field", centre("text_first"), focused="text_first")
+                await at("code, another line", centre("text_code_line3"), focused="text_code_line1")
+                await at("its own label", centre("text_labelled_label"), focused="text_labelled")
+                await at("an icon in its box", centre("text_icon"), focused="text_iconed")
         return session
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
@@ -457,6 +469,27 @@ def test_a_press_that_leaves_focus_in_a_filled_field_away_from_it_is_refused(
     ],
 )
 def test_focus_that_moved_or_a_point_in_the_focused_field_takes_the_text(
+    session: Session, label: str, where: str
+) -> None:
+    case = session.cases[label]
+    assert case.result.success, case.result.error
+    effect = case.result.effect
+    assert isinstance(effect, TextInputEffect)
+    assert (effect.text_entered, effect.value_changed) == (True, True)
+    assert case.state["fields"] == {**UNTOUCHED, where: TEXT}
+
+
+@pytest.mark.parametrize(
+    ("label", "where"),
+    [
+        # Focus stays in the hidden one-line textarea; the editor around it is the field.
+        ("code, another line", "code"),
+        # The press blurs the input, and the label focuses it again.
+        ("its own label", "labelled"),
+        ("an icon in its box", "iconed"),
+    ],
+)
+def test_a_press_that_keeps_focus_inside_the_field_as_drawn_takes_the_text(
     session: Session, label: str, where: str
 ) -> None:
     case = session.cases[label]

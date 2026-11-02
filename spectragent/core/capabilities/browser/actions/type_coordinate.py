@@ -19,10 +19,12 @@ The point is optional (user ruling 2026-11-01, ``docs/architecture_design.md``
 focus; without one it clicks nothing and types into the field that has focus.
 Either way it sends no key when no text field has focus. Given a point, it
 also sends none when focus stayed on the element that had it before the
-click and the point is not in that element (user ruling 2026-11-02, §4.9); a
-field that took focus is typed into wherever it is. Like ``scroll``'s start,
-the point is both axes or neither, and a run whose agent declares no grid is
-not offered it (``coordinate_frames.framed_action_space``).
+click and the point is outside that element's field as the person sees it,
+its largest ancestor holding no other text field (user rulings of
+2026-11-02, §4.9); a field that took focus is typed into wherever it is.
+Like ``scroll``'s start, the point is both axes or neither, and a run whose
+agent declares no grid is not offered it
+(``coordinate_frames.framed_action_space``).
 """
 
 from __future__ import annotations

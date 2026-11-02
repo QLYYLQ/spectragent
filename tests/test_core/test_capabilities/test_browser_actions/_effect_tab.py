@@ -99,7 +99,7 @@ def probe_kind(method: str, params: dict[str, Any]) -> str | None:
         function = params.get("functionDeclaration", "")
         if "spectragent click target check" in function:
             return "click_target_check"
-        if "spectragent focus holds the point" in function:
+        if "spectragent field holds the point" in function:
             return "holds_point"
         if "spectragent focus stayed" in function:
             return "stayed"
@@ -130,7 +130,7 @@ class ProbeCDP:
     that control (``"closed"``, ``"open"``), or ``None`` for none.
     ``before``: what the focus read before a ``type_coordinate`` click finds
     (``"node"``, ``"null"``, ``"opaque"``); ``inside``: what the reading of
-    whether its box holds the point answers then; ``stayed``: what each check
+    whether its field holds the point answers then; ``stayed``: what each check
     after the click that the element with focus is that one answers, one per
     check, the last repeated.
     ``fail_methods``: CDP methods that raise, as a closed target's would.

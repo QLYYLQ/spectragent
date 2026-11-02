@@ -39,7 +39,17 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   text field ``#text_first`` (``First name``, holding ``Grace``), a text field
   ``#text_last`` (``Last name``) and beside it its caption ``#text_last_label``
   (``Last name``), plain text whose press keeps focus where it was (as an
-  editor's toolbar keeps it in the editor), and a paragraph of text;
+  editor's toolbar keeps it in the editor), three fields drawn larger than
+  the element that takes the text — a code editor ``#text_code`` whose lines
+  (``#text_code_line1`` to ``#text_code_line3``) keep focus in its hidden
+  one-line textarea ``#text_code_input`` (``Code``), as CodeMirror does, and
+  are drawn below the editor's own box, which has no height (content
+  positioned out of its ancestors' boxes, as a page leaves its body with no
+  height when all it holds is absolutely positioned); a box
+  ``#text_labelled_box`` holding the text field ``#text_labelled``
+  (``Email``) and its own ``<label for>`` ``#text_labelled_label``; a box
+  ``#text_iconed_box`` holding the text field ``#text_iconed`` (``Find``) and
+  an icon ``#text_icon`` whose press focuses it — and a paragraph of text;
   :data:`FIELDS_EMPTY_POINT` is on none of them. A
   capture-phase listener keeps the ``key`` of every keydown the page's own
   document sees in ``window.__keys``;
@@ -110,6 +120,17 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "text_first": (400, 450, 300, 32),
     "text_last_label": (400, 500, 100, 32),
     "text_last": (510, 500, 190, 32),
+    "text_code": (720, 300, 300, 0),
+    "text_code_input": (720, 300, 2, 16),
+    "text_code_line1": (720, 300, 300, 32),
+    "text_code_line2": (720, 332, 300, 32),
+    "text_code_line3": (720, 364, 300, 32),
+    "text_labelled_box": (720, 420, 300, 32),
+    "text_labelled_label": (720, 420, 70, 32),
+    "text_labelled": (800, 420, 220, 32),
+    "text_iconed_box": (720, 470, 300, 40),
+    "text_icon": (724, 474, 32, 32),
+    "text_iconed": (760, 474, 256, 32),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -118,6 +139,16 @@ _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
 def _box(name: str) -> str:
     left, top, width, height = BOXES[name]
     return f"position:absolute;left:{left}px;top:{top}px;width:{width}px;height:{height}px;"
+
+
+def _box_in(name: str, parent: str) -> str:
+    """``name``'s box positioned inside ``parent``'s, which is itself positioned."""
+    left, top, width, height = BOXES[name]
+    parent_left, parent_top, _, _ = BOXES[parent]
+    return (
+        f"position:absolute;left:{left - parent_left}px;top:{top - parent_top}px;"
+        f"width:{width}px;height:{height}px;"
+    )
 
 
 def centre(name: str) -> tuple[int, int]:
@@ -313,6 +344,29 @@ def _fields_page() -> bytes:
         f'<span id="text_last_label" onmousedown="event.preventDefault()" '
         f'style="{_box("text_last_label")}">Last name</span>'
         f'<input id="text_last" aria-label="Last name" style="{_box("text_last")}">'
+        f'<div id="text_code" style="{_box("text_code")}cursor:text" '
+        'onmousedown="event.preventDefault(); '
+        "document.getElementById('text_code_input').focus()\">"
+        f'<textarea id="text_code_input" aria-label="Code" '
+        f'style="{_box_in("text_code_input", "text_code")}opacity:0;padding:0;border:0;'
+        'resize:none;overflow:hidden"></textarea>'
+        f'<div id="text_code_line1" style="{_box_in("text_code_line1", "text_code")}">'
+        "line one</div>"
+        f'<div id="text_code_line2" style="{_box_in("text_code_line2", "text_code")}">'
+        "line two</div>"
+        f'<div id="text_code_line3" style="{_box_in("text_code_line3", "text_code")}">'
+        "line three</div></div>"
+        f'<div id="text_labelled_box" style="{_box("text_labelled_box")}">'
+        f'<label id="text_labelled_label" for="text_labelled" '
+        f'style="{_box_in("text_labelled_label", "text_labelled_box")}">Email</label>'
+        f'<input id="text_labelled" '
+        f'style="{_box_in("text_labelled", "text_labelled_box")}"></div>'
+        f'<div id="text_iconed_box" style="{_box("text_iconed_box")}outline:1px solid #888">'
+        f'<span id="text_icon" style="{_box_in("text_icon", "text_iconed_box")}" '
+        'onmousedown="event.preventDefault(); '
+        "document.getElementById('text_iconed').focus()\">Q</span>"
+        f'<input id="text_iconed" aria-label="Find" '
+        f'style="{_box_in("text_iconed", "text_iconed_box")}border:0"></div>'
         f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
         "<script>window.__keys = [];"
         " addEventListener('keydown', e => window.__keys.push(e.key), true);"
