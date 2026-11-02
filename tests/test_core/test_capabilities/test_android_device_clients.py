@@ -294,6 +294,7 @@ async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none()
             "bounds_in_screen": {"left": 30, "top": 120, "right": 1050, "bottom": 246},
             "field_bounds_in_screen": {"left": 0, "top": 63, "right": 1080, "bottom": 300},
             "label_bounds_in_screen": {"left": 30, "top": 400, "right": 300, "bottom": 450},
+            "window_at_point": 13,
             "is_editable": True,
             "window_id": 13,
             "node_hash": 1240117,
@@ -310,9 +311,9 @@ async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none()
 
     async with _client("service", {"focus": focus}) as (_, channel):
         service = ServiceClient(channel)
-        field, nothing = await service.focus(field_bounds=True), await service.focus()
+        field, nothing = await service.focus(field_bounds=True, at=(540, 70)), await service.focus()
 
-    assert asked == [{"field_bounds": True}, {"field_bounds": False}]
+    assert asked == [{"field_bounds": True, "x": 540, "y": 70}, {"field_bounds": False}]
     assert field is not None and nothing is None
     assert field.is_editable and field.class_name == "android.widget.EditText"
     assert field.field_holds(540, 70) and field.field_holds(1080, 300), "the field as drawn"
@@ -320,6 +321,8 @@ async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none()
     assert field.field_holds(100, 420), "on its own label, outside the field as drawn"
     unbounded = field.model_copy(update={"field_bounds_in_screen": None})
     assert unbounded.field_holds(540, 183) is None and unbounded.field_holds(100, 420)
+    covered = field.model_copy(update={"window_at_point": 3})
+    assert covered.field_holds(540, 70) is False, "another window is on top at the point"
     moved = field.model_copy(update={"bounds_in_screen": ProtoRect(top=900, bottom=1026)})
     assert field.same_node(moved), "a keyboard moved it: the same field"
     assert not field.same_node(field.model_copy(update={"node_hash": 7})), "another view"

@@ -130,6 +130,8 @@ class ScriptedPhone:
             ``False``: it gave up walking the tree.
         label_bounds: Where the view that labels that node is, given with the
             field's bounds; ``None``: no view labels it.
+        top_window: The window on top at the point a read gives with the
+            field's bounds: 7 is the focused node's own window.
         focus_reads: Whether each read of the focus asked for the field's
             bounds, in order.
         on_tap: Run when a stroke arrives, after it is recorded: a tap that
@@ -157,6 +159,7 @@ class ScriptedPhone:
     drawn_bounds: tuple[int, int, int, int] | None = None
     drawn_bounds_given: bool = True
     label_bounds: tuple[int, int, int, int] | None = None
+    top_window: int = 7
     focus_reads: list[bool] = field(default_factory=list)
     on_tap: Callable[[], None] | None = None
     inputs: list[str] = field(default_factory=list)
@@ -290,6 +293,7 @@ class ScriptedPhone:
             "bounds_in_screen": {"left": left, "top": top, "right": right, "bottom": bottom},
             "field_bounds_in_screen": drawn,
             "label_bounds_in_screen": label,
+            "window_at_point": self.top_window if asked and "x" in params else None,
             "is_editable": True,
             "window_id": 7,
             "node_hash": self.field_node,

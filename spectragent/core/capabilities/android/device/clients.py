@@ -112,6 +112,12 @@ class FocusedNode(_Result):
             (``android:labelFor``, the platform's ``getLabeledBy()``), asked
             for with the field's bounds; ``None`` when none does. A tap on it
             counts as a tap in the field (user ruling 2026-11-02).
+        window_at_point: The window on top at the point the read was asked
+            about with the field's bounds (the highest layer whose bounds
+            hold it); ``None`` when no point was given or no window holds it.
+            Another window than :attr:`window_id` there, such as the status
+            bar over an app's full-screen root, means a tap there is not in
+            the field.
         is_editable: Whether it takes text.
         window_id: The window it is in.
         node_hash: The platform's hash of the node (``AccessibilityNodeInfo.hashCode()``),
@@ -127,6 +133,7 @@ class FocusedNode(_Result):
     window_id: int
     field_bounds_in_screen: ProtoRect | None = None
     label_bounds_in_screen: ProtoRect | None = None
+    window_at_point: int | None = None
     node_hash: int
     package_name: str | None = None
     class_name: str | None = None
@@ -135,13 +142,16 @@ class FocusedNode(_Result):
     def field_holds(self, x: float, y: float) -> bool | None:
         """Whether the point (*x*, *y*) is in the field or on its own label, edges included.
 
-        ``None`` when the field's bounds are not known and the point is not
-        on its label.
+        The point must be the one the read was asked about, whose window on
+        top (:attr:`window_at_point`) must be the field's own. ``None`` when
+        the field's bounds are not known and the point is not on its label.
         """
 
         def inside(box: ProtoRect) -> bool:
             return box.left <= x <= box.right and box.top <= y <= box.bottom
 
+        if self.window_at_point is not None and self.window_at_point != self.window_id:
+            return False
         label, field = self.label_bounds_in_screen, self.field_bounds_in_screen
         if label is not None and inside(label):
             return True
@@ -314,14 +324,20 @@ class ServiceClient:
     async def global_action(self, action: GlobalAction) -> None:
         await self.channel.call("global_action", {"action": action})
 
-    async def focus(self, *, field_bounds: bool = False) -> FocusedNode | None:
+    async def focus(
+        self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
+    ) -> FocusedNode | None:
         """The node with input focus, as the system resolves it; ``None`` when no view has it.
 
         With *field_bounds*, an editable node comes with the bounds of the
-        field it belongs to (``FocusedNode.field_bounds_in_screen``), which
-        the service finds by walking the tree around it.
+        field it belongs to and of its own label (``FocusedNode.
+        field_bounds_in_screen``, ``label_bounds_in_screen``), which the
+        service finds by walking the tree around it; given a point *at* as
+        well, with the window on top there (``FocusedNode.window_at_point``).
         """
         params: JsonObject = {"field_bounds": field_bounds}
+        if at is not None:
+            params["x"], params["y"] = at
         return _Focus.model_validate((await self.channel.call("focus", params)).result).focused
 
     async def set_text(self, text: str, *, replace: bool = True) -> TextTarget:

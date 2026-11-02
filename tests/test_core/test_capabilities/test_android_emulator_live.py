@@ -26,9 +26,13 @@ runs. The one boot covers, in file order:
 - ``type_coordinate`` at a point (user rulings of 2026-11-02): refused after a
   tap on nothing editable; typed into the search field its tap on the search
   bar opens, which takes focus away from the point 2-3 s after the tap
-  (measured); typed into the Add network dialog's "Network name" field after
-  a tap on that field's own label, which leaves focus in it: the label is
-  inside the field as drawn;
+  (measured); refused after a tap on the status bar, another window drawn
+  over the search screen, the field's text untouched; typed into the Add
+  network dialog's "Network name" field after a tap on that field's own
+  label, which leaves focus in it: the label is inside the field as drawn;
+  with WPA/WPA2-Personal chosen, the dialog holds a password field too, and a
+  tap on the "Password" label, outside the "Network name" field as drawn, is
+  refused with the name untouched;
 - a scroll down that shows what is further down, measured on the screenshots,
   its effect naming the injector that delivered it;
 - a capture waits for a still screen: after a cold start of Settings it waits
@@ -104,6 +108,8 @@ SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.sett
 SEARCH_BAR = (540, 660)
 #: A point of Settings' main page on no control: the toolbar above its title.
 NOTHING_THERE = (540, 300)
+#: A point on the status bar, between the clock and the icons: a tap there takes no focus.
+STATUS_BAR = (540, 40)
 #: Where the search screen lists the results of a query, between its field and the keyboard.
 RESULTS = (0, 300, 1080, 1400)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
@@ -387,11 +393,12 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     assert _results_appeared(before, after)
 
 
-async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_none_has_it(
+async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_it_cannot(
     booted: Booted,
 ) -> None:
     """The tap on the search bar opens a screen whose field takes focus 2-3 s later, away from
-    the point, and that types (user ruling 2026-11-02); a tap on nothing focusable is refused."""
+    the point, and that types (user ruling 2026-11-02); a tap on nothing focusable is refused,
+    and so is a tap on the status bar, another window drawn over the search screen."""
     await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
@@ -428,6 +435,15 @@ async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_none_
     assert (await _foreground(booted)).package in SETTINGS_SEARCH
     assert _results_appeared(empty, await _screenshot(booted))
 
+    # The search field is its screen's only text field, so its field is the whole window; the
+    # status bar is another window drawn over it there.
+    stayed = await _act(
+        booted, "type_coordinate", coordinate_x=STATUS_BAR[0], coordinate_y=STATUS_BAR[1], text="x"
+    )
+    assert not stayed.success
+    assert stayed.error is not None and "focus stayed on EditText" in stayed.error
+    assert await _field_text(booted) == "bluetooth", "nothing was cleared or typed"
+
 
 async def test_typing_at_a_point_on_a_fields_own_label_types_into_that_field(
     booted: Booted,
@@ -462,6 +478,37 @@ async def test_typing_at_a_point_on_a_fields_own_label_types_into_that_field(
     assert await _field_text(booted) == "CafeNet"
 
 
+async def test_typing_at_a_point_on_another_fields_label_is_refused(booted: Booted) -> None:
+    """With WPA/WPA2-Personal chosen, the Add network dialog holds "Network name" and "Password"
+    fields, so the walk from the name stops below their shared layout. A tap on the "Password"
+    label (a text view, which takes no focus) is outside the name's field: refused."""
+    await _skip_unless_measured_layout(booted)
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, "am force-stop com.android.settings")
+    await client.shell(booted.session.serial, "am start -W -a android.settings.WIFI_SETTINGS")
+    for text in ("Add network", "None", "WPA/WPA2-Personal"):
+        point = await _text_at(booted, text)
+        tapped = await _act(
+            booted, "click_coordinate", coordinate_x=point[0], coordinate_y=point[1]
+        )
+        assert tapped.success, tapped.error
+    name = await _text_at(booted, "Enter the SSID")
+    named = await _act(
+        booted, "type_coordinate", coordinate_x=name[0], coordinate_y=name[1], text="CafeNet"
+    )
+    assert named.success, named.error
+    label = await _text_at(booted, "Password")
+
+    refused = await _act(
+        booted, "type_coordinate", coordinate_x=label[0], coordinate_y=label[1], text="x"
+    )
+
+    assert not refused.success
+    assert refused.error is not None and "focus stayed on EditText" in refused.error
+    name_now = await _field_text(booted, "com.android.settings:id/ssid")
+    assert name_now == "CafeNet", "nothing was cleared or typed"
+
+
 async def _text_at(booted: Booted, text: str) -> tuple[int, int]:
     """The centre of the visible node whose text is *text*, once the service's tree has it."""
     side = booted.capability._side
@@ -477,8 +524,8 @@ async def _text_at(booted: Booted, text: str) -> tuple[int, int]:
             await asyncio.sleep(0.2)
 
 
-async def _field_text(booted: Booted) -> str | None:
-    """The text of the editable field on screen, as the service's tree has it."""
+async def _field_text(booted: Booted, view_id: str | None = None) -> str | None:
+    """The text of the editable field on screen (the one with *view_id*), as the service's tree has it."""
     side = booted.capability._side
     assert side is not None
     capture = await side.service.tree()
@@ -486,7 +533,9 @@ async def _field_text(booted: Booted) -> str | None:
         node.text
         for window in capture.forest.windows
         for node in window.tree.nodes
-        if node.is_editable and node.is_visible_to_user
+        if node.is_editable
+        and node.is_visible_to_user
+        and (view_id is None or node.view_id_resource_name == view_id)
     ]
     return texts[0] if texts else None
 

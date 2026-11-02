@@ -323,10 +323,13 @@ class AndroidTypeCoordinateAction(ActionBase):
     layout an EditText shares with its label or hint, which the service
     reports with the focused node before the tap (a keyboard that opens moves
     it afterwards); a tap on the view that labels the field
-    (``android:labelFor``) counts as in it too. Focus may leave the old field a moment after the tap, so
-    the wait covers that too; a service that names no field with focus by
-    then cannot tell which field it is, and the text is entered as asked. A
-    refusal still reports the tap (``AndroidTextEffect``).
+    (``android:labelFor``) counts as in it too. A tap is in the field only
+    where the field's own window is on top: the status bar drawn over an
+    app's full-screen root is not part of a field there. Focus may leave the
+    old field a moment after the tap, so the wait covers that too; a service
+    that names no field with focus by then cannot tell which field it is, and
+    the text is entered as asked. A refusal still reports the tap
+    (``AndroidTextEffect``).
     """
 
     __registry_key__ = "android.type_coordinate"
@@ -393,7 +396,7 @@ class AndroidTypeCoordinateAction(ActionBase):
         tapped: Touch | None = None
         if given.coordinate_x is not None and given.coordinate_y is not None:
             point = (given.coordinate_x, given.coordinate_y)
-            before = await device.focused_field(field_bounds=True)
+            before = await device.focused_field(field_bounds=True, at=point)
             tapped = await touch(capability, "tap", point, point, TAP_MS)
             no_field = "No text field took focus at the tapped point"
         where = await self._no_field_at(capability, point, before)

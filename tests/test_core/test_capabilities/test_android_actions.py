@@ -354,6 +354,21 @@ async def test_typing_at_a_point_on_the_focused_fields_own_label_beside_it_types
     assert phone.inputs[-1] == "service set_text 'hi' replace"
 
 
+async def test_typing_at_a_point_on_another_window_over_the_field_is_refused(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The screen's only text field makes the whole window its field, and the status bar is
+    another window drawn over it: a tap there leaves focus in the field and is refused."""
+    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=200)]
+    phone.text_field, phone.drawn_bounds, phone.top_window = True, (0, 0, 1080, 2400), 9
+
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=40, text="hi")
+
+    assert not result.success
+    assert result.error is not None and "focus stayed on EditText" in result.error
+    assert phone.inputs == ["helper stroke (540,40)@0 (540,40)@50"], "nothing entered"
+
+
 async def test_typing_at_a_point_types_as_asked_when_the_service_cannot_give_the_field(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:

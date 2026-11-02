@@ -159,11 +159,14 @@ class InputInjection(Protocol):
         """Enter *text* into the field with input focus: over its text with *replace*, else at its cursor."""
         ...
 
-    async def focused_field(self, *, field_bounds: bool = False) -> FocusedNode | None:
+    async def focused_field(
+        self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
+    ) -> FocusedNode | None:
         """The node with input focus and where it is; ``None`` when no view has it.
 
         With *field_bounds*, an editable node also says where the field it
-        belongs to is, as drawn (``FocusedNode.field_bounds_in_screen``).
+        belongs to is, as drawn, and where its own label is; with a point *at*
+        as well, which window is on top there (``FocusedNode``).
         """
         ...
 
@@ -260,8 +263,10 @@ class DeviceInput:
     async def enter_text(self, text: str, *, replace: bool) -> TextTarget:
         return await self.typing_backend.enter(self.side, text, replace=replace)
 
-    async def focused_field(self, *, field_bounds: bool = False) -> FocusedNode | None:
-        return await self.side.service.focus(field_bounds=field_bounds)
+    async def focused_field(
+        self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
+    ) -> FocusedNode | None:
+        return await self.side.service.focus(field_bounds=field_bounds, at=at)
 
 
 class AdbQueries:

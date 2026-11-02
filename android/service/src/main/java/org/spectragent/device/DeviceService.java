@@ -14,6 +14,7 @@ import android.util.Log;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -317,9 +318,15 @@ public final class DeviceService extends AccessibilityService {
      * without finishing. Asked for only before a tap: the walk looks at every node it passes. The
      * bounds of the node's own label ({@code getLabeledBy()}, a view that names it with {@code
      * android:labelFor}) come with them as {@code label_bounds_in_screen}, null when it has none.
+     * Given the tap's point ({@code "x"}, {@code "y"}) as well, the reply names the window on top
+     * there ({@code window_at_point}, see {@link #windowAt}): a tap that lands on another window,
+     * such as the status bar over an app's full-screen root, is not a tap in the field.
      */
     private Reply focus(JSONObject params) {
         boolean withField = params.optBoolean("field_bounds", false);
+        Integer windowAtPoint = withField && params.has("x") && params.has("y")
+                ? windowAt(params.optInt("x"), params.optInt("y"))
+                : null;
         AccessibilityNodeInfo node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         if (node == null) {
             return Reply.of(Json.obj("focused", null));
@@ -333,6 +340,7 @@ public final class DeviceService extends AccessibilityService {
                     "bounds_in_screen", rect(bounds),
                     "field_bounds_in_screen", field == null ? null : rect(field),
                     "label_bounds_in_screen", label == null ? null : rect(label),
+                    "window_at_point", windowAtPoint,
                     "is_editable", node.isEditable(),
                     "window_id", node.getWindowId(),
                     "node_hash", node.hashCode(),
@@ -442,7 +450,7 @@ public final class DeviceService extends AccessibilityService {
                 "scroll_delta_y", event.getScrollDeltaY());
     }
 
-    /** How many nodes {@link #fieldBounds} looks at, at most, before it gives no answer. */
+    /** How many nodes {@link #fieldBounds} fetches, at most, before it gives no answer. */
     private static final int MAX_FIELD_NODES = 2000;
 
     /**
@@ -482,13 +490,17 @@ public final class DeviceService extends AccessibilityService {
 
     /**
      * Whether a subtree of {@code ancestor}'s children other than {@code from} holds an editable
-     * node; null once {@code looked[0]} passes {@link #MAX_FIELD_NODES}.
+     * node; null once the nodes fetched, counted in {@code looked[0]} before each fetch, pass
+     * {@link #MAX_FIELD_NODES}.
      */
     private static Boolean holdsAnotherEditable(
             AccessibilityNodeInfo ancestor, AccessibilityNodeInfo from, List<AccessibilityNodeInfo> obtained,
             int[] looked) {
         ArrayDeque<AccessibilityNodeInfo> pending = new ArrayDeque<>();
         for (int i = 0; i < ancestor.getChildCount(); i++) {
+            if (++looked[0] > MAX_FIELD_NODES) {
+                return null;
+            }
             AccessibilityNodeInfo child = ancestor.getChild(i);
             if (child != null) {
                 obtained.add(child);
@@ -498,14 +510,14 @@ public final class DeviceService extends AccessibilityService {
             }
         }
         while (!pending.isEmpty()) {
-            if (++looked[0] > MAX_FIELD_NODES) {
-                return null;
-            }
             AccessibilityNodeInfo node = pending.poll();
             if (node.isEditable()) {
                 return true;
             }
             for (int i = 0; i < node.getChildCount(); i++) {
+                if (++looked[0] > MAX_FIELD_NODES) {
+                    return null;
+                }
                 AccessibilityNodeInfo child = node.getChild(i);
                 if (child != null) {
                     obtained.add(child);
@@ -514,6 +526,27 @@ public final class DeviceService extends AccessibilityService {
             }
         }
         return false;
+    }
+
+    /**
+     * The id of the window on top at the point, the one of highest layer whose bounds hold it;
+     * null when none does. Every window obtained is recycled before API 33.
+     */
+    private Integer windowAt(int x, int y) {
+        Integer id = null;
+        int layer = Integer.MIN_VALUE;
+        Rect bounds = new Rect();
+        for (AccessibilityWindowInfo window : getWindows()) {
+            window.getBoundsInScreen(bounds);
+            if (bounds.contains(x, y) && (id == null || window.getLayer() > layer)) {
+                id = window.getId();
+                layer = window.getLayer();
+            }
+            if (Build.VERSION.SDK_INT < 33) {
+                window.recycle(); // pooled before API 33
+            }
+        }
+        return id;
     }
 
     /** The bounds of the view that labels {@code node} ({@code android:labelFor}); null when none does. */

@@ -22,7 +22,8 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
   field, over its text and at its cursor;
 - the node with input focus, reported with its bounds, and when asked with
   the bounds of the field as drawn: on the search screen, whose only text
-  field it is, more than the field's own;
+  field it is, more than the field's own; and with the window on top at a
+  point, the field's own on the field and the status bar's above it;
 - events, in order and numbered without gaps;
 - the service refuses a wrong token, closes a connection from an app's uid
   before reading it, closes a hello over 64 KB without an answer, and closes
@@ -618,6 +619,14 @@ async def test_the_node_with_input_focus_comes_with_its_bounds(up: Up) -> None:
     assert whole.left <= own.left and whole.top <= own.top, "it holds the field"
     assert whole.right >= own.right and whole.bottom >= own.bottom, "it holds the field"
     assert whole.bottom - whole.top > own.bottom - own.top, "the only text field on its screen"
+    centre = ((own.left + own.right) // 2, (own.top + own.bottom) // 2)
+    on_field = await up.side.service.focus(field_bounds=True, at=centre)
+    on_status_bar = await up.side.service.focus(field_bounds=True, at=(own.left + 10, 20))
+    assert on_field is not None and on_field.window_at_point == on_field.window_id
+    assert on_status_bar is not None and on_status_bar.window_at_point not in (
+        None,
+        on_status_bar.window_id,
+    ), "the status bar is another window"
     await _home(up)
     home = await up.side.service.focus()
     assert home is None or not home.is_editable, "the home screen has no text field with focus"
