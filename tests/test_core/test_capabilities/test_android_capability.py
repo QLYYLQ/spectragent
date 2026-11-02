@@ -56,6 +56,7 @@ from spectragent.core.capabilities.android.observations import (
 from spectragent.core.capabilities.android.oracle._registrar import OracleTask
 from spectragent.core.capabilities.android.oracle.androidworld import AndroidWorldOracle
 from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
+from spectragent.core.capabilities.android.session import CaptureError
 from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
@@ -221,6 +222,23 @@ async def test_the_tree_source_and_serializer_a_run_configures_are_the_ones_used
         "UI element 0: UIElement(text='Network & internet'"
     )
     assert capability.fragment_formats() == {UI_TREE: T3ASerializer().describe_format()}
+
+
+async def test_the_tree_has_a_time_limit_of_its_own() -> None:
+    """The first walk of a long web page took 8.4 s: past query_timeout_s, the capture holds."""
+    phone = ScriptedPhone(tree_delay_s=0.4)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, fragments={UI_TREE}, query_timeout_s=0.2) as capability,
+    ):
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+        capability.ui_tree_timeout_s = 0.2
+        await capability.begin_observation(2)
+        with pytest.raises(CaptureError, match=r"android\.ui_tree: .*no answer within 0\.2 s"):
+            await capability.resolve_fragment(UI_TREE)
+
+    assert isinstance(tree, AndroidUITreeObs) and len(tree.elements) == 2
 
 
 async def test_the_tree_is_cleaned_against_the_screen_its_capture_measured() -> None:

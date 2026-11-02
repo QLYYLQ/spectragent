@@ -236,6 +236,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     settle_max_wait_s: float
     screenshot_timeout_s: float
     query_timeout_s: float
+    ui_tree_timeout_s: float
     action_timeout_s: float
     queue_wait_s: float
     service_start_timeout_s: float
@@ -325,12 +326,23 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 gt=0.0,
                 description=(
                     "Seconds each device query may take: those of a capture (the foreground "
-                    "app, the input method, the UI tree, one poll of the wait for a still "
-                    "screen), and the ping that confirms a device call a job gave up on has "
-                    "finished."
+                    "app, the input method, one poll of the wait for a still screen), and the "
+                    "ping that confirms a device call a job gave up on has finished."
                 ),
             ),
         ] = 5.0,
+        ui_tree_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0.0,
+                description=(
+                    "Seconds the UI tree's capture may take before the whole capture fails. "
+                    "Settings' main page took about 0.1 s on the API 33 emulator; the first "
+                    "walk of a long web page after it loaded took up to 8.4 s, later walks "
+                    "about 1.1 s at the source's 5000-node limit."
+                ),
+            ),
+        ] = 10.0,
         action_timeout_s: Annotated[
             float,
             PydanticField(
@@ -388,6 +400,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self.settle_max_wait_s = settle_max_wait_s
         self.screenshot_timeout_s = screenshot_timeout_s
         self.query_timeout_s = query_timeout_s
+        self.ui_tree_timeout_s = ui_tree_timeout_s
         self.action_timeout_s = action_timeout_s
         self.queue_wait_s = queue_wait_s
         self.service_start_timeout_s = service_start_timeout_s
@@ -769,7 +782,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             raise RuntimeError("the Android device is not set up")
         # Each part is bounded on its own (confirming the service, the wait's
         # last poll, then the slowest source); this only stops a runaway capture.
-        sources_s = max(self.screenshot_timeout_s, self.query_timeout_s)
+        sources_s = max(self.screenshot_timeout_s, self.query_timeout_s, self.ui_tree_timeout_s)
         limit = (
             self.service_start_timeout_s
             + self.settle_max_wait_s
@@ -799,7 +812,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         if PLATFORM in wanted:
             sources[PLATFORM] = Source(self._platform, self.query_timeout_s)
         if UI_TREE in wanted:
-            sources[UI_TREE] = Source(self._read_tree, self.query_timeout_s)
+            sources[UI_TREE] = Source(self._read_tree, self.ui_tree_timeout_s)
         fragments: dict[str, FragmentBase] = {}
         for key, answer in (await fan_out(sources)).items():
             # Cleaned once every source answered: against the screen this

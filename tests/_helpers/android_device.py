@@ -25,6 +25,7 @@ every input its device side received, in order (:attr:`ScriptedPhone.inputs`).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shlex
@@ -199,6 +200,7 @@ class ScriptedPhone:
         forest: The window forest the service reports for ``tree``, in the
             wire form (:data:`FOREST` unless changed).
         tree_reads: The node limit each ``tree`` request asked for, in order.
+        tree_delay_s: How long the service takes to answer ``tree``.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
             KEYCODE_..."``, ``"service set_text '...' replace|at the cursor"``,
@@ -227,6 +229,7 @@ class ScriptedPhone:
     on_tap: Callable[[], None] | None = None
     forest: JsonObject = field(default_factory=lambda: dict(FOREST))
     tree_reads: list[JsonValue] = field(default_factory=list)
+    tree_delay_s: float = 0.0
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
@@ -343,6 +346,7 @@ class ScriptedPhone:
 
     async def _tree(self, params: JsonObject) -> Answer:
         self.tree_reads.append(params.get("max_nodes"))
+        await asyncio.sleep(self.tree_delay_s)
         windows = self.forest.get("windows")
         count = sum(
             len(nodes)
