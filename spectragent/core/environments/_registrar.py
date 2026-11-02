@@ -657,15 +657,19 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── Scoring: the task oracles, after the Loop ─────────────
 
-    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+    async def read_oracle_scores(
+        self, *, timeout_s: float, answer: str | None
+    ) -> list[OracleScore]:
         """Ask every task oracle for this task's score; the entries in capability order.
 
         One task per capability implementing
         :class:`~spectragent.core.capabilities.base.TaskOracle`, run
-        **concurrently**, each limited to *timeout_s*, and every task is waited
-        for before anything is returned. A reading becomes a ``scored`` entry
-        carrying the capability's id and the start time and duration measured
-        here around the call; a ``None`` (no oracle in this run) is left out.
+        **concurrently**, each limited to *timeout_s* and handed the same
+        *answer*, the run's final answer (``loop.done``'s text, or ``None``),
+        and every task is waited for before anything is returned. A reading
+        becomes a ``scored`` entry carrying the capability's id and the start
+        time and duration measured here around the call; a ``None`` (no oracle
+        in this run) is left out.
         An oracle that runs out of time, raises, or hands back something other
         than an :class:`OracleReading` comes back as a ``not_scored`` entry
         saying why. Nothing here raises ``Exception``: scoring never fails the
@@ -678,7 +682,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         oracles = [cap for cap in self.capabilities.values() if isinstance(cap, TaskOracle)]
         if not oracles:
             return []
-        tasks = [asyncio.ensure_future(self._score_one(cap, timeout_s)) for cap in oracles]
+        tasks = [asyncio.ensure_future(self._score_one(cap, timeout_s, answer)) for cap in oracles]
         try:
             outcomes = await asyncio.gather(*tasks)
         except BaseException:
@@ -693,7 +697,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         return [score for score in outcomes if score is not None]
 
     @staticmethod
-    async def _score_one(cap: BaseCapability, timeout_s: float) -> OracleScore | None:
+    async def _score_one(
+        cap: BaseCapability, timeout_s: float, answer: str | None
+    ) -> OracleScore | None:
         """One oracle's entry: built from its reading, or the not-scored entry standing in for it.
 
         The capability's id and the start time and duration are this method's
@@ -711,7 +717,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         failure: Exception | None = None
         try:
             async with limit:
-                reading = await oracle.read_score()
+                reading = await oracle.read_score(answer=answer)
         except Exception as exc:  # per-oracle isolation
             failure = exc
         duration_ms = int((time.monotonic() - started) * 1000)

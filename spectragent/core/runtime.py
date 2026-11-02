@@ -108,6 +108,24 @@ def _outcome_under(timed_out: TimeoutError) -> RunAbort | AgentResult | None:
     return carried_outcome(cancelled)
 
 
+def _final_answer(ending: AgentResult | Exception) -> str | None:
+    """The run's final answer for the task oracles: the text ``loop.done`` handed over, else ``None``.
+
+    Only a run that ended ``done`` has one; the Loop put the text in
+    ``answer``. That holds too when the run's own timeout cut off the
+    recording of that last step, whose cancellation carries the result
+    (:func:`_outcome_under`), the result ``execute`` then closes the run out
+    with. Every other ending hands over ``None``, whatever ``answer`` holds
+    (on ``max_steps`` it keeps the last text an action returned), and so does
+    a ``done`` without text. Only the answer: never the reasoning, the
+    history or the agent's claim (docs/architecture_design.md §4.2).
+    """
+    outcome = _outcome_under(ending) if isinstance(ending, TimeoutError) else ending
+    if isinstance(outcome, AgentResult) and outcome.agent_done == AgentDoneStatus.DONE:
+        return outcome.answer or None
+    return None
+
+
 class AgentRuntime:
     """Loop-agnostic orchestration engine.
 
@@ -755,11 +773,13 @@ class AgentRuntime:
         has returned or raised — done, max_steps, the run's timeout, an
         exception, a veto — and before ``on_run_end`` and teardown, the woven
         environment's task oracles read the task's score against the live
-        environment (``read_oracle_scores``), and the trace records it. A run
-        whose setup failed, or that was cancelled from outside, is not scored;
-        a cancellation that lands during scoring closes the run out as
-        cancelled. Scoring time stays out of ``execution_ms``, and scoring
-        never changes ``agent_done`` or fails the run.
+        environment (``read_oracle_scores``), handed the run's final answer
+        (the text of ``loop.done``; ``None`` on every other ending), and the
+        trace records it. A run whose setup failed, or that was cancelled
+        from outside, is not scored; a cancellation that lands during scoring
+        closes the run out as cancelled. Scoring time stays out of
+        ``execution_ms``, and scoring never changes ``agent_done`` or fails
+        the run.
 
         Args:
             task: Task text handed to the agent.
@@ -1087,30 +1107,32 @@ class AgentRuntime:
         """Drive the Loop under the run's own timeout, then score the run (:meth:`_score`).
 
         However the Loop ends — a result, the run's timeout, an exception, a
-        veto — the run is scored before its outcome goes on to ``execute``,
-        unchanged. A cancellation leaves at once: a cancelled run is not scored.
+        veto — the run is scored, with its final answer (:func:`_final_answer`),
+        before its outcome goes on to ``execute``, unchanged. A cancellation
+        leaves at once: a cancelled run is not scored.
         """
         try:
             result = await asyncio.wait_for(prepared_agent.run(task), timeout=timeout)
-        except Exception:
-            await self._score(oracle_timeout)
+        except Exception as ended:
+            await self._score(oracle_timeout, answer=_final_answer(ended))
             raise
-        await self._score(oracle_timeout)
+        await self._score(oracle_timeout, answer=_final_answer(result))
         return result
 
-    async def _score(self, timeout_s: float) -> None:
+    async def _score(self, timeout_s: float, *, answer: str | None) -> None:
         """The scoring point: the execution clock stops, then the task oracles read the score.
 
         Through the woven environment, so the trace hook records what comes
-        back. Scoring never fails the run: the environment hands back a failed
-        oracle as a not-scored entry, and an environment that raises anyway is
-        logged here, not raised. A cancellation propagates.
+        back; each oracle is handed *answer*. Scoring never fails the run: the
+        environment hands back a failed oracle as a not-scored entry, and an
+        environment that raises anyway is logged here, not raised. A
+        cancellation propagates.
         """
         self._execution_ended = time.monotonic()
         if self._woven_env is None:
             return
         try:
-            await self._woven_env.read_oracle_scores(timeout_s=timeout_s)
+            await self._woven_env.read_oracle_scores(timeout_s=timeout_s, answer=answer)
         except Exception:
             logger.exception("AgentRuntime: reading the task oracles' scores failed")
 

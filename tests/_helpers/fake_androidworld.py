@@ -9,15 +9,17 @@ whitelisted environment, its process group.
 
 Run as a program, this file is the service: it answers the endpoints the oracle
 calls (``/health``, ``/suite/reinitialize``, ``/task/goal``,
-``/task/initialize``, ``/reset``, ``/task/score``, ``/task/tear_down``) as the
-real one does, and, like it, listens only once its startup is over. What it
+``/task/initialize``, ``/reset``, ``/execute_action``, ``/task/score``,
+``/task/tear_down``) as the real one does, and, like it, listens only once its
+startup is over. What it
 does is read from ``<root>/behaviour.json``, again for every request, so a test
 can change an endpoint's answer while the service runs: per path, ``{"status": 500}``
 answers an error, ``{"hang": true}`` never answers, ``{"text": ...}`` answers
 that text, ``{"json": ...}`` answers that object; the top level may also say
 ``start_delay_s`` (how long before it listens), ``exit_code`` (exit at once
 with it) and ``ignore_sigterm``. It records every request in
-``<root>/record/requests.jsonl``, its PID, group, argv and environment in
+``<root>/record/requests.jsonl`` (its JSON body too, when it has one), its PID,
+group, argv and environment in
 ``<root>/record/service.json``, and leaves a ``sleep`` in its process group, as
 the real one leaves ``adb logcat``. It imports nothing but the standard
 library: the oracle gives it no ``PYTHONPATH``.
@@ -49,6 +51,7 @@ DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
     "/task/goal": {"goal": "Turn brightness to the max value."},
     "/task/initialize": {"status": "success", "message": "Task initialized."},
     "/reset": {"status": "success", "message": "Environment reset."},
+    "/execute_action": {"status": "success", "message": "Action executed."},
     "/task/score": {"score": 1.0},
     "/task/tear_down": {"status": "success", "message": "Task torn down."},
 }
@@ -84,7 +87,7 @@ def write_behaviour(root: Path, behaviour: dict[str, JsonValue]) -> None:
 
 
 def requests(root: Path) -> list[dict[str, JsonValue]]:
-    """Every request the service received, in order: method, path and query."""
+    """Every request the service received, in order: method, path, query and JSON body (or ``None``)."""
     log = root / "record" / "requests.jsonl"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.is_file() else []
 
@@ -123,11 +126,13 @@ def _serve(argv: list[str]) -> None:
     class Handler(BaseHTTPRequestHandler):
         def _answer(self) -> None:
             url = urlsplit(self.path)
+            sent = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             with lock, (record / "requests.jsonl").open("a") as log:
                 entry = {
                     "method": self.command,
                     "path": url.path,
                     "query": dict(parse_qsl(url.query)),
+                    "body": json.loads(sent) if sent else None,
                 }
                 log.write(json.dumps(entry) + "\n")
             rule = json.loads((root / "behaviour.json").read_text()).get(url.path, {})

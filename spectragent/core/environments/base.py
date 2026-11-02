@@ -261,19 +261,22 @@ class Environment(Protocol):
 
     # ── Scoring: after the Loop, before the close-out ─────────
 
-    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+    async def read_oracle_scores(
+        self, *, timeout_s: float, answer: str | None
+    ) -> list[OracleScore]:
         """Every task oracle's score, in capability order; ``[]`` when there is none.
 
         ``AgentRuntime`` calls it once on every run that reaches the scoring
         point (after the Loop returned or raised, before ``on_run_end`` and
         teardown), so a structural implementation needs it too. Asks every
         capability implementing ``TaskOracle`` (``core/capabilities/base.py``)
-        concurrently, each within *timeout_s*. A reading comes back as a
-        ``scored`` entry with the capability's id and the start time and
-        duration measured around the call; a ``None`` is left out, and a timeout
-        or an ``Exception`` comes back as a ``not_scored`` entry. Never raises
-        ``Exception``. A cancellation cancels the oracles still running,
-        waits for them, and then propagates.
+        concurrently, each within *timeout_s*, handing each the run's final
+        *answer* (``loop.done``'s text; ``None`` when the run ended without
+        one). A reading comes back as a ``scored`` entry with the capability's
+        id and the start time and duration measured around the call; a
+        ``None`` is left out, and a timeout or an ``Exception`` comes back as a
+        ``not_scored`` entry. Never raises ``Exception``. A cancellation
+        cancels the oracles still running, waits for them, and then propagates.
         """
         ...
 

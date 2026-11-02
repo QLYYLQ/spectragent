@@ -63,11 +63,13 @@ class AndroidTaskOracle(Protocol):
         """Prepare *task* on *device*, which the provider booted meeting :attr:`device_needs`."""
         ...
 
-    async def read_score(self) -> OracleReading | None:
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
         """This task's score, read from the live device; ``None`` when there is no oracle.
 
+        *answer* is the run's final answer, ``loop.done``'s text or ``None``
+        (``TaskOracle``, §4.9); a benchmark that scores no answer ignores it.
         Turns its own transport failures into ordinary exceptions and lets no
-        ``CancelledError`` of its own escape (``TaskOracle``, §4.9).
+        ``CancelledError`` of its own escape.
         """
         ...
 

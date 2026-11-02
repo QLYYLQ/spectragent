@@ -16,14 +16,11 @@ adds a field, or lists one task twice raises ``BenchmarkDataError`` and the
 loader publishes nothing.
 
 **Left out, with the reason in** :attr:`AndroidWorldTaskLoader.skipped`, and
-counted in one log line:
-
-- information-retrieval tasks (family ``information_retrieval``, 25 of the
-  116). They are scored on the agent's answer, which travels in ``loop.done``
-  and never reaches the capability; how it should reach the oracle is not
-  decided;
-- the tasks AndroidWorld's service cannot build again from their address
-  (``UNREPRODUCIBLE``, with its reason), which the oracle would refuse.
+counted in one log line: the tasks AndroidWorld's service cannot build again
+from their address (``UNREPRODUCIBLE``, with its reason), which the oracle
+would refuse. Information-retrieval tasks (family ``information_retrieval``,
+25 of the 116) are kept like any other: they are scored on the agent's answer,
+which the Runtime hands the oracle at the scoring point (§4.2).
 
 AndroidWorld's own runner gives a task ``int(10 * complexity)`` steps; the
 framework has no per-task step limit (the Loop's ``max_steps`` holds for every
@@ -72,7 +69,6 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
 
     def _load(self) -> None:
         from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
-            INFORMATION_RETRIEVAL,
             UNREPRODUCIBLE,
             AndroidWorldTaskList,
         )
@@ -98,12 +94,6 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             task_id = f"{task.task}/{task.suite_seed}/{task.index}"
             if task_id in tasks or task_id in skipped:
                 raise BenchmarkDataError(f"{path} lists {task_id} more than once")
-            if task.family == INFORMATION_RETRIEVAL:
-                skipped[task_id] = (
-                    "information retrieval: scored on the agent's answer, which does not reach "
-                    "the task oracle yet"
-                )
-                continue
             if task.task in UNREPRODUCIBLE:
                 skipped[task_id] = UNREPRODUCIBLE[task.task]
                 continue

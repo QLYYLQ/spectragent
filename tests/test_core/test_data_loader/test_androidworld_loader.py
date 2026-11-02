@@ -93,18 +93,20 @@ def test_each_listed_task_is_an_android_task_whose_record_is_its_oracle_task(
     assert loader.get_task_context(task_id).env == {"oracle_task": record}
 
 
-def test_information_retrieval_tasks_are_left_out_with_the_reason(tmp_path: Path) -> None:
-    loader = _loader(
-        tmp_path, _record(), _record("SimpleCalendarLocationOfEvent", "information_retrieval")
-    )
+def test_information_retrieval_tasks_are_kept_and_the_oracle_accepts_them(
+    tmp_path: Path,
+) -> None:
+    """Scored on the run's answer, which the scoring point hands the oracle (§4.2)."""
+    asking = _record("SimpleCalendarLocationOfEvent", "information_retrieval")
+    loader = _loader(tmp_path, _record(), asking)
 
-    assert loader.task_ids() == ["SystemBrightnessMax/42/0"]
-    assert dict(loader.skipped) == {
-        "SimpleCalendarLocationOfEvent/42/0": (
-            "information retrieval: scored on the agent's answer, which does not reach the task "
-            "oracle yet"
-        )
-    }
+    task_id = "SimpleCalendarLocationOfEvent/42/0"
+    assert loader.task_ids() == ["SystemBrightnessMax/42/0", task_id]
+    assert loader.skipped == {}
+    assert loader[task_id].tags == ["information_retrieval"]
+    oracle_task = loader.get_task_context(task_id).env["oracle_task"]
+    assert oracle_task == asking
+    AndroidWorldOracle(root=str(fake_installation(tmp_path / "aw"))).check_setup(oracle_task)
 
 
 def test_tasks_the_service_cannot_build_again_are_left_out_with_the_oracles_reason(
@@ -128,13 +130,13 @@ def test_skipped_tasks_are_counted_in_one_log_line(
     )
 
     assert [record.getMessage() for record in caplog.records] == [
-        "androidworld: left out 2 of the 3 listed tasks; the reasons are in the loader's skipped"
+        "androidworld: left out 1 of the 3 listed tasks; the reasons are in the loader's skipped"
     ]
 
 
 def test_a_list_with_nothing_to_run_is_refused_naming_why(tmp_path: Path) -> None:
-    with pytest.raises(BenchmarkDataError, match="no task this loader runs: .*information"):
-        _loader(tmp_path, _record("SimpleCalendarLocationOfEvent", "information_retrieval"))
+    with pytest.raises(BenchmarkDataError, match="no task this loader runs: .*host's clock"):
+        _loader(tmp_path, _record("MarkorCreateFolder"))
 
 
 @pytest.mark.parametrize(

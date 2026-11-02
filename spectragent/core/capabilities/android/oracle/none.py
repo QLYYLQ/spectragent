@@ -39,7 +39,7 @@ class NoTaskOracle(AndroidTaskOracleBase):
     async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
         return None
 
-    async def read_score(self) -> OracleReading | None:
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
         return None
 
     async def stop(self) -> None:

@@ -660,9 +660,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 if session is not None:
                     await self._backend().close(session)
 
-    async def read_score(self) -> OracleReading | None:
-        """This task's score from the task oracle; ``None`` with ``none`` (``TaskOracle``)."""
-        return await self.task_oracle.read_score()
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+        """The task oracle's score, given the run's *answer*; ``None`` with ``none`` (``TaskOracle``)."""
+        return await self.task_oracle.read_score(answer=answer)
 
     @property
     def is_alive(self) -> bool:

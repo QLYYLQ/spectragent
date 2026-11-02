@@ -395,7 +395,7 @@ class TaskOracle(Protocol):
     close-out and the teardown (``docs/architecture_design.md`` §4.2
     "判分时间点"); the environment asks every capability implementing this,
     concurrently and each within the run's ``oracle_timeout``, and the trace
-    records the answers as evidence evaluators read (§5.3). Not part of
+    records the scores as evidence evaluators read (§5.3). Not part of
     :class:`BaseCapability`; ``CapabilityBase`` gives no default.
 
     An oracle turns its own transport failures into ordinary exceptions (a
@@ -405,14 +405,22 @@ class TaskOracle(Protocol):
     capability call.
     """
 
-    async def read_score(self) -> OracleReading | None:
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
         """Score this task against the live environment; ``None`` when this run has no oracle.
 
-        Reads only: executes no action and tears nothing down. The reading holds
-        only what the oracle knows: the score, its identity and version, what it
-        judged. The environment records this capability's id and when the read
-        started and how long it took, on its own clock; it enforces the time
-        limit and turns a timeout or an exception into a not-scored entry.
+        *answer* is the run's final answer: the text the agent handed over with
+        ``loop.done``, or ``None`` when the run ended any other way or
+        ``loop.done`` carried no text (§4.2). It is only the answer, never the
+        agent's reasoning or history; an oracle whose benchmark scores no
+        answer ignores it.
+
+        Executes none of the run's actions and tears nothing down; handing
+        *answer* to the benchmark's own judge is part of scoring. The reading
+        holds only what the oracle knows: the score, its identity and version,
+        what it judged. The environment records this capability's id and when
+        the read started and how long it took, on its own clock; it enforces
+        the time limit and turns a timeout or an exception into a not-scored
+        entry.
         """
         ...
 
