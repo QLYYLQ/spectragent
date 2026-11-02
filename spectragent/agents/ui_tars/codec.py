@@ -190,7 +190,10 @@ def _fixed(param: str, value: str) -> Argument:
 #: unknown verbs in a browser run.
 #:
 #: - ``long_press``: one point, like ``click``: taught as ``point``, read as
-#:   ``start_box`` too, as UI-TARS's mobile prompt writes it.
+#:   ``start_box`` too, as UI-TARS's mobile prompt writes it. Optional, as the
+#:   action's point is (its other target, an element index, needs the UI tree,
+#:   which a vision run does not have): a call without one reads into an
+#:   action with neither, which the action's params refuse.
 #: - ``type``: UI-TARS says ``content``, the action reads ``text``. Required:
 #:   with ``clear_by_default`` a missing text would clear the field and type
 #:   nothing, reported as a success. The point is optional, as the action's is
@@ -222,7 +225,11 @@ VERBS: Mapping[str, Verb] = MappingProxyType(
         verb.name: verb
         for verb in (
             _verb("click", "click_coordinate", _point("point", "'(x, y)'", "start_box")),
-            _verb("long_press", "long_press", _point("point", "'(x, y)'", "start_box")),
+            _verb(
+                "long_press",
+                "long_press",
+                _point("point", "'(x, y)'", "start_box", required=False),
+            ),
             _verb(
                 "type",
                 "type_coordinate",

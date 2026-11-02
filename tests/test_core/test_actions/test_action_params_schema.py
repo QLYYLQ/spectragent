@@ -27,7 +27,9 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 import spectragent.core.capabilities.android.actions  # noqa: F401 — registers them
+import spectragent.core.capabilities.android.observations  # noqa: F401 — and its fragments
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
+import spectragent.core.capabilities.browser.observations  # noqa: F401 — and its fragments
 import spectragent.core.loops.actions  # noqa: F401 — registers the Loop's own (loop.done)
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.action_union import params_model_from_schema
@@ -139,7 +141,15 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "end_x": _ANDROID_X,
         "end_y": _ANDROID_Y,
     },
-    "android.long_press": {"coordinate_x": _ANDROID_X, "coordinate_y": _ANDROID_Y},
+    # The point made optional and an index added on purpose: one of the two, the
+    # index only in a run that has the UI tree, as scroll's start and index are.
+    "android.long_press": {
+        "coordinate_x": "int (optional, the finger goes down there; never with index) -- "
+        "Physical px from the screen's left edge",
+        "coordinate_y": "int (optional, the finger goes down there; never with index) -- "
+        "Physical px from the screen's top edge",
+        "index": "int (optional) -- element index from the UI tree",
+    },
     "android.open_app": {"app_name": "str"},
     "android.press_key": {"key": "back|home|enter|delete|recent_apps"},
     "android.scroll": {
@@ -150,6 +160,12 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "Physical px from the screen's left edge",
         "start_y": "int (optional, the swipe starts there; never with index) -- "
         "Physical px from the screen's top edge",
+    },
+    # Typing by index takes the browser's ``type`` params, its index into the UI tree.
+    "android.type": {
+        "index": "int -- element index from the UI tree",
+        "text": "str",
+        "clear": "bool (optional, default=true)",
     },
     "android.type_coordinate": {
         "coordinate_x": "int (optional) -- Physical px from the screen's left edge",
@@ -168,6 +184,7 @@ _GOLDEN_DEPENDENCIES: dict[str, set[str]] = {
     "browser.type": {"browser.dom"},
     "browser.select_dropdown": {"browser.dom"},
     "android.click": {"android.ui_tree"},
+    "android.type": {"android.ui_tree"},
 }
 
 
@@ -359,10 +376,11 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
     runtime symptom of a wiring mistake that is visible from the declarations
     alone. A relative name binds per run (``click`` is ``browser.click`` with
     the browser and ``android.click`` with Android), so each agent is scanned
-    on every capability it can run on, the ones that offer each action it
-    requires, with its declarations bound there; matching names by their last
-    segment alone would hold a browser agent's ``click`` to the UI tree
-    Android's reads.
+    on every capability it can run on, the ones that offer each action and
+    each fragment it requires, with its declarations bound there; matching
+    names by their last segment alone would hold a browser agent's ``click``
+    to the UI tree Android's reads, and Skyvern, which requires ``dom``, to
+    Android, which offers every action it requires but no DOM.
     """
     from spectragent.agents._registrar import AgentRegistrar
     from spectragent.agents.prompts import agent_family
@@ -371,12 +389,18 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
         agent_families,
         discover_implementations,
     )
+    from spectragent.schemas.observation._registrar import ObservationRegistrar
 
     # A run imports only the families its configuration names, so import them
     # all here: scanning whatever happens to be registered scanned nothing
     # when this test ran alone.
     discover_implementations(*(f"{AGENTS_PACKAGE}.{family}" for family in agent_families()))
     capabilities = sorted({key.split(".", 1)[0] for key in _KEYS} - {"loop"})
+    offered_fragments = sorted(
+        key
+        for key, cls in ObservationRegistrar.get_all().items()
+        if cls.__module__.startswith("spectragent.")
+    )
 
     scanned: set[str] = set()
     pairs: set[tuple[str, str]] = set()
@@ -391,6 +415,8 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
             bound = {declared: _bound(declared, capability, _KEYS) for declared in actions}
             if None in bound.values():
                 continue  # the agent cannot run here: an action it requires is not offered
+            if any(_bound(key, capability, offered_fragments) is None for key in fragments):
+                continue  # nor here: a fragment it requires is not offered
             pairs.add((agent_id, capability))
             have = {key if "." in key else f"{capability}.{key}" for key in fragments}
             for declared, full in sorted(bound.items()):
@@ -446,7 +472,9 @@ _GOLDEN_ELEMENTS: dict[str, tuple[str, ...]] = {
     "browser.scroll": ("index",),
     "browser.extract_content": ("index",),
     "android.click": ("index",),
+    "android.type": ("index",),
     "android.scroll": ("index",),
+    "android.long_press": ("index",),
 }
 
 
@@ -549,6 +577,55 @@ def test_the_start_is_the_scrolls_one_optional_point() -> None:
     assert descriptor.optional_points == (("start_x", "start_y"),)
     assert "start_x" in descriptor.params and "index" not in descriptor.params
     assert scroll.requires_fragments() == frozenset()
+
+
+# ── A long press: a point or an element index ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"coordinate_x": 10, "coordinate_y": 20},
+        {"coordinate_x": 0, "coordinate_y": 0},
+        {"index": 3},
+    ],
+)
+def test_a_long_press_takes_a_point_or_an_element(params: dict[str, Any]) -> None:
+    assert ActionRegistrar.get("android.long_press").Params.model_validate(params)
+
+
+@pytest.mark.parametrize(
+    ("params", "said"),
+    [
+        ({"coordinate_x": 10}, "a long press point needs both coordinate_x and coordinate_y"),
+        ({"coordinate_y": 20}, "a long press point needs both coordinate_x and coordinate_y"),
+        (
+            {"index": 3, "coordinate_x": 10, "coordinate_y": 20},
+            "long_press takes an element index or a point, not both",
+        ),
+        ({}, "long_press needs a point or an element index"),
+    ],
+)
+def test_a_long_press_is_both_axes_or_an_index_and_never_neither(
+    params: dict[str, Any], said: str
+) -> None:
+    with pytest.raises(ValidationError, match=said):
+        ActionRegistrar.get("android.long_press").Params.model_validate(params)
+
+
+def test_a_long_press_keeps_the_target_its_run_can_name() -> None:
+    """The index only with the UI tree, the point only for an agent that writes points."""
+    press = _action("android.long_press")
+    assert press.requires_fragments() == frozenset(), "either target does without the other"
+
+    without_tree = press.descriptor(fragments=frozenset({"android.screenshot"}))
+    assert set(without_tree.params) == {"coordinate_x", "coordinate_y"}
+
+    with_tree = press.descriptor(fragments=frozenset({"android.screenshot", "android.ui_tree"}))
+    (by_index,) = space_of([with_tree]).descriptors
+    assert set(by_index.params) == {"index"} and by_index.point_params == ()
+    (by_point,) = space_of([without_tree], coordinate_space="normalized_1000").descriptors
+    assert by_point.point_params == (("coordinate_x", "coordinate_y"),)
 
 
 # ── A typing action's optional point ──────────────────────────────────

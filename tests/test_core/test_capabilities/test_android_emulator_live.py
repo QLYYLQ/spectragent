@@ -38,7 +38,9 @@ runs. The one boot covers, in file order:
 - the UI tree of Settings' main page, cleaned and printed by the configured
   cleaner and serializer, with our service as its producer; ``click`` by an
   element's index opens the row it names, and ``scroll`` by the list's index
-  moves the list, both found by their text, not their place;
+  moves the list, both found by their text, not their place; on the search
+  screen, ``type`` by the field's index types into it; on the home screen,
+  ``long_press`` by an app icon's index opens the icon's menu;
 - a capture waits for a still screen: after a cold start of Settings it waits
   for the window manager, the frames and the events, and reports how;
 - a clean teardown: no process of the run is left, nothing listens on its
@@ -670,6 +672,52 @@ async def test_scroll_by_index_moves_the_list_it_names(booted: Booted) -> None:
     assert scrolled.success, scrolled.error
     after = _texts(await _tree(booted))
     assert after != before and "Network & internet" not in after, after
+
+
+async def _search_screen_tree(booted: Booted) -> AndroidUITreeObs:
+    """Settings' search screen in front, its field in the tree."""
+    await _skip_unless_measured_layout(booted)
+    await _settings_from_scratch(booted)
+    assert (
+        await _act(
+            booted, "click_coordinate", coordinate_x=SEARCH_BAR[0], coordinate_y=SEARCH_BAR[1]
+        )
+    ).success
+    assert (await _foreground(booted)).package in SETTINGS_SEARCH
+    return await _tree(booted)
+
+
+async def test_type_by_index_types_into_the_field_it_names(booted: Booted) -> None:
+    """The browser's ``type``: a tap at the element's centre puts focus there, then the text."""
+    tree = await _search_screen_tree(booted)
+
+    typed = await _act(
+        booted,
+        "type",
+        index=_index_of(tree, lambda node: node.is_editable),
+        text="bluetooth",
+        clear=False,
+    )
+
+    assert typed.success, typed.error
+    assert await _field_text(booted) == "bluetooth"
+
+
+async def test_long_press_by_index_opens_the_menu_of_the_app_icon_it_names(booted: Booted) -> None:
+    """On the home screen, a long press on an app's icon opens its menu (App info, shortcuts)."""
+    assert (await _act(booted, "press_key", key="home")).success
+    tree = await _tree(booted)
+
+    pressed = await _act(
+        booted, "long_press", index=_index_of(tree, lambda node: node.text == "Phone")
+    )
+
+    assert pressed.success, pressed.error
+    assert isinstance(pressed.effect, AndroidTouchEffect)
+    assert pressed.effect.touch.gesture == "long_press"
+    menu = await _tree(booted)
+    assert "App info" in _texts(menu), menu.serialized
+    assert (await _act(booted, "press_key", key="back")).success, "the menu closes"
 
 
 def _content_shift(before: Image.Image, after: Image.Image) -> int:

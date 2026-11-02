@@ -25,6 +25,7 @@ from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import point_params
 from spectragent.core.capabilities.android.actions import (
     KEYCODES,
+    AndroidTypeAction,
     AndroidTypeCoordinateAction,
     SystemKey,
 )
@@ -48,7 +49,7 @@ from tests._helpers.android_device import (
 from tests._helpers.fake_adb import ShellResult
 
 #: The actions that mean what the browser's of the same relative name mean.
-SHARED = ("click", "click_coordinate", "drag", "type_coordinate", "scroll", "wait")
+SHARED = ("click", "click_coordinate", "drag", "type", "type_coordinate", "scroll", "wait")
 
 
 def _schema_without_descriptions(params: type[BaseModel]) -> object:
@@ -81,10 +82,11 @@ def test_a_shared_action_takes_exactly_the_browser_actions_params(name: str) -> 
 @pytest.mark.parametrize(
     ("name", "properties", "required", "points"),
     [
+        # A point or an element index, one of the two (the validator's rule).
         (
             "long_press",
-            {"coordinate_x", "coordinate_y"},
-            {"coordinate_x", "coordinate_y"},
+            {"coordinate_x", "coordinate_y", "index"},
+            set(),
             (("coordinate_x", "coordinate_y"),),
         ),
         ("press_key", {"key"}, {"key"}, ()),
@@ -98,7 +100,7 @@ def test_an_android_action_takes_the_params_it_is_designed_with(
     schema = params.model_json_schema()
 
     assert set(schema["properties"]) == properties
-    assert set(schema["required"]) == required
+    assert set(schema.get("required", ())) == required
     assert point_params(params) == list(points)
 
 
@@ -370,6 +372,96 @@ async def test_a_scroll_with_an_index_swipes_from_that_elements_centre(
     scrolled = await act(capability, "scroll", direction="down", index=0, amount=200)
 
     assert scrolled.success and phone.inputs == ["helper stroke (540,375)@0 (540,175)@500"]
+
+
+async def test_a_long_press_by_index_holds_the_centre_of_that_element(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+
+    pressed = await act(capability, "long_press", index=1)
+
+    assert pressed.success and phone.inputs == ["helper stroke (540,525)@0 (540,525)@1000"]
+    assert isinstance(pressed.effect, AndroidTouchEffect)
+    assert pressed.effect.describe() == "Pressed (540, 525) for 1000 ms."
+
+
+async def test_a_long_press_by_an_index_the_tree_does_not_have_touches_nothing(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+
+    refused = await act(capability, "long_press", index=7)
+
+    assert refused.error == "The screen's UI tree has no element 7; its elements are 0-1."
+    assert phone.inputs == []
+
+
+# ── typing by index: type ─────────────────────────────────────────────
+
+
+async def test_typing_by_index_taps_the_elements_centre_and_types_into_the_field_there(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The browser's ``type``: focus the element (here a tap at its centre), then type."""
+    await observe_tree(capability)
+    # The field with focus is the element's: (0, 450)-(1080, 600), centre (540, 525).
+    phone.text_field, phone.field_bounds = True, (0, 450, 1080, 600)
+
+    typed = await act(capability, "type", index=1, text="hi", clear=False)
+
+    assert phone.inputs == [
+        "helper stroke (540,525)@0 (540,525)@50",
+        "service set_text 'hi' at the cursor",
+    ]
+    assert isinstance(typed.effect, AndroidTextEffect) and typed.effect.text_entered
+    assert typed.effect.describe() == (
+        "Tapped (540, 525). Entered the text into EditText android:id/search_src_text of "
+        "com.google.android.apps.nexuslauncher, at its cursor."
+    )
+
+
+async def test_typing_by_index_clears_the_field_unless_told_not_to(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+    phone.text_field, phone.field_bounds = True, (0, 450, 1080, 600)
+
+    assert (await act(capability, "type", index=1, text="hi")).success
+
+    assert phone.inputs[-1] == "service set_text 'hi' replace", "clear_by_default is true"
+
+
+async def test_typing_by_index_where_focus_stays_on_another_field_is_refused_naming_the_element(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The focus rules after the tap are type_coordinate's: the element was not the field."""
+    capability.actions = [AndroidTypeAction(focus_wait_ms=200)]
+    await observe_tree(capability)
+    phone.text_field = True  # a field at (0, 100)-(1080, 250) has focus, and keeps it
+
+    refused = await act(capability, "type", index=1, text="hi")
+
+    assert refused.error == (
+        "No text field took focus at element 1: focus stayed on EditText "
+        "android:id/search_src_text of com.google.android.apps.nexuslauncher, away from "
+        "element 1, so no text was typed."
+    )
+    assert phone.inputs == ["helper stroke (540,525)@0 (540,525)@50"], "the tap, nothing typed"
+    assert isinstance(refused.effect, AndroidTextEffect) and not refused.effect.text_entered
+
+
+async def test_typing_by_an_index_from_an_older_tree_touches_nothing(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+    assert (await act(capability, "click", index=0)).success
+    phone.inputs.clear()
+
+    refused = await act(capability, "type", index=1, text="hi")
+
+    assert not refused.success and "before the last action" in (refused.error or "")
+    assert refused.effect is None and phone.inputs == []
 
 
 @dataclass
