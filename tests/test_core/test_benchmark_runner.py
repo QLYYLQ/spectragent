@@ -1012,19 +1012,21 @@ class TestTraceBranchesSweep:
         """Loader → runner → runtime → BranchLoop: the env part reaches setup, the
         checkpoint reaches the Loop, the provenance reaches the trace.
 
-        The fake's source records no network archive and an empty setup
-        context, so its env part is empty: no ``replay_archive`` (§11.2).
+        The fake's source records a start URL and no network archive, so the
+        env part is that start URL alone, with no ``replay_archive``
+        (``docs/architecture_design.md`` §4.10).
         """
         from spectragent.core.data_loader.task import TraceBranchesTaskLoader
         from spectragent.core.data_loader.task.step_selector import ExplicitSteps
         from spectragent.core.loops import BranchLoop
         from tests._helpers.branch_fakes import BranchFakeAgent, build_run, make_cap, record_source
 
+        start = "https://site.test/start"
         source = await record_source(
-            tmp_path, ["click 100", "click 101", "done ok"], env_context={}
+            tmp_path, ["click 100", "click 101", "done ok"], env_context={"start_url": start}
         )
         setup = RunTrace(source).config.task_setup
-        assert setup is not None and setup.context == {}
+        assert setup is not None and setup.context == {"start_url": start}
         loader = TraceBranchesTaskLoader(data_dir=str(source.parent), require_archive=())
         loader.step_selector = ExplicitSteps(steps=[1])
         caps: list[Any] = []
@@ -1045,9 +1047,8 @@ class TestTraceBranchesSweep:
         assert summary.completed == 1 and summary.failed == 0, summary.format_table()
         (outcome,) = summary.outcomes
         assert outcome.task_id == "src/s1/b0"
-        assert caps[0].setups == 1 and caps[0].replay_archive is None, (
-            "the empty env part reached setup: no network archive, no replay archive"
-        )
+        assert caps[0].setups == 1 and caps[0].start_url == start, "the env part reached setup"
+        assert caps[0].replay_archive is None, "no network archive in the source, no replay archive"
         # The restored click reached the capability; the Loop executed ``loop.done``.
         assert caps[0].log == ["branchfake.click({'index': 500})"]
         assert outcome.result is not None and outcome.result.answer == "branched"

@@ -108,7 +108,8 @@ class BranchFakeCap(CapabilityBase):
     far), ``cycle``, ``id_offset`` (element ids are ``offset + 0..2``),
     ``urls`` (cycle → forced URL, to make a restored step diverge),
     ``veto_act_at`` (a ``RunAbort`` raised by the click on this position),
-    ``log`` (every action it executed: the Loop executes ``done``), ``setups``.
+    ``log`` (every action it executed: the Loop executes ``done``), ``setups``,
+    and what the last ``setup`` was handed (``start_url``, ``replay_archive``).
     """
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
@@ -126,6 +127,9 @@ class BranchFakeCap(CapabilityBase):
     veto_act_at: int | None
     log: list[str]
     setups: int
+    #: The ``start_url`` a task's environment context handed ``setup``: kept so
+    #: a test can see the context arrive; the fake's pages never read it.
+    start_url: str | None
     #: The ``replay_archive`` a branch task's environment context handed
     #: ``setup`` (the source run directory) — accepted the way the browser
     #: accepts it; the fake's pages are deterministic without it.
@@ -138,8 +142,15 @@ class BranchFakeCap(CapabilityBase):
             execution["replay_archive"] = str(Path(path).expanduser().resolve())
         return PreparedSetupContext(execution, dict(execution))
 
-    async def setup(self, *, negotiation: Any = None, replay_archive: str | None = None) -> None:
+    async def setup(
+        self,
+        *,
+        negotiation: Any = None,
+        start_url: str | None = None,
+        replay_archive: str | None = None,
+    ) -> None:
         self.setups += 1
+        self.start_url = start_url
         self.replay_archive = replay_archive
         await super().setup(negotiation=negotiation)
 
@@ -219,6 +230,7 @@ def make_cap(*, id_offset: int = 100, urls: dict[int, str] | None = None) -> Bra
     cap.veto_act_at = None
     cap.log = []
     cap.setups = 0
+    cap.start_url = None
     cap.replay_archive = None
     return cap
 
