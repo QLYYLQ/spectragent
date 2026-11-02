@@ -24,12 +24,15 @@ from collections.abc import Callable
 
 from conscribe import discover
 
+from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
 from spectragent.core.capabilities.android.observations import (
     AndroidCaptureStateObs,
     AndroidForegroundAppObs,
     AndroidPlatformObs,
     AndroidScreenshotObs,
+    AndroidUITreeObs,
 )
+from spectragent.core.capabilities.android.ui_tree.models import UITreeElement
 from spectragent.core.capabilities.browser.dom.budget import DOMBudgetReport
 from spectragent.core.capabilities.browser.dom.models import (
     FRAME_HANDLE_BASE,
@@ -72,6 +75,61 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0" + bytes(range(64))
 
 #: Handle of the button inside the indexed out-of-process frame (namespace 1).
 FRAME_BUTTON_HANDLE = FRAME_HANDLE_BASE + 30
+
+
+def _android_ui_tree() -> AndroidUITreeObs:
+    """Two elements of Settings' list, numbered 0 and 2 (the cleaner left 1 unused).
+
+    The first node offers actions, which the forest model calls
+    ``accessibility_actions`` and every dump, the trace's included, ``actions``.
+    """
+
+    def row(unique_id: int, top: int, text: str) -> dict[str, object]:
+        return {
+            "unique_id": unique_id,
+            "bounds_in_screen": {"left": 0, "top": top, "right": 1080, "bottom": top + 150},
+            "class_name": "android.widget.TextView",
+            "package_name": "com.android.settings",
+            "text": text,
+            "view_id_resource_name": "android:id/title",
+            "window_id": 7,
+            "is_clickable": True,
+            "is_visible_to_user": True,
+            "depth": 4,
+            "drawing_order": 2,
+            "is_important": True,
+        }
+
+    first = {
+        **row(5, 300, "Network & internet"),
+        "actions": [{"id": 16}, {"id": 1, "label": "Open"}],
+    }
+    forest = AndroidAccessibilityForest.model_validate(
+        {
+            "windows": [
+                {
+                    "bounds_in_screen": {"right": 1080, "bottom": 2400},
+                    "id": 7,
+                    "title": "Settings",
+                    "window_type": "TYPE_APPLICATION",
+                    "is_focused": True,
+                    "tree": {"nodes": [first, row(9, 600, "Apps")]},
+                }
+            ]
+        }
+    )
+    return AndroidUITreeObs(
+        producer="accessibility_service",
+        forest=forest,
+        elements=(
+            UITreeElement(index=0, window_id=7, unique_id=5),
+            UITreeElement(index=2, window_id=7, unique_id=9),
+        ),
+        serialized='UI element 0: {"index": 0, "text": "Network & internet"}\n',
+        node_count=168,
+        omitted_offscreen=2,
+        capture_ms=69,
+    )
 
 
 def _attach(parent: DOMElementNode, child: DOMElementNode) -> DOMElementNode:
@@ -333,6 +391,10 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             ),
         ),
         "unreported": AndroidPlatformObs,
+    },
+    "android.ui_tree": {
+        "cleaned": lambda: _android_ui_tree(),
+        "not_captured": AndroidUITreeObs,
     },
     "android.capture_state": {
         "capped": lambda: AndroidCaptureStateObs(

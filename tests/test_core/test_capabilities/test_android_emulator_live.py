@@ -207,6 +207,8 @@ async def booted() -> AsyncIterator[Booted]:
                 "service_apk": apk,
                 "tap_injector": {"injector_id": "accessibility_gesture"},
                 "typing_backend": {"typing_id": "set_text"},
+                "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+                "ui_tree_serializer": {"serializer_id": "m3a"},
                 "task_oracle": {"oracle_id": "none"},
             }
         ]

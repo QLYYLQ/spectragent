@@ -32,6 +32,8 @@ _ANDROID: Block = {
     "service_apk": "spectragent-device.apk",
     "tap_injector": {"injector_id": "shell_injection"},
     "typing_backend": {"typing_id": "set_text"},
+    "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+    "ui_tree_serializer": {"serializer_id": "m3a"},
 }
 _UI_TARS: Block = {
     "agent_id": "ui_tars",
@@ -60,6 +62,9 @@ BLOCK_ONLY: dict[str, tuple[Block, str]] = {
     "android_tap_injector": (_ON_ANDROID, "capability[android].tap_injector"),
     "android_typing_backend": (_ON_ANDROID, "capability[android].typing_backend"),
     "android_task_oracle": (_ON_ANDROID, "capability[android].task_oracle"),
+    "android_ui_tree_source": (_ON_ANDROID, "capability[android].ui_tree_source"),
+    "android_ui_tree_cleaner": (_ON_ANDROID, "capability[android].ui_tree_cleaner"),
+    "android_ui_tree_serializer": (_ON_ANDROID, "capability[android].ui_tree_serializer"),
     "agent_loop": (_AGENT, "agent[ui_tars].agent_loop"),
     "memory": (_AGENT, "agent[ui_tars].memory"),
     "restorer": (_AGENT, "agent[ui_tars].agent_loop[branch].restorer"),

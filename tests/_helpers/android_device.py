@@ -10,7 +10,8 @@
 - **the device side** (:class:`~tests._helpers.fake_device_side.FakeDeviceSide`):
   the APK's install, the shell helper, the accessibility service, and what
   they do for a run: screenshots, timed strokes, keys, text, the node with
-  input focus and the events the service pushes.
+  input focus, the window forest (:data:`FOREST` unless a test gives another)
+  and the events the service pushes.
 
 Any other command is answered as ``sh`` does (exit 127), so a capability that
 starts sending a new command fails a test until this phone learns it. It keeps
@@ -55,6 +56,12 @@ from spectragent.core.capabilities.android.input._registrar import (
 )
 from spectragent.core.capabilities.android.input.tap import ShellInjectionInjector
 from spectragent.core.capabilities.android.input.text import SetTextBackend
+from spectragent.core.capabilities.android.ui_tree._registrar import (
+    AndroidUITreeCleaner,
+    AndroidUITreeSerializer,
+)
+from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
+from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer
 from tests._helpers.fake_adb import FakeAdbServer, ShellResult
 from tests._helpers.fake_device_side import Answer, Failure, FakeDeviceSide, Method
 
@@ -65,6 +72,59 @@ INPUT_METHOD = "com.google.android.inputmethod.latin/com.android.inputmethod.lat
 #: The APK the fake phone installs; its sidecar describes it (:func:`fake_service_apk`).
 APK_BYTES = b"PK\x03\x04 the device-side APK " + bytes(range(256)) * 64
 _LAUNCHABLE = "-a android.intent.action.MAIN -c android.intent.category.LAUNCHER"
+
+
+def settings_forest(*rows: tuple[str, tuple[int, int, int, int]]) -> JsonObject:
+    """A window forest in the wire form (``device/forest.py``): Settings, its root, and *rows*.
+
+    Each row is a clickable text view, laid out (drawing order 1) and
+    important, given as its text and its ``(left, top, right, bottom)``.
+    """
+    nodes: list[JsonValue] = [
+        {
+            "bounds_in_screen": {"right": 1080, "bottom": 2400},
+            "class_name": "android.widget.FrameLayout",
+            "package_name": "com.android.settings",
+            "window_id": 7,
+            "is_visible_to_user": True,
+            "child_ids": list(range(1, len(rows) + 1)),
+            "is_important": True,
+        }
+    ]
+    for unique_id, (text, (left, top, right, bottom)) in enumerate(rows, start=1):
+        nodes.append(
+            {
+                "unique_id": unique_id,
+                "bounds_in_screen": {"left": left, "top": top, "right": right, "bottom": bottom},
+                "class_name": "android.widget.TextView",
+                "package_name": "com.android.settings",
+                "text": text,
+                "window_id": 7,
+                "is_clickable": True,
+                "is_enabled": True,
+                "is_visible_to_user": True,
+                "depth": 1,
+                "drawing_order": 1,
+                "is_important": True,
+            }
+        )
+    window: JsonObject = {
+        "bounds_in_screen": {"right": 1080, "bottom": 2400},
+        "id": 7,
+        "title": "Settings",
+        "window_type": "TYPE_APPLICATION",
+        "is_active": True,
+        "is_focused": True,
+        "tree": {"nodes": nodes},
+    }
+    return {"windows": [window]}
+
+
+#: The window forest the scripted phone's service answers ``tree`` with:
+#: Settings with two rows of its list.
+FOREST = settings_forest(
+    ("Network & internet", (0, 300, 1080, 450)), ("Connected devices", (0, 450, 1080, 600))
+)
 
 
 def png(width: int, height: int) -> bytes:
@@ -136,6 +196,9 @@ class ScriptedPhone:
             bounds, in order.
         on_tap: Run when a stroke arrives, after it is recorded: a tap that
             moves focus, or opens a screen.
+        forest: The window forest the service reports for ``tree``, in the
+            wire form (:data:`FOREST` unless changed).
+        tree_reads: The node limit each ``tree`` request asked for, in order.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
             KEYCODE_..."``, ``"service set_text '...' replace|at the cursor"``,
@@ -162,6 +225,8 @@ class ScriptedPhone:
     top_window: int = 7
     focus_reads: list[bool] = field(default_factory=list)
     on_tap: Callable[[], None] | None = None
+    forest: JsonObject = field(default_factory=lambda: dict(FOREST))
+    tree_reads: list[JsonValue] = field(default_factory=list)
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
@@ -174,6 +239,7 @@ class ScriptedPhone:
                 "screenshot": self._screenshot("accessibility_service"),
                 "gesture": self._stroke("service"),
                 "focus": self._focus,
+                "tree": self._tree,
                 "set_text": self._text("set_text"),
                 "commit_text": self._text("commit_text"),
             },
@@ -274,6 +340,20 @@ class ScriptedPhone:
         if code == "KEYCODE_HOME":
             self.focused = LAUNCHER
         return Answer()
+
+    async def _tree(self, params: JsonObject) -> Answer:
+        self.tree_reads.append(params.get("max_nodes"))
+        windows = self.forest.get("windows")
+        count = sum(
+            len(nodes)
+            for window in (windows if isinstance(windows, list) else [])
+            if isinstance(window, dict)
+            and isinstance(tree := window.get("tree"), dict)
+            and isinstance(nodes := tree.get("nodes"), list)
+        )
+        return Answer(
+            {"forest": self.forest, "node_count": count, "omitted_offscreen": 0, "capture_ms": 12}
+        )
 
     async def _focus(self, params: JsonObject) -> Answer:
         asked = params.get("field_bounds") is True
@@ -465,12 +545,20 @@ def configured(
     *,
     tap_injector: AndroidTapInjector | None = None,
     typing_backend: AndroidTypingBackend | None = None,
+    ui_tree_cleaner: AndroidUITreeCleaner | None = None,
+    ui_tree_serializer: AndroidUITreeSerializer | None = None,
 ) -> FakeServerProvider:
-    """Give *capability* a provider of *adb*'s phone and both input strategies; returns the provider."""
+    """Give *capability* a provider of *adb*'s phone and the strategies a run names; returns the provider.
+
+    The tap injector is the shell helper's, the typing backend ``set_text``,
+    the UI tree's cleaner ``androidworld`` and its serializer ``m3a``, unless given.
+    """
     provider = FakeServerProvider(adb.host, adb.port)
     capability.backend = provider
     capability.tap_injector = tap_injector or ShellInjectionInjector()
     capability.typing_backend = typing_backend or SetTextBackend()
+    capability.ui_tree_cleaner = ui_tree_cleaner or AndroidWorldCleaner()
+    capability.ui_tree_serializer = ui_tree_serializer or M3ASerializer()
     return provider
 
 

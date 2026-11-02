@@ -28,14 +28,22 @@ the tap injector delivers every touch, the typing backend enters text
 31-33), else the service's, decided once at setup by asking the helper, and
 recorded with every screenshot.
 
+**Three strategies make the UI tree** (``ui_tree/``): the source captures the
+forest (one today, our service, so a block may leave it out), the cleaner
+picks and numbers the elements, the serializer prints them and describes what
+it prints (``fragment_formats``). A run names the cleaner and the serializer.
+
 **One observation cycle is one capture** (``tests/_helpers/capability_contract.py``).
 The first fragment asked for in a cycle starts it, as one job of the device's
 queue: wait until the screen is still (``settle.py``), then ask every
 negotiated source at once, each within its own timeout (the screenshot, the
-foreground app, the current input method), and build every negotiated fragment
-from that one capture. A source that fails fails the whole capture, once: the
-error is kept for the rest of the cycle and raised for every fragment asked
-for. The next cycle captures again. Only the negotiated fragments are captured.
+foreground app, the current input method, the UI tree), and build every
+negotiated fragment from that one capture; the tree is cleaned once every
+source answered, against the screen size the capture's screenshot measured. A
+source that fails fails the whole capture, once: the error is kept for the
+rest of the cycle and raised for every fragment asked for. The next cycle
+captures again. Only the negotiated fragments are captured, so a run whose
+agent reads no tree never asks the service for one.
 
 **An action is one job of the same queue**, so a capture never interleaves
 with it, and it drops the capture it came after: whatever reads next sees the
@@ -91,6 +99,7 @@ from spectragent.core.capabilities.android.device.channel import ChannelError, R
 from spectragent.core.capabilities.android.device.clients import (
     ScreenshotProducer,
     ServiceEvents,
+    TreeCapture,
 )
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
 from spectragent.core.capabilities.android.input import tap, text  # noqa: F401 — registration
@@ -104,10 +113,12 @@ from spectragent.core.capabilities.android.observations import (
     FOREGROUND_APP,
     PLATFORM,
     SCREENSHOT,
+    UI_TREE,
     AndroidCaptureStateObs,
     AndroidForegroundAppObs,
     AndroidPlatformObs,
     AndroidScreenshotObs,
+    AndroidUITreeObs,
 )
 from spectragent.core.capabilities.android.oracle import (  # noqa: F401 — registration
     androidworld,
@@ -125,6 +136,17 @@ from spectragent.core.capabilities.android.session import (
     fan_out,
 )
 from spectragent.core.capabilities.android.settle import EventsEnded, ScreenPoll, wait_until_still
+from spectragent.core.capabilities.android.ui_tree import (  # noqa: F401 — registration
+    cleaning,
+    serializers,
+    source,
+)
+from spectragent.core.capabilities.android.ui_tree._registrar import (
+    AndroidUITreeCleaner,
+    AndroidUITreeSerializer,
+    AndroidUITreeSource,
+    default_ui_tree_source,
+)
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
@@ -163,7 +185,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": {
             "registry": "observation",
-            "keys": [SCREENSHOT, FOREGROUND_APP, PLATFORM, CAPTURE_STATE],
+            "keys": [SCREENSHOT, FOREGROUND_APP, PLATFORM, CAPTURE_STATE, UI_TREE],
             "declare_only": True,
         },
         # The attribute the Composer fills (``self.actions``) from the action
@@ -182,12 +204,26 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             "keys": ["none", "androidworld"],
             "default": "none",
         },
+        # Omitted in YAML: our accessibility service, the only source there is
+        # (``uiautomator dump`` is deferred, §11.2), which ``__init__`` installs.
+        "ui_tree_source": {
+            "registry": "android_ui_tree_source",
+            "keys": ["accessibility_service"],
+            "default": "accessibility_service",
+        },
+        # Required: which nodes become elements and how they are printed is
+        # what the agent sees, so a run names both (§4.2.1).
+        "ui_tree_cleaner": ("android_ui_tree_cleaner", ["androidworld"]),
+        "ui_tree_serializer": ("android_ui_tree_serializer", ["m3a", "t3a"]),
     }
 
     backend: BaseAndroidProvider  # type: ignore[misc]
     tap_injector: AndroidTapInjector  # type: ignore[misc]
     typing_backend: AndroidTypingBackend  # type: ignore[misc]
     task_oracle: AndroidTaskOracle  # type: ignore[misc]
+    ui_tree_source: AndroidUITreeSource  # type: ignore[misc]
+    ui_tree_cleaner: AndroidUITreeCleaner  # type: ignore[misc]
+    ui_tree_serializer: AndroidUITreeSerializer  # type: ignore[misc]
 
     service_apk: str
     settle_quiet_ms: int
@@ -279,8 +315,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 gt=0.0,
                 description=(
                     "Seconds each device query may take: those of a capture (the foreground "
-                    "app, the input method, one poll of the wait for a still screen), and the "
-                    "ping that confirms a device call a job gave up on has finished."
+                    "app, the input method, the UI tree, one poll of the wait for a still "
+                    "screen), and the ping that confirms a device call a job gave up on has "
+                    "finished."
                 ),
             ),
         ] = 5.0,
@@ -359,6 +396,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._capture = None
         self.actions = actions
         self.task_oracle = default_task_oracle()
+        self.ui_tree_source = default_ui_tree_source()
 
     # ── actions ───────────────────────────────────────────────────────
 
@@ -402,6 +440,21 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         if self._screen_size is None:
             raise RuntimeError("the Android device is not set up")
         return self._screen_size
+
+    # ── how the fragments read as text (FragmentFormats, §4.4) ────────
+
+    def fragment_formats(self) -> Mapping[str, str]:
+        """``android.ui_tree``'s format, in its configured serializer's own words.
+
+        The text is the serializer's, so is its description; nothing here
+        restates it. Reads configuration only. A capability built by hand
+        without a serializer describes nothing (and its setup refuses it).
+        """
+        try:
+            serializer = self.ui_tree_serializer
+        except AttributeError:
+            return {}
+        return {UI_TREE: serializer.describe_format()}
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -462,7 +515,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         await super().setup(negotiation=negotiation)
         oracle = self.task_oracle
         backend = self._backend()
-        tap_injector, typing_backend = self._strategies()
+        tap_injector, typing_backend, *_ = self._strategies()
         self.check_setup({"oracle_task": oracle_task})
         self._apk = apk = ServiceApk.load(self.service_apk)
         session = await backend.open(oracle.device_needs)
@@ -556,14 +609,25 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 "(provider_id: local_emulator)"
             ) from None
 
-    def _strategies(self) -> tuple[AndroidTapInjector, AndroidTypingBackend]:
-        """The configured tap injector and typing backend; a run names both."""
+    def _strategies(
+        self,
+    ) -> tuple[
+        AndroidTapInjector, AndroidTypingBackend, AndroidUITreeCleaner, AndroidUITreeSerializer
+    ]:
+        """The strategies a run names: the tap injector, the typing backend, the tree's cleaner and serializer."""
         try:
-            return self.tap_injector, self.typing_backend
+            return (
+                self.tap_injector,
+                self.typing_backend,
+                self.ui_tree_cleaner,
+                self.ui_tree_serializer,
+            )
         except AttributeError:
             raise RuntimeError(
                 "AndroidCapability needs a tap_injector (injector_id: accessibility_gesture or "
-                "shell_injection) and a typing_backend (typing_id: set_text or commit_text)"
+                "shell_injection), a typing_backend (typing_id: set_text or commit_text), a "
+                "ui_tree_cleaner (cleaner_id: androidworld) and a ui_tree_serializer "
+                "(serializer_id: m3a or t3a)"
             ) from None
 
     @property
@@ -671,14 +735,22 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 quiet_s=self.settle_quiet_ms / 1000,
                 max_wait_s=self.settle_max_wait_s,
             )
-        sources: dict[str, Source[FragmentBase]] = {}
+        sources: dict[str, Source[FragmentBase | TreeCapture]] = {}
         if SCREENSHOT in wanted:
             sources[SCREENSHOT] = Source(self._screenshot, self.screenshot_timeout_s)
         if FOREGROUND_APP in wanted:
             sources[FOREGROUND_APP] = Source(self._foreground_app, self.query_timeout_s)
         if PLATFORM in wanted:
             sources[PLATFORM] = Source(self._platform, self.query_timeout_s)
-        fragments = await fan_out(sources)
+        if UI_TREE in wanted:
+            sources[UI_TREE] = Source(self._read_tree, self.query_timeout_s)
+        fragments: dict[str, FragmentBase] = {}
+        for key, answer in (await fan_out(sources)).items():
+            # Cleaned once every source answered: against the screen this
+            # capture's screenshot measured, when it took one.
+            fragments[key] = (
+                self._ui_tree_fragment(answer) if isinstance(answer, TreeCapture) else answer
+            )
         if CAPTURE_STATE in wanted:
             fragments[CAPTURE_STATE] = AndroidCaptureStateObs(settle=settle)
         return fragments
@@ -748,6 +820,25 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             capture_ms=shot.capture_ms,
             encode_ms=shot.encode_ms,
             waited_ms=shot.waited_ms,
+        )
+
+    async def _read_tree(self) -> TreeCapture:
+        side = self._side
+        if side is None:
+            raise RuntimeError("the Android device is not set up")
+        return await self.ui_tree_source.capture(side)
+
+    def _ui_tree_fragment(self, capture: TreeCapture) -> AndroidUITreeObs:
+        """Clean and print *capture*."""
+        tree = self.ui_tree_cleaner.clean(capture.forest, self.screen_size)
+        return AndroidUITreeObs(
+            producer=self.ui_tree_source.source_id,
+            forest=tree.forest,
+            elements=tree.elements,
+            serialized=self.ui_tree_serializer.serialize(tree),
+            node_count=capture.node_count,
+            omitted_offscreen=capture.omitted_offscreen,
+            capture_ms=capture.capture_ms,
         )
 
     async def _foreground_app(self) -> FragmentBase:

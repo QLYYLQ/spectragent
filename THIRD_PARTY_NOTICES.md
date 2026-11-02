@@ -251,3 +251,37 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## AndroidWorld — UI element extraction and the M3A and T3A element lists
+
+- **Upstream:** AndroidWorld, https://github.com/google-research/android_world
+- **Revision:** `55ddaf5edc6f6c25673aed343907d5b9dca66f84` (2026-10-23), files
+  `android_world/env/representation_utils.py` (`forest_to_ui_elements`,
+  `accessibility_node_to_ui_element`, the `UIElement` and `BoundingBox` dataclasses),
+  `android_world/agents/m3a_utils.py` (`validate_ui_element`),
+  `android_world/agents/m3a.py` (`_generate_ui_element_description`,
+  `_generate_ui_elements_description_list`) and `android_world/agents/t3a.py`
+  (`_generate_ui_elements_description_list_full`)
+- **License:** Apache License 2.0 (the license header quoted under `cdxj-indexer` above;
+  the files carry "Copyright 2026 The android_world Authors"; the repository has no
+  `NOTICE` file).
+- **Ported into:** `spectragent/core/capabilities/android/ui_tree/cleaning.py` (the
+  `androidworld` cleaner) and `spectragent/core/capabilities/android/ui_tree/serializers.py`
+  (the `m3a` and `t3a` serializers, and the `UIElement` and `BoundingBox` dataclasses whose
+  `repr` T3A prints), rewritten in Spectragent's types over the
+  `AndroidAccessibilityForest` our accessibility service captures.
+- **Kept:** an element is a visible node that is a leaf, has a content description or
+  scrolls, windows in the forest's order and nodes in the order the forwarder walks them;
+  invisible nodes are skipped as extracted, and elements with empty or wholly off-screen
+  bounds as printed, their numbers counted; the node-to-element conversion (empty strings
+  as `None`, `bbox_pixels` from the bounds, `bbox`, `tooltip`, `resource_id` and
+  `metadata` left `None`); M3A's line, key by key, and T3A's `UI element <i>: <repr>`.
+- **Modified by Spectragent:** AndroidWorld cleans the tree its accessibility forwarder
+  reads, without `FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`; ours reads the full tree, so the
+  cleaner first rebuilds the forwarder's tree from it (views not important for
+  accessibility left out and their children moved up; nodes a provider built kept,
+  told by their drawing order 0) and numbers in that tree's breadth-first order. The
+  numbering and the screen test are one step, the cleaner's, instead of an extraction
+  and a print-time filter; the elements keep the nodes they stand for, and their bounds,
+  for the capability's `click` and `scroll`. Our service fills `is_focused`, which the
+  forwarder leaves false.
