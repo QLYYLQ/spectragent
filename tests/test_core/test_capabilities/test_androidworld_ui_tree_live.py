@@ -150,7 +150,7 @@ async def test_our_service_and_androidworlds_forwarder_are_both_bound(prepared: 
 async def test_the_stopwatch_task_scores_0_unsolved_and_1_once_started_by_index(
     prepared: Prepared,
 ) -> None:
-    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=90)
+    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=90, answer=None)
     opened = await prepared.capability.execute_action(
         Action(name="android.open_app", params={"app_name": "Clock"})
     )
@@ -158,7 +158,7 @@ async def test_the_stopwatch_task_scores_0_unsolved_and_1_once_started_by_index(
     await _click(prepared, "Stopwatch")
     await _click(prepared, "Start")
     running = await _tree(prepared)
-    (solved,) = await prepared.env.read_oracle_scores(timeout_s=90)
+    (solved,) = await prepared.env.read_oracle_scores(timeout_s=90, answer=None)
 
     labels = {
         label
