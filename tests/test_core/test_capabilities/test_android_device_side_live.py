@@ -20,7 +20,9 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
 - text committed through the service's input method at the cursor, Chinese
   included, and over the field's whole text (API 33); text set on the focused
   field, over its text and at its cursor;
-- the node with input focus, reported with its bounds;
+- the node with input focus, reported with its bounds, and when asked with
+  the bounds of the field as drawn: on the search screen, whose only text
+  field it is, more than the field's own;
 - events, in order and numbered without gaps;
 - the service refuses a wrong token, closes a connection from an app's uid
   before reading it, closes a hello over 64 KB without an answer, and closes
@@ -596,6 +598,8 @@ async def test_text_set_at_the_cursor_goes_after_what_the_field_holds(up: Up) ->
 
 async def test_the_node_with_input_focus_comes_with_its_bounds(up: Up) -> None:
     await _focused_search_field(up)
+    # The search screen opens with an animation that still moves the field (7 px, 2026-11-02).
+    await _still(up)
     field = await _node(
         up,
         "the search field with input focus",
@@ -607,6 +611,13 @@ async def test_the_node_with_input_focus_comes_with_its_bounds(up: Up) -> None:
     assert focused is not None and focused.is_editable
     assert focused.package_name == field.package_name
     assert focused.bounds_in_screen == field.bounds_in_screen
+    assert focused.field_bounds_in_screen is None, "not asked for"
+    drawn = await up.side.service.focus(field_bounds=True)
+    assert drawn is not None and drawn.field_bounds_in_screen is not None
+    own, whole = drawn.bounds_in_screen, drawn.field_bounds_in_screen
+    assert whole.left <= own.left and whole.top <= own.top, "it holds the field"
+    assert whole.right >= own.right and whole.bottom >= own.bottom, "it holds the field"
+    assert whole.bottom - whole.top > own.bottom - own.top, "the only text field on its screen"
     await _home(up)
     home = await up.side.service.focus()
     assert home is None or not home.is_editable, "the home screen has no text field with focus"

@@ -315,14 +315,17 @@ class AndroidTypeCoordinateAction(ActionBase):
     (:meth:`~spectragent.core.capabilities.android.bridge.InputInjection.focused_field`).
     Focus that moved to a text field is typed into, wherever that field is: a
     tap on Settings' search bar opens a screen whose field, away from the
-    point, takes focus. Focus that stayed on the field that had it, a field the
-    point was not in when tapped, is refused: the tap landed beside it, on a
-    label, and nothing is cleared or typed. Where the field was is read before
-    the tap, since a keyboard that opens moves it. Focus may leave the old
-    field a moment after the tap, so the wait covers that too; a service that
-    names no field with focus by then cannot tell which field it is, and the
-    text is entered as asked. A refusal still reports the tap
-    (``AndroidTextEffect``).
+    point, takes focus. Focus that stayed on the field that had it, with the
+    point outside that field when tapped, is refused: the tap landed on the
+    caption of another field, and nothing is cleared or typed. The field is
+    the one the person sees (user ruling 2026-11-02): the focused node's
+    largest ancestor whose subtree holds no other editable node, such as the
+    layout an EditText shares with its label or hint, which the service
+    reports with the focused node before the tap (a keyboard that opens moves
+    it afterwards). Focus may leave the old field a moment after the tap, so
+    the wait covers that too; a service that names no field with focus by
+    then cannot tell which field it is, and the text is entered as asked. A
+    refusal still reports the tap (``AndroidTextEffect``).
     """
 
     __registry_key__ = "android.type_coordinate"
@@ -338,13 +341,13 @@ class AndroidTypeCoordinateAction(ActionBase):
             description=(
                 "How long typing waits, in ms, while no text field has focus yet (after its tap, "
                 "or at once without a point) and, with a point, while focus stays on the field "
-                "that had it before the tap, a field the point was not in, or the service does "
-                "not name the field with focus yet. Read again every 0.1 s. When the wait runs "
-                "out, typing fails without entering text, except where the service still names "
-                "no field: it cannot tell then, and enters the text as asked. A tap that opens a "
-                "screen takes a while: on the API 33 "
-                "emulator, Settings' search field had focus 1.8-2.8 s after a tap on its bar on a "
-                "still page, and up to 4.6 s after a tap right after Settings started."
+                "that had it before the tap, with the point outside that field as drawn, or the "
+                "service does not name the field with focus yet. Read again every 0.1 s. When "
+                "the wait runs out, typing fails without entering text, except where the service "
+                "still names no field: it cannot tell then, and enters the text as asked. A tap "
+                "that opens a screen takes a while: on the API 33 emulator, Settings' search "
+                "field had focus 1.8-2.8 s after a tap on its bar on a still page, and up to "
+                "4.6 s after a tap right after Settings started."
             ),
         ),
     ] = 5000
@@ -389,7 +392,7 @@ class AndroidTypeCoordinateAction(ActionBase):
         tapped: Touch | None = None
         if given.coordinate_x is not None and given.coordinate_y is not None:
             point = (given.coordinate_x, given.coordinate_y)
-            before = await device.focused_field()
+            before = await device.focused_field(field_bounds=True)
             tapped = await touch(capability, "tap", point, point, TAP_MS)
             no_field = "No text field took focus at the tapped point"
         where = await self._no_field_at(capability, point, before)
@@ -443,15 +446,18 @@ class AndroidTypeCoordinateAction(ActionBase):
         """Where focus is when no text should go in now, and whether the service could not tell.
 
         Focus on a text field is refused only when it stayed on the field
-        *before* named, a field the point was not in when tapped.
+        *before* named, with the point outside that field as drawn when tapped.
         """
         focus = await capability.bridge.apps.text_focus()
         if focus.text_field is False:
             if focus.window is None:
                 return "nothing has focus", False
             return f"focus is in {focus.window}, not on a text field", False
-        if point is None or before is None or not before.is_editable or before.contains(*point):
-            return None, False  # a text field has focus; none had it away from the point before
+        if point is None or before is None or before.field_holds(*point) is not False:
+            # A text field has focus, and no field had it before the tap with
+            # the point measured outside it: none, one the point was in, or
+            # one whose bounds the service could not give.
+            return None, False
         node = await capability.bridge.input.focused_field()
         if node is None:
             return None, True

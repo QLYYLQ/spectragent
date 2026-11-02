@@ -23,11 +23,12 @@ runs. The one boot covers, in file order:
 - ``open_app`` with the foreground app checked, and the back and home keys;
 - ``type_coordinate`` without a point: refused on Settings' main page, where
   no text field has focus, and typed into the search field a tap opens;
-- ``type_coordinate`` at a point (user ruling 2026-11-02): refused after a tap
-  on nothing editable; typed into the search field its tap on the search bar
-  opens, which takes focus away from the point 2-3 s after the tap
-  (measured); refused after a tap on the status bar, where the search field
-  keeps focus away from the point, the field's text untouched;
+- ``type_coordinate`` at a point (user rulings of 2026-11-02): refused after a
+  tap on nothing editable; typed into the search field its tap on the search
+  bar opens, which takes focus away from the point 2-3 s after the tap
+  (measured); typed into the Add network dialog's "Network name" field after
+  a tap on that field's own label, which leaves focus in it: the label is
+  inside the field as drawn;
 - a scroll down that shows what is further down, measured on the screenshots,
   its effect naming the injector that delivered it;
 - a capture waits for a still screen: after a cold start of Settings it waits
@@ -103,8 +104,6 @@ SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.sett
 SEARCH_BAR = (540, 660)
 #: A point of Settings' main page on no control: the toolbar above its title.
 NOTHING_THERE = (540, 300)
-#: A point on the status bar, between the clock and the icons: a tap there takes no focus.
-STATUS_BAR = (540, 40)
 #: Where the search screen lists the results of a query, between its field and the keyboard.
 RESULTS = (0, 300, 1080, 1400)
 USER_KEYS = (Path.home() / ".android" / "adbkey", Path.home() / ".android" / "adbkey.pub")
@@ -388,12 +387,11 @@ async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowh
     assert _results_appeared(before, after)
 
 
-async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_it_stays_away(
+async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_none_has_it(
     booted: Booted,
 ) -> None:
     """The tap on the search bar opens a screen whose field takes focus 2-3 s later, away from
-    the point, and that types (user ruling 2026-11-02); a tap on nothing focusable is refused,
-    before and after."""
+    the point, and that types (user ruling 2026-11-02); a tap on nothing focusable is refused."""
     await _skip_unless_measured_layout(booted)
     await _settings_from_scratch(booted)
 
@@ -430,16 +428,56 @@ async def test_typing_at_a_point_types_where_focus_moves_and_refuses_where_it_st
     assert (await _foreground(booted)).package in SETTINGS_SEARCH
     assert _results_appeared(empty, await _screenshot(booted))
 
-    # A tap on the status bar takes no focus: the search field keeps it, away from the point.
-    stayed = await _act(
-        booted, "type_coordinate", coordinate_x=STATUS_BAR[0], coordinate_y=STATUS_BAR[1], text="x"
+
+async def test_typing_at_a_point_on_a_fields_own_label_types_into_that_field(
+    booted: Booted,
+) -> None:
+    """The Add network dialog focuses its "Network name" field, with the label above it. A tap
+    on the label leaves focus in the field, away from the field's own bounds but inside the
+    field as drawn (user ruling 2026-11-02: here the whole dialog, whose only text field it
+    is), so the text goes in."""
+    await _skip_unless_measured_layout(booted)
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, "am force-stop com.android.settings")
+    await client.shell(booted.session.serial, "am start -W -a android.settings.WIFI_SETTINGS")
+    add = await _text_at(booted, "Add network")
+    assert (
+        await _act(booted, "click_coordinate", coordinate_x=add[0], coordinate_y=add[1])
+    ).success
+    side = booted.capability._side
+    assert side is not None
+    async with asyncio.timeout(10):
+        while (focused := await side.service.focus(field_bounds=True)) is None:
+            await asyncio.sleep(0.1)
+    label = await _text_at(booted, "Network name")
+    assert focused.is_editable and focused.view_id_resource_name == "com.android.settings:id/ssid"
+    assert not (focused.bounds_in_screen.top <= label[1] <= focused.bounds_in_screen.bottom)
+    assert focused.field_holds(*label), "the label is inside the field as drawn"
+
+    typed = await _act(
+        booted, "type_coordinate", coordinate_x=label[0], coordinate_y=label[1], text="CafeNet"
     )
-    assert not stayed.success
-    assert stayed.error is not None and "focus stayed on EditText" in stayed.error
-    assert await _search_field_text(booted) == "bluetooth", "nothing was cleared or typed"
+
+    assert typed.success, typed.error
+    assert await _field_text(booted) == "CafeNet"
 
 
-async def _search_field_text(booted: Booted) -> str | None:
+async def _text_at(booted: Booted, text: str) -> tuple[int, int]:
+    """The centre of the visible node whose text is *text*, once the service's tree has it."""
+    side = booted.capability._side
+    assert side is not None
+    async with asyncio.timeout(10):
+        while True:
+            capture = await side.service.tree()
+            for window in capture.forest.windows:
+                for node in window.tree.nodes:
+                    if node.text == text and node.is_visible_to_user:
+                        box = node.bounds_in_screen
+                        return (box.left + box.right) // 2, (box.top + box.bottom) // 2
+            await asyncio.sleep(0.2)
+
+
+async def _field_text(booted: Booted) -> str | None:
     """The text of the editable field on screen, as the service's tree has it."""
     side = booted.capability._side
     assert side is not None

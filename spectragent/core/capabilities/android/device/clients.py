@@ -102,6 +102,12 @@ class FocusedNode(_Result):
 
     Attributes:
         bounds_in_screen: Where it is, in screen pixels.
+        field_bounds_in_screen: Where the field it belongs to is, as the
+            person sees it: its largest ancestor whose subtree holds no other
+            editable node (the layout an EditText shares with its label, a
+            search view with its icons; user ruling 2026-11-02). Given only
+            when asked for, for an editable node, and ``None`` when the service
+            gave up walking a tree too large.
         is_editable: Whether it takes text.
         window_id: The window it is in.
         node_hash: The platform's hash of the node (``AccessibilityNodeInfo.hashCode()``),
@@ -115,14 +121,17 @@ class FocusedNode(_Result):
     bounds_in_screen: ProtoRect
     is_editable: bool
     window_id: int
+    field_bounds_in_screen: ProtoRect | None = None
     node_hash: int
     package_name: str | None = None
     class_name: str | None = None
     view_id_resource_name: str | None = None
 
-    def contains(self, x: float, y: float) -> bool:
-        """Whether the point (*x*, *y*) is inside its bounds, edges included."""
-        box = self.bounds_in_screen
+    def field_holds(self, x: float, y: float) -> bool | None:
+        """Whether the point (*x*, *y*) is inside the field's bounds, edges included; ``None``: not known."""
+        box = self.field_bounds_in_screen
+        if box is None:
+            return None
         return box.left <= x <= box.right and box.top <= y <= box.bottom
 
     def same_node(self, other: FocusedNode) -> bool:
@@ -292,9 +301,15 @@ class ServiceClient:
     async def global_action(self, action: GlobalAction) -> None:
         await self.channel.call("global_action", {"action": action})
 
-    async def focus(self) -> FocusedNode | None:
-        """The node with input focus, as the system resolves it; ``None`` when no view has it."""
-        return _Focus.model_validate((await self.channel.call("focus")).result).focused
+    async def focus(self, *, field_bounds: bool = False) -> FocusedNode | None:
+        """The node with input focus, as the system resolves it; ``None`` when no view has it.
+
+        With *field_bounds*, an editable node comes with the bounds of the
+        field it belongs to (``FocusedNode.field_bounds_in_screen``), which
+        the service finds by walking the tree around it.
+        """
+        params: JsonObject = {"field_bounds": field_bounds}
+        return _Focus.model_validate((await self.channel.call("focus", params)).result).focused
 
     async def set_text(self, text: str, *, replace: bool = True) -> TextTarget:
         """Set *text* on the editable field that has input focus (``ACTION_SET_TEXT``).

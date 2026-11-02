@@ -123,6 +123,13 @@ class ScriptedPhone:
             bottom)``; ``None``: the service names no focused node.
         field_node: That node's hash, as the service reports it: another
             number is another field.
+        drawn_bounds: Where the field that node belongs to is, as drawn, when
+            the service is asked (``field_bounds``): ``None``, the node's own
+            bounds, a field with nothing around it.
+        drawn_bounds_given: Whether the service gives those bounds when asked;
+            ``False``: it gave up walking the tree.
+        focus_reads: Whether each read of the focus asked for the field's
+            bounds, in order.
         on_tap: Run when a stroke arrives, after it is recorded: a tap that
             moves focus, or opens a screen.
         inputs: Every input the device side received, in order, setup's test
@@ -145,6 +152,9 @@ class ScriptedPhone:
     window_over: str | None = None
     field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
     field_node: int = 1
+    drawn_bounds: tuple[int, int, int, int] | None = None
+    drawn_bounds_given: bool = True
+    focus_reads: list[bool] = field(default_factory=list)
     on_tap: Callable[[], None] | None = None
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
@@ -260,11 +270,18 @@ class ScriptedPhone:
         return Answer()
 
     async def _focus(self, params: JsonObject) -> Answer:
+        asked = params.get("field_bounds") is True
+        self.focus_reads.append(asked)
         if not self.text_field or self.field_bounds is None:
             return Answer({"focused": None})
         left, top, right, bottom = self.field_bounds
+        drawn: JsonValue = None
+        if asked and self.drawn_bounds_given:
+            d_left, d_top, d_right, d_bottom = self.drawn_bounds or self.field_bounds
+            drawn = {"left": d_left, "top": d_top, "right": d_right, "bottom": d_bottom}
         node: dict[str, JsonValue] = {
             "bounds_in_screen": {"left": left, "top": top, "right": right, "bottom": bottom},
+            "field_bounds_in_screen": drawn,
             "is_editable": True,
             "window_id": 7,
             "node_hash": self.field_node,

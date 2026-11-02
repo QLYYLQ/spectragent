@@ -15,6 +15,8 @@ import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -112,7 +114,7 @@ public final class DeviceService extends AccessibilityService {
             case "global_action":
                 return globalAction(params);
             case "focus":
-                return focus();
+                return focus(params);
             case "set_text":
                 return setText(params);
             case "commit_text":
@@ -307,8 +309,15 @@ public final class DeviceService extends AccessibilityService {
      * input focus. {@code {"focused": null}} when no view has it. Its window id and the node's hash
      * ({@code AccessibilityNodeInfo.hashCode()}, computed from the view's accessibility id and its
      * window, so the same while that view lives) tell whether two answers name the same field.
+     *
+     * <p>With {@code "field_bounds": true}, an editable node also comes with the bounds of the field
+     * as the person sees it ({@code field_bounds_in_screen}): its largest ancestor whose subtree
+     * holds no other editable node, such as the layout an EditText shares with its label or hint,
+     * or a search view with its icons. Null when the walk looked at {@link #MAX_FIELD_NODES} nodes
+     * without finishing. Asked for only before a tap: the walk looks at every node it passes.
      */
-    private Reply focus() {
+    private Reply focus(JSONObject params) {
+        boolean withField = params.optBoolean("field_bounds", false);
         AccessibilityNodeInfo node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         if (node == null) {
             return Reply.of(Json.obj("focused", null));
@@ -316,9 +325,10 @@ public final class DeviceService extends AccessibilityService {
         try {
             Rect bounds = new Rect();
             node.getBoundsInScreen(bounds);
+            Rect field = withField && node.isEditable() ? fieldBounds(node) : null;
             return Reply.of(Json.obj("focused", Json.obj(
-                    "bounds_in_screen", Json.obj(
-                            "left", bounds.left, "top", bounds.top, "right", bounds.right, "bottom", bounds.bottom),
+                    "bounds_in_screen", rect(bounds),
+                    "field_bounds_in_screen", field == null ? null : rect(field),
                     "is_editable", node.isEditable(),
                     "window_id", node.getWindowId(),
                     "node_hash", node.hashCode(),
@@ -426,6 +436,84 @@ public final class DeviceService extends AccessibilityService {
                 "removed_count", event.getRemovedCount(),
                 "scroll_delta_x", event.getScrollDeltaX(),
                 "scroll_delta_y", event.getScrollDeltaY());
+    }
+
+    /** How many nodes {@link #fieldBounds} looks at, at most, before it gives no answer. */
+    private static final int MAX_FIELD_NODES = 2000;
+
+    /**
+     * The bounds of the largest ancestor of {@code focused} whose subtree holds no editable node
+     * other than {@code focused}: the field as drawn. Each step up looks only into the subtrees of
+     * the new ancestor's other children. Null when that took more than {@link #MAX_FIELD_NODES}
+     * nodes. Every node it obtains is recycled before API 33.
+     */
+    private static Rect fieldBounds(AccessibilityNodeInfo focused) {
+        Rect bounds = new Rect();
+        focused.getBoundsInScreen(bounds);
+        List<AccessibilityNodeInfo> obtained = new ArrayList<>();
+        try {
+            int[] looked = {0};
+            AccessibilityNodeInfo from = focused;
+            for (AccessibilityNodeInfo parent = focused.getParent(); parent != null; parent = parent.getParent()) {
+                obtained.add(parent);
+                Boolean other = holdsAnotherEditable(parent, from, obtained, looked);
+                if (other == null) {
+                    return null;
+                }
+                if (other) {
+                    break;
+                }
+                parent.getBoundsInScreen(bounds);
+                from = parent;
+            }
+            return bounds;
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                for (AccessibilityNodeInfo node : obtained) {
+                    node.recycle(); // pooled before API 33
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a subtree of {@code ancestor}'s children other than {@code from} holds an editable
+     * node; null once {@code looked[0]} passes {@link #MAX_FIELD_NODES}.
+     */
+    private static Boolean holdsAnotherEditable(
+            AccessibilityNodeInfo ancestor, AccessibilityNodeInfo from, List<AccessibilityNodeInfo> obtained,
+            int[] looked) {
+        ArrayDeque<AccessibilityNodeInfo> pending = new ArrayDeque<>();
+        for (int i = 0; i < ancestor.getChildCount(); i++) {
+            AccessibilityNodeInfo child = ancestor.getChild(i);
+            if (child != null) {
+                obtained.add(child);
+                if (!child.equals(from)) {
+                    pending.add(child);
+                }
+            }
+        }
+        while (!pending.isEmpty()) {
+            if (++looked[0] > MAX_FIELD_NODES) {
+                return null;
+            }
+            AccessibilityNodeInfo node = pending.poll();
+            if (node.isEditable()) {
+                return true;
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    obtained.add(child);
+                    pending.add(child);
+                }
+            }
+        }
+        return false;
+    }
+
+    private static JSONObject rect(Rect rect) {
+        return Json.obj("left", rect.left, "top", rect.top, "right", rect.right, "bottom", rect.bottom);
     }
 
     private static String string(CharSequence value) {

@@ -298,10 +298,11 @@ async def test_the_commit_text_backend_types_through_the_services_input_method()
 async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_refused(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
-    """The tap landed beside the field, on a label, and the field that had focus keeps it
-    (user ruling 2026-11-02): nothing is cleared or typed, and the tap is reported."""
+    """The tap landed on the caption of another field, and the field that had focus keeps it
+    (user rulings of 2026-11-02): nothing is cleared or typed, and the tap is reported."""
     capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=300)]
-    phone.text_field = True  # a field has focus, at (0, 100)-(1080, 250)
+    # A field has focus at (0, 100)-(1080, 250); drawn with its own label, it reaches up to 50.
+    phone.text_field, phone.drawn_bounds = True, (0, 50, 1080, 250)
 
     started = time.monotonic()
     result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
@@ -318,6 +319,37 @@ async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_re
     assert isinstance(effect, AndroidTextEffect) and not effect.text_entered
     assert effect.tap is not None and effect.tap.start == ScreenPoint(x=540, y=900)
     assert effect.describe() == "Tapped (540, 900). No text was entered."
+    assert phone.focus_reads[0] and not any(phone.focus_reads[1:]), (
+        "the field's bounds are asked for once, before the tap"
+    )
+
+
+async def test_typing_at_a_point_on_the_label_of_the_focused_field_types(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The label above the field keeps focus in it: it is inside the field as drawn, the
+    layout the field shares with its label (user ruling 2026-11-02)."""
+    phone.text_field = True
+    phone.field_bounds, phone.drawn_bounds = (0, 300, 1080, 400), (0, 200, 1080, 400)
+
+    started = time.monotonic()
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=250, text="hi")
+
+    assert result.success, result.error
+    assert phone.inputs[-1] == "service set_text 'hi' replace"
+    assert time.monotonic() - started < 1.0, "no wait for focus to leave"
+
+
+async def test_typing_at_a_point_types_as_asked_when_the_service_cannot_give_the_field(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The service gave up walking a tree too large: where the field is cannot be told."""
+    phone.text_field, phone.drawn_bounds_given = True, False
+
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
+
+    assert result.success, result.error
+    assert phone.inputs[-1] == "service set_text 'hi' replace"
 
 
 async def test_typing_at_a_point_types_into_a_field_that_took_focus_wherever_it_is(

@@ -288,9 +288,11 @@ async def test_service_screenshots_tree_text_and_global_actions_come_back_typed(
 
 
 async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none() -> None:
+    asked: list[JsonObject] = []
     nodes: list[JsonObject | None] = [
         {
             "bounds_in_screen": {"left": 30, "top": 120, "right": 1050, "bottom": 246},
+            "field_bounds_in_screen": {"left": 0, "top": 63, "right": 1080, "bottom": 300},
             "is_editable": True,
             "window_id": 13,
             "node_hash": 1240117,
@@ -302,16 +304,19 @@ async def test_the_node_with_input_focus_comes_back_with_its_bounds_or_as_none()
     ]
 
     async def focus(params: JsonObject) -> Answer:
+        asked.append(params)
         return Answer({"focused": nodes.pop(0)})
 
     async with _client("service", {"focus": focus}) as (_, channel):
         service = ServiceClient(channel)
-        field, nothing = await service.focus(), await service.focus()
+        field, nothing = await service.focus(field_bounds=True), await service.focus()
 
+    assert asked == [{"field_bounds": True}, {"field_bounds": False}]
     assert field is not None and nothing is None
     assert field.is_editable and field.class_name == "android.widget.EditText"
-    assert field.contains(540, 183) and field.contains(30, 246)
-    assert not field.contains(540, 660), "below it"
+    assert field.field_holds(540, 70) and field.field_holds(1080, 300), "the field as drawn"
+    assert field.field_holds(540, 660) is False, "below it"
+    assert field.model_copy(update={"field_bounds_in_screen": None}).field_holds(540, 183) is None
     moved = field.model_copy(update={"bounds_in_screen": ProtoRect(top=900, bottom=1026)})
     assert field.same_node(moved), "a keyboard moved it: the same field"
     assert not field.same_node(field.model_copy(update={"node_hash": 7})), "another view"
