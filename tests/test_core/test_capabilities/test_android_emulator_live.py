@@ -648,8 +648,11 @@ async def test_click_by_index_opens_the_row_it_names(booted: Booted) -> None:
     assert tapped.success, tapped.error
     assert isinstance(tapped.effect, AndroidTouchEffect)
     assert tapped.effect.touch.delivered_by == "accessibility_gesture"
-    opened = await _tree(booted)
-    assert {"Internet", "Airplane mode"} <= set(_texts(opened)), opened.serialized
+    # The page's window joins the accessibility window list 1-2 s after the
+    # window manager shows it, longer under load than the 2 s settle cap.
+    async with asyncio.timeout(10):
+        while not {"Internet", "Airplane mode"} <= set(_texts(opened := await _tree(booted))):
+            print(f"not yet:\n{opened.serialized}")
 
 
 async def test_scroll_by_index_moves_the_list_it_names(booted: Booted) -> None:
