@@ -1,7 +1,7 @@
 {
-  "action": "7500deb7c7f3950d",
+  "action": "69a24968cfe97e0b",
   "action_translator": "9676d3c4b1ebe5c2",
-  "agent": "8943d0d21b3e516f",
+  "agent": "755e36a21210b5f9",
   "agent_loop": "49ac35a8ba9714cc",
   "android_provider": "483484b35bb547cb",
   "android_tap_injector": "2567a5d070f09504",
@@ -12,7 +12,7 @@
   "android_ui_tree_source": "539005659ac1aa9b",
   "archiver": "a7d95691c1b812e5",
   "browser_provider": "59618076010d6a34",
-  "capability": "e4004e2b5395c7c0",
+  "capability": "3bba7bc2c9015d06",
   "decision_model": "78ea078bf0b0bc82",
   "dom_cleaner": "3b3dceaa4c39cedd",
   "dom_serializer": "020375d3b20de5f8",

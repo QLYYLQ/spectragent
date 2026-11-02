@@ -20,6 +20,7 @@ from spectragent.core.negotiation._registrar import (
     NegotiationResultRegistrar,
 )
 from spectragent.core.negotiation.action import (
+    ActionFragmentError,
     ActionNegotiationResult,
     AmbiguousActionError,
     IncompatibleActionError,
@@ -50,6 +51,7 @@ from spectragent.core.negotiation.platform import IncompatiblePlatformError, che
 
 __all__ = [
     "FRAGMENT_FORMATS_PARAMETER",
+    "ActionFragmentError",
     "ActionNegotiationResult",
     "AmbiguousActionError",
     "AmbiguousFragmentError",

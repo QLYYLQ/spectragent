@@ -21,6 +21,10 @@ from spectragent.core.capabilities.android.device.forest import (
 )
 
 
+class ElementIndexError(LookupError):
+    """An element index that names no element of the tree the agent last saw; the message says why."""
+
+
 class UITreeElement(BaseModel):
     """One element a cleaner numbered: its index, and the node it stands for, by window and node id."""
 

@@ -3,9 +3,9 @@
 A relative name is a param contract (``docs/architecture_design.md`` §4.9,
 "相对名就是参数契约"): negotiation binds names, never params, so an action that
 means what a browser action means takes its relative name and exactly its
-params. Five do: ``click_coordinate``, ``drag``, ``type_coordinate``, ``scroll``
-and ``wait``; typing into the focused field is ``type_coordinate`` without a
-point (user ruling 2026-11-01). Three are Android's own (§11.2, "动作"):
+params. Six do: ``click``, ``click_coordinate``, ``drag``, ``type_coordinate``,
+``scroll`` and ``wait``; typing into the focused field is ``type_coordinate``
+without a point (user ruling 2026-11-01). Three are Android's own (§11.2, "动作"):
 ``long_press``, ``press_key`` (system keys) and ``open_app`` (by name; the
 name-to-package table is this action's, never an agent's). Points are physical
 screen pixels, the space touches take and the screenshot's viewport. A
@@ -18,10 +18,15 @@ effect (``effects.py``), injector included (§11.2, "实验身份"). A tap holds
 finger down for :data:`~spectragent.core.capabilities.android.device.clients.TAP_MS`.
 Keys go through the shell helper; text through the configured typing backend.
 
-``scroll``'s ``index`` names an element of ``android.ui_tree``, which arrives
-with a later stage; until then no run negotiates the tree, so the param is
-never offered, and its start point and direction mean what they mean on the
-browser: ``down`` shows what is further down, so the finger moves up.
+``click``'s ``index`` and ``scroll``'s names an element of ``android.ui_tree``,
+numbered by the configured cleaner (user ruling 2026-11-01): the capability
+turns it into the centre of the element's bounds on the screen
+(``AndroidCapability.element_centre``), and the meaning stays here, never with
+an agent. A run that does not negotiate the tree is offered no ``click``
+(negotiation leaves out an action whose required param addresses a fragment
+the run lacks) and a ``scroll`` without ``index`` (§4.5 "参数的含义"). A
+scroll's start point and direction mean what they mean on the browser:
+``down`` shows what is further down, so the finger moves up.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from spectragent.core.capabilities.android.effects import (
     ScreenPoint,
     Touch,
 )
+from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -71,6 +77,45 @@ async def touch(
         elapsed_ms=elapsed_ms,
         delivered_by=device.injector,
     )
+
+
+@dataclass
+class AndroidClickAction(ActionBase):
+    """Tap an element of the UI tree: the centre of its bounds on the screen."""
+
+    __registry_key__ = "android.click"
+    Effect = AndroidTouchEffect
+
+    class Params(BaseModel):
+        """The browser's ``click`` params: an element index, of ``android.ui_tree`` here.
+
+        The param is required and addresses the tree, so the whole action
+        needs the tree: a run without it has no index to tap.
+        """
+
+        model_config = ConfigDict(extra="forbid")
+
+        index: Annotated[
+            int,
+            AddressesElement("android.ui_tree"),
+            PydanticField(description="element index from the UI tree"),
+        ]
+
+    def descriptor(self, **context: Any) -> ActionDescriptor:
+        return self.describe("Tap a UI element by its index in the UI tree.", **context)
+
+    async def execute(
+        self, params: dict[str, Any], *, capability: AndroidCapability
+    ) -> ActionResult:
+        index = self.Params.model_validate(params).index
+        try:
+            point = capability.element_centre(index)
+        except ElementIndexError as exc:
+            return ActionResult(success=False, error=str(exc))
+        tapped = await touch(capability, "tap", point, point, TAP_MS)
+        return ActionResult(
+            success=True, effect=AndroidTouchEffect(effect_id=self.action_id, touch=tapped)
+        )
 
 
 @dataclass
@@ -193,7 +238,7 @@ _START_HINT = "the swipe starts there; never with index"
 
 @dataclass
 class AndroidScrollAction(ActionBase):
-    """Swipe to scroll: from the start point, or from the middle of the screen."""
+    """Swipe to scroll: from the start point, from the centre of an element, or from the middle of the screen."""
 
     __registry_key__ = "android.scroll"
     Effect = AndroidTouchEffect
@@ -255,17 +300,15 @@ class AndroidScrollAction(ActionBase):
         self, params: dict[str, Any], *, capability: AndroidCapability
     ) -> ActionResult:
         given = self.Params.model_validate(params)
-        if given.index is not None:
-            return ActionResult(
-                success=False,
-                error="scrolling inside an element needs the screen's UI tree, and this run has none",
-            )
         width, height = capability.screen_size
-        start = (
-            (given.start_x, given.start_y)
-            if given.start_x is not None and given.start_y is not None
-            else (width // 2, height // 2)
-        )
+        start = (width // 2, height // 2)
+        if given.start_x is not None and given.start_y is not None:
+            start = (given.start_x, given.start_y)
+        elif given.index is not None:
+            try:
+                start = capability.element_centre(given.index)
+            except ElementIndexError as exc:
+                return ActionResult(success=False, error=str(exc))
         distance = max(1, min(given.amount or self.default_amount, self.max_amount))
         # The content follows the finger, so it moves against the direction scrolled.
         dx, dy = {
@@ -640,6 +683,7 @@ class AndroidWaitAction(ActionBase):
 
 #: Every action of the Android capability, the order its prompt lists them in.
 ACTIONS: tuple[type[ActionBase], ...] = (
+    AndroidClickAction,
     AndroidClickCoordinateAction,
     AndroidLongPressAction,
     AndroidDragAction,

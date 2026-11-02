@@ -131,6 +131,7 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "clear": "bool (optional, default=true)",
     },
     "browser.wait": {"seconds": "float (optional, default=1.0, max=30.0)"},
+    "android.click": {"index": "int -- element index from the UI tree"},
     "android.click_coordinate": {"coordinate_x": _ANDROID_X, "coordinate_y": _ANDROID_Y},
     "android.drag": {
         "start_x": _ANDROID_X,
@@ -166,6 +167,7 @@ _GOLDEN_DEPENDENCIES: dict[str, set[str]] = {
     "browser.click": {"browser.dom"},
     "browser.type": {"browser.dom"},
     "browser.select_dropdown": {"browser.dom"},
+    "android.click": {"android.ui_tree"},
 }
 
 
@@ -330,16 +332,37 @@ def test_no_context_means_no_filtering() -> None:
 # ── Every agent's action set is consistent with its observation set ───
 
 
+def _bound(declared: str, capability: str, registered: list[str]) -> str | None:
+    """The fully-qualified key *declared* binds to in a run of *capability*, or ``None``.
+
+    A relative name binds to the one provider of that run that offers it: the
+    capability, or the Loop (``loop.done``); a qualified one pins its provider.
+    """
+    if "." in declared:
+        return declared if declared.split(".", 1)[0] in (capability, "loop") else None
+    found = [
+        key
+        for key in registered
+        if key.rsplit(".", 1)[-1] == declared and key.split(".", 1)[0] in (capability, "loop")
+    ]
+    return found[0] if len(found) == 1 else None
+
+
 def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
-    """The static scan §4.2 asks for, over every registered agent.
+    """The static scan §4.5 asks for, over every registered agent, by the names its actions bind to.
 
     A family member is a class of its own (``browser_use.dom``,
     ``browser_use.dom_vision``), so the registry lists every demand there is.
 
     An agent whose required actions read a fragment it never requires would
-    fail at the first step with ``Element N not found in selector_map`` —
-    a runtime symptom of a wiring mistake that is visible from the
-    declarations alone.
+    fail at the first step with ``Element N not found in selector_map`` — a
+    runtime symptom of a wiring mistake that is visible from the declarations
+    alone. A relative name binds per run (``click`` is ``browser.click`` with
+    the browser and ``android.click`` with Android), so each agent is scanned
+    on every capability it can run on, the ones that offer each action it
+    requires, with its declarations bound there; matching names by their last
+    segment alone would hold a browser agent's ``click`` to the UI tree
+    Android's reads.
     """
     from spectragent.agents._registrar import AgentRegistrar
     from spectragent.agents.prompts import agent_family
@@ -353,14 +376,10 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
     # all here: scanning whatever happens to be registered scanned nothing
     # when this test ran alone.
     discover_implementations(*(f"{AGENTS_PACKAGE}.{family}" for family in agent_families()))
-
-    # Declarations are capability-relative, so a declared key matches every
-    # registered action whose trailing segment is the same.
-    by_local: dict[str, list[str]] = {}
-    for full in _KEYS:
-        by_local.setdefault(full.rsplit(".", 1)[-1], []).append(full)
+    capabilities = sorted({key.split(".", 1)[0] for key in _KEYS} - {"loop"})
 
     scanned: set[str] = set()
+    pairs: set[tuple[str, str]] = set()
     for agent_id, cls in sorted(AgentRegistrar.get_all().items()):
         if not cls.__module__.startswith(f"{AGENTS_PACKAGE}."):
             continue  # another test's fake, not a shipped agent
@@ -368,28 +387,34 @@ def test_every_agent_can_satisfy_its_actions_dependencies() -> None:
         scanned.add(agent_family(agent_id))
         actions, _optional = agent.negotiation_demand("action")
         fragments, _ = agent.negotiation_demand("observation")
-        for declared in sorted(actions):
-            for full in by_local.get(declared.rsplit(".", 1)[-1], []):
-                missing = {
-                    key
-                    for key in _action(full).requires_fragments()
-                    if key not in fragments and key.rsplit(".", 1)[-1] not in fragments
-                }
+        for capability in capabilities:
+            bound = {declared: _bound(declared, capability, _KEYS) for declared in actions}
+            if None in bound.values():
+                continue  # the agent cannot run here: an action it requires is not offered
+            pairs.add((agent_id, capability))
+            have = {key if "." in key else f"{capability}.{key}" for key in fragments}
+            for declared, full in sorted(bound.items()):
+                assert full is not None
+                missing = sorted(_action(full).requires_fragments() - have)
                 assert not missing, (
-                    f"{agent_id} requires action {declared!r}, which "
-                    f"reads {sorted(missing)} — a fragment it does not require"
+                    f"{agent_id} requires action {declared!r} ({full} on {capability}), which "
+                    f"reads {missing} — a fragment it does not require"
                 )
     assert sorted(scanned) == list(agent_families())
+    assert {("browser_use.dom", "browser"), ("ui_tars", "browser"), ("ui_tars", "android")} <= pairs
 
 
-def test_a_required_dependent_param_would_be_caught() -> None:
-    """The scan is falsifiable: give ``click`` to an agent with no DOM."""
+@pytest.mark.parametrize(
+    ("click", "fragment"), [("browser.click", "dom"), ("android.click", "ui_tree")]
+)
+def test_a_required_dependent_param_would_be_caught(click: str, fragment: str) -> None:
+    """The scan is falsifiable: give ``click`` to an agent with no DOM, or no UI tree."""
     from spectragent.agents.ui_tars import UITarsAgent
 
     ui_tars = UITarsAgent()
     fragments, _ = ui_tars.negotiation_demand("observation")
-    assert "dom" not in fragments
-    needed = _action("browser.click").requires_fragments()
+    assert fragment not in fragments
+    needed = _action(click).requires_fragments()
     assert needed and not {k.rsplit(".", 1)[-1] for k in needed} <= fragments
 
 
@@ -420,6 +445,7 @@ _GOLDEN_ELEMENTS: dict[str, tuple[str, ...]] = {
     "browser.select_dropdown": ("index",),
     "browser.scroll": ("index",),
     "browser.extract_content": ("index",),
+    "android.click": ("index",),
     "android.scroll": ("index",),
 }
 

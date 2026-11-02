@@ -36,13 +36,19 @@ from spectragent.core.capabilities.android.effects import (
 )
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
 from spectragent.core.capabilities.android.input.text import CommitTextBackend
+from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
 from spectragent.core.trace.effects import registered_effect, restore_effects
 from spectragent.schemas.action import Action, ActionResult
-from tests._helpers.android_device import ScriptedPhone, android_capability, phone_server
+from tests._helpers.android_device import (
+    ScriptedPhone,
+    android_capability,
+    phone_server,
+    settings_forest,
+)
 from tests._helpers.fake_adb import ShellResult
 
 #: The actions that mean what the browser's of the same relative name mean.
-SHARED = ("click_coordinate", "drag", "type_coordinate", "scroll", "wait")
+SHARED = ("click", "click_coordinate", "drag", "type_coordinate", "scroll", "wait")
 
 
 def _schema_without_descriptions(params: type[BaseModel]) -> object:
@@ -231,6 +237,139 @@ async def test_a_scroll_starts_at_its_start_point_and_goes_its_amount(
     assert phone.inputs == ["helper stroke (300,2000)@0 (300,1400)@500"]
     assert isinstance(scrolled.effect, AndroidTouchEffect)
     assert scrolled.effect.describe() == "Swiped from (300, 2000) to (300, 1400) over 500 ms."
+
+
+# ── element indexes: click, and scroll's index ───────────────────────
+
+
+async def observe_tree(capability: AndroidCapability, cycle: int = 1) -> AndroidUITreeObs:
+    await capability.begin_observation(cycle)
+    tree = await capability.resolve_fragment(UI_TREE)
+    assert isinstance(tree, AndroidUITreeObs)
+    return tree
+
+
+async def test_click_taps_the_centre_of_the_element_its_index_names(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The scripted Settings list: element 1 is "Connected devices", (0, 450)-(1080, 600)."""
+    tree = await observe_tree(capability)
+    assert [node.text for _, node in tree.tree().element_nodes()] == [
+        "Network & internet",
+        "Connected devices",
+    ]
+
+    tapped = await act(capability, "click", index=1)
+
+    assert tapped.success and phone.inputs == ["helper stroke (540,525)@0 (540,525)@50"]
+    assert isinstance(tapped.effect, AndroidTouchEffect)
+    assert tapped.effect.describe() == "Tapped (540, 525)."
+
+
+async def test_an_element_partly_off_the_screen_is_tapped_where_it_shows(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    phone.forest = settings_forest(
+        ("Network & internet", (0, 300, 1080, 450)), ("Low on the list", (0, 2300, 1080, 2600))
+    )
+    await observe_tree(capability)
+
+    assert (await act(capability, "click", index=1)).success
+    assert phone.inputs == ["helper stroke (540,2350)@0 (540,2350)@50"]
+
+
+async def test_an_index_from_the_tree_before_the_last_action_is_refused_and_touches_nothing(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """After an action the screen may have changed, and its numbers with it."""
+    await observe_tree(capability)
+    assert (await act(capability, "click", index=0)).success
+    phone.inputs.clear()
+
+    for refused in (
+        await act(capability, "click", index=1),
+        await act(capability, "scroll", direction="down", index=1),
+    ):
+        assert not refused.success and refused.effect is None
+        assert refused.error == (
+            "Element 1 is from the UI tree captured before the last action, and the screen may "
+            "have changed since; the next observation numbers the elements again."
+        )
+    assert phone.inputs == []
+    await observe_tree(capability, cycle=2)
+    assert (await act(capability, "click", index=1)).success, "the next tree names it again"
+
+
+async def test_a_wait_ends_the_trees_numbers_too(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+    assert (await act(capability, "wait", seconds=0)).success
+
+    refused = await act(capability, "click", index=0)
+
+    assert not refused.success and "before the last action" in (refused.error or "")
+    assert phone.inputs == []
+
+
+async def test_an_index_the_tree_does_not_have_is_refused_naming_the_ones_it_has(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+
+    refused = await act(capability, "click", index=7)
+
+    assert refused.error == "The screen's UI tree has no element 7; its elements are 0-1."
+    assert phone.inputs == []
+
+
+async def test_the_numbers_a_refusal_names_show_the_ones_left_unused(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """The cleaner leaves an element below the screen out and keeps its number unused."""
+    phone.forest = settings_forest(
+        ("Network & internet", (0, 300, 1080, 450)),
+        ("Below the screen", (0, 2500, 1080, 2650)),
+        ("Connected devices", (0, 450, 1080, 600)),
+    )
+    await observe_tree(capability)
+
+    refused = await act(capability, "click", index=1)
+
+    assert refused.error == "The screen's UI tree has no element 1; its elements are 0, 2."
+    assert phone.inputs == []
+
+
+async def test_an_index_before_any_tree_was_captured_is_refused(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    refused = await act(capability, "click", index=0)
+
+    assert refused.error == "Element 0 names nothing: no UI tree was captured yet in this run."
+    assert phone.inputs == []
+
+
+async def test_an_index_in_a_run_that_captures_no_tree_names_nothing() -> None:
+    phone = ScriptedPhone()
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, fragments={"android.screenshot"}) as capability,
+    ):
+        phone.inputs.clear()
+        refused = await act(capability, "scroll", direction="down", index=0)
+
+    assert refused.error == "Element 0 names nothing: this run does not capture the UI tree."
+    assert phone.inputs == []
+
+
+async def test_a_scroll_with_an_index_swipes_from_that_elements_centre(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    await observe_tree(capability)
+
+    scrolled = await act(capability, "scroll", direction="down", index=0, amount=200)
+
+    assert scrolled.success and phone.inputs == ["helper stroke (540,375)@0 (540,175)@500"]
 
 
 @dataclass

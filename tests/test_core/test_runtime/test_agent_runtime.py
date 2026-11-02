@@ -97,13 +97,16 @@ def _make_env():
 
 
 class _ClickTypeCap(CapabilityBase):
+    # Its own keys: the browser's ``browser.click`` reads ``browser.dom``, so
+    # negotiation offers it only to a run with the DOM.
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "rt_composite_cap_click_type"
-    __wiring__ = {"action": ("action", ["browser.click", "browser.type"])}
+    __wiring__ = {"action": ("action", ["web.click", "web.type"])}
 
     def get_action_descriptors(self, **ctx):
         return [
-            ActionDescriptor(name="browser.click", description="Click"),
-            ActionDescriptor(name="browser.type", description="Type"),
+            ActionDescriptor(name="web.click", description="Click"),
+            ActionDescriptor(name="web.type", description="Type"),
         ]
 
     async def execute_action(self, action, **kw):
@@ -125,7 +128,7 @@ class _CompositeDoneCap(CapabilityBase):
 def _make_composite_env():
     return make_env(
         SimpleEnv,
-        {"browser": _ClickTypeCap(), "finish": _CompositeDoneCap()},
+        {"web": _ClickTypeCap(), "finish": _CompositeDoneCap()},
     )
 
 
@@ -465,8 +468,8 @@ class TestCompositeEnvNarrowing:
             __wiring__ = {
                 "action": (
                     "action",
-                    ["browser.click", "finish.done"],
-                    ["browser.type"],
+                    ["web.click", "finish.done"],
+                    ["web.type"],
                 ),
             }
 
@@ -476,7 +479,7 @@ class TestCompositeEnvNarrowing:
             _make_composite_env(),
         )
         asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("composite"))
-        assert set(seen) == {"browser.click", "browser.type", "finish.done"}
+        assert set(seen) == {"web.click", "web.type", "finish.done"}
 
     def test_composite_env_drops_actions_not_in_wiring(self) -> None:
         seen: list[str] = []

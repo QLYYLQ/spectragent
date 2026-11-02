@@ -376,6 +376,9 @@ class AgentRuntime:
             IncompatibleFragmentError: A required fragment no provider here
                 serves — the environment, or the Loop for a loop-source
                 fragment it does not build.
+            ActionFragmentError: A required action addresses a fragment the
+                observation negotiation did not activate (an element index
+                with no tree to name it in).
             FragmentFormatError: The agent quotes the format of an active
                 fragment whose provider describes none, or declares its
                 quoted formats wrongly.
@@ -449,8 +452,14 @@ class AgentRuntime:
         )
 
         # Step 2.5: Action negotiation: the environment's actions and the
-        # Loop's own (``loop.done``) on offer, the agent's demand to meet.
-        negotiated_actions = negotiate_action(agent, loop, env)
+        # Loop's own (``loop.done``) on offer, the agent's demand to meet. An
+        # action whose required param addresses a fragment negotiated away
+        # above is not on offer (``android.click``'s index without
+        # ``android.ui_tree``): left out when optional, refused by name when
+        # required (docs/architecture_design.md §4.5 "参数的含义").
+        negotiated_actions = negotiate_action(
+            agent, loop, env, fragments=negotiated_obs.active_fragments
+        )
         self._negotiated_actions = negotiated_actions
 
         # Step 2.75: Memory protocol negotiation (Loop ⊆ Memory)
