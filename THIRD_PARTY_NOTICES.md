@@ -286,3 +286,39 @@ SOFTWARE.
   and a print-time filter; the elements keep the nodes they stand for, and their bounds,
   for the capability's `click` and `scroll`. Our service fills `is_focused`, which the
   forwarder leaves false.
+
+## AndroidWorld — the M3A agent
+
+- **Upstream:** AndroidWorld, https://github.com/google-research/android_world
+- **Revision:** `55ddaf5edc6f6c25673aed343907d5b9dca66f84` (2026-10-23), files
+  `android_world/agents/m3a.py` (`PROMPT_PREFIX`, `GUIDANCE`,
+  `ACTION_SELECTION_PROMPT_TEMPLATE`, `SUMMARY_PROMPT_TEMPLATE`, `_action_selection_prompt`,
+  `_summarize_prompt` and `M3A.step`), `android_world/agents/m3a_utils.py`
+  (`add_ui_element_mark`, `add_screenshot_label`, `parse_reason_action_output` and its
+  `extract_json`), `android_world/agents/agent_utils.py` (`extract_json`),
+  `android_world/env/json_action.py` (`JSONAction`'s checks) and
+  `android_world/env/actuation.py` (what each action type does)
+- **License:** Apache License 2.0 (the license header quoted under `cdxj-indexer` above;
+  the files carry "Copyright 2026 The android_world Authors"; the repository has no
+  `NOTICE` file).
+- **Ported into:** `spectragent/agents/m3a/` (the `m3a` agent: `agent.py`, `reply.py`,
+  `marks.py`) and `spectragent/prompts/agents/m3a/` (the two prompts, verbatim, with the
+  prefix they share in `_parts/prefix.md`), rewritten in Spectragent's types.
+- **Kept:** the prompts to the byte (the action-selection prompt without task guidelines,
+  which AndroidWorld never sets); one user message per step holding the prompt, the
+  screenshot and the screenshot with its set-of-marks, both JPEG; the history of one
+  `Step N- ` line per step and the per-step summary call on the same model, with the
+  before screenshot unlabelled as AndroidWorld sends it; the reply's reading
+  (`Reason:` / `Action:` and both `extract_json`) and `JSONAction`'s checks; the marks'
+  places, sizes and colours; `input_text` as a tap on the element, the text and Enter.
+- **Modified by Spectragent:** the marks are drawn with Pillow and its default font instead
+  of OpenCV's Hershey font, placed on the image by the framework's point grid; actions run
+  as the capability's (`click`, `long_press`, `type`, `scroll` by element index,
+  `press_key`, `open_app`, `wait`) and the Loop's `loop.done`, which ends the run for
+  `answer` (its text as the answer, no claim) as for `status` (`complete` claims success,
+  `infeasible` failure); a point (`x`, `y`) and the action types the prompt does not teach
+  are refused; a `scroll` with index 0 scrolls element 0 (AndroidWorld's `if action.index`
+  reads 0 as none); the summary of a step is written when the next step's observation
+  arrives, from that observation, instead of 2 s after the action; a step whose action
+  failed is written into the history with its error (AndroidWorld drops it); a failed
+  summary call fails the step rather than becoming a history line.

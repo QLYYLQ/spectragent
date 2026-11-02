@@ -172,6 +172,8 @@ class ScriptedPhone:
         helper_screenshots: Whether the helper takes screenshots (API 31-33);
             otherwise it answers ``unsupported`` and the service takes them.
         screenshot_fails: Every screenshot fails from now on.
+        screen: The image a screenshot carries; ``None``: :func:`png`'s header
+            alone, which says the type and the size and decodes to nothing.
         text_field: A text field of the activity in front has focus: the input
             method serves its window, and the view with focus holds an input
             connection. ``None``: the input method's client does not answer, so
@@ -217,6 +219,7 @@ class ScriptedPhone:
     )
     helper_screenshots: bool = True
     screenshot_fails: bool = False
+    screen: bytes | None = None
     text_field: bool | None = False
     window_over: str | None = None
     field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
@@ -313,7 +316,7 @@ class ScriptedPhone:
                 "encode_ms": 85,
                 "waited_ms": waited,
             }
-            return Answer(result, png(self.width, self.height))
+            return Answer(result, self.screen or png(self.width, self.height))
 
         return screenshot
 

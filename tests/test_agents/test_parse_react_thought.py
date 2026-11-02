@@ -15,6 +15,7 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.browser_use.output_models import REASONING_FIELDS
+from spectragent.agents.m3a import M3AAgent
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.skyvern.reply import reply_model
 from spectragent.agents.ui_tars import UITarsAgent
@@ -22,7 +23,7 @@ from tests._helpers.action_spaces import browser_descriptors
 
 
 @pytest.mark.parametrize(
-    "cls", [UITarsAgent, BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent]
+    "cls", [UITarsAgent, BrowserUseAgent, SkyvernDomAgent, SkyvernDomVisionAgent, M3AAgent]
 )
 def test_it_is_a_pure_function_of_the_reply(cls: type) -> None:
     assert isinstance(inspect.getattr_static(cls, "parse_react_thought"), staticmethod)

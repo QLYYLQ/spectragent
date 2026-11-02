@@ -12,6 +12,7 @@ import pytest
 from conscribe.wiring import WiredField
 
 from spectragent.agents.browser_use import BrowserUseDomAgent, BrowserUseDomVisionAgent
+from spectragent.agents.m3a import M3AAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernDomAgent, SkyvernDomVisionAgent
 from spectragent.agents.ui_tars import UITarsAgent
@@ -22,6 +23,7 @@ AGENT_CLASSES = [
     SkyvernDomAgent,
     SkyvernDomVisionAgent,
     UITarsAgent,
+    M3AAgent,
 ]
 
 

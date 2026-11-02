@@ -140,6 +140,12 @@ _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
     ("ui_tars", {"prompt_template": "mobile_use"}),
 ]
 
+#: Families whose templates render at each step, not in ``prepare()``: M3A
+#: writes one prompt per step and its summary prompt after it. Their own tests
+#: hold this module's two invariants for them (``test_m3a/test_m3a_agent.py``:
+#: every variable supplied and rendered, every template reached).
+_RENDERED_PER_STEP = {"m3a"}
+
 #: ``Any``, not ``Callable[..., AgentBase]``: ``prepare`` and
 #: ``system_prompt`` are Loop-slot / Protocol surface on the concrete
 #: agents, not on the base, and this file walks all three uniformly.
@@ -221,7 +227,7 @@ def test_every_prompt_directory_is_exactly_a_family_root():
         f"Prompt directories {sorted(on_disk - families)} match no agent "
         f"family, so an agent would need a path constant."
     )
-    assert on_disk == {agent_family(key) for key in _PREPARE_KWARGS}
+    assert on_disk == {agent_family(key) for key in _PREPARE_KWARGS} | _RENDERED_PER_STEP
 
 
 @pytest.mark.parametrize("agent_id", sorted(AgentRegistrar.keys()))
@@ -241,6 +247,7 @@ def test_no_agent_carries_its_own_prompt_directory_constant():
     import spectragent.agents.browser_use.dom as browser_use_dom
     import spectragent.agents.browser_use.dom_vision as browser_use_dom_vision
     import spectragent.agents.browser_use.family as browser_use
+    import spectragent.agents.m3a.agent as m3a
     import spectragent.agents.skyvern.dom as skyvern_dom
     import spectragent.agents.skyvern.dom_vision as skyvern_dom_vision
     import spectragent.agents.skyvern.family as skyvern
@@ -250,6 +257,7 @@ def test_no_agent_carries_its_own_prompt_directory_constant():
         browser_use,
         browser_use_dom,
         browser_use_dom_vision,
+        m3a,
         skyvern,
         skyvern_dom,
         skyvern_dom_vision,
