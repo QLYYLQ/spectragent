@@ -27,9 +27,9 @@ from spectragent.schemas.restoration import (
     BranchProvenance,
     BranchTaskVariant,
     RestorationCheck,
-    RestorationEvidence,
 )
 from spectragent.schemas.step_record import ActionSpan
+from tests._helpers.browser_evidence import browser_evidence
 from tests._helpers.trace_builder import agent_result
 from tests.test_lookahead.traces import (
     StepSpec,
@@ -349,7 +349,7 @@ def build_world(root: Path) -> World:
                     verdict="diverged",
                     reason="screenshot_distance",
                     reasons=["screenshot_distance"],
-                    evidence=[RestorationEvidence(capability_id="browser", screenshot_distance=30)],
+                    evidence=[browser_evidence(screenshot_distance=30)],
                 ),
             )
         ],
@@ -366,8 +366,7 @@ def build_world(root: Path) -> World:
             reason="document_miss",
             reasons=["document_miss", "url_mismatch"],
             evidence=[
-                RestorationEvidence(
-                    capability_id="browser",
+                browser_evidence(
                     url_match=False,
                     recorded_url="https://shop.example/search",
                     restored_url="chrome-error://chromewebdata/",

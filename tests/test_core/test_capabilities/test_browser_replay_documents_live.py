@@ -46,6 +46,9 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     document_miss_total,
     iter_replay_log,
 )
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers import branch_driver as branch
 from tests._helpers import replay_driver as driver
@@ -199,6 +202,7 @@ def test_the_branch_restores_both_documents(flow: Flow) -> None:
         check = record.restoration
         assert check is not None and check.verdict == "ok", (record.step, check)
         (evidence,) = check.evidence
+        assert isinstance(evidence, BrowserRestorationEvidence)
         assert evidence.url_match is True and evidence.document_misses == 0
 
 
@@ -242,5 +246,6 @@ def test_a_refused_document_fails_the_branchs_restoration(flow: Flow) -> None:
     (check,) = failing
     assert check.verdict == "diverged" and "document_miss" in check.reasons
     (evidence,) = check.evidence
+    assert isinstance(evidence, BrowserRestorationEvidence)
     # One refusal, or more when Chrome's error-page auto-reload asked again in time.
     assert evidence.document_misses is not None and evidence.document_misses >= 1

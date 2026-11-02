@@ -96,9 +96,9 @@ from spectragent.core.capabilities.browser.replay.media_areas import (
     media_area_rule_ids,
 )
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRuleError, SiteRules
+from spectragent.core.capabilities.browser.restoration_evidence import MaskedAreaKind
 from spectragent.flywheel.diagnostics import DifferenceMethod
 from spectragent.inspection.marks import action_lines, action_text
-from spectragent.schemas.restoration import MaskedAreaKind
 
 Verdict = Literal[
     "stable_through_think", "stable_short", "changed_short", "changed_before_action", "no_frames"

@@ -94,12 +94,12 @@ from spectragent.schemas.dataset import (
 from spectragent.schemas.restoration import (
     BranchProvenance,
     RestorationCheck,
-    RestorationEvidence,
     RestoredAction,
 )
 from spectragent.schemas.sample import CanonicalStepSample, SampleLabels
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_recorder import open_session
+from tests._helpers.browser_evidence import browser_evidence
 from tests._helpers.replay_archive import RecordingScript
 from tests._helpers.trace_builder import agent_result, archive_file
 
@@ -157,11 +157,10 @@ def check(
     return RestorationCheck(
         step=step,
         verdict="warn" if reasons else "ok",
-        reason=reasons[0] if reasons else None,  # type: ignore[arg-type]
-        reasons=list(reasons),  # type: ignore[arg-type]
+        reason=reasons[0] if reasons else None,
+        reasons=list(reasons),
         evidence=[
-            RestorationEvidence(
-                capability_id="browser",
+            browser_evidence(
                 screenshot_distance=12 if "screenshot_distance" in reasons else 0,
                 document_misses=document_misses,
             )
@@ -699,7 +698,7 @@ async def known_chain(root: Path) -> KnownChain:
                 [click(1, 1)],
                 color=11,
                 restoration=check(
-                    0, "retarget_not_found", "screenshot_distance", actions=[not_found]
+                    0, "screenshot_distance", "retarget_not_found", actions=[not_found]
                 ),
             ),
             Step(

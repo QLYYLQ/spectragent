@@ -234,6 +234,10 @@ from spectragent.core.capabilities.browser.restoration import (
     retarget_action,
     screenshot_fragment,
 )
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+    MediaAlignment,
+)
 from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.settle import (
     DEFAULT_SETTLE_MAX_WAIT_S,
@@ -286,7 +290,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.browser_storage import BrowserStorageState
-from spectragent.schemas.restoration import MediaAlignment, RestorationEvidence, Retarget
+from spectragent.schemas.restoration import Retarget
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 
 logger = logging.getLogger(__name__)
@@ -654,6 +658,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         "backend": "browser_provider",
     }
 
+    #: What ``verify_restoration`` returns, and what the trace reader reads a
+    #: recorded browser measurement back as (``RestorationSupport``, §4.9).
+    RestorationEvidence = BrowserRestorationEvidence
+
     # ── wired receptors ───────────────────────────────────────────────
     # ``actions`` is declared on :class:`_BrowserReceptors`; the other two
     # are annotation-only here, so conscribe installs a ``WiredField``
@@ -687,6 +695,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     capture_state_timeout_s: float
     media_state_timeout_s: float
     retarget_tolerance_px: float
+    screenshot_max_distance: int
+    align_media: bool
+    media_time_tolerance_s: float
+    media_seek_timeout_s: float
+    media_end_lead_s: float
     new_tabs: Literal["follow", "stay"]
     background_tabs: Literal["run", "freeze"]
     expected_platform: BrowserPlatform | None
@@ -1077,6 +1090,82 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 2.0,
+        screenshot_max_distance: Annotated[
+            int,
+            PydanticField(
+                ge=0,
+                le=64,
+                description=(
+                    "Checkpoint restoration (branch runs): the largest Hamming distance "
+                    "between the recorded and restored screenshots' 64-bit perceptual "
+                    "hashes (dHash) that still passes the restoration check; on a page a "
+                    "replay media-area rule declares, the distance with the media areas "
+                    "masked out. Recorded with each restoration measurement. Read only "
+                    "by a restorer; an ordinary run never uses it."
+                ),
+            ),
+        ] = 5,
+        align_media: Annotated[
+            bool,
+            PydanticField(
+                description=(
+                    "Checkpoint restoration (branch runs). true (the default): inside "
+                    "every restored observation's capture (the checkpoint's included), "
+                    "after the settle wait and before the screenshot, each media element "
+                    "that can be matched is moved to the recorded position and play "
+                    "state; every operation and its outcome is recorded with the step's "
+                    "restoration check, and a seek that does not complete is undone and "
+                    "fails the step. Nothing is aligned after the checkpoint. false: "
+                    "nothing is aligned (the control arm); the media state is still "
+                    "compared."
+                ),
+            ),
+        ] = True,
+        media_time_tolerance_s: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                le=60,
+                description=(
+                    "Checkpoint restoration (branch runs): how far, in seconds, a media "
+                    "element's restored playback position may lie from the recorded one "
+                    "and still pass the restoration check. A different paused state, a "
+                    "missing or extra element, an ambiguous match or a live stream fails "
+                    "regardless; an unknown value never decides. Recorded with each "
+                    "restoration measurement."
+                ),
+            ),
+        ] = 1.0,
+        media_seek_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                le=30,
+                description=(
+                    "Checkpoint restoration (branch runs), with align_media: true: "
+                    "how long each seek, and the play after it for a media element the "
+                    "recording showed playing, may take to complete (seeked fired, no "
+                    "longer seeking, a frame to show). One that does not complete is put "
+                    "back where it was and fails the step."
+                ),
+            ),
+        ] = 2.0,
+        media_end_lead_s: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                le=10,
+                description=(
+                    "Checkpoint restoration (branch runs), with align_media: true: a "
+                    "media element the recording showed at its end (ended) is sought this "
+                    "many seconds before the recorded end and played through to its "
+                    "natural end, so the player shows what it shows at an end; a seek "
+                    "straight to the end leaves a stale frame and no end screen. The play "
+                    "to the end must finish within media_seek_timeout_s, so this must be "
+                    "shorter than that."
+                ),
+            ),
+        ] = 0.5,
         new_tabs: Annotated[
             Literal["follow", "stay"],
             PydanticField(
@@ -1184,6 +1273,18 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.capture_state_timeout_s = capture_state_timeout_s
         self.media_state_timeout_s = media_state_timeout_s
         self.retarget_tolerance_px = retarget_tolerance_px
+        if media_end_lead_s >= media_seek_timeout_s:
+            raise ValueError(
+                f"media_end_lead_s ({media_end_lead_s:g} s) is not shorter than "
+                f"media_seek_timeout_s ({media_seek_timeout_s:g} s): playing the last "
+                "media_end_lead_s seconds to a recorded end could never finish in time. "
+                "Shorten the lead or raise the timeout."
+            )
+        self.screenshot_max_distance = screenshot_max_distance
+        self.align_media = align_media
+        self.media_time_tolerance_s = media_time_tolerance_s
+        self.media_seek_timeout_s = media_seek_timeout_s
+        self.media_end_lead_s = media_end_lead_s
         self.new_tabs = new_tabs
         self.background_tabs = background_tabs
 
@@ -1614,7 +1715,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             tolerance_px=self.retarget_tolerance_px,
         )
 
-    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
+    async def verify_restoration(self, recorded: Any, restored: Any) -> BrowserRestorationEvidence:
         """How far the restored observation is from the recorded one.
 
         URL, the interactive-element signature multiset and the screenshot
@@ -1630,7 +1731,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         rule set declares in its page-URL rules, and on a page its media-area
         rules declare the media areas are masked out of the screenshot
         distance and the evidence says so (neither when the network is live).
-        Thresholds are the restorer's.
+        The evidence records ``screenshot_max_distance`` and
+        ``media_time_tolerance_s``, the limits its checks apply.
         """
         alignment: list[MediaAlignment] | None = None
         alignment_detail = ""
@@ -1652,6 +1754,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 alignment=alignment,
                 alignment_detail=alignment_detail,
             ),
+            screenshot_max_distance=self.screenshot_max_distance,
+            media_time_tolerance_s=self.media_time_tolerance_s,
             page_urls=self._replay_server.page_urls if self._replay_server is not None else (),
             media_areas=(
                 self._replay_server.media_areas if self._replay_server is not None else ()
@@ -1660,22 +1764,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
     # ── Checkpoint restoration: media alignment (RestorationAlignment, §4.9 / §4.14) ──
 
-    async def align_next_observation(
-        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
-    ) -> None:
+    async def align_next_observation(self, recorded: Any) -> None:
         """Align the next observation's media to *recorded*'s, inside its capture.
 
-        Only the request is kept here — the page is not touched. The next
-        observation cycle's capture aligns after its settle wait and before
-        its screenshot (:meth:`_capture_once`, ``media.py::align_media``),
-        and the next :meth:`verify_restoration` reports what it did. The
-        request belongs to that one cycle: a later cycle never aligns.
+        Only under ``align_media: true``, and only the request is kept
+        here — the page is not touched. The next observation cycle's capture
+        aligns after its settle wait and before its screenshot
+        (:meth:`_capture_once`, ``media.py::align_media``), and the next
+        :meth:`verify_restoration` reports what it did. The request belongs
+        to that one cycle: a later cycle never aligns. Under ``false`` nothing
+        is requested, and the evidence says no alignment was asked for.
         """
+        if not self.align_media:
+            return
         screenshot = screenshot_fragment(recorded)
         self._media_alignment = PendingAlignment(
-            recorded=screenshot.media if screenshot is not None else None,
-            seek_timeout_s=media_seek_timeout_s,
-            end_lead_s=media_end_lead_s,
+            recorded=screenshot.media if screenshot is not None else None
         )
 
     def _document_misses_since_last_check(self) -> int | None:
@@ -3074,7 +3178,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         Its capture takes the screenshot first: the tab captures fragments one
         after another, and a playing video moves on through a DOM capture taken
         before the pixels (measured: 0.6 s at 5,000 elements, 3.5 s at 30,000,
-        past the restorer's 1 s tolerance). Every other capture keeps its order.
+        past the default 1 s media_time_tolerance_s). Every other capture keeps its order.
         """
         pending = self._media_alignment
         return (
@@ -3098,8 +3202,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 recorded=pending.recorded,
                 tolerance_px=self.retarget_tolerance_px,
                 read_timeout_s=self.media_state_timeout_s,
-                seek_timeout_s=pending.seek_timeout_s,
-                end_lead_s=pending.end_lead_s,
+                seek_timeout_s=self.media_seek_timeout_s,
+                end_lead_s=self.media_end_lead_s,
             )
         except asyncio.CancelledError:
             raise

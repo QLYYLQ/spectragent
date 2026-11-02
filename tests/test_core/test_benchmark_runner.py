@@ -1007,6 +1007,7 @@ class TestTraceBranchesSweep:
         built = _resolve_eval_loader(_NoBlock(), "online_mind2web", "Hard")  # type: ignore[arg-type]
         assert isinstance(built, _Reference) and built.subset == "Hard"
 
+    @pytest.mark.usefixtures("branch_fake_registered")
     async def test_each_branch_task_runs_from_its_context(self, tmp_path):
         """Loader → runner → runtime → BranchLoop: the env part reaches setup, the
         checkpoint reaches the Loop, the provenance reaches the trace.

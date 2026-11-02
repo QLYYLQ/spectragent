@@ -12,9 +12,9 @@ metrics chain's same-path replay runs them, with no model spend:
   on between observations, as it did while the real model thought in task 30
   of the Xiaohongshu runs. Step 0 clicks nowhere after a pause; step 1 clicks
   the video (paused); step 2 clicks it again (playing); step 3 is done.
-- **The branches**: the same recording restored to step 3 with
-  ``media: align`` and with ``media: none`` (``verify: warn``, so every step
-  is checked). The restorer re-executes the clicks at once: without
+- **The branches**: the same recording restored to step 3 with the browser's
+  ``align_media: true`` and with ``align_media: false`` (``verify: warn``, so
+  every step is checked). The restorer re-executes the clicks at once: without
   alignment the video stands seconds behind the recording at steps 1-3 and
   the check fails ``media_mismatch``; with alignment every restored
   observation, the checkpoint's included, is captured at the recorded
@@ -34,8 +34,11 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+    MediaEvidence,
+)
 from spectragent.core.trace.reader import RunTrace
-from spectragent.schemas.restoration import MediaEvidence
 from tests._helpers import branch_driver as branch
 from tests._helpers import replay_driver as driver
 from tests._helpers.scripted_llm import ScriptedLLMServer
@@ -172,10 +175,12 @@ def branches(origin: str, tmp_path_factory: pytest.TempPathFactory) -> Branches:
             config["agent"][0]["agent_loop"]["restorer"] = {
                 "restorer_id": "prefix_replay",
                 "verify": "warn",
-                "media": media,
-                "media_time_tolerance_s": 1.0,
-                "media_seek_timeout_s": 2.0,
             }
+            config["environment"][0]["capabilities"][0].update(
+                align_media=media == "align",
+                media_time_tolerance_s=1.0,
+                media_seek_timeout_s=2.0,
+            )
             outcome = branch.run_branch_task(
                 config, f"{source.run_dir.name}/s{CHECKPOINT}/b0", timeout=240
             )
@@ -197,7 +202,7 @@ def _media(trace: RunTrace, step: int) -> MediaEvidence:
     record = trace.step(step)
     assert record is not None and record.restoration is not None
     (evidence,) = record.restoration.evidence
-    assert evidence.media is not None
+    assert isinstance(evidence, BrowserRestorationEvidence) and evidence.media is not None
     return evidence.media
 
 
@@ -219,7 +224,7 @@ def test_without_alignment_the_restored_video_stands_behind_and_fails(branches: 
     assert {1, 2, 3} <= failing
     for step in (1, 2, 3):
         media = _media(trace, step)
-        assert media.alignment is None, "media: none requests no alignment"
+        assert media.alignment is None, "align_media: false requests no alignment"
         (comparison,) = media.comparisons or []
         assert comparison.correspondence == "matched"
         assert comparison.recorded_time is not None and comparison.restored_time is not None
@@ -242,7 +247,7 @@ def test_with_alignment_every_restored_observation_matches_the_recording(
         assert alignment.target_time == recorded_time
         assert alignment.target_paused is recorded_paused
         expected = "pause_and_seek" if recorded_paused else "seek_and_play"
-        assert alignment.outcome == "already_aligned" or alignment.action == expected
+        assert alignment.outcome == "already_aligned" or alignment.operation == expected
         (comparison,) = media.comparisons or []
         assert comparison.restored_paused is recorded_paused
         assert comparison.restored_time is not None
@@ -250,7 +255,8 @@ def test_with_alignment_every_restored_observation_matches_the_recording(
     # The paused checkpoint frame is the recorded frame.
     paused = trace.step(2)
     assert paused is not None and paused.restoration is not None
-    assert paused.restoration.evidence[0].screenshot_distance == 0
+    (evidence,) = paused.restoration.evidence
+    assert isinstance(evidence, BrowserRestorationEvidence) and evidence.screenshot_distance == 0
 
 
 def test_nothing_after_the_checkpoint_is_aligned(branches: Branches) -> None:

@@ -1,4 +1,4 @@
-"""Reading recorded action effects back as their own types.
+"""Reading recorded action effects and restoration evidence back as their own types.
 
 An :class:`~spectragent.schemas.action.ActionEffect` is written whole, as its
 concrete model, wherever an ``ActionResult`` is written: a step's
@@ -8,16 +8,21 @@ action that produced it, and the action class's nested ``Effect`` is the model
 to read it with (``docs/architecture_design.md`` §4.5, "动作效果"). There is
 no effect registry: the action registry already maps that key to the class.
 
-``schemas/`` never imports an action class, so the lookup happens here, on the
-trace-reading side, the way a fragment's class is found by its key before
-``from_trace`` reads it. :func:`restore_effects` walks the *schema* of the
-model about to be validated — its fields' annotations, not the JSON's key
-names — and replaces each recorded effect mapping with the validated
-instance; pydantic then accepts the instance in the field typed
-``ActionEffect``. A key no action is registered under, an action that
-declares no ``Effect``, or a payload its ``Effect`` refuses is a
-``ValueError``: the reader turns it into ``TraceSchemaError`` naming the file.
-Nothing is ever kept as a bare dict.
+A capability's :class:`~spectragent.schemas.restoration.RestorationEvidence`
+goes the same way (§4.9): written whole in a restoration check, read back by
+its ``capability_id`` — the key of the capability that measured it — with the
+``RestorationEvidence`` that capability's class names, found in the
+capability registry.
+
+``schemas/`` never imports an action or a capability class, so the lookup
+happens here, on the trace-reading side, the way a fragment's class is found
+by its key before ``from_trace`` reads it. Each restore walks the *schema* of
+the model about to be validated — its fields' annotations, not the JSON's key
+names — and replaces each recorded payload of its kind with the validated
+instance; pydantic then accepts the instance in the field typed with the
+base. An id nothing is registered under, a class that declares no model, or
+a payload its model refuses is a ``ValueError``: the reader turns it into
+``TraceSchemaError`` naming the file. Nothing is ever kept as a bare dict.
 """
 
 from __future__ import annotations
@@ -29,10 +34,15 @@ from typing import Annotated, Any, Union, get_args, get_origin
 from pydantic import BaseModel
 
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.schemas.action import ActionEffect
+from spectragent.schemas.restoration import RestorationEvidence
 
 #: How an ``effect_id`` becomes the class that reads it.
 EffectResolver = Callable[[str], type[ActionEffect]]
+
+#: How a ``capability_id`` becomes the class that reads its restoration evidence.
+EvidenceResolver = Callable[[str], type[RestorationEvidence]]
 
 
 def registered_effect(effect_id: str) -> type[ActionEffect]:
@@ -56,6 +66,28 @@ def registered_effect(effect_id: str) -> type[ActionEffect]:
     return effect
 
 
+def registered_restoration_evidence(capability_id: str) -> type[RestorationEvidence]:
+    """The ``RestorationEvidence`` of the capability registered under *capability_id*.
+
+    Raises:
+        ValueError: no capability is registered under the key, or the
+            capability declares no ``RestorationEvidence``.
+    """
+    try:
+        capability = CapabilityRegistrar.get(capability_id)
+    except KeyError:
+        raise ValueError(
+            f"recorded restoration evidence {capability_id!r} names no registered capability"
+        ) from None
+    evidence = getattr(capability, "RestorationEvidence", None)
+    if not (isinstance(evidence, type) and issubclass(evidence, RestorationEvidence)):
+        raise ValueError(
+            f"recorded restoration evidence {capability_id!r}: capability "
+            f"{capability.__name__} declares no RestorationEvidence"
+        )
+    return evidence
+
+
 def restore_effects(model: type[BaseModel], data: Any, resolve: EffectResolver) -> Any:
     """*data*, the JSON form of a *model*, with every recorded effect rebuilt as its type.
 
@@ -68,13 +100,39 @@ def restore_effects(model: type[BaseModel], data: Any, resolve: EffectResolver) 
             ``effect_id``, names no action with an ``Effect`` (from
             *resolve*), or does not validate as that ``Effect``.
     """
-    return _Walk(resolve).value(model, data)
+    return _Walk(ActionEffect, "effect_id", "action effect", resolve).value(model, data)
+
+
+def restore_restoration_evidence(
+    model: type[BaseModel], data: Any, resolve: EvidenceResolver
+) -> Any:
+    """*data*, the JSON form of a *model*, with every recorded restoration evidence rebuilt as its type.
+
+    The twin of :func:`restore_effects`, keyed by ``capability_id``.
+
+    Raises:
+        ValueError: an evidence is not a JSON object, has no string
+            ``capability_id``, names no capability with a
+            ``RestorationEvidence`` (from *resolve*), or does not validate as it.
+    """
+    return _Walk(RestorationEvidence, "capability_id", "restoration evidence", resolve).value(
+        model, data
+    )
 
 
 class _Walk:
-    """One restoration: the resolver and which annotations can hold an effect."""
+    """One restoration of one kind: the base it rebuilds, how, and which annotations hold it."""
 
-    def __init__(self, resolve: EffectResolver) -> None:
+    def __init__(
+        self,
+        base: type[BaseModel],
+        id_field: str,
+        noun: str,
+        resolve: Callable[[str], type[BaseModel]],
+    ) -> None:
+        self._base = base
+        self._id_field = id_field
+        self._noun = noun
         self._resolve = resolve
         self._carries: dict[Any, bool] = {}
 
@@ -91,8 +149,8 @@ class _Walk:
                 return value
             if len(holding) > 1:
                 raise TypeError(
-                    f"{annotation!r}: more than one union member can hold an action effect, "
-                    f"so a recorded one cannot be placed"
+                    f"{annotation!r}: more than one union member can hold a recorded "
+                    f"{self._noun}, so one cannot be placed"
                 )
             return self.value(holding[0], value)
         if origin in (list, tuple, set, frozenset):
@@ -105,8 +163,8 @@ class _Walk:
             if not isinstance(value, dict):
                 return value
             return {key: self.value(value_type, item) for key, item in value.items()}
-        if isinstance(annotation, type) and issubclass(annotation, ActionEffect):
-            return self._effect(value)
+        if isinstance(annotation, type) and issubclass(annotation, self._base):
+            return self._typed(value)
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             if not isinstance(value, dict):
                 return value
@@ -122,7 +180,7 @@ class _Walk:
         return value
 
     def carries(self, annotation: Any) -> bool:
-        """Whether a value of *annotation* can hold an action effect anywhere inside it."""
+        """Whether a value of *annotation* can hold this walk's kind anywhere inside it."""
         try:
             known = self._carries.get(annotation)
         except TypeError:  # an annotation with unhashable metadata: not cached
@@ -135,23 +193,30 @@ class _Walk:
         return found
 
     def _find(self, annotation: Any) -> bool:
-        if isinstance(annotation, type) and issubclass(annotation, ActionEffect):
+        if isinstance(annotation, type) and issubclass(annotation, self._base):
             return True
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             return any(self.carries(field.annotation) for field in annotation.model_fields.values())
         return any(self.carries(arg) for arg in get_args(annotation) if arg is not Ellipsis)
 
-    def _effect(self, value: Any) -> ActionEffect:
-        if isinstance(value, ActionEffect):
+    def _typed(self, value: Any) -> BaseModel:
+        if isinstance(value, self._base):
             return value
         if not isinstance(value, dict):
             raise ValueError(
-                f"a recorded action effect is a JSON object, not {type(value).__name__}"
+                f"a recorded {self._noun} is a JSON object, not {type(value).__name__}"
             )
-        effect_id = value.get("effect_id")
-        if not isinstance(effect_id, str) or not effect_id:
-            raise ValueError("a recorded action effect has no effect_id naming its action")
-        return self._resolve(effect_id).model_validate(value)
+        key = value.get(self._id_field)
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"a recorded {self._noun} has no {self._id_field} naming its producer")
+        return self._resolve(key).model_validate(value)
 
 
-__all__ = ["EffectResolver", "registered_effect", "restore_effects"]
+__all__ = [
+    "EffectResolver",
+    "EvidenceResolver",
+    "registered_effect",
+    "registered_restoration_evidence",
+    "restore_effects",
+    "restore_restoration_evidence",
+]

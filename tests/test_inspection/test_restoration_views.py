@@ -1,6 +1,7 @@
 """History/replay inspection uses committed evidence and recorded image presentation."""
 
 from io import BytesIO
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,15 @@ from spectragent.inspection import open_repository
 from spectragent.inspection.restoration import restoration_gap, restoration_results
 from spectragent.schemas.step_record import StepRecord
 from spectragent.viewer import create_app
+from tests._helpers.browser_evidence import browser_evidence
+
+
+def _record(data: dict[str, Any]) -> StepRecord:
+    """A step record whose evidence is the browser's own type, as the trace reader rebuilds it."""
+    check = data.get("restoration")
+    if check is not None:
+        check["evidence"] = [browser_evidence(**item) for item in check.get("evidence", [])]
+    return StepRecord.model_validate(data)
 
 
 def shot(cursor):
@@ -112,7 +122,7 @@ def make_pair(root, history_source="source"):
     )
     branch.commit_step(
         0,
-        StepRecord.model_validate(
+        _record(
             {
                 "step": 0,
                 "origin": "restored",
@@ -155,7 +165,7 @@ def make_pair(root, history_source="source"):
     )
     branch.commit_step(
         1,
-        StepRecord.model_validate(
+        _record(
             {
                 "step": 1,
                 "restoration": {

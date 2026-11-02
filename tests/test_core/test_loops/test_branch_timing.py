@@ -21,6 +21,9 @@ from tests._helpers.branch_fakes import (
     run_branch,
 )
 
+#: The fake capability's restoration evidence reads back through the capability registry.
+pytestmark = pytest.mark.usefixtures("branch_fake_registered")
+
 
 class Clock:
     def __init__(self):

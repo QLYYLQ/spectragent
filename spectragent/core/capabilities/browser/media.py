@@ -77,7 +77,7 @@ from spectragent.core.capabilities.browser.dom.capture import (
     FrameTargets,
     frame_tree_nodes,
 )
-from spectragent.schemas.restoration import (
+from spectragent.core.capabilities.browser.restoration_evidence import (
     MediaAlignment,
     MediaComparison,
     MediaEvidence,
@@ -975,8 +975,6 @@ class PendingAlignment:
     """
 
     recorded: MediaState | None
-    seek_timeout_s: float
-    end_lead_s: float
     cycle: int | None = None
     report: AlignmentReport | None = None
 
@@ -1209,12 +1207,12 @@ async def _align_one(
     to_end = target.ended is True
     play = target.paused is False
     seek_to = max(0.0, target.current_time - end_lead_s) if to_end else target.current_time
-    action: Literal["pause_and_seek", "seek_and_play", "seek_and_play_to_end"] = (
+    operation: Literal["pause_and_seek", "seek_and_play", "seek_and_play_to_end"] = (
         "seek_and_play_to_end" if to_end else "seek_and_play" if play else "pause_and_seek"
     )
     base: dict[str, Any] = {
         "element": recorded.label,
-        "action": action,
+        "operation": operation,
         "target_time": target.current_time,
         "target_paused": target.paused,
     }

@@ -43,6 +43,9 @@ from spectragent.core.capabilities.browser.observations import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.views import ChatInvokeCompletion
@@ -50,8 +53,9 @@ from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.agent_result import AgentResult
-from spectragent.schemas.restoration import Checkpoint, RestorationEvidence, Retarget
+from spectragent.schemas.restoration import Checkpoint, Retarget
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.browser_evidence import browser_evidence
 
 VIEWPORT = (1280, 720)
 IMAGE = (64, 36)
@@ -194,18 +198,15 @@ class FakeBrowserCap(CapabilityBase):
         moved = {**action.params, "index": now[before.index(index)]}
         return Retarget(action=Action(name=action.name, params=moved), method="geometry_signature")
 
-    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
-        # Only what this run negotiated: a vision-only agent has no meta.
+    async def verify_restoration(self, recorded: Any, restored: Any) -> BrowserRestorationEvidence:
+        # The browser's own evidence type, which a trace reads back as the
+        # browser's. Only what this run negotiated: a vision-only agent has no meta.
         before = getattr(recorded, "browser_meta", None)
         after = getattr(restored, "browser_meta", None)
         if before is None or after is None:
-            return RestorationEvidence(capability_id="browser")
-        recorded_url, restored_url = before.url, after.url
-        return RestorationEvidence(
-            capability_id="browser",
-            url_match=recorded_url == restored_url,
-            recorded_url=recorded_url,
-            restored_url=restored_url,
+            return browser_evidence()
+        return browser_evidence(
+            url_match=before.url == after.url, recorded_url=before.url, restored_url=after.url
         )
 
 

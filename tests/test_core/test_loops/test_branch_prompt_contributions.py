@@ -16,6 +16,9 @@ from spectragent.core.trace.usage import recorded_calls, recorded_usage
 from spectragent.schemas.prompt import PromptContribution, PromptRequest
 from tests._helpers.branch_fakes import BranchFakeAgent, ScriptedLLM, record_source, run_branch
 
+#: The fake capability's restoration evidence reads back through the capability registry.
+pytestmark = pytest.mark.usefixtures("branch_fake_registered")
+
 
 async def page_advice(*, request: PromptRequest) -> PromptContribution:
     assert request.helper is not None

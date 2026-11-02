@@ -29,6 +29,9 @@ from pathlib import Path
 import pytest
 
 from spectragent.core.benchmark_runner import TaskOutcome
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.trace.reader import RunTrace
 from spectragent.flywheel import metrics
 from tests._helpers import branch_driver as branch
@@ -121,6 +124,7 @@ def test_prefix_restores_with_every_step_verified(sweep: Sweep) -> None:
         for record in records[: branch.CHECKPOINT + 1]:
             assert record.restoration is not None
             (evidence,) = record.restoration.evidence
+            assert isinstance(evidence, BrowserRestorationEvidence)
             assert evidence.capability_id == "browser"
             assert evidence.url_match is True and evidence.signature_match is True
             assert evidence.screenshot_distance is not None and evidence.screenshot_distance <= 5

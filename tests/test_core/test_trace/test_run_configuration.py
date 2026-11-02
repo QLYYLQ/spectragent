@@ -574,12 +574,9 @@ class TestStepTimings:
         """
         from spectragent.agents._registrar import AgentRegistrar
         from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
-        from spectragent.schemas.restoration import (
-            RestorationCheck,
-            RestorationEvidence,
-            RestoredAction,
-        )
+        from spectragent.schemas.restoration import RestorationCheck, RestoredAction
         from spectragent.schemas.step_record import StepRecord
+        from tests._helpers.browser_evidence import browser_evidence
 
         agent_cls = AgentRegistrar.get(agent_id)
         entry = agent_cls.__wiring__["observation"]
@@ -603,8 +600,7 @@ class TestStepTimings:
             reason="screenshot_distance",
             reasons=["screenshot_distance"],
             evidence=[
-                RestorationEvidence(
-                    capability_id="browser",
+                browser_evidence(
                     url_match=True,
                     recorded_url="https://restored-marker.example/",
                     screenshot_distance=4321,

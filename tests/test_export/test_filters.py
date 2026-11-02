@@ -26,6 +26,7 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from tests._helpers.archive_recorder import open_session
+from tests._helpers.browser_evidence import browser_evidence
 from tests._helpers.export_traces import (
     START_URL,
     ExportStep,
@@ -202,6 +203,7 @@ class TestFiltered:
             verdict="warn",
             reason="url_mismatch",
             reasons=["url_mismatch", "screenshot_distance"],
+            evidence=[browser_evidence(url_match=False, screenshot_distance=9)],
         )
         diverged = warned.model_copy(update={"verdict": "diverged"})
         _one(tmp_path, "src")
@@ -239,7 +241,11 @@ class TestFiltered:
         ``warn`` case above is the one only it catches.
         """
         diverged = RestorationCheck(
-            step=1, verdict="diverged", reason="url_mismatch", reasons=["url_mismatch"]
+            step=1,
+            verdict="diverged",
+            reason="url_mismatch",
+            reasons=["url_mismatch"],
+            evidence=[browser_evidence(url_match=False)],
         )
         _one(tmp_path, "src")
         write_ui_tars_run(

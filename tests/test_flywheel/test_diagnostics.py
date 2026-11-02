@@ -17,8 +17,9 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.flywheel.cli import main
 from spectragent.flywheel.diagnostics import DiagnosticInputError, DifferenceMethod, diagnose
-from spectragent.schemas.restoration import BranchProvenance, RestorationCheck, RestorationEvidence
+from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.browser_evidence import browser_evidence
 from tests._helpers.flywheel_traces import config
 from tests._helpers.trace_builder import agent_result
 
@@ -71,11 +72,7 @@ def _run(
                 verdict="warn",
                 reason="screenshot_distance",
                 reasons=["screenshot_distance"],
-                evidence=[
-                    RestorationEvidence(
-                        capability_id="browser", screenshot_distance=8, url_match=None
-                    )
-                ],
+                evidence=[browser_evidence(screenshot_distance=8, url_match=None)],
             )
             if source is not None and step <= checkpoint
             else None

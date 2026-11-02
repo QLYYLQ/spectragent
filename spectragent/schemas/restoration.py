@@ -7,9 +7,12 @@ the way:
 
 - :class:`Retarget` — a capability's answer to "how should this recorded
   action run in the restored environment?" (``RestorationSupport``, §4.9);
-- :class:`RestorationEvidence` — a capability's measurement of how far a
-  restored observation is from the recorded one. It measures, never judges:
-  thresholds and ``strict | warn`` belong to the restorer;
+- :class:`RestorationEvidence` — the base of what one capability measured
+  between a recorded and a restored observation. Each capability that
+  implements ``RestorationSupport`` defines its own subclass — the facts it
+  measures, the limits its checks apply and the checks themselves — and
+  names it on its class; the trace reader reads one back as that type by
+  its ``capability_id``, the way it reads an action's ``Effect`` (§4.5);
 - :class:`RestoredAction` / :class:`RestorationCheck` — the restorer's
   verdict on one step, carried on that step's ``StepRecord.restoration``
   (§5.3);
@@ -19,60 +22,59 @@ the way:
   from (``TraceConfig.branch``, kept out of the configuration digest), with
   :class:`BranchTaskVariant` when the branch's task replaced the source's.
 
-Nothing here carries a price: token counts are the only cost the framework
-records.
+Nothing here names a capability's measures: the browser's evidence and checks
+are in ``core/capabilities/browser/restoration_evidence.py``. Nothing here
+carries a price either: token counts are the only cost the framework records.
 """
 
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Literal, get_args
+from typing import Any, ClassVar, Final, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    field_validator,
+    model_validator,
+)
 
 from spectragent.schemas.action import Action, ActionResult
 
-#: Why a restored step did not pass. The order of the literal is also the
-#: order the reasons are reported in (``RestorationCheck.reasons``), so the
-#: first one (``RestorationCheck.reason``) is the most fundamental: a page
-#: the replay could not serve explains every mismatch after it.
-RestorationReason = Literal[
-    "document_miss",
-    "url_mismatch",
-    "retarget_not_found",
-    "retarget_ambiguous",
-    "action_failed",
-    "signature_mismatch",
-    "media_mismatch",
-    "screenshot_distance",
-]
-
-#: :data:`RestorationReason` as a tuple, in precedence order.
-REASON_ORDER: tuple[RestorationReason, ...] = get_args(RestorationReason)
-
-#: How a recorded action was mapped onto the restored environment.
-#: ``identity`` — run as recorded (coordinate and navigation actions, and
-#: every action of a capability that does not implement ``RestorationSupport``);
-#: ``geometry_signature`` — an element index re-found by position and
-#: element signature; ``tab_order_url`` — a tab id re-found by its position
-#: and URL.
-RetargetMethod = Literal["identity", "geometry_signature", "tab_order_url"]
+#: The retarget method of an action that runs as recorded — the framework's own:
+#: every action of a capability that does not implement ``RestorationSupport``
+#: runs this way. Every other method is a capability's own name for how it
+#: re-found a target (the browser's ``geometry_signature`` and ``tab_order_url``).
+IDENTITY: Final = "identity"
 
 #: Why a retarget found no single answer.
 RetargetFailure = Literal["not_found", "ambiguous"]
+
+#: The framework's own reasons a restored step does not pass, found by re-executing
+#: its recorded actions: a retarget that found no target, or more than one; an action
+#: whose outcome differs from the recorded one, or that raised. Every other reason is
+#: a capability's own check (:attr:`RestorationEvidence.REASONS`).
+ActionReason = Literal["retarget_not_found", "retarget_ambiguous", "action_failed"]
+
+#: :data:`ActionReason` as a tuple, in reporting order.
+ACTION_REASONS: tuple[ActionReason, ...] = get_args(ActionReason)
 
 
 class Retarget(BaseModel):
     """How one recorded action should run in the restored environment.
 
     Exactly one of ``action`` and ``failure`` is set: either there is an
-    action to execute, or there is a reason there is none. ``detail`` says
-    what was matched (or how many candidates there were) for a reader of
-    the trace.
+    action to execute, or there is a reason there is none. ``method`` is how
+    the answer was found: :data:`IDENTITY` (as recorded) or the capability's
+    own name for its way. ``detail`` says what was matched (or how many
+    candidates there were) for a reader of the trace.
     """
 
     model_config = ConfigDict(frozen=True)
 
     action: Action | None
-    method: RetargetMethod
+    method: str = Field(min_length=1)
     failure: RetargetFailure | None = None
     detail: str = ""
 
@@ -86,206 +88,57 @@ class Retarget(BaseModel):
         return self
 
 
-#: How a media element of one observation corresponds to the other's
-#: (``docs/architecture_design.md`` §4.14 "恢复：重定位与校验"). ``matched``:
-#: exactly one counterpart, in the same place and order; ``missing``: a
-#: recorded element with no counterpart; ``extra``: a restored element no
-#: recorded one corresponds to; ``ambiguous``: candidates the position and
-#: order cannot single out.
-MediaCorrespondence = Literal["matched", "missing", "extra", "ambiguous"]
-
-#: Which of the two readings around the screenshots a comparison used.
-MediaReadingPoint = Literal["before", "after"]
-
-#: What aligning one media element came to. ``aligned``: moved to the recorded
-#: position and play state, the seek (and the play) completed in time;
-#: ``already_aligned``: it was already there, nothing was done; ``failed``: the
-#: seek or the play did not complete in time, and it was put back where it
-#: was (``rolled_back``); ``not_restorable``: nothing can be aligned (a live
-#: stream, an ambiguous or missing counterpart); ``unknown``: the recorded
-#: position or play state is not known, so there was no target.
-MediaAlignmentOutcome = Literal["aligned", "already_aligned", "failed", "not_restorable", "unknown"]
-
-#: What alignment did to one element: paused and seeked; seeked and played; seeked a
-#: short lead before the end and played through to the natural end (a recorded
-#: element that had ended); or nothing.
-MediaAlignmentAction = Literal["pause_and_seek", "seek_and_play", "seek_and_play_to_end", "none"]
-
-
-class MediaComparison(BaseModel):
-    """One media element compared between a recorded and a restored observation.
-
-    ``element`` is the capability's name for it (the browser's
-    ``<frame>#<order> <tag>``). ``live``: either side is a live stream, which
-    has no position to compare. The times and play states are the reading
-    both sides took at the same point (``reading``: before the screenshot
-    where both have it, else after); ``None`` where it was not measured,
-    which never decides. Measures only: the restorer applies its tolerance.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    element: str
-    correspondence: MediaCorrespondence
-    live: bool = False
-    reading: MediaReadingPoint | None = None
-    recorded_time: float | None = None
-    restored_time: float | None = None
-    recorded_paused: bool | None = None
-    restored_paused: bool | None = None
-    detail: str = ""
-
-
-class MediaAlignment(BaseModel):
-    """What aligning one media element to the recorded state did, before a restored capture.
-
-    ``target_*``: the recorded state aimed at; ``from_*``: the element before
-    alignment; ``reached_*``, ``ready_state`` and ``seeking``: where it stood
-    when alignment finished. ``seek_ms``: how long the seek took to complete
-    (``None``: it did not, or none was made). ``rolled_back`` is set only for a
-    ``failed`` alignment: whether putting the element back where it was
-    completed. ``detail`` says why, in words.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    element: str
-    outcome: MediaAlignmentOutcome
-    action: MediaAlignmentAction = "none"
-    target_time: float | None = None
-    target_paused: bool | None = None
-    from_time: float | None = None
-    from_paused: bool | None = None
-    reached_time: float | None = None
-    reached_paused: bool | None = None
-    ready_state: int | None = None
-    seeking: bool | None = None
-    seek_ms: float | None = Field(default=None, ge=0)
-    rolled_back: bool | None = None
-    detail: str = ""
-
-
-class MediaEvidence(BaseModel):
-    """Media playback state compared between two observations, and what was aligned first.
-
-    ``comparisons`` is ``None`` when no comparison could be made — a side
-    carries no media state, or both of its readings are unknown — and
-    ``detail`` says why; an empty list means neither side has a media
-    element. ``recorded_unreachable_frames`` / ``restored_unreachable_frames``
-    name the embedded frames whose own media read did not answer on each
-    side: what media they hold is unknown, so the step cannot be restored.
-    ``alignment`` is ``None`` when no alignment was requested for the
-    restored observation (``media: none``); otherwise one entry per recorded
-    element it considered, and ``alignment_detail`` says why it is empty
-    when it is.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    comparisons: list[MediaComparison] | None = None
-    detail: str = ""
-    recorded_unreachable_frames: list[str] = Field(default_factory=list)
-    restored_unreachable_frames: list[str] = Field(default_factory=list)
-    alignment: list[MediaAlignment] | None = None
-    alignment_detail: str = ""
-
-
-#: What a masked box covers: a media element (``<video>`` / ``<audio>``), or an
-#: embedded frame whose own media read did not answer on that side, so what it
-#: plays is unknown (on the declared video sites it is the player's frame).
-MaskedAreaKind = Literal["media_element", "unreachable_frame"]
-
-
-class MaskedArea(BaseModel):
-    """One box masked out of a screenshot comparison.
-
-    ``side``: whose media facts measured it (the mask is the union of both
-    sides' boxes and is applied to both images); ``element``: the media
-    element's name (the browser's ``<frame>#<order> <tag>``) or the frame's
-    path. The box is in CSS pixels of the top viewport, clipped to it; a box
-    that falls outside the viewport masks nothing and is not listed.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    side: Literal["recorded", "restored"]
-    kind: MaskedAreaKind
-    element: str
-    x: float = Field(ge=0)
-    y: float = Field(ge=0)
-    width: float = Field(gt=0)
-    height: float = Field(gt=0)
-
-
-class MediaAreaEvidence(BaseModel):
-    """What a page's media-area rules set aside in one restoration measurement.
-
-    Present only on a page a media-area rule declares (the browser's replay
-    rule set, ``docs/architecture_design.md`` §4.14): ``rule_ids`` are the
-    rules whose scope matched both page URLs. The media playback state is
-    then not judged (the restorer reads this), and ``areas`` are masked out
-    of both screenshots before their distance. ``masked_share`` is the share
-    of the image's pixels the mask covers (the larger of the two images;
-    ``None`` without both images). ``unmasked_distance`` is the distance of
-    the whole images, ``masked_distance`` the distance after masking.
-    ``mask_applied`` says which one ``RestorationEvidence.screenshot_distance``
-    carries: the masked one, unless the mask covers so much of the image
-    that the rest says too little about the page — then the whole images'
-    one, as on an undeclared page, never a pass by a nearly blank
-    comparison. ``detail`` says why the mask was not applied, why a side's
-    boxes are unknown, or that there was no pair of images.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    rule_ids: list[str] = Field(min_length=1)
-    areas: list[MaskedArea] = Field(default_factory=list)
-    masked_share: float | None = Field(default=None, ge=0, le=1)
-    unmasked_distance: int | None = Field(default=None, ge=0)
-    masked_distance: int | None = Field(default=None, ge=0)
-    mask_applied: bool = False
-    detail: str = ""
-
-
 class RestorationEvidence(BaseModel):
-    """What one capability measured between a recorded and a restored observation.
+    """What one capability measured between a recorded and a restored observation — the base.
 
-    Every measure is ``None`` when the capability does not measure it or
-    could not this time (no screenshot fragment in this run, say); a
-    ``None`` never takes part in a verdict. ``signature_missing`` /
-    ``signature_extra`` detail a signature comparison: elements of the
-    recorded page absent from the restored one, and the reverse (both 0
-    when no comparison was made). ``media`` compares media playback state
-    and records the media alignment done before the restored capture
-    (:class:`MediaEvidence`).
+    A capability that implements ``RestorationSupport``
+    (``core/capabilities/base.py``) defines a subclass — the facts it measures,
+    the limits its checks apply (from its own configuration) and the checks —
+    and names it on its class as ``RestorationEvidence``. ``capability_id`` is
+    the registry key of the capability that measured it: the trace reader looks
+    it up in the capability registry and reads the payload back with that
+    capability's ``RestorationEvidence`` (``core/trace/effects.py``), as an
+    action's ``Effect`` is read back by its ``effect_id``
+    (``docs/architecture_design.md`` §4.5, §4.9). This package never imports a
+    capability.
 
-    ``recorded_url`` / ``restored_url`` are the two page URLs as observed;
-    ``url_match`` compares them after leaving out the query parameters a
-    site's page-URL rules declare (the browser's replay rule set,
-    ``docs/architecture_design.md`` §4.14). ``url_ignored_query`` names the
-    parameters left out of either URL, ``url_rule_ids`` the rules that left
-    them out; both are empty when the URLs were compared exactly.
-
-    ``media_areas`` is set only on a page a site's media-area rules declare
-    (:class:`MediaAreaEvidence`): ``media`` is still measured and kept, but
-    the restorer does not judge it, and ``screenshot_distance`` is the
-    distance with the media areas masked out of both images (the whole
-    images' distance when the mask would cover too much of them).
+    :attr:`REASONS` names the subclass's checks, in the order they are
+    reported; :meth:`failed_checks` is the judgement: the checks this
+    measurement does not pass, from its own fields alone. A measure the
+    capability did not take, or could not take this time, decides nothing.
     """
 
-    capability_id: str
-    url_match: bool | None = None
-    recorded_url: str | None = None
-    restored_url: str | None = None
-    url_ignored_query: list[str] = Field(default_factory=list)
-    url_rule_ids: list[str] = Field(default_factory=list)
-    signature_match: bool | None = None
-    signature_missing: int = Field(default=0, ge=0)
-    signature_extra: int = Field(default=0, ge=0)
-    screenshot_distance: int | None = Field(default=None, ge=0)
-    document_misses: int | None = Field(default=None, ge=0)
-    media: MediaEvidence | None = None
-    media_areas: MediaAreaEvidence | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Every check :meth:`failed_checks` can report, in reporting order.
+    REASONS: ClassVar[tuple[str, ...]] = ()
+
+    capability_id: str = Field(min_length=1)
+
+    def failed_checks(self) -> list[str]:
+        """The checks of :attr:`REASONS` this measurement does not pass, in that order."""
+        raise NotImplementedError(f"{type(self).__name__} must implement failed_checks()")
+
+
+def ordered_reasons(failed: Collection[str], evidence: Sequence[RestorationEvidence]) -> list[str]:
+    """*failed* in reporting order: the restored observation's checks, then its actions'.
+
+    First the capabilities' own checks — in evidence order, each in its evidence
+    type's ``REASONS`` order — then :data:`ACTION_REASONS`: an observation that
+    already left the recording explains the action failures after it.
+
+    Raises:
+        ValueError: A reason that no evidence here declares and that is not the
+            framework's.
+    """
+    declared = [reason for item in evidence for reason in type(item).REASONS]
+    unknown = sorted(set(failed) - {*declared, *ACTION_REASONS})
+    if unknown:
+        raise ValueError(
+            f"restoration reasons {unknown} are neither the framework's {list(ACTION_REASONS)} "
+            f"nor a check the evidence here declares ({declared})"
+        )
+    return [reason for reason in dict.fromkeys([*declared, *ACTION_REASONS]) if reason in failed]
 
 
 class RestoredAction(BaseModel):
@@ -293,16 +146,18 @@ class RestoredAction(BaseModel):
 
     ``executed`` is the action handed to ``act_fn`` — ``None`` when a
     retarget failed under ``verify: strict`` and nothing was executed.
-    ``recorded_success`` is the source result's ``success`` (``None`` when
-    the source step has no result for it); ``live_success`` is the restored
-    execution's, and ``live_error`` the exception it raised, if it raised
-    (``"Type: message"``; a returned failure is compared by ``success``
-    alone, since the recording failed the same way or it did not).
+    ``method`` / ``failure`` / ``detail`` are the retarget's
+    (:class:`Retarget`). ``recorded_success`` is the source result's
+    ``success`` (``None`` when the source step has no result for it);
+    ``live_success`` is the restored execution's, and ``live_error`` the
+    exception it raised, if it raised (``"Type: message"``; a returned failure
+    is compared by ``success`` alone, since the recording failed the same way
+    or it did not).
     """
 
     recorded: Action
     executed: Action | None
-    method: RetargetMethod
+    method: str = Field(min_length=1)
     failure: RetargetFailure | None = None
     detail: str = ""
     recorded_success: bool | None
@@ -314,27 +169,49 @@ class RestoredAction(BaseModel):
 class RestorationCheck(BaseModel):
     """The restorer's verdict on one restored step.
 
-    ``reasons`` lists every check that did not pass, in
-    :data:`REASON_ORDER`; ``reason`` is the first of them. ``verdict`` is
-    ``ok`` exactly when nothing failed, and otherwise says which policy
-    applied: ``warn`` (recorded, the run went on) or ``diverged`` (``strict``:
-    the run ends here). ``actions`` is empty on the checkpoint step itself —
-    its action is the one the branch is about to decide.
+    ``evidence`` holds each restoring capability's own measurement, as its
+    own type. ``reasons`` lists every check that did not pass, in
+    :func:`ordered_reasons` order — the capabilities' own checks, then the
+    framework's :data:`ACTION_REASONS` — and ``reason`` is the first of them.
+    ``verdict`` is ``ok`` exactly when nothing failed, and otherwise says
+    which policy applied: ``warn`` (recorded, the run went on) or
+    ``diverged`` (``strict``: the run ends here). ``actions`` is empty on the
+    checkpoint step itself — its action is the one the branch is about to
+    decide.
     """
 
     step: int = Field(ge=0)
     verdict: Literal["ok", "warn", "diverged"]
-    reason: RestorationReason | None = None
-    reasons: list[RestorationReason] = Field(default_factory=list)
-    evidence: list[RestorationEvidence] = Field(default_factory=list)
+    reason: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+    evidence: list[SerializeAsAny[RestorationEvidence]] = Field(default_factory=list)
     actions: list[RestoredAction] = Field(default_factory=list)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _evidence_is_typed(cls, value: Any) -> Any:
+        """Evidence arrives as its capability's own model, never as a bare mapping.
+
+        Only the capability registry knows which class a ``capability_id``
+        names, and this package does not import it: recorded evidence is
+        rebuilt by the trace reader (``core/trace/effects.py``) before the
+        check is validated. A mapping reaching here was not, and would
+        otherwise be read as this base or refused for its fields.
+        """
+        if isinstance(value, (list, tuple)) and any(isinstance(item, Mapping) for item in value):
+            raise ValueError(
+                "restoration evidence must be RestorationEvidence instances; recorded "
+                "evidence is read back by the trace reader, which resolves its "
+                "capability_id through the capability registry"
+            )
+        return value
 
     @model_validator(mode="after")
     def _consistent(self) -> "RestorationCheck":
-        ordered = [r for r in REASON_ORDER if r in self.reasons]
+        ordered = ordered_reasons(self.reasons, self.evidence)
         if list(self.reasons) != ordered:
             raise ValueError(
-                f"reasons must be distinct and in REASON_ORDER; got {self.reasons!r}, "
+                f"reasons must be distinct and in reporting order; got {self.reasons!r}, "
                 f"expected {ordered!r}"
             )
         first = self.reasons[0] if self.reasons else None
@@ -440,25 +317,16 @@ class BranchProvenance(BaseModel):
 
 
 __all__ = [
-    "REASON_ORDER",
+    "ACTION_REASONS",
+    "IDENTITY",
+    "ActionReason",
     "BranchProvenance",
     "BranchTaskVariant",
     "Checkpoint",
-    "MaskedArea",
-    "MaskedAreaKind",
-    "MediaAlignment",
-    "MediaAlignmentAction",
-    "MediaAlignmentOutcome",
-    "MediaAreaEvidence",
-    "MediaComparison",
-    "MediaCorrespondence",
-    "MediaEvidence",
-    "MediaReadingPoint",
     "RestorationCheck",
     "RestorationEvidence",
-    "RestorationReason",
     "RestoredAction",
     "Retarget",
     "RetargetFailure",
-    "RetargetMethod",
+    "ordered_reasons",
 ]

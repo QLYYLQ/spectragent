@@ -12,6 +12,7 @@ from spectragent.monitoring import ProgressState, attach_progress
 from spectragent.schemas.action import Action
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
+from tests._helpers.browser_evidence import browser_evidence
 
 
 async def test_call_lifetime_return_failure_and_unknown_usage():
@@ -203,7 +204,11 @@ async def test_strict_restore_failure_keeps_zero_policy_steps_and_branch_context
         return None
 
     check = RestorationCheck(
-        step=0, verdict="diverged", reason="url_mismatch", reasons=["url_mismatch"]
+        step=0,
+        verdict="diverged",
+        reason="url_mismatch",
+        reasons=["url_mismatch"],
+        evidence=[browser_evidence(url_match=False)],
     )
     record = StepRecord(
         step=0,

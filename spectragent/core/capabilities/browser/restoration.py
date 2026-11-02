@@ -36,8 +36,11 @@ element signatures, the Hamming distance between the two screenshots'
 misses the capability counted since its last measurement, and the two
 screenshots' media playback states with the media alignment done before the
 restored capture (:func:`media_measure`, ``media.py``). Every measure is
-``None`` when its fragment (or its bytes) is absent on either side. Never a
-verdict: thresholds and ``strict | warn`` are the restorer's.
+``None`` when its fragment (or its bytes) is absent on either side. The
+result is the browser's own evidence type
+(``restoration_evidence.py::BrowserRestorationEvidence``), which records the
+limits the capability's knobs set and judges itself against them
+(``failed_checks``); ``strict | warn`` is the restorer's.
 
 **Media areas** (:func:`media_area_measure`). On a page a media-area rule of
 the replay's rule set declares (``replay/media_areas.py``; both page URLs in
@@ -53,7 +56,7 @@ with and without the mask; past
 the mask is not applied and the whole images are compared, as on an
 undeclared page. The boxes and the masking are ``media_mask.py``'s, public
 to other readers of a screenshot's media areas. The media playback state is
-still measured and kept; the restorer does not judge it on such a page.
+still measured and kept; the media check does not judge it on such a page.
 """
 
 from __future__ import annotations
@@ -89,16 +92,16 @@ from spectragent.core.capabilities.browser.replay.page_urls import (
     PageUrlRule,
     compare_page_urls,
 )
-from spectragent.schemas.action import Action
-from spectragent.schemas.observation._registrar import fragment_field_name
-from spectragent.schemas.restoration import (
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
     MaskedArea,
     MediaAlignment,
     MediaAreaEvidence,
     MediaEvidence,
-    RestorationEvidence,
-    Retarget,
 )
+from spectragent.schemas.action import Action
+from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.restoration import IDENTITY, Retarget
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +208,7 @@ def bounds_within(recorded: DOMRect, restored: DOMRect, tolerance_px: float) -> 
 
 
 def _identity(action: Action) -> Retarget:
-    return Retarget(action=action.model_copy(deep=True), method="identity")
+    return Retarget(action=action.model_copy(deep=True), method=IDENTITY)
 
 
 def _rewritten(action: Action, **params: Any) -> Action:
@@ -518,23 +521,28 @@ def measure(
     capability_id: str,
     document_misses: int | None,
     media: MediaEvidence | None,
+    screenshot_max_distance: int,
+    media_time_tolerance_s: float,
     page_urls: Sequence[PageUrlRule] = (),
     media_areas: Sequence[MediaAreaRule] = (),
-) -> RestorationEvidence:
+) -> BrowserRestorationEvidence:
     """What the browser measures between a recorded and a restored observation.
 
     ``document_misses`` is the capability's own count of main-frame document
     misses since its last measurement (``None`` when the network is live);
     ``media`` is :func:`media_measure`'s comparison with the alignment the
-    capability did since its last measurement; ``page_urls`` are the replay's
-    page-URL rules, whose declared query parameters the URL comparison
-    leaves out (:func:`~spectragent.core.capabilities.browser.replay.page_urls.compare_page_urls`;
+    capability did since its last measurement; ``screenshot_max_distance``
+    and ``media_time_tolerance_s`` are the limits the evidence's checks
+    apply (the capability's knobs), recorded with it; ``page_urls`` are the
+    replay's page-URL rules, whose declared query parameters the URL
+    comparison leaves out
+    (:func:`~spectragent.core.capabilities.browser.replay.page_urls.compare_page_urls`;
     none when the network is live, and the URLs then compare exactly);
     ``media_areas`` are the replay's media-area rules: on a page one of them
     declares, the screenshot distance is measured with the media areas
     masked out (:func:`media_area_measure`) and the evidence carries
-    ``media_areas``, which tells the restorer not to judge ``media``; the
-    rest is read from the two observations.
+    ``media_areas``, which keeps its media check from judging ``media``;
+    the rest is read from the two observations.
     """
     recorded_url, restored_url = observation_url(recorded), observation_url(restored)
     url = PageUrlComparison(match=False)
@@ -558,7 +566,7 @@ def measure(
     else:
         distance = areas.masked_distance if areas.mask_applied else areas.unmasked_distance
 
-    return RestorationEvidence(
+    return BrowserRestorationEvidence(
         capability_id=capability_id,
         url_match=url_match,
         recorded_url=recorded_url,
@@ -569,8 +577,10 @@ def measure(
         signature_missing=missing,
         signature_extra=extra,
         screenshot_distance=distance,
+        screenshot_max_distance=screenshot_max_distance,
         document_misses=document_misses,
         media=media,
+        media_time_tolerance_s=media_time_tolerance_s,
         media_areas=areas,
     )
 

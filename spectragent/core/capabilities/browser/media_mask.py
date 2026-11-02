@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.core.capabilities.browser.media import MediaRect
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
-from spectragent.schemas.restoration import MaskedAreaKind
+from spectragent.core.capabilities.browser.restoration_evidence import MaskedAreaKind
 
 MAX_MASKED_SHARE: Final = 0.75
 """The largest share of a screenshot a media-area mask may cover and still be compared.
@@ -42,7 +42,7 @@ The difference hash reads the image as a 9x8 grid of averages, one bit per
 horizontally adjacent pair: 64 bits. Masked pixels are the same on both
 sides, so with three quarters of the image masked only about 16 bits still
 read the page, and even a wholly different rest of the page flips about half
-of them — barely past the restorer's default ``screenshot_max_distance`` of
+of them — barely past the browser's default ``screenshot_max_distance`` of
 5 — while a smaller difference cannot fail at all. Past this share the
 masked distance would pass by construction, so the mask is not applied: the
 screenshot distance is the whole images' one, as on an undeclared page, and

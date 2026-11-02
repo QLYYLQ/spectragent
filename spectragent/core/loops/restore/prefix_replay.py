@@ -1,12 +1,23 @@
 """``prefix_replay`` — the v1 restorer: re-execute the recorded prefix, verifying each step.
 
 For each step ``k`` before the checkpoint *t* (``docs/architecture_design.md``
-§4.1 "恢复器"): one ``env.observe`` (one cycle, as the source run took) →
+§4.1 "恢复器"): ``env.align_next_observation(recorded obs_k)`` → one
+``env.observe`` (one cycle, as the source run took) →
 ``env.verify_restoration(recorded obs_k, live obs_k)`` → for each action the
 source executed at ``k``: ``env.retarget`` → ``act_fn`` → compare the outcome
 with the recorded one. Then one more observe, and the checkpoint step's
 observation is verified the same way. Each step is handed back as it is
 restored.
+
+Every restored observation, the checkpoint's included, is announced to the
+environment first (``align_next_observation``): a capability that can put
+its own clock-driven state back where the recording had it
+(``RestorationAlignment``) does so inside that observation's capture — the
+browser its media, when its ``align_media`` says so — and reports it with
+the next ``verify_restoration``. Nothing is announced after the checkpoint.
+What each capability measures, and the limits its checks apply, are the
+capability's (its ``RestorationEvidence``); this restorer adds the action
+checks and the policy (``checks.py``).
 
 Only what the source executed runs: an action its Loop skipped after a failed
 one (``StepRecord.skipped_actions``), or one after a ``done`` or a raise, never
@@ -26,9 +37,6 @@ Knobs:
   that raised, is one too, and the step's later actions are not executed);
   ``warn``: failed checks are recorded on the step and the restoration goes
   on (an action whose retarget failed runs as recorded);
-- ``screenshot_max_distance`` — the largest Hamming distance between the
-  recorded and restored screenshots' 64-bit perceptual hashes that still
-  passes (default 5);
 - ``pace`` — how long to wait between restored steps (``docs/architecture_design.md``
   §4.1 "恢复节奏"). ``none`` (default): no wait. ``recorded_llm_latency``:
   wait, before executing step ``k``'s actions, as long as the source run
@@ -41,22 +49,7 @@ Knobs:
   goes on at once, never hurrying. A source step that executes actions but
   measured no action spans is refused (:meth:`PrefixReplayRestorer.source_problems`).
   Either wait only approximates media playback position; neither restores
-  it;
-- ``media`` — ``align`` (default): before every restored observation,
-  the checkpoint's included, ``env.align_next_observation`` asks the
-  environment to move matched media elements to the recorded position and
-  play state inside that observation's capture (after its settle wait,
-  before its screenshot), and the next ``verify_restoration`` reports what
-  was done; ``none``: nothing is aligned (the control arm). Nothing is
-  requested after the checkpoint's observation;
-- ``media_time_tolerance_s`` — how far, in seconds, a media element's
-  restored position may lie from the recorded one and still pass (default 1);
-- ``media_seek_timeout_s`` — how long each alignment seek, and the play
-  after it, may take to complete (default 2); one that does not is undone
-  and the step fails ``media_mismatch``;
-- ``media_end_lead_s`` — a recorded element that had ended is sought this
-  long before its end and played through to the natural end (default 0.5;
-  shorter than ``media_seek_timeout_s``).
+  it.
 """
 
 import asyncio
@@ -231,18 +224,6 @@ class PrefixReplayRestorer(RestorerBase):
             ),
         ),
     ] = "strict"
-    screenshot_max_distance: Annotated[
-        int,
-        Field(
-            default=5,
-            ge=0,
-            le=64,
-            description=(
-                "Largest Hamming distance between the recorded and restored "
-                "screenshots' 64-bit perceptual hashes (dHash) that still passes."
-            ),
-        ),
-    ] = 5
     pace: Annotated[
         Literal["none", "recorded_llm_latency", "recorded_timeline"],
         Field(
@@ -265,77 +246,6 @@ class PrefixReplayRestorer(RestorerBase):
             ),
         ),
     ] = "none"
-    media: Annotated[
-        Literal["none", "align"],
-        Field(
-            default="align",
-            description=(
-                "'align': before every restored observation (the checkpoint's "
-                "included), the environment moves each media element it can match "
-                "to the recorded position and play state, inside that "
-                "observation's capture after the settle wait and before the "
-                "screenshot; every action and its outcome is recorded with the "
-                "step's restoration check, and a seek that does not complete is "
-                "undone and fails the step. Nothing is aligned after the "
-                "checkpoint. 'none': nothing is aligned; the media state is still "
-                "compared."
-            ),
-        ),
-    ] = "align"
-    media_time_tolerance_s: Annotated[
-        float,
-        Field(
-            default=1.0,
-            ge=0,
-            le=60,
-            description=(
-                "How far, in seconds, a media element's restored playback position "
-                "may lie from the recorded one and still pass the restoration check. "
-                "A different paused state, a missing or extra element, an ambiguous "
-                "match or a live stream fails regardless; an unknown value never "
-                "decides."
-            ),
-        ),
-    ] = 1.0
-    media_seek_timeout_s: Annotated[
-        float,
-        Field(
-            default=2.0,
-            gt=0,
-            le=30,
-            description=(
-                "With media: align, how long each seek, and the play after it for a "
-                "media element the recording showed playing, may take to complete "
-                "(seeked fired, no longer seeking, a frame to show). One that does not "
-                "complete is put back where it was and fails the step."
-            ),
-        ),
-    ] = 2.0
-    media_end_lead_s: Annotated[
-        float,
-        Field(
-            default=0.5,
-            gt=0,
-            le=10,
-            description=(
-                "With media: align, a media element the recording showed at its end "
-                "(ended) is sought this many seconds before the recorded end and played "
-                "through to its natural end, so the player shows what it shows at an end; "
-                "a seek straight to the end leaves a stale frame and no end screen. The "
-                "play to the end must finish within media_seek_timeout_s, so this must be "
-                "shorter than that."
-            ),
-        ),
-    ] = 0.5
-
-    def __post_init__(self) -> None:
-        if self.media_end_lead_s >= self.media_seek_timeout_s:
-            raise ValueError(
-                f"media_end_lead_s ({self.media_end_lead_s:g} s) is not shorter than "
-                f"media_seek_timeout_s ({self.media_seek_timeout_s:g} s): playing the last "
-                "media_end_lead_s seconds to a recorded end could never finish in time. "
-                "Shorten the lead or raise the timeout."
-            )
 
     def source_problems(self, source: SourceRun) -> list[str]:
         """Under ``pace: recorded_timeline``, the restored steps whose action start times are unknown."""
@@ -357,7 +267,9 @@ class PrefixReplayRestorer(RestorerBase):
         for step in range(ctx.checkpoint_step):
             recorded_obs = ctx.source.observation(step, ctx.negotiated_obs)
             record = ctx.source.record(step)
-            await self._request_alignment(ctx, recorded_obs)
+            # Each aligning capability decides, by its own configuration,
+            # what to put back inside the next capture (module docstring).
+            await ctx.env.align_next_observation(recorded_obs)
             live_obs = await self._observe(ctx, step, recorded_obs, timeline)
             evidence = await ctx.env.verify_restoration(recorded_obs, live_obs)
             # A world that already left the recording is not acted on.
@@ -433,7 +345,7 @@ class PrefixReplayRestorer(RestorerBase):
         # The checkpoint: the observation the branch decides on.
         step = ctx.checkpoint_step
         recorded_obs = ctx.source.observation(step, ctx.negotiated_obs)
-        await self._request_alignment(ctx, recorded_obs)
+        await ctx.env.align_next_observation(recorded_obs)
         live_obs = await self._observe(ctx, step, recorded_obs, timeline)
         evidence = await ctx.env.verify_restoration(recorded_obs, live_obs)
         check = self._judge(step, evidence, [])
@@ -488,29 +400,13 @@ class PrefixReplayRestorer(RestorerBase):
             return await ctx.env.observe(ctx.negotiated_obs)
         return await timeline.observe(ctx, step, recorded_obs)
 
-    async def _request_alignment(self, ctx: RestorationContext, recorded_obs: Any) -> None:
-        """Under ``media: align``, have the next observation aligned to *recorded_obs*."""
-        if self.media == "align":
-            await ctx.env.align_next_observation(
-                recorded_obs,
-                media_seek_timeout_s=self.media_seek_timeout_s,
-                media_end_lead_s=self.media_end_lead_s,
-            )
-
     def _judge(
         self,
         step: int,
         evidence: Sequence[RestorationEvidence],
         actions: Sequence[RestoredAction],
     ) -> RestorationCheck:
-        return judge(
-            step,
-            evidence,
-            actions,
-            verify=self.verify,
-            screenshot_max_distance=self.screenshot_max_distance,
-            media_time_tolerance_s=self.media_time_tolerance_s,
-        )
+        return judge(step, evidence, actions, verify=self.verify)
 
     def _raise_if_diverged(
         self,

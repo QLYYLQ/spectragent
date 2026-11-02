@@ -83,6 +83,9 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     iter_decisions,
 )
 from spectragent.core.capabilities.browser.replay.rule_snapshot import recorded_site_rules
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.capabilities.browser.settle import PageSettle, recorded_settle
 from spectragent.core.trace.digest import TreeDigest, tree_digest
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
@@ -885,7 +888,8 @@ class Fidelity(_Model):
     #: The restorer's verdict: checks that were ``ok``.
     restorer: Ratio
     #: URL compared and equal, and the screenshot's sha256 equal to the source run's same step.
-    #: The URL is the restorer's own evidence (``url_match``), so the replay's page-URL rules apply.
+    #: The URL is the browser's own restoration evidence (``url_match``), so the replay's
+    #: page-URL rules apply.
     strict: Ratio
     #: Screenshot bytes equal, independent of whether URL evidence was collected.
     exact_screenshot: Ratio
@@ -997,6 +1001,13 @@ class _FidelityTally:
         )
 
 
+def _browser_evidence(check: RestorationCheck | None) -> list[BrowserRestorationEvidence]:
+    """The browser's restoration evidence in *check* — the only evidence these measures read."""
+    if check is None:
+        return []
+    return [item for item in check.evidence if isinstance(item, BrowserRestorationEvidence)]
+
+
 def _exact_screenshots(
     run: Run, source: Run, checked: Sequence[StepRecord]
 ) -> tuple[int, int, int, int]:
@@ -1016,8 +1027,9 @@ def _exact_screenshots(
         if ours is None or theirs is None:
             continue
         compared += 1
-        check = record.restoration
-        urls = [e.url_match for e in check.evidence if e.url_match is not None] if check else []
+        urls = [
+            e.url_match for e in _browser_evidence(record.restoration) if e.url_match is not None
+        ]
         if ours == theirs:
             passed += 1
         if urls:
@@ -1058,14 +1070,15 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
             check = record.restoration
             assert check is not None
             verified += 1
-            urls += int(any(e.url_match is not None for e in check.evidence))
-            signatures += int(any(e.signature_match is not None for e in check.evidence))
+            browser = _browser_evidence(check)
+            urls += int(any(e.url_match is not None for e in browser))
+            signatures += int(any(e.signature_match is not None for e in browser))
             media += int(
-                any(e.media is not None and e.media.comparisons is not None for e in check.evidence)
+                any(e.media is not None and e.media.comparisons is not None for e in browser)
             )
             media_mismatches += int("media_mismatch" in check.reasons)
-            media_area_steps += int(any(e.media_areas is not None for e in check.evidence))
-            for item in check.evidence:
+            media_area_steps += int(any(e.media_areas is not None for e in browser))
+            for item in browser:
                 if item.media is not None:
                     alignment.update(a.outcome for a in item.media.alignment or [])
             if check.verdict == "ok":

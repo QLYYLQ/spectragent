@@ -12,7 +12,7 @@
   "android_ui_tree_source": "539005659ac1aa9b",
   "archiver": "a7d95691c1b812e5",
   "browser_provider": "59618076010d6a34",
-  "capability": "284816491d079d57",
+  "capability": "e10205602c91a835",
   "decision_model": "78ea078bf0b0bc82",
   "dom_cleaner": "3b3dceaa4c39cedd",
   "dom_serializer": "020375d3b20de5f8",
@@ -28,7 +28,7 @@
   "network_source": "40f4cfe2a8d6dfb5",
   "replay_reviewer": "252b38d8d5e6d3d1",
   "replayability": "cd0e273bc73057eb",
-  "restorer": "5eaddc7314cbdde2",
+  "restorer": "13e83e73e1c46a90",
   "step_selector": "cde47ac0230d823c",
   "task_loader": "9850a10fe37c08b7",
   "typing_rhythm": "b73ed1af3b320f70"

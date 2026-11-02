@@ -213,6 +213,8 @@ def test_restoration_measures_clean_scene_when_only_cursor_differs() -> None:
         capability_id="browser",
         document_misses=None,
         media=None,
+        screenshot_max_distance=5,
+        media_time_tolerance_s=1.0,
     )
     assert evidence.screenshot_distance == 0
 
