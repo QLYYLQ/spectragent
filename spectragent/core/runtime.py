@@ -543,15 +543,20 @@ class AgentRuntime:
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
         execution_models = [llm]
-        for hook in self._hooks:
-            if isinstance(hook, PromptModelOwner):
-                for model in hook.helper_llms:
+        # A hook, or the agent itself, may call models of its own (a prompt
+        # contribution's helper, M3A's per-step summary): each gets them back
+        # woven, with the run's call context to scope its caller and purpose
+        # in, so the recorder sees every such call, and they are closed with
+        # the main model.
+        for owner in (*self._hooks, agent):
+            if isinstance(owner, PromptModelOwner):
+                for model in owner.helper_llms:
                     require_inference_protocol(
-                        model, "chat", consumer=f"{type(hook).__name__}.helper_llms"
+                        model, "chat", consumer=f"{type(owner).__name__}.helper_llms"
                     )
-                execution_models.extend(hook.helper_llms)
-                hook.bind_prompt_models(
-                    [weaver.wrap(model, role="llm") for model in hook.helper_llms],
+                execution_models.extend(owner.helper_llms)
+                owner.bind_prompt_models(
+                    [weaver.wrap(model, role="llm") for model in owner.helper_llms],
                     self._call_context,
                 )
         # Retain raw, explicitly declared dependencies for unconditional cleanup.

@@ -707,6 +707,68 @@ async def test_helper_models_share_llm_interception_and_receive_a_fresh_run_cont
     assert owner.interceptions == 2
 
 
+async def test_an_agent_owning_a_helper_model_gets_it_woven_with_the_run_context_and_closed():
+    """M3A's per-step summary runs on a model the agent calls itself: the runtime hands it back
+    through the run's interception, with the run's call context, and closes it at the end."""
+    from spectragent.core.aop.advice import Intercept
+    from spectragent.core.hooks._registrar import HookBase
+
+    class Model(MockLLM):
+        def __init__(self):
+            self.closed = 0
+
+        async def aclose(self, *, timeout=5.0):
+            self.closed += 1
+            return ()
+
+    class Interceptor(HookBase):
+        __intercepts__ = [Intercept("ainvoke", role="llm", advice="around")]
+
+        def __init__(self):
+            super().__init__()
+            self.purposes = []
+
+        async def on_run_start(self, *, call_context, **kwargs):
+            self.call_context = call_context
+
+        async def around_ainvoke(self, proceed, *args, **kwargs):
+            self.purposes.append(self.call_context.current.purpose)
+            return await proceed()
+
+    class SummarizingAgent(SimpleAgent):
+        def __init__(self, helper):
+            self.helper_llms = [helper]
+            self.bound = []
+
+        def bind_prompt_models(self, models, call_context):
+            self.bound.append((models, call_context))
+
+        async def build_react_prompt(self, obs, *, context: ReactPromptContext):
+            (models, call_context) = self.bound[-1]
+            with call_context.scope(caller="agent", purpose="step_summary"):
+                await models[0].ainvoke([])
+            return await super().build_react_prompt(obs, context=context)
+
+    main, helper = Model(), Model()
+    agent, interceptor = SummarizingAgent(helper), Interceptor()
+    run = make_run(
+        agent=agent,
+        loop=ReactLoop(),
+        env=_make_env(),
+        llm=main,
+        memory=MockMemory(),
+        hooks=[interceptor],
+    )
+    result = await AgentRuntime.for_agent(run, AGENT_ID).execute("task")
+
+    assert result.agent_done.value == "done"
+    (models, call_context), *_ = agent.bound
+    assert models[0] is not helper, "handed back woven"
+    assert call_context is interceptor.call_context, "the run's own context"
+    assert interceptor.purposes == ["step_summary", "agent_decision"]
+    assert (main.closed, helper.closed) == (1, 1)
+
+
 async def test_an_earlier_lifecycle_failure_cannot_skip_helper_model_cleanup():
     from spectragent.core.hooks._registrar import HookBase
 
