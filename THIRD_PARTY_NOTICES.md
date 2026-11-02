@@ -269,7 +269,8 @@ SOFTWARE.
   `androidworld` cleaner) and `spectragent/core/capabilities/android/ui_tree/serializers.py`
   (the `m3a` and `t3a` serializers, and the `UIElement` and `BoundingBox` dataclasses whose
   `repr` T3A prints), rewritten in Spectragent's types over the
-  `AndroidAccessibilityForest` our accessibility service captures.
+  `AndroidAccessibilityForest` our accessibility service captures; each file keeps the
+  upstream license header and a modification statement.
 - **Kept:** an element is a visible node that is a leaf, has a content description or
   scrolls, windows in the forest's order and nodes in the order the forwarder walks them;
   invisible nodes are skipped as extracted, and elements with empty or wholly off-screen

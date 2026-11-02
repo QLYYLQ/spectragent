@@ -1,3 +1,34 @@
+# Portions of this module are derived from AndroidWorld's
+# android_world/env/representation_utils.py (the UIElement and BoundingBox
+# dataclasses, accessibility_node_to_ui_element), android_world/agents/m3a.py
+# (_generate_ui_element_description) and android_world/agents/t3a.py
+# (_generate_ui_elements_description_list_full)
+# (https://github.com/google-research/android_world, commit
+# 55ddaf5edc6f6c25673aed343907d5b9dca66f84):
+#
+#   Copyright 2026 The android_world Authors.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# Modified by Spectragent (2026-11-02): rewritten over Spectragent's
+# AndroidAccessibilityForest model and cleaned tree. Kept: the UIElement and
+# BoundingBox fields in their order, so the same repr; the node-to-element
+# conversion without a screen size (empty strings as None, bbox_pixels from the
+# bounds; bbox, tooltip, resource_id and metadata left None); M3A's line key by
+# key and T3A's "UI element <i>: <repr>", one line per element, strings
+# unescaped. Changed: the elements come from the configured cleaner, not from a
+# list the printer filters; M3A's never-written "tooltip" branch is dropped.
+
 """The UI tree serializers: AndroidWorld's M3A and T3A element lists (``docs/architecture_design.md`` §11.2).
 
 Ported from AndroidWorld (``google-research/android_world`` at commit

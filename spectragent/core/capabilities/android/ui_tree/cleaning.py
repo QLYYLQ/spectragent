@@ -1,3 +1,33 @@
+# Portions of this module are derived from AndroidWorld's
+# android_world/env/representation_utils.py (forest_to_ui_elements) and
+# android_world/agents/m3a_utils.py (validate_ui_element)
+# (https://github.com/google-research/android_world, commit
+# 55ddaf5edc6f6c25673aed343907d5b9dca66f84):
+#
+#   Copyright 2026 The android_world Authors.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# Modified by Spectragent (2026-11-02): rewritten over Spectragent's
+# AndroidAccessibilityForest model. Kept: an element is a visible node that is a
+# leaf, has a content description or scrolls; windows in the forest's order;
+# invisible nodes skipped as extracted, elements with empty or wholly off-screen
+# bounds skipped as printed, their numbers counted. Added: the tree is first
+# rebuilt as a service without FLAG_INCLUDE_NOT_IMPORTANT_VIEWS reads it, from
+# the full tree our service captures, and numbered in that tree's breadth-first
+# order; the numbering and the screen test are one step, and each element keeps
+# the node it stands for.
+
 """The UI tree cleaners: AndroidWorld's element extraction (``docs/architecture_design.md`` §11.2).
 
 Ported from AndroidWorld (``google-research/android_world`` at commit
