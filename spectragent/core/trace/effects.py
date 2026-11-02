@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import NoneType, UnionType
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -44,6 +44,8 @@ EffectResolver = Callable[[str], type[ActionEffect]]
 #: How a ``capability_id`` becomes the class that reads its restoration evidence.
 EvidenceResolver = Callable[[str], type[RestorationEvidence]]
 
+M = TypeVar("M", bound=BaseModel)
+
 
 def registered_effect(effect_id: str) -> type[ActionEffect]:
     """The ``Effect`` of the action registered under *effect_id*.
@@ -52,18 +54,9 @@ def registered_effect(effect_id: str) -> type[ActionEffect]:
         ValueError: no action is registered under the key, or the action
             declares no ``Effect``.
     """
-    try:
-        action = ActionRegistrar.get(effect_id)
-    except KeyError:
-        raise ValueError(
-            f"recorded action effect {effect_id!r} names no registered action"
-        ) from None
-    effect = getattr(action, "Effect", None)
-    if not (isinstance(effect, type) and issubclass(effect, ActionEffect)):
-        raise ValueError(
-            f"recorded action effect {effect_id!r}: action {action.__name__} declares no Effect"
-        )
-    return effect
+    return _declared_model(
+        ActionRegistrar.get, effect_id, "Effect", ActionEffect, noun="action effect", owner="action"
+    )
 
 
 def registered_restoration_evidence(capability_id: str) -> type[RestorationEvidence]:
@@ -73,19 +66,30 @@ def registered_restoration_evidence(capability_id: str) -> type[RestorationEvide
         ValueError: no capability is registered under the key, or the
             capability declares no ``RestorationEvidence``.
     """
+    return _declared_model(
+        CapabilityRegistrar.get,
+        capability_id,
+        "RestorationEvidence",
+        RestorationEvidence,
+        noun="restoration evidence",
+        owner="capability",
+    )
+
+
+def _declared_model(
+    lookup: Callable[[str], type], key: str, attribute: str, base: type[M], *, noun: str, owner: str
+) -> type[M]:
+    """The *base* subclass that the class registered under *key* names as its *attribute*."""
     try:
-        capability = CapabilityRegistrar.get(capability_id)
+        registered = lookup(key)
     except KeyError:
+        raise ValueError(f"recorded {noun} {key!r} names no registered {owner}") from None
+    model = getattr(registered, attribute, None)
+    if not (isinstance(model, type) and issubclass(model, base)):
         raise ValueError(
-            f"recorded restoration evidence {capability_id!r} names no registered capability"
-        ) from None
-    evidence = getattr(capability, "RestorationEvidence", None)
-    if not (isinstance(evidence, type) and issubclass(evidence, RestorationEvidence)):
-        raise ValueError(
-            f"recorded restoration evidence {capability_id!r}: capability "
-            f"{capability.__name__} declares no RestorationEvidence"
+            f"recorded {noun} {key!r}: {owner} {registered.__name__} declares no {attribute}"
         )
-    return evidence
+    return model
 
 
 def restore_effects(model: type[BaseModel], data: Any, resolve: EffectResolver) -> Any:

@@ -105,7 +105,6 @@ from spectragent.core.trace.models import (
     TraceConfig,
     TraceManifest,
 )
-from spectragent.schemas.action import ActionEffect
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation._registrar import (
@@ -116,7 +115,6 @@ from spectragent.schemas.observation._registrar import (
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import RecordingTiming
-from spectragent.schemas.restoration import RestorationEvidence
 from spectragent.schemas.step_record import StepRecord
 
 M = TypeVar("M", bound=BaseModel)
@@ -1074,57 +1072,42 @@ class RunTrace:
 
     def _restore_types(self, model: type[BaseModel], data: Any) -> Any:
         """*data* with its recorded action effects and restoration evidence rebuilt as their types."""
-        data = restore_effects(model, data, self._effect_class)
-        return restore_restoration_evidence(model, data, self._evidence_class)
-
-    def _effect_class(self, effect_id: str) -> type[ActionEffect]:
-        """The ``Effect`` of the action *effect_id* names, importing the action packages once on a miss.
-
-        Raises:
-            ValueError: no action is registered under the key even after the
-                import, or it declares no ``Effect`` (the caller names the file).
-        """
-        try:
-            return registered_effect(effect_id)
-        except ValueError:
-            if self._discovered:
-                raise
-        self._discovered = True
-        discover_implementations(*_FRAGMENT_PACKAGES)
-        return registered_effect(effect_id)
-
-    def _evidence_class(self, capability_id: str) -> type[RestorationEvidence]:
-        """The ``RestorationEvidence`` of the capability *capability_id* names, importing once on a miss.
-
-        Raises:
-            ValueError: no capability is registered under the key even after
-                the import, or it declares no ``RestorationEvidence`` (the
-                caller names the file).
-        """
-        try:
-            return registered_restoration_evidence(capability_id)
-        except ValueError:
-            if self._discovered:
-                raise
-        self._discovered = True
-        discover_implementations(*_FRAGMENT_PACKAGES)
-        return registered_restoration_evidence(capability_id)
+        data = restore_effects(model, data, lambda key: self._resolved(registered_effect, key))
+        return restore_restoration_evidence(
+            model, data, lambda key: self._resolved(registered_restoration_evidence, key)
+        )
 
     def _fragment_class(self, key: str) -> type[FragmentBase]:
-        """The class registered under *key*, importing the fragment packages once on a miss."""
-        cls = _registered(key)
-        if cls is None and not self._discovered:
-            self._discovered = True
-            discover_implementations(*_FRAGMENT_PACKAGES)
-            cls = _registered(key)
-        if cls is None:
+        """The class registered under *key*."""
+        try:
+            return self._resolved(_registered_fragment, key)
+        except ValueError:
             raise TraceSchemaError(
                 f"{self._trace_dir} records fragment {key!r}, and no class is registered under "
                 f"that key, even after importing {list(_FRAGMENT_PACKAGES)}. The module that "
                 f"defines it must be importable by the reader.",
                 path=self._manifest_path,
-            )
-        return cls
+            ) from None
+
+    def _resolved(self, resolve: Callable[[str], T], key: str) -> T:
+        """*resolve(key)*, importing :data:`_FRAGMENT_PACKAGES` once on the reader's first miss.
+
+        Fragment, action and capability classes register when their modules
+        are imported, and a reader in another process may not have imported
+        them yet. After that one import a miss is final.
+
+        Raises:
+            ValueError: *resolve* finds nothing even after the import (the
+                caller names the file).
+        """
+        try:
+            return resolve(key)
+        except ValueError:
+            if self._discovered:
+                raise
+        self._discovered = True
+        discover_implementations(*_FRAGMENT_PACKAGES)
+        return resolve(key)
 
 
 def _run_version(record: ArchiveRecord) -> int:
@@ -1132,12 +1115,15 @@ def _run_version(record: ArchiveRecord) -> int:
     return record.run_version if record.run_version is not None else -1
 
 
-def _registered(key: str) -> type[FragmentBase] | None:
+def _registered_fragment(key: str) -> type[FragmentBase]:
+    """The fragment class registered under *key* (``ValueError`` when there is none)."""
     try:
         cls = ObservationRegistrar.get(key)
     except KeyError:
-        return None
-    return cls if isinstance(cls, type) and issubclass(cls, FragmentBase) else None
+        cls = None
+    if not (isinstance(cls, type) and issubclass(cls, FragmentBase)):
+        raise ValueError(f"no fragment class is registered under {key!r}")
+    return cls
 
 
 def _read_bytes(path: Path) -> bytes:
