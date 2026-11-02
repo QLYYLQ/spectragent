@@ -35,6 +35,10 @@ runs. The one boot covers, in file order:
   refused with the name untouched;
 - a scroll down that shows what is further down, measured on the screenshots,
   its effect naming the injector that delivered it;
+- the UI tree of Settings' main page, cleaned and printed by the configured
+  cleaner and serializer, with our service as its producer; ``click`` by an
+  element's index opens the row it names, and ``scroll`` by the list's index
+  moves the list, both found by their text, not their place;
 - a capture waits for a still screen: after a cold start of Settings it waits
   for the window manager, the frames and the events, and reports how;
 - a clean teardown: no process of the run is left, nothing listens on its
@@ -44,6 +48,7 @@ runs. The one boot covers, in file order:
   the run added nothing to the top level of the user's home and left the
   user's ``~/.emulator_console_auth_token`` as it was.
 
+The capability is composed with AndroidWorld's cleaner and M3A's serializer.
 The points on Settings' pages were read off a Pixel 6 profile (1080 x 2400,
 420 dpi) with the API 33 Google APIs image; on another screen or image the tests
 that tap them skip.
@@ -60,7 +65,7 @@ import socket
 import subprocess
 import tempfile
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,17 +82,23 @@ from spectragent.core.capabilities.android.backends.local_emulator import (
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.device.apk import ServiceApk
+from spectragent.core.capabilities.android.device.forest import (
+    AndroidAccessibilityNodeInfo as Node,
+)
 from spectragent.core.capabilities.android.effects import AndroidTouchEffect
 from spectragent.core.capabilities.android.observations import (
     CAPTURE_STATE,
     FOREGROUND_APP,
     PLATFORM,
     SCREENSHOT,
+    UI_TREE,
     AndroidCaptureStateObs,
     AndroidForegroundAppObs,
     AndroidPlatformObs,
     AndroidScreenshotObs,
+    AndroidUITreeObs,
 )
+from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer
 from spectragent.core.composer import ConfigComposer
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
@@ -590,6 +601,72 @@ async def test_a_capture_after_a_cold_start_waits_for_a_still_screen(booted: Boo
     assert isinstance(again, AndroidCaptureStateObs) and again.settle is not None
     print(f"right after: {again.settle}")
     assert again.settle.outcome == "settled", "nothing changed since"
+
+
+async def _tree(booted: Booted) -> AndroidUITreeObs:
+    tree = await _observe(booted, UI_TREE)
+    assert isinstance(tree, AndroidUITreeObs)
+    return tree
+
+
+def _index_of(tree: AndroidUITreeObs, matches: Callable[[Node], bool]) -> int:
+    for index, node in tree.tree().element_nodes():
+        if matches(node):
+            return index
+    raise AssertionError(f"no element matches; the tree reads:\n{tree.serialized}")
+
+
+def _texts(tree: AndroidUITreeObs) -> list[str]:
+    return [node.text for _, node in tree.tree().element_nodes() if node.text]
+
+
+async def test_the_ui_tree_of_settings_is_cleaned_and_printed_by_the_configured_strategies(
+    booted: Booted,
+) -> None:
+    await _settings_from_scratch(booted)
+
+    tree = await _tree(booted)
+
+    assert tree.producer == "accessibility_service"
+    assert 0 < len(tree.elements) < tree.node_count and tree.omitted_offscreen == 0
+    assert tree.capture_ms is not None and tree.capture_ms > 0
+    assert "Network & internet" in _texts(tree)
+    assert tree.serialized == M3ASerializer().serialize(tree.tree())
+    print(
+        f"Settings: {len(tree.elements)} elements of {tree.node_count} nodes, {tree.capture_ms} ms"
+    )
+
+
+async def test_click_by_index_opens_the_row_it_names(booted: Booted) -> None:
+    await _settings_from_scratch(booted)
+    tree = await _tree(booted)
+
+    tapped = await _act(
+        booted, "click", index=_index_of(tree, lambda node: node.text == "Network & internet")
+    )
+
+    assert tapped.success, tapped.error
+    assert isinstance(tapped.effect, AndroidTouchEffect)
+    assert tapped.effect.touch.delivered_by == "accessibility_gesture"
+    opened = await _tree(booted)
+    assert {"Internet", "Airplane mode"} <= set(_texts(opened)), opened.serialized
+
+
+async def test_scroll_by_index_moves_the_list_it_names(booted: Booted) -> None:
+    await _settings_from_scratch(booted)
+    tree = await _tree(booted)
+    before = _texts(tree)
+
+    scrolled = await _act(
+        booted,
+        "scroll",
+        direction="down",
+        index=_index_of(tree, lambda node: node.is_scrollable),
+    )
+
+    assert scrolled.success, scrolled.error
+    after = _texts(await _tree(booted))
+    assert after != before and "Network & internet" not in after, after
 
 
 def _content_shift(before: Image.Image, after: Image.Image) -> int:
