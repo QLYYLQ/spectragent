@@ -6,9 +6,10 @@ a directory of recorded runs into such tasks: for every source run it
 selects, every checkpoint step its ``step_selector`` picks among the
 branchable ones, ``branches_per_step`` tasks with the id
 ``<source_run_id>/s<t>/b<i>``. Each task hands the run three things
-(``TaskContext``): the environment part — the source's own setup context
+(``TaskContext``): the environment part — the source's own setup context,
 plus ``replay_archive`` (the source run directory, so the browser replays
-the recorded network); the Loop part — ``checkpoint``; and the branch part —
+the recorded network) when the source recorded a network archive
+(``browser.network``); the Loop part — ``checkpoint``; and the branch part —
 :class:`~spectragent.schemas.restoration.BranchProvenance`, recorded as
 ``TraceConfig.branch``.
 
@@ -125,6 +126,13 @@ logger = logging.getLogger(__name__)
 #: The Loop-input key ``BranchLoop`` declares.
 CHECKPOINT_KEY = "checkpoint"
 
+#: The archiver whose evidence an offline replay serves the recorded network from
+#: (``browser.network``, §4.14). Only a source that recorded it gets ``replay_archive``:
+#: without it there is nothing to replay, and an environment with no network replay
+#: (Android's) has no capability whose ``setup()`` takes the key, so a branch task
+#: carrying it would be refused at ``prepare()`` (§11.2).
+NETWORK_ARCHIVER = "browser.network"
+
 
 class TraceBranchesTaskLoader(TaskLoaderBase):
     """Branch tasks from recorded runs: ``<source_run_id>/s<t>/b<i>`` (module docstring).
@@ -218,7 +226,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
                     "replays from; [] requires none."
                 ),
             ),
-        ] = ("browser.network",),
+        ] = (NETWORK_ARCHIVER,),
         on_unbranchable: Annotated[
             Literal["raise", "skip"],
             Field(
@@ -737,8 +745,12 @@ class _Scan:
         }
         self.tasks[task_id] = TaskDefinition(**fields)
         source_dir = str(source.directory)
+        task_env = dict(env)
+        recorded = config.negotiation.active_archivers if config.negotiation is not None else []
+        if NETWORK_ARCHIVER in recorded:
+            task_env[REPLAY_ARCHIVE_KEY] = source_dir
         self.contexts[task_id] = TaskContext(
-            env={**env, REPLAY_ARCHIVE_KEY: source_dir},
+            env=task_env,
             loop={
                 CHECKPOINT_KEY: Checkpoint(
                     trace_dir=source_dir,

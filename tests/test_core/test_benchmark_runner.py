@@ -1009,7 +1009,11 @@ class TestTraceBranchesSweep:
 
     async def test_each_branch_task_runs_from_its_context(self, tmp_path):
         """Loader → runner → runtime → BranchLoop: the env part reaches setup, the
-        checkpoint reaches the Loop, the provenance reaches the trace."""
+        checkpoint reaches the Loop, the provenance reaches the trace.
+
+        The fake's source records no network archive and an empty setup
+        context, so its env part is empty: no ``replay_archive`` (§11.2).
+        """
         from spectragent.core.data_loader.task import TraceBranchesTaskLoader
         from spectragent.core.data_loader.task.step_selector import ExplicitSteps
         from spectragent.core.loops import BranchLoop
@@ -1040,7 +1044,9 @@ class TestTraceBranchesSweep:
         assert summary.completed == 1 and summary.failed == 0, summary.format_table()
         (outcome,) = summary.outcomes
         assert outcome.task_id == "src/s1/b0"
-        assert caps[0].replay_archive == str(source), "the env part reached setup"
+        assert caps[0].setups == 1 and caps[0].replay_archive is None, (
+            "the empty env part reached setup: no network archive, no replay archive"
+        )
         # The restored click reached the capability; the Loop executed ``loop.done``.
         assert caps[0].log == ["branchfake.click({'index': 500})"]
         assert outcome.result is not None and outcome.result.answer == "branched"
