@@ -1745,7 +1745,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return measure(
             recorded,
             restored,
-            capability_id=self.capability_id,
             document_misses=self._document_misses_since_last_check(),
             media=media_measure(
                 recorded,

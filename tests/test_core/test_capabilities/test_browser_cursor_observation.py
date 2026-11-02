@@ -210,7 +210,6 @@ def test_restoration_measures_clean_scene_when_only_cursor_differs() -> None:
     evidence = measure(
         SimpleNamespace(screenshot=before),
         SimpleNamespace(screenshot=after),
-        capability_id="browser",
         document_misses=None,
         media=None,
         screenshot_max_distance=5,

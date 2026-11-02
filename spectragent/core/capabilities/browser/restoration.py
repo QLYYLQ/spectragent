@@ -518,7 +518,6 @@ def measure(
     recorded: Any,
     restored: Any,
     *,
-    capability_id: str,
     document_misses: int | None,
     media: MediaEvidence | None,
     screenshot_max_distance: int,
@@ -567,7 +566,6 @@ def measure(
         distance = areas.masked_distance if areas.mask_applied else areas.unmasked_distance
 
     return BrowserRestorationEvidence(
-        capability_id=capability_id,
         url_match=url_match,
         recorded_url=recorded_url,
         restored_url=restored_url,

@@ -17,5 +17,5 @@ DEFAULT_LIMITS: dict[str, Any] = {"screenshot_max_distance": 5, "media_time_tole
 
 
 def browser_evidence(**fields: Any) -> BrowserRestorationEvidence:
-    """The browser's evidence with *fields*, for ``browser`` and the default limits unless given."""
-    return BrowserRestorationEvidence(**{"capability_id": "browser", **DEFAULT_LIMITS, **fields})
+    """The browser's evidence with *fields*, and the default limits unless given."""
+    return BrowserRestorationEvidence(**{**DEFAULT_LIMITS, **fields})

@@ -16,11 +16,14 @@ Pydantic models only: readers of recorded evidence (the flywheel metrics, the
 lookahead tools) import this module without the browser implementation.
 """
 
-from typing import ClassVar, Literal, get_args
+from typing import ClassVar, Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas.restoration import RestorationEvidence
+
+#: ``BrowserCapability``'s registry key: the ``capability_id`` every browser evidence carries.
+BROWSER: Final = "browser"
 
 #: The browser's checks, in the order they are reported: a page the replay could not
 #: serve explains every mismatch after it; a page at another URL explains a different
@@ -256,11 +259,14 @@ class BrowserRestorationEvidence(RestorationEvidence):
 
     ``screenshot_max_distance`` and ``media_time_tolerance_s`` are the limits
     the checks apply: the ``BrowserCapability`` knobs of the same names when
-    it measured.
+    it measured. ``capability_id`` is always ``browser``.
     """
 
     REASONS: ClassVar[tuple[str, ...]] = get_args(BrowserRestorationReason)
 
+    #: Pinned to ``BrowserCapability``'s registry key: a browser evidence can
+    #: name no other capability, and the trace reader finds this type by it.
+    capability_id: Literal["browser"] = BROWSER
     url_match: bool | None = None
     recorded_url: str | None = None
     restored_url: str | None = None
@@ -309,6 +315,7 @@ class BrowserRestorationEvidence(RestorationEvidence):
 
 
 __all__ = [
+    "BROWSER",
     "BrowserRestorationEvidence",
     "BrowserRestorationReason",
     "MaskedArea",

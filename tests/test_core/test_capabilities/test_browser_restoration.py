@@ -527,7 +527,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view({"screenshot": before}),
             observation(screenshot=after),
-            capability_id="browser",
             **LIMITS,
             document_misses=0,
             media=None,
@@ -543,7 +542,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view(fragments),
             restored_view(fragments),
-            capability_id="browser",
             **LIMITS,
             document_misses=0,
             media=None,
@@ -572,7 +570,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view(recorded),
             restored_view(restored),
-            capability_id="browser",
             **LIMITS,
             document_misses=0,
             media=None,
@@ -592,7 +589,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view(full(url="https://shop.test/cart?session=1&item=7")),
             restored_view(full(url="https://shop.test/cart?session=2&item=8")),
-            capability_id="browser",
             **LIMITS,
             document_misses=0,
             media=None,
@@ -604,7 +600,6 @@ class TestMeasure:
         evidence = measure(
             observation(),
             observation(),
-            capability_id="browser",
             document_misses=None,
             media=None,
             **LIMITS,
@@ -622,7 +617,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view(fragments),
             restored,
-            capability_id="browser",
             **LIMITS,
             document_misses=None,
             media=None,
@@ -642,7 +636,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view(fragments),
             restored,
-            capability_id="browser",
             **LIMITS,
             document_misses=None,
             media=None,
@@ -657,7 +650,6 @@ class TestMeasure:
         evidence = measure(
             recorded_view(recorded),
             observation(dom=relaunched(dom_of(state))),
-            capability_id="browser",
             **LIMITS,
             document_misses=None,
             media=None,
@@ -852,7 +844,6 @@ def media_pair(
     evidence = measure(
         before,
         after,
-        capability_id="browser",
         **LIMITS,
         document_misses=0,
         media=media_measure(before, after, tolerance_px=TOLERANCE, alignment=None),

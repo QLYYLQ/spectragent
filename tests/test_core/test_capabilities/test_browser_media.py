@@ -568,7 +568,6 @@ def test_measure_reports_media_only_with_a_screenshot_or_an_alignment() -> None:
     evidence = measure(
         old,
         observation(state(element())),
-        capability_id="browser",
         document_misses=None,
         media=media_measure(old, observation(state(element())), tolerance_px=2.0, alignment=None),
         screenshot_max_distance=5,
