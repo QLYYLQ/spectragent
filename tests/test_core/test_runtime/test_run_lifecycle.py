@@ -168,6 +168,20 @@ class _Agent:
         return None
 
 
+class _AnsweringAgent(_Agent):
+    """Ends the run with the Loop's own ``loop.done``, its answer *text*."""
+
+    # Written in full: ``_DoneCap`` offers a ``done`` of its own.
+    __wiring__ = {"action": ("action", ["loop.done"])}
+
+    def __init__(self, text: str | None):
+        super().__init__()
+        self.text = text
+
+    def parse_react_output(self, out):
+        return [Action(name="loop.done", params={"extracted_content": self.text})]
+
+
 class _Completion:
     completion = "done"
     usage = None
@@ -1458,9 +1472,9 @@ async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(mo
 class _OracleCap(_DoneCap):
     """``_DoneCap`` with a task oracle that writes ``score`` into the shared log when asked.
 
-    It answers with a score; with *fails* it raises, and with *hangs* it waits
-    until it is cancelled, writes ``score cancelled``, and lets the
-    cancellation through.
+    It keeps each run answer it is handed in *given* and replies with a score;
+    with *fails* it raises, and with *hangs* it waits until it is cancelled,
+    writes ``score cancelled``, and lets the cancellation through.
     """
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
@@ -1471,9 +1485,11 @@ class _OracleCap(_DoneCap):
         self.fails = fails
         self.hangs = hangs
         self.asked = asyncio.Event()
+        self.given: list[str | None] = []
 
-    async def read_score(self) -> OracleReading | None:
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
         self.log.append("score")
+        self.given.append(answer)
         self.asked.set()
         if self.hangs:
             try:
@@ -1496,9 +1512,11 @@ class _ScoringEnv(_Env):
         self.log: list[str] = []
         self.timeouts: list[float] = []
 
-    async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+    async def read_oracle_scores(
+        self, *, timeout_s: float, answer: str | None
+    ) -> list[OracleScore]:
         self.timeouts.append(timeout_s)
-        return await super().read_oracle_scores(timeout_s=timeout_s)
+        return await super().read_oracle_scores(timeout_s=timeout_s, answer=answer)
 
     async def teardown(self):
         self.log.append("teardown")
@@ -1518,12 +1536,14 @@ class _EndingLoop(_SlowLoop):
         async def run(task, **kw):
             try:
                 if self.ending == "done":
-                    return agent_result(task_id="t-1")
+                    return agent_result(task_id="t-1", answer="Mall")
                 if self.ending == "max_steps":
+                    # ``answer`` keeps the last text an action returned: no final answer.
                     return agent_result(
                         task_id="t-1",
                         agent_done=AgentDoneStatus.MAX_STEPS,
                         agent_reported_success=None,
+                        answer="half an answer",
                     )
                 if self.ending == "error":
                     raise RuntimeError("loop exploded")
@@ -1552,25 +1572,27 @@ class TestTheScoringPoint:
     """docs/architecture_design.md §4.2 "Loop 结束之后、teardown 之前的判分时间点".
 
     The woven environment's task oracles score the run once its Loop has
-    returned or raised, before ``on_run_end`` and teardown. A failed setup and
-    an outside cancellation are not scored. Scoring never changes the outcome,
-    never fails the run, and its time stays out of ``execution_ms``.
+    returned or raised, before ``on_run_end`` and teardown, handed the run's
+    final answer: the text of ``loop.done``, ``None`` on every other ending. A
+    failed setup and an outside cancellation are not scored. Scoring never
+    changes the outcome, never fails the run, and its time stays out of
+    ``execution_ms``.
     """
 
     @pytest.mark.parametrize(
-        ("ending", "agent_done"),
+        ("ending", "agent_done", "answer"),
         [
-            ("done", AgentDoneStatus.DONE),
-            ("max_steps", AgentDoneStatus.MAX_STEPS),
-            ("timeout", AgentDoneStatus.TIMEOUT),
-            ("error", AgentDoneStatus.ERROR),
-            ("veto", AgentDoneStatus.VETOED),
+            ("done", AgentDoneStatus.DONE, "Mall"),
+            ("max_steps", AgentDoneStatus.MAX_STEPS, None),
+            ("timeout", AgentDoneStatus.TIMEOUT, None),
+            ("error", AgentDoneStatus.ERROR, None),
+            ("veto", AgentDoneStatus.VETOED, None),
         ],
     )
     async def test_every_ending_is_scored_after_the_loop_and_before_the_close_out(
-        self, ending: str, agent_done: AgentDoneStatus
+        self, ending: str, agent_done: AgentDoneStatus, answer: str | None
     ):
-        env, _oracle, log = _scoring()
+        env, oracle, log = _scoring()
         hook = _RecordingHook(log)
         loop = _EndingLoop(ending, log)
         runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
@@ -1592,6 +1614,31 @@ class TestTheScoringPoint:
         ]
         assert env.timeouts == [ORACLE_TIMEOUT_S]
         assert hook.end_kwargs["result"].agent_done == agent_done
+        assert oracle.given == [answer]
+
+    @pytest.mark.parametrize(("text", "answer"), [("Mall", "Mall"), (None, None), ("", None)])
+    async def test_the_oracle_is_handed_the_text_loop_done_handed_over(
+        self, text: str | None, answer: str | None
+    ):
+        """The Loop's own ``loop.done`` ends the run; a ``done`` without text hands over none."""
+        env, oracle, _log = _scoring()
+        runtime = AgentRuntime.for_agent(_mk(_AnsweringAgent(text), ReactLoop(), env), AGENT_ID)
+
+        result = await runtime.execute("t", task_id="t-1")
+
+        assert (result.agent_done, result.answer) == (AgentDoneStatus.DONE, text or "")
+        assert oracle.given == [answer]
+
+    async def test_a_done_whose_recording_the_timeout_cut_off_still_hands_over_its_answer(self):
+        """The run closes out with the result the Loop had built, and is scored on its answer."""
+        env, oracle, _log = _scoring()
+        ended = agent_result(task_id="t-1", answer="Mall")
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _CutOffLoop(ended), env), AGENT_ID)
+
+        result = await runtime.execute("t", task_id="t-1", timeout=0.05)
+
+        assert (result.agent_done, result.answer) == (AgentDoneStatus.DONE, "Mall")
+        assert oracle.given == ["Mall"]
 
     async def test_its_time_limit_is_the_oracle_timeout_not_the_runs(self):
         env, _oracle, _log = _scoring()
@@ -1638,7 +1685,9 @@ class TestTheScoringPoint:
         class _BrokenScoring(_ScoringEnv):
             __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-            async def read_oracle_scores(self, *, timeout_s: float) -> list[OracleScore]:
+            async def read_oracle_scores(
+                self, *, timeout_s: float, answer: str | None
+            ) -> list[OracleScore]:
                 raise RuntimeError("scoring broke its contract")
 
         env, _oracle, log = _scoring(_BrokenScoring)
@@ -1737,9 +1786,9 @@ class TestTheScoringPoint:
         class _SlowOracle(_OracleCap):
             __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-            async def read_score(self) -> OracleReading | None:
+            async def read_score(self, *, answer: str | None) -> OracleReading | None:
                 clock.now += 13.0
-                return await super().read_score()
+                return await super().read_score(answer=answer)
 
         class _TimedLoop(_SlowLoop):
             def weave(self, agent, **deps):

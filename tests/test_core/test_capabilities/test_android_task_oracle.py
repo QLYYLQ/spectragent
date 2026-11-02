@@ -127,7 +127,7 @@ async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after
 ) -> None:
     oracle = _oracle(root)
     await oracle.start(_device(tmp_path), _task())
-    reading = await oracle.read_score()
+    reading = await oracle.read_score(answer=None)
     await oracle.stop()
 
     task = AndroidWorldTask.model_validate(_task())
@@ -214,7 +214,7 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_records_it(
     oracle = _oracle(root)
     await oracle.start(_device(tmp_path), task)
     try:
-        reading = await oracle.read_score()
+        reading = await oracle.read_score(answer=None)
     finally:
         await oracle.stop()
 
@@ -295,7 +295,7 @@ async def test_a_score_the_service_cannot_give_is_an_ordinary_error(
     try:
         write_behaviour(root, {"/task/score": rule})
         with pytest.raises(AndroidWorldError, match=message):
-            await oracle.read_score()
+            await oracle.read_score(answer=None)
     finally:
         await oracle.stop()
     assert await _service_is_gone(root)
@@ -310,7 +310,7 @@ async def test_a_bool_score_is_0_or_1_as_androidworlds_runner_counts_it(
     await oracle.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"json": {"score": answered}}})
-        reading = await oracle.read_score()
+        reading = await oracle.read_score(answer=None)
     finally:
         await oracle.stop()
 
@@ -325,7 +325,7 @@ async def test_a_dead_service_is_an_ordinary_error_that_says_so(root: Path, tmp_
         oracle._service.process.kill()  # the oracle's own child
         await oracle._service.process.wait()
         with pytest.raises(AndroidWorldError, match="could not be reached .*exited with code"):
-            await oracle.read_score()
+            await oracle.read_score(answer=None)
     finally:
         await oracle.stop()
     assert await _service_is_gone(root)
@@ -369,7 +369,7 @@ async def test_stop_is_safe_before_a_start_and_twice(root: Path, tmp_path: Path)
 
 async def test_a_score_before_any_task_is_an_ordinary_error(root: Path) -> None:
     with pytest.raises(AndroidWorldError, match="no AndroidWorld task was initialized"):
-        await _oracle(root).read_score()
+        await _oracle(root).read_score(answer=None)
 
 
 async def test_a_device_without_the_emulators_grpc_is_refused(root: Path, tmp_path: Path) -> None:
@@ -402,7 +402,7 @@ async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path
     await oracle.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"hang": True}})
-        scoring = asyncio.ensure_future(oracle.read_score())
+        scoring = asyncio.ensure_future(oracle.read_score(answer=None))
         assert await soon(lambda: "/task/score" in [p for _, p, _ in _calls(root)], within_s=20)
 
         scoring.cancel()
@@ -420,7 +420,7 @@ async def _environment_scores(oracle: AndroidWorldOracle, timeout_s: float) -> l
     capability = unset_capability()
     capability.task_oracle = oracle
     env = make_env(AndroidEnvironment, {"android": capability})
-    return await env.read_oracle_scores(timeout_s=timeout_s)
+    return await env.read_oracle_scores(timeout_s=timeout_s, answer=None)
 
 
 async def test_the_environment_records_the_score_and_each_way_of_not_scoring(
@@ -446,7 +446,7 @@ async def test_the_environment_records_the_score_and_each_way_of_not_scoring(
 
 async def test_with_no_oracle_the_environment_records_nothing() -> None:
     env = make_env(AndroidEnvironment, {"android": unset_capability()})
-    assert await env.read_oracle_scores(timeout_s=1.0) == []
+    assert await env.read_oracle_scores(timeout_s=1.0, answer=None) == []
 
 
 # ── before anything starts: check_setup ──────────────────────────────
@@ -557,7 +557,7 @@ async def test_none_needs_nothing_scores_nothing_and_refuses_a_benchmark_task(
     assert oracle.device_needs == DeviceNeeds()
     oracle.check_setup(None)
     await oracle.start(_device(tmp_path), None)
-    assert await oracle.read_score() is None
+    assert await oracle.read_score(answer=None) is None
     await oracle.stop()
 
     with pytest.raises(ValueError, match="task_oracle is 'none': the task would run unprepared"):

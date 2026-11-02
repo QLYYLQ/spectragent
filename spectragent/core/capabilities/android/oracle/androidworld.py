@@ -493,18 +493,19 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             ).get("goal")
             self._device_goal = goal if isinstance(goal, str) else None
 
-    async def read_score(self) -> OracleReading | None:
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+        del answer  # only information-retrieval tasks score it, and check_setup refuses them
         service, task = self._service, self._task
         if service is None or task is None or not self._initialized:
             raise AndroidWorldError("no AndroidWorld task was initialized on this device")
-        answer = await service.call(
+        reply = await service.call(
             "GET", "/task/score", {"task_type": task.task, "task_idx": task.index}, timeout_s=None
         )
         # Some tasks answer a bool (RetroPlaylistDuration returns False for a
         # wrongly named playlist); AndroidWorld's own runner counts it as 0 or 1.
-        score = answer.get("score")
+        score = reply.get("score")
         if not isinstance(score, int | float) or not math.isfinite(score):
-            raise AndroidWorldError(f"GET /task/score answered no finite score: {answer!r}")
+            raise AndroidWorldError(f"GET /task/score answered no finite score: {reply!r}")
         provenance = {
             "family": task.family,
             "task": task.task,

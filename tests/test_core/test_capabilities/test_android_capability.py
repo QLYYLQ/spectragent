@@ -517,8 +517,8 @@ class _RecordingOracle:
         if self.fail_start:
             raise RuntimeError("the oracle could not start")
 
-    async def read_score(self) -> OracleReading | None:
-        self.calls.append("read_score")
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+        self.calls.append(f"read_score {answer}")
         return OracleReading(score=0.5, oracle="recording")
 
     async def stop(self) -> None:
@@ -548,7 +548,7 @@ async def test_the_oracle_shapes_the_boot_and_is_stopped_before_the_device_goes(
         provider = _ClosingProvider(adb.host, adb.port, log=oracle.calls)
         capability.backend = provider
         await capability.setup(oracle_task=task)
-        reading = await capability.read_score()
+        reading = await capability.read_score(answer="Mall")
         await capability.teardown()
 
     assert provider.needs == [DeviceNeeds(root=True, guest_wifi=True)]
@@ -557,7 +557,7 @@ async def test_the_oracle_shapes_the_boot_and_is_stopped_before_the_device_goes(
     assert oracle.calls == [
         "check_setup",
         f"start {SERIAL}",
-        "read_score",
+        "read_score Mall",  # the run's answer, handed over as it came
         "stop",
         "provider closed",
     ]

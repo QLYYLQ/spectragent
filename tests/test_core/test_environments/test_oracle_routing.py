@@ -2,13 +2,14 @@
 
 ``docs/architecture_design.md`` §4.3 "判分的路由" and §4.9 ``TaskOracle``:
 ``read_oracle_scores`` gives each capability implementing the protocol a task
-of its own, runs them concurrently and limits each to ``timeout_s``. A reading
-becomes a ``scored`` entry carrying the capability's id and the start time and
-duration the environment measured around the call; a ``None`` is left out; a
-timeout, an exception or a broken contract comes back as a ``not_scored``
-entry; the entries come back in capability order, and the call never raises
-``Exception``. A cancellation cancels the unfinished oracles and waits for them
-before it propagates. No oracle, no entry.
+of its own, runs them concurrently, limits each to ``timeout_s`` and hands each
+the run's ``answer`` unchanged (§4.2: the text ``loop.done`` handed over, or
+``None``). A reading becomes a ``scored`` entry carrying the capability's id
+and the start time and duration the environment measured around the call; a
+``None`` is left out; a timeout, an exception or a broken contract comes back
+as a ``not_scored`` entry; the entries come back in capability order, and the
+call never raises ``Exception``. A cancellation cancels the unfinished oracles
+and waits for them before it propagates. No oracle, no entry.
 """
 
 from __future__ import annotations
@@ -42,26 +43,29 @@ class _Plain(CapabilityBase):
 
 
 class _Oracle(_Plain):
-    """Answers with *answer*: a reading, ``None``, an object to return, or an exception to raise.
+    """Replies with *reply*: a reading, ``None``, an object to return, or an exception to raise.
 
-    It waits for *wait_for* first, when given. A cancellation is noted, and the
-    oracle takes a few loop turns to wind down before it lets it through — the
-    cleanup ``read_oracle_scores`` must wait out.
+    It keeps every run answer it is handed in *given*. It waits for *wait_for*
+    first, when given. A cancellation is noted, and the oracle takes a few loop
+    turns to wind down before it lets it through — the cleanup
+    ``read_oracle_scores`` must wait out.
     """
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "oracle_route_cap"
 
-    def __init__(self, answer: Any = None, **kw: Any) -> None:
+    def __init__(self, reply: Any = None, **kw: Any) -> None:
         super().__init__(**kw)
-        self.answer = answer
+        self.reply = reply
+        self.given: list[str | None] = []
         self.wait_for: asyncio.Event | None = None
         self.entered = asyncio.Event()
-        self.answered = asyncio.Event()
+        self.replied = asyncio.Event()
         self.was_cancelled = False
         self.wound_down = False
 
-    async def read_score(self) -> OracleReading | None:
+    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+        self.given.append(answer)
         self.entered.set()
         try:
             if self.wait_for is not None:
@@ -72,10 +76,10 @@ class _Oracle(_Plain):
                 await asyncio.sleep(0)
             self.wound_down = True
             raise
-        self.answered.set()
-        if isinstance(self.answer, BaseException):
-            raise self.answer
-        return self.answer
+        self.replied.set()
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        return self.reply
 
 
 class _Second(_Oracle):
@@ -102,20 +106,47 @@ class TestTheContract:
         assert hasattr(Environment, "read_oracle_scores")
         for owner in (Environment, EnvironmentBase):
             parameters = inspect.signature(owner.read_oracle_scores).parameters
-            assert list(parameters) == ["self", "timeout_s"]
-            assert parameters["timeout_s"].kind is inspect.Parameter.KEYWORD_ONLY
+            assert list(parameters) == ["self", "timeout_s", "answer"]
+            assert all(
+                parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+                and parameters[name].default is inspect.Parameter.empty
+                for name in ("timeout_s", "answer")
+            ), "both named, both required: no caller can leave the answer out by accident"
+
+    def test_an_oracle_takes_the_answer_by_name(self) -> None:
+        parameters = inspect.signature(TaskOracle.read_score).parameters
+        assert list(parameters) == ["self", "answer"]
+        assert parameters["answer"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters["answer"].default is inspect.Parameter.empty
 
     def test_the_capability_base_gives_no_default(self) -> None:
         assert not hasattr(CapabilityBase, "read_score")
 
 
+class TestTheAnswer:
+    @pytest.mark.parametrize("answer", ["Mall", None])
+    async def test_every_oracle_is_handed_the_runs_answer_unchanged(
+        self, answer: str | None
+    ) -> None:
+        first, second = _Oracle(_reading()), _Second(None)
+        await _env(a=first, plain=_Plain(), b=second).read_oracle_scores(timeout_s=1, answer=answer)
+        assert first.given == second.given == [answer]
+
+    async def test_the_answer_is_not_copied_into_the_entry(self) -> None:
+        """It is in ``result.json``; an oracle that scores it says so in its own provenance."""
+        (entry,) = await _env(a=_Oracle(_reading())).read_oracle_scores(timeout_s=1, answer="Mall")
+        assert "Mall" not in entry.model_dump_json()
+
+
 class TestNoOracle:
     async def test_no_oracle_is_an_empty_list(self) -> None:
-        assert await _env(plain=_Plain()).read_oracle_scores(timeout_s=1) == []
-        assert await _env().read_oracle_scores(timeout_s=1) == []
+        assert await _env(plain=_Plain()).read_oracle_scores(timeout_s=1, answer=None) == []
+        assert await _env().read_oracle_scores(timeout_s=1, answer=None) == []
 
     async def test_an_oracle_with_nothing_to_judge_is_left_out(self) -> None:
-        scores = await _env(a=_Oracle(None), b=_Second(_reading())).read_oracle_scores(timeout_s=1)
+        scores = await _env(a=_Oracle(None), b=_Second(_reading())).read_oracle_scores(
+            timeout_s=1, answer=None
+        )
         assert [(s.capability_id, s.status, s.score) for s in scores] == [
             ("oracle_route_second", "scored", 1.0)
         ]
@@ -126,7 +157,7 @@ class TestScoring:
         self,
     ) -> None:
         before = time.time()
-        (entry,) = await _env(a=_Oracle(_reading(0.5))).read_oracle_scores(timeout_s=1)
+        (entry,) = await _env(a=_Oracle(_reading(0.5))).read_oracle_scores(timeout_s=1, answer=None)
         assert entry.model_dump(exclude={"started_at", "duration_ms"}) == {
             "capability_id": "oracle_route_cap",
             "status": "scored",
@@ -145,11 +176,11 @@ class TestScoring:
         class _Slow(_Oracle):
             __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-            async def read_score(self) -> OracleReading | None:
+            async def read_score(self, *, answer: str | None) -> OracleReading | None:
                 await asyncio.sleep(0.2)
-                return await super().read_score()
+                return await super().read_score(answer=answer)
 
-        (entry,) = await _env(a=_Slow(_reading())).read_oracle_scores(timeout_s=30)
+        (entry,) = await _env(a=_Slow(_reading())).read_oracle_scores(timeout_s=30, answer=None)
         assert entry.status == "scored"
         assert entry.duration_ms >= 190  # its 200 ms, give or take the timer's tick
 
@@ -158,7 +189,7 @@ class TestScoring:
         first, second = _Oracle(_reading()), _Second(_reading())
         first.wait_for, second.wait_for = second.entered, first.entered
 
-        scores = await _env(a=first, b=second).read_oracle_scores(timeout_s=5)
+        scores = await _env(a=first, b=second).read_oracle_scores(timeout_s=5, answer=None)
 
         assert [(s.capability_id, s.status) for s in scores] == [
             ("oracle_route_cap", "scored"),
@@ -168,9 +199,11 @@ class TestScoring:
     async def test_the_entries_come_back_in_capability_order(self) -> None:
         """Not in the order the oracles finished: the first one here finishes last."""
         later, sooner = _Oracle(_reading()), _Second(_reading())
-        later.wait_for = sooner.answered
+        later.wait_for = sooner.replied
 
-        scores = await _env(b=later, plain=_Plain(), a=sooner).read_oracle_scores(timeout_s=5)
+        scores = await _env(b=later, plain=_Plain(), a=sooner).read_oracle_scores(
+            timeout_s=5, answer=None
+        )
 
         assert [s.capability_id for s in scores] == ["oracle_route_cap", "oracle_route_second"]
 
@@ -181,7 +214,9 @@ class TestAFailedOracleIsNotScored:
         hung.wait_for = asyncio.Event()  # never set
         before = time.time()
 
-        hung_entry, healthy_entry = await _env(a=hung, b=healthy).read_oracle_scores(timeout_s=0.05)
+        hung_entry, healthy_entry = await _env(a=hung, b=healthy).read_oracle_scores(
+            timeout_s=0.05, answer=None
+        )
 
         assert hung_entry.model_dump(exclude={"started_at", "duration_ms"}) == {
             "capability_id": "oracle_route_cap",
@@ -204,7 +239,7 @@ class TestAFailedOracleIsNotScored:
 
     async def test_one_that_raises_is_not_scored_by_error(self) -> None:
         broken = _Oracle(RuntimeError("adb went away"))
-        (entry,) = await _env(a=broken).read_oracle_scores(timeout_s=1)
+        (entry,) = await _env(a=broken).read_oracle_scores(timeout_s=1, answer=None)
         assert (entry.capability_id, entry.status, entry.reason, entry.detail) == (
             "oracle_route_cap",
             "not_scored",
@@ -216,12 +251,12 @@ class TestAFailedOracleIsNotScored:
     async def test_its_own_timeout_error_is_an_error_not_the_limit(self) -> None:
         """The limit is the environment's clock: an oracle's own ``TimeoutError`` is what it raised."""
         (entry,) = await _env(a=_Oracle(TimeoutError("server took too long"))).read_oracle_scores(
-            timeout_s=5
+            timeout_s=5, answer=None
         )
         assert (entry.reason, entry.detail) == ("error", "TimeoutError: server took too long")
 
     @pytest.mark.parametrize(
-        ("answer", "returned"),
+        ("reply", "returned"),
         [
             ({"score": 1.0, "oracle": "test_oracle"}, "dict"),
             (
@@ -239,9 +274,9 @@ class TestAFailedOracleIsNotScored:
         ids=["a mapping", "the record instead of a reading"],
     )
     async def test_anything_but_a_reading_is_not_scored_by_error(
-        self, answer: Any, returned: str
+        self, reply: Any, returned: str
     ) -> None:
-        (entry,) = await _env(a=_Oracle(answer)).read_oracle_scores(timeout_s=1)
+        (entry,) = await _env(a=_Oracle(reply)).read_oracle_scores(timeout_s=1, answer=None)
         assert (entry.capability_id, entry.status, entry.reason, entry.detail) == (
             "oracle_route_cap",
             "not_scored",
@@ -254,7 +289,9 @@ class TestCancellation:
     async def test_cancelling_the_caller_cancels_and_awaits_every_unfinished_oracle(self) -> None:
         done, hung = _Oracle(_reading()), _Second(_reading())
         hung.wait_for = asyncio.Event()  # never set
-        task = asyncio.ensure_future(_env(a=done, b=hung).read_oracle_scores(timeout_s=30))
+        task = asyncio.ensure_future(
+            _env(a=done, b=hung).read_oracle_scores(timeout_s=30, answer=None)
+        )
         await asyncio.wait_for(hung.entered.wait(), timeout=5)
 
         task.cancel()
@@ -274,7 +311,7 @@ class TestCancellation:
 
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(
-                _env(a=cancelled, b=hung).read_oracle_scores(timeout_s=30), timeout=5
+                _env(a=cancelled, b=hung).read_oracle_scores(timeout_s=30, answer=None), timeout=5
             )
 
         assert hung.was_cancelled and hung.wound_down

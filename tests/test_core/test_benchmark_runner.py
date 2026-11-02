@@ -255,9 +255,9 @@ class TestBenchmarkRunner:
         seen: list[float] = []
         read = EnvironmentBase.read_oracle_scores
 
-        async def spy(self, *, timeout_s):
+        async def spy(self, *, timeout_s, answer):
             seen.append(timeout_s)
-            return await read(self, timeout_s=timeout_s)
+            return await read(self, timeout_s=timeout_s, answer=answer)
 
         monkeypatch.setattr(_Env, "read_oracle_scores", spy)
         compose = _make_factory(tmp_path, [], [])

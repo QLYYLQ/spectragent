@@ -175,7 +175,9 @@ async def _closed_run(
     """One run through ``TraceWriter`` alone: started, scored, closed out."""
     writer = TraceWriter(trace_dir=str(tmp_path / "traces"), recording=recording)
     await writer.on_run_start(agent=None, env=None, task="t", config={})
-    await writer.after_read_oracle_scores(scores, args=(), kwargs={"timeout_s": 60.0})
+    await writer.after_read_oracle_scores(
+        scores, args=(), kwargs={"timeout_s": 60.0, "answer": None}
+    )
     await writer.on_run_end(result=agent_result())
     return writer
 

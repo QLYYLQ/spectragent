@@ -182,9 +182,9 @@ async def test_our_service_is_bound_beside_androidworlds_forwarder(prepared: Pre
 
 
 async def test_the_task_scores_0_unsolved_and_1_once_solved(prepared: Prepared) -> None:
-    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=60)
+    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=60, answer=None)
     await _shell(prepared, "settings put system screen_brightness 255")
-    (solved,) = await prepared.env.read_oracle_scores(timeout_s=60)
+    (solved,) = await prepared.env.read_oracle_scores(timeout_s=60, answer=None)
     prepared.scores += [unsolved, solved]
 
     assert (unsolved.status, unsolved.score) == ("scored", 0.0), unsolved.detail
