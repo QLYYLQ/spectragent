@@ -87,15 +87,47 @@ class TestCheckLoopInputs:
         assert err.value.missing == ["point"]
         assert err.value.mistyped == {"hint": ("str", "int")}
 
-    def test_react_accepts_no_input(self) -> None:
+    def test_react_accepts_only_an_optional_step_budget(self) -> None:
         """A checkpoint handed to ``react`` fails loudly instead of running from scratch."""
-        assert ReactLoop.__loop_inputs__ == {}
+        assert list(ReactLoop.__loop_inputs__) == ["max_steps"]
+        assert not ReactLoop.__loop_inputs__["max_steps"].required
         checkpoint = Checkpoint(trace_dir="/tmp/source-run", step=2)
         with pytest.raises(IncompatibleLoopInputError) as err:
             ReactLoop().check_loop_inputs({"checkpoint": checkpoint})
         assert err.value.loop_id == "react"
         assert err.value.unknown == ["checkpoint"]
-        assert "declares: none" in str(err.value)
+        assert "declares: max_steps" in str(err.value)
+
+    def test_a_value_the_loop_refuses(self) -> None:
+        """Of the declared type, and still not one the Loop can take."""
+
+        class _Ranged(_InputLoop):
+            __registry_key__ = "test_loop_inputs_ranged"
+
+            def loop_input_refusal(self, key: str, value: object) -> str | None:
+                return "must be shorter" if key == "hint" and value == "far too long" else None
+
+        try:
+            _Ranged().check_loop_inputs({"point": _Point(), "hint": "short"})
+            with pytest.raises(IncompatibleLoopInputError) as err:
+                _Ranged().check_loop_inputs({"point": _Point(), "hint": "far too long"})
+            assert err.value.refused == {"hint": "must be shorter"}
+            assert (err.value.unknown, err.value.missing, err.value.mistyped) == ([], [], {})
+            assert "hint must be shorter" in str(err.value)
+            # Asked only about values of the declared type: a mistyped one is
+            # reported as mistyped, never handed to the refusal.
+            with pytest.raises(IncompatibleLoopInputError) as err:
+                _Ranged().check_loop_inputs({"point": _Point(), "hint": 3, "bogus": 1})
+            assert err.value.refused == {}
+            assert err.value.mistyped == {"hint": ("str", "int")}
+        finally:
+            AgentLoopRegistrar.unregister("test_loop_inputs_ranged")
+
+    def test_a_refused_value_is_reported_with_every_other_problem(self) -> None:
+        with pytest.raises(IncompatibleLoopInputError) as err:
+            ReactLoop().check_loop_inputs({"max_steps": 0, "checkpoint": None})
+        assert err.value.unknown == ["checkpoint"]
+        assert err.value.refused == {"max_steps": "must be a positive integer, got 0"}
 
     def test_react_accepts_an_empty_input_set(self) -> None:
         ReactLoop().check_loop_inputs({})

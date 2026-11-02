@@ -59,13 +59,15 @@ class IncompatibleLoopInputError(Exception):
     again by ``weave()`` for a caller that weaves by hand. Every problem is
     reported at once: keys the Loop does not accept (a ``checkpoint`` handed to
     ``react`` must not quietly run the task from scratch), required keys the
-    task did not supply, and values of the wrong type.
+    task did not supply, values of the wrong type, and values of the right type
+    the Loop refuses (``AgentLoopBase.loop_input_refusal``: a step budget of 0).
 
     Attributes:
         loop_id: The Loop that refused the inputs.
         unknown: Keys the Loop does not declare, sorted.
         missing: Required keys absent from the inputs, sorted.
         mistyped: Key -> (expected type name, actual type name).
+        refused: Key -> why the Loop cannot take its value.
     """
 
     def __init__(
@@ -75,12 +77,14 @@ class IncompatibleLoopInputError(Exception):
         unknown: Iterable[str] = (),
         missing: Iterable[str] = (),
         mistyped: Mapping[str, tuple[str, str]] | None = None,
+        refused: Mapping[str, str] | None = None,
         accepted: Iterable[str] = (),
     ) -> None:
         self.loop_id = loop_id
         self.unknown = sorted(unknown)
         self.missing = sorted(missing)
         self.mistyped = dict(sorted((mistyped or {}).items()))
+        self.refused = dict(sorted((refused or {}).items()))
         accepted_keys = sorted(accepted)
         parts: list[str] = []
         if self.unknown:
@@ -90,6 +94,8 @@ class IncompatibleLoopInputError(Exception):
             parts.append(f"requires {', '.join(self.missing)}, which the task did not supply")
         for key, (expected, actual) in self.mistyped.items():
             parts.append(f"expects {key} to be {expected}, got {actual}")
+        for key, reason in self.refused.items():
+            parts.append(f"{key} {reason}")
         super().__init__(f"Loop {loop_id!r} loop inputs: " + "; ".join(parts))
 
 

@@ -15,16 +15,19 @@ a file that cannot be read, is not JSON, declares another format, misses or
 adds a field, or lists one task twice raises ``BenchmarkDataError`` and the
 loader publishes nothing.
 
+**The step budget.** A task's context hands the Loop the steps AndroidWorld's
+own runner gives it, ``max_steps = int(10 * complexity)`` (10 to 120 on the
+pinned commit), as ReAct's Loop input ``max_steps``. The configured
+``max_steps`` stays the ceiling, so a sweep that should match AndroidWorld's
+runner on every task configures at least 120 (``docs/architecture_design.md``
+§4.1 "Loop 输入").
+
 **Left out, with the reason in** :attr:`AndroidWorldTaskLoader.skipped`, and
 counted in one log line: the tasks AndroidWorld's service cannot build again
 from their address (``UNREPRODUCIBLE``, with its reason), which the oracle
 would refuse. Information-retrieval tasks (family ``information_retrieval``,
 25 of the 116) are kept like any other: they are scored on the agent's answer,
 which the Runtime hands the oracle at the scoring point (§4.2).
-
-AndroidWorld's own runner gives a task ``int(10 * complexity)`` steps; the
-framework has no per-task step limit (the Loop's ``max_steps`` holds for every
-task of a sweep), so the complexity is only kept in the task's ``metadata``.
 
 The list's model is the Android package's, imported where the file is read:
 every run imports this loader with the framework, and a run that names no
@@ -47,7 +50,7 @@ from spectragent.core.data_loader._common import (
 )
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
 from spectragent.core.registries import setup_class_for_env
-from spectragent.schemas.task import TaskDefinition
+from spectragent.schemas.task import TaskContext, TaskDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +64,23 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
     env_type: str = "android"
 
     _skipped: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _step_budgets: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def skipped(self) -> Mapping[str, str]:
         """The listed tasks left out, by task id, and why."""
         return MappingProxyType(self._skipped)
+
+    def get_task_context(self, task_id: str) -> TaskContext:
+        """The task's setup context, and the step budget AndroidWorld's runner gives it.
+
+        The budget is the Loop input ``max_steps``; an unknown ``task_id``
+        yields an empty ``TaskContext()``, as for every loader.
+        """
+        context = super().get_task_context(task_id)
+        if task_id in self._step_budgets:
+            context.loop["max_steps"] = self._step_budgets[task_id]
+        return context
 
     def _load(self) -> None:
         from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
@@ -89,6 +104,7 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             ) from exc
         setup_type = setup_class_for_env(self.env_type).__registry_key__
         tasks: dict[str, TaskDefinition] = {}
+        step_budgets: dict[str, int] = {}
         skipped: dict[str, str] = {}
         for task in listing.tasks:
             task_id = f"{task.task}/{task.suite_seed}/{task.index}"
@@ -111,6 +127,7 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
                     "metadata": {"complexity": task.complexity},
                 }
             )
+            step_budgets[task_id] = task.step_budget
         if not tasks:
             raise BenchmarkDataError(
                 f"{path} has no task this loader runs: "
@@ -124,4 +141,5 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
                 len(listing.tasks),
             )
         self._tasks.update(tasks)
+        self._step_budgets.update(step_budgets)
         self._skipped.update(skipped)

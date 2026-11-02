@@ -310,6 +310,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         config_source: ConfigSource | None = None,
         call_context: RunCallContext | None = None,
         action_space: Any = None,
+        step_budget: int | None = None,
         **kwargs: Any,
     ) -> None:
         self._reset()
@@ -352,6 +353,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 else None,
                 task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
                 branch=branch,
+                max_steps=step_budget,
                 config_source=config_source,
                 **(
                     {"action_space": action_space.model_copy(deep=True)}

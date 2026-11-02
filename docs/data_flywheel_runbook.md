@@ -465,7 +465,7 @@ for record in trace.archive_files(0, "browser.dom_raw"):
 - `archive_run_file(capability_id)`：这个 capability 已提交的 run 记录里版本最高的一份。
 - `archive_lines(path, model)`：把逐行 JSON 的归档文件按给定的 pydantic 模型读回，坏行报 `TraceSchemaError` 并点名行号。
 
-`trace.config` 里还记着：`negotiation.active_archivers` 和 `negotiation.archive_bindings`（绑定了哪些归档器），`env_evidence_privacy`（所绑定归档器声明的隐私标记），以及按值脱敏后的任务 setup context `task_setup`（`start_url`；回放 run 另有 `replay_archive`，已是绝对路径）。按任务、按功能的字段有值才写进 `config.json`：没绑定归档器的 run 没有 `env_evidence_privacy`，没有 setup context 的没有 `task_setup`，不是分叉的没有 `branch`。组装后的配置（`resolved`）里闭集值与数字原样记录（`max_steps`、`temperature` 都看得到），没标 trace-safe 的自由字符串（模型名、`base_url`）记成 `"<omitted>"`。`env/steps/NNN/` 是第 NNN 步的提交收集到的证据，页面加载完之后才发出的请求（`fetch`、XHR、迟到的 beacon）会落在下一步。
+`trace.config` 里还记着：`negotiation.active_archivers` 和 `negotiation.archive_bindings`（绑定了哪些归档器），`env_evidence_privacy`（所绑定归档器声明的隐私标记），按值脱敏后的任务 setup context `task_setup`（`start_url`；回放 run 另有 `replay_archive`，已是绝对路径），以及这个任务实际的步数预算 `max_steps`（配置的 `max_steps`，任务自己的预算更小时取它；分叉是 `min(1 + continue_steps, max_steps)`）。按任务、按功能的字段有值才写进 `config.json`：没绑定归档器的 run 没有 `env_evidence_privacy`，没有 setup context 的没有 `task_setup`，不是分叉的没有 `branch`。组装后的配置（`resolved`）里闭集值与数字原样记录（`max_steps`、`temperature` 都看得到），没标 trace-safe 的自由字符串（模型名、`base_url`）记成 `"<omitted>"`。`env/steps/NNN/` 是第 NNN 步的提交收集到的证据，页面加载完之后才发出的请求（`fetch`、XHR、迟到的 beacon）会落在下一步。
 
 ## 离线回放一个 run
 

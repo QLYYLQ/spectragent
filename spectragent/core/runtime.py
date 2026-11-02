@@ -184,6 +184,9 @@ class AgentRuntime:
         self._call_context = RunCallContext()
         self._execution_limits = ExecutionLimits()
         self._agent_consumes_limits = False
+        # The most policy steps the Loop allows this task (see :meth:`prepare`);
+        # ``None`` when the Loop has no step budget.
+        self._step_budget: int | None = None
         # The fragment format descriptions the agent's prompt quotes, keyed by
         # the names it declared; ``None`` when it declares none (see
         # :meth:`prepare`, step 2b).
@@ -362,7 +365,10 @@ class AgentRuntime:
         negotiation — and handed to the Loop as a read-only
         ``ctx["loop_inputs"]``. There is no other channel into the Loop: an
         unexpected keyword is a ``TypeError`` here, not a ``ctx`` entry
-        nobody reads.
+        nobody reads. The Loop also says the most policy steps the task takes
+        with them (``loop.step_budget(inputs)``: a task's own budget lowers
+        ReAct's configured ``max_steps``), which ``on_run_start`` receives as
+        ``step_budget``.
 
         *env_context* is this task's environment setup context
         (``TaskContext.env``). After negotiations, the environment routes
@@ -388,7 +394,8 @@ class AgentRuntime:
         Raises:
             IncompatibleError: The agent lacks a slot the Loop requires.
             IncompatibleLoopInputError: The loop inputs do not fit what the
-                Loop declares (unknown, missing or mistyped keys).
+                Loop declares (unknown, missing or mistyped keys, or a value
+                the Loop refuses, such as a step budget below 1).
             MissingEnvironmentError: The Loop needs an environment and the
                 run has none.
             IncompatibleFragmentError: A required fragment no provider here
@@ -436,6 +443,9 @@ class AgentRuntime:
         # declare one must fail here, not run the task from scratch.
         inputs = MappingProxyType(dict(loop_inputs or {}))
         loop.check_loop_inputs(inputs)
+        # The task's step budget, for the trace and the live view only: the
+        # Agent learns its budget from ``loop.step_info``.
+        self._step_budget = loop.step_budget(inputs)
         # Step 1c: An environment, when the Loop needs one. A run without
         # one used to die in observation negotiation with an AttributeError
         # on ``None``; an env-less Loop's run negotiates against nothing.
@@ -859,9 +869,10 @@ class AgentRuntime:
             # archive facts: whether evidence is recorded and what its
             # archivers declare, and the setup context this task's environment
             # is started from (``task_setup`` is the owner-prepared recording
-            # projection; execution receives its separate prepared input). A
-            # branch task's provenance (``branch``) rides along by name for the
-            # trace; nothing here interprets it.
+            # projection; execution receives its separate prepared input), and
+            # the most policy steps the Loop allows this task (``step_budget``).
+            # A branch task's provenance (``branch``) rides along by name for
+            # the trace; nothing here interprets it.
             await self._dispatch_lifecycle(
                 "on_run_start",
                 agent=self._agent,
@@ -884,6 +895,7 @@ class AgentRuntime:
                 observation_negotiation=self._negotiated_obs,
                 action_negotiation=self._negotiated_actions,
                 action_space=self.action_space,
+                step_budget=self._step_budget,
                 archive_negotiation=self._negotiated_archive,
                 env_evidence_privacy=(
                     list(self._env_evidence_privacy)

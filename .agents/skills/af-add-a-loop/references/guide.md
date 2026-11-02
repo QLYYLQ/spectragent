@@ -53,7 +53,10 @@ by `prepare()` too; do not defer an already knowable error to the first step.
 
 `execution_limits() -> ExecutionLimits` is the Loop's sole source of execution limits.
 `ReactLoop` supplies `max_actions_per_step`. The immutable type and validation live in
-`core/loops/limits.py`.
+`core/loops/limits.py`. The step budget is not an execution limit: `step_budget(loop_inputs)`
+says the most policy steps a task takes (`None` by default), Runtime hands it to
+`on_run_start` for the trace and the live view, and an Agent learns it only from
+`loop.step_info`, which a branch and the training export pin to the source run's.
 
 An Agent declares consumed fields in `__execution_limit_fields__`. A deliberate empty set
 means these limits do not apply to its prompts; an absent declaration cannot silently
@@ -93,7 +96,7 @@ ReAct keeps its own phase vocabulary and knobs:
 
 | Field | Meaning |
 |---|---|
-| `max_steps` | Budget for this run's policy decisions |
+| `max_steps` | Ceiling on a run's policy decisions; a task's Loop input `max_steps` lowers it |
 | `max_actions_per_step` | Maximum actions executed from one accepted reply |
 | `max_consecutive_parse_errors` | Consecutive unparseable steps before termination |
 | `parse_retries_per_step` | Additional asks inside the same observation cycle |
@@ -320,8 +323,9 @@ recording-failure stop rule. Replace them with the current behavior contract.
 ## 7. Loop inputs, terminal observations and ReAct branching
 
 `__loop_inputs__: Mapping[str, LoopInput]` declares per-task Loop inputs. Runtime and
-`weave` both refuse unknown, missing or mistyped values with
-`IncompatibleLoopInputError`. Validated values reach the closure as `ctx["loop_inputs"]`.
+`weave` both refuse unknown, missing or mistyped values, and values the Loop's
+`loop_input_refusal` refuses (a step budget below 1), with `IncompatibleLoopInputError`.
+Validated values reach the closure as `ctx["loop_inputs"]`.
 `TaskContext.env`, `.loop` and `.branch` remain separate channels: setup, execution inputs
 and trace provenance respectively.
 

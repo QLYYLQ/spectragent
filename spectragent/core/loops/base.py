@@ -56,7 +56,7 @@ class AgentLoop(Protocol):
         ...
 
     def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
-        """Refuse unknown, missing or mistyped task inputs."""
+        """Refuse unknown, missing or mistyped task inputs, and values the Loop cannot take."""
         ...
 
     def get_action_space(
@@ -71,6 +71,10 @@ class AgentLoop(Protocol):
 
     def execution_limits(self) -> ExecutionLimits:
         """Declare the typed execution limits supplied to the Agent."""
+        ...
+
+    def step_budget(self, loop_inputs: Mapping[str, object]) -> int | None:
+        """The most policy steps a run with these (checked) inputs takes; ``None``: no budget."""
         ...
 
     def weave(

@@ -905,6 +905,11 @@ class TestPerTaskFieldsAppearOnlyWithAValue:
         assert "extra" in json.loads(TraceConfig(extra={"domain": "travel"}).model_dump_json())
         assert "extra" not in json.loads(TraceConfig().model_dump_json())
 
+    def test_the_step_budget_appears_when_the_loop_has_one(self):
+        assert json.loads(TraceConfig(max_steps=12).model_dump_json())["max_steps"] == 12
+        assert "max_steps" not in json.loads(TraceConfig().model_dump_json())
+        assert TraceConfig.model_validate({"agent_id": "a"}).max_steps is None
+
 
 class TestTheDigestAndTheArchiveAxis:
     async def test_the_archive_binding_moves_the_hash(self, tmp_path):
@@ -925,10 +930,11 @@ class TestTheDigestAndTheArchiveAxis:
         assert a.manifest is not None and b.manifest is not None
         assert a.manifest.config_hash == b.manifest.config_hash
 
-    def test_provenance_and_task_setup_are_not_configuration(self):
+    def test_provenance_and_per_task_facts_are_not_configuration(self):
         base = TraceConfig(agent_id="a")
         varied = TraceConfig(
             agent_id="a",
+            max_steps=12,
             env_evidence_privacy=[MARKER_REDACTED],
             task_setup=TaskSetupRecord(
                 context={"start_url": "https://x.example/"}, redactions=RedactionLedger()

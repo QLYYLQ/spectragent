@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar
@@ -39,7 +39,7 @@ from spectragent.core.loops._loop_fragments import (
     loop_fragment_builders,
     populate_loop_fragments,
 )
-from spectragent.core.loops._registrar import AgentLoopBase
+from spectragent.core.loops._registrar import AgentLoopBase, LoopInput
 from spectragent.core.loops.coordinate_frames import actions_in_capability_units, step_frame
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
@@ -124,8 +124,11 @@ def parse_feedback(exc: ParseError) -> str:
 
 @dataclass(kw_only=True)
 class ReactRun(LoopRun):
-    """ReAct retry state belonging to one execution."""
+    """ReAct state belonging to one execution: its step budget and its parse-error streak."""
 
+    #: The most policy steps this run takes (:meth:`ReactLoop.step_budget`);
+    #: ``loop.step_info`` tells ReAct's agent this number.
+    max_steps: int
     parse_error_streak: int = 0
 
 
@@ -140,7 +143,9 @@ class ReactLoop(AgentLoopBase):
     them, not this Loop, and checks them before it does (arch §4.1 "可选 slot").
 
     Configuration fields (conscribe config-annotated):
-    - ``max_steps``: maximum number of steps before termination
+    - ``max_steps``: the most policy steps a run takes. A ceiling: a task's
+      own step budget, the optional Loop input ``max_steps``, lowers it for
+      that task (AndroidWorld's ``int(10 * complexity)``) and never raises it
     - ``max_actions_per_step``: maximum actions per LLM response
     - ``max_consecutive_parse_errors``: consecutive unparseable *steps*
       before termination
@@ -164,9 +169,29 @@ class ReactLoop(AgentLoopBase):
         {"user_assistant"}
     )
     __requires_env__ = True
+    __loop_inputs__ = {
+        "max_steps": LoopInput(
+            int,
+            required=False,
+            description=(
+                "This task's own step budget, at least 1. The configured max_steps stays the "
+                "ceiling: the task runs at most the smaller of the two."
+            ),
+        )
+    }
 
     # ── conscribe config-annotated fields ─────────────────────
-    max_steps: Annotated[int, Field(default=100, description="Maximum number of steps.")] = 100
+    max_steps: Annotated[
+        int,
+        Field(
+            default=100,
+            description=(
+                "The most policy steps a run takes. A ceiling: a task's own step budget (the "
+                "Loop input max_steps, such as AndroidWorld's 10 x complexity) lowers it for "
+                "that task and never raises it; a branch runs 1 + continue_steps within it."
+            ),
+        ),
+    ] = 100
     max_actions_per_step: Annotated[
         int, Field(default=1, description="Maximum actions per LLM response.")
     ] = 1
@@ -242,6 +267,21 @@ class ReactLoop(AgentLoopBase):
             is_branch=run.is_branch,
         )
 
+    def loop_input_refusal(self, key: str, value: object) -> str | None:
+        """A step budget must be a positive integer (``True`` is not a budget)."""
+        if key == "max_steps" and (type(value) is not int or value < 1):
+            return f"must be a positive integer, got {value!r}"
+        return None
+
+    def step_budget(self, loop_inputs: Mapping[str, object]) -> int:
+        """The most policy steps a run with these (checked) Loop inputs takes.
+
+        The configured ``max_steps`` is the ceiling: a task's own budget (the
+        Loop input ``max_steps``) lowers it for that task, never raises it.
+        """
+        budget = loop_inputs.get("max_steps")
+        return min(budget, self.max_steps) if isinstance(budget, int) else self.max_steps
+
     def execution_limits(self) -> ExecutionLimits:
         """The action cap the Agent must communicate in its own prompt."""
         return ExecutionLimits(max_actions_per_step=self.max_actions_per_step)
@@ -267,8 +307,14 @@ class ReactLoop(AgentLoopBase):
         Returns:
             AgentResult with execution trace and metrics.
         """
-        run = ReactRun.from_ctx(agent, task, ctx, step_executor=ctx.get("step_executor", self))
-        for step_idx in range(self.max_steps):
+        run = ReactRun.from_ctx(
+            agent,
+            task,
+            ctx,
+            step_executor=ctx.get("step_executor", self),
+            max_steps=self.step_budget(ctx.get("loop_inputs", {})),
+        )
+        for step_idx in range(run.max_steps):
             result = await run.step_executor.execute_step(run, step_idx)
             if result is not None:
                 return result
@@ -995,12 +1041,12 @@ class ReactLoop(AgentLoopBase):
 
         The construction itself is ``_loop_fragments.loop_fragment_builders``
         (shared with ``BranchLoop`` and the training export); this Loop hands
-        it ``max_steps`` and today's date (``today_override`` first).
+        it the run's step budget and today's date (``today_override`` first).
         """
         return loop_fragment_builders(
             task=run.task,
             step=step_idx,
-            max_steps=self.max_steps,
+            max_steps=run.max_steps,
             today=self.today_iso(),
             history=run.step_records,
             prev_step=run.prev_step_record,
