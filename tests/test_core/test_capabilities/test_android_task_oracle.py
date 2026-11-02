@@ -69,6 +69,20 @@ def _task(**changes: JsonValue) -> dict[str, JsonValue]:
     return record
 
 
+#: An information-retrieval task, which AndroidWorld scores on the agent's answer.
+_ASKS = "SimpleCalendarLocationOfEvent"
+_ASKS_GOAL = "What is the location of my Movie night event in Simple Calendar Pro?"
+
+
+def _asking_task() -> dict[str, JsonValue]:
+    return _task(
+        family="information_retrieval",
+        task=_ASKS,
+        params={"seed": instance_seed(42, _ASKS, 0)},
+        goal=_ASKS_GOAL,
+    )
+
+
 def _device(tmp_path: Path) -> AndroidProviderSession:
     """A booted emulator, as ``local_emulator`` hands it over with every need met."""
     return AndroidProviderSession(
@@ -107,6 +121,15 @@ def _calls(root: Path) -> list[tuple[str, str, dict[str, str]]]:
         assert isinstance(method, str) and isinstance(path, str) and isinstance(query, dict)
         calls.append((method, path, {name: str(value) for name, value in query.items()}))
     return calls
+
+
+def _after_the_reset(root: Path) -> list[tuple[str, str, JsonValue]]:
+    """The calls that followed the task's ``/reset``, each with its JSON body (``None`` without)."""
+    sent = [(entry["method"], entry["path"], entry["body"]) for entry in requests(root)]
+    paths = [path for _, path, _ in sent]
+    return [
+        (str(method), str(path), body) for method, path, body in sent[paths.index("/reset") + 1 :]
+    ]
 
 
 async def _service_is_gone(root: Path) -> bool:
@@ -239,6 +262,75 @@ async def test_a_service_that_builds_another_task_is_refused_and_stopped(
     await oracle.stop()  # what the capability's teardown does after a failed setup
 
     assert "/task/initialize" not in [path for _, path, _ in _calls(root)]
+    assert await _service_is_gone(root)
+
+
+# ── the run's answer: information-retrieval tasks are scored on it ───
+
+
+async def _scored(
+    root: Path, tmp_path: Path, task: dict[str, JsonValue], answer: str | None
+) -> OracleReading | None:
+    """Prepare *task*, score it handed *answer*, end it."""
+    write_behaviour(root, {"/task/goal": {"json": {"goal": task["goal"]}}})
+    oracle = _oracle(root)
+    await oracle.start(_device(tmp_path), task)
+    try:
+        return await oracle.read_score(answer=answer)
+    finally:
+        await oracle.stop()
+
+
+async def test_an_information_retrieval_task_hands_the_answer_over_before_the_score(
+    root: Path, tmp_path: Path
+) -> None:
+    """As AndroidWorld's own runner: the answer action first, then the score."""
+    reading = await _scored(root, tmp_path, _asking_task(), "Mall")
+
+    address = {"task_type": _ASKS, "task_idx": "0"}
+    assert _after_the_reset(root) == [
+        ("POST", "/execute_action", {"action_type": "answer", "text": "Mall"}),
+        ("GET", "/task/score", None),
+        ("POST", "/task/tear_down", None),
+    ]
+    assert [query for _, path, query in _calls(root) if path == "/task/score"] == [address]
+    assert reading is not None and reading.provenance["answer"] == "sent"
+
+
+async def test_an_information_retrieval_task_without_an_answer_is_scored_on_none(
+    root: Path, tmp_path: Path
+) -> None:
+    """Nothing is sent: AndroidWorld scores the empty answer 0, as when its agent never answers."""
+    reading = await _scored(root, tmp_path, _asking_task(), None)
+
+    assert [path for _, path, _ in _after_the_reset(root)] == ["/task/score", "/task/tear_down"]
+    assert reading is not None and reading.provenance["answer"] == "none"
+
+
+async def test_a_task_scored_on_the_device_never_sends_the_answer(
+    root: Path, tmp_path: Path
+) -> None:
+    reading = await _scored(root, tmp_path, _task(), "Mall")
+
+    assert [path for _, path, _ in _after_the_reset(root)] == ["/task/score", "/task/tear_down"]
+    assert reading is not None and "answer" not in reading.provenance
+
+
+async def test_an_answer_the_service_refuses_is_an_ordinary_error_and_nothing_is_scored(
+    root: Path, tmp_path: Path
+) -> None:
+    """A score read without the answer would not be this run's: "not scored", not a 0."""
+    oracle = _oracle(root)
+    write_behaviour(root, {"/task/goal": {"json": {"goal": _ASKS_GOAL}}})
+    await oracle.start(_device(tmp_path), _asking_task())
+    try:
+        write_behaviour(root, {"/execute_action": {"status": 500}})
+        with pytest.raises(AndroidWorldError, match="POST /execute_action answered HTTP 500"):
+            await oracle.read_score(answer="Mall")
+    finally:
+        await oracle.stop()
+
+    assert "/task/score" not in [path for _, path, _ in _calls(root)]
     assert await _service_is_gone(root)
 
 
@@ -462,6 +554,11 @@ def test_a_good_installation_and_task_pass(root: Path) -> None:
     _oracle(root).check_setup(_task())
 
 
+def test_an_information_retrieval_task_passes(root: Path) -> None:
+    """Scored on the run's answer, which the scoring point hands over (§4.2)."""
+    _oracle(root).check_setup(_asking_task())
+
+
 @pytest.mark.parametrize(
     ("breakage", "message"),
     [
@@ -496,7 +593,6 @@ def test_an_installation_the_service_cannot_start_from_is_refused(
         (None, "the task carries no AndroidWorld task"),
         ({"task": "SystemBrightnessMax"}, "the task's oracle_task is not an AndroidWorld task"),
         (_task(commit="f" * 40), "the task list was made with AndroidWorld ffff"),
-        (_task(family="information_retrieval"), "an information-retrieval task, scored on"),
         (_task(params={"seed": 1}), "params.seed is 1, and the instance AndroidWorld makes"),
         (
             _task(task="MarkorCreateFolder"),

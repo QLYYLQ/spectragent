@@ -21,6 +21,11 @@ it was cloned:
   would kill the server the run shares: the command is retried instead;
 - android_env turns on the touch and pointer overlays whenever it connects,
   which every screenshot would show: they stay off;
+- AndroidWorld shows an agent's answer on the screen through ``adb shell am
+  broadcast ... "<answer>"``, so the device's shell reads the answer: a lone
+  double quote in it fails the answer action, ``$(...)`` in it runs as root,
+  and the broadcast now and then hangs until adb's timeout: the answer is kept
+  for the score and stays off the screen, which nobody looks at after the run;
 - android_env downloads its accessibility forwarder on every start: the cached
   build is used;
 - the emulator's gRPC listens on loopback only behind a token
@@ -76,7 +81,7 @@ def _patch(args: argparse.Namespace) -> None:
     from android_env.components.simulators.emulator import emulator_simulator
     from android_env.proto import emulator_controller_pb2_grpc, snapshot_service_pb2_grpc
     from android_env.wrappers import a11y_grpc_wrapper
-    from android_world.env import env_launcher
+    from android_world.env import env_launcher, interface
 
     logging.set_verbosity(logging.WARNING)
 
@@ -88,6 +93,12 @@ def _patch(args: argparse.Namespace) -> None:
         self.show_pointer_location = False
 
     config_classes.DeviceSettingsConfig.__init__ = no_overlays
+
+    def answer_off_the_screen(self, message, header=""):
+        # The answer action keeps the answer for the score before it calls this.
+        return None
+
+    interface.AsyncAndroidEnv.display_message = answer_off_the_screen
 
     adb_init = adb_controller.AdbController.__init__
 

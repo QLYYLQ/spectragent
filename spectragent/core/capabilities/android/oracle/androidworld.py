@@ -15,9 +15,13 @@ Spectragent's own bridge. One task is one run:
    environment, and the wait for ``/health`` is bounded. Then the task: the
    suite its seed makes, a check that the service built the task the list
    records, ``/task/initialize`` and ``/reset``.
-2. **read_score**, at the Runtime's scoring point: ``/task/score``, within
-   the run's ``oracle_timeout``. HTTP 500, a broken answer or a dead service
-   raise :class:`AndroidWorldError`, so the environment records "not scored".
+2. **read_score**, at the Runtime's scoring point, within the run's
+   ``oracle_timeout``: for an information-retrieval task, scored on the agent's
+   answer, the run's answer goes to the service first as an ``answer`` action
+   (``/execute_action``), as AndroidWorld's own runner hands it over, unless the
+   run ended without one; then ``/task/score``. HTTP 500, a broken reply or a
+   dead service raise :class:`AndroidWorldError`, so the environment records
+   "not scored".
 3. **stop**, at teardown: ``/task/tear_down`` (best effort, since the device's
    changes are thrown away with the run; a failure is logged), then the
    service's process group: SIGTERM, then SIGKILL for the whole group, its
@@ -312,8 +316,9 @@ class _Service:
         params: dict[str, str | int | bool],
         *,
         timeout_s: float | None,
+        body: dict[str, JsonValue] | None = None,
     ) -> dict[str, JsonValue]:
-        """One call; its JSON object answer.
+        """One call, with *body* as its JSON body when given; the JSON object it replies.
 
         *timeout_s* ``None`` leaves the limit to the caller (the scoring point's).
 
@@ -330,7 +335,7 @@ class _Service:
         limit = asyncio.timeout(timeout_s)
         try:
             async with limit:
-                answer = await self.client.request(method, path, params=query)
+                response = await self.client.request(method, path, params=query, json=body)
         except TimeoutError:
             if not limit.expired():
                 raise
@@ -347,20 +352,20 @@ class _Service:
                 f"{what}: AndroidWorld's service could not be reached ({type(exc).__name__}: "
                 f"{exc}; {state}):\n{log_tail(self.log, lines=8)}"
             ) from None
-        if answer.status_code != 200:
+        if response.status_code != 200:
             raise AndroidWorldError(
-                f"{what} answered HTTP {answer.status_code} ({answer.text[:200]!r}); the end of "
-                f"the service's log:\n{log_tail(self.log, lines=8)}"
+                f"{what} answered HTTP {response.status_code} ({response.text[:200]!r}); the end "
+                f"of the service's log:\n{log_tail(self.log, lines=8)}"
             )
         try:
-            body = answer.json()
+            reply = response.json()
         except ValueError:
-            body = None
-        if not isinstance(body, dict):
+            reply = None
+        if not isinstance(reply, dict):
             raise AndroidWorldError(
-                f"{what} answered something that is not a JSON object: {answer.text[:200]!r}"
+                f"{what} answered something that is not a JSON object: {response.text[:200]!r}"
             )
-        return body
+        return reply
 
     async def close(self) -> None:
         """Stop the service (SIGTERM, then SIGKILL for its group), close the client, remove its directory."""
@@ -494,10 +499,22 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             self._device_goal = goal if isinstance(goal, str) else None
 
     async def read_score(self, *, answer: str | None) -> OracleReading | None:
-        del answer  # only information-retrieval tasks score it, and check_setup refuses them
         service, task = self._service, self._task
         if service is None or task is None or not self._initialized:
             raise AndroidWorldError("no AndroidWorld task was initialized on this device")
+        on_the_answer = task.family == INFORMATION_RETRIEVAL
+        if on_the_answer and answer is not None:
+            # As AndroidWorld's own runner: the agent's answer action reaches the
+            # service before the score, and the service keeps the answer for it
+            # (initialize and reset clear it). With no answer nothing is sent, and
+            # the task scores 0, as it does when an agent never answers there.
+            await service.call(
+                "POST",
+                "/execute_action",
+                {},
+                body={"action_type": "answer", "text": answer},
+                timeout_s=None,
+            )
         reply = await service.call(
             "GET", "/task/score", {"task_type": task.task, "task_idx": task.index}, timeout_s=None
         )
@@ -516,6 +533,9 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
         }
         if self._device_goal is not None:
             provenance["goal"] = self._device_goal
+        if on_the_answer:
+            # Whether there was an answer to score; its text is in result.json.
+            provenance["answer"] = "sent" if answer is not None else "none"
         return OracleReading(
             score=float(score),
             oracle=self.oracle_id,
@@ -558,9 +578,8 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
 
         Raises:
             AndroidWorldSetupError: There is none, it is no AndroidWorld task,
-                it comes from another commit, it is scored on the agent's
-                answer, which does not reach the oracle yet, or the service
-                cannot build it again from its address.
+                it comes from another commit, or the service cannot build it
+                again from its address.
         """
         if task is None:
             raise AndroidWorldSetupError(
@@ -577,11 +596,6 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             raise AndroidWorldSetupError(
                 f"the task list was made with AndroidWorld {parsed.commit}, and this oracle runs "
                 f"{PINNED_COMMIT}: generate the list again with the pinned checkout"
-            )
-        if parsed.family == INFORMATION_RETRIEVAL:
-            raise AndroidWorldSetupError(
-                f"{parsed.task} is an information-retrieval task, scored on the agent's answer, "
-                f"and the answer does not reach the oracle yet"
             )
         if parsed.task in UNREPRODUCIBLE:
             raise AndroidWorldSetupError(f"{parsed.task} cannot run: {UNREPRODUCIBLE[parsed.task]}")
