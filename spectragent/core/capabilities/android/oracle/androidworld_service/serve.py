@@ -98,6 +98,13 @@ def _patch(args: argparse.Namespace) -> None:
         # The answer action keeps the answer for the score before it calls this.
         return None
 
+    # A renamed method would be added, not replaced, and the device's root shell
+    # would read every answer again.
+    if "display_message" not in vars(interface.AsyncAndroidEnv):
+        raise SystemExit(
+            "serve.py keeps answers off the screen by replacing "
+            "AsyncAndroidEnv.display_message, which this AndroidWorld does not define"
+        )
     interface.AsyncAndroidEnv.display_message = answer_off_the_screen
 
     adb_init = adb_controller.AdbController.__init__
