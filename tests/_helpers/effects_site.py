@@ -52,10 +52,24 @@ page is about it, ``<link rel=icon href="data:,">`` so no favicon request):
   an icon ``#text_icon`` whose press focuses it — two text fields
   ``#text_given`` (``Given name``) and ``#text_family`` (``Family name``),
   each beside its own ``<label for>`` (``#text_given_label``,
-  ``#text_family_label``) with no box of their own, and a paragraph of text;
+  ``#text_family_label``) with no box of their own, a text field
+  ``#text_menu`` (``Flavour``, holding ``Ada``) whose box ``#text_menu_row``
+  also holds a dropdown's catcher ``#text_menu_catcher``: shown while the
+  field has focus, transparent, fixed over the whole page, its press keeping
+  focus where it was; a box ``#text_shadow_pair`` holding a text field
+  ``#text_shadow_first`` (``Shadow first``, holding ``Ada``), a caption
+  ``#text_shadow_caption`` whose press keeps focus where it was, and a host
+  ``#text_shadow_host`` whose open shadow root holds another text field; the
+  same with a same-site ``<iframe>`` ``#text_frame_last`` holding the other
+  field (``#text_frame_pair``, ``#text_frame_first`` (``Frame first``, holding
+  ``Ada``), ``#text_frame_caption``); and a paragraph of text;
   :data:`FIELDS_EMPTY_POINT` is on none of them. A
   capture-phase listener keeps the ``key`` of every keydown the page's own
   document sees in ``window.__keys``;
+- ``editor_alone.html`` — the page's only text field: a code editor
+  ``#alone_code`` like ``fields.html``'s, under a note ``#alone_note`` that
+  gives the page some height, its lines (``#alone_line1``, ``#alone_line3``)
+  drawn below the page's own box, so the field is the page's root element;
 - ``far.html`` — a button ``#far`` (``Far button``) at :data:`FAR_LEFT` px from
   the left of a page wider than the viewport, so its centre starts outside it;
   ``far_hidden.html`` is the same page with horizontal overflow hidden, as some
@@ -138,6 +152,20 @@ BOXES: dict[str, tuple[int, int, int, int]] = {
     "text_given": (820, 530, 200, 24),
     "text_family_label": (720, 560, 90, 24),
     "text_family": (820, 560, 200, 24),
+    "text_menu_row": (1040, 20, 220, 32),
+    "text_menu": (1040, 20, 220, 32),
+    "text_shadow_pair": (1040, 80, 220, 120),
+    "text_shadow_first": (1040, 80, 220, 32),
+    "text_shadow_caption": (1040, 125, 220, 24),
+    "text_shadow_host": (1040, 160, 220, 32),
+    "text_frame_pair": (1040, 230, 220, 120),
+    "text_frame_first": (1040, 230, 220, 32),
+    "text_frame_caption": (1040, 275, 220, 24),
+    "text_frame_last": (1040, 310, 220, 40),
+    "alone_code": (100, 200, 400, 0),
+    "alone_input": (100, 200, 2, 16),
+    "alone_line1": (100, 200, 400, 32),
+    "alone_line3": (100, 264, 400, 32),
 }
 
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
@@ -307,8 +335,24 @@ def _pages() -> dict[str, tuple[str, bytes]]:
             )
         },
         "fields.html": ("text/html; charset=utf-8", _fields_page()),
+        "editor_alone.html": ("text/html; charset=utf-8", _editor_alone_page()),
         "ok.png": ("image/png", _png((30, 120, 200))),
     }
+
+
+def _editor_alone_page() -> bytes:
+    return _page(
+        "Editor",
+        '<p id="alone_note" style="margin:0;height:40px">A note above the editor.</p>'
+        f'<div id="alone_code" style="{_box("alone_code")}cursor:text" '
+        "onmousedown=\"event.preventDefault(); document.getElementById('alone_input').focus()\">"
+        f'<textarea id="alone_input" aria-label="Alone" '
+        f'style="{_box_in("alone_input", "alone_code")}opacity:0;padding:0;border:0;'
+        'resize:none;overflow:hidden"></textarea>'
+        f'<div id="alone_line1" style="{_box_in("alone_line1", "alone_code")}">line one</div>'
+        f'<div id="alone_line3" style="{_box_in("alone_line3", "alone_code")}">line three</div>'
+        "</div>",
+    )
 
 
 def _fields_page() -> bytes:
@@ -380,6 +424,28 @@ def _fields_page() -> bytes:
         f'<label id="text_family_label" for="text_family" style="{_box("text_family_label")}">'
         "Family name</label>"
         f'<input id="text_family" style="{_box("text_family")}">'
+        f'<div id="text_menu_row" style="{_box("text_menu_row")}">'
+        f'<input id="text_menu" aria-label="Flavour" value="Ada" '
+        f'style="{_box_in("text_menu", "text_menu_row")}" '
+        "onfocus=\"document.getElementById('text_menu_catcher').style.display = 'block'\" "
+        "onblur=\"document.getElementById('text_menu_catcher').style.display = 'none'\">"
+        '<div id="text_menu_catcher" onmousedown="event.preventDefault()" '
+        'style="display:none;position:fixed;left:0;top:0;right:0;bottom:0;z-index:10"></div>'
+        "</div>"
+        f'<div id="text_shadow_pair" style="{_box("text_shadow_pair")}">'
+        f'<input id="text_shadow_first" aria-label="Shadow first" value="Ada" '
+        f'style="{_box_in("text_shadow_first", "text_shadow_pair")}">'
+        f'<span id="text_shadow_caption" onmousedown="event.preventDefault()" '
+        f'style="{_box_in("text_shadow_caption", "text_shadow_pair")}">Shadow last</span>'
+        f'<div id="text_shadow_host" style="{_box_in("text_shadow_host", "text_shadow_pair")}">'
+        "</div></div>"
+        f'<div id="text_frame_pair" style="{_box("text_frame_pair")}">'
+        f'<input id="text_frame_first" aria-label="Frame first" value="Ada" '
+        f'style="{_box_in("text_frame_first", "text_frame_pair")}">'
+        f'<span id="text_frame_caption" onmousedown="event.preventDefault()" '
+        f'style="{_box_in("text_frame_caption", "text_frame_pair")}">Frame last</span>'
+        f'<iframe id="text_frame_last" srcdoc="{escape(frame_input)}" '
+        f'style="{_box_in("text_frame_last", "text_frame_pair")}border:0"></iframe></div>'
         f'<p id="prose" style="position:absolute;left:400px;top:20px;width:600px">{prose}</p>'
         "<script>window.__keys = [];"
         " addEventListener('keydown', e => window.__keys.push(e.key), true);"
@@ -393,7 +459,10 @@ def _fields_page() -> bytes:
         "  .attachShadow({mode: 'closed', delegatesFocus: true});"
         ' closed.innerHTML = \'<input aria-label="Closed" style="width:100%;height:100%;'
         "box-sizing:border-box;margin:0\">';"
-        " window.__closedField = closed.querySelector('input');</script>",
+        " window.__closedField = closed.querySelector('input');"
+        " document.getElementById('text_shadow_host').attachShadow({mode: 'open'}).innerHTML ="
+        ' \'<input aria-label="Shadow last" style="width:100%;height:100%;box-sizing:border-box">\';'
+        "</script>",
     )
 
 

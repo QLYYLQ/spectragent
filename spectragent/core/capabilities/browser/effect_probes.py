@@ -327,15 +327,21 @@ function fieldAsDrawn(focused) {
 """
 
 #: Whether the field ``this`` belongs to as drawn (``fieldAsDrawn``) holds the
-#: viewport point ``(x, y)``, in CSS px: the point is in the field's box
-#: (edges included, in the tab's viewport, through the same-origin frames
-#: ``deepFocus`` finds focus in), or on an element drawn inside the field
-#: (``deepHit``). The second covers what a box leaves out: content positioned
-#: out of its ancestors' boxes, as a page whose content is all absolutely
-#: positioned leaves its body no height (a CodeMirror editor on its own page).
-#: A point on a ``<label>`` whose control is ``this`` counts as in the field
-#: too (user ruling 2026-11-02): a label beside its input, sharing only an
-#: ancestor that holds other fields, still names that field.
+#: viewport point ``(x, y)``, in CSS px (``docs/architecture_design.md`` §4.9):
+#: what is drawn on top at the point (``deepHit``, through open shadow roots
+#: and same-origin frames) is the field or inside it, and the point is in the
+#: field's box (edges included, in the tab's viewport, through the
+#: same-origin frames ``deepFocus`` finds focus in). A box with no area, or a
+#: field that is the page's root element, leaves only the first: content
+#: positioned out of its ancestors' boxes has nothing else to be measured by
+#: (a page that holds only absolutely positioned content gives its root no
+#: height, as a CodeMirror editor alone on its page does). Something drawn
+#: over the point that is not the field (another field's caption, a page's
+#: fixed header) is outside, and so is the field's own overlay drawn past its
+#: box (a dropdown's full-screen catcher). A point on a ``<label>`` whose
+#: control is ``this`` counts as in the field too (user ruling 2026-11-02): a
+#: label beside its input, sharing only an ancestor that holds other fields,
+#: still names that field.
 _FIELD_HOLDS_POINT_FN = (
     "function(x, y) { /* spectragent field holds the point */"
     + _TEXT_ENTRY_JS
@@ -351,11 +357,14 @@ _FIELD_HOLDS_POINT_FN = (
     "   const dx = box.left + frame.clientLeft, dy = box.top + frame.clientTop;"
     "   left += dx; right += dx; top += dy; bottom += dy;"
     "   win = frame.ownerDocument.defaultView; }"
-    " if (left <= x && x <= right && top <= y && y <= bottom) return true;"
     " const hit = deepHit(x, y).el;"
-    " for (let n = hit, hops = 0; n && hops < 4096; hops += 1) {"
-    "   if (n === field) return true;"
-    "   n = composedParent(n); }"
+    " let belongs = false;"
+    " for (let n = hit, hops = 0; n && hops < 4096 && !belongs; hops += 1) {"
+    "   belongs = n === field; n = composedParent(n); }"
+    " const inBox = left <= x && x <= right && top <= y && y <= bottom;"
+    " const noArea = right <= left || bottom <= top;"
+    " const root = field === field.ownerDocument.documentElement;"
+    " if (belongs && (inBox || noArea || root)) return true;"
     " const label = hit && hit.closest ? hit.closest('label') : null;"
     " return !!label && label.control === this; }"
 )
@@ -710,9 +719,11 @@ class FieldProbe:
         """Whether the field the held element belongs to, as drawn, holds the viewport point *(x, y)*.
 
         The field as drawn is the element's largest ancestor holding no other
-        text field (``fieldAsDrawn``, user ruling 2026-11-02); its box is
-        measured in the tab's viewport in CSS px, through the same-origin
-        frames focus was found in. ``None`` when this probe holds no element
+        text field (``fieldAsDrawn``, user ruling 2026-11-02). The point is in
+        it where what is drawn on top there belongs to it and the point is in
+        its box, measured in the tab's viewport in CSS px through the
+        same-origin frames focus was found in (``_FIELD_HOLDS_POINT_FN``), or
+        on the element's own label. ``None`` when this probe holds no element
         (nothing has focus, or it is in a frame of another site) or the
         reading failed.
         """

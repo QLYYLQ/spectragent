@@ -38,6 +38,14 @@ each case on a freshly loaded page:
   in the input's box; and a press on the focused input's own ``<label for>``
   beside it, with no box of their own (user ruling 2026-11-02). A press on the
   label of another field moves focus to that field, which takes the text.
+  Refused, the field keeping its text: a press on another field's caption
+  that lands on the focused field's own dropdown catcher, drawn over the
+  whole page past the field's box; and a press on the caption of a field that
+  sits in an open shadow root, or in a same-site frame, beside the focused
+  one (those fields stop the focused field's box at their shared box). On
+  ``editor_alone.html``, where the code editor is the page's only field and
+  its lines lie below the page's own box, a press on another line types: the
+  field is the page's root element.
 
 Unit counterpart: ``test_browser_actions/test_text_input_effects.py``
 (``TestTypingNeedsATextField``, ``TestTypingAtAPointGoesWhereFocusWent``).
@@ -84,6 +92,11 @@ UNTOUCHED = {
     "iconed": "",
     "given": "",
     "family": "",
+    "menu": "Ada",
+    "shadow_first": "Ada",
+    "shadow_last": "",
+    "frame_first": "Ada",
+    "frame_last": "",
 }
 #: The page's state: its selection, the keys its document saw, and every field's content.
 STATE = """(() => {
@@ -111,6 +124,11 @@ STATE = """(() => {
       iconed: $('text_iconed').value,
       given: $('text_given').value,
       family: $('text_family').value,
+      menu: $('text_menu').value,
+      shadow_first: $('text_shadow_first').value,
+      shadow_last: $('text_shadow_host').shadowRoot.querySelector('input').value,
+      frame_first: $('text_frame_first').value,
+      frame_last: inner('text_frame_last').getElementById('inner').value,
     },
   };
 })()"""
@@ -152,9 +170,9 @@ async def _state(cap: BrowserCapability) -> dict[str, Any]:
     return dict(reply["result"]["value"])
 
 
-async def _load(cap: BrowserCapability, site: EffectsSite) -> None:
+async def _load(cap: BrowserCapability, site: EffectsSite, page: str = "fields.html") -> None:
     loaded = await cap.execute_action(
-        Action(name="browser.navigate", params={"url": site.url("fields.html")})
+        Action(name="browser.navigate", params={"url": site.url(page)})
     )
     assert loaded.success, loaded.error
 
@@ -272,6 +290,39 @@ def _session() -> Session:
                 await at("an icon in its box", centre("text_icon"), focused="text_iconed")
                 await at("its label beside it", centre("text_given_label"), focused="text_given")
                 await at("another field's label", centre("text_family_label"), focused="text_given")
+                await at("a catcher over a caption", centre("text_last_label"), focused="text_menu")
+                await at(
+                    "beside a field in a shadow root",
+                    centre("text_shadow_caption"),
+                    focused="text_shadow_first",
+                )
+                await at(
+                    "beside a field in a frame",
+                    centre("text_frame_caption"),
+                    focused="text_frame_first",
+                )
+
+                await _load(cap, site, "editor_alone.html")
+                await _click(cap, centre("alone_line1"))
+                line3 = centre("alone_line3")
+                alone = await cap.execute_action(
+                    Action(
+                        name="browser.type_coordinate",
+                        params={"coordinate_x": line3[0], "coordinate_y": line3[1], "text": TEXT},
+                    )
+                )
+                reply = await cap.cdp.send(
+                    "Runtime.evaluate",
+                    {
+                        "expression": "document.getElementById('alone_input').value",
+                        "returnByValue": True,
+                    },
+                    session_id=cap.default_session_id,
+                    timeout=5,
+                )
+                session.cases["the page's only field"] = Case(
+                    alone, {"value": reply["result"]["value"]}, line3
+                )
         return session
 
     return asyncio.run(asyncio.wait_for(_all(), _TIMEOUT_S))
@@ -518,3 +569,30 @@ def test_a_press_on_another_fields_label_moves_focus_there_and_types(session: Se
     assert isinstance(effect, TextInputEffect)
     assert effect.target == ElementFacts(role="textbox", name="Family name")
     assert case.state["fields"] == {**UNTOUCHED, "family": TEXT}
+
+
+@pytest.mark.parametrize(
+    ("label", "name"),
+    [
+        # The focused field's own catcher is on top at the point, drawn past the field's box.
+        ("a catcher over a caption", "Flavour"),
+        # The other field sits in an open shadow root, or in a frame, inside the shared box.
+        ("beside a field in a shadow root", "Shadow first"),
+        ("beside a field in a frame", "Frame first"),
+    ],
+)
+def test_a_press_outside_the_field_as_drawn_is_refused(
+    session: Session, label: str, name: str
+) -> None:
+    _refused(
+        session.cases[label],
+        f'No text field took focus at the clicked point: focus stayed on textbox "{name}", '
+        "away from the clicked point, so no text was typed.",
+    )
+
+
+def test_the_pages_only_field_drawn_below_the_pages_box_takes_the_text(session: Session) -> None:
+    # The field is the page's root element, whose box ends above the lines.
+    case = session.cases["the page's only field"]
+    assert case.result.success, case.result.error
+    assert case.state == {"value": TEXT}
