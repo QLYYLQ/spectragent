@@ -1,7 +1,15 @@
-"""Presentation of recorded restoration facts, shared by terminal and web views."""
+"""Presentation of recorded restoration facts, shared by terminal and web views.
+
+The measured differences are read from the browser's evidence only, the one
+capability whose evidence this view knows (``docs/architecture_design.md``
+§4.9): any other capability's evidence is named as not shown here, never read
+as missing browser measures. Its own checks still decide the step's verdict.
+"""
 
 from collections.abc import Iterable
 from typing import Any
+
+from spectragent.core.capabilities.browser.restoration_evidence import BROWSER
 
 
 def _outcome(result: dict[str, Any]) -> dict[str, Any]:
@@ -51,12 +59,18 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
 
     A nonzero dHash distance may pass verification. Conversely, zero distance
     is not proof of identical pixels. Missing measures never become matches.
+    Evidence of a capability other than the browser is listed in
+    ``not_shown``: this view does not know its measures, and they are neither
+    differences nor unmeasured facts. With nothing else to report, the status
+    is ``not_shown``: its own checks may have failed, so no "no measured
+    difference" is claimed.
     """
     check = record.get("restoration")
     if check is None and record.get("origin") != "restored":
         return None
     differences: list[str] = []
     unknown: list[str] = []
+    not_shown: list[str] = []
     if check is None:
         unknown.append("Restoration check not recorded")
     else:
@@ -64,6 +78,9 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
             unknown.append("Environment comparison not recorded")
         for item in check.get("evidence", []):
             prefix = item["capability_id"]
+            if prefix != BROWSER:
+                not_shown.append(f"{prefix}: not shown in this view")
+                continue
             for field, label in (("url_match", "URL"), ("signature_match", "DOM signature")):
                 if item.get(field) is False:
                     differences.append(f"{prefix}: {label} changed")
@@ -108,9 +125,12 @@ def restoration_gap(record: dict[str, Any]) -> dict[str, Any] | None:
         if differences
         else "unmeasured"
         if unknown
+        else "not_shown"
+        if not_shown
         else "no_measured_difference",
         "differences": differences,
         "unmeasured": unknown,
+        "not_shown": not_shown,
         "verdict": check.get("verdict") if check else None,
     }
 

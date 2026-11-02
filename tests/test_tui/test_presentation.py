@@ -19,15 +19,18 @@ from spectragent.tui.presentation import (
 from spectragent.tui.summary import summary_sheet
 
 
-def _gap(differences=(), unmeasured=(), verdict: str | None = "ok"):
+def _gap(differences=(), unmeasured=(), verdict: str | None = "ok", not_shown=()):
     return {
         "status": "changed"
         if differences
         else "unmeasured"
         if unmeasured
+        else "not_shown"
+        if not_shown
         else "no_measured_difference",
         "differences": list(differences),
         "unmeasured": list(unmeasured),
+        "not_shown": list(not_shown),
         "verdict": verdict,
     }
 
@@ -42,6 +45,15 @@ def test_a_pass_within_tolerance_still_shows_measured_differences_and_unmeasured
     assert plain(measured_parts(_gap())) == "no measured difference"
     assert plain(verdict_parts(None)) == "—"
     assert plain(verdict_parts(_gap(verdict=None))) == "? no verdict"
+
+
+def test_evidence_the_view_cannot_read_never_reads_as_no_difference():
+    """Another capability's checks decided the step: the row counts its evidence as not shown."""
+    android = _gap(verdict="diverged", not_shown=["android: not shown in this view"])
+    assert plain(verdict_parts(android)) == "✗ diverged"
+    assert plain(measured_parts(android)) == "1 not shown"
+    both = _gap(["browser: URL changed"], not_shown=["android: not shown in this view"])
+    assert plain(measured_parts(both)) == "≠ 1 different 1 not shown"
 
 
 def _restored(**attempt):
