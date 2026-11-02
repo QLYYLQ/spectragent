@@ -9,7 +9,8 @@ reads otherwise in Python only: a node's ``actions`` is the attribute
 ``accessibility_actions``, because ``actions`` is the capability's own action
 receptor, and no model of the capability's package may carry a receptor's name
 (``tests/test_core/test_capabilities/test_receptor_hygiene.py``); on the wire,
-and to every reader by alias, it is ``actions``.
+in every dump (a trace's ``android.ui_tree`` included) and to every reader by
+alias, it is ``actions``.
 
 The service sends the proto3 JSON form: the proto's field names, enums by
 name, and every field at its default left out, so a field missing here has the
@@ -35,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Message(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", serialize_by_alias=True)
 
 
 class ProtoRect(_Message):

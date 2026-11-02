@@ -55,17 +55,26 @@ OMITTABLE: dict[tuple[str, str], dict[str, Block]] = {
         "network_source": {"source_id": "live"},
     },
     ("network_source", "archive"): {"miss_policy": {"miss_policy_id": "strict"}},
-    ("capability", "android"): {"task_oracle": {"oracle_id": "none"}},
+    ("capability", "android"): {
+        "task_oracle": {"oracle_id": "none"},
+        "ui_tree_source": {"source_id": "accessibility_service"},
+    },
     ("agent_loop", "branch"): {"restorer": {"restorer_id": "prefix_replay"}},
 }
 
 #: Strategy receptors that stay required because a default would choose
 #: behaviour: what the agent sees, how many branch runs a sweep makes, what a
-#: student is trained on (each owner has a Python default nonetheless), and how
-#: a touch and text reach a phone (Android's owner has none).
+#: student is trained on (each owner has a Python default nonetheless), how a
+#: touch and text reach a phone and what an agent sees of its UI tree
+#: (Android's owner has none).
 REQUIRED: dict[tuple[str, str], tuple[str, ...]] = {
     ("capability", "browser"): ("dom_cleaner", "dom_serializer"),
-    ("capability", "android"): ("tap_injector", "typing_backend"),
+    ("capability", "android"): (
+        "tap_injector",
+        "typing_backend",
+        "ui_tree_cleaner",
+        "ui_tree_serializer",
+    ),
     ("task_loader", "trace_branches"): ("step_selector",),
     ("exporter", "openai_messages"): ("translator",),
 }
@@ -96,6 +105,8 @@ def _android(written: Written) -> Block:
         "service_apk": "spectragent-device.apk",
         "tap_injector": {"injector_id": "shell_injection"},
         "typing_backend": {"typing_id": "set_text"},
+        "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+        "ui_tree_serializer": {"serializer_id": "m3a"},
     }
     return {"capability": [{**block, **written}]}
 

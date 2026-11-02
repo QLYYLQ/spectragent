@@ -46,14 +46,20 @@ from spectragent.core.capabilities.android.observations import (
     FOREGROUND_APP,
     PLATFORM,
     SCREENSHOT,
+    UI_TREE,
     AndroidCaptureStateObs,
     AndroidForegroundAppObs,
     AndroidPlatformObs,
     AndroidScreenshotObs,
+    AndroidUITreeObs,
 )
 from spectragent.core.capabilities.android.oracle._registrar import OracleTask
 from spectragent.core.capabilities.android.oracle.androidworld import AndroidWorldOracle
 from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
+from spectragent.core.capabilities.android.session import CaptureError
+from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
+from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
+from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
@@ -73,6 +79,7 @@ from tests._helpers.android_device import (
     fake_service_apk,
     phone_server,
     png,
+    settings_forest,
     unset_capability,
 )
 from tests._helpers.assembly import AGENT_ID, NoModel, make_env, make_run
@@ -166,6 +173,95 @@ async def test_one_capture_builds_every_fragment_from_one_read_of_each_source() 
         "unavailable",
     )
     assert state.settle_state is None and state.foreground_change is None
+
+
+async def test_one_capture_reads_the_tree_once_and_cleans_and_prints_it() -> None:
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+        await capability.resolve_fragment(SCREENSHOT)
+        reads = list(phone.tree_reads)
+
+    assert reads == [5000], "one read per capture, past which off-screen nodes are left out"
+    assert isinstance(tree, AndroidUITreeObs)
+    assert (tree.producer, tree.node_count, tree.omitted_offscreen, tree.capture_ms) == (
+        "accessibility_service",
+        3,
+        0,
+        12,
+    )
+    assert [(e.index, e.unique_id) for e in tree.elements] == [(0, 1), (1, 2)]
+    assert [node.unique_id for node in tree.forest.windows[0].tree.nodes] == [1, 2]
+    assert tree.serialized == M3ASerializer().serialize(tree.tree())
+    assert tree.serialized.startswith('UI element 0: {"index": 0, "text": "Network & internet"')
+
+
+async def test_a_run_whose_agent_reads_no_tree_never_asks_for_one() -> None:
+    phone = ScriptedPhone()
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, fragments={SCREENSHOT, PLATFORM, CAPTURE_STATE}) as capability,
+    ):
+        await capability.begin_observation(1)
+        await capability.resolve_fragment(SCREENSHOT)
+
+    assert phone.service_calls("tree") == 0
+
+
+async def test_the_tree_source_and_serializer_a_run_configures_are_the_ones_used() -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        capability.ui_tree_source = AccessibilityServiceTreeSource(max_nodes=300)
+        capability.ui_tree_serializer = T3ASerializer()
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+
+    assert phone.tree_reads == [300]
+    assert isinstance(tree, AndroidUITreeObs) and tree.serialized.startswith(
+        "UI element 0: UIElement(text='Network & internet'"
+    )
+    assert capability.fragment_formats() == {UI_TREE: T3ASerializer().describe_format()}
+
+
+async def test_the_tree_has_a_time_limit_of_its_own() -> None:
+    """The first walk of a long web page took 8.4 s: past query_timeout_s, the capture holds."""
+    phone = ScriptedPhone(tree_delay_s=0.4)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, fragments={UI_TREE}, query_timeout_s=0.2) as capability,
+    ):
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+        capability.ui_tree_timeout_s = 0.2
+        await capability.begin_observation(2)
+        with pytest.raises(CaptureError, match=r"android\.ui_tree: .*no answer within 0\.2 s"):
+            await capability.resolve_fragment(UI_TREE)
+
+    assert isinstance(tree, AndroidUITreeObs) and len(tree.elements) == 2
+
+
+async def test_the_tree_is_cleaned_against_the_screen_its_capture_measured() -> None:
+    """Turned sideways after setup, the screenshot is 2400 wide; an element right of 1080 is on it."""
+    phone = ScriptedPhone()
+    phone.forest = settings_forest(("Beside the old edge", (1200, 300, 1500, 450)))
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        phone.width, phone.height = 2400, 1080
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+        await capability.resolve_fragment(SCREENSHOT)
+
+    assert isinstance(tree, AndroidUITreeObs) and len(tree.elements) == 1
+    assert capability.screen_size == (2400, 1080)
+
+
+def test_the_ui_tree_format_is_described_by_the_configured_serializer(tmp_path: Path) -> None:
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    assert capability.fragment_formats() == {}, "no serializer configured: nothing described"
+
+    capability.ui_tree_serializer = M3ASerializer()
+
+    assert capability.fragment_formats() == {UI_TREE: M3ASerializer().describe_format()}
 
 
 def test_the_platform_names_a_closed_set_of_operating_systems() -> None:
@@ -491,6 +587,8 @@ async def test_an_oracle_that_refuses_the_task_stops_setup_before_any_boot(
     capability.task_oracle = oracle
     capability.tap_injector = AccessibilityGestureInjector()
     capability.typing_backend = CommitTextBackend()
+    capability.ui_tree_cleaner = AndroidWorldCleaner()
+    capability.ui_tree_serializer = M3ASerializer()
     provider = FakeServerProvider("127.0.0.1", 1)
     capability.backend = provider
 
@@ -548,6 +646,8 @@ def test_a_capability_block_that_leaves_its_oracle_out_selects_none() -> None:
                     "service_apk": "~/.cache/spectragent/android-service/0/spectragent-device.apk",
                     "tap_injector": {"injector_id": "shell_injection"},
                     "typing_backend": {"typing_id": "set_text"},
+                    "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+                    "ui_tree_serializer": {"serializer_id": "m3a"},
                     **block,
                 }
             ]
@@ -577,14 +677,19 @@ def _android_block(**written: JsonValue) -> dict[str, JsonValue]:
         "service_apk": "spectragent-device.apk",
         "tap_injector": {"injector_id": "accessibility_gesture"},
         "typing_backend": {"typing_id": "commit_text"},
+        "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+        "ui_tree_serializer": {"serializer_id": "t3a"},
     }
     block.update(written)
     return block
 
 
-def test_a_run_names_its_apk_its_tap_injector_and_its_typing_backend() -> None:
-    """Which program delivers a touch, and which enters text, change what the device receives."""
-    for left_out in ("service_apk", "tap_injector", "typing_backend"):
+def test_a_run_names_its_apk_its_input_strategies_and_its_tree_cleaner_and_serializer() -> None:
+    """Which program delivers a touch, and which enters text, change what the device receives;
+    which nodes become elements, and how they are printed, change what the agent sees. The tree's
+    source has one value, so a block may leave it out."""
+    required = ("service_apk", "tap_injector", "typing_backend")
+    for left_out in (*required, "ui_tree_cleaner", "ui_tree_serializer"):
         block = _android_block()
         del block[left_out]
         raw: dict[str, JsonValue] = {"capability": [block]}
@@ -597,6 +702,9 @@ def test_a_run_names_its_apk_its_tap_injector_and_its_typing_backend() -> None:
     assert isinstance(capability, AndroidCapability)
     assert isinstance(capability.tap_injector, AccessibilityGestureInjector)
     assert isinstance(capability.typing_backend, CommitTextBackend)
+    assert isinstance(capability.ui_tree_source, AccessibilityServiceTreeSource)
+    assert isinstance(capability.ui_tree_cleaner, AndroidWorldCleaner)
+    assert isinstance(capability.ui_tree_serializer, T3ASerializer)
     assert capability.service_apk == "spectragent-device.apk"
 
 
@@ -679,11 +787,19 @@ async def test_setup_refuses_a_typing_backend_the_device_cannot_run_when_only_it
     assert provider.needs != [], "it took booting the device to know"
 
 
-async def test_setup_refuses_a_capability_without_its_input_strategies(tmp_path: Path) -> None:
+async def test_setup_refuses_a_capability_without_the_strategies_a_run_names(
+    tmp_path: Path,
+) -> None:
     capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
     capability.backend = FakeServerProvider("127.0.0.1", 1)
+    capability.tap_injector = AccessibilityGestureInjector()
+    capability.typing_backend = CommitTextBackend()
 
-    with pytest.raises(RuntimeError, match="needs a tap_injector .* and a typing_backend"):
+    with pytest.raises(
+        RuntimeError,
+        match="needs a tap_injector .*, a typing_backend .*, a ui_tree_cleaner .* and a "
+        "ui_tree_serializer",
+    ):
         await capability.setup()
 
 

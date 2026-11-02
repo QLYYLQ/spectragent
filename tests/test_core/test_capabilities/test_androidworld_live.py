@@ -129,6 +129,8 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
                 "service_apk": os.environ[APK_VARIABLE],
                 "tap_injector": {"injector_id": "shell_injection"},
                 "typing_backend": {"typing_id": "set_text"},
+                "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+                "ui_tree_serializer": {"serializer_id": "m3a"},
                 "task_oracle": {"oracle_id": "androidworld", "root": str(installation.root)},
             }
         ]

@@ -18,7 +18,11 @@ One capture serves every negotiated fragment of an observation cycle:
   no pointer and these reads measure no failed resources, so both are
   ``unavailable``; the settle wait is the capability's "still"
   (``settle.py``); the capability never moves a focus of its own, so the
-  foreground change is always ``None``.
+  foreground change is always ``None``;
+- ``android.ui_tree``: the cleaned UI tree, in android_env's
+  ``AndroidAccessibilityForest`` form, the elements the configured cleaner
+  numbered, the configured serializer's text of them, and the tree source that
+  captured it (``producer``, §14.4). Captured only in a run that negotiates it.
 """
 
 from __future__ import annotations
@@ -26,9 +30,11 @@ from __future__ import annotations
 import base64
 from typing import Any, ClassVar, Literal, Self
 
-from pydantic import field_serializer
+from pydantic import field_serializer, model_validator
 
 from spectragent.core.capabilities.android.device.clients import ScreenshotProducer
+from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
+from spectragent.core.capabilities.android.ui_tree.models import UITree, UITreeElement
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
@@ -43,6 +49,7 @@ SCREENSHOT = "android.screenshot"
 FOREGROUND_APP = "android.foreground_app"
 PLATFORM = "android.platform"
 CAPTURE_STATE = "android.capture_state"
+UI_TREE = "android.ui_tree"
 
 
 class AndroidScreenshotObs(FragmentBase):
@@ -171,3 +178,46 @@ class AndroidCaptureStateObs(CaptureStateFragment):
     @property
     def foreground_change(self) -> ForegroundChange | None:
         return None
+
+
+class AndroidUITreeObs(FragmentBase):
+    """The screen's UI tree, as the configured cleaner kept it and the configured serializer printed it.
+
+    ``forest`` and ``elements`` are the cleaned tree
+    (:class:`~spectragent.core.capabilities.android.ui_tree.models.UITree`): the
+    captured ``AndroidAccessibilityForest`` holding only the nodes the cleaner
+    kept, each with its bounds and fields as captured, ``is_important``
+    included, and the numbers it gave them, which ``click`` and ``scroll``
+    take as ``index``. ``serialized`` is what an agent reads; its format is the
+    serializer's to describe (``AndroidCapability.fragment_formats``).
+    ``producer`` is the tree source that captured it (``accessibility_service``),
+    in case it ever changes during a run (§14.4). The raw tree is not here:
+    ``node_count`` and ``omitted_offscreen`` say how large it was.
+    """
+
+    __registry_key__ = UI_TREE
+    __source__: ClassVar[Literal["env", "loop"]] = "env"
+
+    producer: str | None = None
+    forest: AndroidAccessibilityForest = AndroidAccessibilityForest()
+    elements: tuple[UITreeElement, ...] = ()
+    serialized: str = ""
+    #: How many nodes the source captured, before cleaning.
+    node_count: int = 0
+    #: How many off-screen nodes the source left out, each with everything
+    #: under it, past its node limit.
+    omitted_offscreen: int = 0
+    #: How long the capture took on the device, in ms.
+    capture_ms: int | None = None
+
+    @model_validator(mode="after")
+    def _elements_name_kept_nodes(self) -> Self:
+        self.tree()
+        return self
+
+    def tree(self) -> UITree:
+        """The cleaned tree: ``forest`` and ``elements`` together."""
+        return UITree(forest=self.forest, elements=self.elements)
+
+    def summary(self) -> str:
+        return f"{len(self.elements)} elements of {self.node_count} nodes"

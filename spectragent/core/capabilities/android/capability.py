@@ -28,20 +28,33 @@ the tap injector delivers every touch, the typing backend enters text
 31-33), else the service's, decided once at setup by asking the helper, and
 recorded with every screenshot.
 
+**Three strategies make the UI tree** (``ui_tree/``): the source captures the
+forest (one today, our service, so a block may leave it out), the cleaner
+picks and numbers the elements, the serializer prints them and describes what
+it prints (``fragment_formats``). A run names the cleaner and the serializer.
+
 **One observation cycle is one capture** (``tests/_helpers/capability_contract.py``).
 The first fragment asked for in a cycle starts it, as one job of the device's
 queue: wait until the screen is still (``settle.py``), then ask every
 negotiated source at once, each within its own timeout (the screenshot, the
-foreground app, the current input method), and build every negotiated fragment
-from that one capture. A source that fails fails the whole capture, once: the
-error is kept for the rest of the cycle and raised for every fragment asked
-for. The next cycle captures again. Only the negotiated fragments are captured.
+foreground app, the current input method, the UI tree), and build every
+negotiated fragment from that one capture; the tree is cleaned once every
+source answered, against the screen size the capture's screenshot measured. A
+source that fails fails the whole capture, once: the error is kept for the
+rest of the cycle and raised for every fragment asked for. The next cycle
+captures again. Only the negotiated fragments are captured, so a run whose
+agent reads no tree never asks the service for one.
 
 **An action is one job of the same queue**, so a capture never interleaves
 with it, and it drops the capture it came after: whatever reads next sees the
 device after the action. ``android.wait`` touches nothing and does not hold
 the queue. A job that gave up on a device call confirms it done before the
 device is handed on (``session.py``).
+
+**An element index names an element of the tree the agent last saw**: the
+latest capture's, until the next action starts (:meth:`AndroidCapability.element_centre`).
+An index into an older tree, or one the tree does not have, is refused, and
+nothing is touched.
 
 **The service is kept bound.** Something on the device can unbind it during a
 run: AndroidWorld's own service writes its accessibility forwarder over the
@@ -62,7 +75,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, cast
 
@@ -91,6 +104,7 @@ from spectragent.core.capabilities.android.device.channel import ChannelError, R
 from spectragent.core.capabilities.android.device.clients import (
     ScreenshotProducer,
     ServiceEvents,
+    TreeCapture,
 )
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
 from spectragent.core.capabilities.android.input import tap, text  # noqa: F401 — registration
@@ -104,10 +118,12 @@ from spectragent.core.capabilities.android.observations import (
     FOREGROUND_APP,
     PLATFORM,
     SCREENSHOT,
+    UI_TREE,
     AndroidCaptureStateObs,
     AndroidForegroundAppObs,
     AndroidPlatformObs,
     AndroidScreenshotObs,
+    AndroidUITreeObs,
 )
 from spectragent.core.capabilities.android.oracle import (  # noqa: F401 — registration
     androidworld,
@@ -125,6 +141,18 @@ from spectragent.core.capabilities.android.session import (
     fan_out,
 )
 from spectragent.core.capabilities.android.settle import EventsEnded, ScreenPoll, wait_until_still
+from spectragent.core.capabilities.android.ui_tree import (  # noqa: F401 — registration
+    cleaning,
+    serializers,
+    source,
+)
+from spectragent.core.capabilities.android.ui_tree._registrar import (
+    AndroidUITreeCleaner,
+    AndroidUITreeSerializer,
+    AndroidUITreeSource,
+    default_ui_tree_source,
+)
+from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError, UITree
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
@@ -163,7 +191,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": {
             "registry": "observation",
-            "keys": [SCREENSHOT, FOREGROUND_APP, PLATFORM, CAPTURE_STATE],
+            "keys": [SCREENSHOT, FOREGROUND_APP, PLATFORM, CAPTURE_STATE, UI_TREE],
             "declare_only": True,
         },
         # The attribute the Composer fills (``self.actions``) from the action
@@ -182,18 +210,33 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             "keys": ["none", "androidworld"],
             "default": "none",
         },
+        # Omitted in YAML: our accessibility service, the only source there is
+        # (``uiautomator dump`` is deferred, §11.2), which ``__init__`` installs.
+        "ui_tree_source": {
+            "registry": "android_ui_tree_source",
+            "keys": ["accessibility_service"],
+            "default": "accessibility_service",
+        },
+        # Required: which nodes become elements and how they are printed is
+        # what the agent sees, so a run names both (§4.2.1).
+        "ui_tree_cleaner": ("android_ui_tree_cleaner", ["androidworld"]),
+        "ui_tree_serializer": ("android_ui_tree_serializer", ["m3a", "t3a"]),
     }
 
     backend: BaseAndroidProvider  # type: ignore[misc]
     tap_injector: AndroidTapInjector  # type: ignore[misc]
     typing_backend: AndroidTypingBackend  # type: ignore[misc]
     task_oracle: AndroidTaskOracle  # type: ignore[misc]
+    ui_tree_source: AndroidUITreeSource  # type: ignore[misc]
+    ui_tree_cleaner: AndroidUITreeCleaner  # type: ignore[misc]
+    ui_tree_serializer: AndroidUITreeSerializer  # type: ignore[misc]
 
     service_apk: str
     settle_quiet_ms: int
     settle_max_wait_s: float
     screenshot_timeout_s: float
     query_timeout_s: float
+    ui_tree_timeout_s: float
     action_timeout_s: float
     queue_wait_s: float
     service_start_timeout_s: float
@@ -215,6 +258,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _fingerprint: str | None
     _cycle: int
     _capture: _Capture | None
+    #: The cleaned tree of the latest capture that took one, and how many
+    #: actions started since: an element index is good for the first one only.
+    _ui_tree: UITree | None
+    _actions_since_tree: int
 
     def __init__(
         self,
@@ -284,6 +331,18 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 ),
             ),
         ] = 5.0,
+        ui_tree_timeout_s: Annotated[
+            float,
+            PydanticField(
+                gt=0.0,
+                description=(
+                    "Seconds the UI tree's capture may take before the whole capture fails. "
+                    "Settings' main page took about 0.1 s on the API 33 emulator; the first "
+                    "walk of a long web page after it loaded took up to 8.4 s, later walks "
+                    "about 1.1 s at the source's 5000-node limit."
+                ),
+            ),
+        ] = 10.0,
         action_timeout_s: Annotated[
             float,
             PydanticField(
@@ -341,6 +400,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self.settle_max_wait_s = settle_max_wait_s
         self.screenshot_timeout_s = screenshot_timeout_s
         self.query_timeout_s = query_timeout_s
+        self.ui_tree_timeout_s = ui_tree_timeout_s
         self.action_timeout_s = action_timeout_s
         self.queue_wait_s = queue_wait_s
         self.service_start_timeout_s = service_start_timeout_s
@@ -357,8 +417,11 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._fingerprint = None
         self._cycle = 0
         self._capture = None
+        self._ui_tree = None
+        self._actions_since_tree = 0
         self.actions = actions
         self.task_oracle = default_task_oracle()
+        self.ui_tree_source = default_ui_tree_source()
 
     # ── actions ───────────────────────────────────────────────────────
 
@@ -402,6 +465,63 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         if self._screen_size is None:
             raise RuntimeError("the Android device is not set up")
         return self._screen_size
+
+    def element_centre(self, index: int) -> tuple[int, int]:
+        """The centre of element *index*'s bounds on the screen, in the UI tree the agent last saw.
+
+        That tree is the latest capture's, while the action asking is the first
+        to start since: after another action the screen may have changed, and
+        the numbers with it. The bounds are cut to the screen first, as
+        AndroidWorld does before it scrolls inside an element, so an element
+        partly off the screen is touched where it shows.
+
+        Raises:
+            ElementIndexError: The run captures no UI tree, none was captured
+                yet, an action started since it was, or it has no element
+                *index*; the message says which.
+        """
+        tree = self._ui_tree
+        if UI_TREE not in self.provided_fragments:
+            raise ElementIndexError(
+                f"Element {index} names nothing: this run does not capture the UI tree."
+            )
+        if tree is None:
+            raise ElementIndexError(
+                f"Element {index} names nothing: no UI tree was captured yet in this run."
+            )
+        if self._actions_since_tree > 1:
+            raise ElementIndexError(
+                f"Element {index} is from the UI tree captured before the last action, and the "
+                "screen may have changed since; the next observation numbers the elements again."
+            )
+        node = tree.node(index)
+        if node is None:
+            raise ElementIndexError(
+                f"The screen's UI tree has no element {index}; its elements are "
+                f"{_numbers(number for number, _ in tree.element_nodes())}."
+            )
+        box = node.bounds_in_screen
+        width, height = self.screen_size
+        left, top = max(box.left, 0), max(box.top, 0)
+        right, bottom = min(box.right, width), min(box.bottom, height)
+        if left >= right or top >= bottom:
+            raise ElementIndexError(f"Element {index} is not on the screen.")
+        return (left + right) // 2, (top + bottom) // 2
+
+    # ── how the fragments read as text (FragmentFormats, §4.4) ────────
+
+    def fragment_formats(self) -> Mapping[str, str]:
+        """``android.ui_tree``'s format, in its configured serializer's own words.
+
+        The text is the serializer's, so is its description; nothing here
+        restates it. Reads configuration only. A capability built by hand
+        without a serializer describes nothing (and its setup refuses it).
+        """
+        try:
+            serializer = self.ui_tree_serializer
+        except AttributeError:
+            return {}
+        return {UI_TREE: serializer.describe_format()}
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -462,7 +582,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         await super().setup(negotiation=negotiation)
         oracle = self.task_oracle
         backend = self._backend()
-        tap_injector, typing_backend = self._strategies()
+        tap_injector, typing_backend, *_ = self._strategies()
+        self._ui_tree, self._actions_since_tree = None, 0
         self.check_setup({"oracle_task": oracle_task})
         self._apk = apk = ServiceApk.load(self.service_apk)
         session = await backend.open(oracle.device_needs)
@@ -556,14 +677,25 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 "(provider_id: local_emulator)"
             ) from None
 
-    def _strategies(self) -> tuple[AndroidTapInjector, AndroidTypingBackend]:
-        """The configured tap injector and typing backend; a run names both."""
+    def _strategies(
+        self,
+    ) -> tuple[
+        AndroidTapInjector, AndroidTypingBackend, AndroidUITreeCleaner, AndroidUITreeSerializer
+    ]:
+        """The strategies a run names: the tap injector, the typing backend, the tree's cleaner and serializer."""
         try:
-            return self.tap_injector, self.typing_backend
+            return (
+                self.tap_injector,
+                self.typing_backend,
+                self.ui_tree_cleaner,
+                self.ui_tree_serializer,
+            )
         except AttributeError:
             raise RuntimeError(
                 "AndroidCapability needs a tap_injector (injector_id: accessibility_gesture or "
-                "shell_injection) and a typing_backend (typing_id: set_text or commit_text)"
+                "shell_injection), a typing_backend (typing_id: set_text or commit_text), a "
+                "ui_tree_cleaner (cleaner_id: androidworld) and a ui_tree_serializer "
+                "(serializer_id: m3a or t3a)"
             ) from None
 
     @property
@@ -601,6 +733,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         if device is None:
             return ActionResult(success=False, error="the Android device is not set up")
         self._capture = None  # what reads next must see the device after this action
+        self._actions_since_tree += 1  # and only this action may still name the tree's elements
         executor = cast(BaseAction, impl)
 
         async def act() -> ActionResult:
@@ -649,7 +782,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             raise RuntimeError("the Android device is not set up")
         # Each part is bounded on its own (confirming the service, the wait's
         # last poll, then the slowest source); this only stops a runaway capture.
-        sources_s = max(self.screenshot_timeout_s, self.query_timeout_s)
+        sources_s = max(self.screenshot_timeout_s, self.query_timeout_s, self.ui_tree_timeout_s)
         limit = (
             self.service_start_timeout_s
             + self.settle_max_wait_s
@@ -671,14 +804,22 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 quiet_s=self.settle_quiet_ms / 1000,
                 max_wait_s=self.settle_max_wait_s,
             )
-        sources: dict[str, Source[FragmentBase]] = {}
+        sources: dict[str, Source[FragmentBase | TreeCapture]] = {}
         if SCREENSHOT in wanted:
             sources[SCREENSHOT] = Source(self._screenshot, self.screenshot_timeout_s)
         if FOREGROUND_APP in wanted:
             sources[FOREGROUND_APP] = Source(self._foreground_app, self.query_timeout_s)
         if PLATFORM in wanted:
             sources[PLATFORM] = Source(self._platform, self.query_timeout_s)
-        fragments = await fan_out(sources)
+        if UI_TREE in wanted:
+            sources[UI_TREE] = Source(self._read_tree, self.ui_tree_timeout_s)
+        fragments: dict[str, FragmentBase] = {}
+        for key, answer in (await fan_out(sources)).items():
+            # Cleaned once every source answered: against the screen this
+            # capture's screenshot measured, when it took one.
+            fragments[key] = (
+                self._ui_tree_fragment(answer) if isinstance(answer, TreeCapture) else answer
+            )
         if CAPTURE_STATE in wanted:
             fragments[CAPTURE_STATE] = AndroidCaptureStateObs(settle=settle)
         return fragments
@@ -750,6 +891,26 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             waited_ms=shot.waited_ms,
         )
 
+    async def _read_tree(self) -> TreeCapture:
+        side = self._side
+        if side is None:
+            raise RuntimeError("the Android device is not set up")
+        return await self.ui_tree_source.capture(side)
+
+    def _ui_tree_fragment(self, capture: TreeCapture) -> AndroidUITreeObs:
+        """Clean and print *capture*, and keep its tree for the element indexes of the next action."""
+        tree = self.ui_tree_cleaner.clean(capture.forest, self.screen_size)
+        self._ui_tree, self._actions_since_tree = tree, 0
+        return AndroidUITreeObs(
+            producer=self.ui_tree_source.source_id,
+            forest=tree.forest,
+            elements=tree.elements,
+            serialized=self.ui_tree_serializer.serialize(tree),
+            node_count=capture.node_count,
+            omitted_offscreen=capture.omitted_offscreen,
+            capture_ms=capture.capture_ms,
+        )
+
     async def _foreground_app(self) -> FragmentBase:
         front = await self.bridge.apps.foreground()
         return AndroidForegroundAppObs(
@@ -798,6 +959,17 @@ def _check_typing(typing_backend: AndroidTypingBackend, level: int, device: str)
         raise TypingBackendUnsupported(
             f"typing_backend {typing_backend.typing_id!r} cannot enter text on {device}: {problem}"
         )
+
+
+def _numbers(numbers: Iterable[int]) -> str:
+    """Increasing *numbers* as runs, for a message: ``0-12, 14, 16-20``; ``none`` when there are none."""
+    runs: list[list[int]] = []
+    for number in numbers:
+        if runs and number == runs[-1][1] + 1:
+            runs[-1][1] = number
+        else:
+            runs.append([number, number])
+    return ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs) or "none"
 
 
 async def _fastest_screen(side: DeviceSide) -> ScreenshotProducer:

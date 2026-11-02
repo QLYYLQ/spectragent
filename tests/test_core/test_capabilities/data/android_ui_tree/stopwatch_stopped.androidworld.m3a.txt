@@ -1,0 +1,13 @@
+UI element 0: {"index": 0, "text": "Stopwatch", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 1: {"index": 1, "content_description": "More options", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 2: {"index": 2, "content_description": "Start", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 3: {"index": 3, "text": "00", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 4: {"index": 4, "content_description": "Alarm", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 5: {"index": 5, "content_description": "Clock", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 6: {"index": 6, "content_description": "Timer", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 7: {"index": 7, "content_description": "Stopwatch", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": True, "is_checked": False}
+UI element 8: {"index": 8, "content_description": "Bedtime", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 9: {"index": 9, "text": "15:34", "content_description": "23:34", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 10: {"index": 10, "content_description": "Wifi signal full.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 11: {"index": 11, "content_description": "Phone three bars.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 12: {"index": 12, "content_description": "Battery charging, 100 percent.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}

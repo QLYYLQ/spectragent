@@ -1,0 +1,43 @@
+UI element 0: {"index": 0, "text": "2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 1: {"index": 1, "text": "Sun, Oct 15", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 2: {"index": 2, "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_scrollable": True, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 3: {"index": 3, "content_description": "Previous month", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 4: {"index": 4, "content_description": "Next month", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 5: {"index": 5, "text": "Cancel", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 6: {"index": 6, "text": "OK", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 7: {"index": 7, "text": "1", "content_description": "01 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 8: {"index": 8, "text": "2", "content_description": "02 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 9: {"index": 9, "text": "3", "content_description": "03 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 10: {"index": 10, "text": "4", "content_description": "04 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 11: {"index": 11, "text": "5", "content_description": "05 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 12: {"index": 12, "text": "6", "content_description": "06 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 13: {"index": 13, "text": "7", "content_description": "07 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 14: {"index": 14, "text": "8", "content_description": "08 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 15: {"index": 15, "text": "9", "content_description": "09 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 16: {"index": 16, "text": "10", "content_description": "10 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 17: {"index": 17, "text": "11", "content_description": "11 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 18: {"index": 18, "text": "12", "content_description": "12 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 19: {"index": 19, "text": "13", "content_description": "13 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 20: {"index": 20, "text": "14", "content_description": "14 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 21: {"index": 21, "text": "15", "content_description": "15 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": True, "is_checked": True}
+UI element 22: {"index": 22, "text": "16", "content_description": "16 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 23: {"index": 23, "text": "17", "content_description": "17 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 24: {"index": 24, "text": "18", "content_description": "18 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 25: {"index": 25, "text": "19", "content_description": "19 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 26: {"index": 26, "text": "20", "content_description": "20 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 27: {"index": 27, "text": "21", "content_description": "21 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 28: {"index": 28, "text": "22", "content_description": "22 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 29: {"index": 29, "text": "23", "content_description": "23 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 30: {"index": 30, "text": "24", "content_description": "24 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 31: {"index": 31, "text": "25", "content_description": "25 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 32: {"index": 32, "text": "26", "content_description": "26 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 33: {"index": 33, "text": "27", "content_description": "27 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 34: {"index": 34, "text": "28", "content_description": "28 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 35: {"index": 35, "text": "29", "content_description": "29 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 36: {"index": 36, "text": "30", "content_description": "30 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 37: {"index": 37, "text": "31", "content_description": "31 October 2023", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 38: {"index": 38, "text": "15:34", "content_description": "23:34", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 39: {"index": 39, "content_description": "Clock notification: ", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 40: {"index": 40, "content_description": "Wifi signal full.,No internet", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 41: {"index": 41, "content_description": "Phone signal full.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 42: {"index": 42, "content_description": "Battery charging, 100 percent.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}

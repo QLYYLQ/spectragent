@@ -31,8 +31,6 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.android.actions import AndroidTypeCoordinateAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.capabilities.android.input.tap import ShellInjectionInjector
-from spectragent.core.capabilities.android.input.text import SetTextBackend
 from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
@@ -40,8 +38,8 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import ActionDescriptor
 from spectragent.schemas.agent_result import AgentResult
 from tests._helpers.android_device import (
-    FakeServerProvider,
     ScriptedPhone,
+    configured,
     fake_service_apk,
     phone_server,
 )
@@ -85,9 +83,7 @@ def _android(adb: FakeAdbServer, apk: Path) -> AndroidCapability:
     Typing reads whether a text field has focus once, without waiting for one.
     """
     capability = AndroidCapability(service_apk=str(apk), settle_max_wait_s=0)
-    capability.backend = FakeServerProvider(adb.host, adb.port)
-    capability.tap_injector = ShellInjectionInjector()
-    capability.typing_backend = SetTextBackend()
+    configured(capability, adb)
     capability.actions = [
         AndroidTypeCoordinateAction(focus_wait_ms=0)
         if isinstance(action, AndroidTypeCoordinateAction)

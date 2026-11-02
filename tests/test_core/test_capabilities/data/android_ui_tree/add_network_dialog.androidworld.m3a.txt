@@ -1,0 +1,60 @@
+UI element 0: {"index": 0, "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_scrollable": True, "is_selected": False, "is_checked": False}
+UI element 1: {"index": 1, "content_description": "Add network", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 2: {"index": 2, "content_description": "Navigate up", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 3: {"index": 3, "text": "Network name", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 4: {"index": 4, "text": "Enter the SSID", "hint_text": "Enter the SSID", "is_clickable": True, "is_long_clickable": True, "is_editable": True, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 5: {"index": 5, "content_description": "Scan QR code", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 6: {"index": 6, "text": "Security", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 7: {"index": 7, "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_scrollable": True, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 8: {"index": 8, "text": "Advanced options", "content_description": "Drop down list Advanced Options", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 9: {"index": 9, "text": "None", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 10: {"index": 10, "text": "Cancel", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 11: {"index": 11, "text": "Save", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 12: {"index": 12, "content_description": "Back", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 13: {"index": 13, "content_description": "Switch input method", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 14: {"index": 14, "content_description": "More features", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 15: {"index": 15, "content_description": "Sticker Keyboard", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 16: {"index": 16, "content_description": "GIF Keyboard", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 17: {"index": 17, "content_description": "Clipboard", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 18: {"index": 18, "content_description": "Settings", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 19: {"index": 19, "content_description": "Theme settings", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 20: {"index": 20, "content_description": "Voice input", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 21: {"index": 21, "content_description": "q", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 22: {"index": 22, "content_description": "w", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 23: {"index": 23, "content_description": "e", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 24: {"index": 24, "content_description": "r", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 25: {"index": 25, "content_description": "t", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 26: {"index": 26, "content_description": "y", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 27: {"index": 27, "content_description": "u", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 28: {"index": 28, "content_description": "i", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 29: {"index": 29, "content_description": "o", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 30: {"index": 30, "content_description": "p", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 31: {"index": 31, "content_description": "a", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 32: {"index": 32, "content_description": "s", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 33: {"index": 33, "content_description": "d", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 34: {"index": 34, "content_description": "f", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 35: {"index": 35, "content_description": "g", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 36: {"index": 36, "content_description": "h", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 37: {"index": 37, "content_description": "j", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 38: {"index": 38, "content_description": "k", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 39: {"index": 39, "content_description": "l", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 40: {"index": 40, "content_description": "Shift", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 41: {"index": 41, "content_description": "z", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 42: {"index": 42, "content_description": "x", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 43: {"index": 43, "content_description": "c", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 44: {"index": 44, "content_description": "v", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 45: {"index": 45, "content_description": "b", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 46: {"index": 46, "content_description": "n", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 47: {"index": 47, "content_description": "m", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 48: {"index": 48, "content_description": "Delete", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 49: {"index": 49, "content_description": "Symbol keyboard", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 50: {"index": 50, "content_description": ",", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 51: {"index": 51, "content_description": "Emoji button", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 52: {"index": 52, "content_description": "Space", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 53: {"index": 53, "content_description": ".", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 54: {"index": 54, "content_description": "Done", "is_clickable": True, "is_long_clickable": True, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 55: {"index": 55, "text": "15:35", "content_description": "23:35", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 56: {"index": 56, "content_description": "Clock notification: ", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 57: {"index": 57, "content_description": "Wifi signal full.,No internet", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 58: {"index": 58, "content_description": "Phone signal full.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 59: {"index": 59, "content_description": "Battery charging, 100 percent.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}

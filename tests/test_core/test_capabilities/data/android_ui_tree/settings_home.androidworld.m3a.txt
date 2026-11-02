@@ -1,0 +1,24 @@
+UI element 0: {"index": 0, "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_scrollable": True, "is_selected": False, "is_checked": False}
+UI element 1: {"index": 1, "content_description": "Profile picture, double tap to open Google Account", "is_clickable": True, "is_long_clickable": False, "is_editable": False, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 2: {"index": 2, "text": "Settings", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 3: {"index": 3, "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_scrollable": True, "is_focusable": True, "is_selected": False, "is_checked": False}
+UI element 4: {"index": 4, "text": "Search settings", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 5: {"index": 5, "text": "Network & internet", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 6: {"index": 6, "text": "Mobile, Wi‑Fi, hotspot", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 7: {"index": 7, "text": "Connected devices", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 8: {"index": 8, "text": "Bluetooth, pairing", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 9: {"index": 9, "text": "Apps", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 10: {"index": 10, "text": "Assistant, recent apps, default apps", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 11: {"index": 11, "text": "Notifications", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 12: {"index": 12, "text": "Notification history, conversations", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 13: {"index": 13, "text": "Battery", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 14: {"index": 14, "text": "100%", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 15: {"index": 15, "text": "Storage", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 16: {"index": 16, "text": "48% used - 8.30 GB free", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 17: {"index": 17, "text": "Sound & vibration", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 18: {"index": 18, "text": "Volume, haptics, Do Not Disturb", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 19: {"index": 19, "text": "15:34", "content_description": "23:34", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 20: {"index": 20, "content_description": "Clock notification: ", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 21: {"index": 21, "content_description": "Wifi signal full.,No internet", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 22: {"index": 22, "content_description": "Phone three bars.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
+UI element 23: {"index": 23, "content_description": "Battery charging, 100 percent.", "is_clickable": False, "is_long_clickable": False, "is_editable": False, "is_selected": False, "is_checked": False}
