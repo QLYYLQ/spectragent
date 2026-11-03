@@ -94,10 +94,13 @@ class AndroidTapInjectorBase(metaclass=AndroidTapInjectorRegistrar.Meta):
 #: The codes of a typing backend's refusals that leave the field as it was: the
 #: device answered before any text went in (``android/service/``: ``set_text``'s
 #: and ``commit_text``'s own checks, and an ``ACTION_SET_TEXT`` the field did not
-#: perform). Any other device error, such as ``internal``, says nothing about
-#: the field: some of the text may have gone in.
+#: perform; ``key_events``' refusal of text with a character that has no key,
+#: made before its clear and its first key). Any other device error says nothing
+#: about the field, or says it changed: ``internal``; ``typed_partly``, part of
+#: the text went in; ``key_events``' ``inject_failed`` on its first key, which
+#: may have timed out and still arrive.
 UNCHANGED_FIELD_CODES = frozenset(
-    {"no_focused_field", "password_field", "set_text_failed", "no_input_method"}
+    {"no_focused_field", "password_field", "set_text_failed", "no_input_method", "unmappable_text"}
 )
 
 
@@ -144,10 +147,10 @@ class AndroidTypingBackend(Protocol):
             RemoteError: No text went in and the field is as it was, when the
                 code is one of :data:`UNCHANGED_FIELD_CODES`
                 (``no_focused_field``, ``password_field``, ``set_text_failed``,
-                ``no_input_method``); ``typed_partly`` when part of the text
-                went in (``key_events`` failed partway, after the clear and
-                some of its keys); any other code (``internal``) says nothing
-                about the field.
+                ``no_input_method``, ``unmappable_text``); ``typed_partly`` when
+                part of the text went in (``key_events`` failed partway, after
+                the clear and some of its keys); any other code (``internal``,
+                ``inject_failed``) says nothing about the field.
         """
         ...
 
@@ -172,8 +175,10 @@ class AndroidTypingBackendBase(metaclass=AndroidTypingBackendRegistrar.Meta):
         return self.__registry_key__
 
     async def finds_field(self, device: DevicePrograms) -> bool:
-        """Yes: a backend that types through the input connection needs no more than the shared focus rule checked.
+        """Yes: a backend that types into what has focus needs no more than the shared focus rule checked.
 
+        ``commit_text`` types through the input connection and ``key_events``
+        sends keys to the window with focus, both what the shared rule reads;
         ``set_text`` finds its field otherwise, and says so itself.
         """
         return True

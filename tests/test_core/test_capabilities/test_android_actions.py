@@ -605,6 +605,37 @@ async def test_the_key_events_backend_types_through_the_shell_helper() -> None:
     assert typed.effect.describe() == "Entered the text into the field, replacing its text."
     assert not refused.success
     assert refused.error is not None and "'é' (U+00E9)" in refused.error
+    effect = refused.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered, (
+        "refused before any key: the field is as it was"
+    )
+
+
+async def test_a_key_events_refusal_keeps_the_tap_and_partial_typing_leaves_no_effect() -> None:
+    """``unmappable_text`` comes before the clear and the first key, so the field is as it was
+    and the effect keeps the tap; ``typed_partly`` comes after some keys went in, so the action
+    leaves no effect, which would otherwise say no text went in."""
+    phone = ScriptedPhone(text_field=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend()) as capability,
+    ):
+        refused = await act(
+            capability, "type_coordinate", coordinate_x=5, coordinate_y=160, text="café"
+        )
+        phone.typing_fails = "typed_partly"
+        partly = await act(
+            capability, "type_coordinate", coordinate_x=5, coordinate_y=160, text="cafe"
+        )
+
+    assert not refused.success and refused.error is not None
+    assert "unmappable_text" in refused.error
+    effect = refused.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered
+    assert effect.tap is not None and effect.tap.start == ScreenPoint(x=5, y=160)
+    assert effect.describe() == "Tapped (5, 160). No text was entered."
+    assert not partly.success and partly.error is not None and "typed_partly" in partly.error
+    assert partly.effect is None, "part of the text went in: no effect may say none did"
 
 
 async def test_key_events_fold_accents_as_androidworld_does_and_the_effect_records_it() -> None:
@@ -645,10 +676,7 @@ async def test_a_text_that_fails_partway_is_reported_as_partly_typed() -> None:
     assert phone.inputs[-1] == "helper type_text 'rm cats.png' replace, failed partway"
     assert not result.success
     assert result.error is not None and "typed_partly" in result.error
-    effect = result.effect
-    assert not (isinstance(effect, AndroidTextEffect) and not effect.text_entered), (
-        "never 'No text was entered'"
-    )
+    assert result.effect is None, "never 'No text was entered'"
 
 
 async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_refused(
