@@ -286,3 +286,56 @@ SOFTWARE.
   and a print-time filter; the elements keep the nodes they stand for, and their bounds,
   for the capability's `click` and `scroll`. Our service fills `is_focused`, which the
   forwarder leaves false.
+
+## AndroidWorld — the M3A agent
+
+- **Upstream:** AndroidWorld, https://github.com/google-research/android_world
+- **Revision:** `55ddaf5edc6f6c25673aed343907d5b9dca66f84` (2026-10-23), files
+  `android_world/agents/m3a.py` (`PROMPT_PREFIX`, `GUIDANCE`,
+  `ACTION_SELECTION_PROMPT_TEMPLATE`, `SUMMARY_PROMPT_TEMPLATE`, `_action_selection_prompt`,
+  `_summarize_prompt` and `M3A.step`), `android_world/agents/m3a_utils.py`
+  (`add_ui_element_mark`, `add_screenshot_label`, `parse_reason_action_output` and its
+  `extract_json`), `android_world/agents/agent_utils.py` (`extract_json`),
+  `android_world/env/json_action.py` (`JSONAction`'s checks) and
+  `android_world/env/actuation.py` (what each action type does)
+- **License:** Apache License 2.0 (the license header quoted under `cdxj-indexer` above;
+  the files carry "Copyright 2026 The android_world Authors"; the repository has no
+  `NOTICE` file).
+- **Ported into:** `spectragent/agents/m3a/` (the `m3a` agent: `agent.py`, `reply.py`,
+  `marks.py`, each with AndroidWorld's license header and what was modified) and
+  `spectragent/prompts/agents/m3a/` (the two prompts, verbatim, with the prefix they share
+  in `_parts/prefix.md`), rewritten in Spectragent's types. The prompt files carry no
+  header: a header would become part of the prompt the model reads, so this notice
+  covers them.
+- **Kept:** the prompts to the byte, the task's own guidelines included (written as
+  AndroidWorld writes them when a run sets them; AndroidWorld's runner sets one for its
+  MiniWoB tasks); one user message per step holding the prompt, the screenshot and the
+  screenshot with its set-of-marks, both JPEG; the history of one `Step N- ` line per step
+  and the per-step summary call on the same model, with the before screenshot unlabelled
+  as AndroidWorld sends it; the reply's reading (`Reason:` / `Action:` and both
+  `extract_json`) and `JSONAction`'s checks; the marks' places, sizes and colours;
+  `input_text` as a tap on the element, the text and Enter (without an index, the text
+  into the field with focus and Enter); `scroll` as AndroidWorld swipes, from the
+  target's centre to its edge in 300 ms, when the run sets `android.scroll`'s
+  `swipe_to: target_edge` and `duration_ms: 300`.
+- **Modified by Spectragent:** the marks are drawn with Pillow and its default font instead
+  of OpenCV's Hershey font, placed on the image by the framework's point grid; actions run
+  as the capability's (`click`, `long_press`, `type`, `type_coordinate`, `scroll` by
+  element index, `press_key`, `open_app`, `wait`) and the Loop's `loop.done`, which ends
+  the run for `answer` (its text as the answer, no claim) as for `status` (`complete`
+  claims success, `infeasible` failure); the summary of a step is written when the next
+  step's observation arrives, from that observation, instead of 2 s after the action; a
+  failed summary call fails the step rather than becoming a history line. Where the
+  behaviour departs from AndroidWorld's (the list in `spectragent/agents/m3a/reply.py`
+  and `docs/architecture_design.md` §4.1 "M3A"): `click`, `long_press` and `input_text`
+  given a point instead of an index are refused, as is a point beside an index, while
+  the other action types ignore a point; a `scroll` with index 0 scrolls element 0
+  (AndroidWorld's `if action.index` reads 0 as none); typing waits for a text field with
+  focus and is refused when none takes it, where AndroidWorld types regardless; the
+  action types the prompt does not teach (`double_tap`, `swipe`, `unknown`), and
+  `input_text` without text, `scroll` without a direction, `click` or `long_press` with
+  neither an index nor a point, and `open_app` without an app name, are refused before
+  running with M3A's own `Can not parse ...` sentence; an action that failed is written
+  into the history with the capability's error (AndroidWorld drops it), and an index past
+  the element list is refused by the capability in its words rather than AndroidWorld's;
+  `answer` ends the run, where AndroidWorld goes on until `status`.

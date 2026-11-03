@@ -36,6 +36,7 @@ from spectragent.agents.ui_tars.codec import (
     Verb,
     read_thought,
 )
+from spectragent.core.action_guard import params_refusal
 from spectragent.core.actions.params import PointAxis, params_view, point_params
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.loops.coordinate_frames import (
@@ -386,6 +387,15 @@ class TestMobileVerbs:
         assert codec.write_call(held.model_copy(update={"name": "android.long_press"})) == (
             "long_press(point='(10, 20)')"
         )
+
+    def test_a_long_press_without_a_point_is_refused_by_the_actions_params(self) -> None:
+        """The point is optional on the action (an element index is its other target, which
+        a vision run lacks), so the verb's is too, and the run's params check refuses neither."""
+        codec = _android_codec()
+        (bare,) = codec.read_actions("Action: long_press()")
+        assert bare == Action(name="long_press", params={})
+        refusal = params_refusal(codec.space, bare)
+        assert refusal is not None and "long_press needs a point or an element index" in refusal
 
     def test_open_app_names_the_app(self) -> None:
         codec = _android_codec()

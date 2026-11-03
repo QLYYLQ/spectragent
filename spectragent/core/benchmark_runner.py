@@ -102,8 +102,10 @@ VETO_EXIT_CODE = 3
 #: after it started (the flywheel chain stops on it, arch §4.16).
 TOKEN_LIMIT_EXIT_CODE = 4
 
-#: ``StepRecord.error_phase`` of a step whose model call failed (``ReactLoop``).
-_MODEL_CALL_PHASE = "llm"
+#: ``StepRecord.error_phase`` of a step whose model call failed (``ReactLoop``),
+#: and of one whose prompt failed, as when a helper model the prompt builder
+#: calls fails (M3A's step summary).
+_MODEL_CALL_PHASES = ("llm", "prompt")
 
 
 def _safe_run_id(task_id: str, *, prefix: str = "") -> str:
@@ -534,7 +536,7 @@ def _model_call_that_ended(trace: RunTrace, result: Any) -> str | None:
     if getattr(result, "agent_done", None) != AgentDoneStatus.ERROR:
         return None
     policy = [record for record in trace.step_records if record.origin == "policy"]
-    if not policy or policy[-1].error_phase != _MODEL_CALL_PHASE:
+    if not policy or policy[-1].error_phase not in _MODEL_CALL_PHASES:
         return None
     if any(step > policy[-1].step for step in trace.manifest.missing_steps):
         return None

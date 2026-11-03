@@ -76,3 +76,31 @@ def test_a_keyword_sink_is_not_an_explicit_limits_parameter():
 
     with pytest.raises(IncompatibleExecutionLimitsError, match="explicitly accept"):
         runtime_for(Sink(), ReactLoop()).prepare()
+
+
+def test_react_provides_its_parse_settings_with_none_for_no_limit_on_unread_replies():
+    """M3A checks these: AndroidWorld never re-asks, and never ends a run on an unread reply."""
+
+    class ParseConsumer(LimitConsumer):
+        __execution_limit_fields__ = frozenset(
+            {"parse_retries_per_step", "max_consecutive_parse_errors"}
+        )
+
+    loop = ReactLoop(parse_retries_per_step=2, max_consecutive_parse_errors=None)
+    runtime = runtime_for(ParseConsumer(), loop)
+    runtime.prepare()
+
+    (limits,) = runtime.seed_messages("task")
+    assert (limits.parse_retries_per_step, limits.max_consecutive_parse_errors) == (2, None)
+    assert limits.provided() == ExecutionLimits.limit_names()
+
+
+def test_a_limit_left_none_is_provided_only_when_named_unbounded():
+    unbounded = frozenset({"max_consecutive_parse_errors"})
+
+    assert "max_consecutive_parse_errors" not in ExecutionLimits(max_actions_per_step=1).provided()
+    assert "max_consecutive_parse_errors" in ExecutionLimits(unbounded=unbounded).provided()
+    with pytest.raises(ValueError, match="unbounded names only limits left None, not max_c"):
+        ExecutionLimits(max_consecutive_parse_errors=3, unbounded=unbounded)
+    with pytest.raises(ValueError, match="unbounded names only limits left None, not max_steps"):
+        ExecutionLimits(unbounded=frozenset({"max_steps"}))

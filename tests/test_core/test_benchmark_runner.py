@@ -739,6 +739,44 @@ class TestTheSummaryCountsThreeLedgers:
         assert summary.failed == 1 and summary.completed == 0
         assert "infrastructure failure: the model call failed" in summary.format_table()
 
+    async def test_a_helper_model_unavailable_while_the_prompt_is_built_is_one_too(self, tmp_path):
+        """M3A summarizes the step before on its own model while it builds the next prompt."""
+
+        class SummarizingAgent(_Agent):
+            def __init__(self, helper: Any) -> None:
+                self.helper_llms = [helper]
+                self.bound: list[tuple[Any, Any]] = []
+
+            def bind_prompt_models(self, models, call_context):
+                self.bound.append((models, call_context))
+
+            async def build_react_prompt(self, obs, *, context):
+                models, call_context = self.bound[-1]
+                with call_context.scope(caller="agent", purpose="step_summary"):
+                    await models[0].ainvoke([])
+                return await super().build_react_prompt(obs, context=context)
+
+        helper = _RaisingLLM(ModelRateLimitError("rate limit exceeded", model="test-model"))
+
+        def compose():
+            return make_run(
+                agent=SummarizingAgent(helper),
+                loop=ReactLoop(max_steps=2),
+                env=make_env(_Env, {"bench_runner_cap": _Cap()}),
+                llm=_LLM(),
+                memory=_Memory(),
+                hooks=[TraceWriter(trace_dir=str(tmp_path / "traces"))],
+            )
+
+        summary = await BenchmarkRunner(loader=_Loader(), compose=compose, timeout=10).run(
+            task_ids=["t-1"]
+        )
+
+        (outcome,) = summary.outcomes
+        assert outcome.agent_done == "error"
+        assert outcome.model_unavailable == "ModelRateLimitError: rate limit exceeded"
+        assert summary.failed == 1
+
     async def test_a_truncated_reply_is_the_runs_own_ceiling_not_an_outage(self, tmp_path):
         llm = _RaisingLLM(
             ModelOutputTruncatedError(

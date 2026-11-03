@@ -237,11 +237,17 @@ class RuntimeHook(Protocol):
 
 @runtime_checkable
 class PromptModelOwner(Protocol):
-    """A hook with helper models requiring the run's common model interception.
+    """A hook, or an agent, with helper models requiring the run's common model interception.
 
-    The original wired models remain owned by the hook for cleanup. Runtime
-    supplies proxies and a run-owned attribution context through the public
-    binding method, before any helper can be invoked.
+    The original wired models remain owned by their holder; Runtime closes them
+    with the main model. Runtime supplies proxies and a run-owned attribution
+    context through the public binding method, before any helper can be
+    invoked: the holder scopes each call's caller and purpose in that context
+    (``RunCallContext.scope``), so the recorder attributes it, and a helper's
+    reply is never an agent decision (``docs/architecture_design.md`` §4.1).
+    An agent's helpers are part of the subject under test, a prompt
+    contribution's are the experiment's: M3A's per-step summary runs on the
+    agent's own model (``agents/m3a/``).
     """
 
     helper_llms: list[BaseChatModel]

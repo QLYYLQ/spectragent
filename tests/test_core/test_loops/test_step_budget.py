@@ -53,6 +53,12 @@ class _Env(EnvironmentBase):
     __registry_key__ = "step_budget_env"
 
 
+#: The limits ReAct hands the agent: its action cap and its parse settings, never the budget.
+_SEED_LIMITS = ExecutionLimits(
+    max_actions_per_step=1, parse_retries_per_step=0, max_consecutive_parse_errors=3
+)
+
+
 class _Agent:
     """Waits every step, so only the budget ends its run; notes what it is told."""
 
@@ -177,7 +183,7 @@ class TestARun:
         # Every step tells the agent the task's budget, not the configured one;
         # the seed limits are the same whatever the task's budget.
         assert agent.told == [(1, 3), (2, 3), (3, 3)]
-        assert agent.limits == [ExecutionLimits(max_actions_per_step=1)]
+        assert agent.limits == [_SEED_LIMITS]
         assert trace.config.max_steps == 3
         assert [record.step for record in trace.step_records] == [0, 1, 2]
         told = trace.observation_fragment(2, "loop.step_info")
@@ -188,7 +194,7 @@ class TestARun:
         assert result.agent_done == AgentDoneStatus.MAX_STEPS
         assert result.metrics.steps == 2
         assert agent.told == [(1, 2), (2, 2)]
-        assert agent.limits == [ExecutionLimits(max_actions_per_step=1)]
+        assert agent.limits == [_SEED_LIMITS]
         assert trace.config.max_steps == 2
 
     async def test_a_budget_above_the_ceiling_runs_the_ceiling_and_says_so(

@@ -98,7 +98,7 @@ ReAct keeps its own phase vocabulary and knobs:
 |---|---|
 | `max_steps` | Ceiling on a run's policy decisions; a task's Loop input `max_steps` lowers it |
 | `max_actions_per_step` | Maximum actions executed from one accepted reply |
-| `max_consecutive_parse_errors` | Consecutive unparseable steps before termination |
+| `max_consecutive_parse_errors` | Consecutive unparseable steps before termination; `null` never ends the run on them (the step budget still does) |
 | `parse_retries_per_step` | Additional asks inside the same observation cycle |
 | `today_override` | Date shown by ReAct's step-info fragment |
 | `terminal_observation` | Whether to observe after a normal terminal result |

@@ -1133,7 +1133,22 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 
   亮度任务这次拉下了快捷设置、拖了亮度条，但拖到 x=978 就松手；在 API 33 模拟器上照这几笔重放，亮度是 184，拖到 1060 才是 AndroidWorld 要的 255，所以输在终点，不在设备端。每步除去模型与动作的时间（主要是等界面静止与截图）中位数 766 ms，最长 2302 ms（阶段 1 是 1103 与 2488 ms）；截图都由助手拍，设备上拍 9–59 ms、编 PNG 25–134 ms（阶段 1 的 `screencap -p` 约 0.7 s）；等界面静止中位数 662 ms，最长 2136 ms（阶段 1 是 509 与 2146 ms，上限都是 2 s）。这次五个任务都没撞上客体 Wi-Fi 没有默认路由的开机。配置、日志与 trace 在本地这个分支的 worktree 的 `tmp/e2e/`，不入库。
 
-  **2026-11-02，界面树。** `android.ui_tree` 与三条策略轴：来源 `accessibility_service`（唯一的取值，可省略；`uiautomator dump` 推迟），清洗器 `androidworld` 与序列化器 `m3a`、`t3a`（都必填）。清洗器移植 AndroidWorld 的规则：先从全树还原它的转发器读到的树（不重要的视图删掉、孩子上移，provider 建的节点按绘制顺序 0 认出、留下），再照它的规则选元素、编号；在 AndroidWorld 的 AVD 上与它的转发器在同一时刻采树，8 个界面上我们写出的 M3A、T3A 文字与 AndroidWorld 自己的代码写出的逐字相同，只差我们的服务填了 `is_focused` 与走着的秒表跳了一秒。按编号点击的 `click` 与 `scroll` 的 `index`，只在协商到树时提供，编号到下一个动作开始为止有效；静态扫描改为按绑定后的全限定名查（architecture §4.5）。我们的服务开着、每次观测都采树，`ClockStopWatchRunning` 由 `click(index)` 解出后 AndroidWorld 按它的转发器的树判 1.0（未解时 0.0）。耗时与大小见 architecture §11.2 "界面树的耗时与大小"；M3A agent 在下一个分支。
+  **2026-11-02，界面树。** `android.ui_tree` 与三条策略轴：来源 `accessibility_service`（唯一的取值，可省略；`uiautomator dump` 推迟），清洗器 `androidworld` 与序列化器 `m3a`、`t3a`（都必填）。清洗器移植 AndroidWorld 的规则：先从全树还原它的转发器读到的树（不重要的视图删掉、孩子上移，provider 建的节点按绘制顺序 0 认出、留下），再照它的规则选元素、编号；在 AndroidWorld 的 AVD 上与它的转发器在同一时刻采树，8 个界面上我们写出的 M3A、T3A 文字与 AndroidWorld 自己的代码写出的逐字相同，只差我们的服务填了 `is_focused` 与走着的秒表跳了一秒。按编号点击的 `click` 与 `scroll` 的 `index`，只在协商到树时提供，编号到下一个动作开始为止有效；静态扫描改为按绑定后的全限定名查（architecture §4.5）。我们的服务开着、每次观测都采树，`ClockStopWatchRunning` 由 `click(index)` 解出后 AndroidWorld 按它的转发器的树判 1.0（未解时 0.0）。耗时与大小见 architecture §11.2 "界面树的耗时与大小"；M3A agent 见下一段。
+
+  **2026-11-02，M3A。** 移植 AndroidWorld 的 M3A 来验证 `android.ui_tree`（architecture §4.1 "M3A"）：每步一条消息，AndroidWorld 的提示词逐字、原截图与标了编号框的截图；每步另调一次同一个模型写上一步的小结（helper 调用，purpose `step_summary`，与决策分开记录）。随它定下按编号的 `long_press` 与 `type`（architecture §11.2 "动作"），Runtime 也允许 agent 自己持有 helper 模型。按阶段 1 的五个任务与三个要输入的任务实测，模型与 UI-TARS 相同（DMX 上的 `deepseek-v4.1-flash-1017`，reasoning high），设备端照阶段 2 的配置（注入器 `shell_injection`、后端 `set_text`），清洗器 `androidworld`、序列化器 `m3a`；memory 只留本步这一条，`max_actions_per_step` 为 2，不重问，步数照 AndroidWorld 的 `int(10 × complexity)`（这批 run 的 `scroll` 还是默认的固定 1000 px、500 ms，读不了的回复的上限设成与步数相同；2026-11-03 起 M3A 的配置照 AndroidWorld 滑到目标的边、用 300 ms，并设 `max_consecutive_parse_errors: null`，architecture §4.1 "M3A"）。后三个任务的 UI-TARS 一栏是同一天按阶段 2 的 UI-TARS 配置补跑的：
+
+  | 任务 | UI-TARS（设备端） | M3A |
+  |---|---|---|
+  | `OpenAppTaskEval` | 4 步，1.0 | 4 步，1.0 |
+  | `SystemBluetoothTurnOff` | 6 步，1.0 | 10 步（最后一步才结束），1.0 |
+  | `SystemWifiTurnOff` | 5 步，1.0 | 5 步，1.0 |
+  | MiniWoB++ 的 `click-button` | 4 步，1.0 | 4 步，1.0 |
+  | `SystemBrightnessMax` | 4 步后自称完成，0.0 | 7 步，1.0 |
+  | `ContactsAddContact` | 用完 12 步，0.0 | 9 步，1.0 |
+  | `SimpleSmsSend` | 7 步，1.0 | 9 步，1.0 |
+  | `MarkorCreateNote` | 用完 16 步，0.0（卡在存储权限的对话框上） | 用完 16 步、没有声明完成；设备上的判分 1.0，AndroidWorld 自己的 runner 记 0 |
+
+  亮度：M3A 打开显示设置，在亮度条这个元素上按编号滚动，先 `right` 把它拉到 0，再照提示词说的"方向与手指相反"改用 `left`，拉到 100%。输入都经按编号的 `type` 加回车：联系人的三个框各一次，短信的号码与正文，Markor 的文件名与正文；短信正文框是多行的，回车在正文末尾多出一个换行，M3A 下一步点键盘的删除键删掉它（AndroidWorld 的 `input_text` 同样按回车）。Markor 里它用按编号的 `long_press` 长按文件名框与键盘的删除键，想选中、删掉框里的默认名，几步都没成；随后直接输入文件名，名字就对了，最后一步才保存了正文，没来得及声明完成。一条回复漏了 `Reason:` 这个标签，照 AndroidWorld 算作读不了，那一步花掉，历史里写着 M3A 自己的那句话。每步除了决策另有一次小结调用，两者的 token 差不多一样多（8 个任务合计决策约 39.6 万、小结约 36.5 万），小结调用的中位数 3.3 s。界面树的一个现象：刚打开新页面之后，72 次采集里有 4 次采到的树里应用的窗口还没有内容（一个节点也没有，或只有空的根），元素只剩状态栏的图标：无障碍的窗口列表还没换成新页面的窗口（architecture §11.2 "界面树的采集"），界面静止的等待（上限 2 s，负载约 7–12）没等到它。M3A 一次按这棵树的编号去点，被拒（`The screen's UI tree has no element 9; its elements are 0-3.`）；一次等了一秒；两次在只有状态栏的列表上滚动、返回，各白花一步。M3A 不协商 `capture_state`，这几次等待的结局 trace 里没有。配置、日志与 trace 在本地这个分支的 worktree 的 `tmp/e2e/`，不入库。
 
   **用户 2026-11-01 的裁决。** 不建 Linux KVM 容器池：用户的 codelab 机器用不了，多个种子改在本机（Apple M1 Pro，10 核、32 GB）上同时开 2–3 个模拟器跑。这还是计划：已测的是每个 run 的模拟器自己挑空闲端口，adb server、`HOME`、`TMPDIR` 与 `netsimd` 都归 run 自己，另一个模拟器在跑时照样开机，收尾也不碰它（architecture §11.2）；没测的是同一个 AVD 同时开几个会话，以及 2–3 个模拟器一起跑时内存与 CPU 够不够（AndroidWorld 用的 AVD 配 2 GB 内存、4 个虚拟 CPU）。在磁盘允许的情况下，也可以试别的 benchmark，顺序见下面阶段 4（用户 2026-11-01 的裁决）。
 

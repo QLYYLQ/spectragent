@@ -19,7 +19,7 @@ from spectragent.schemas.action_space import ActionSpace
 
 def _make_loop(
     max_steps: int = 100,
-    max_consecutive_parse_errors: int = 3,
+    max_consecutive_parse_errors: int | None = 3,
 ) -> ReactLoop:
     """Build a ReactLoop with overridden config fields."""
     loop = ReactLoop()
@@ -200,6 +200,35 @@ class TestParseErrorTermination:
         result = asyncio.run(loop._execute(_AlwaysFail(), "test", ctx=ctx))
         assert result.agent_done.value == "error"
         assert "Parse failed 3 consecutive times" in (result.error or "")
+
+    def test_no_limit_leaves_the_end_to_the_step_budget(self) -> None:
+        """None: unreadable replies never end the run, as AndroidWorld runs M3A; max_steps does."""
+
+        class _AlwaysFail:
+            __wiring__: dict = {}
+
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
+                return [{"role": "user", "content": "go"}]
+
+            def parse_react_output(self, llm_output: Any) -> list[Action]:
+                raise ParseError("always bad")
+
+            def get_react_output_model(self) -> None:
+                return None
+
+        loop = _make_loop(max_steps=5, max_consecutive_parse_errors=None)
+        ctx = {
+            "env": _FakeEnv(),
+            "llm": _FakeLLM(["x"] * 10),
+            "memory": _FakeMemory(),
+            "act_fn": _FakeEnv().act,
+            "action_space": ActionSpace(),
+            "task_id": "t",
+        }
+        result = asyncio.run(loop._execute(_AlwaysFail(), "test", ctx=ctx))
+        assert (result.agent_done.value, result.metrics.steps) == ("max_steps", 5)
 
     def test_error_feedback_injected_into_memory(self) -> None:
         mem = _FakeMemory()
