@@ -224,6 +224,37 @@ class TaskContext(BaseModel):
     branch: BranchProvenance | None = None
 
 
+class SetupTaskText(BaseModel):
+    """The run's task text, as a capability's setup completed it (``docs/architecture_design.md`` §4.10).
+
+    Some benchmarks make a task's text in the environment as it starts:
+    AndroidWorld's MiniWoB++ pages write their instruction then. The loader's
+    ``task_text`` is the part known before, and the capability that completes
+    it at setup hands back the whole text, exactly as the agent gets it. The
+    environment adds the capability's id (``Environment.task_text_from_setup``)
+    and the trace records it as ``task_text.json`` beside the loader's text
+    (§5.3).
+
+    Attributes:
+        capability_id: The capability whose setup completed the text.
+        text: The run's task text; never blank.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    capability_id: str
+    text: str
+
+    @model_validator(mode="after")
+    def _the_text_says_something(self) -> SetupTaskText:
+        if not self.text.strip():
+            raise ValueError(
+                f"capability {self.capability_id!r} completed the run's task text with "
+                f"{self.text!r}: its setup made no text"
+            )
+        return self
+
+
 #: The environment setup context key naming the recorded run a replay reads —
 #: a run directory (``docs/architecture_design.md`` §4.10, §4.14).
 REPLAY_ARCHIVE_KEY: Final = "replay_archive"
@@ -238,5 +269,6 @@ __all__ = [
     "TaskReference",
     "TaskDefinition",
     "TaskContext",
+    "SetupTaskText",
     "REPLAY_ARCHIVE_KEY",
 ]

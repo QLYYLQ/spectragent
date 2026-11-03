@@ -1,4 +1,4 @@
-"""Tests for the generic TaskDefinition and the browser's registered setup."""
+"""Tests for the generic TaskDefinition, the browser's registered setup and the task text a setup completes."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.schemas.task import (
     ScoringItem,
     ScoringRubric,
+    SetupTaskText,
     TaskDefinition,
     TaskReference,
 )
@@ -139,6 +140,32 @@ class TestTaskDefinition:
         task = TaskDefinition(task_id="t1", benchmark="browsecomp", reference=ref)
         assert task.reference is not None
         assert task.reference.encrypted_answer == "ENC_A"
+
+
+class TestSetupTaskText:
+    """The run's task text as a setup completed it (``docs/architecture_design.md`` §4.10, §5.3)."""
+
+    def test_it_holds_the_text_and_the_capability_that_completed_it(self) -> None:
+        made = SetupTaskText(capability_id="android", text="Follow the instructions: Click.")
+        assert made.model_dump() == {
+            "capability_id": "android",
+            "text": "Follow the instructions: Click.",
+        }
+        assert SetupTaskText.model_validate_json(made.model_dump_json()) == made
+
+    @pytest.mark.parametrize("text", ["", " ", "\n\t"])
+    def test_a_blank_text_is_refused_naming_the_capability(self, text: str) -> None:
+        with pytest.raises(ValidationError, match="capability 'android' completed .* no text"):
+            SetupTaskText(capability_id="android", text=text)
+
+    def test_it_is_frozen_strict_and_takes_nothing_else(self) -> None:
+        made = SetupTaskText(capability_id="android", text="Do it.")
+        with pytest.raises(ValidationError):
+            made.text = "Do something else."  # type: ignore[misc]
+        with pytest.raises(ValidationError, match="string_type"):
+            SetupTaskText.model_validate({"capability_id": "android", "text": 1})
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            SetupTaskText.model_validate({"capability_id": "android", "text": "x", "version": 2})
 
 
 class TestSchemasInitExports:

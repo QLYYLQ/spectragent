@@ -31,6 +31,7 @@ from spectragent.core.capabilities.base import (
     BaseCapability,
     CaptureCheck,
     CaptureComparison,
+    EpisodeEnd,
     FragmentFormats,
     PreparedSetupContext,
     RestorationAlignment,
@@ -38,6 +39,7 @@ from spectragent.core.capabilities.base import (
     SetupCheck,
     SetupContextPreparation,
     TaskOracle,
+    TaskTextFromSetup,
 )
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
@@ -53,6 +55,7 @@ from spectragent.schemas.observation.dynamic_model import (
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.oracle_score import OracleReading, OracleScore
 from spectragent.schemas.restoration import IDENTITY, RestorationEvidence, Retarget
+from spectragent.schemas.task import SetupTaskText
 
 logger = logging.getLogger(__name__)
 
@@ -747,6 +750,91 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 else f"{type(failure).__name__}: {failure}"
             ),
         )
+
+    # ── The task text a setup completes; the episode the environment ends ──
+
+    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+        """The capability whose setup completes this task's text; ``None`` when none does.
+
+        Routes *context* exactly as :meth:`setup` routes it (a key no
+        capability accepts raises), then asks every capability implementing
+        :class:`~spectragent.core.capabilities.base.TaskTextFromSetup` about
+        its own slice. Reads configuration and task data only; changes nothing
+        (``docs/architecture_design.md`` §4.3).
+
+        Raises:
+            ValueError: A context key nobody accepts, or more than one
+                capability would complete the text: a run has one task text.
+        """
+        self._by_capability_id()
+        routed = self.route_setup_context(context or {})
+        setters = [
+            cap.capability_id
+            for inst_id, cap in self.capabilities.items()
+            if isinstance(cap, TaskTextFromSetup) and cap.sets_task_text(routed[inst_id])
+        ]
+        if len(setters) > 1:
+            where = getattr(type(self), "__name__", "Environment")
+            raise ValueError(
+                f"{where}: the setups of capabilities {setters} would each complete the run's "
+                f"task text, and a run has one task text"
+            )
+        return setters[0] if setters else None
+
+    async def task_text_from_setup(self) -> SetupTaskText | None:
+        """After setup: the task text a capability's setup completed, with that capability's id.
+
+        Asks every :class:`~spectragent.core.capabilities.base.TaskTextFromSetup`
+        capability in capability order; one that completed none answers
+        ``None`` and does not count. No text: ``None``. The capability's id is
+        the environment's to add, as in :meth:`read_oracle_scores`. Public so
+        the trace hook records what it returns (``docs/architecture_design.md``
+        §4.3, §5.3). A capability's exception propagates: the run's setup failed.
+
+        Raises:
+            ValueError: More than one capability completed a text, or one
+                completed a blank one or something other than a string.
+        """
+        made: list[SetupTaskText] = []
+        for cap in self.capabilities.values():
+            if isinstance(cap, TaskTextFromSetup):
+                text = await cap.task_text_from_setup()
+                if text is not None:
+                    made.append(SetupTaskText(capability_id=cap.capability_id, text=text))
+        if len(made) > 1:
+            where = getattr(type(self), "__name__", "Environment")
+            raise ValueError(
+                f"{where}: the setups of capabilities {[m.capability_id for m in made]} each "
+                f"completed the run's task text, and a run has one task text"
+            )
+        return made[0] if made else None
+
+    async def episode_over(self) -> bool:
+        """Whether the task's episode is over: the first ``EpisodeEnd`` capability to say so decides.
+
+        Asks every capability implementing
+        :class:`~spectragent.core.capabilities.base.EpisodeEnd`, one at a time
+        in capability order, and stops at the first ``True``; with none, no
+        capability is touched and the answer is ``False``
+        (``docs/architecture_design.md`` §4.3). A capability's exception and
+        a cancellation propagate: the Loop records the first as an
+        environment failure (§4.1).
+
+        Raises:
+            TypeError: A capability answered something other than a bool.
+        """
+        for cap in self.capabilities.values():
+            if not isinstance(cap, EpisodeEnd):
+                continue
+            over = await cap.episode_over()
+            if not isinstance(over, bool):
+                raise TypeError(
+                    f"capability {cap.capability_id!r} answered episode_over() with "
+                    f"{type(over).__name__}, not a bool"
+                )
+            if over:
+                return True
+        return False
 
     # ── Observation delegation ────────────────────────────────
 
