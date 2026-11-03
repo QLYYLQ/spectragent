@@ -24,6 +24,7 @@ from pydantic import JsonValue, ValidationError
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.core.capabilities.android.actions import AndroidOpenAppAction
 from spectragent.core.capabilities.android.backends.base import (
     AndroidProviderSession,
     DeviceNeeds,
@@ -819,6 +820,32 @@ def test_a_run_names_its_apk_its_input_strategies_and_its_tree_cleaner_and_seria
     assert isinstance(capability.ui_tree_cleaner, AndroidWorldCleaner)
     assert isinstance(capability.ui_tree_serializer, T3ASerializer)
     assert capability.service_apk == "spectragent-device.apk"
+
+
+def test_open_apps_table_takes_packages_and_components_and_refuses_anything_else() -> None:
+    """A component (``package/activity``) is how AndroidWorld's table names what it opens."""
+
+    def configured(apps: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return {
+            "capability": [
+                _android_block(actions=[{"action_id": "android.open_app", "apps": apps}])
+            ]
+        }
+
+    apps: dict[str, JsonValue] = {
+        "Settings": "com.android.settings",
+        "VLC": "org.videolan.vlc/.gui.MainActivity",
+        "Discord": "com.discord/com.discord.app.AppActivity$Main",
+    }
+    raw = configured(apps)
+    capability = ConfigComposer.for_config(raw).compose(raw).single("capability")
+    assert isinstance(capability, AndroidCapability)
+    (open_app,) = capability.actions
+    assert isinstance(open_app, AndroidOpenAppAction) and open_app.apps == apps
+    for written in ("VLC", "org.videolan.vlc/", "org.videolan.vlc/.gui Main"):
+        raw = configured({"VLC": written})
+        with pytest.raises(ValidationError, match="string_pattern_mismatch"):
+            ConfigComposer.for_config(raw).validate(raw)
 
 
 def _sidecar(path: Path) -> dict[str, JsonValue]:

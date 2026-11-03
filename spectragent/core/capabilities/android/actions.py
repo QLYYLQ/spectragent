@@ -7,8 +7,8 @@ params. Seven do: ``click``, ``click_coordinate``, ``drag``, ``type``,
 ``type_coordinate``, ``scroll`` and ``wait``; typing into the focused field is
 ``type_coordinate`` without a point (user ruling 2026-11-01). Three are
 Android's own (§11.2, "动作"): ``long_press``, ``press_key`` (system keys) and
-``open_app`` (by name; the name-to-package table is this action's, never an
-agent's). Points are physical screen pixels, the space touches take and the
+``open_app`` (by name; the table of what a name opens is this action's, never
+an agent's). Points are physical screen pixels, the space touches take and the
 screenshot's viewport. A gesture's duration is a setting on the action
 instance, never a model param. There is no ``done``: the Loop's ``loop.done``
 ends a run (§4.5).
@@ -44,6 +44,7 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import AddressesElement, PointAxis
+from spectragent.core.capabilities.android.bridge import ACTIVITY_PATTERN, PACKAGE_PATTERN
 from spectragent.core.capabilities.android.device.clients import TAP_MS, FocusedNode, Stroke
 from spectragent.core.capabilities.android.effects import (
     AndroidTextEffect,
@@ -750,17 +751,24 @@ def stock_apps() -> dict[str, str]:
     return dict(STOCK_APPS)
 
 
+#: What a name in ``open_app``'s table opens: a package, or a component
+#: (``package/activity``).
+AppTarget = Annotated[str, PydanticField(pattern=rf"^{PACKAGE_PATTERN}(?:/{ACTIVITY_PATTERN})?$")]
+
+
 @dataclass
 class AndroidOpenAppAction(ActionBase):
-    """Open an app by its name; which package a name means is this action's table."""
+    """Open an app by its name; what a name opens is this action's table."""
 
     __registry_key__ = "android.open_app"
 
     apps: Annotated[
-        dict[str, str],
+        dict[str, AppTarget],
         PydanticField(
             description=(
-                "The apps an agent can open by name: name -> package. A name matches ignoring "
+                "The apps an agent can open by name: name -> package, which opens the "
+                "package's launcher activity, or name -> component (package/activity), which "
+                "starts that activity, as AndroidWorld opens its apps. A name matches ignoring "
                 "case and extra spaces; an installed package name opens too. The default "
                 "lists the launcher apps of the stock Google APIs image."
             )
@@ -779,19 +787,25 @@ class AndroidOpenAppAction(ActionBase):
             **context,
         )
 
-    def package_of(self, app_name: str) -> str | None:
-        """The package *app_name* names in :attr:`apps`, or ``None``."""
+    def component_of(self, app_name: str) -> tuple[str, str | None] | None:
+        """The package and activity *app_name* names in :attr:`apps`, or ``None``.
+
+        The activity is ``None`` where the table names only the package: its
+        launcher activity opens.
+        """
         wanted = " ".join(app_name.split()).casefold()
-        for name, package in self.apps.items():
+        for name, target in self.apps.items():
             if " ".join(name.split()).casefold() == wanted:
-                return package
+                package, _, activity = target.partition("/")
+                return package, activity or None
         return None
 
     async def execute(
         self, params: dict[str, Any], *, capability: AndroidCapability
     ) -> ActionResult:
         app_name = self.Params.model_validate(params).app_name
-        package = self.package_of(app_name) or app_name.strip()
+        # Only the table names an activity: an agent's own name is a package or nothing.
+        package, activity = self.component_of(app_name) or (app_name.strip(), None)
         launcher = capability.bridge.launcher
         try:
             installed = await launcher.is_installed(package)
@@ -805,7 +819,7 @@ class AndroidOpenAppAction(ActionBase):
                     f"{', '.join(sorted(self.apps))}, or an installed package name"
                 ),
             )
-        await launcher.launch(package)
+        await launcher.launch(package, activity)
         return ActionResult(success=True)
 
 

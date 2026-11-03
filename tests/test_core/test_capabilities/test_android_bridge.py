@@ -261,6 +261,27 @@ async def test_only_a_package_name_reaches_a_command_line(name: str) -> None:
     assert adb.requests == []
 
 
+@pytest.mark.parametrize("activity", [".Main; reboot", "$(reboot)", "gui/Main", ""])
+async def test_only_an_activity_name_reaches_a_command_line(activity: str) -> None:
+    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
+        queries = AdbQueries(AdbClient(adb.host, adb.port), SERIAL)
+        with pytest.raises(ValueError, match="not an Android activity name"):
+            await queries.launch("com.android.settings", activity)
+
+    assert adb.requests == []
+
+
+async def test_a_component_reaches_am_quoted_so_its_dollar_stays_a_dollar() -> None:
+    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
+        await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).launch(
+            "com.discord", "com.discord.app.AppActivity$Main"
+        )
+
+    assert adb.requests[-1].service == (
+        "shell,v2:am start -W -n 'com.discord/com.discord.app.AppActivity$Main'"
+    )
+
+
 async def test_a_failed_command_says_which_and_why() -> None:
     async with FakeAdbServer({SERIAL: scripted({})}) as adb:
         with pytest.raises(BridgeError, match="wm size failed .exit 127.: /system/bin/sh: wm"):

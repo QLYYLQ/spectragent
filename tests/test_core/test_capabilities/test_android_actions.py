@@ -25,6 +25,7 @@ from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import point_params
 from spectragent.core.capabilities.android.actions import (
     KEYCODES,
+    AndroidOpenAppAction,
     AndroidScrollAction,
     AndroidTypeAction,
     AndroidTypeCoordinateAction,
@@ -894,6 +895,24 @@ async def test_an_app_opens_by_its_name_or_its_package(
     await act(capability, "press_key", key="home")
     assert (await act(capability, "open_app", app_name="com.android.settings")).success
     assert phone.focused == "com.android.settings/.Settings"
+
+
+async def test_a_name_the_table_gives_an_activity_starts_that_activity(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """AndroidWorld opens OpenTracks on its track list, past the introduction its launcher shows."""
+    launcher = "de.dennisguse.opentracks/.introduction.IntroductionActivity"
+    track_list = "de.dennisguse.opentracks/de.dennisguse.opentracks.TrackListActivity"
+    phone.launchable["de.dennisguse.opentracks"] = launcher
+    capability.actions = [AndroidOpenAppAction(apps={"OpenTracks": track_list})]
+
+    assert (await act(capability, "open_app", app_name="opentracks")).success
+    assert phone.focused == track_list
+    # Only the table names an activity: the package opens its launcher activity, and an
+    # activity the agent names is refused.
+    assert (await act(capability, "open_app", app_name="de.dennisguse.opentracks")).success
+    assert phone.focused == launcher
+    assert not (await act(capability, "open_app", app_name=track_list)).success
 
 
 async def test_an_app_that_is_not_there_is_refused_naming_the_apps_that_are_known(
