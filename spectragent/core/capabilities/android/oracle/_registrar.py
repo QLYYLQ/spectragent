@@ -45,8 +45,9 @@ class AndroidTaskOracle(Protocol):
     The capability calls, in order: :meth:`check_setup` and :meth:`makes_goal`
     (in ``prepare()``; ``check_setup`` again in its own ``setup()``),
     :meth:`start` once the device is up, :meth:`made_goal` after setup when
-    the oracle makes the goal, :meth:`episode_over` after each of the agent's
-    steps, :meth:`read_score` at the scoring point, :meth:`stop` at teardown.
+    the oracle makes the goal, :meth:`answers_episode_over` after each of the
+    agent's steps and, when it does, :meth:`episode_over` once the screen is
+    still, :meth:`read_score` at the scoring point, :meth:`stop` at teardown.
     """
 
     @property
@@ -82,6 +83,16 @@ class AndroidTaskOracle(Protocol):
         """After :meth:`start`: the goal it made on the device, as the benchmark hands it to an agent.
 
         ``None`` when it made none: the task's goal is the listed one.
+        """
+        ...
+
+    def answers_episode_over(self) -> bool:
+        """After :meth:`start`: whether the benchmark ends this task's episode itself, so :meth:`episode_over` asks it.
+
+        Reads the started task only. The capability waits for a still screen
+        before it asks :meth:`episode_over`, and only for a task this answers
+        ``True`` for (AndroidWorld: a MiniWoB++ task); every other task pays
+        nothing (``docs/architecture_design.md`` §11.2).
         """
         ...
 

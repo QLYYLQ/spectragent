@@ -45,6 +45,9 @@ class NoTaskOracle(AndroidTaskOracleBase):
     def made_goal(self) -> str | None:
         return None
 
+    def answers_episode_over(self) -> bool:
+        return False
+
     async def episode_over(self) -> bool:
         return False
 

@@ -390,14 +390,17 @@ async def test_a_miniwob_episode_is_over_when_the_service_says_the_page_ended_it
 ) -> None:
     write_behaviour(root, {"/task/goal": {"json": {"goal": _MINIWOB_GOAL}}})
     oracle = _oracle(root)
+    assert not oracle.answers_episode_over(), "no task started yet"
     await oracle.start(_device(tmp_path), _miniwob_task())
     try:
+        answers = oracle.answers_episode_over()
         before = await oracle.episode_over()
         write_behaviour(root, {"/task/episode_over": {"json": {"over": True}}})
         after = await oracle.episode_over()
     finally:
         await oracle.stop()
 
+    assert answers, "the capability waits for a still screen, then asks"
     assert (before, after) == (False, True)
     address = {"task_type": "click-button", "task_idx": "0"}
     asked = [
@@ -412,11 +415,11 @@ async def test_a_task_of_another_family_is_never_ended_by_its_page_and_nothing_i
     oracle = _oracle(root)
     await oracle.start(_device(tmp_path), _task())
     try:
-        over = await oracle.episode_over()
+        answers, over = oracle.answers_episode_over(), await oracle.episode_over()
     finally:
         await oracle.stop()
 
-    assert over is False
+    assert (answers, over) == (False, False), "the capability neither waits nor asks"
     assert "/task/episode_over" not in [path for _, path, _ in _calls(root)]
 
 
@@ -914,6 +917,7 @@ async def test_none_needs_nothing_scores_nothing_and_refuses_a_benchmark_task(
     assert not oracle.makes_goal(None)
     await oracle.start(_device(tmp_path), None)
     assert oracle.made_goal() is None
+    assert not oracle.answers_episode_over()
     assert await oracle.episode_over() is False
     assert await oracle.read_score(answer=None) is None
     await oracle.stop()

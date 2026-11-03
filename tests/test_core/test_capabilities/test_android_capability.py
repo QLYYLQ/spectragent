@@ -57,6 +57,7 @@ from spectragent.core.capabilities.android.oracle._registrar import OracleTask
 from spectragent.core.capabilities.android.oracle.androidworld import AndroidWorldOracle
 from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
 from spectragent.core.capabilities.android.session import CaptureError
+from spectragent.core.capabilities.android.settle import ScreenPoll
 from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
@@ -499,10 +500,13 @@ class _RecordingOracle:
     fail_start: bool = False
     #: The goal it says it made on the device; ``None``: the task's goal is the listed one.
     goal: str | None = None
-    #: Whether it says the task's episode is over.
+    #: Whether it answers whether the task's episode is over, and its answer.
+    answers: bool = False
     over: bool = False
     calls: list[str] = field(default_factory=list)
     tasks: list[OracleTask | None] = field(default_factory=list)
+    #: The event loop's time when the episode question reached it.
+    asked_at: float | None = None
 
     @property
     def oracle_id(self) -> str:
@@ -532,8 +536,13 @@ class _RecordingOracle:
         self.calls.append("made_goal")
         return self.goal
 
+    def answers_episode_over(self) -> bool:
+        self.calls.append("answers_episode_over")
+        return self.answers
+
     async def episode_over(self) -> bool:
         self.calls.append("episode_over")
+        self.asked_at = asyncio.get_running_loop().time()
         return self.over
 
     async def read_score(self, *, answer: str | None) -> OracleReading | None:
@@ -633,28 +642,89 @@ def test_prepare_routes_the_task_to_the_oracle_and_refuses_what_it_refuses(
     assert oracle.calls == ["check_setup"], "only a check: nothing started"
 
 
-async def test_the_oracle_completes_the_task_text_and_says_when_the_episode_is_over(
-    tmp_path: Path,
-) -> None:
+async def test_the_oracle_completes_the_task_text(tmp_path: Path) -> None:
     capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
     assert isinstance(capability, TaskTextFromSetup) and isinstance(capability, EpisodeEnd)
     env = make_env(AndroidEnvironment, {"android#0": capability})
 
-    # ``none``: no goal is made on the device, and no episode ends.
+    # ``none``: no goal is made on the device, and no episode ends: nothing to wait for.
     assert env.task_text_setter({}) is None
     assert await env.task_text_from_setup() is None
     assert await env.episode_over() is False
 
     goal = "Follow the instructions shown on the top of the screen: Click on the Submit button."
-    oracle = _RecordingOracle(goal=goal, over=True)
+    oracle = _RecordingOracle(goal=goal)
     capability.task_oracle = oracle
     task: dict[str, JsonValue] = {"opaque": ["to", "the", "capability"]}
 
     assert env.task_text_setter({"oracle_task": task}) == "android"
     assert oracle.tasks == [task] and oracle.tasks[0] is task, "handed over as it came"
     assert await env.task_text_from_setup() == SetupTaskText(capability_id="android", text=goal)
-    assert await env.episode_over() is True
-    assert oracle.calls == ["makes_goal", "made_goal", "episode_over"]
+    assert oracle.calls == ["makes_goal", "made_goal"]
+
+
+def _polls_counted(capability: AndroidCapability, log: list[str]) -> None:
+    """Note each poll of the wait for a still screen in *log*."""
+    poll = capability._poll_screen
+
+    async def counted() -> ScreenPoll:
+        log.append("poll")
+        return await poll()
+
+    capability._poll_screen = counted  # type: ignore[method-assign]
+
+
+async def test_the_episode_question_is_asked_only_once_the_screen_is_still() -> None:
+    """Asked at once, a MiniWoB++ page may not have stored its reward yet (§11.2)."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, settle_max_wait_s=5, settle_quiet_ms=100) as capability,
+    ):
+        oracle = _RecordingOracle(answers=True, over=True)
+        capability.task_oracle = oracle
+        _polls_counted(capability, oracle.calls)
+        clock = asyncio.get_running_loop().time
+        emitted: list[float] = []
+
+        async def the_page_reacts() -> None:  # to the step's last action
+            for _ in range(5):
+                phone.emit()
+                emitted.append(clock())
+                await asyncio.sleep(0.05)
+
+        reacting = asyncio.ensure_future(the_page_reacts())
+        try:
+            assert await capability.episode_over() is True
+        finally:
+            await reacting
+
+    asked = oracle.calls[: oracle.calls.index("stop")]
+    assert asked[0] == "answers_episode_over" and asked[-1] == "episode_over"
+    assert set(asked[1:-1]) == {"poll"} and len(asked) > 3, "the wait polled, then asked"
+    asked_at = oracle.asked_at
+    assert asked_at is not None
+    last = max(at for at in emitted if at <= asked_at)
+    assert asked_at - last >= 0.09, "a quiet period after the page's last event before it"
+
+
+async def test_a_task_whose_oracle_does_not_answer_the_question_makes_no_wait() -> None:
+    """AndroidWorld answers it for MiniWoB++ alone; every other task pays nothing."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, settle_max_wait_s=5, settle_quiet_ms=300) as capability,
+    ):
+        oracle = _RecordingOracle(answers=False, over=True)
+        capability.task_oracle = oracle
+        _polls_counted(capability, oracle.calls)
+        clock = asyncio.get_running_loop().time
+        started = clock()
+        assert await capability.episode_over() is False
+        took = clock() - started
+
+    assert oracle.calls[: oracle.calls.index("stop")] == ["answers_episode_over"]
+    assert took < 0.3, "no quiet period was waited for"
 
 
 def test_prepare_refuses_a_device_the_provider_cannot_give_naming_oracle_needs_and_provider(

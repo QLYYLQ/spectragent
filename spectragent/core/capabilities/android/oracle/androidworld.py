@@ -21,9 +21,11 @@ Spectragent's own bridge. One task is one run:
    ``/task/goal`` again, refused when it is no whole goal
    (:func:`goal_after_initialize`); that goal completes the run's task text
    (:meth:`AndroidWorldOracle.made_goal`).
-2. **episode_over**, after each of the agent's steps: a MiniWoB++ task asks
-   ``GET /task/episode_over``, the endpoint the launcher adds, whether the page
-   ended its episode; every other task answers ``False`` without a call.
+2. **episode_over**, after each of the agent's steps: a MiniWoB++ task
+   (:meth:`AndroidWorldOracle.answers_episode_over`), once the capability has
+   waited for a still screen, asks ``GET /task/episode_over``, the endpoint the
+   launcher adds, whether the page ended its episode; every other task answers
+   ``False`` without a wait or a call.
 3. **read_score**, at the Runtime's scoring point, within the run's
    ``oracle_timeout``: for an information-retrieval task, scored on the agent's
    answer, the run's answer goes to the service first as an ``answer`` action
@@ -590,6 +592,10 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
     def made_goal(self) -> str | None:
         return self._device_goal
 
+    def answers_episode_over(self) -> bool:
+        """Whether the started task is a MiniWoB++ task: AndroidWorld's runner ends only its episodes."""
+        return self._task is not None and self._task.family == MINIWOB
+
     async def episode_over(self) -> bool:
         """Whether the page ended a MiniWoB++ task's episode; ``False`` for every other task, with no call.
 
@@ -605,7 +611,7 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
         service, task = self._service, self._task
         if service is None or task is None or not self._initialized:
             raise AndroidWorldError("no AndroidWorld task was initialized on this device")
-        if task.family != MINIWOB:
+        if not self.answers_episode_over():
             return False
         reply = await service.call(
             "GET",

@@ -13,9 +13,9 @@ run's task text (``docs/architecture_design.md`` §4.10, §11.2):
   M3A runs on a stand-in model that reads the goal and the element list off
   its prompt and clicks the element the goal quotes, so the goal must reach
   the prompt. The page then reports its reward, the environment ends the
-  episode (``episode_over``) and the run scores 1. The episode question is
-  timed: whether the page had stored its reward when the Loop asked, right
-  after the click, and if not, how long until it had;
+  episode (``episode_over``) and the run scores 1. The episode question,
+  asked once the screen is still, is timed from the click: whether the page
+  had stored its reward by then, and if not, how long until it had;
 - ``SimpleCalendarAnyEventsOnDate`` (information retrieval): initialize rewords
   the date its goal names, with the instance's seed. UI-TARS answers at once
   with the expected answer; the run's text is the reworded goal, the one
