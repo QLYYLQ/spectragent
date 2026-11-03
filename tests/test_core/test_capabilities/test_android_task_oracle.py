@@ -37,8 +37,8 @@ from spectragent.core.capabilities.android.oracle.androidworld import (
     AndroidWorldOracle,
     AndroidWorldSetupError,
     checkout_commit,
+    goal_after_initialize,
     params_digest,
-    whole_goal,
 )
 from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     AndroidWorldTask,
@@ -66,7 +66,7 @@ def _task(**changes: JsonValue) -> dict[str, JsonValue]:
         "suite_seed": suite_seed,
         "params": {"max_or_min": "max", "seed": instance_seed(suite_seed, task, index)},
         "goal": "Turn brightness to the max value.",
-        "goal_made_at_initialize": False,
+        "goal_at_initialize": "unchanged",
         "complexity": 1.0,
         "start_on_home_screen": True,
     }
@@ -245,7 +245,7 @@ def _miniwob_task() -> dict[str, JsonValue]:
         task="click-button",
         params={"task_name": "click-button", "seed": instance_seed(42, "click-button", 0)},
         goal=_MINIWOB_FIXED,
-        goal_made_at_initialize=True,
+        goal_at_initialize="made",
         start_on_home_screen=False,
     )
 
@@ -269,12 +269,59 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is
     assert reading is not None and reading.provenance["goal"] == _MINIWOB_GOAL
 
 
-def test_only_a_task_whose_goal_is_made_at_initialize_completes_the_task_text(root: Path) -> None:
+#: An information-retrieval goal naming a date, before and after AndroidWorld's initialize
+#: rewords the date: the wording suite seed 42's instance draws, since initialize seeds the
+#: draw with the instance's seed (``docs/architecture_design.md`` §11.2).
+_DATED = "SimpleCalendarAnyEventsOnDate"
+_DATED_BEFORE = (
+    "Do I have any events October 26 2023 in Simple Calendar Pro? Answer with the titles only."
+)
+_DATED_AFTER = "Do I have any events the Thursday after next in Simple Calendar Pro? Answer with the titles only."
+
+
+def _dated_task() -> dict[str, JsonValue]:
+    """An information-retrieval task whose goal names a date, which initialize rewords."""
+    return _task(
+        family="information_retrieval",
+        task=_DATED,
+        params={"date": "October 26 2023", "seed": instance_seed(42, _DATED, 0)},
+        goal=_DATED_BEFORE,
+        goal_at_initialize="rewritten",
+    )
+
+
+def test_a_goal_made_or_rewritten_at_initialize_completes_the_task_text(root: Path) -> None:
     oracle = _oracle(root)
     assert oracle.makes_goal(_miniwob_task())
+    assert oracle.makes_goal(_dated_task())
     assert not oracle.makes_goal(_task())
     assert not oracle.makes_goal(_asking_task())
     assert oracle.made_goal() is None, "nothing was made before a start"
+
+
+async def test_a_goal_rewritten_at_initialize_is_checked_before_it_and_read_after_it(
+    root: Path, tmp_path: Path
+) -> None:
+    """As AndroidWorld's runner: it reads ``task.goal`` once the task is initialized."""
+    write_behaviour(
+        root, {"/task/goal": {"json_in_turn": [{"goal": _DATED_BEFORE}, {"goal": _DATED_AFTER}]}}
+    )
+    oracle = _oracle(root)
+    await oracle.start(_device(tmp_path), _dated_task())
+    try:
+        made = oracle.made_goal()
+    finally:
+        await oracle.stop()
+
+    paths = [path for _, path, _ in _calls(root) if path != "/health"]
+    assert paths[:5] == [
+        "/suite/reinitialize",
+        "/task/goal",
+        "/task/initialize",
+        "/reset",
+        "/task/goal",
+    ]
+    assert made == _DATED_AFTER
 
 
 @pytest.mark.parametrize(
@@ -286,8 +333,8 @@ def test_only_a_task_whose_goal_is_made_at_initialize_completes_the_task_text(ro
         ("Follow the instructions shown on the top of the screen:", "says nothing after"),
         ("Follow the instructions shown on the top of the screen.", "says nothing after"),
         ("Follow the instructions: Click on the Cancel button.", "does not start with the fixed"),
-        ("", "does not start with the fixed part the task list records"),
-        (None, "the goal None, which does not start with the fixed part"),
+        ("", "the goal '', which is no goal"),
+        (None, "the goal None, which is no goal"),
     ],
 )
 def test_a_made_goal_must_say_something_after_the_fixed_part_the_list_records(
@@ -295,10 +342,24 @@ def test_a_made_goal_must_say_something_after_the_fixed_part_the_list_records(
 ) -> None:
     task = AndroidWorldTask.model_validate(_miniwob_task())
     if message is None:
-        assert whole_goal(task, goal) == goal
+        assert goal_after_initialize(task, goal) == goal
         return
     with pytest.raises(AndroidWorldError, match=message):
-        whole_goal(task, goal)
+        goal_after_initialize(task, goal)
+
+
+@pytest.mark.parametrize(
+    ("goal", "message"),
+    [(_DATED_AFTER, None), (_DATED_BEFORE, None), ("  ", "which is no goal"), (7, "is no goal")],
+)
+def test_a_rewritten_goal_must_be_a_goal(goal: object, message: str | None) -> None:
+    """Its rewording is AndroidWorld's; the check before initialize compared the rest."""
+    task = AndroidWorldTask.model_validate(_dated_task())
+    if message is None:
+        assert goal_after_initialize(task, goal) == goal
+        return
+    with pytest.raises(AndroidWorldError, match=message):
+        goal_after_initialize(task, goal)
 
 
 async def test_an_empty_goal_fails_the_start_and_the_service_is_stopped(

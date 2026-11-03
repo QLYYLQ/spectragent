@@ -10,7 +10,7 @@ of the pinned commit hold parameters that are not JSON (dataclass rows, one
 image), which the list records in a plain form, so they could not be handed
 back to the service in any case.
 
-A task list is one JSON document, ``{"format": "androidworld-tasks-1",
+A task list is one JSON document, ``{"format": "androidworld-tasks-2",
 "tasks": [<task>, ...]}``, written offline in AndroidWorld's own venv by
 ``androidworld_service/task_list.py`` (``docs/architecture_design.md`` §11.2).
 The ``androidworld`` task loader reads it, and each task's record, unchanged,
@@ -28,7 +28,9 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 #: The ``format`` a task list declares.
-TASK_LIST_FORMAT = "androidworld-tasks-1"
+TASK_LIST_FORMAT = "androidworld-tasks-2"
+#: What AndroidWorld's ``initialize_task`` does to a task's goal (:class:`AndroidWorldTask`).
+GoalAtInitialize = Literal["unchanged", "made", "rewritten"]
 #: The family whose tasks are scored on the agent's answer.
 INFORMATION_RETRIEVAL = "information_retrieval"
 #: The family whose episodes the page ends: AndroidWorld's runner asks a MiniWoB++
@@ -68,12 +70,19 @@ class AndroidWorldTask(BaseModel):
         params: Its parameters as generated, the instance seed under ``seed``;
             a value that is not JSON in a plain form (a dataclass as its
             fields, an image as its size, mode and a digest of its pixels).
-        goal: What the agent is asked to do. When ``goal_made_at_initialize``,
-            only the goal's fixed part: the rest is made on the device.
-        goal_made_at_initialize: AndroidWorld makes the goal on the device
-            when it initializes the task (MiniWoB's JavaScript writes its
-            instruction then, differently each time), so it is not known
-            before.
+        goal: What the agent is asked to do, as known before the task is
+            initialized: when ``goal_at_initialize`` is ``made``, only the
+            goal's fixed part; when ``rewritten``, the goal before its
+            rewording.
+        goal_at_initialize: What AndroidWorld's initialize does to the goal.
+            ``made``: the goal exists only once the task is initialized
+            (MiniWoB's JavaScript writes its instruction then, unseeded).
+            ``rewritten``: initialize rewords a date the goal names
+            (information retrieval: "October 26 2023" becomes, say, "the
+            Thursday after next"; drawn with the instance's seed, so the same
+            each time). ``unchanged``: the goal is final before.
+            For the first two the oracle reads the goal after initialize, and
+            it is the run's task text (``docs/architecture_design.md`` §11.2).
         complexity: AndroidWorld's estimate; its own runner gives a task
             ``int(10 * complexity)`` steps (:attr:`step_budget`).
         start_on_home_screen: Whether the episode starts on the home screen
@@ -89,7 +98,7 @@ class AndroidWorldTask(BaseModel):
     suite_seed: int
     params: dict[str, JsonValue]
     goal: str
-    goal_made_at_initialize: bool
+    goal_at_initialize: GoalAtInitialize
     complexity: float = Field(gt=0)
     start_on_home_screen: bool
 
@@ -119,5 +128,5 @@ class AndroidWorldTaskList(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    format: Literal["androidworld-tasks-1"]
+    format: Literal["androidworld-tasks-2"]
     tasks: list[AndroidWorldTask]

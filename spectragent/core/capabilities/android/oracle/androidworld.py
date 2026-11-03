@@ -16,10 +16,11 @@ Spectragent's own bridge. One task is one run:
    the host's ffmpeg (:meth:`Installation.ffmpeg`), and the wait for ``/health``
    is bounded. Then the task: the suite its seed makes, a check that the
    service built the task the list records, ``/task/initialize`` and
-   ``/reset``. A task whose goal is made at initialize (MiniWoB++) then reads
-   its goal from ``/task/goal``, refused when it says nothing past the fixed
-   part the list records (:func:`whole_goal`); that goal completes the run's
-   task text (:meth:`AndroidWorldOracle.made_goal`).
+   ``/reset``. A task whose goal is made at initialize (MiniWoB++) or
+   rewritten then (information retrieval naming a date) reads its goal from
+   ``/task/goal`` again, refused when it is no whole goal
+   (:func:`goal_after_initialize`); that goal completes the run's task text
+   (:meth:`AndroidWorldOracle.made_goal`).
 2. **episode_over**, after each of the agent's steps: a MiniWoB++ task asks
    ``GET /task/episode_over``, the endpoint the launcher adds, whether the page
    ended its episode; every other task answers ``False`` without a call.
@@ -225,25 +226,32 @@ def params_digest(params: dict[str, JsonValue]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def whole_goal(task: AndroidWorldTask, goal: object) -> str:
-    """*goal*, the goal AndroidWorld made on the device for *task*, when it says more than its fixed part.
+def goal_after_initialize(task: AndroidWorldTask, goal: object) -> str:
+    """*goal*, the goal AndroidWorld holds for *task* once it is initialized, when it is a whole one.
 
-    The task list records only the fixed part of a goal made at initialize:
-    the template before its placeholder, ending in a full stop ("Follow the
-    instructions shown on the top of the screen."). The device's goal goes on
-    with the instruction the page made (": Click on the Submit button."). The
-    page gets 1 s to load before AndroidWorld reads the instruction, and a page
-    that had not shown it yet leaves an empty one (an empty string, which
-    AndroidWorld does not ask again for), so the goal is the fixed part alone
-    (``docs/architecture_design.md`` §11.2).
+    A ``made`` goal (MiniWoB++) exists only after initialize, and the task list
+    records only its fixed part: the template before its placeholder, ending in
+    a full stop ("Follow the instructions shown on the top of the screen.").
+    The device's goal goes on with the instruction the page made (": Click on
+    the Submit button."). The page gets 1 s to load before AndroidWorld reads
+    the instruction, and a page that had not shown it yet leaves an empty one
+    (an empty string, which AndroidWorld does not ask again for), so the goal
+    is the fixed part alone. A ``rewritten`` goal (information retrieval) has
+    the date it names reworded, so only its being a goal is checked here; the
+    check before initialize compared the rest (``docs/architecture_design.md``
+    §11.2).
 
     Raises:
-        AndroidWorldError: *goal* is not a string, does not start with the
-            fixed part, or says nothing after it.
+        AndroidWorldError: *goal* is not a string or is blank; a made goal does
+            not start with the fixed part, or says nothing after it.
     """
-    fixed = task.goal.removesuffix(".")
     what = f"AndroidWorld made {task.task} #{task.index} (suite seed {task.suite_seed}) the goal"
-    if not isinstance(goal, str) or not goal.startswith(fixed):
+    if not isinstance(goal, str) or not goal.strip():
+        raise AndroidWorldError(f"{what} {goal!r}, which is no goal")
+    if task.goal_at_initialize != "made":
+        return goal
+    fixed = task.goal.removesuffix(".")
+    if not goal.startswith(fixed):
         raise AndroidWorldError(
             f"{what} {goal!r}, which does not start with the fixed part the task list records "
             f"({task.goal!r})"
@@ -552,7 +560,9 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             },
             timeout_s=self.call_timeout_s,
         )
-        if not task.goal_made_at_initialize:
+        # Before initialize, the goal is the one the list records unless it is
+        # made then (MiniWoB++: the service has none to give yet).
+        if task.goal_at_initialize != "made":
             goal = (
                 await service.call("GET", "/task/goal", address, timeout_s=self.call_timeout_s)
             ).get("goal")
@@ -568,14 +578,14 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
         await service.call(
             "POST", "/reset", {"go_home": task.start_on_home_screen}, timeout_s=self.call_timeout_s
         )
-        if task.goal_made_at_initialize:
+        if task.goal_at_initialize != "unchanged":
             goal = (
                 await service.call("GET", "/task/goal", address, timeout_s=self.call_timeout_s)
             ).get("goal")
-            self._device_goal = whole_goal(task, goal)
+            self._device_goal = goal_after_initialize(task, goal)
 
     def makes_goal(self, task: OracleTask | None) -> bool:
-        return self._parse(task).goal_made_at_initialize
+        return self._parse(task).goal_at_initialize != "unchanged"
 
     def made_goal(self) -> str | None:
         return self._device_goal

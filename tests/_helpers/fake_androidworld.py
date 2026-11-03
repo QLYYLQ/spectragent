@@ -17,7 +17,10 @@ startup is over. What it
 does is read from ``<root>/behaviour.json``, again for every request, so a test
 can change an endpoint's answer while the service runs: per path, ``{"status": 500}``
 answers an error, ``{"hang": true}`` never answers, ``{"text": ...}`` answers
-that text, ``{"json": ...}`` answers that object; the top level may also say
+that text, ``{"json": ...}`` answers that object, ``{"json_in_turn": [...]}``
+answers the path's first request with the first object, its second with the
+second, and every later one with the last (a goal AndroidWorld rewrites at
+initialize reads differently before and after); the top level may also say
 ``start_delay_s`` (how long before it listens), ``exit_code`` (exit at once
 with it) and ``ignore_sigterm``. It records every request in
 ``<root>/record/requests.jsonl`` (its JSON body too, when it has one), its PID,
@@ -137,6 +140,7 @@ def _serve(argv: list[str]) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(behaviour.get("start_delay_s", 0))
     lock = threading.Lock()
+    counts: dict[str, int] = {}
 
     class Handler(BaseHTTPRequestHandler):
         def _answer(self) -> None:
@@ -150,6 +154,7 @@ def _serve(argv: list[str]) -> None:
                     "body": json.loads(sent) if sent else None,
                 }
                 log.write(json.dumps(entry) + "\n")
+                counts[url.path] = turn = counts.get(url.path, 0) + 1
             rule = json.loads((root / "behaviour.json").read_text()).get(url.path, {})
             if rule.get("hang"):
                 time.sleep(3600)
@@ -164,6 +169,8 @@ def _serve(argv: list[str]) -> None:
                 body, kind = rule["text"], "text/plain"
             elif "json" in rule:
                 body = json.dumps(rule["json"])
+            elif "json_in_turn" in rule:
+                body = json.dumps(rule["json_in_turn"][min(turn, len(rule["json_in_turn"])) - 1])
             data = body.encode()
             self.send_response(status)
             self.send_header("Content-Type", kind)

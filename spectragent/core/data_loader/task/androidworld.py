@@ -1,7 +1,7 @@
 """AndroidWorld task loader: a task list made offline in AndroidWorld's own venv.
 
 ``docs/architecture_design.md`` §11.2 ("任务裁判与 ``AndroidSetup``"). The list
-(format ``androidworld-tasks-1``,
+(format ``androidworld-tasks-2``,
 ``core/capabilities/android/oracle/androidworld_tasks.py``) is a split file in
 the usual data layout: ``data_dir`` (default
 ``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``) holds ``data_info.json``,
@@ -84,6 +84,7 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
 
     def _load(self) -> None:
         from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
+            TASK_LIST_FORMAT,
             UNREPRODUCIBLE,
             AndroidWorldTaskList,
         )
@@ -99,8 +100,8 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             ) from exc
         except ValidationError as exc:
             raise BenchmarkDataError(
-                f"{path} is not an AndroidWorld task list (format androidworld-tasks-1, written "
-                f"by task_list.py): {exc}"
+                f"{path} is not an AndroidWorld task list (format {TASK_LIST_FORMAT}, written "
+                f"by task_list.py; regenerate an older one): {exc}"
             ) from exc
         setup_type = setup_class_for_env(self.env_type).__registry_key__
         tasks: dict[str, TaskDefinition] = {}

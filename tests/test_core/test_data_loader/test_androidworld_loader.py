@@ -48,7 +48,7 @@ def _record(
         "suite_seed": 42,
         "params": {"seed": instance_seed(42, task, 0)},
         "goal": f"Do {task}.",
-        "goal_made_at_initialize": False,
+        "goal_at_initialize": "unchanged",
         "complexity": 1.2,
         "start_on_home_screen": True,
     }
