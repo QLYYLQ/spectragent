@@ -871,6 +871,26 @@ def browser_archive_harness() -> ArchiveHarness:
     )
 
 
+def android_archive_harness() -> ArchiveHarness:
+    """``AndroidCapability`` and ``android.ui_tree_raw``, against a scripted phone.
+
+    ``produce`` observes a screen of its own (the capability sets up on first
+    use, after the clause bound what it binds); ``break_collect`` makes
+    encoding the tree fail. No run record: the capability writes none. See
+    ``tests/_helpers/android_archive.py``.
+    """
+    from tests._helpers.android_archive import AndroidArchiveDriver
+
+    driver = AndroidArchiveDriver()
+    return ArchiveHarness(
+        capability=driver.capability,
+        archivers=driver.archivers,
+        produce=driver.produce,
+        break_collect=driver.break_collect,
+        close=driver.close,
+    )
+
+
 #: capability_id → harness factory. **Add your archiving capability here.**
 #:
 #: A fresh harness per test: the clauses bind, capture and collect, and a
@@ -878,6 +898,7 @@ def browser_archive_harness() -> ArchiveHarness:
 HARNESS_FACTORIES: dict[str, Callable[[], ArchiveHarness]] = {
     "contract_archive": fake_archive_harness,
     "browser": browser_archive_harness,
+    "android": android_archive_harness,
 }
 
 
