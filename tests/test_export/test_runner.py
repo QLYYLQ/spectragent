@@ -22,6 +22,7 @@ from spectragent.export.errors import (
 from spectragent.export.runner import ExportRunner
 from spectragent.schemas.action import Action
 from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest, StepLedger
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export
 from tests._helpers.export_traces import (
     NEVER_QUIET,
@@ -271,6 +272,30 @@ class TestDeterminism:
         assert str(tmp_path) not in text and "/private/" not in text
         assert first.manifest == second.manifest
         assert tree_digest(tmp_path / "out-0") == tree_digest(tmp_path / "out-1")
+
+    def test_a_source_whose_completed_task_text_is_lost_is_skipped_alone(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """Its agent ran on the text its setup completed: read as the loader's, it would mislead."""
+        root = tmp_path / "src"
+        write_ui_tars_run(root, "run-a", [ui_tars_step(click_at(640, 360))], task_id="a")
+        lost = write_ui_tars_run(
+            root,
+            "run-lost",
+            [ui_tars_step(click_at(9, 9))],
+            task_id="b",
+            task_text=SetupTaskText(capability_id="android", text="Do b, as its setup said."),
+        )
+        (lost / "task_text.json").unlink()
+
+        report = run_export(composer, exporter_entry(root, tmp_path / "out"))
+
+        assert report.manifest.sources.skipped == {
+            "run-lost": "not a readable trace: task_text.json does not read back (TraceSchemaError)"
+        }
+        assert [(source.path, source.samples) for source in report.manifest.sources.exported] == [
+            ("run-a", 1)
+        ]
 
 
 class TestFailClosed:
