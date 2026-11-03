@@ -928,9 +928,9 @@ class AgentRuntime:
 
 **基准层在 `prepare()` 里加的检查（用户 2026-11-03 的裁决，还没实施，§4.10.1）。** 多三件事，与其余装配错误一样在 trace 打开之前、任何东西启动之前报出，`spectragent run --dry-run` 与 sweep 的 pre-flight 也看得到：
 
-- **合并 capability 配置**（§4.10.1 "capability 配置合并"），在协商之前：运行配置、基准与判分器各自写的 capability 块按 `capability_id` 对齐、逐字段合并。两边写了同一个字段、值不同，抛错，点名字段与两边；只有一边写的照它；谁都没写的照 schema 的默认（§4.2.1 "单实例策略受体省略即默认"）；必填而谁都没写的，点名这个字段，并说运行配置与基准都没写它。没有基准时只有运行配置这一份，它必须自己完整，缺了照样这样报。提议的做法（实施时可调整）：Composer 只按同一份 schema 校验每一份贡献写了的字段，不要求完整；必填项的检查挪到合并之后；capability 由合并后的配置构造，再进入协商（今天 capability 在组装时就构造了，§4.2.1）；多实例的块按判别键对齐后再逐字段合并（`actions` 按 `action_id`）。
-- **数据与安装**（§4.10.1 "数据"）：基准钉住的数据缺了，拒绝并给出 `spectragent benchmark fetch <alias>`；重的安装缺了，拒绝并给出 `spectragent benchmark setup <alias>`。
-- **基准组件交给承载它的 capability**（§4.9 "基准组件由 capability 承载"）：开局布置组件与活体判分器按它们声明的 capability 路由；第 3d 步的 `check_setup` 一并问它们；绑定与归档器一样放在最后一步。
+- **合并 capability 配置**（§4.10.1 "capability 配置合并"），在协商之前：运行配置与基准各自写的 capability 块按 `capability_id` 对齐、逐字段合并。两边写了同一个字段、值不同，抛错，点名字段与两边；只有一边写的照它；谁都没写的照 schema 的默认（§4.2.1 "单实例策略受体省略即默认"）；必填而谁都没写的，点名这个字段，并说运行配置与基准都没写它。没有基准时只有运行配置这一份，它必须自己完整，缺了照样这样报。列表照这条规则合并（协调者 2026-11-03 定的，否则基准给一个动作设旋钮，就成了删掉其余的动作）：一边不写某个列表，就是完整的默认列表；一份贡献可以给已有的条目设旋钮（按判别键对齐，`actions` 按 `action_id`），从不增删条目，要增删就是冲突。合并之后核对判分器的要求，满足不了就拒绝，点名判分器与那条要求（判分器只写要求，§4.10.1）。提议的做法（实施时可调整）：Composer 只按同一份 schema 校验每一份贡献写了的字段，不要求完整；必填项的检查挪到合并之后；capability 由合并后的配置构造，再进入协商（今天 capability 在组装时就构造了，§4.2.1）。
+- **安装**（§4.10.1 "数据"）：重的安装缺了，拒绝并给出 `spectragent benchmark setup <alias>`。数据缺了的拒绝不在这里：任务加载器在组装时就读数据，那一查在加载器读数据之前（§4.10.1 "数据"）。
+- **基准组件交给承载它的 capability**（§4.9 "基准组件由 capability 承载"）。提议，与 §4.9 一致：开局布置组件与活体判分器按它们声明的 capability 路由；第 3d 步的 `check_setup` 一并问它们；绑定与归档器一样放在最后一步。
 
 `BenchmarkRunner` 的任务改从基准的任务来源取（今天从运行配置的 `task_loader` 段取），pre-flight 照旧用第一个任务调一次 `prepare()`。
 
@@ -2713,7 +2713,7 @@ class TaskOracle(Protocol):
     async def read_score(self, *, answer: str | None) -> OracleReading | None: ...
 ```
 
-- 为什么需要：有的基准只能对着活体环境判分（AndroidWorld 读设备上的数据库、文件与设置），只有 capability 够得着那个环境。判分作为证据进 trace（§5.3 的判分记录），评测器读它，不另开"活体评测器"。
+- 为什么需要：有的基准只能对着活体环境判分（AndroidWorld 读设备上的数据库、文件与设置），只有 capability 够得着那个环境。判分作为证据进 trace（§5.3 的判分记录），评测器读它，不另开"活体评测器"。目标（用户 2026-11-03 的裁决，还没实施，§4.10.1）取代"不另开'活体评测器'"这一句：活体判分器就是判分时间点上的判分器。留下的是：agent 的 run 进行中没有判分器跑；活体判分器在判分时间点、Loop 结束之后跑一次；离线判分器只读 `RunTrace`。
 - 判了的 `OracleScore` 由裁判自己填（分数、裁判身份与版本、来源）；超时与抛错由 environment 换成"没判"（§4.3 "判分的路由"）。裁判交回的只是这几样（`OracleReading`）；capability 的 id、这次读的开始时间与耗时由 environment 记，耗时是它在调用两头自己量的，所以判分记录里的耗时不取决于裁判自己的时钟，`oracle_timeout` 的默认值也按它定。`OracleReading` 与 `OracleScore` 都在 `schemas/oracle_score.py`，capability 与 environment 都不必 import trace 层（§5.3、§10）。
 - 把答案交给基准自己的评判是判分的一部分，不算执行 run 的动作。按答案判分的裁判在 `provenance` 里记下这次有没有答案可判；答案的文字不抄进去，它在 `result.json` 的 `answer` 里（§5.3）。
 - 裁判把自己的传输故障换成普通异常（如 `ConnectionError`），从不让 `CancelledError` 漏出来：框架把任何 `CancelledError` 都当作 run 被取消（照外部取消收尾、不留判分记录，§4.2 "取消先走"），与 `collect_archive` 和 capability 的其余调用是同一个约定。
@@ -2746,7 +2746,7 @@ class EpisodeEnd(Protocol):
 
 - 组件声明承载它的 capability（`capability_id`）；`prepare()` 按它路由，在最后一步绑定给那个 capability，与归档器从 trace hook 绑定给 capability 是同一做法（§4.3 `bind_archivers`）。
 - 两个可选 Protocol，与 `SetupCheck`、`TaskOracle` 一样不进 `BaseCapability`、`CapabilityBase` 不给默认：`SetupHost`（`bind_setup(component)`：capability 在 `check_setup` 里问它，在 setup 里交它访问、由它开局，teardown 时最先由它收尾；setup 补全任务文本（`TaskTextFromSetup`）与环境结束 episode（`EpisodeEnd`）的回答也来自它）与 `LiveVerifierHost`（`bind_live_verifiers(verifiers)` 与 `verify_live(*, answer)`：判分时间点交它们同一份访问，§4.2）。
-- 设备在 ADB 之外的需要（§11.2 `DeviceNeeds`）由承载的组件推出，provider 上照旧没有并列的开关。
+- 设备在 ADB 之外的需要（§11.2 `DeviceNeeds`）由开局布置组件推出，provider 上照旧没有并列的开关；活体判分器只声明要求，在 `prepare()` 里核对，满足不了就拒绝（判分器只写要求，§4.10.1 "capability 配置合并"）。
 - `TaskOracle` 与 `OracleReading` 随之删掉。
 
 **起始参数（用户 2026-11-03 的裁决，还没实施，§4.10.1）。** 单任务的起始参数由各 capability 在 `declarations.py` 里声明。提议：`START_FLAGS`，每项是参数名、它填的任务上下文的键（`TaskContext.env`，§4.10 的词表）与说明；browser 是 `--start-url` → `start_url`、`--storage-state` → `storage_state`、`--replay-archive` → `replay_archive`，Android 是 `--start-app`（任务从哪个 app 开始，§4.10 "任务的起始点归 capability"）。它与另外三样声明一样只是数据，不导入实现（§4.2.1）。`spectragent run` 读每个 capability 包的声明，拼出静态的并集：`--help` 与 tab 补全按 capability 分组列出；本 run 的配置没点名那个 capability 时，用了它的参数就在任何东西启动之前拒绝。框架的 CLI 里因此没有任何 capability 的字段，今天写死的 `--start-url` 与 `--replay-archive` 删掉。
@@ -3100,7 +3100,7 @@ class TaskContext(BaseModel):
 
 ### 4.10.1 基准层（用户 2026-11-03 的裁决，还没实施）
 
-本节记下用户 2026-11-03 经一问一答定下的基准层。它全部已决定、还没实施：代码今天的样子仍是 §4.2、§4.9、§4.10、§4.11、§5.3、§11.2 写的，那些地方各自注明了目标。实施分五段，见本节末"分段实施"与 `docs/execution_dag.md` 的基准层模块。本节新起的名字（注册表与判别字段、Protocol、`declarations.py` 里的声明、文件布局与记录字段）都是提议，实施时可以调整，不是用户的裁决。用户自己定下的名字是 `--benchmark`、`--task-id`、`--fetch`、`configs/benchmarks/<alias>.yaml`、`$SPECTRAGENT_BENCHMARK_DATA`、`spectragent benchmark fetch` 与 `spectragent benchmark setup`；`--start-url`、`--start-app`、`--storage-state` 是用户举的起始参数的例子。
+本节记下用户 2026-11-03 经一问一答定下的基准层。它全部已决定、还没实施：代码今天的样子仍是 §4.2、§4.9、§4.10、§4.11、§5.3、§11.2 写的，那些地方各自注明了目标。实施分五段，见本节末"分段实施"与 `docs/execution_dag.md` 的基准层模块。本节新起的名字（注册表与判别字段、Protocol、`declarations.py` 里的声明、文件布局与记录字段）都是提议，实施时可以调整，不是用户的裁决。用户在裁决里点了名的是 `--benchmark`、`--task-id`、`--fetch`、`configs/benchmarks/<alias>.yaml`、`$SPECTRAGENT_BENCHMARK_DATA`、`spectragent benchmark fetch` 与 `spectragent benchmark setup`（其中 `--benchmark`、`--task-id` 与 `$SPECTRAGENT_BENCHMARK_DATA` 今天已经有，下文说明变的是什么）；`--start-url`、`--start-app`、`--storage-state` 是用户举的起始参数的例子。几处由协调者 2026-11-03 定下或确认，各处写明，不是用户的裁决。
 
 **问题是真的（用户 2026-11-03 的裁决）。** 今天一份运行 YAML 装着 agent、环境（capability 块，含 Android 的 `task_oracle` 与 `android.open_app` 的 app 名称表）、hook 与 `task_loader`。`spectragent bench --config X --benchmark <任务加载器的键>` 只选任务加载器；`spectragent run --config X --task T --start-url U` 跑一个任务，`--start-url` 是 browser 的字段，却写死在框架的 CLI 里。基准自己的事实（设备镜像、任务裁判、app 名称表、成功的规则）于是被手抄进每一份运行配置。触发这次设计的是 AndroidWorld 的一次 run：`open_app` 的名称表手抄进了运行 YAML，漏了 Joplin、Retro Music、VLC 与 OpenTracks，18 个任务因此失败。基准还会越来越多，有同一个 capability 上的，也有别的 capability 上的。解法是一个与 agent 同级的组件，由它组装一个基准特有的任务要求。
 
@@ -3115,7 +3115,7 @@ class TaskContext(BaseModel):
 
 开局布置与判分器是两个分开的组件。用户："我认为是benchmark的verfier和开局布置得分开。因为verfier最复杂也就是一套和loop相关的agent，加上specific的提示词，这样我们可以同时配置rule base judge + llm judge"。开局布置又分两种：
 
-- **通用的、按任务的开局**：capability 照每个任务的数据自己做，例如带着 cookie 打开一个 URL、打开一个 app。这就是今天每个 capability 注册的任务 setup 类（§4.10 "任务 setup"），经 `TaskContext.env` 按 `setup()` 的签名路由（§4.3），不变。
+- **通用的、按任务的开局**：capability 照每个任务的数据自己做，例如带着 cookie 打开一个 URL、打开一个 app（Android 的 setup 今天只收 `oracle_task`，打开 app 是以后的键）。这就是今天每个 capability 注册的任务 setup 类（§4.10 "任务 setup"），经 `TaskContext.env` 按 `setup()` 的签名路由（§4.3），不变。
 - **基准特有的开局布置**：一个注册的组件，由 capability 承载，capability 给它设备或环境的访问。例子：AndroidWorld 的 initialize、MiniWoB 的页面目标，以后 KernelBench 的容器、ALE 的镜像。提议：`BenchmarkSetupRegistrar`（判别字段 `setup_id`），只能内联，写在基准块的 `setup` 受体里；怎样承载见 §4.9 "基准组件由 capability 承载"。
 
 **判分器有两条轴（用户 2026-11-03 的裁决）。** 判分器可以是 LLM judge（一个像 agent 的组件：有 Loop、有自己的提示词）、Python 规则或一条命令。
@@ -3135,8 +3135,10 @@ class TaskContext(BaseModel):
 **capability 配置合并（用户 2026-11-03 的裁决）。** 运行配置、基准与判分器各自在同一份 capability schema 里写它要的那一部分，哪个字段归谁没有固定的主人（用户："难解难分"）。几份贡献经协商合成一份 capability 配置，由它起环境：
 
 - 同一个字段、不同的值，在 `prepare()` 里拒绝，点名两边，与动作协商点名两个提供方同一做法（§4.3 "消歧靠拒绝"）；没有优先级，谁也不悄悄覆盖谁。
-- 按任务的数据（每个网页任务不同的 cookie、每个 Android 任务不同的镜像）留在按任务的开局通道里（`TaskContext.env`），不进合并。
+- 按任务的数据（每个网页任务不同的 cookie；以后每个 Android 任务不同的镜像，Android 的 setup 今天只收 `oracle_task`，这个键还没有）留在按任务的开局通道里（`TaskContext.env`），不进合并。
 - trace 记下合并后的配置。
+
+判分器只写要求，不写设置（协调者 2026-11-03 的决定，不是用户的裁决）。判分器若也写改变 agent 环境的设置，就会改变 run 与 `config_hash`，与上面"判分器从不改变 run"和"判分器不进实验身份"（§5.3 "实验身份"）相抵。所以判分器对 capability 只声明要求，在 `prepare()` 里核对，满足不了就拒绝；合并的设置只来自运行配置与基准。
 
 `prepare()` 里怎样合并、缺了怎样报，见 §4.2 "基准层在 `prepare()` 里加的检查"。
 
@@ -3167,9 +3169,9 @@ benchmark:
 #   spectragent run --config run.yaml --benchmark ./my_androidworld.yaml --task-id <任务 id>
 ```
 
-**数据（用户 2026-11-03 的裁决）。** 放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，例如 `~/.cache/spectragent/benchmarks/`，每个 worktree 都用它。
+**数据（用户 2026-11-03 的裁决）。** 放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，例如 `~/.cache/spectragent/benchmarks/`，每个 worktree 都用它。今天这个变量已经有了，是加载器数据根的覆盖；没设时数据根是包里的 `spectragent/benchmark_data/`，在仓库里（`core/data_loader/_common.py::benchmark_data_root`）。目标里没设时也落在仓库之外（提议：就是上面那个例子）。
 
-- 从不悄悄下载：缺了数据源，`prepare()` 拒绝，给出确切的命令（`spectragent benchmark fetch <alias>`）；`run` 与 `bench` 带 `--fetch` 才下载。
+- 从不悄悄下载：缺了数据源就拒绝，给出确切的命令（`spectragent benchmark fetch <alias>`）；`run` 与 `bench` 带 `--fetch` 才下载。用户说的是在 `prepare()` 里拒绝；可任务加载器在构造时就读数据（`TaskLoaderBase.__post_init__`，`core/data_loader/task/_registrar.py`），那是在组装时、`prepare()` 之前，所以这一查要在加载器读数据之前做，不能等到 `prepare()`（协调者 2026-11-03 指出）。拒绝照样在 trace 打开之前、任何东西启动之前。
 - 数据源与版本都钉住（Hugging Face 的仓库加 revision，或 git 加 commit），下载之后核对，版本记进 trace。
 - 重的安装（AndroidWorld 的检出、venv 与 AVD）走 `spectragent benchmark setup <alias>`，缺了就拒绝，给出这条命令。
 
@@ -3177,13 +3179,11 @@ benchmark:
 
 **实验身份**：`config_hash` 怎样覆盖基准的各部分，见 §5.3 "实验身份"。
 
-**环境跨任务复用（用户 2026-11-03 的裁决；以后做，基准层基本到位之后另开分支）。** 只在两条都成立时复用：下一个任务的环境身份（镜像、provider 设置）与当前的相同；基准的开局布置声明它能在任务之间复位状态。否则用新的环境，这仍是默认。trace 记下这个环境已经服务过几个任务。
+**环境跨任务复用（用户 2026-11-03 的裁决；以后做，基准层基本到位之后另开分支）。** 只在两条都成立时复用：下一个任务的环境身份（镜像、provider 设置）与当前的相同；基准的开局布置声明它能在任务之间复位状态。否则用新的环境，这仍是默认。trace 记下这个环境已经服务过几个任务。两条只管任务状态会带到下一个任务的地方，即设备与容器（协调者 2026-11-03 的决定，见下面 Browser 一条）。
 
-- Browser：留着进程，每个任务一个新的、隔离的 context。
+- Browser：留着进程，每个任务一个新的、隔离的 context。这已经有了，就是 `local_chrome.lifetime: experiment`（§4.9.x "同一实验进程内共享 Chrome"）：每个任务一个新的、隔离的 context，没有任务状态带到下一个任务，所以它不是这里说的状态复用，不受上面两条约束，仍是 capability 的设置（协调者 2026-11-03 的决定，不是用户的裁决）。
 - Android：照 AndroidWorld 官方 harness 的做法；每个任务约省 50 s，但系统设置会带到下一个任务，app 的热启动与冷启动也不同。
 - Docker：得益不多。
-
-一处重叠留给这一段定：browser 今天的 `local_chrome.lifetime: experiment`（§4.9.x "同一实验进程内共享 Chrome"）就是"留着进程、每个 run 一个新的 BrowserContext"，由 YAML 的这个旋钮选，不看基准的开局布置有没有声明能复位。它与上面两条怎样对上，这里不定。
 
 **迁移，不留兼容层（用户 2026-11-03 的裁决）：**
 
@@ -3194,6 +3194,8 @@ benchmark:
 - 早先"任务的起始点归 capability"那条裁决（§4.10，已决定、还没实施）随这项工作落地；
 - 录下的数据可以丢：旧的形状被拒绝，不转换。
 
+**还没定：分叉 sweep 的任务写在哪里（协调者 2026-11-03 提出，等用户的回答）。** 分叉 sweep（`trace_branches` 加载器，§4.10）没有基准：它的任务来自已录下的 run，没有开局布置组件，也没有判分器。可发布的配置里写了 `task_loader` 的都是分叉 sweep，正是 a 段要迁移的：`configs/flywheel/` 的分叉与原路径回放配置、`configs/lookahead/` 的三份分叉配置；度量链也把它们当作段来跑（§4.16）。运行根的顶层 `task_loader` 段删掉之后，它们的任务从哪里来，还没定。
+
 **分段实施（用户 2026-11-03 的裁决："可以，go"）。** 本文档分支之后分五段，每段的内容与验收在 `docs/execution_dag.md` 的基准层模块：
 
 - a，骨架：注册表，任务与评测数据加载器挪到基准下，`--benchmark` 的 alias 与 path，生成的起始参数；
@@ -3202,7 +3204,7 @@ benchmark:
 - d，数据：数据获取；
 - e，复用：环境复用，另开分支并行做。
 
-a 在 b、c 之前；b 与 c 并行；d 在 a 之后；e 在 a、b、c 之后。
+a 在 b、c 之前；b 与 c 并行；d 在 a 之后；e 在 a、b、c 之后。c 里有一件要等 b（协调者 2026-11-03 定的顺序）：c 段做合并、承载的 Protocol 与 AndroidWorld 的开局布置组件；AndroidWorld 的活体判分器要 b 段的注册表与判定存放，b 合进去之后建在 b 上落地，两段之间不搭临时的桥。
 
 ### 4.11 Evaluator 抽象
 
@@ -3227,7 +3229,7 @@ class BaseEvaluator(Protocol):
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
 每个 evaluator（包括仅结构化满足 Protocol 的实现）公开 `config_signature()` 与稳定的 `verdict_slug`：无旋钮时签名显式返回 `{}`，有旋钮时写出影响判定的可复现设置，slug 随之变化。Runner 不猜测缺失身份，也不把读取签名的异常吞掉后记成空签名。落盘的 `EvalResult` 只接受当前 `schema_version: "2.1"`；构造新判定时 `verdict_source` 默认 `graded`，读回已存判定时该字段与 `evaluator_config` 必须实际存在，旧数据不能被默认值伪装成已评分。
 
-**活体环境的判分也从 trace 读（用户 2026-10-31 的裁决）。** 只能对着活体环境判的基准（AndroidWorld 读设备上的数据库、文件与设置）不开"活体评测器"这个例外，那会违反"录一次、评多次"：capability 的任务裁判在 Runtime 的判分时间点（§4.2）读出判分，写成带来源的判分记录（§5.3），评测器经 `RunTrace.oracle_scores()` 读它，不碰活体环境；"没判"的记录与没有记录都不算判错。Android 阶段 3 加上状态转储归档器之后，一部分判分可以离线重算，用来对变体重评（换部分分规则、换比较字段）。用户 2026-11-03 的裁决（§4.10.1，还没实施）改掉这条做法的两处：在判分时间点判分的不再是 capability 的受体，而是写在基准下、由 capability 承载的活体判分器；它的判定写进统一的判定存放，不再是 run 记录里的判分记录（§5.3 "判定统一存放"）。判分照旧只在判分时间点对着活体环境做，离线的判分器照旧从不碰活体环境。
+**活体环境的判分也从 trace 读（用户 2026-10-31 的裁决）。** 只能对着活体环境判的基准（AndroidWorld 读设备上的数据库、文件与设置）不开"活体评测器"这个例外，那会违反"录一次、评多次"：capability 的任务裁判在 Runtime 的判分时间点（§4.2）读出判分，写成带来源的判分记录（§5.3），评测器经 `RunTrace.oracle_scores()` 读它，不碰活体环境；"没判"的记录与没有记录都不算判错。Android 阶段 3 加上状态转储归档器之后，一部分判分可以离线重算，用来对变体重评（换部分分规则、换比较字段）。用户 2026-11-03 的裁决（§4.10.1，还没实施）取代"不开'活体评测器'这个例外"那一句：在判分时间点判分的是活体判分器，写在基准下、由 capability 承载，不再是 capability 的受体；它的判定写进统一的判定存放，不再是 run 记录里的判分记录（§5.3 "判定统一存放"）。留下的是：agent 的 run 进行中没有判分器跑；活体判分器在判分时间点、Loop 结束之后跑一次；离线判分器只读 `RunTrace`，从不碰活体环境。
 
 **现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
@@ -3240,7 +3242,7 @@ Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可
 | `visual_diff` | 截图对比 | OSWorld |
 | `multi_criteria` | 多维度打分 | WebArena |
 
-**独立入口**：`spectragent eval --config <yaml> --traces <run或父目录> [...] --out <新目录>` 只组合一个 `evaluator` 和一个 `eval_loader`（judge 仍经 evaluator 的 `llm` 受体），复用 `EvaluationRunner`。它只把显式提供的 trace 作为分母，不自动把整个 benchmark 未提供的任务补成失败；原 runner 显式 `expected_task_ids` 的覆盖策略保留。分叉的参考按 `BranchProvenance.source_benchmark/source_subset/source_task_id` 找，判定身份仍是被评的分叉 run。**任务变体的分叉例外（2026-10-21）**：它跑的是另一份任务（`BranchProvenance.task_variant`，§4.10），源任务的参考描述的不是它，所以 `EvaluationRunner` 从不去找。按参考评分的 evaluator（`exact_match`、`browsecomp`、`lexbench_browser`，以及任何没有声明的）对它报 `NoReferenceError`（`task variant '<id>': no reference for this task`，点名源任务），记为评测失败：`verdict_source: evaluation_error`，不进有效判定的分母、不算判错，trace 的 `evals/` 里不写判定。声明 `__needs_reference__ = False` 的 evaluator 照样评它：目前只有 `online_mind2web` 的 WebJudge（关键点从 trace 记下的任务文本生成，从不读参考行），用的就是变体文本；它收到的 `EvalReference` 只写分叉 run 自己的任务 id 与 benchmark，不带任何评测数据，判定的 `benchmark_details.task_variant` 记变体（id、两份任务文本、`note`）、源任务身份与 `reference: null`，不写 `source_reference`。一个批次的报告分别列输入 run、有效判定、判对、判错、评测失败；任务正确率只用有效判定作分母，同时显示有效判定覆盖，零有效判定为 `null`。新输出目录保留该批的判定副本、失败与脱敏配置；trace 内的同 slug 判定沿用现有最新结果语义。退出码 0 表示本批全部输入得到有效判定（任务判错不使进程失败），1 表示至少一份无法判定，2 表示配置或输入拒绝。目标（§4.10.1，还没实施）：这个入口就是离线挂接点；判定只写进统一的判定存放，新输出目录不再存判定副本，只留报告、失败与脱敏配置（§5.3 "判定统一存放"）。
+**独立入口**：`spectragent eval --config <yaml> --traces <run或父目录> [...] --out <新目录>` 只组合一个 `evaluator` 和一个 `eval_loader`（judge 仍经 evaluator 的 `llm` 受体），复用 `EvaluationRunner`。它只把显式提供的 trace 作为分母，不自动把整个 benchmark 未提供的任务补成失败；原 runner 显式 `expected_task_ids` 的覆盖策略保留。分叉的参考按 `BranchProvenance.source_benchmark/source_subset/source_task_id` 找，判定身份仍是被评的分叉 run。**任务变体的分叉例外（2026-10-21）**：它跑的是另一份任务（`BranchProvenance.task_variant`，§4.10），源任务的参考描述的不是它，所以 `EvaluationRunner` 从不去找。按参考评分的 evaluator（`exact_match`、`browsecomp`、`lexbench_browser`，以及任何没有声明的）对它报 `NoReferenceError`（`task variant '<id>': no reference for this task`，点名源任务），记为评测失败：`verdict_source: evaluation_error`，不进有效判定的分母、不算判错，trace 的 `evals/` 里不写判定。声明 `__needs_reference__ = False` 的 evaluator 照样评它：目前只有 `online_mind2web` 的 WebJudge（关键点从 trace 记下的任务文本生成，从不读参考行），用的就是变体文本；它收到的 `EvalReference` 只写分叉 run 自己的任务 id 与 benchmark，不带任何评测数据，判定的 `benchmark_details.task_variant` 记变体（id、两份任务文本、`note`）、源任务身份与 `reference: null`，不写 `source_reference`。一个批次的报告分别列输入 run、有效判定、判对、判错、评测失败；任务正确率只用有效判定作分母，同时显示有效判定覆盖，零有效判定为 `null`。新输出目录保留该批的判定副本、失败与脱敏配置；trace 内的同 slug 判定沿用现有最新结果语义。退出码 0 表示本批全部输入得到有效判定（任务判错不使进程失败），1 表示至少一份无法判定，2 表示配置或输入拒绝。目标见本节开头"目标：评测器成为判分器"。
 
 LexBench 图像 judge 没有任务文字、没有可用截图、回复没有有效的 0–100 总分，都属于评测错误，不制造任务失败。请求使用录制时间与已录下的 `loop.step_info.today` 解释时效文字；这些是提示中的可追溯证据，不是当前网站事实。实际 judge 模型与路由身份、模板快照、录制时间及已报告的 `eval_usage` 随独立结果保存；模型失败时已知的提示与用量也保留，未知用量不声称为零。此入口不启动浏览器、不访问当前页面、不修改恢复保真指标或训练导出。
 
@@ -4481,6 +4483,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **链只改路径**：每段的 YAML 原样读入，链只写这几个字段再落到 `<root>/configs/<段>.yaml`：唯一的 `trace_writer` 的 `trace_dir`（`<root>/traces/<段>`）；`same_path` / `branch` 唯一的 `trace_branches` 加载器的 `data_dir`（`<root>/traces/record`）；导出段唯一的导出器的 `sources_root`（`<root>/traces`）、`sources`（`["record/*", "branch/*"]`）与 `output_dir`（`<root>/datasets/first`，第二次 `second`）。缺这些块（或多于一个）在任何一段开跑之前报错、点名段与缺的块。其余一切（agent、档位、归档器、选步、分支数、`verify`、评测器）都写在段的 YAML 里；对照组的 YAML 自己写 `archive: []`。
 - **段的成败**：`spectragent bench` 退出码 0 或 1（个别任务的基础设施失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；退出码 4（这一段的 sweep 达到了链交给它的 token 额度）且写出了新 run，这一段算跑完、链在这里停下（下面"token 上限"）；别的退出码（2：它的 pre-flight 拒绝了这一段的配置，一个任务也没跑；3：一个 guard 否决了这一段，被否决那一段的 run 不喂给下一段；§4.2）、`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
 - **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, token_limit, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, oracle_timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器；`oracle_timeout` 省略时不传 `--oracle-timeout`，bench 用自己的默认，§4.2 "判分时间点"），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个），`token_limit` 是至少为 1 的整数或 `unlimited`（默认）。CLI：`spectragent flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状，也不知道 token 上限）；退出码 0 完成、1 某段失败（`report` 算不出报告——发布的数据集读不回来——或写不了——`--out` 建不了、写不进——也是 1，报错点名是哪一个，不抛 traceback）、2 规格或参数不对、4 链在 token 上限处停下（`run`；选了报告段时报告照样算出，与 `spectragent bench` 的 4 同一个意思）。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
+- **目标（§4.10.1，还没实施）**：`tasks.benchmark` 今天是任务加载器的键，链把它原样交给 `spectragent bench --benchmark`（`flywheel/chain.py`）。基准层的 a 段之后 `--benchmark` 收基准的 alias 或 path，`tasks.benchmark` 跟着改成基准的 alias 或 path；分叉段的任务写在哪里还没定（§4.10.1 "还没定：分叉 sweep 的任务写在哪里"）。
 - **token 上限**（用户 2026-10-14 的裁决）：`token_limit` 是链的所有运行段合计能用的 token，数的是 trace 里记下的用量——每个 run 的每次调用记录里 provider 报的数（`core/trace/usage.py::recorded_usage`：每个已提交步的调用、再是 trailing 调用；成功、失败与取消都读 `RecordedCallMetrics.usage`，失败的调用照样计费；一次调用的 token 数与步记录同一条规则 `TokenUsage.from_llm_usage`：provider 的 `total_tokens`，没给总数时 prompt 加 completion）。从独立 `call_metrics` 账读取，不需要还原完整提示或图片；记录计划没选 metrics 时用量为未测量。provider 没报用量的调用（被取消的、回复之前就失败的、从不报用量的 provider 的）计入调用数、不加 token，按 `traces/<角色>/<run>: step S call K (状态)` 点名，从不当作 0；调用记录读不回来的 run 不计，点名原因。
   - 有上限时，链开跑之前先数一遍链根下已有的每个 run（四个角色，`metrics.role_token_use`），所以分段跑（`--stages`）时前几次花掉的照样算，重跑一段加的 run 也算。每个运行段把剩下的额度（上限减已用）交给 `spectragent bench --token-limit`（§4.2 "sweep 的 token 上限"：每个任务跑完就加一次，达到额度时那个任务照常跑完、之后的任务不开始、退出码 4）；段跑完后链数这一段新写的 run（`chain.json` 的 `stages.<段>.token_use{runs, tokens, calls, calls_without_usage, skipped}`），加进总数（这一段失败了也加，来历照记）。
   - 这一段的 bench 以退出码 4 结束，或总数达到上限（大于或等于）：链停下，后面的运行段与导出段都不开始；报告段（选了的话）照样用已有的数据算；`chain.json` 写 `stopped_by_token_limit{stage, tokens_used, token_limit, stages_not_started, calls_without_usage}`（顶层另有 `token_limit` 与当时的 `tokens_used`）；`spectragent flywheel run` 打印停在哪里、退出码 4。开跑之前已有的 run 就已经达到上限（例如上一次在上限处停下，规格里的上限没有调高）：选中的运行段与导出段一个也不开始（`stage: null`），报告照跑；只选了报告段时没有要停的段，不算停下。要接着跑，先调高 `token_limit`，再用 `--stages` 只跑没开始的段。
@@ -4983,7 +4986,7 @@ traces/
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
       ├── oracle_scores.json            # 判分记录（list[OracleScore]，§4.2）；没有任务裁判或没走到判分时间点就没有
-      │                                 #   目标：与 evals/ 并成 verdicts/（下文"判定统一存放"，还没实施）
+      │                                 #   目标：与 evals/ 并成一处（提议名 verdicts/；下文"判定统一存放"，还没实施）
       ├── task_text.json                # setup 补全的任务文本（SetupTaskText，§4.10）；任务文本没有由 setup 补全就没有
       │
       ├── steps/
@@ -5021,7 +5024,7 @@ traces/
       │   └── trailing/KK/<archiver_id>/<name>  # 第 KK 次 commit_trailing 的证据（收尾、提交失败遗留）
       │
       └── evals/                        # 评测结果（后置、原子写，可多次运行不同 judge）
-                                        #   目标：与 oracle_scores.json 并成 verdicts/（"判定统一存放"，还没实施）
+                                        #   目标：与 oracle_scores.json 并成一处（提议名 verdicts/；"判定统一存放"，还没实施）
           ├── exact_match_v1.json
           ├── llm_judge_gpt4o_v1.json
           └── llm_judge_claude_v2.json  # 新 judge 无需重跑 agent
@@ -5106,12 +5109,13 @@ traces/
 
 **判定统一存放（用户 2026-11-03 的裁决，还没实施，§4.10.1）。** 用户："judge的文件统一放就行，不用这样不同的hook放在不同的地方"。今天判分有两个地方：判分时间点的判分记录 `oracle_scores.json` 在 run 记录里（上一段，manifest 指向它），离线评测的判定 `evals/<verdict_slug>.json` 在 run 记录旁边（不进 manifest，下文"`evals/` 也是原子写"）。这两处要并成一处：
 
-- 所有判分器、两个挂接点的判定放在一个地方，一种记录格式，每份带判分器的身份：种类、版本、模型。
-- 离线的判定从不改 run 已提交的记录：存放在 manifest 之外，写法照 WAL 的原子写（`fsio.atomic_write`）。
-- 判分时间点的判定也写进这个存放，不再经 manifest 提交；上一段 2026-10-31 的放法由这条取代。写不进去照旧与 agent 的结局无关，怎样记下这次失败（今天是一条记录问题，上一段），实施时定。
+- 所有判分器、两个挂接点的判定放在一个地方，一种记录格式，每份带判分器的身份：种类、版本、模型。今天的两处由此结束，上一段 2026-10-31 的放法由这条取代。
+- 离线的判定从不改 run 已提交的记录。
+- 判分时间点的判定写不进去时，照今天一样记进记录健康（上一段：一条记录问题），与 agent 的结局无关：磁盘满了也不会悄悄丢掉一份重做不了的判定（协调者 2026-11-03 定的）。
 
 提议（实施时可调整）：
 
+- 存放在 manifest 之外，判分时间点的判定也不再经 manifest 提交；写法照 WAL 的原子写（`fsio.atomic_write`）。
 - 布局：`<run_dir>/verdicts/<verdict_slug>.json`，一份判定一个文件；同一个 slug 再判时原子替换（今天 `evals/` 的"最新结果"语义）。
 - 记录类型：`Verdict`（`schemas/verdict.py`，与 `OracleScore` 一样不 import `spectragent.core`），取代 `EvalResult` 与 `OracleScore`：`verifier_id`（种类）、`verifier_version`、`model`（LLM judge 的模型身份，别的种类为 `None`）、`config_signature`、`attachment`（`live` 或 `offline`）、`status`（判了，或没判与原因、诊断）、分数或标签与依据、开始时间与耗时。
 - 读侧：`RunTrace.verdicts()` 取代 `oracle_scores()` 与 `evals()`（§5.5），仍是唯一按目录列文件的访问器。manifest 不再有 `oracle_scores` 字段，trace 格式版本随之升一次；旧的 trace 与判定被拒，不转换。
@@ -5338,7 +5342,7 @@ class TraceConfig(BaseModel):
 
 **摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup`、`max_steps` 与 `task_text_setter` 按任务变化，`env_evidence_privacy` 是 provenance，都不进摘要，所以同一次 sweep 里只差 `start_url` 或步数预算的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
 
-**实验身份（用户 2026-11-03 的裁决，还没实施，§4.10.1）。** `config_hash` 覆盖 agent、合并后的 capability 配置（§4.10.1 "capability 配置合并"）、基准的任务来源（含数据版本）与它的开局布置组件。判分器（不论挂在哪个挂接点）与按任务的数据不在其中；判分器的身份写在它的每份判定里（上文"判定统一存放"）。今天经 `negotiation` 进摘要的协商结果与归档绑定、trace hook 的配置，这条裁决没有提到，照旧。提议：`TraceConfig` 多一个 `benchmark` 记录（`benchmark_id`、怎样选的（alias 或 path）、数据源与核对过的版本、开局布置组件的配置），任务来源与开局布置经它进摘要，判分器的配置不记在这里；环境复用（§4.10.1）落地时再加一个按任务的字段，记下这个环境已经服务过几个任务，不进摘要。
+**实验身份（用户 2026-11-03 的裁决，还没实施，§4.10.1）。** `config_hash` 覆盖 agent、合并后的 capability 配置（§4.10.1 "capability 配置合并"）、基准的任务来源（含数据版本）与它的开局布置组件。判分器（不论挂在哪个挂接点）与按任务的数据不在其中；判分器的身份写在它的每份判定里（上文"判定统一存放"）。判分器只写要求、不写设置（§4.10.1 "capability 配置合并"），所以合并后的配置与判分器无关。这条裁决列的是基准层新加进来的部分，已有的部分照旧不变：经 `negotiation` 进摘要的协商结果与归档绑定，以及 trace 的设置（trace hook 的配置）（协调者 2026-11-03 确认）。提议：`TraceConfig` 多一个 `benchmark_spec` 记录（提议名；`benchmark_id`、怎样选的（alias 或 path）、数据源与核对过的版本、开局布置组件的配置），任务来源与开局布置经它进摘要，判分器的配置不记在这里。已有的 `TraceConfig.benchmark`（字符串）照旧是数据的连接键，分叉、导出的切分与参考答案的查找都按它找源任务，不改。环境复用（§4.10.1）落地时再加一个按任务的字段，记下这个环境已经服务过几个任务，不进摘要。
 
 **`evals/` 也是原子写。** `EvaluationRunner` 写 `evals/<verdict_slug>.json`，以及可选的平铺副本和 summary，都走 `fsio.atomic_write`：半写的 verdict 文件会被下一个读者当成损坏的评测。权限与普通写入相同（§5.2），共享的 `--evals-dir` 对其他用户照常可读，重新打分也不改动已有文件的权限。evals 是后置产物，不进 manifest。
 
@@ -6189,7 +6193,7 @@ M3A 的文字是原始的树的 1/16 到 1/9，T3A 的是 1/7 到 1/4；表单�
 
 **`open_app` 的名称表（用户 2026-11-03 的裁决，还没实施，§4.10.1）。** 今天名称表是 `android.open_app` 这个动作实例上的旋钮 `apps`（名称 → 包名），默认是代码里写死的原装 Google APIs 镜像的启动器 app（`actions.py::STOCK_APPS`）。镜像上别的 app 只能手抄进运行配置的 `apps`，漏抄的就开不了（§4.10.1 "问题是真的" 记下的那次 AndroidWorld run）。目标：
 
-- 跑基准时，名称表由基准给出：AndroidWorld 基准从钉住的 AndroidWorld 代码（`adb_utils._PATTERN_TO_ACTIVITY`：名称的正则 → Activity）算出，作为它对 capability 配置的贡献（§4.10.1 "capability 配置合并"），从不手抄；
+- 跑基准时，名称表由基准给出：AndroidWorld 基准从钉住的 AndroidWorld 代码（`adb_utils._PATTERN_TO_ACTIVITY`：名称的正则 → Activity）算出，作为它对 capability 配置的贡献（§4.10.1 "capability 配置合并"），从不手抄。这份贡献只给已有的 `android.open_app` 条目设 `apps`，不增删动作（§4.2 "基准层在 `prepare()` 里加的检查" 的列表规则）：动作的集合照旧由运行配置定，运行配置不写就是完整的默认列表；运行配置的动作里没有 `android.open_app` 时，这份贡献就是冲突；
 - 没有基准的单任务从设备启动器的标签取 app 名，在 setup 时读；写死的默认表随之删掉。
 
 **实验身份。** 配置出来的这些进配置身份并写进 trace：设备架构、镜像修订、模拟器版本、AVD 配置摘要、快照名、键入后端、UI 树来源、界面树清洗器与序列化器、配置选的点按注入器、要装的服务 APK 构建（它的 sidecar：SHA-256、版本、协议版本、`isAccessibilityTool`）、ADB 端点的 `kind` 与 `encrypted`、ADB server 模式。实测的设备事实不是配置：设备指纹、实际装上的服务 APK（服务的 hello 里在设备上算出的 SHA-256 与版本，以及系统读到的 `isAccessibilityTool`）、`faketouch` 预检与试点的结果、当前输入法，随 `android.platform` 片段观测、随观测记录，从不按宿主机推断；浏览器那样的 `env/run.browser.json` 只在开了归档时才有，靠不住。快照与可复现性依赖"模拟器构建 + 镜像修订 + AVD 配置 + 快照名"这个整体，arm64 与 x86_64 的 AVD 也不逐位一致。每一步另记实际用了哪个点按注入器、哪个截屏生产方、哪个界面树生产方；具体字段随动作与片段的实现定；界面树的生产方就是 `android.ui_tree` 的 `producer` 字段（§14.4）。2026-11-02 实施的部分：要装的 APK 是 capability 块的 `service_apk`（构建命令打印的路径，必填，标了 `trace_safe`，原样进 resolved 配置与 `config_hash`；路径所在的目录按 SHA-256 命名，不在这样的目录里的 APK 被拒绝，所以路径说得出是哪份构建）；`check_setup` 用 `ServiceApk.load` 拒绝没有 sidecar、字节与 sidecar 对不上、协议版本或包名不对、不在按 SHA-256 命名的目录里的 APK，在 trace 打开之前；setup 拒绝设备上跑的不是这份构建的服务（hello 里的 SHA-256 与 sidecar 不同）。实测的那一半（hello 的 SHA-256 与版本、系统读到的 `isAccessibilityTool`、签名证书、faketouch 与试点）随 `android.platform` 记下（上面"片段"）。点按注入器与键入后端进配置身份（两个必填的块）；每步实际用的注入器与后端记在动作的效果里，截屏生产方记在 `android.screenshot` 的 `producer` 里。以后接已连接设备（真机）的 provider 拒绝测试钥匙签的 APK（`ServiceApk.signed_with_test_key`，上面"APK 放在哪里"）：provider 与 APK 都在 `check_setup` 手里，拒绝就放在那里，provider 现在还没有。
@@ -6256,7 +6260,7 @@ M3A 的文字是原始的树的 1/16 到 1/9，T3A 的是 1/7 到 1/4；表单�
 | **P1** | `action_filter` config 收窄 + guarded_act 实现 |
 | **P1** | TaskLoader / EvalLoader 去掉 Browser 前缀，泛化接口 |
 | **P1** | EvaluatorRegistrar + RunTrace lazy loader |
-| **P1**（排在这里是提议） | 基准层（§4.10.1，用户 2026-11-03 的裁决，还没实施）：`BenchmarkRegistrar`、开局布置组件与 capability 承载、`VerifierRegistrar` 与判定统一存放、capability 配置合并、生成的起始参数、数据获取、环境复用；分段见 `docs/execution_dag.md` 的基准层模块 |
+| **P1**（排在这里是提议） | 基准层（§4.10.1，用户 2026-11-03 的裁决，还没实施；注册表名是提议）：`BenchmarkRegistrar`、开局布置组件与 capability 承载、`VerifierRegistrar` 与判定统一存放、capability 配置合并、生成的起始参数、数据获取、环境复用；分段见 `docs/execution_dag.md` 的基准层模块 |
 | **P2** | DockerCapability 实现（actions + terminal/filesystem resolver） |
 | **P2** | CodeActLoop 实现 + DockerCapability 集成 |
 | **P2** | 数据飞轮（browser）：离线回放（M30）；状态分叉——`BranchLoop` + `RestorerRegistrar`（`prefix_replay`）+ `RestorationSupport`（browser 重定位与校验）+ `trace_branches` 加载器与 `StepSelectorRegistrar` + `terminal_observation`（M31）；训练导出——`ExporterRegistrar`（`openai_messages`）+ `ActionTranslatorRegistrar`（`identity` / `index_to_coordinate`）+ `CanonicalStepSample` + 学生渲染（ReAct 可选 slot `format_react_output` / `parse_react_thought`）+ 校验器 + `spectragent export` + `skyvern_hit_test` cleaner（M32）；度量闸门——`spectragent/flywheel/`（度量、报告、链）+ `spectragent flywheel` + 选步 `last` 与原路径回放配置 + 表单提交的观测修复（M33） |
