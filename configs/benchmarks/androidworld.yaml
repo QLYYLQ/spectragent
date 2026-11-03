@@ -6,12 +6,13 @@
 # offline by task_list.py beside AndroidWorld's launcher
 # (spectragent/benchmarks/androidworld/androidworld_service/,
 # docs/architecture_design.md §11.2). The setup component prepares each task on
-# the device through AndroidWorld's own service, run from the installation in the
-# benchmark's data directory unless root says otherwise. Until AndroidWorld's
-# live verifier lands, the same component judges each task on the device at the
-# scoring point, within --verify-timeout; its verdict (verifier androidworld)
-# goes into the run's verdicts/ and is this benchmark's primary verdict. This
-# block takes no verifiers.
+# the device through AndroidWorld's own service, run from the installation under
+# the benchmark data root ($SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation,
+# whatever the task loader's data_dir says) unless root says otherwise. Until
+# AndroidWorld's live verifier lands, the same component judges each task on
+# the device at the scoring point, within --verify-timeout; its verdict
+# (verifier androidworld) goes into the run's verdicts/ and is this
+# benchmark's primary verdict. This block takes no verifiers.
 #
 # The benchmark's part of the Android capability's configuration is merged into
 # the run configuration's Android block (§4.10.1): the AVD AndroidWorld's one-time

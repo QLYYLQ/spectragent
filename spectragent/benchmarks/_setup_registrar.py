@@ -13,8 +13,12 @@ is the host's own protocol (the Android capability's is
 gives.
 
 What the device or environment must offer beyond its plain form comes from the
-component (Android: ``DeviceNeeds``), never from a provider setting. A
-component never scores a run: scoring is a verifier's.
+component (Android: ``DeviceNeeds``), never from a provider setting. Judging is
+a verifier's, never a setup component's, once the benchmark's live verifier
+lands: until then AndroidWorld's component hands the Android capability's
+``oracle_identity`` and ``read_score`` (``TaskOracle``) its identity and its
+judgment, from the service it started, and the environment keeps them as the
+run's live verdict.
 
 This module stays light: ``core/registries.py`` lists the registrar with the
 framework axes.

@@ -24,10 +24,12 @@ device. One task is one run:
    device's changes are thrown away with the run; a failure is logged), then
    the service's process group.
 
-The score is read from the same service at the scoring point (``scoring.py``).
-Until AndroidWorld's live verifier lands, this component hands it to the
-capability's ``read_score`` (``TaskOracle``): the scoring path is as it was
-when the capability's task oracle held both halves.
+The task is judged against the same service at the scoring point
+(``scoring.py``). Until AndroidWorld's live verifier lands, this component
+hands its identity and its judgment to the capability's ``oracle_identity`` and
+``read_score`` (``TaskOracle``), and the environment keeps them as the run's
+live verdict: the scoring path is as it was when the capability's task oracle
+held both halves.
 
 The service makes the task again from its address, so a task whose parameters
 it cannot rebuild cannot be the listed one: ``MarkorCreateFolder`` names its
@@ -85,8 +87,9 @@ class AndroidWorldSetup(BenchmarkSetupBase):
                 f"(cache/a11y/{FORWARDER_APK}). The AVD the provider boots must be the one that "
                 "setup prepared, and ffmpeg must be on Spectragent's PATH, as AndroidWorld's "
                 "README installs it: its music tasks make their mp3 files with it. None (the "
-                "default): the directory 'installation' in the benchmark's data directory, "
-                "$SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation."
+                "default): android/androidworld/installation under the benchmark data root, "
+                "$SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation, whatever the "
+                "task loader's data_dir says."
             )
         ),
     ] = None
@@ -253,7 +256,7 @@ class AndroidWorldSetup(BenchmarkSetupBase):
         """The started task's judgment, given the run's *answer* (``TaskOracle``, through the capability).
 
         The scoring path stays as it was until AndroidWorld's live verifier
-        lands and reads the score itself (``scoring.py``).
+        lands and judges the task itself (``scoring.py``).
 
         Raises:
             AndroidWorldError: No task was initialized, or the service refused

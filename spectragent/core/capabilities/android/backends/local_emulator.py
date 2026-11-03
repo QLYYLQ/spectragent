@@ -57,7 +57,7 @@ port it bound (``-report-console``) to a loopback listener of the provider; the
 serial is ``emulator-<that port>``. Other adb servers that scan the default
 ports still find it.
 
-What the run needs beyond ADB (``DeviceNeeds``, derived from its task oracle)
+What the run needs beyond ADB (``DeviceNeeds``, derived from its benchmark setup component)
 is met before ``open()`` returns, within the same ``boot_timeout_s`` (measured
 on macOS, emulator 37.2.13, API 33 Google APIs, 2026-11-01):
 
@@ -384,7 +384,7 @@ class LocalEmulatorProvider(AndroidProviderBase):
                 "Boot with -read-only: the AVD's disk images are not written, so every session "
                 "starts from the same device and its changes are discarded at shutdown. False "
                 "writes the session's changes into the AVD, where the next session finds them; "
-                "a run that needs a fresh device (the androidworld task oracle) is refused then."
+                "a run that needs a fresh device (AndroidWorld's setup) is refused then."
             )
         ),
     ] = True

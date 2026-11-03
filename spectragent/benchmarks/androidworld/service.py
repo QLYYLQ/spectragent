@@ -80,11 +80,12 @@ _LOOPBACK = "localhost,127.0.0.1,::1"
 
 
 def default_root() -> Path:
-    """Where the installation is when the setup leaves ``root`` out: in the benchmark's data directory.
+    """Where the installation is when the setup leaves ``root`` out.
 
-    ``installation`` beside the task lists, under
-    ``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld`` (the data root's
-    default otherwise), read on each call as the data root is.
+    ``android/androidworld/installation`` under the benchmark data root
+    (``$SPECTRAGENT_BENCHMARK_DATA``, the data root's default otherwise),
+    read on each call as the data root is. It does not follow the task
+    loader's ``data_dir``: the installation is not the task data.
     """
     return resolve_data_dir("android", "androidworld", None) / "installation"
 
