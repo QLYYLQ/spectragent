@@ -372,3 +372,28 @@ def test_the_branch_sweeps_task_source_takes_no_capability_part() -> None:
     assert [(error["type"], error["loc"][-1]) for error in refused.value.errors()] == [
         ("extra_forbidden", "capability")
     ]
+
+
+def test_a_list_the_run_writes_in_a_top_level_section_is_refused_against_a_part(
+    tmp_path: Path,
+) -> None:
+    """The block takes the top-level ``action:`` pool when it leaves ``actions`` out: that pool,
+    not the default list, is the run's, and a part may not widen it or override its options."""
+    pool: list[JsonValue] = [
+        {"action_id": "android.click_coordinate"},
+        {"action_id": "android.open_app", "apps": {"Clock": "com.google.android.deskclock"}},
+    ]
+    alone = {**_run(_android(), None), "action": pool}
+    capability = ConfigComposer.for_config(alone).compose(alone).single("capability")
+    assert isinstance(capability, AndroidCapability)
+    assert [action.action_id for action in capability.actions] == [
+        "android.click_coordinate",
+        "android.open_app",
+    ], "without a benchmark the run has the two actions of its pool"
+
+    refused = _refused({**_run(_android(), _table(tmp_path)), "action": pool})
+
+    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
+    assert refused.issue.path == "environment[0].capabilities[0].actions"
+    assert "takes the run configuration's top-level 'action' section" in str(refused)
+    assert "write the actions in the capability block" in str(refused)

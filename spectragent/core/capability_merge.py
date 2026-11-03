@@ -21,7 +21,11 @@ that capability (:meth:`CapabilityMerge.merge`):
   whole default list when it leaves the list out: a part may set options on an
   entry already there, matched by its discriminator (``action_id``), and never
   adds or removes one (coordinator ruling 2026-11-03), since a benchmark that
-  sets one action's knob would otherwise delete the others.
+  sets one action's knob would otherwise delete the others. A block that leaves
+  the list out while the run writes a top-level section of its layer (``action:``)
+  takes that section when it is composed; a part on such a list is refused,
+  naming where to write the list instead, since its entries are not the
+  default list (coordinator decision 2026-11-04).
 
 The per-task data stays in the per-task setup channel (``TaskContext.env``)
 and is never merged. The merged block is what the run validates, constructs
@@ -108,6 +112,9 @@ class _Block:
 
     path: str
     fields: dict[str, JsonValue]
+    #: The layers the run writes a top-level section of, with entries: a list
+    #: the block leaves out takes that section's instances when it is composed.
+    pooled: frozenset[str] = frozenset()
     #: Field path within the block (``backend.avd``) → who wrote it; the run
     #: configuration for what this map leaves out.
     written_by: dict[str, _Side] = field(default_factory=dict)
@@ -177,7 +184,10 @@ class CapabilityMerge:
                 naming every field two sides write differently.
         """
         merged = copy.deepcopy(dict(sections))
-        blocks = _capability_blocks(merged)
+        pooled = frozenset(
+            name for name, value in merged.items() if isinstance(value, list) and value
+        )
+        blocks = [_Block(block.path, block.fields, pooled) for block in _capability_blocks(merged)]
         problems: list[MergeProblem] = []
         missing: list[MergeProblem] = []
         for contribution in contributions:
@@ -319,6 +329,17 @@ class CapabilityMerge:
                 return []
             return [] if base == value else [self._conflict(target, at, base, value, side)]
         if not isinstance(base, list):
+            if layer in target.pooled:
+                return [
+                    MergeProblem(
+                        f"{target.path}.{at}",
+                        f"{side} sets options on the {name} of this block, which leaves {name} "
+                        f"out and so takes the run configuration's top-level {layer!r} section; a "
+                        f"part sets options only on entries written in the capability block: "
+                        f"write the {name} in the capability block, not in the top-level "
+                        f"{layer!r} section",
+                    )
+                ]
             base = [_entry(discriminator, key) for key in entry.spec.allowed_keys or ()]
             into[name] = base
         entries = {
