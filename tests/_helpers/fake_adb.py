@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import re
 import struct
 from collections.abc import Awaitable, Callable, Mapping
@@ -243,8 +244,14 @@ class FakeAdbServer:
                     return
                 self.requests.append(DeviceRequest(serial, request))
                 # A client may hang up before the answer ends (a capture that timed out).
-                with contextlib.suppress(ConnectionError):
+                # Ending the answer (``write_eof``) on a socket the client already reset
+                # fails with ENOTCONN, an OSError that is not a ConnectionError (seen on
+                # macOS). Any other error is a fault in the device script and fails the test.
+                try:
                     await self._answer(serial, request, reader, writer)
+                except OSError as exc:
+                    if not isinstance(exc, ConnectionError) and exc.errno != errno.ENOTCONN:
+                        raise
                 return
         finally:
             writer.close()

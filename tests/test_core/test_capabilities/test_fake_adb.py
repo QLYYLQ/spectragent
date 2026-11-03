@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
+import os
 import struct
 
 import pytest
@@ -206,3 +208,37 @@ async def test_clients_that_stay_connected_do_not_hold_the_exit() -> None:
         writer.close()
         with contextlib.suppress(ConnectionError):
             await writer.wait_closed()
+
+
+async def test_a_hang_up_macos_reports_as_not_connected_is_not_the_servers_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ending the answer to a client that already reset fails on macOS with ENOTCONN, which is
+    not a ConnectionError. The block's end must not raise it as the fake's own error."""
+
+    def not_connected(_writer: asyncio.StreamWriter) -> None:
+        raise OSError(errno.ENOTCONN, os.strerror(errno.ENOTCONN))
+
+    monkeypatch.setattr(asyncio.StreamWriter, "write_eof", not_connected)
+    device = scripted({"ls": ShellResult(stdout=b"x\n")})
+    async with FakeAdbServer({SERIAL: device}) as adb:
+        statuses, _ = await _call(adb, f"host:transport:{SERIAL}", "shell,v2:ls")
+
+    assert statuses == [b"OKAY", b"OKAY"]
+
+
+@pytest.mark.parametrize(
+    "fault", [RuntimeError("a bug"), TimeoutError("timed out")], ids=["an error", "an OSError"]
+)
+async def test_a_fault_in_a_device_script_fails_the_test(fault: Exception) -> None:
+    """The block's end raises it, though the client only sees its answer end early.
+
+    ``TimeoutError`` is an ``OSError``: the filter for a client that hung up must not take it.
+    """
+
+    async def faulty(command: str) -> ShellResult:
+        raise fault
+
+    with pytest.raises(type(fault)):
+        async with FakeAdbServer({SERIAL: faulty}) as adb:
+            await _call(adb, f"host:transport:{SERIAL}", "shell,v2:ls")
