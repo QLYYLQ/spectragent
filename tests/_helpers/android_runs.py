@@ -9,7 +9,8 @@ The opt-in AndroidWorld live modules (marker ``requires_android_emulator``)
 read three environment variables: ``SPECTRAGENT_TEST_AVD``, the AVD
 AndroidWorld's one-time setup prepared; :data:`ANDROIDWORLD_VARIABLE`, the
 AndroidWorld installation (its venv, its checkout at the pinned commit, its
-cached forwarder; ``docs/architecture_design.md`` §11.2); and
+cached forwarder, and ffmpeg on PATH;
+``docs/architecture_design.md`` §11.2); and
 :data:`APK_VARIABLE`, the device-side APK. :func:`installation_problem` says
 why a module skips, :func:`write_task_list` writes a task list under
 AndroidWorld's interpreter, and :func:`androidworld_capability` composes the

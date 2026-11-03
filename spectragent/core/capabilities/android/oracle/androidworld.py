@@ -12,9 +12,11 @@ Spectragent's own bridge. One task is one run:
    the launcher (``androidworld_service/serve.py``) runs the service under
    AndroidWorld's interpreter, in a process group of its own tied to this
    process (``processes.py``), on a free loopback port, with a whitelisted
-   environment, and the wait for ``/health`` is bounded. Then the task: the
-   suite its seed makes, a check that the service built the task the list
-   records, ``/task/initialize`` and ``/reset``.
+   environment whose ``PATH`` adds to the system's directories only a link to
+   the host's ffmpeg (:meth:`Installation.ffmpeg`), and the wait for ``/health``
+   is bounded. Then the task: the suite its seed makes, a check that the
+   service built the task the list records, ``/task/initialize`` and
+   ``/reset``.
 2. **read_score**, at the Runtime's scoring point, within the run's
    ``oracle_timeout``: for an information-retrieval task, scored on the agent's
    answer, the run's answer goes to the service first as an ``answer`` action
@@ -122,8 +124,37 @@ class Installation:
     def forwarder_apk(self) -> Path:
         return self.root / "cache" / "a11y" / FORWARDER_APK
 
+    def ffmpeg(self) -> Path:
+        """Where Spectragent's own PATH finds ffmpeg, as an absolute path.
+
+        Part of the installation (AndroidWorld's README: "Install ffmpeg"): its
+        music tasks make their mp3 files with pydub, which runs ffmpeg from
+        PATH, so the service's ``bin/``, the only directory its PATH adds to the
+        system's, links to this one. pydub runs ffprobe only to read audio,
+        which the pinned code never does, so a host without ffprobe runs every
+        task.
+
+        Raises:
+            AndroidWorldSetupError: PATH has no ffmpeg; the message says why the service needs it.
+        """
+        found = shutil.which("ffmpeg")
+        if found is None:
+            raise AndroidWorldSetupError(
+                "there is no ffmpeg on PATH: AndroidWorld generates its music tasks' mp3 files "
+                "with pydub, which runs ffmpeg; install ffmpeg, as AndroidWorld's README says"
+            )
+        return Path(found).absolute()
+
     def problems(self) -> list[str]:
         """What keeps the service from starting here, one entry per problem."""
+        found = self._problems_under_root()
+        try:
+            self.ffmpeg()
+        except AndroidWorldSetupError as exc:
+            found.append(str(exc))
+        return found
+
+    def _problems_under_root(self) -> list[str]:
         if not self.root.is_dir():
             return [f"there is no AndroidWorld installation at {self.root}"]
         found: list[str] = []
@@ -216,15 +247,19 @@ class _Service:
         endpoint, through the same adb build and with the emulator's ``HOME``.
 
         Raises:
+            AndroidWorldSetupError: Spectragent's PATH has no ffmpeg.
             AndroidWorldError: It exited first; the message ends with its log.
             TimeoutError: It was not healthy in time.
         """
+        ffmpeg = installation.ffmpeg()
         port = free_port()
         group = await ProcessGroup.open()
         workdir: Path | None = None
         try:
             workdir = Path(tempfile.mkdtemp(prefix="spectragent-androidworld-"))
             (workdir / "tmp").mkdir()
+            (workdir / "bin").mkdir()
+            (workdir / "bin" / "ffmpeg").symlink_to(ffmpeg)
             process = await group.spawn(
                 [
                     str(installation.python),
@@ -250,7 +285,8 @@ class _Service:
                 ],
                 env={
                     # Nothing else: android_env logs its whole environment at INFO.
-                    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                    # bin/ holds the link to the host's ffmpeg and nothing else.
+                    "PATH": f"{workdir / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
                     "LANG": "en_US.UTF-8",
                     "HOME": emulator.home,
                     "TMPDIR": str(workdir / "tmp"),
@@ -390,7 +426,8 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
                 "Python 3.11), its checkout at the commit the launcher is written against "
                 "(src/), and the accessibility forwarder its one-time setup cached "
                 f"(cache/a11y/{FORWARDER_APK}). The AVD the provider boots must be the one that "
-                "setup prepared."
+                "setup prepared, and ffmpeg must be on Spectragent's PATH, as AndroidWorld's "
+                "README installs it: its music tasks make their mp3 files with it."
             )
         ),
     ]

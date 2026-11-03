@@ -120,7 +120,7 @@ def test_an_unknown_task_has_no_step_budget(tmp_path: Path) -> None:
 
 
 def test_information_retrieval_tasks_are_kept_and_the_oracle_accepts_them(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Scored on the run's answer, which the scoring point hands the oracle (§4.2)."""
     asking = _record("SimpleCalendarLocationOfEvent", "information_retrieval")
@@ -132,7 +132,8 @@ def test_information_retrieval_tasks_are_kept_and_the_oracle_accepts_them(
     assert loader[task_id].tags == ["information_retrieval"]
     oracle_task = loader.get_task_context(task_id).env["oracle_task"]
     assert oracle_task == asking
-    AndroidWorldOracle(root=str(fake_installation(tmp_path / "aw"))).check_setup(oracle_task)
+    installation = fake_installation(tmp_path / "aw", monkeypatch)
+    AndroidWorldOracle(root=str(installation)).check_setup(oracle_task)
 
 
 def test_tasks_the_service_cannot_build_again_are_left_out_with_the_oracles_reason(
@@ -201,9 +202,11 @@ def test_the_subset_picks_the_split_file(tmp_path: Path) -> None:
     assert loader.task_ids() == ["click-button/42/0"]
 
 
-def test_the_oracle_accepts_the_task_the_loader_hands_over(tmp_path: Path) -> None:
+def test_the_oracle_accepts_the_task_the_loader_hands_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     loader = _loader(tmp_path, _record())
-    oracle = AndroidWorldOracle(root=str(fake_installation(tmp_path / "aw")))
+    oracle = AndroidWorldOracle(root=str(fake_installation(tmp_path / "aw", monkeypatch)))
 
     oracle.check_setup(loader.get_task_context("SystemBrightnessMax/42/0").env["oracle_task"])
 

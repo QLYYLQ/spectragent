@@ -2,9 +2,10 @@
 
 :func:`fake_installation` lays out an AndroidWorld installation the
 ``androidworld`` oracle accepts: ``src`` is a checkout at the pinned commit, the
-forwarder APK is a placeholder, and ``.venv/bin/python`` is a script that runs
+forwarder APK is a placeholder, ``.venv/bin/python`` is a script that runs
 this file under Spectragent's interpreter with the arguments the oracle gives
-the launcher. So a test drives the oracle's real spawn: its argv, its
+the launcher, and a stand-in for ffmpeg goes first on the test's PATH. So a
+test drives the oracle's real spawn: its argv, its
 whitelisted environment, its process group.
 
 Run as a program, this file is the service: it answers the endpoints the oracle
@@ -42,6 +43,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlsplit
 
 if TYPE_CHECKING:  # run as a program, this file imports only the standard library
+    import pytest
     from pydantic import JsonValue
 
 #: What each endpoint answers when the behaviour file says nothing about it.
@@ -57,8 +59,14 @@ DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
 }
 
 
-def fake_installation(root: Path, behaviour: dict[str, JsonValue] | None = None) -> Path:
-    """An AndroidWorld installation at *root* whose service is this file, behaving as *behaviour* says."""
+def fake_installation(
+    root: Path, monkeypatch: pytest.MonkeyPatch, behaviour: dict[str, JsonValue] | None = None
+) -> Path:
+    """An AndroidWorld installation at *root* whose service is this file, behaving as *behaviour* says.
+
+    A stand-in for ffmpeg goes in ``<root>/host-bin``, first on this process's
+    PATH until the test ends.
+    """
     from spectragent.core.capabilities.android.oracle.androidworld import (
         FORWARDER_APK,
         PINNED_COMMIT,
@@ -70,6 +78,11 @@ def fake_installation(root: Path, behaviour: dict[str, JsonValue] | None = None)
         f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(__file__)} "$@"\n'
     )
     python.chmod(python.stat().st_mode | stat.S_IXUSR)
+    host_bin = root / "host-bin"
+    host_bin.mkdir()
+    (host_bin / "ffmpeg").write_text("#!/bin/sh\n")
+    (host_bin / "ffmpeg").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{host_bin}{os.pathsep}{os.environ.get('PATH', '')}")
     server = root / "src" / "server"
     server.mkdir(parents=True)
     (server / "android_server.py").write_text("")
