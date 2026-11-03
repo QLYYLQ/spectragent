@@ -28,10 +28,10 @@ from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
-from spectragent.core.capabilities.android.oracle.androidworld import AndroidWorldOracle
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from tests._helpers.android_runs import (
     androidworld_capability,
+    androidworld_setup,
     installation_problem,
     write_task_list,
 )
@@ -84,14 +84,13 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
     data = tmp_path_factory.mktemp("androidworld")
     write_task_list(data, TASK)
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(f"{TASK}/42/0")
-    capability = androidworld_capability()
-    oracle = capability.task_oracle
-    assert isinstance(oracle, AndroidWorldOracle)
+    capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env)
+    env.check_setup(context.env, setups=[setup])
+    env.bind_setups([setup])
     await env.setup(context.env)
     try:
-        service, session = oracle._service, capability._session
+        service, session = setup._service, capability._session
         assert service is not None and session is not None
         granted = [
             line.split("serve.py: ", 1)[1]

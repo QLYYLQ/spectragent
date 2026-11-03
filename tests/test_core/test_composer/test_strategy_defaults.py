@@ -55,10 +55,7 @@ OMITTABLE: dict[tuple[str, str], dict[str, Block]] = {
         "network_source": {"source_id": "live"},
     },
     ("network_source", "archive"): {"miss_policy": {"miss_policy_id": "strict"}},
-    ("capability", "android"): {
-        "task_oracle": {"oracle_id": "none"},
-        "ui_tree_source": {"source_id": "accessibility_service"},
-    },
+    ("capability", "android"): {"ui_tree_source": {"source_id": "accessibility_service"}},
     ("agent_loop", "branch"): {"restorer": {"restorer_id": "prefix_replay"}},
 }
 
@@ -216,8 +213,8 @@ def test_a_strategy_that_chooses_behaviour_stays_required(catalog: Configuration
         (_archive({"miss_policy": {"miss_policy_id": "lenient"}}), "literal_error"),
         (_archive({"miss_policy": {"miss_policyid": "strict"}}), "extra_forbidden"),
         (_archive({"miss_policy": None}), "model_type"),
-        (_android({"task_oracle": {"oracle_id": "android_world"}}), "union_tag_invalid"),
-        (_android({"task_oracle": None}), "model_attributes_type"),
+        (_android({"ui_tree_source": {"source_id": "uiautomator"}}), "literal_error"),
+        (_android({"ui_tree_source": None}), "model_type"),
     ],
     ids=[
         "unknown-strategy",
@@ -228,8 +225,8 @@ def test_a_strategy_that_chooses_behaviour_stays_required(catalog: Configuration
         "one-strategy-unknown-strategy",
         "one-strategy-misspelled-discriminator",
         "one-strategy-null",
-        "android-unknown-strategy",
-        "android-null",
+        "android-one-strategy-unknown-strategy",
+        "android-one-strategy-null",
     ],
 )
 def test_a_written_block_is_still_checked(raw: Block, error: str) -> None:

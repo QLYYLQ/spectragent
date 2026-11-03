@@ -38,10 +38,10 @@ from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityNodeInfo
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
-from spectragent.core.capabilities.android.oracle.androidworld import AndroidWorldOracle
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from tests._helpers.android_runs import (
     androidworld_capability,
+    androidworld_setup,
     installation_problem,
     write_task_list,
 )
@@ -102,16 +102,15 @@ async def test_a_miniwob_task_initializes_on_a_fresh_boot_and_its_episode_runs(
     data = tmp_path / "data"
     write_task_list(data, task, family="miniwob")
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(f"{task}/42/0")
-    capability = androidworld_capability()
-    oracle = capability.task_oracle
-    assert isinstance(oracle, AndroidWorldOracle)
+    capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env)
+    env.check_setup(context.env, setups=[setup])
+    env.bind_setups([setup])
     started = time.monotonic()
     await env.setup(context.env)
     try:
         setup_s = time.monotonic() - started
-        service = oracle._service
+        service = setup._service
         assert service is not None
         log = service.log.read_text(errors="replace")
         goal = await capability.task_text_from_setup()

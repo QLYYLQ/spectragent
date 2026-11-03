@@ -23,6 +23,7 @@ from spectragent.schemas.restoration import RestorationEvidence, Retarget
 from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 if TYPE_CHECKING:
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.archive._registrar import ArchiverBase
 
 
@@ -388,6 +389,49 @@ class SetupCheck(Protocol):
 
         Reads configuration and its arguments only: no backend, no connection,
         no state written.
+        """
+        ...
+
+
+@runtime_checkable
+class SetupHost(Protocol):
+    """Optional: this capability hosts a benchmark's setup component.
+
+    A benchmark's own setup of each task (AndroidWorld's initialize) is a
+    component written under the benchmark that names the capability hosting
+    it (``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载").
+    ``AgentRuntime.prepare()`` routes it here through the environment: this
+    capability's :meth:`check_setup` gets it with the archivers about to be
+    bound, and :meth:`bind_setup` is called as the last step, as archivers are
+    bound. From the next setup on, the capability gives the component access to
+    its device or environment, lets it start the task, asks it first at
+    teardown, and answers ``TaskTextFromSetup`` and ``EpisodeEnd`` through it.
+    What the device must offer beyond its plain form comes from the component,
+    never from a provider setting. Not part of :class:`BaseCapability`;
+    ``CapabilityBase`` gives no default.
+    """
+
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+        setup: BenchmarkSetup | None = None,
+    ) -> None:
+        """``SetupCheck.check_setup``, with the setup component about to be bound (``None``: none).
+
+        Refuses, among the rest, a component this capability cannot host and a
+        task the component would refuse. Reads configuration and its
+        arguments only.
+        """
+        ...
+
+    def bind_setup(self, setup: BenchmarkSetup | None) -> None:
+        """Host *setup* from the next setup on (``None``: host none). Acquires nothing.
+
+        Raises:
+            TypeError: *setup* is no component this capability can host.
         """
         ...
 

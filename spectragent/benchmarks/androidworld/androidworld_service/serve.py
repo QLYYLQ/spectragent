@@ -1,11 +1,11 @@
 # pyright: reportMissingImports=false, reportMissingModuleSource=false
-"""Run AndroidWorld's own task service against one run's emulator, for the ``androidworld`` oracle.
+"""Run AndroidWorld's own task service against one run's emulator, for the ``androidworld`` setup.
 
 This file runs under AndroidWorld's interpreter (its own venv, Python 3.11),
 never Spectragent's, and imports ``android_world``. So it is not a module of
 Spectragent: its directory has no ``__init__.py``, discovery never walks it, and
-nothing imports it; the oracle runs it as a program
-(``spectragent/core/capabilities/android/oracle/androidworld.py``,
+nothing imports it; the ``androidworld`` setup component runs it as a program
+(``spectragent/benchmarks/androidworld/service.py``,
 ``docs/architecture_design.md`` §11.2).
 
 It starts the official FastAPI app (``src/server/android_server.py`` of the
@@ -55,10 +55,10 @@ it was cloned:
 It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
 (``miniwob_base.is_episode_terminated``); ``GET /task/episode_over`` answers
-that question for the oracle, which asks after each of the agent's steps
-(:func:`reward_ends_episode`).
+that question for the setup component, which asks after each of the agent's
+steps (:func:`reward_ends_episode`).
 
-The oracle starts it with a whitelisted environment: android_env logs its
+The setup component starts it with a whitelisted environment: android_env logs its
 whole environment when its log level is INFO, which this file never sets.
 """
 

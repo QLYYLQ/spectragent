@@ -2,7 +2,7 @@
 """Write an AndroidWorld task list for Spectragent's ``androidworld`` task loader.
 
 Runs offline (no device) under AndroidWorld's own interpreter, against the
-checkout the oracle pins; like ``serve.py`` beside it, it is not a module of
+checkout the ``androidworld`` setup pins; like ``serve.py`` beside it, it is not a module of
 Spectragent::
 
     <root>/.venv/bin/python -I task_list.py --src <root>/src --out <data dir> \\
@@ -11,7 +11,7 @@ Spectragent::
 It makes the suite AndroidWorld's own runner makes (``create_suite``: each
 task's instances, their seeds derived from the suite seed, the task and the
 index) and writes ``<data dir>/<split>.json``, format
-``androidworld-tasks-2`` (``spectragent/core/capabilities/android/oracle/androidworld_tasks.py``),
+``androidworld-tasks-2`` (``spectragent/benchmarks/androidworld/tasks.py``),
 then names the split in ``<data dir>/data_info.json``. Point the loader's
 ``data_dir`` there, or write it to
 ``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``.

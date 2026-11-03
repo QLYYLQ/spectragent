@@ -4,9 +4,9 @@ Opt-in, like ``test_androidworld_live.py`` (marker ``requires_android_emulator``
 the same ``SPECTRAGENT_TEST_AVD``, ``SPECTRAGENT_TEST_ANDROIDWORLD`` and
 ``SPECTRAGENT_TEST_SERVICE_APK``). Each test is one run through
 ``AgentRuntime.execute`` on a task ``task_list.py`` lists under AndroidWorld's
-interpreter: the Android capability, composed from YAML with ``task_oracle:
-androidworld``, boots its own read-only emulator, and AndroidWorld's service
-prepares the task. The goal the device holds after initialize completes the
+interpreter: the Android capability, composed from YAML and hosting the
+``androidworld`` benchmark's setup component, boots its own read-only
+emulator, and AndroidWorld's service prepares the task. The goal the device holds after initialize completes the
 run's task text (``docs/architecture_design.md`` §4.10, §11.2):
 
 - ``click-button`` (MiniWoB++): the page makes its instruction at initialize.
@@ -39,11 +39,9 @@ from spectragent.agents.m3a import M3AAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.memory.sliding_window import SlidingWindowMemory
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.benchmarks.androidworld.service import AndroidWorldError
+from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.capabilities.android.oracle.androidworld import (
-    AndroidWorldError,
-    AndroidWorldOracle,
-)
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import BaseMessage
@@ -56,6 +54,7 @@ from tests._helpers.android_runs import (
     M3A_GOAL_LINE,
     MINIWOB_GUIDELINE,
     ScriptedModel,
+    androidworld_benchmark,
     androidworld_capability,
     installation,
     installation_problem,
@@ -162,13 +161,13 @@ class EpisodeTimes:
     probed: bool = False
 
 
-def _timed(oracle: AndroidWorldOracle, times: EpisodeTimes, acted: list[float]) -> None:
-    """Time the oracle's episode question; after the first no, probe until the page stores its reward.
+def _timed(setup: AndroidWorldSetup, times: EpisodeTimes, acted: list[float]) -> None:
+    """Time the setup's episode question; after the first no, probe until the page stores its reward.
 
     The Loop still gets each first answer, so the run goes as it would. The
     probe asks for up to 10 s after the action and stops at its first error.
     """
-    real = oracle.episode_over
+    real = setup.episode_over
 
     async def episode_over() -> bool:
         asked = time.monotonic()
@@ -187,7 +186,7 @@ def _timed(oracle: AndroidWorldOracle, times: EpisodeTimes, acted: list[float]) 
                     break
         return over
 
-    oracle.episode_over = episode_over  # type: ignore[method-assign]
+    setup.episode_over = episode_over  # type: ignore[method-assign]
 
 
 @dataclass(frozen=True)
@@ -202,11 +201,9 @@ async def _run_click_button(data: Path, traces: Path) -> Ran:
     task_id = "click-button/42/0"
     loader = AndroidWorldTaskLoader(data_dir=str(data))
     context = loader.get_task_context(task_id)
-    capability = androidworld_capability()
-    oracle = capability.task_oracle
-    assert isinstance(oracle, AndroidWorldOracle)
+    capability, benchmark = androidworld_capability(), androidworld_benchmark(loader)
     times, acted = EpisodeTimes(), [time.monotonic()]
-    _timed(oracle, times, acted)
+    _timed(benchmark.setup, times, acted)
     execute_action = capability.execute_action
 
     async def act_and_note(action: Action) -> ActionResult:
@@ -231,6 +228,7 @@ async def _run_click_button(data: Path, traces: Path) -> Ran:
         llm=model,
         memory=SlidingWindowMemory(window_size=1),
         hooks=[writer],
+        benchmark=benchmark,
     )
     result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
         loader[task_id].task_text,
@@ -308,6 +306,7 @@ async def test_a_goal_whose_date_initialize_rewords_is_the_runs_text(tmp_path: P
         llm=model,
         memory=SimpleMemory(),
         hooks=[writer],
+        benchmark=androidworld_benchmark(loader),
     )
     result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
         listed.task_text,

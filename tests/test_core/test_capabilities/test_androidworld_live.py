@@ -9,14 +9,14 @@ its cached forwarder; ``docs/architecture_design.md`` §11.2), and
 
 - ``task_list.py`` writes the task list for ``SystemBrightnessMax`` under
   AndroidWorld's interpreter, and the ``androidworld`` loader reads it;
-- the capability, composed from YAML with ``task_oracle: androidworld``, boots
-  the device with what the oracle needs and starts the service, which
-  prepares the task;
+- the capability, composed from YAML and hosting the ``androidworld`` setup
+  component, boots the device with what the component needs and starts the
+  service, which prepares the task;
 - the touch and pointer overlays are off, so screenshots do not carry them;
 - our accessibility service is bound beside AndroidWorld's forwarder, which
   AndroidWorld's service wrote over the setting when it started;
 - the unsolved task scores 0 and, once the brightness is set over adb, 1, with
-  the oracle's version in the verdict's identity and the task in its evidence;
+  the pinned commit in the verdict's identity and the task in its evidence;
 - teardown leaves no service, emulator or adb server, and nothing listens on
   adb's default port 5037 that did not before.
 """
@@ -30,20 +30,19 @@ from dataclasses import dataclass
 import pytest
 import pytest_asyncio
 
+from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.capabilities.android.oracle.androidworld import (
-    PINNED_COMMIT,
-    AndroidWorldOracle,
-)
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.schemas.verdict import Verdict
 from tests._helpers.android_runs import (
     FORWARDER,
     androidworld_capability,
+    androidworld_setup,
     installation_problem,
     write_task_list,
 )
@@ -71,7 +70,7 @@ class Prepared:
 
     env: AndroidEnvironment
     capability: AndroidCapability
-    oracle: AndroidWorldOracle
+    setup: AndroidWorldSetup
     session: AndroidProviderSession
     service: dict[str, int]
     emulator_group: int
@@ -85,14 +84,13 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
     data = tmp_path_factory.mktemp("androidworld")
     write_task_list(data, TASK)
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(TASK_ID)
-    capability = androidworld_capability()
-    oracle = capability.task_oracle
-    assert isinstance(oracle, AndroidWorldOracle)
+    capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env)
+    env.check_setup(context.env, setups=[setup])
+    env.bind_setups([setup])
     await env.setup(context.env)
     try:
-        session, service, provider = capability._session, oracle._service, capability.backend
+        session, service, provider = capability._session, setup._service, capability.backend
         assert session is not None and service is not None
         assert isinstance(provider, LocalEmulatorProvider)
         run = provider._runs[session.session_id]  # what the run owns, for the last test
@@ -100,7 +98,7 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
         yield Prepared(
             env=env,
             capability=capability,
-            oracle=oracle,
+            setup=setup,
             session=session,
             service={"pid": service.process.pid, "group": service.group.id},
             emulator_group=run.emulator_group.id,

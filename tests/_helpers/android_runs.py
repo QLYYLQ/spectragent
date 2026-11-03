@@ -13,11 +13,14 @@ cached forwarder, and ffmpeg on PATH;
 ``docs/architecture_design.md`` §11.2); and
 :data:`APK_VARIABLE`, the device-side APK. :func:`installation_problem` says
 why a module skips, :func:`write_task_list` writes a task list under
-AndroidWorld's interpreter, and :func:`androidworld_capability` composes the
+AndroidWorld's interpreter, :func:`androidworld_capability` composes the
 Android capability from one YAML block, so a receptor the capability starts
-to require is written here once. It types with ``key_events`` and
+to require is written here once (it types with ``key_events`` and
 ``fold_accents``, as AndroidWorld and MiniWoB++ runs do, for parity with
-AndroidWorld's own typing.
+AndroidWorld's own typing), and :func:`androidworld_setup` builds the
+benchmark's setup component for that installation, which a module routes to
+the capability as ``prepare()`` does (``check_setup`` with it, then
+``bind_setups``).
 """
 
 from __future__ import annotations
@@ -30,9 +33,12 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from spectragent import PACKAGE_ROOT
+from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
+from spectragent.benchmarks.androidworld.service import Installation
+from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.core.capabilities.android.capability import AndroidCapability
-from spectragent.core.capabilities.android.oracle.androidworld import Installation
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.llm.messages import BaseMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 
@@ -40,9 +46,7 @@ from spectragent.core.llm.views import ChatInvokeCompletion
 ANDROIDWORLD_VARIABLE = "SPECTRAGENT_TEST_ANDROIDWORLD"
 #: The device-side APK the capability installs.
 APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
-TASK_LIST_WRITER = (
-    PACKAGE_ROOT / "core/capabilities/android/oracle/androidworld_service/task_list.py"
-)
+TASK_LIST_WRITER = PACKAGE_ROOT / "benchmarks/androidworld/androidworld_service/task_list.py"
 #: AndroidWorld's runner adds it to M3A's prompt for its MiniWoB tasks (``run.py``).
 MINIWOB_GUIDELINE = (
     "This task is running in a mock app, you must stay in this app and DO NOT use the "
@@ -115,8 +119,25 @@ def write_task_list(out: Path, task: str, *, family: str = "android_world") -> N
     )
 
 
+def androidworld_setup() -> AndroidWorldSetup:
+    """The ``androidworld`` setup component for the installation :data:`ANDROIDWORLD_VARIABLE` names."""
+    return AndroidWorldSetup(root=str(installation().root))
+
+
+def androidworld_benchmark(loader: AndroidWorldTaskLoader) -> AndroidWorldBenchmark:
+    """The ``androidworld`` benchmark of *loader*'s tasks, with :func:`androidworld_setup` as its setup.
+
+    What ``make_run(benchmark=...)`` takes, so ``prepare()`` routes the setup
+    component to the Android capability as a composed run's would be.
+    """
+    benchmark = AndroidWorldBenchmark()
+    benchmark.task_loader = loader
+    benchmark.setup = androidworld_setup()
+    return benchmark
+
+
 def androidworld_capability() -> AndroidCapability:
-    """The Android capability on the test AVD with the ``androidworld`` oracle, composed as a run composes it."""
+    """The Android capability on the test AVD, composed as a run composes it; it hosts no setup yet."""
     raw: dict[str, JsonValue] = {
         "capability": [
             {
@@ -132,7 +153,6 @@ def androidworld_capability() -> AndroidCapability:
                 "typing_backend": {"typing_id": "key_events", "fold_accents": True},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
-                "task_oracle": {"oracle_id": "androidworld", "root": str(installation().root)},
             }
         ]
     }

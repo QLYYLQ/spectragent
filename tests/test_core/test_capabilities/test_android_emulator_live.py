@@ -235,7 +235,6 @@ async def booted() -> AsyncIterator[Booted]:
                 "typing_backend": {"typing_id": TYPING_BACKEND},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
-                "task_oracle": {"oracle_id": "none"},
             }
         ]
     }

@@ -2,7 +2,7 @@
 
 The list is what ``androidworld_service/task_list.py`` writes in AndroidWorld's
 own venv (``docs/architecture_design.md`` §11.2); its record is the Android
-task's ``oracle_task``, which the ``androidworld`` oracle accepts unchanged.
+task's ``oracle_task``, which the ``androidworld`` setup component accepts unchanged.
 """
 
 from __future__ import annotations
@@ -16,11 +16,9 @@ import pytest
 from pydantic import JsonValue
 
 from spectragent import PACKAGE_ROOT
-from spectragent.core.capabilities.android.oracle.androidworld import (
-    PINNED_COMMIT,
-    AndroidWorldOracle,
-)
-from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
+from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.benchmarks.androidworld.tasks import (
     TASK_LIST_FORMAT,
     UNREPRODUCIBLE,
     instance_seed,
@@ -32,9 +30,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.schemas.task import TaskContext
 from tests._helpers.fake_androidworld import fake_installation
 
-TASK_LIST_WRITER = (
-    PACKAGE_ROOT / "core/capabilities/android/oracle/androidworld_service/task_list.py"
-)
+TASK_LIST_WRITER = PACKAGE_ROOT / "benchmarks/androidworld/androidworld_service/task_list.py"
 
 
 def _record(
@@ -119,10 +115,10 @@ def test_an_unknown_task_has_no_step_budget(tmp_path: Path) -> None:
     assert _loader(tmp_path, _record()).get_task_context("NoSuchTask/42/0") == TaskContext()
 
 
-def test_information_retrieval_tasks_are_kept_and_the_oracle_accepts_them(
+def test_information_retrieval_tasks_are_kept_and_the_setup_accepts_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Scored on the run's answer, which the scoring point hands the oracle (§4.2)."""
+    """Scored on the run's answer, which the scoring point hands over (§4.2)."""
     asking = _record("SimpleCalendarLocationOfEvent", "information_retrieval")
     loader = _loader(tmp_path, _record(), asking)
 
@@ -133,10 +129,10 @@ def test_information_retrieval_tasks_are_kept_and_the_oracle_accepts_them(
     oracle_task = loader.get_task_context(task_id).env["oracle_task"]
     assert oracle_task == asking
     installation = fake_installation(tmp_path / "aw", monkeypatch)
-    AndroidWorldOracle(root=str(installation)).check_setup(oracle_task)
+    AndroidWorldSetup(root=str(installation)).check_setup(oracle_task)
 
 
-def test_tasks_the_service_cannot_build_again_are_left_out_with_the_oracles_reason(
+def test_tasks_the_service_cannot_build_again_are_left_out_with_the_setups_reason(
     tmp_path: Path,
 ) -> None:
     loader = _loader(tmp_path, _record(), _record("MarkorCreateFolder"))
@@ -202,13 +198,13 @@ def test_the_subset_picks_the_split_file(tmp_path: Path) -> None:
     assert loader.task_ids() == ["click-button/42/0"]
 
 
-def test_the_oracle_accepts_the_task_the_loader_hands_over(
+def test_the_setup_accepts_the_task_the_loader_hands_over(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     loader = _loader(tmp_path, _record())
-    oracle = AndroidWorldOracle(root=str(fake_installation(tmp_path / "aw", monkeypatch)))
+    setup = AndroidWorldSetup(root=str(fake_installation(tmp_path / "aw", monkeypatch)))
 
-    oracle.check_setup(loader.get_task_context("SystemBrightnessMax/42/0").env["oracle_task"])
+    setup.check_setup(loader.get_task_context("SystemBrightnessMax/42/0").env["oracle_task"])
 
 
 def test_the_writer_and_the_reader_name_one_format() -> None:
@@ -217,7 +213,7 @@ def test_the_writer_and_the_reader_name_one_format() -> None:
 
 def test_reading_a_list_imports_no_android_implementation(tmp_path: Path) -> None:
     """Every run imports this loader with the framework; a run that names no Android must not
-    pay for the capability, its bridge or the oracle that starts processes (§4.2.1)."""
+    pay for the capability, its bridge or the setup component that starts processes (§4.2.1)."""
     data = _data_dir(tmp_path, {"format": TASK_LIST_FORMAT, "tasks": [_record()]})
     probe = (
         "import json, sys\n"
@@ -232,6 +228,9 @@ def test_reading_a_list_imports_no_android_implementation(tmp_path: Path) -> Non
             ).stdout
         )
     )
-    android = "spectragent.core.capabilities.android"
-    assert f"{android}.oracle.androidworld_tasks" in loaded, "the probe read a list"
-    assert not {f"{android}.capability", f"{android}.oracle.androidworld"} & loaded
+    android, benchmark = (
+        "spectragent.core.capabilities.android",
+        "spectragent.benchmarks.androidworld",
+    )
+    assert f"{benchmark}.tasks" in loaded, "the probe read a list"
+    assert not {f"{android}.capability", f"{benchmark}.setup", f"{benchmark}.service"} & loaded

@@ -1,11 +1,13 @@
-"""The Android task oracle: ``none``, and ``androidworld`` against a fake AndroidWorld service.
+"""The ``androidworld`` setup component against a fake AndroidWorld service.
 
-``tests/_helpers/fake_androidworld.py`` is started exactly as the oracle starts
+``tests/_helpers/fake_androidworld.py`` is started exactly as the setup starts
 the real service (through the installation's interpreter, with the launcher's
 arguments, a whitelisted environment and a process group of its own), so these
-cover the oracle's lifecycle, its error mapping, cancellation and that the
-service's whole process group is gone on every path. The real service runs in
-``test_androidworld_live.py``.
+cover the setup's lifecycle, its error mapping, cancellation and that the
+service's whole process group is gone on every path, and the score read from
+the same service, which the setup hands to the Android capability until
+AndroidWorld's live verifier reads it. The real service runs in
+``tests/test_core/test_capabilities/test_androidworld_live.py``.
 """
 
 from __future__ import annotations
@@ -22,6 +24,19 @@ from types import ModuleType
 import pytest
 from pydantic import JsonValue
 
+from spectragent.benchmarks.androidworld import service as androidworld
+from spectragent.benchmarks.androidworld.service import (
+    FORWARDER_APK,
+    LAUNCHER,
+    PINNED_COMMIT,
+    AndroidWorldError,
+    AndroidWorldSetupError,
+    checkout_commit,
+    goal_after_initialize,
+    params_digest,
+)
+from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.benchmarks.androidworld.tasks import AndroidWorldTask, instance_seed
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
     AndroidProviderSession,
@@ -30,23 +45,6 @@ from spectragent.core.capabilities.android.backends.base import (
     EmulatorGrpc,
 )
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.capabilities.android.oracle import androidworld
-from spectragent.core.capabilities.android.oracle.androidworld import (
-    FORWARDER_APK,
-    LAUNCHER,
-    PINNED_COMMIT,
-    AndroidWorldError,
-    AndroidWorldOracle,
-    AndroidWorldSetupError,
-    checkout_commit,
-    goal_after_initialize,
-    params_digest,
-)
-from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
-    AndroidWorldTask,
-    instance_seed,
-)
-from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
 from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 from tests._helpers.android_device import unset_capability
 from tests._helpers.assembly import make_env
@@ -117,8 +115,8 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return fake_installation(tmp_path / "androidworld", monkeypatch)
 
 
-def _oracle(root: Path) -> AndroidWorldOracle:
-    return AndroidWorldOracle(root=str(root), start_timeout_s=20.0, call_timeout_s=5.0)
+def _setup(root: Path) -> AndroidWorldSetup:
+    return AndroidWorldSetup(root=str(root), start_timeout_s=20.0, call_timeout_s=5.0)
 
 
 def _calls(root: Path) -> list[tuple[str, str, dict[str, str]]]:
@@ -155,15 +153,17 @@ async def _service_is_gone(root: Path) -> bool:
 async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after(
     root: Path, tmp_path: Path
 ) -> None:
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
-    made = oracle.made_goal()
-    reading = await oracle.read_score(answer=None)
-    await oracle.stop()
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
+    made = setup.made_goal()
+    reading = await setup.read_score(answer=None)
+    await setup.stop()
 
     assert made is None, "the task's goal is the listed one"
     task = AndroidWorldTask.model_validate(_task())
-    assert oracle.identity() == VerifierIdentity(verifier_id="androidworld", version=PINNED_COMMIT)
+    assert setup.oracle_identity() == VerifierIdentity(
+        verifier_id="androidworld", version=PINNED_COMMIT
+    )
     assert reading == Judgment(
         score=1.0,
         evidence={
@@ -190,9 +190,9 @@ async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after
 async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_with_a_bare_environment(
     root: Path, tmp_path: Path
 ) -> None:
-    oracle = _oracle(root)
+    setup = _setup(root)
     device = _device(tmp_path)
-    await oracle.start(device, _task())
+    await setup.start(device, _task())
     try:
         started = service(root)
         argv, environment = started["argv"], started["env"]
@@ -200,7 +200,7 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
         workdir = Path(str(environment["TMPDIR"])).parent
         links = {link.name: os.readlink(link) for link in (workdir / "bin").iterdir()}
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert argv[:3] == ["-I", "-u", str(LAUNCHER)], "isolated, unbuffered, the launcher"
     pairs = dict(zip(argv[3::2], argv[4::2], strict=True))
@@ -228,7 +228,7 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
     assert not workdir.exists(), "its working directory is removed with it"
 
 
-#: What the shell and the interpreter add to the environment the oracle hands over.
+#: What the shell and the interpreter add to the environment the setup hands over.
 _PYTHON_ADDS = frozenset({"PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING", "OLDPWD"})
 
 
@@ -255,13 +255,13 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is
     root: Path, tmp_path: Path
 ) -> None:
     write_behaviour(root, {"/task/goal": {"json": {"goal": _MINIWOB_GOAL}}})
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _miniwob_task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _miniwob_task())
     try:
-        made = oracle.made_goal()
-        reading = await oracle.read_score(answer=None)
+        made = setup.made_goal()
+        reading = await setup.read_score(answer=None)
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     paths = [path for _, path, _ in _calls(root) if path != "/health"]
     assert paths[:4] == ["/suite/reinitialize", "/task/initialize", "/reset", "/task/goal"]
@@ -292,12 +292,12 @@ def _dated_task() -> dict[str, JsonValue]:
 
 
 def test_a_goal_made_or_rewritten_at_initialize_completes_the_task_text(root: Path) -> None:
-    oracle = _oracle(root)
-    assert oracle.makes_goal(_miniwob_task())
-    assert oracle.makes_goal(_dated_task())
-    assert not oracle.makes_goal(_task())
-    assert not oracle.makes_goal(_asking_task())
-    assert oracle.made_goal() is None, "nothing was made before a start"
+    setup = _setup(root)
+    assert setup.makes_goal(_miniwob_task())
+    assert setup.makes_goal(_dated_task())
+    assert not setup.makes_goal(_task())
+    assert not setup.makes_goal(_asking_task())
+    assert setup.made_goal() is None, "nothing was made before a start"
 
 
 async def test_a_goal_rewritten_at_initialize_is_checked_before_it_and_read_after_it(
@@ -307,12 +307,12 @@ async def test_a_goal_rewritten_at_initialize_is_checked_before_it_and_read_afte
     write_behaviour(
         root, {"/task/goal": {"json_in_turn": [{"goal": _DATED_BEFORE}, {"goal": _DATED_AFTER}]}}
     )
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _dated_task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _dated_task())
     try:
-        made = oracle.made_goal()
+        made = setup.made_goal()
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     paths = [path for _, path, _ in _calls(root) if path != "/health"]
     assert paths[:5] == [
@@ -369,17 +369,17 @@ async def test_an_empty_goal_fails_the_start_and_the_service_is_stopped(
     """A page that had shown no instruction when AndroidWorld read it leaves only the prefix."""
     empty = "Follow the instructions shown on the top of the screen: "
     write_behaviour(root, {"/task/goal": {"json": {"goal": empty}}})
-    oracle = _oracle(root)
+    setup = _setup(root)
 
     with pytest.raises(
         AndroidWorldError,
         match=r"click-button #0 \(suite seed 42\) the goal '.*: ', which says nothing after its "
         r"fixed part: the page had shown no instruction when AndroidWorld read it",
     ):
-        await oracle.start(_device(tmp_path), _miniwob_task())
-    await oracle.stop()  # what the capability's teardown does after a failed setup
+        await setup.start(_device(tmp_path), _miniwob_task())
+    await setup.stop()  # what the capability's teardown does after a failed setup
 
-    assert oracle.made_goal() is None
+    assert setup.made_goal() is None
     assert await _service_is_gone(root)
 
 
@@ -390,16 +390,16 @@ async def test_a_miniwob_episode_is_over_when_the_service_says_the_page_ended_it
     root: Path, tmp_path: Path
 ) -> None:
     write_behaviour(root, {"/task/goal": {"json": {"goal": _MINIWOB_GOAL}}})
-    oracle = _oracle(root)
-    assert not oracle.answers_episode_over(), "no task started yet"
-    await oracle.start(_device(tmp_path), _miniwob_task())
+    setup = _setup(root)
+    assert not setup.answers_episode_over(), "no task started yet"
+    await setup.start(_device(tmp_path), _miniwob_task())
     try:
-        answers = oracle.answers_episode_over()
-        before = await oracle.episode_over()
+        answers = setup.answers_episode_over()
+        before = await setup.episode_over()
         write_behaviour(root, {"/task/episode_over": {"json": {"over": True}}})
-        after = await oracle.episode_over()
+        after = await setup.episode_over()
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert answers, "the capability waits for a still screen, then asks"
     assert (before, after) == (False, True)
@@ -413,12 +413,12 @@ async def test_a_miniwob_episode_is_over_when_the_service_says_the_page_ended_it
 async def test_a_task_of_another_family_is_never_ended_by_its_page_and_nothing_is_asked(
     root: Path, tmp_path: Path
 ) -> None:
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
-        answers, over = oracle.answers_episode_over(), await oracle.episode_over()
+        answers, over = setup.answers_episode_over(), await setup.episode_over()
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert (answers, over) == (False, False), "the capability neither waits nor asks"
     assert "/task/episode_over" not in [path for _, path, _ in _calls(root)]
@@ -428,8 +428,8 @@ async def test_an_episode_question_the_service_cannot_answer_is_an_ordinary_erro
     root: Path, tmp_path: Path
 ) -> None:
     write_behaviour(root, {"/task/goal": {"json": {"goal": _MINIWOB_GOAL}}})
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _miniwob_task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _miniwob_task())
     try:
         for rule, message in [
             ({"status": 500}, r"GET /task/episode_over answered HTTP 500"),
@@ -438,20 +438,20 @@ async def test_an_episode_question_the_service_cannot_answer_is_an_ordinary_erro
         ]:
             write_behaviour(root, {"/task/episode_over": rule})
             with pytest.raises(AndroidWorldError, match=message):
-                await oracle.episode_over()
+                await setup.episode_over()
         write_behaviour(root, {"/task/episode_over": {"hang": True}})
-        oracle.call_timeout_s = 0.5  # only the question that never answers waits on it
+        setup.call_timeout_s = 0.5  # only the question that never answers waits on it
         with pytest.raises(TimeoutError, match=r"GET /task/episode_over: .* within 0.5 s"):
-            await oracle.episode_over()
+            await setup.episode_over()
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert await _service_is_gone(root)
 
 
 async def test_an_episode_question_before_any_task_is_an_ordinary_error(root: Path) -> None:
     with pytest.raises(AndroidWorldError, match="no AndroidWorld task was initialized"):
-        await _oracle(root).episode_over()
+        await _setup(root).episode_over()
 
 
 def _launcher() -> ModuleType:
@@ -864,15 +864,15 @@ async def test_a_service_that_builds_another_task_is_refused_and_stopped(
     root: Path, tmp_path: Path
 ) -> None:
     write_behaviour(root, {"/task/goal": {"json": {"goal": "Turn brightness to the min value."}}})
-    oracle = _oracle(root)
+    setup = _setup(root)
 
     with pytest.raises(
         AndroidWorldError,
         match="the task list records 'Turn brightness to the max value.': either its parameters "
         "cannot be rebuilt from its address, or the checkout or its dependencies differ",
     ):
-        await oracle.start(_device(tmp_path), _task())
-    await oracle.stop()  # what the capability's teardown does after a failed setup
+        await setup.start(_device(tmp_path), _task())
+    await setup.stop()  # what the capability's teardown does after a failed setup
 
     assert "/task/initialize" not in [path for _, path, _ in _calls(root)]
     assert await _service_is_gone(root)
@@ -886,12 +886,12 @@ async def _scored(
 ) -> Judgment:
     """Prepare *task*, score it handed *answer*, end it."""
     write_behaviour(root, {"/task/goal": {"json": {"goal": task["goal"]}}})
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), task)
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), task)
     try:
-        return await oracle.read_score(answer=answer)
+        return await setup.read_score(answer=answer)
     finally:
-        await oracle.stop()
+        await setup.stop()
 
 
 async def test_an_information_retrieval_task_hands_the_answer_over_before_the_score(
@@ -933,15 +933,15 @@ async def test_an_answer_the_service_refuses_is_an_ordinary_error_and_nothing_is
     root: Path, tmp_path: Path
 ) -> None:
     """A score read without the answer would not be this run's: "not scored", not a 0."""
-    oracle = _oracle(root)
+    setup = _setup(root)
     write_behaviour(root, {"/task/goal": {"json": {"goal": _ASKS_GOAL}}})
-    await oracle.start(_device(tmp_path), _asking_task())
+    await setup.start(_device(tmp_path), _asking_task())
     try:
         write_behaviour(root, {"/execute_action": {"status": 500}})
         with pytest.raises(AndroidWorldError, match="POST /execute_action answered HTTP 500"):
-            await oracle.read_score(answer="Mall")
+            await setup.read_score(answer="Mall")
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert "/task/score" not in [path for _, path, _ in _calls(root)]
     assert await _service_is_gone(root)
@@ -954,31 +954,31 @@ async def test_a_service_that_exits_while_starting_is_reported_with_its_log(
     root: Path, tmp_path: Path
 ) -> None:
     write_behaviour(root, {"exit_code": 3})
-    oracle = _oracle(root)
+    setup = _setup(root)
 
     with pytest.raises(AndroidWorldError, match=r"exited with code 3[\s\S]*giving up"):
-        await oracle.start(_device(tmp_path), _task())
+        await setup.start(_device(tmp_path), _task())
 
     assert await _service_is_gone(root)
 
 
 async def test_a_service_that_is_not_ready_in_time_is_stopped(root: Path, tmp_path: Path) -> None:
     write_behaviour(root, {"start_delay_s": 60})
-    oracle = AndroidWorldOracle(root=str(root), start_timeout_s=1.0)
+    setup = AndroidWorldSetup(root=str(root), start_timeout_s=1.0)
 
     with pytest.raises(TimeoutError, match="was not ready after 1 s"):
-        await oracle.start(_device(tmp_path), _task())
+        await setup.start(_device(tmp_path), _task())
 
     assert await _service_is_gone(root)
 
 
 async def test_a_call_that_preparing_the_task_needs_is_bounded(root: Path, tmp_path: Path) -> None:
     write_behaviour(root, {"/task/initialize": {"hang": True}})
-    oracle = AndroidWorldOracle(root=str(root), start_timeout_s=20.0, call_timeout_s=0.5)
+    setup = AndroidWorldSetup(root=str(root), start_timeout_s=20.0, call_timeout_s=0.5)
 
     with pytest.raises(TimeoutError, match="POST /task/initialize: .* no answer within 0.5 s"):
-        await oracle.start(_device(tmp_path), _task())
-    await oracle.stop()
+        await setup.start(_device(tmp_path), _task())
+    await setup.stop()
 
     assert await _service_is_gone(root)
 
@@ -995,14 +995,14 @@ async def test_a_call_that_preparing_the_task_needs_is_bounded(root: Path, tmp_p
 async def test_a_score_the_service_cannot_give_is_an_ordinary_error(
     root: Path, tmp_path: Path, rule: dict[str, JsonValue], message: str
 ) -> None:
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": rule})
         with pytest.raises(AndroidWorldError, match=message):
-            await oracle.read_score(answer=None)
+            await setup.read_score(answer=None)
     finally:
-        await oracle.stop()
+        await setup.stop()
     assert await _service_is_gone(root)
 
 
@@ -1011,28 +1011,28 @@ async def test_a_bool_score_is_0_or_1_as_androidworlds_runner_counts_it(
     root: Path, tmp_path: Path, answered: bool, score: float
 ) -> None:
     """RetroPlaylistDuration answers False for a wrongly named playlist: a failure, not "not scored"."""
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"json": {"score": answered}}})
-        reading = await oracle.read_score(answer=None)
+        reading = await setup.read_score(answer=None)
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert reading.score == score
 
 
 async def test_a_dead_service_is_an_ordinary_error_that_says_so(root: Path, tmp_path: Path) -> None:
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
-        assert oracle._service is not None
-        oracle._service.process.kill()  # the oracle's own child
-        await oracle._service.process.wait()
+        assert setup._service is not None
+        setup._service.process.kill()  # the setup's own child
+        await setup._service.process.wait()
         with pytest.raises(AndroidWorldError, match="could not be reached .*exited with code"):
-            await oracle.read_score(answer=None)
+            await setup.read_score(answer=None)
     finally:
-        await oracle.stop()
+        await setup.stop()
     assert await _service_is_gone(root)
 
 
@@ -1047,16 +1047,16 @@ async def test_a_server_error_ends_with_the_traceback_the_service_logs_after_ans
         '  File "miniwob_base.py", line 47, in _get_episode_utterance\n'
         f"{cause}\n"
     )
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(
             root, {"/task/score": {"status": 500, "log": traceback, "log_after_s": 0.5}}
         )
         with pytest.raises(AndroidWorldError, match="GET /task/score answered HTTP 500") as caught:
-            await oracle.read_score(answer=None)
+            await setup.read_score(answer=None)
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert str(caught.value).endswith(cause)
 
@@ -1091,13 +1091,13 @@ async def test_a_server_error_ends_with_the_handlers_traceback_not_one_logged_on
             }
         },
     )
-    oracle = _oracle(root)
+    setup = _setup(root)
 
     with pytest.raises(
         AndroidWorldError, match="POST /task/initialize answered HTTP 500"
     ) as caught:
-        await oracle.start(_device(tmp_path), _task())
-    await oracle.stop()
+        await setup.start(_device(tmp_path), _task())
+    await setup.stop()
 
     assert str(caught.value).endswith(cause)
 
@@ -1107,16 +1107,16 @@ async def test_a_server_error_whose_cause_is_never_logged_waits_only_its_limit(
 ) -> None:
     monkeypatch.setattr(androidworld, "_TRACEBACK_WAIT_S", 0.3)
     clock = asyncio.get_running_loop().time
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"status": 500, "log": ""}})
         started = clock()
         with pytest.raises(AndroidWorldError, match="GET /task/score answered HTTP 500"):
-            await oracle.read_score(answer=None)
+            await setup.read_score(answer=None)
         waited = clock() - started
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     assert 0.3 <= waited < 2.0
 
@@ -1125,10 +1125,10 @@ async def test_a_failed_tear_down_is_logged_and_the_service_is_still_stopped(
     root: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     write_behaviour(root, {"/task/tear_down": {"status": 500}})
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
 
-    await oracle.stop()
+    await setup.stop()
 
     assert "tear-down of SystemBrightnessMax #0 failed" in caplog.text
     assert await _service_is_gone(root)
@@ -1139,34 +1139,34 @@ async def test_a_service_that_ignores_sigterm_is_killed_with_its_group(
 ) -> None:
     monkeypatch.setattr(androidworld, "STOP_GRACE_S", 0.5)
     write_behaviour(root, {"ignore_sigterm": True})
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
 
-    await oracle.stop()
+    await setup.stop()
 
     assert await _service_is_gone(root)
 
 
 async def test_stop_is_safe_before_a_start_and_twice(root: Path, tmp_path: Path) -> None:
-    oracle = _oracle(root)
-    await oracle.stop()
-    await oracle.start(_device(tmp_path), _task())
-    await oracle.stop()
-    await oracle.stop()
+    setup = _setup(root)
+    await setup.stop()
+    await setup.start(_device(tmp_path), _task())
+    await setup.stop()
+    await setup.stop()
 
     assert [path for _, path, _ in _calls(root)].count("/task/tear_down") == 1
 
 
 async def test_a_score_before_any_task_is_an_ordinary_error(root: Path) -> None:
     with pytest.raises(AndroidWorldError, match="no AndroidWorld task was initialized"):
-        await _oracle(root).read_score(answer=None)
+        await _setup(root).read_score(answer=None)
 
 
 async def test_a_device_without_the_emulators_grpc_is_refused(root: Path, tmp_path: Path) -> None:
     device = _device(tmp_path).model_copy(update={"emulator": None})
 
     with pytest.raises(AndroidWorldError, match="drives an emulator over its gRPC endpoint"):
-        await _oracle(root).start(device, _task())
+        await _setup(root).start(device, _task())
     assert requests(root) == [], "no service was started"
 
 
@@ -1177,7 +1177,7 @@ async def test_a_start_cancelled_while_waiting_for_the_service_stops_it_before_e
     root: Path, tmp_path: Path
 ) -> None:
     write_behaviour(root, {"start_delay_s": 60})
-    starting = asyncio.ensure_future(_oracle(root).start(_device(tmp_path), _task()))
+    starting = asyncio.ensure_future(_setup(root).start(_device(tmp_path), _task()))
     assert await soon(lambda: (root / "record" / "service.json").is_file(), within_s=20)
 
     starting.cancel()
@@ -1188,44 +1188,44 @@ async def test_a_start_cancelled_while_waiting_for_the_service_stops_it_before_e
 
 
 async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path) -> None:
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"hang": True}})
-        scoring = asyncio.ensure_future(oracle.read_score(answer=None))
+        scoring = asyncio.ensure_future(setup.read_score(answer=None))
         assert await soon(lambda: "/task/score" in [p for _, p, _ in _calls(root)], within_s=20)
 
         scoring.cancel()
         with pytest.raises(asyncio.CancelledError):
             await scoring
     finally:
-        await oracle.stop()
+        await setup.stop()
     assert await _service_is_gone(root)
 
 
 # ── at the scoring point, through the environment ────────────────────
 
 
-async def _environment_verdicts(oracle: AndroidWorldOracle, timeout_s: float) -> list[Verdict]:
+async def _environment_verdicts(setup: AndroidWorldSetup, timeout_s: float) -> list[Verdict]:
     capability = unset_capability()
-    capability.task_oracle = oracle
     env = make_env(AndroidEnvironment, {"android": capability})
+    env.bind_setups([setup])
     return await env.verify_live(timeout_s=timeout_s, answer=None)
 
 
 async def test_the_environment_records_the_verdict_and_each_way_of_judging_nothing(
     root: Path, tmp_path: Path
 ) -> None:
-    oracle = _oracle(root)
-    await oracle.start(_device(tmp_path), _task())
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
     try:
-        (judged,) = await _environment_verdicts(oracle, timeout_s=5.0)
+        (judged,) = await _environment_verdicts(setup, timeout_s=5.0)
         write_behaviour(root, {"/task/score": {"status": 500}})
-        (failed,) = await _environment_verdicts(oracle, timeout_s=5.0)
+        (failed,) = await _environment_verdicts(setup, timeout_s=5.0)
         write_behaviour(root, {"/task/score": {"hang": True}})
-        (late,) = await _environment_verdicts(oracle, timeout_s=0.5)
+        (late,) = await _environment_verdicts(setup, timeout_s=0.5)
     finally:
-        await oracle.stop()
+        await setup.stop()
 
     who = VerifierIdentity(verifier_id="androidworld", version=PINNED_COMMIT)
     assert (judged.verifier, judged.attachment, judged.status, judged.score) == (
@@ -1240,7 +1240,7 @@ async def test_the_environment_records_the_verdict_and_each_way_of_judging_nothi
     assert await _service_is_gone(root)
 
 
-async def test_with_no_oracle_the_environment_records_nothing() -> None:
+async def test_with_no_setup_the_environment_records_nothing() -> None:
     env = make_env(AndroidEnvironment, {"android": unset_capability()})
     assert await env.verify_live(timeout_s=1.0, answer=None) == []
 
@@ -1248,19 +1248,19 @@ async def test_with_no_oracle_the_environment_records_nothing() -> None:
 # ── before anything starts: check_setup ──────────────────────────────
 
 
-def test_what_the_androidworld_oracle_needs_of_the_device() -> None:
-    assert AndroidWorldOracle(root="/aw").device_needs == DeviceNeeds(
+def test_what_the_androidworld_setup_needs_of_the_device() -> None:
+    assert AndroidWorldSetup(root="/aw").device_needs == DeviceNeeds(
         emulator_grpc=True, root=True, guest_wifi=True, fresh=True
     )
 
 
 def test_a_good_installation_and_task_pass(root: Path) -> None:
-    _oracle(root).check_setup(_task())
+    _setup(root).check_setup(_task())
 
 
 def test_an_information_retrieval_task_passes(root: Path) -> None:
     """Scored on the run's answer, which the scoring point hands over (§4.2)."""
-    _oracle(root).check_setup(_asking_task())
+    _setup(root).check_setup(_asking_task())
 
 
 @pytest.mark.parametrize(
@@ -1288,7 +1288,7 @@ def test_an_installation_the_service_cannot_start_from_is_refused(
         (root / "cache" / "a11y" / FORWARDER_APK).unlink()
 
     with pytest.raises(AndroidWorldSetupError, match=message):
-        _oracle(root).check_setup(_task())
+        _setup(root).check_setup(_task())
 
 
 async def test_a_path_without_ffmpeg_is_refused_before_the_service_starts(
@@ -1297,12 +1297,12 @@ async def test_a_path_without_ffmpeg_is_refused_before_the_service_starts(
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
-    oracle = _oracle(root)
+    setup = _setup(root)
 
     with pytest.raises(AndroidWorldSetupError) as refused:
-        oracle.check_setup(_task())
+        setup.check_setup(_task())
     with pytest.raises(AndroidWorldSetupError, match="there is no ffmpeg on PATH"):
-        await oracle.start(_device(tmp_path), _task())
+        await setup.start(_device(tmp_path), _task())
 
     assert (
         "there is no ffmpeg on PATH: AndroidWorld generates its music tasks' mp3 files with "
@@ -1324,18 +1324,18 @@ async def test_a_path_without_ffmpeg_is_refused_before_the_service_starts(
         ),
     ],
 )
-def test_a_task_the_oracle_cannot_start_is_refused(
+def test_a_task_the_setup_cannot_start_is_refused(
     root: Path, task: dict[str, JsonValue] | None, message: str
 ) -> None:
     with pytest.raises(AndroidWorldSetupError, match=message):
-        _oracle(root).check_setup(task)
+        _setup(root).check_setup(task)
 
 
 def test_every_problem_is_named_at_once(root: Path) -> None:
     (root / "cache" / "a11y" / FORWARDER_APK).unlink()
 
     with pytest.raises(AndroidWorldSetupError) as refused:
-        _oracle(root).check_setup(None)
+        _setup(root).check_setup(None)
     assert "forwarder" in str(refused.value) and "no AndroidWorld task" in str(refused.value)
 
 
@@ -1365,24 +1365,3 @@ def test_the_checkouts_commit_is_read_from_its_git_directory(tmp_path: Path, lay
 
 def test_a_checkout_without_git_has_no_commit(tmp_path: Path) -> None:
     assert checkout_commit(tmp_path) is None
-
-
-# ── none ─────────────────────────────────────────────────────────────
-
-
-async def test_none_needs_nothing_judges_nothing_and_refuses_a_benchmark_task(
-    tmp_path: Path,
-) -> None:
-    oracle = NoTaskOracle()
-    assert oracle.device_needs == DeviceNeeds()
-    oracle.check_setup(None)
-    assert not oracle.makes_goal(None)
-    await oracle.start(_device(tmp_path), None)
-    assert oracle.made_goal() is None
-    assert not oracle.answers_episode_over()
-    assert await oracle.episode_over() is False
-    assert oracle.identity() is None, "the environment never asks it to judge"
-    await oracle.stop()
-
-    with pytest.raises(ValueError, match="task_oracle is 'none': the task would run unprepared"):
-        oracle.check_setup(_task())

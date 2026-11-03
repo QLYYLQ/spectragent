@@ -3,8 +3,8 @@
 AgentRuntime is loop-agnostic: it handles slot validation,
 three-party observation negotiation, action negotiation + guarded_act,
 memory and archive negotiation, the environment's setup check, AOP hook
-weaving, loop weaving, binding the environment's archivers, timeout
-control, and error handling.
+weaving, loop weaving, binding the environment's archivers and the
+benchmark's setup component, timeout control, and error handling.
 
 ``prepare()`` assembles all dependencies and weaves the Loop into the
 agent instance — after which ``agent.run(task)`` is self-contained.
@@ -69,6 +69,7 @@ from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
 
 if TYPE_CHECKING:
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
     from spectragent.schemas.restoration import BranchProvenance
@@ -139,7 +140,8 @@ class AgentRuntime:
     5. Aggregate action space + build guarded_act
     6. Weave AOP hooks into agent/env/llm proxies
     7. Weave Loop execution logic into agent.run
-    8. Bind the environment's archivers (only when a hook archives)
+    8. Bind the environment's archivers (only when a hook archives) and the
+       benchmark's setup component (only when its benchmark has one)
     9. (execute only) Drive agent.run() with timeout + lifecycle hooks
 
     An AgentRuntime drives exactly **one** agent instance. Its loop, llm
@@ -397,6 +399,13 @@ class AgentRuntime:
         ``env.bind_archivers`` is the final statement. With no such hook
         the environment receives no archive call at all.
 
+        The run's benchmark setup component (its benchmark's ``setup``,
+        ``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载") goes
+        the same way: ``Environment.check_setup`` routes it to the capability
+        it names, whose own check asks it, and ``env.bind_setups`` binds it
+        with the archivers, last. A run whose benchmark has none makes no
+        binding call.
+
         Raises:
             IncompatibleError: The agent lacks a slot the Loop requires.
             IncompatibleLoopInputError: The loop inputs do not fit what the
@@ -420,8 +429,9 @@ class AgentRuntime:
                 an input platform the agent's prompt cannot render, or the
                 agent declares none (``negotiation.platform.check_input_platform``).
             ValueError: A setup context key no capability accepts (or any
-                key, in a run with no environment), or two capabilities whose
-                setups would each complete the task's text. Also UI-TARS's refusal,
+                key, in a run with no environment), a benchmark setup
+                component no capability here hosts, or two capabilities
+                whose setups would each complete the task's text. Also UI-TARS's refusal,
                 from its ``check_action_space`` (``ActionSpaceCheck``), of a
                 verb whose points differ from its action's; another agent's
                 check raises its own errors.
@@ -530,10 +540,14 @@ class AgentRuntime:
         # set up, bound or narrowed.
         self._prepared_setup = PreparedSetupContext({}, {})
         self._task_text_setter = None
+        setups = self._benchmark_setups()
         if env is not None:
             self._prepared_setup = env.prepare_setup_context(env_context)
             env.check_setup(
-                self._prepared_setup.execution, negotiation=negotiated_obs, archivers=archivers
+                self._prepared_setup.execution,
+                negotiation=negotiated_obs,
+                archivers=archivers,
+                setups=setups,
             )
             # Step 2.95: Whose setup completes this task's text, if any (a
             # MiniWoB++ page makes its instruction as the task starts). Known
@@ -545,6 +559,14 @@ class AgentRuntime:
             raise ValueError(
                 f"setup key(s) {sorted(env_context)} were given, but this run has no environment "
                 f"to set up."
+            )
+        elif setups:
+            raise ValueError(
+                "; ".join(
+                    f"the benchmark setup {setup.setup_id!r} is hosted by the "
+                    f"{setup.capability_id!r} capability, and this run has no environment"
+                    for setup in setups
+                )
             )
 
         # Step 3: AOP weaving (must happen before guarded_act so
@@ -690,8 +712,20 @@ class AgentRuntime:
         # without an environment — the check is for the type checker.)
         if negotiated_archive is not None and env is not None:
             env.bind_archivers(archivers)
+        # The benchmark's setup component, bound the same way and as late.
+        if setups and env is not None:
+            env.bind_setups(setups)
 
         return wrapped_agent
+
+    def _benchmark_setups(self) -> list[BenchmarkSetup]:
+        """The run's benchmark setup component, as a list: ``[]`` with no benchmark or none.
+
+        A run root holds at most one benchmark block (``--benchmark``).
+        """
+        benchmark = self._run.optional_single("benchmark")
+        setup = getattr(benchmark, "setup", None)
+        return [] if setup is None else [setup]
 
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).

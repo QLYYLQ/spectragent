@@ -261,7 +261,7 @@ def test_the_primary_verdict_is_the_first_listed_verifier_of_the_primary_kind() 
 
 
 def test_with_none_listed_the_primary_verdict_is_the_one_live_verdict_of_its_kind() -> None:
-    from spectragent.benchmarks.androidworld import AndroidWorldBenchmark
+    from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
 
     benchmark = AndroidWorldBenchmark()
     live = _judged("androidworld", attachment="live", score=1.0)
@@ -306,7 +306,7 @@ def test_androidworld_counts_the_score_only_when_the_agent_declared_done(
     family: str, agent_done: str, score: float, success: float
 ) -> None:
     """Its runner's ``task_successful if done else 0``; a MiniWoB++ page ends its own episode."""
-    from spectragent.benchmarks.androidworld import AndroidWorldBenchmark
+    from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
     from tests._helpers.trace_builder import agent_result
 
     verdict = _judged("androidworld", attachment="live", score=score, evidence={"family": family})

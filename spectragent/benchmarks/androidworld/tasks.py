@@ -1,4 +1,4 @@
-"""AndroidWorld's tasks, as a task list records them and as the ``androidworld`` oracle receives them.
+"""AndroidWorld's tasks, as a task list records them and as the ``androidworld`` setup receives them.
 
 A task is addressed as AndroidWorld's own suite addresses it: the family whose
 registry holds it, its task key, and its index in a suite made with a seed.
@@ -14,8 +14,8 @@ A task list is one JSON document, ``{"format": "androidworld-tasks-2",
 "tasks": [<task>, ...]}``, written offline in AndroidWorld's own venv by
 ``androidworld_service/task_list.py`` (``docs/architecture_design.md`` §11.2).
 The ``androidworld`` task loader reads it, and each task's record, unchanged,
-is the task's ``oracle_task``. Nothing here imports the oracle, so the loader
-reads a list without it.
+is the task's ``oracle_task``, which the ``androidworld`` setup component reads.
+Nothing here imports the setup component, so the loader reads a list without it.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ INFORMATION_RETRIEVAL = "information_retrieval"
 MINIWOB = "miniwob"
 #: Tasks of the pinned commit that the service cannot build again from their
 #: address, so it never builds the listed one: task key → why. The loader
-#: leaves them out and the oracle refuses them, both with these words.
+#: leaves them out and the setup component refuses them, both with these words.
 UNREPRODUCIBLE: Mapping[str, str] = MappingProxyType(
     {
         "MarkorCreateFolder": (
@@ -60,7 +60,7 @@ class AndroidWorldTask(BaseModel):
 
     Attributes:
         commit: The AndroidWorld commit the list was generated with; the
-            oracle refuses a task from any other commit than its own.
+            setup component refuses a task from any other commit than its own.
         family: The narrowest family whose registry holds the task:
             ``android``, ``information_retrieval`` or ``miniwob``.
         task: The task's key in that registry (its class name; a MiniWoB
@@ -81,8 +81,9 @@ class AndroidWorldTask(BaseModel):
             (information retrieval: "October 26 2023" becomes, say, "the
             Thursday after next"; drawn with the instance's seed, so the same
             each time). ``unchanged``: the goal is final before.
-            For the first two the oracle reads the goal after initialize, and
-            it is the run's task text (``docs/architecture_design.md`` §11.2).
+            For the first two the setup component reads the goal after
+            initialize, and it is the run's task text
+            (``docs/architecture_design.md`` §11.2).
         complexity: AndroidWorld's estimate; its own runner gives a task
             ``int(10 * complexity)`` steps (:attr:`step_budget`).
         start_on_home_screen: Whether the episode starts on the home screen

@@ -273,6 +273,7 @@ def _framework_axes() -> dict[str, type]:
     from spectragent.agents._registrar import AgentRegistrar
     from spectragent.agents.memory._registrar import MemoryRegistrar
     from spectragent.benchmarks._registrar import BenchmarkRegistrar
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetupRegistrar
     from spectragent.core.actions._registrar import ActionRegistrar
     from spectragent.core.archive._registrar import ArchiverRegistrar
     from spectragent.core.capabilities._registrar import CapabilityRegistrar
@@ -305,6 +306,7 @@ def _framework_axes() -> dict[str, type]:
         "step_selector": StepSelectorRegistrar,
         "task_loader": TaskLoaderRegistrar,
         "eval_loader": EvalLoaderRegistrar,
+        "benchmark_setup": BenchmarkSetupRegistrar,
         "benchmark": BenchmarkRegistrar,
         "verifier": VerifierRegistrar,
         "action_translator": ActionTranslatorRegistrar,

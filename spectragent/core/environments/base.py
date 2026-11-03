@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.archive._registrar import ArchiverBase
     from spectragent.core.archive.types import ArchiveBatch
     from spectragent.core.capabilities.base import PreparedSetupContext
@@ -340,24 +341,42 @@ class Environment(Protocol):
         *,
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
+        setups: Sequence[BenchmarkSetup] = (),
     ) -> None:
         """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
 
         ``AgentRuntime.prepare()`` calls it — before the trace is opened and
         before anything is launched, on a dry run too — with the task's setup
-        context, the observation negotiation result and the archivers it is
-        about to bind. The context is routed exactly as :meth:`setup` routes
-        it (a key no capability's ``setup()`` declares is refused), each
-        archiver goes to the capability its prefix names, and every
-        capability implementing ``SetupCheck``
+        context, the observation negotiation result, and the archivers and
+        benchmark setup components it is about to bind. The context is routed
+        exactly as :meth:`setup` routes it (a key no capability's ``setup()``
+        declares is refused), each archiver goes to the capability its prefix
+        names, each setup component to the capability it names, and every
+        capability implementing ``SetupCheck`` or ``SetupHost``
         (``core/capabilities/base.py``) checks its own slice.
 
         Raises:
-            ValueError: A colliding capability set, or a context key no
-                capability accepts.
+            ValueError: A colliding capability set, a context key no
+                capability accepts, or a setup component no capability here
+                hosts.
             UnroutableArchiverError: An archiver that cannot be bound here.
             Exception: A capability's own refusal, naming both parties
                 (browser: ``BrowserCooperationError``).
+        """
+        ...
+
+    def bind_setups(self, setups: Sequence[BenchmarkSetup]) -> None:
+        """Route each benchmark setup component to the capability it names, and bind.
+
+        Validates every component before binding any, as :meth:`bind_archivers`
+        does, then hands every hosting capability its component, ``None`` to
+        those that get none. Acquires no resource: ``AgentRuntime.prepare``
+        calls it as its last step, with the archivers, only when the run's
+        benchmark has a setup component.
+
+        Raises:
+            ValueError: A component whose capability is not here, does not
+                host setup components, or is named by two components.
         """
         ...
 

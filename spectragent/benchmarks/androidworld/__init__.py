@@ -1,5 +1,11 @@
-"""AndroidWorld: tasks on an emulated phone, scored on the device by its task oracle (§11.2)."""
+"""AndroidWorld: tasks on an emulated phone, prepared and scored by AndroidWorld's own service (§11.2).
 
-from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
-
-__all__ = ["AndroidWorldBenchmark"]
+The package holds the benchmark (``benchmark.py``), its setup component
+(``setup.py``), AndroidWorld's service and installation (``service.py``), the
+score read from it (``scoring.py``), its task list's model (``tasks.py``) and
+the programs that run under AndroidWorld's own interpreter
+(``androidworld_service/``, which is not a Python package: Spectragent never
+imports them). This file imports none of them, so the task loader reads a list
+through ``tasks.py`` without the setup component, its service or the Android
+capability; discovery imports the rest when a run names the benchmark.
+"""

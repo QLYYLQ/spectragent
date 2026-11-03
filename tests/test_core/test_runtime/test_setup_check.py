@@ -362,3 +362,98 @@ class TestArchiveConsumerMustBlock:
         )
         assert "an archive consumer must be blocking" in problem
         assert cap.bind_calls == 0 and woven == []
+
+
+# ── the benchmark's setup component ───────────────────────────────────
+
+
+@dataclass
+class _Setup:
+    """A benchmark setup component hosted by the contract's archiving capability."""
+
+    setup_id: str = "contract_setup"
+    capability_id: str = CAPABILITY_ID
+
+
+@dataclass
+class _Benchmark:
+    """The run's benchmark block, as far as ``prepare()`` reads it: its setup component."""
+
+    setup: _Setup | None
+
+
+class _HostingCap(_CheckingCap):
+    """A capability that hosts setup components (``SetupHost``), recording what it is handed."""
+
+    __abstract__ = True
+
+    @property
+    def hosted(self) -> list[tuple[str, Any]]:
+        return self.__dict__.setdefault("_hosted", [])
+
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[Any] = (),
+        setup: Any = None,
+    ) -> None:
+        self.hosted.append(("check", setup))
+        super().check_setup(context, negotiation=negotiation, archivers=archivers)
+
+    def bind_setup(self, setup: Any) -> None:
+        self.hosted.append(("bind", setup))
+
+
+def _benchmark_run(cap: FakeArchivingCapability | None, setup: _Setup | None) -> Any:
+    env = None if cap is None else _composite(cap)
+    return make_run(
+        agent=ContractArchiveAgent(),
+        loop=ReactLoop(max_steps=3),
+        env=env,
+        llm=ContractArchiveLLM(),
+        memory=ContractArchiveMemory(),
+        benchmark=_Benchmark(setup),
+    )
+
+
+class TestPrepareRoutesTheBenchmarksSetup:
+    def test_the_host_checks_it_and_it_is_bound_last(self) -> None:
+        cap, setup = _HostingCap(), _Setup()
+
+        AgentRuntime.for_agent(_benchmark_run(cap, setup), AGENT_ID).prepare()
+
+        assert cap.hosted == [("check", setup), ("bind", setup)]
+
+    def test_a_benchmark_without_one_binds_nothing(self) -> None:
+        cap = _HostingCap()
+
+        AgentRuntime.for_agent(_benchmark_run(cap, None), AGENT_ID).prepare()
+
+        assert cap.hosted == [("check", None)], "checked with none, and no binding call"
+
+    def test_a_refusing_host_binds_nothing(self) -> None:
+        cap, setup = _HostingCap(), _Setup()
+        cap.refuse(ValueError("not this task"))
+
+        with pytest.raises(ValueError, match="not this task"):
+            AgentRuntime.for_agent(_benchmark_run(cap, setup), AGENT_ID).prepare()
+
+        assert cap.hosted == [("check", setup)]
+
+    def test_a_capability_that_hosts_none_is_refused_by_name(self) -> None:
+        with pytest.raises(ValueError, match="hosts no setup component"):
+            AgentRuntime.for_agent(_benchmark_run(_CheckingCap(), _Setup()), AGENT_ID).prepare()
+
+    def test_a_run_without_an_environment_is_refused(self) -> None:
+        run = make_run(
+            agent=_TaskOnlyAgent(),
+            loop=_EnvlessLoop(max_steps=3),
+            env=None,
+            llm=ContractArchiveLLM(),
+            memory=ContractArchiveMemory(),
+            benchmark=_Benchmark(_Setup()),
+        )
+        with pytest.raises(ValueError, match="hosted by the 'contract_archive' capability, and "):
+            AgentRuntime.for_agent(run, AGENT_ID).prepare()

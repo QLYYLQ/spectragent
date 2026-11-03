@@ -11,7 +11,6 @@ from spectragent.core.capabilities.android.input._registrar import (
     AndroidTapInjectorRegistrar,
     AndroidTypingBackendRegistrar,
 )
-from spectragent.core.capabilities.android.oracle._registrar import AndroidTaskOracleRegistrar
 from spectragent.core.capabilities.android.task_setup import AndroidSetup
 from spectragent.core.capabilities.android.ui_tree._registrar import (
     AndroidUITreeCleanerRegistrar,
@@ -21,13 +20,12 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
 from spectragent.schemas.task import StartFlag
 
 #: The Android capability's internal strategy axes, layer name → registrar: the
-#: provider, the tap injector, the typing backend, the task oracle, and the UI
-#: tree's source, cleaner and serializer (§11.2).
+#: provider, the tap injector, the typing backend, and the UI tree's source,
+#: cleaner and serializer (§11.2).
 STRATEGY_AXES = {
     "android_provider": AndroidProviderRegistrar,
     "android_tap_injector": AndroidTapInjectorRegistrar,
     "android_typing_backend": AndroidTypingBackendRegistrar,
-    "android_task_oracle": AndroidTaskOracleRegistrar,
     "android_ui_tree_source": AndroidUITreeSourceRegistrar,
     "android_ui_tree_cleaner": AndroidUITreeCleanerRegistrar,
     "android_ui_tree_serializer": AndroidUITreeSerializerRegistrar,

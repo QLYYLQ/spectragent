@@ -19,12 +19,12 @@ class AndroidSetup(SetupBase):
     """An Android task's requirements of its device.
 
     The device boots from the AVD the provider's configuration names. A
-    benchmark task carries its data for the capability's task oracle in
+    benchmark task carries its data for its benchmark's setup component in
     ``oracle_task``: AndroidWorld's family, task key, index, suite seed and
     parameters, seed included (``docs/architecture_design.md`` §11.2, "任务裁判与
-    ``AndroidSetup``"). The capability passes it to its oracle unread, and the
-    oracle refuses data that is not its own; ``None`` is a task no oracle
-    prepares.
+    ``AndroidSetup``"). The capability passes it to the component it hosts
+    unread, and the component refuses data that is not its own; ``None`` is a
+    task no benchmark prepares.
     """
 
     __registry_key__ = "android"

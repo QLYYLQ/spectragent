@@ -2,16 +2,21 @@
 #
 #   spectragent bench --config <your Android run configuration> --benchmark androidworld
 #
-# The task list is made offline by task_list.py beside the androidworld task
-# oracle's launcher (docs/architecture_design.md §11.2). Its task oracle, the
-# device image and the open_app name table are still written in the run
-# configuration's Android capability block until they move here (§4.10.1).
-# The oracle judges each task on the device at the scoring point, within
-# --verify-timeout; its verdict (verifier androidworld) goes into the run's
-# verdicts/ and is this benchmark's primary verdict. This block takes no verifiers.
+# The task list is made offline by task_list.py beside AndroidWorld's launcher
+# (spectragent/benchmarks/androidworld/androidworld_service/,
+# docs/architecture_design.md §11.2). The setup component prepares each task
+# on the device through AndroidWorld's own service, run from the installation
+# in the benchmark's data directory unless root says otherwise. Until
+# AndroidWorld's live verifier lands, the same component judges each task on
+# the device at the scoring point, within --verify-timeout; its verdict
+# (verifier androidworld) goes into the run's verdicts/ and is this
+# benchmark's primary verdict. This block takes no verifiers.
 benchmark:
   - benchmark_id: androidworld
     task_loader:
       benchmark_name: androidworld
       subset: All
       data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/android/androidworld
+    setup:
+      setup_id: androidworld
+      root: null                 # null: $SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation

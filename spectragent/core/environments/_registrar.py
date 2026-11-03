@@ -19,7 +19,7 @@ import inspect
 import logging
 import time
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 from conscribe import create_registrar
 from pydantic import Field
@@ -38,6 +38,7 @@ from spectragent.core.capabilities.base import (
     RestorationSupport,
     SetupCheck,
     SetupContextPreparation,
+    SetupHost,
     TaskOracle,
     TaskTextFromSetup,
 )
@@ -56,6 +57,9 @@ from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.restoration import IDENTITY, RestorationEvidence, Retarget
 from spectragent.schemas.task import SetupTaskText
 from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
+
+if TYPE_CHECKING:
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetup
 
 logger = logging.getLogger(__name__)
 
@@ -564,6 +568,63 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             cap.bind_archivers(group)
             if group:
                 self._archiving.append(cap)
+
+    # ── Benchmark setup components: routing the binding ─────────
+
+    def _setup_groups(self, setups: Sequence[BenchmarkSetup]) -> dict[str, BenchmarkSetup]:
+        """Each setup component under the ``capability_id`` it names: the routing of
+        :meth:`check_setup` and :meth:`bind_setups`.
+
+        That capability must be here and host setup components
+        (``SetupHost``), and no two components may name one capability. Every
+        problem is collected before anything is returned.
+
+        Raises:
+            ValueError: Naming every component that cannot be hosted here and why.
+        """
+        by_cap = self._by_capability_id()
+        groups: dict[str, BenchmarkSetup] = {}
+        problems: list[str] = []
+        for setup in setups:
+            host = setup.capability_id
+            cap = by_cap.get(host)
+            if cap is None:
+                problems.append(
+                    f"the benchmark setup {setup.setup_id!r} is hosted by the {host!r} "
+                    f"capability, and this environment has none (it has "
+                    f"{', '.join(sorted(by_cap)) or 'no capability'})"
+                )
+            elif not isinstance(cap, SetupHost):
+                problems.append(
+                    f"the benchmark setup {setup.setup_id!r} is hosted by the {host!r} "
+                    f"capability, which hosts no setup component (SetupHost)"
+                )
+            elif host in groups:
+                problems.append(
+                    f"the benchmark setups {groups[host].setup_id!r} and {setup.setup_id!r} "
+                    f"both name the {host!r} capability, which hosts one"
+                )
+            else:
+                groups[host] = setup
+        if problems:
+            raise ValueError("; ".join(problems))
+        return groups
+
+    def bind_setups(self, setups: Sequence[BenchmarkSetup]) -> None:
+        """Route each setup component to the capability it names, then bind.
+
+        Validate first, bind second, as :meth:`bind_archivers`: every
+        component is routed before any capability is called, and every
+        hosting capability receives its component, ``None`` when it gets
+        none. Acquires nothing.
+
+        Raises:
+            ValueError: As :meth:`_setup_groups`, with nothing bound.
+        """
+        groups = self._setup_groups(setups)
+        for cap in self.capabilities.values():
+            if isinstance(cap, SetupHost):
+                cap.bind_setup(groups.get(cap.capability_id))
 
     async def collect_archive(self) -> ArchiveBatch:
         """Pull every bound capability's evidence; merge in capability order.
@@ -1115,15 +1176,16 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         *,
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
+        setups: Sequence[BenchmarkSetup] = (),
     ) -> None:
         """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
 
         ``AgentRuntime.prepare()`` calls this with the task's setup context,
-        the observation negotiation result and the archivers it is about to
-        bind (``docs/architecture_design.md`` §4.3 "setup 之前的检查"), so a
-        configuration that cannot run fails before the trace is opened and
-        before anything is launched — on a dry run too. In order, each step
-        raising on its own:
+        the observation negotiation result, and the archivers and benchmark
+        setup components it is about to bind (``docs/architecture_design.md``
+        §4.3 "setup 之前的检查"), so a configuration that cannot run fails
+        before the trace is opened and before anything is launched — on a dry
+        run too. In order, each step raising on its own:
 
         1. the capability set must route (:meth:`_by_capability_id`);
         2. every context key must be one some capability's ``setup()``
@@ -1131,17 +1193,22 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         3. every archiver must route to an archiving capability that
            provides it (:meth:`_archiver_groups`, the routing
            :meth:`bind_archivers` uses);
-        4. every capability implementing
-           :class:`~spectragent.core.capabilities.base.SetupCheck` checks
-           its own slice — its routed context and its archivers — in
-           capability order. A capability without the protocol is checked
-           for routing only.
+        4. every setup component must route to a capability that hosts it
+           (:meth:`_setup_groups`, the routing :meth:`bind_setups` uses);
+        5. every capability implementing
+           :class:`~spectragent.core.capabilities.base.SetupHost` checks its
+           own slice — its routed context, its archivers and its setup
+           component, ``None`` when it has none — and every other one
+           implementing :class:`~spectragent.core.capabilities.base.SetupCheck`
+           its routed context and archivers, in capability order. A
+           capability with neither protocol is checked for routing only.
 
         Changes nothing: no capability is set up, bound or narrowed.
 
         Raises:
-            ValueError: A colliding capability set, or a context key no
-                capability accepts.
+            ValueError: A colliding capability set, a context key no
+                capability accepts, or a setup component no capability here
+                hosts.
             UnroutableArchiverError: An archiver that cannot be bound here.
             Exception: A capability's own refusal (browser:
                 ``BrowserCooperationError``, naming both parties of every
@@ -1150,8 +1217,16 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         self._by_capability_id()
         routed = self.route_setup_context(context or {})
         groups = self._archiver_groups(archivers)
+        hosted = self._setup_groups(setups)
         for inst_id, cap in self.capabilities.items():
-            if isinstance(cap, SetupCheck):
+            if isinstance(cap, SetupHost):
+                cap.check_setup(
+                    routed[inst_id],
+                    negotiation=negotiation,
+                    archivers=groups.get(cap.capability_id, []),
+                    setup=hosted.get(cap.capability_id),
+                )
+            elif isinstance(cap, SetupCheck):
                 cap.check_setup(
                     routed[inst_id],
                     negotiation=negotiation,

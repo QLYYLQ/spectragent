@@ -40,6 +40,7 @@ from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.schemas.action import Action, ActionResult
 from tests._helpers.android_runs import (
     androidworld_capability,
+    androidworld_setup,
     installation_problem,
     write_task_list,
 )
@@ -61,9 +62,10 @@ async def _prepared(data: Path, task: str) -> AsyncIterator[Prepared]:
     """The device with MiniWoB++ *task* prepared on it by AndroidWorld's service."""
     write_task_list(data, task, family="miniwob")
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(f"{task}/42/0")
-    capability = androidworld_capability()
+    capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env)
+    env.check_setup(context.env, setups=[setup])
+    env.bind_setups([setup])
     await env.setup(context.env)
     try:
         yield Prepared(capability=capability)

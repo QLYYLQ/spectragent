@@ -5,12 +5,12 @@ the same ``SPECTRAGENT_TEST_AVD``, ``SPECTRAGENT_TEST_ANDROIDWORLD`` and
 ``SPECTRAGENT_TEST_SERVICE_APK``). ``task_list.py`` writes the list for one
 information-retrieval task under AndroidWorld's interpreter, and the
 ``androidworld`` loader reads it. Each test is one run through
-``AgentRuntime.execute``: the Android capability, composed from YAML with
-``task_oracle: androidworld``, boots its own read-only emulator and
-AndroidWorld's service prepares the task; UI-TARS reads its first reply,
-``finished(content=...)``, from a scripted model, so the run ends at once with
-the Loop's ``loop.done`` and that answer; at the scoring point the oracle hands
-the answer to AndroidWorld before it asks for the score
+``AgentRuntime.execute``: the Android capability, composed from YAML and
+hosting the ``androidworld`` benchmark's setup component, boots its own
+read-only emulator and AndroidWorld's service prepares the task; UI-TARS reads
+its first reply, ``finished(content=...)``, from a scripted model, so the run
+ends at once with the Loop's ``loop.done`` and that answer; at the scoring
+point the answer goes to AndroidWorld before the score is asked for
 (``docs/architecture_design.md`` §4.2, §11.2). The answer AndroidWorld expects
 is worked out under its own interpreter, for the same instance:
 
@@ -41,6 +41,7 @@ from spectragent.core.trace import RunTrace
 from spectragent.schemas.task import TaskContext, TaskDefinition
 from tests._helpers.android_runs import (
     ScriptedModel,
+    androidworld_benchmark,
     androidworld_capability,
     installation,
     installation_problem,
@@ -77,10 +78,11 @@ pytestmark = [
 
 @dataclass(frozen=True)
 class Listed:
-    """The listed task, its setup context, and the answer AndroidWorld expects of it."""
+    """The listed task, its setup context, its loader, and the answer AndroidWorld expects of it."""
 
     task: TaskDefinition
     context: TaskContext
+    loader: AndroidWorldTaskLoader
     expected: str
 
 
@@ -99,7 +101,12 @@ def listed(tmp_path_factory: pytest.TempPathFactory) -> Listed:
     ).stdout.strip()
     loader = AndroidWorldTaskLoader(data_dir=str(data))
     assert expected and loader.skipped == {}, "an information-retrieval task the loader keeps"
-    return Listed(task=loader[TASK_ID], context=loader.get_task_context(TASK_ID), expected=expected)
+    return Listed(
+        task=loader[TASK_ID],
+        context=loader.get_task_context(TASK_ID),
+        loader=loader,
+        expected=expected,
+    )
 
 
 async def _run(listed: Listed, answer: str, traces: Path) -> RunTrace:
@@ -114,6 +121,7 @@ async def _run(listed: Listed, answer: str, traces: Path) -> RunTrace:
         llm=ScriptedModel(f"Action: finished(content={answer!r})"),
         memory=SimpleMemory(),
         hooks=[writer],
+        benchmark=androidworld_benchmark(listed.loader),
     )
     result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
         listed.task.task_text,

@@ -34,6 +34,7 @@ from spectragent.core.trace import RunTrace
 from tests._helpers.android_runs import (
     M3A_GOAL_LINE,
     MINIWOB_GUIDELINE,
+    androidworld_benchmark,
     androidworld_capability,
     installation_problem,
     prompt_text,
@@ -122,6 +123,7 @@ async def test_the_terminal_takes_commands_typed_as_key_events(tmp_path: Path) -
         llm=model,
         memory=SlidingWindowMemory(window_size=1),
         hooks=[writer],
+        benchmark=androidworld_benchmark(loader),
     )
 
     result = await AgentRuntime.for_agent(run, AGENT_ID).execute(

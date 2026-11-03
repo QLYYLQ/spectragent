@@ -1,14 +1,14 @@
-"""A stand-in for AndroidWorld's task service, started exactly as the oracle starts the real one.
+"""A stand-in for AndroidWorld's task service, started exactly as the ``androidworld`` setup starts the real one.
 
 :func:`fake_installation` lays out an AndroidWorld installation the
-``androidworld`` oracle accepts: ``src`` is a checkout at the pinned commit, the
+``androidworld`` setup component accepts: ``src`` is a checkout at the pinned commit, the
 forwarder APK is a placeholder, ``.venv/bin/python`` is a script that runs
-this file under Spectragent's interpreter with the arguments the oracle gives
+this file under Spectragent's interpreter with the arguments the setup gives
 the launcher, and a stand-in for ffmpeg goes first on the test's PATH. So a
-test drives the oracle's real spawn: its argv, its
+test drives the setup's real spawn: its argv, its
 whitelisted environment, its process group.
 
-Run as a program, this file is the service: it answers the endpoints the oracle
+Run as a program, this file is the service: it answers the endpoints the setup
 calls (``/health``, ``/suite/reinitialize``, ``/task/goal``,
 ``/task/initialize``, ``/reset``, ``/execute_action``, ``/task/episode_over``,
 ``/task/score``, ``/task/tear_down``) as the real one does (the launcher adds
@@ -30,7 +30,7 @@ with it) and ``ignore_sigterm``. It records every request in
 group, argv and environment in
 ``<root>/record/service.json``, and leaves a ``sleep`` in its process group, as
 the real one leaves ``adb logcat``. It imports nothing but the standard
-library: the oracle gives it no ``PYTHONPATH``.
+library: the setup gives it no ``PYTHONPATH``.
 """
 
 from __future__ import annotations
@@ -82,10 +82,7 @@ def fake_installation(
     A stand-in for ffmpeg goes in ``<root>/host-bin``, first on this process's
     PATH until the test ends.
     """
-    from spectragent.core.capabilities.android.oracle.androidworld import (
-        FORWARDER_APK,
-        PINNED_COMMIT,
-    )
+    from spectragent.benchmarks.androidworld.service import FORWARDER_APK, PINNED_COMMIT
 
     python = root / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
