@@ -1,6 +1,6 @@
 # Spectragent — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 34 个开发模块（M01–M34）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 35 个开发模块（M01–M35）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 >
 > 状态阅读说明（2026-10-16）：图中依赖关系是实施顺序，不表示每个节点都尚未实现。
 > 六项后续改造已在 `a6a36d0` 完成验收；当前续接见本地
@@ -69,6 +69,7 @@ flowchart TB
         M15["M15<br/>DataLoader<br/>泛化"]
         M16["M16<br/>Evaluator<br/>体系"]
         M17["M17<br/>Memory<br/>协议协商"]
+        M35["M35<br/>基准层<br/>（基准、判分器、配置合并）"]
     end
 
     %% ════════════════════════════════════════
@@ -185,6 +186,13 @@ flowchart TB
     M01 --> M17
     M03 --> M17
 
+    %% → M35 基准层（用户 2026-11-03 的裁决）：加载器（M15）与评测器（M16）挪到基准下；prepare 与判分时间点（M08）；记录器（M11）；c 段的 AndroidWorld 建在 Android 的阶段 1–2 上（M26）
+    M08 --> M35
+    M11 --> M35
+    M15 --> M35
+    M16 --> M35
+    M26 -->|c 段：AndroidWorld| M35
+
     %% P1 → 集成验证
     M08 --> M18
     M11 --> M18
@@ -223,7 +231,7 @@ flowchart TB
     classDef milestone fill:#F59E0B30,stroke:#F59E0B,stroke-width:3px,color:#1a1a1a
 
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
-    class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29 p1
+    class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29,M35 p1
     class M18,M33 milestone
     class M19,M20,M21,M30,M31,M32 p2
     class M22,M23,M24,M25,M26 p3
@@ -528,7 +536,7 @@ Resolver 模式使 Capability 内部按需提供 fragment。以 Browser 为例�
 
 ### M08: AgentRuntime 通用编排
 
-**优先级**: P0 | **前置依赖**: M02, M03, M04, M05, M07 | **被依赖方**: M18, M28
+**优先级**: P0 | **前置依赖**: M02, M03, M04, M05, M07 | **被依赖方**: M18, M28, M35
 
 #### 业务实现
 
@@ -640,7 +648,7 @@ WAL 保证已经提交的数据，不把执行步号冒充持久化进度。进�
 
 ### M11: 统一记录组件（TraceWriter）
 
-**优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18, M27, M28
+**优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18, M27, M28, M35
 
 #### 业务实现
 
@@ -750,7 +758,9 @@ Browser 特有的 CDP、tab/frame 和输入实现留在 capability 内；Runtime
 
 ### M15: DataLoader 泛化
 
-**优先级**: P1 | **前置依赖**: M05 | **被依赖方**: M18, M23, M31
+**优先级**: P1 | **前置依赖**: M05 | **被依赖方**: M18, M23, M31, M35
+
+**目标（M35，用户 2026-11-03 的裁决，还没实施）**：任务加载器与评测数据加载器挪到基准下，是基准的任务来源与参考答案来源，不再是运行根的顶层段（architecture §4.10.1）。
 
 #### 业务实现
 
@@ -781,7 +791,9 @@ DataLoader 的泛化是独立工作流，与核心框架改造的依赖较弱。
 
 ### M16: Evaluator 体系
 
-**优先级**: P1 | **前置依赖**: M01, M10 | **被依赖方**: M18, M31（可选：`require_eval` 读评测结果，默认不读）、M32（可选：`require_eval`、样本的判定标签；泄漏扫描读的是基准的评测加载器） | **状态**: 独立评测阶段（用户 2026-10-14 裁决，取代 2026-10-13 的休眠约定：评测只读已提交的 trace，可启用 judge，与数据飞轮的回放保真判定解耦，见 architecture §4.11）
+**优先级**: P1 | **前置依赖**: M01, M10 | **被依赖方**: M18, M31（可选：`require_eval` 读评测结果，默认不读）、M32（可选：`require_eval`、样本的判定标签；泄漏扫描读的是基准的评测加载器）、M35 | **状态**: 独立评测阶段（用户 2026-10-14 裁决，取代 2026-10-13 的休眠约定：评测只读已提交的 trace，可启用 judge，与数据飞轮的回放保真判定解耦，见 architecture §4.11）
+
+**目标（M35，用户 2026-11-03 的裁决，还没实施）**：评测器成为判分器的种类（`VerifierRegistrar`，提议名），写在基准下；判分时间点的判分与离线的判定统一存放，`evals/` 与 `oracle_scores.json` 并成一处；`spectragent eval` 重做成离线判分器的入口（architecture §4.10.1、§4.11、§5.3）。
 
 #### 业务实现
 
@@ -1084,7 +1096,7 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 
 ### M26: Desktop / Android Capability
 
-**优先级**: P3 | **前置依赖**: M06 | **被依赖方**: 无
+**优先级**: P3 | **前置依赖**: M06 | **被依赖方**: M35（c 段：AndroidWorld）
 
 #### 业务实现
 
@@ -1160,9 +1172,9 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 
   **用户 2026-11-03 的两条裁决：MiniWoB++ 照 AndroidWorld 自己的 runner 跑。** 一、setup 可以补全 run 的任务文本：capability 声明它的 setup 补全任务文本，`prepare()` 因此知道；setup 之后 Runtime 向环境读回文本、记进 trace（`task_text.json`，与加载器的文本并列），再建种子消息、启动 Loop，Agent 不改；读任务文本的地方都经一个优先读补全文本的访问器，去污染两份都比对；这样的 run 不能分叉，在 `prepare()` 被拒（architecture §4.1、§4.2、§4.10、§5.3）。二、环境可以结束 run：每个策略步之后，Loop 经环境问实现了新的可选 Protocol 的 capability episode 结束了没有，结束了就以 `episode_over` 结束，与 agent 的 `done` 和步数用完分开记（§4.1、§4.3、§4.9）；`androidworld` 裁判只对 MiniWoB 的任务经服务回答。MiniWoB 与 AndroidWorld 比时只看判分记录的分数；7 个给小数奖励的任务照 AndroidWorld 不判分；裁判拒绝空的目标；每个套件的指引是 M3A 的 `task_guidelines`，写在 MiniWoB sweep 的 YAML 里（§11.2）。2026-11-03 已完成：设计，两个 capability Protocol 与 environment 的路由，裁判与服务一侧（开局后读完整目标、拒绝空目标、经启动器加的端点问 episode），Runtime、Loop、trace 与读者；信息检索任务在开局时换说法的日期走同一条路（任务列表格式 `androidworld-tasks-2`）。在 `AndroidWorldAvd` 上实测：MiniWoB 的 `click-button` 由 M3A 在替身模型上跑，目标交到提示词里、页面结束 episode、分数 1；信息检索的 `SimpleCalendarAnyEventsOnDate` 跑在换过说法的目标上、分数 1。实测发现一步之后马上问会漏掉还没存下的奖励（三次里一次，run 多走一步），于是改成 Android 先等界面静止再问，只对 MiniWoB（architecture §11.2）。从换过说法的信息检索 run 分叉与阶段 3 的 Android 分叉一起定。
 
-- **以后，专项：飞轮与检查视图按 capability 调整。** 用户 2026-11-03 的裁决："以后flywheel和dashboard需要做一下专项调整"。用户说的 dashboard 是网页查看器（TUI 也这样叫它）。飞轮与网页查看器的两个比较页面现在都按 `start_url` 分组（用户确认："现在flywheel和dashboard也是start url分组的"）。这一项收拢下面三件。
+- **以后，专项：飞轮与检查视图按 capability 调整。** 用户 2026-11-03 的裁决："以后flywheel和dashboard需要做一下专项调整"。用户说的 dashboard 是网页查看器（TUI 也这样叫它）。飞轮与网页查看器的两个比较页面现在都按 `start_url` 分组（用户确认："现在flywheel和dashboard也是start url分组的"）。这一项收拢下面两件。
 
-  **起始点。** 实施"任务的起始点归 capability"的裁决（architecture §4.10），先定 Android 说什么（候选与它的问题记在那里）：`core/trace/sources.py::task_identity` 不再读 browser 的 `start_url`，飞轮与网页查看器的比较页面都改按各 capability 的任务 setup 类说出的起始点分组。
+  **起始点挪到 M35。** "任务的起始点归 capability"的裁决（architecture §4.10）原先是这一项的第一件；用户 2026-11-03 定它随基准层一起落地（architecture §4.10.1 "迁移"），实施挪到 M35 的 a 段，做法写在那里。
 
   **飞轮度量按 capability 拆开**（architecture §4.16 开头："每个 capability 贡献哪些度量"成为一根轴）。`flywheel/metrics.py` 里每项建议所依据的度量都数它的数据来自几个不同的站点（`site_count`），原路径回放保真总体与按站点各报一份（`same_path_fidelity`）；Android 的 run 全落进 `NO_SITE`（`(no start_url)`），算 0 个站点，所以按站点数的条件（`supported` 要至少 10 个站点）Android 的数据永远满足不了。
 
@@ -1577,6 +1589,30 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 本期不改变恢复判定，不做 Agent cascade，不自动启用候选规则；动态 replay 参与以本期实验为后续设计依据。
 
 2026-10-19 验收：8,264 tests passed，零失败/错误/跳过，22 条既有警告；Pyright 零错误/警告，前端 13 tests 与 build 通过。三个 Luna record/replay 全部完成，7/7 恢复检查通过且像素一致；保留 3 条源响应不完整的脚本 miss。Jev 紧预算复测 7/7 有效，2 条 candidate_acceptable、5 条进一步复核；其中一条低置信语义误报被分诊政策拦下。重复/顺序/语义反例另存，不据此宣称已校准或允许动态放行。详细本地证据：`tmp/jev_add/delivery.json`。
+
+---
+
+### M35: 基准层（基准组件、开局布置、判分器、capability 配置合并）
+
+**优先级**: P1（泛化层；排在这里是提议） | **前置依赖**: M08、M11、M15、M16；c 段另依赖 M26 的 Android 阶段 1–2（AndroidWorld 的任务裁判、服务与任务加载器） | **被依赖方**: 无 | **状态**: 设计已定，还没实施（用户 2026-11-03 的裁决，architecture §4.10.1）
+
+#### 业务实现
+
+把今天手抄进每一份运行配置的基准事实收进一个与 agent 同级的注册组件：基准拥有任务来源、开局布置、判分器与基准的环境事实，运行配置只写 agent、环境与 hook。设计以 architecture §4.10.1 为准；§4.2、§4.2.1、§4.3、§4.9、§4.10、§4.11、§5.3、§5.5、§6、§11.2 各自注明了目标。新起的名字都是提议，实施时可以调整。
+
+#### 业务逻辑
+
+设计写在 2026-11-03 的文档分支里；之后分五段，每段单独验收（用户 2026-11-03 的裁决："可以，go"）。段之间：a 在 b、c 之前；b 与 c 并行；d 在 a 之后；e 在 a、b、c 之后，另开分支并行做。c 里只有 AndroidWorld 的活体判分器要等 b（协调者 2026-11-03 定的顺序，见 c 段）。
+
+- **a 段：骨架。** `BenchmarkRegistrar` 与基准包；任务加载器与评测数据加载器挪到基准下，运行根的顶层 `task_loader` / `eval_loader` 段删掉，发布的配置（`configs/*.yaml`、`configs/flywheel/` 与 `configs/lookahead/` 的分叉配置、度量链的 `tasks.benchmark`、导出的 YAML）随之迁移。写了 `task_loader` 的发布配置都是分叉 sweep：这五份（`configs/flywheel/` 两份、`configs/lookahead/` 三份）的 `task_loader` 段挪进分叉 YAML，即分叉任务来源，经 `--benchmark <alias|branches.yaml>` 选；运行配置里的分叉 Loop 与 hook 不变；分叉任务继承源 run 的基准（architecture §4.10.1 "分叉 sweep 是一种任务来源"）；`--benchmark <alias|path.yaml>`（`configs/benchmarks/<alias>.yaml`）与 `--benchmark X --task-id Y`；由各 capability 的 `declarations.py` 生成的单任务起始参数，框架 CLI 里写死的 `--start-url` 与 `--replay-archive` 删掉。"任务的起始点归 capability"的裁决（architecture §4.10）随这项工作落地，提议放在这一段，因为起始参数就是起始点在命令行上的写法：先定 Android 说什么（候选与它的问题记在 architecture §4.10），`core/trace/sources.py::task_identity` 不再读 browser 的 `start_url`，飞轮与网页查看器的比较页面都改按各 capability 的任务 setup 类说出的起始点分组。完成标准（提议）：发布的配置经 `--benchmark` 跑通，运行配置里没有加载器段；`spectragent run --help` 按 capability 列出起始参数，本 run 没有的 capability 的参数被拒。
+- **b 段：判分器与判定存放。** `VerifierRegistrar` 取代 `EvaluatorRegistrar`，判分器写在基准下，挂在哪里由它声明要的东西推出；判定统一存放（`oracle_scores.json` 与 `evals/` 并成一处；提议存放在 manifest 之外，trace 格式随之升一次版本）；主判定与成功规则（提议：进 `spectragent bench` 的汇总）；`spectragent eval` 重做成离线判分器的入口；读判定的地方（`trace_branches` 的 `require_eval`、导出的判定筛选与标签、查看器）改读这一处。完成标准（提议）：一个基准同时配规则判分与 LLM judge，两份判定在一处，各带自己的身份。
+- **c 段：capability 配置合并与 AndroidWorld。** c 段做合并、承载的 Protocol 与开局布置组件：运行配置与基准的 capability 贡献在 `prepare()` 里合并，冲突点名两边，缺项说明谁都没写，列表只给已有条目设旋钮、不增删（协调者 2026-11-03 定的规则）；判分器只写要求，在 `prepare()` 里核对（协调者 2026-11-03 的决定）；capability 承载基准组件（`SetupHost`、`LiveVerifierHost`，提议名）；AndroidWorld 的开局布置组件（architecture §11.2）；`open_app` 名称表由 AndroidWorld 基准从钉住的代码算出，没有基准的单任务读启动器标签。AndroidWorld 的活体判分器要 b 段的注册表与判定存放：b 合进去之后，它建在 b 上落地；两段之间不搭临时的桥（协调者 2026-11-03 定的顺序）。完成标准（提议）：活体判分器落地之后，AndroidWorld 的运行配置里没有任务裁判、名称表与任务加载器，`--benchmark androidworld` 跑通；名称表含 AndroidWorld 自己的启动表里的每个 app。
+- **d 段：数据获取。** 共用缓存 `$SPECTRAGENT_BENCHMARK_DATA`；`spectragent benchmark fetch <alias>` 与 `run` / `bench` 的 `--fetch`；钉住的数据源与版本，下载之后核对，trace 记数据版本；重的安装走 `spectragent benchmark setup <alias>`（AndroidWorld 的检出、venv 与 AVD）。缺了安装，`prepare()` 拒绝并给出命令；缺了数据，在任务加载器读数据之前（组装时）就拒绝，同样给出命令（architecture §4.10.1 "数据"）。
+- **e 段：环境跨任务复用**（另开分支并行做）。两条都成立才复用：环境身份相同，基准的开局布置声明能复位；两条只管任务状态会带到下一个任务的地方（设备、容器）；trace 记下环境服务过几个任务；Android 照 AndroidWorld 官方 harness。browser 的已经有了：`local_chrome.lifetime: experiment` 每个任务一个新的、隔离的 context，不是状态复用，不受这两条约束，仍是 capability 的设置（协调者 2026-11-03 的决定，architecture §4.10.1）。
+
+#### 设计思考
+
+基准的事实只该写一次，写在基准那里：同一个 AndroidWorld 跑 M3A 与 UI-TARS，名称表、设备镜像与判分不该在两份运行配置里各抄一遍。合并不给字段定主人、冲突就拒绝，沿用动作协商"两个提供方撞名就点名拒绝"的做法；判分器只有两个挂接点，沿用已有的判分时间点与离线评测，不另开每一步的通道。
 
 ---
 
