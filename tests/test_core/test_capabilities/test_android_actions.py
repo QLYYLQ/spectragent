@@ -39,7 +39,7 @@ from spectragent.core.capabilities.android.effects import (
     ScreenPoint,
 )
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
-from spectragent.core.capabilities.android.input.text import CommitTextBackend
+from spectragent.core.capabilities.android.input.text import CommitTextBackend, KeyEventsBackend
 from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
 from spectragent.core.trace.effects import registered_effect, restore_effects
 from spectragent.schemas.action import Action, ActionResult
@@ -579,6 +579,32 @@ async def test_the_commit_text_backend_types_through_the_services_input_method()
     assert typed.success and appended.success
     assert isinstance(typed.effect, AndroidTextEffect) and typed.effect.entered_by == "commit_text"
     assert typed.effect.field_class is None, "an input method knows only the field's package"
+
+
+async def test_the_key_events_backend_types_through_the_shell_helper() -> None:
+    """AndroidWorld's typing: key events from the helper into whatever has focus, which names no
+    field; text with a character its key map has no key for is refused whole."""
+    phone = ScriptedPhone(text_field=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend()) as capability,
+    ):
+        typed = await act(capability, "type_coordinate", text="rm cats.png")
+        appended = await act(capability, "type_coordinate", text="!", clear=False)
+        typed_so_far = list(phone.inputs)
+        refused = await act(capability, "type_coordinate", text="café", clear=False)
+
+    assert typed_so_far[-2:] == [
+        "helper type_text 'rm cats.png' replace",
+        "helper type_text '!' at the cursor",
+    ]
+    assert phone.inputs == typed_so_far, "no key for 'é', so no key at all"
+    assert typed.success and appended.success
+    assert isinstance(typed.effect, AndroidTextEffect) and typed.effect.entered_by == "key_events"
+    assert (typed.effect.field_package, typed.effect.field_class) == (None, None)
+    assert typed.effect.describe() == "Entered the text into the field, replacing its text."
+    assert not refused.success
+    assert refused.error is not None and "'é' (U+00E9)" in refused.error
 
 
 async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_refused(

@@ -45,7 +45,7 @@ from spectragent.core.capabilities.android.device.lifecycle import DeviceSideErr
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.input._registrar import TypingBackendUnsupported
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
-from spectragent.core.capabilities.android.input.text import CommitTextBackend
+from spectragent.core.capabilities.android.input.text import CommitTextBackend, KeyEventsBackend
 from spectragent.core.capabilities.android.observations import (
     CAPTURE_STATE,
     FOREGROUND_APP,
@@ -1196,6 +1196,21 @@ def test_prepare_refuses_a_typing_backend_the_providers_device_cannot_run(tmp_pa
     for level in (33, None):
         capability.backend = FakeServerProvider("127.0.0.1", 1, level=level)
         env.check_setup({})
+
+
+def test_a_run_types_with_key_events_on_every_api_level_the_apk_runs_on(tmp_path: Path) -> None:
+    """The helper injects keys from API 30, the APK's lowest, as it injects ``key``."""
+    raw: dict[str, JsonValue] = {
+        "capability": [_android_block(typing_backend={"typing_id": "key_events"})]
+    }
+    composed = ConfigComposer.for_config(raw).compose(raw).single("capability")
+    assert isinstance(composed, AndroidCapability)
+    assert isinstance(composed.typing_backend, KeyEventsBackend)
+
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    capability.typing_backend = KeyEventsBackend()
+    capability.backend = FakeServerProvider("127.0.0.1", 1, level=30)
+    make_env(AndroidEnvironment, {"android#0": capability}).check_setup({})
 
 
 async def test_setup_refuses_a_typing_backend_the_device_cannot_run_when_only_it_can_tell(

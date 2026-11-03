@@ -211,8 +211,9 @@ class ScriptedPhone:
         tree_delay_s: How long the service takes to answer ``tree``.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
-            KEYCODE_..."``, ``"service set_text '...' replace|at the cursor"``,
-            ``"service commit_text '...' replace|at the cursor"``.
+            KEYCODE_..."``, ``"helper type_text '...' replace|at the cursor"``,
+            ``"service set_text '...' replace|at the cursor"``, ``"service
+            commit_text '...' replace|at the cursor"``.
     """
 
     width: int = 1080
@@ -262,6 +263,7 @@ class ScriptedPhone:
                 "screenshot": self._screenshot("shell_helper"),
                 "gesture": self._stroke("helper"),
                 "key": self._key,
+                "type_text": self._type_text,
             },
             fallback=self._adb,
         )
@@ -353,6 +355,19 @@ class ScriptedPhone:
         self.inputs.append(f"helper key {code}")
         if code == "KEYCODE_HOME":
             self.focused = LAUNCHER
+        return Answer()
+
+    async def _type_text(self, params: JsonObject) -> Answer:
+        """Key events go wherever focus is. This key map keeps to printable ASCII, Enter and Tab;
+        the emulator's also reaches ç, Ç and ß through Alt (2026-11-03)."""
+        text = params["text"]
+        assert isinstance(text, str)
+        keyless = sorted({c for c in text if not (" " <= c <= "~" or c in "\n\t")})
+        if keyless:
+            named = ", ".join(f"{c!r} (U+{ord(c):04X})" for c in keyless)
+            raise Failure("unmappable_text", f"the device's key map has no key for {named}")
+        how = "replace" if params.get("replace") else "at the cursor"
+        self.inputs.append(f"helper type_text {text!r} {how}")
         return Answer()
 
     async def _tree(self, params: JsonObject) -> Answer:

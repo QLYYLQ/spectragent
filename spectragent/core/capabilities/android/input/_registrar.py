@@ -18,10 +18,12 @@ strategy whose default would choose behaviour stays required).
   endpoint (``DeviceNeeds.emulator_grpc``), a gRPC client and its stubs.
 - **Typing backend** (``typing_id``): who enters text into the field that has
   input focus: ``set_text`` (``ACTION_SET_TEXT`` from our accessibility
-  service, API 30 and up) or ``commit_text`` (our service's own input method,
-  API 33 and up, the current keyboard kept). Both take any text, Chinese
-  included, unlike ``input text``, which typed only the virtual keyboard's
-  characters and is gone with the rest of adb's ``input``.
+  service, API 30 and up), ``commit_text`` (our service's own input method,
+  API 33 and up, the current keyboard kept) or ``key_events`` (key events
+  from the shell helper, as AndroidWorld's ``adb shell input text`` types).
+  The first two take any text, Chinese included, and send no key event;
+  ``key_events`` sends one for every key, and takes only the characters the
+  device's virtual keyboard key map has keys for.
 
 This module stays light: the package's ``declarations.py`` imports it.
 """
@@ -127,7 +129,8 @@ class AndroidTypingBackend(Protocol):
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         """Enter *text*: over the field's whole text with *replace*, else at its cursor.
 
-        Returns the field that took it, as the device names it.
+        Returns the field that took it, as far as the device names it
+        (``key_events`` names none).
 
         Raises:
             RemoteError: No text went in and the field is as it was, when the

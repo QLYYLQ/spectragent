@@ -19,7 +19,10 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
 - the global actions back, home and recents, and the helper's keys;
 - text committed through the service's input method at the cursor, Chinese
   included, and over the field's whole text (API 33); text set on the focused
-  field, over its text and at its cursor;
+  field, over its text and at its cursor; text typed as the helper's key
+  events, capitals and symbols included, at the cursor and over the field's
+  text, refused before any key when a character has none, and a text long
+  enough that ``input text`` would lose its tail arriving whole;
 - the node with input focus, reported with its bounds, and when asked with
   the bounds of the field as drawn: on the search screen, whose only text
   field it is, more than the field's own; and with the window on top at a
@@ -73,6 +76,7 @@ from spectragent.core.capabilities.android.device.channel import (
     PROTOCOL_VERSION,
     Channel,
     HandshakeRefused,
+    RemoteError,
     encode_frame,
 )
 from spectragent.core.capabilities.android.device.clients import (
@@ -594,6 +598,75 @@ async def test_text_set_at_the_cursor_goes_after_what_the_field_holds(up: Up) ->
         up,
         "the field reading 'bluetooth'",
         lambda node: _search_field(node) and node.text == "bluetooth",
+    )
+
+
+async def test_text_is_typed_as_key_events_at_the_cursor(up: Up) -> None:
+    """The helper's keys, as ``input text`` types: capitals and symbols with shift."""
+    await _focused_search_field(up)
+    await up.side.helper.type_text("Wi-Fi")
+    await _node(
+        up, "the field reading 'Wi-Fi'", lambda node: _search_field(node) and node.text == "Wi-Fi"
+    )
+
+    await up.side.helper.type_text(" & NFC!")
+
+    await _node(
+        up,
+        "the field reading 'Wi-Fi & NFC!'",
+        lambda node: _search_field(node) and node.text == "Wi-Fi & NFC!",
+    )
+
+
+async def test_key_events_replace_the_fields_text_after_ctrl_a_and_delete(up: Up) -> None:
+    await _focused_search_field(up)
+    await up.side.helper.type_text("wifi")
+    await _node(
+        up, "the field reading 'wifi'", lambda node: _search_field(node) and node.text == "wifi"
+    )
+
+    await up.side.helper.type_text("bluetooth", replace=True)
+
+    await _node(
+        up,
+        "the field reading 'bluetooth' alone",
+        lambda node: _search_field(node) and node.text == "bluetooth",
+    )
+
+
+async def test_text_with_a_character_without_a_key_is_refused_before_any_key(up: Up) -> None:
+    """Nothing is cleared or typed: the whole text is mapped before the first key. An é written
+    as e and a combining acute (U+0301) is refused too: the map's combining accents are dead
+    keys, which would put the accent on the character after them."""
+    await _focused_search_field(up)
+    await up.side.helper.type_text("wifi")
+    await _node(
+        up, "the field reading 'wifi'", lambda node: _search_field(node) and node.text == "wifi"
+    )
+
+    with pytest.raises(RemoteError) as refused:
+        await up.side.helper.type_text("蓝牙 wifi é e\u0301", replace=True)
+
+    assert refused.value.code == "unmappable_text"
+    assert "no key for '蓝' (U+84DD), '牙' (U+7259), 'é' (U+00E9), U+0301, so" in str(refused.value)
+    fields = [node.text for node in _nodes(await up.side.service.tree()) if _search_field(node)]
+    assert fields == ["wifi"], "no key was pressed"
+
+
+async def test_a_long_text_typed_as_key_events_arrives_whole(up: Up) -> None:
+    """Each event is stamped as it is injected. ``input text`` stamps them all with the time it
+    mapped the text, and the input dispatcher drops an event more than 10 s old, so a text that
+    takes longer loses its tail: 47 of 100 characters on this field (2026-11-03). These 150 take
+    longer than 10 s at the 85-300 ms a character measured then."""
+    text = ("The quick brown Fox jumps over 13 lazy Dogs! " * 4)[:150]
+    await _focused_search_field(up)
+
+    await up.side.helper.type_text(text)
+
+    await _node(
+        up,
+        "the field reading the whole text",
+        lambda node: _search_field(node) and node.text == text,
     )
 
 

@@ -14,7 +14,12 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import org.json.JSONObject;
 
 /**
@@ -25,11 +30,12 @@ import org.json.JSONObject;
  * the host's shell connection closes: it never outlives the host's session.
  *
  * <p>Methods: {@code ping}; {@code screenshot} (from SurfaceFlinger, API 31-33, without the
- * service's 333 ms limit); {@code key} (any key, by its KEYCODE_ name); {@code gesture} (one timed
- * stroke, {@link Strokes}, injected with injectInputEvent as {@code input} injects, each event at
- * its planned time); {@code enable_service} and {@code disable_service} (the service appended to
- * enabled_accessibility_services, and taken out again only if this helper put it there; other
- * services kept).
+ * service's 333 ms limit); {@code key} (any key, by its KEYCODE_ name); {@code type_text} (text as
+ * key events, mapped as {@code input text} maps it, see {@link #typeText}); {@code gesture} (one
+ * timed stroke, {@link Strokes}, injected with injectInputEvent as {@code input} injects, each
+ * event at its planned time); {@code enable_service} and {@code disable_service} (the service
+ * appended to enabled_accessibility_services, and taken out again only if this helper put it
+ * there; other services kept).
  */
 public final class ShellHelper {
     private static final ComponentName SERVICE =
@@ -37,6 +43,8 @@ public final class ShellHelper {
     private static final String ENABLED = "enabled_accessibility_services";
     /** Moves between a stroke's points, every 8 ms: what `input swipe` sends (120 Hz). */
     private static final long MOVE_INTERVAL_MS = 8;
+    /** How many characters without a key a refused type_text names; the rest it counts. */
+    private static final int MAX_NAMED_CHARACTERS = 10;
     /**
      * Whether this helper wrote the service into the setting. Set as soon as the write is made, so
      * that disable_service takes it out again even when the enable failed afterwards, or its answer
@@ -85,6 +93,8 @@ public final class ShellHelper {
                 return screenshot();
             case "key":
                 return key(params);
+            case "type_text":
+                return typeText(params);
             case "gesture":
                 return Reply.of(Json.obj("elapsed_ms", touch(Strokes.parse(params, 1).get(0))));
             case "enable_service":
@@ -122,14 +132,92 @@ public final class ShellHelper {
         if (code == KeyEvent.KEYCODE_UNKNOWN) {
             throw new Failure("bad_params", "not an Android key code: " + name);
         }
-        long down = SystemClock.uptimeMillis();
-        injectKey(down, down, KeyEvent.ACTION_DOWN, code);
-        injectKey(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code);
+        pressKey(code, 0);
         return Reply.of(new JSONObject());
     }
 
-    private static void injectKey(long down, long time, int action, int code) throws Failure {
-        Hidden.inject(new KeyEvent(down, time, action, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
+    /**
+     * Text typed as key events, as {@code input text} types it: the virtual keyboard's key map
+     * (KeyCharacterMap.VIRTUAL_KEYBOARD) gives each character the keys a keyboard presses for it,
+     * shift with a capital and ENTER for a newline, and each event is injected and waited for. A
+     * character with no key (see {@link #keyless}) fails the request with unmappable_text, naming
+     * it, before any key is pressed; {@code input text} throws there, and AndroidWorld drops such
+     * characters before it calls it. With {@code "replace": true}, ctrl+A and DEL come first,
+     * selecting the field's text and deleting it, as AndroidWorld clears a field. Each event is
+     * stamped as it is injected: the input dispatcher drops an event more than 10 s old, which a
+     * long text reaches when every event carries the time the text was mapped, as
+     * {@code input text}'s do.
+     */
+    private static Reply typeText(JSONObject params) throws Failure {
+        if (!params.has("text")) {
+            throw new Failure("bad_params", "text is required");
+        }
+        String text = params.optString("text");
+        KeyCharacterMap keys = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+        String keyless = keyless(keys, text);
+        if (!keyless.isEmpty()) {
+            throw new Failure("unmappable_text", "the device's key map has no key for " + keyless
+                    + ", so no key was pressed");
+        }
+        KeyEvent[] events = text.isEmpty() ? new KeyEvent[0] : keys.getEvents(text.toCharArray());
+        if (params.optBoolean("replace", false)) {
+            int ctrl = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
+            long held = SystemClock.uptimeMillis();
+            injectKey(held, held, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl);
+            pressKey(KeyEvent.KEYCODE_A, ctrl);
+            injectKey(held, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT, 0);
+            pressKey(KeyEvent.KEYCODE_DEL, 0);
+        }
+        Map<Integer, Long> downAt = new HashMap<>();
+        for (KeyEvent event : events) {
+            long now = SystemClock.uptimeMillis();
+            int code = event.getKeyCode();
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                downAt.put(code, now);
+            }
+            Long down = downAt.get(code);
+            injectKey(down == null ? now : down, now, event.getAction(), code, event.getMetaState());
+        }
+        return Reply.of(new JSONObject());
+    }
+
+    /**
+     * The characters of text with no key, each once, as its code point and, when it shows on its
+     * own, itself; empty when every character has keys. The map has no key for most (Chinese, an
+     * accented letter). The combining accents it reaches with Alt (U+0300 grave) are dead keys,
+     * which put the accent on the character typed after them, not on the one before, so a
+     * combining mark counts as having no key: an e followed by U+0301 would come out wrong.
+     */
+    private static String keyless(KeyCharacterMap keys, String text) {
+        List<String> found = new ArrayList<>();
+        Set<Integer> seen = new HashSet<>();
+        int more = 0;
+        for (int i = 0; i < text.length(); i += Character.charCount(text.codePointAt(i))) {
+            int point = text.codePointAt(i);
+            boolean combining = Character.getType(point) == Character.NON_SPACING_MARK;
+            if (!seen.add(point) || (!combining && keys.getEvents(Character.toChars(point)) != null)) {
+                continue;
+            }
+            if (found.size() == MAX_NAMED_CHARACTERS) {
+                more++;
+                continue;
+            }
+            String code = String.format(Locale.ROOT, "U+%04X", point);
+            boolean shows = !combining && !Character.isISOControl(point);
+            found.add(shows ? "'" + new String(Character.toChars(point)) + "' (" + code + ")" : code);
+        }
+        return String.join(", ", found) + (more > 0 ? " and " + more + " more" : "");
+    }
+
+    /** One key down and up, with metaState held. */
+    private static void pressKey(int code, int metaState) throws Failure {
+        long down = SystemClock.uptimeMillis();
+        injectKey(down, down, KeyEvent.ACTION_DOWN, code, metaState);
+        injectKey(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, metaState);
+    }
+
+    private static void injectKey(long down, long time, int action, int code, int metaState) throws Failure {
+        Hidden.inject(new KeyEvent(down, time, action, code, 0, metaState, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
                 InputDevice.SOURCE_KEYBOARD), Hidden.INJECT_WAIT_FOR_FINISH);
     }
 

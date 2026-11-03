@@ -6,7 +6,12 @@ the name of an AVD and ``SPECTRAGENT_TEST_SERVICE_APK`` to an APK built by
 The capability is composed from YAML, as a run composes it, with the
 ``local_emulator`` provider, the accessibility service's gestures as its tap
 injector and ``set_text`` as its typing backend, which every API level from 30
-runs. The one boot covers, in file order:
+runs; ``SPECTRAGENT_TEST_TYPING_BACKEND`` names another by its ``typing_id``.
+With ``key_events`` on API 33 (2026-11-03) every test passed but one: the tap
+on the "Password" label was refused, as it should be, but the refusal named
+the keyboard's own view, not the "Network name" field (the open item on
+typing keys in ``docs/architecture_design.md`` §11.2 "以后，或还没定的"). The
+one boot covers, in file order:
 
 - the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): from
   API 31 the emulator hands the guest the run's own key (its log's "Sending
@@ -121,6 +126,8 @@ pytestmark = [
 #: The AVD to boot; the marker skips this module when it is unset (``tests/conftest.py``).
 AVD_VARIABLE = "SPECTRAGENT_TEST_AVD"
 APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
+#: The typing backend to compose, by its ``typing_id``; ``set_text`` when unset.
+TYPING_VARIABLE = "SPECTRAGENT_TEST_TYPING_BACKEND"
 SETTINGS = "com.android.settings"
 #: Settings' search: Google's on the API 31 and 33 images, AOSP's on API 30's.
 SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.settings.intelligence")
@@ -226,7 +233,7 @@ async def booted() -> AsyncIterator[Booted]:
                 },
                 "service_apk": apk,
                 "tap_injector": {"injector_id": "accessibility_gesture"},
-                "typing_backend": {"typing_id": "set_text"},
+                "typing_backend": {"typing_id": os.environ.get(TYPING_VARIABLE, "set_text")},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
                 "task_oracle": {"oracle_id": "none"},
