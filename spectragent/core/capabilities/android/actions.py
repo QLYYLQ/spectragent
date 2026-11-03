@@ -45,6 +45,7 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import AddressesElement, PointAxis
 from spectragent.core.capabilities.android.bridge import ACTIVITY_PATTERN, PACKAGE_PATTERN
+from spectragent.core.capabilities.android.device.channel import RemoteError
 from spectragent.core.capabilities.android.device.clients import TAP_MS, FocusedNode, Stroke
 from spectragent.core.capabilities.android.effects import (
     AndroidTextEffect,
@@ -449,7 +450,9 @@ class _FocusedTyping:
     old field a moment after the tap, so the wait covers that too; a service
     that names no field with focus by then cannot tell which field it is, and
     the text is entered as asked. A refusal still reports the tap
-    (``AndroidTextEffect``).
+    (``AndroidTextEffect``), and so does a typing backend that enters nothing:
+    the action fails with the backend's own reason (``RemoteError: set_text:
+    no_focused_field: ...``).
     """
 
     clear_by_default: Annotated[
@@ -504,7 +507,14 @@ class _FocusedTyping:
                 effect=AndroidTextEffect(effect_id=effect_id, tap=tapped, text_entered=False),
             )
         replace = self.clear_by_default if clear is None else clear
-        field = await device.enter_text(text, replace=replace)
+        try:
+            field = await device.enter_text(text, replace=replace)
+        except RemoteError as exc:  # the device answered that it entered nothing
+            return ActionResult(
+                success=False,
+                error=f"{type(exc).__name__}: {exc}",
+                effect=AndroidTextEffect(effect_id=effect_id, tap=tapped, text_entered=False),
+            )
         return ActionResult(
             success=True,
             effect=AndroidTextEffect(

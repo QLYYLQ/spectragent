@@ -861,6 +861,8 @@ async def test_typing_where_the_device_cannot_tell_types_as_asked(
     # The service itself then finds no editable field with focus, and says so.
     assert not result.success
     assert result.error is not None and "no_focused_field" in result.error
+    assert isinstance(result.effect, AndroidTextEffect) and not result.effect.text_entered
+    assert result.effect.tap is None, "typing without a point taps nothing"
 
 
 async def test_chinese_text_types_as_any_other(
