@@ -97,6 +97,7 @@ class RuntimeHook(Protocol):
         call_context: RunCallContext,
         action_space: ActionSpace,
         step_budget: int | None,
+        task_text_setter: str | None,
         agent_id: str,
         loop_id: str,
         env_type: str,
@@ -162,6 +163,12 @@ class RuntimeHook(Protocol):
           ReAct's configured ``max_steps``; a branch's is its
           ``1 + continue_steps``), or ``None`` when the Loop has no step
           budget. Per task, like ``task_setup``.
+        - ``task_text_setter``: the capability whose setup will complete this
+          task's text (``Environment.task_text_setter``), or ``None`` when the
+          loader's text is the run's; ``task`` is the loader's text either way.
+          The completed text arrives after setup through
+          ``Environment.task_text_from_setup``, which a recorder intercepts.
+          Per task, like ``task_setup``.
         - ``config_source``: the source YAML path and consumed-byte digest supplied
           by the caller, or ``None`` when its source is unknown. It is provenance,
           not effective configuration; no hook derives it from resolved settings.

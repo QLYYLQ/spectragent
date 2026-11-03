@@ -485,6 +485,10 @@ _PRECONDITIONS: dict[str, tuple[Any, str]] = {
         ),
         "it is a replay run",
     ),
+    "task_text_completed_at_setup": (
+        lambda root: write_source(root, "run-x", steps=1, task_text_setter="android"),
+        "its task text was completed at setup by capability 'android'",
+    ),
     "no_archive": (
         lambda root: write_source(root, "run-x", steps=1, archivers=()),
         "did not record 'browser.network'",

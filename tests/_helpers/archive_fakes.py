@@ -73,6 +73,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.prompt import ReactPromptContext
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.assembly import make_env, make_run
 
 #: The fake capability's registry key — the prefix of every key it provides.
@@ -616,6 +617,13 @@ class SurfacelessEnv:
     ) -> list[OracleScore]:
         # Every run that reaches the scoring point calls it, archiving or not.
         return await self._inner.read_oracle_scores(timeout_s=timeout_s, answer=answer)
+
+    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+        # Every run's ``prepare()`` asks it, archiving or not.
+        return self._inner.task_text_setter(context)
+
+    async def task_text_from_setup(self) -> SetupTaskText | None:
+        return await self._inner.task_text_from_setup()
 
     async def episode_over(self) -> bool:
         # A Loop asks after every policy step, archiving or not.

@@ -290,6 +290,20 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 "the source is itself a branch run (its prefix made no model calls to replay); "
                 f"branch from its source run {config.branch.source_run_id!r} instead"
             )
+        # A task text a setup completes is made anew at every setup (a MiniWoB++
+        # page draws its instruction unseeded): the restored prefix and the
+        # source's prompts would answer another task (§4.1, §4.10).
+        if config.task_text_setter is not None:
+            problems.append(
+                f"the source's task text was completed at setup by capability "
+                f"{config.task_text_setter!r}, which makes it anew on every run"
+            )
+        setter = deps.get("task_text_setter")
+        if setter is not None:
+            problems.append(
+                f"this run's task text would be completed at setup by capability {setter!r}, "
+                "which makes it anew on every run, so it cannot be the source's"
+            )
         variant = source.checkpoint.task_variant
         if variant is not None and self.history_source == "source":
             # Decided by configuration and task data, so refused here, before

@@ -133,6 +133,7 @@ def write_source(
     verdicts: dict[str, EvalResult] | None = None,
     format_version: int | None = None,
     uncommitted: Sequence[int] = (),
+    task_text_setter: str | None = None,
 ) -> Path:
     """Commit one recorded run under ``root/<run_id>`` and return its directory.
 
@@ -147,7 +148,8 @@ def write_source(
     trace is complete only through the step before the gap). ``status`` is
     the trace's (``writing``: never closed out; ``incomplete`` closes it with
     *incomplete_reason*); ``agent_done`` is the agent's, written as
-    ``result.json`` (``None``: no result.json).
+    ``result.json`` (``None``: no result.json); ``task_text_setter`` names
+    the capability whose setup completed the run's task text (§4.10).
     """
     specs = [Step() for _ in range(steps)] if isinstance(steps, int) else list(steps)
     captured = any(spec.capture is not None for spec in specs)
@@ -174,6 +176,7 @@ def write_source(
             env_evidence_privacy=[] if archivers else None,
             task_setup=setup_record() if task_setup is _DEFAULT else task_setup,
             branch=branch,
+            task_text_setter=task_text_setter,
         )
     )
     for index, spec in enumerate(specs):

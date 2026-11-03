@@ -187,6 +187,9 @@ class AgentRuntime:
         # The most policy steps the Loop allows this task (see :meth:`prepare`);
         # ``None`` when the Loop has no step budget.
         self._step_budget: int | None = None
+        # The capability whose setup completes this task's text (see
+        # :meth:`prepare`); ``None`` when the loader's text is the run's.
+        self._task_text_setter: str | None = None
         # The fragment format descriptions the agent's prompt quotes, keyed by
         # the names it declared; ``None`` when it declares none (see
         # :meth:`prepare`, step 2b).
@@ -378,7 +381,10 @@ class AgentRuntime:
         each capability's own checks (browser: the cooperation rows and a
         replay's consistency with its source run, §4.14). A configuration
         that cannot run therefore fails here, before ``on_run_start`` opens
-        a trace and before anything is launched — on a dry run too.
+        a trace and before anything is launched — on a dry run too. The
+        environment also says whose setup, if any, completes the task's text
+        (``Environment.task_text_setter``): the trace records it and the Loop
+        is told, so a branch refuses such a run here (§4.2, §4.10).
 
         No environment: a Loop that declares ``__requires_env__`` (the
         default) is refused by name; an env-less Loop's run negotiates
@@ -414,7 +420,8 @@ class AgentRuntime:
                 an input platform the agent's prompt cannot render, or the
                 agent declares none (``negotiation.platform.check_input_platform``).
             ValueError: A setup context key no capability accepts (or any
-                key, in a run with no environment). Also UI-TARS's refusal,
+                key, in a run with no environment), or two capabilities whose
+                setups would each complete the task's text. Also UI-TARS's refusal,
                 from its ``check_action_space`` (``ActionSpaceCheck``), of a
                 verb whose points differ from its action's; another agent's
                 check raises its own errors.
@@ -522,11 +529,18 @@ class AgentRuntime:
         # again before it acquires anything. Validation only: nothing is
         # set up, bound or narrowed.
         self._prepared_setup = PreparedSetupContext({}, {})
+        self._task_text_setter = None
         if env is not None:
             self._prepared_setup = env.prepare_setup_context(env_context)
             env.check_setup(
                 self._prepared_setup.execution, negotiation=negotiated_obs, archivers=archivers
             )
+            # Step 2.95: Whose setup completes this task's text, if any (a
+            # MiniWoB++ page makes its instruction as the task starts). Known
+            # now, from configuration and task data, so the trace records it
+            # and a Loop that could not use such a run refuses it here
+            # (docs/architecture_design.md §4.2, §4.10).
+            self._task_text_setter = env.task_text_setter(self._prepared_setup.execution)
         elif env_context:
             raise ValueError(
                 f"setup key(s) {sorted(env_context)} were given, but this run has no environment "
@@ -649,6 +663,7 @@ class AgentRuntime:
             step_executor=wrapped_loop,
             identity=self._identity,
             loop_inputs=inputs,
+            task_text_setter=self._task_text_setter,
         )
 
         # Only now is every intercept's fate decided: ``agent.run`` did
@@ -796,6 +811,13 @@ class AgentRuntime:
         ``execution_ms``, and scoring never changes ``agent_done`` or fails
         the run.
 
+        A task whose setup completes its text (``Environment.task_text_setter``,
+        asked in :meth:`prepare`): the trace opens on the loader's text, and
+        once setup is done the woven environment's ``task_text_from_setup``
+        gives the run's task, which the trace hook records; the agent is
+        seeded with it and runs on it. Failing to read it is a failed setup; a
+        seed builder that fails on it is the agent's error (§4.2).
+
         Args:
             task: Task text handed to the agent.
             timeout: Wall-clock budget for ``agent.run``.
@@ -854,8 +876,13 @@ class AgentRuntime:
 
             # The seed messages (typically the system prompt) come from the
             # agent's ``prepare`` slot; AgentRuntime owns the memory write.
+            # Built here, from the loader's text, before the trace opens and
+            # before setup boots anything, so a seed builder that cannot build
+            # them fails now. A run whose setup completes the task's text is
+            # seeded again from that text after setup instead
+            # (:meth:`_run_to_the_scoring_point`).
             seed_messages = self.seed_messages(task)
-            if seed_messages and memory is not None:
+            if seed_messages and memory is not None and self._task_text_setter is None:
                 memory.add_messages(seed_messages)
 
             # Hook lifecycle — run_start. Deliberately *before* env setup: a
@@ -874,10 +901,12 @@ class AgentRuntime:
             # archive facts: whether evidence is recorded and what its
             # archivers declare, and the setup context this task's environment
             # is started from (``task_setup`` is the owner-prepared recording
-            # projection; execution receives its separate prepared input), and
-            # the most policy steps the Loop allows this task (``step_budget``).
-            # A branch task's provenance (``branch``) rides along by name for
-            # the trace; nothing here interprets it.
+            # projection; execution receives its separate prepared input), the
+            # most policy steps the Loop allows this task (``step_budget``), and
+            # the capability whose setup will complete the task's text
+            # (``task_text_setter``; ``task`` is still the loader's text). A
+            # branch task's provenance (``branch``) rides along by name for the
+            # trace; nothing here interprets it.
             await self._dispatch_lifecycle(
                 "on_run_start",
                 agent=self._agent,
@@ -901,6 +930,7 @@ class AgentRuntime:
                 action_negotiation=self._negotiated_actions,
                 action_space=self.action_space,
                 step_budget=self._step_budget,
+                task_text_setter=self._task_text_setter,
                 archive_negotiation=self._negotiated_archive,
                 env_evidence_privacy=(
                     list(self._env_evidence_privacy)
@@ -918,6 +948,11 @@ class AgentRuntime:
             try:
                 try:
                     await self.setup_environment(env_context)
+                    if self._task_text_setter is not None:
+                        # Setup completed the task's text: from here on it is
+                        # the run's task. Reading it belongs to setup, so a
+                        # failure here is a setup failure.
+                        task = await self._task_text_after_setup()
                 except Exception as exc:
                     if isinstance(exc, RunAbort):
                         # A veto raised while the environment was being set up
@@ -1127,14 +1162,64 @@ class AgentRuntime:
         veto — the run is scored, with its final answer (:func:`_final_answer`),
         before its outcome goes on to ``execute``, unchanged. A cancellation
         leaves at once: a cancelled run is not scored.
+
+        A run whose setup completed the task's text is seeded from that text
+        first. A seed builder that fails on it is the agent's failure, not the
+        environment's: it ends the run as any failure inside the Loop does.
         """
         try:
+            if self._task_text_setter is not None:
+                self._seed_from_task_text(task)
             result = await asyncio.wait_for(prepared_agent.run(task), timeout=timeout)
         except Exception as ended:
             await self._score(oracle_timeout, answer=_final_answer(ended))
             raise
         await self._score(oracle_timeout, answer=_final_answer(result))
         return result
+
+    async def _task_text_after_setup(self) -> str:
+        """The task text the setter's setup completed, read through the woven environment.
+
+        Through the woven environment, so the trace hook records it
+        (``task_text.json``, docs/architecture_design.md §5.3).
+
+        Raises:
+            RuntimeError: The setter's setup completed no text, or another
+                capability's did: setup did not do what ``prepare()`` was told.
+        """
+        setter = self._task_text_setter
+        env = self._woven_env
+        made = await env.task_text_from_setup() if env is not None else None
+        if made is None:
+            raise RuntimeError(
+                f"capability {setter!r} said its setup would complete the run's task text, "
+                f"and its setup completed none"
+            )
+        if made.capability_id != setter:
+            raise RuntimeError(
+                f"the run's task text was to be completed by capability {setter!r}'s setup, and "
+                f"capability {made.capability_id!r}'s completed it"
+            )
+        return made.text
+
+    def _seed_from_task_text(self, task: str) -> None:
+        """Seed the agent from the task text its setup completed (:meth:`seed_messages`).
+
+        Raises:
+            RuntimeError: The agent's seed builder failed on that text; the
+                message names it, and the original error is the cause.
+        """
+        try:
+            seeds = self.seed_messages(task)
+        except RunAbort:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"the agent's seed messages could not be built from the task text its setup "
+                f"completed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if seeds and self._memory is not None:
+            self._memory.add_messages(seeds)
 
     async def _score(self, timeout_s: float, *, answer: str | None) -> None:
         """The scoring point: the execution clock stops, then the task oracles read the score.

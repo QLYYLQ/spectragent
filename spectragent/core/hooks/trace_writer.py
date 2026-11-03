@@ -68,6 +68,7 @@ from spectragent.schemas.recording import (
 )
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
+from spectragent.schemas.task import SetupTaskText
 
 logger = logging.getLogger(__name__)
 _RunVersions = dict[str, tuple[int, str, int]]
@@ -138,6 +139,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         Intercept("ainvoke", role="llm", advice="around"),
         Intercept("act", role="env", advice="around"),
         Intercept("read_oracle_scores", role="env", advice="after"),
+        Intercept("task_text_from_setup", role="env", advice="after"),
         Intercept("execute_step", role="loop", advice="around"),
         Intercept("observe_terminal", role="loop", advice="around"),
         Intercept("record_step", role="loop", advice="around"),
@@ -258,6 +260,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._archive_owners: frozenset[str] = frozenset()
         self._collections = 0
         self._oracle_scores: list[OracleScore] = []
+        #: The task text setup completed, until the worker commits it.
+        self._pending_task_text: SetupTaskText | None = None
         self._storage: RecordingStorage | None = None
         self._health = RecordingHealth()
 
@@ -272,11 +276,12 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         return True
 
     def intercept_environment(self, present: bool) -> None:
-        """Intercept ``env.act`` and ``env.read_oracle_scores`` only in a run that has an environment.
+        """Intercept the environment's methods only in a run that has an environment.
 
         The ``EnvironmentInterceptor`` declaration. An env-less run executes no
         action, so its measured steps carry ``action_spans == []``, and it has
-        no task oracle to score with: neither interception could ever fire.
+        no task oracle to score with and no setup to complete its task text:
+        no ``env`` interception could ever fire.
         """
         intercepts = [item for item in type(self).__intercepts__ if present or item.role != "env"]
         # The declaration is a ClassVar: shadow it on this instance only.
@@ -311,6 +316,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         call_context: RunCallContext | None = None,
         action_space: Any = None,
         step_budget: int | None = None,
+        task_text_setter: str | None = None,
         **kwargs: Any,
     ) -> None:
         self._reset()
@@ -354,6 +360,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
                 branch=branch,
                 max_steps=step_budget,
+                task_text_setter=task_text_setter,
                 config_source=config_source,
                 **(
                     {"action_space": action_space.model_copy(deep=True)}
@@ -511,6 +518,39 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             self._oracle_scores = list(result)
         except Exception as exc:
             self._problem(None, "oracle_scores", "capture", exc)
+
+    async def after_task_text_from_setup(
+        self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
+    ) -> None:
+        """Keep the task text setup completed; the worker commits it before any later step.
+
+        Whatever the recording plan selects: every reader of the run's task
+        needs it (``docs/architecture_design.md`` §5.3). Never raises into the
+        run; a fault is a ``task_text`` problem on step 0, whose prompt starts
+        from this text.
+        """
+        if result is None:
+            return
+        if isinstance(result, SetupTaskText):
+            self._pending_task_text = result
+        else:
+            self._problem(
+                0,
+                "task_text",
+                "capture",
+                TypeError(f"task_text_from_setup() returned {type(result).__name__}"),
+            )
+
+    async def _commit_task_text(self) -> None:
+        """Commit the task text setup completed, once; a failure is a ``task_text`` problem on step 0."""
+        record, self._pending_task_text = self._pending_task_text, None
+        wal = self.wal
+        if record is None or wal is None or self._stop_writes.is_set():
+            return
+        try:
+            await self._offload(wal.commit_task_text, record)
+        except Exception as exc:
+            self._problem(0, "task_text", "commit", exc)
 
     async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
         pending: PendingLLMCall | None = None
@@ -932,7 +972,10 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             try:
                 segment = await asyncio.wait_for(self._queue.get(), timeout=0.05)
             except TimeoutError:
+                await self._commit_task_text()  # while step 0 runs
                 continue
+            # Taken before step 0 began, so it is pending by now: it precedes the segment.
+            await self._commit_task_text()
             try:
                 await self._offload(self._commit, segment, storage)
                 initialized = storage.wal is not None and storage.wal.manifest is not None
@@ -981,6 +1024,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     async def _finalize(self) -> None:
         if self._stop_writes.is_set():
             return
+        # A task text the worker has not committed yet (the run closed out
+        # right after setup) goes first, as it would have before step 0.
+        await self._commit_task_text()
         wal = self.wal
         # The scores first: committed before ``result.json``, and early enough
         # that the result's recording health says whether they were.

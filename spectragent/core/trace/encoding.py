@@ -62,6 +62,8 @@ CONFIG_FILE = "config.json"
 RESULT_FILE = "result.json"
 #: The task oracles' scores (``list[OracleScore]``), pointed to by the manifest.
 ORACLE_SCORES_FILE = "oracle_scores.json"
+#: The task text a capability's setup completed (``SetupTaskText``), pointed to by the manifest.
+TASK_TEXT_FILE = "task_text.json"
 STEPS_DIR = "steps"
 OBSERVATIONS_DIR = "observations"
 MESSAGES_DIR = "messages"
@@ -72,7 +74,9 @@ METRICS_DIR = "metrics"
 
 #: Names the WAL and this module decide. An extra file may not land on one:
 #: a producer that could write ``steps/007.json`` could forge a step.
-WAL_OWNED_FILES = frozenset({MANIFEST_FILE, CONFIG_FILE, RESULT_FILE, ORACLE_SCORES_FILE})
+WAL_OWNED_FILES = frozenset(
+    {MANIFEST_FILE, CONFIG_FILE, RESULT_FILE, ORACLE_SCORES_FILE, TASK_TEXT_FILE}
+)
 WAL_OWNED_DIRS = frozenset({STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, EVALS_DIR, METRICS_DIR})
 
 

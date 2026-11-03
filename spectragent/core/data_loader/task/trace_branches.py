@@ -31,7 +31,8 @@ off by a rate limit at step 25 still gives its first 25 checkpoints.
 (:mod:`~spectragent.core.data_loader.task.run_exclusions`): a source whose
 run id it lists is left out with the file's reason. A source
 that matches but cannot be branched — an unreadable trace (one of an older
-format among them), a branch or replay run, a missing required archive or
+format among them), a branch or replay run, a run whose task text a setup
+completed, a missing required archive or
 environment fingerprint, no environment setup context, a run id another
 source shares — is a precondition failure: ``on_unbranchable: raise`` (the
 default) raises one :class:`BenchmarkDataError` listing every such source;
@@ -574,6 +575,11 @@ class _Scan:
             )
         if config.task_setup is not None and REPLAY_ARCHIVE_KEY in config.task_setup.context:
             raise _Unbranchable("it is a replay run: branch from the recorded run it replayed")
+        if config.task_text_setter is not None:
+            raise _Unbranchable(
+                f"its task text was completed at setup by capability {config.task_text_setter!r}, "
+                f"which makes it anew on every run (docs/architecture_design.md §4.10)"
+            )
         self._require_archive(trace, config)
         env = self._setup_context(config)
 
