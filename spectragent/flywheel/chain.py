@@ -26,10 +26,12 @@ loader's ``data_dir`` (``<root>/traces/record``), written to
 ``<root>/configs/<stage>_branches.yaml``; for the export, the one exporter's
 ``sources_root`` (``<root>/traces``), ``sources`` (``record/*``,
 ``branch/*``) and ``output_dir`` (``<root>/datasets/first``, then
-``second``). A block missing, or there twice, is a :class:`ChainConfigError`
-naming the stage and the block — before any stage runs. Everything else
-(agent, tier, archivers, selector, branches, ``verify``, evaluator) is the
-stage YAML's; a control group's YAML says ``archive: []`` itself.
+``second``), and the export reads benchmark data through ``tasks.benchmark``
+(``spectragent export --benchmark``). A block missing, or there twice, is a
+:class:`ChainConfigError` naming the stage and the block — before any stage
+runs. Everything else (agent, tier, archivers, selector, branches,
+``verify``, evaluator) is the stage YAML's; a control group's YAML says
+``archive: []`` itself.
 
 **A stage's outcome.** A run stage that exits 0 or 1 (a task with an
 infrastructure failure is data to measure) and wrote at least one run
@@ -691,7 +693,9 @@ def run_chain(
                         account.limit,
                     )
             elif stage == "export":
-                _export_stage(effective[stage], outcome, export_main, log_level)
+                _export_stage(
+                    effective[stage], outcome, export_main, log_level, spec.tasks.benchmark
+                )
             else:
                 result.report = _report_stage(spec, layout)
         except ChainStageError as exc:
@@ -846,12 +850,20 @@ def _export_stage(
     outcome: StageOutcome,
     entry: Entry,
     log_level: str,
+    benchmark: str,
 ) -> None:
+    """Run each export; *benchmark* (``tasks.benchmark``) is where it reads benchmark data.
+
+    ``--benchmark`` names the benchmark the chain recorded on: decontamination
+    and the reference-leak scan read through its loaders (its task loader, and
+    its ``eval_loader`` when it writes one) instead of only the registered
+    loaders' defaults.
+    """
     # An output that already existed was refused before any stage ran (``run_chain``); one
     # that appears since is the exporter's own refusal (a non-zero exit, nothing written).
     for path, raw in configs:
         _write_yaml(path, raw)
-        argv = ["--config", str(path), "--log-level", log_level]
+        argv = ["--config", str(path), "--benchmark", benchmark, "--log-level", log_level]
         outcome.argv.append(argv)
         code = _invoke("export", entry, argv)
         outcome.exit_codes.append(code)

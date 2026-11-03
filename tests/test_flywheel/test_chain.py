@@ -156,6 +156,11 @@ class TestThePaths:
             str(root / "configs" / "export_first.yaml"),
             str(root / "configs" / "export_second.yaml"),
         ]
+        # The export reads benchmark data through the benchmark the chain recorded on.
+        assert [call[call.index("--benchmark") + 1] for call in export.calls] == [
+            "online_mind2web",
+            "online_mind2web",
+        ]
         assert (root / "report" / "report.json").is_file() and result.report is not None
 
     def test_the_argv_of_each_run_stage(self, tmp_path: Path) -> None:

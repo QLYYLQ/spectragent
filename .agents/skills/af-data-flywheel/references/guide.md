@@ -722,7 +722,10 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   and handed to bench as `--benchmark`), and the exporter's `sources_root`, `sources` and
   `output_dir`. A stage YAML missing one of those blocks, or holding two, is refused before
   anything runs. Everything
-  else (agent, tier, archivers, selector, `verify`) is the stage YAML's own.
+  else (agent, tier, archivers, selector, `verify`) is the stage YAML's own. The recording
+  stages get `--benchmark <tasks.benchmark>`, plus `--subset <tasks.subset>` when it is set;
+  each export gets `--benchmark <tasks.benchmark>`, so decontamination and the leak scan read
+  through that benchmark's loaders (its task loader, and its `eval_loader` when it writes one).
 - A chain's export YAML uses `filters.require_eval: null` (the chain does not evaluate) and
   `decontamination: {against: []}` (the sources are the benchmark's own tasks) — both the
   defaults, and what the shipped `export_sft.yaml` writes.

@@ -783,7 +783,7 @@ export:    {config: my/export.yaml, repeat: 2}            # 2：顺带量导出�
 report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}
 ```
 
-`my/` 下是从 `configs/flywheel/` 复制来改过的文件。录制段（`record`、`control`）跑 `tasks.benchmark`；分叉段（`same_path`、`branch`）必须写 `benchmark`，点名它的分叉 YAML，录制段写了会被拒。`tasks.subset` 交给录制段的 `--subset`，省略时用基准 YAML 自己的。
+`my/` 下是从 `configs/flywheel/` 复制来改过的文件。录制段（`record`、`control`）跑 `tasks.benchmark`；分叉段（`same_path`、`branch`）必须写 `benchmark`，点名它的分叉 YAML，录制段写了会被拒。`tasks.subset` 交给录制段的 `--subset`，省略时用基准 YAML 自己的。两次导出都带 `--benchmark <tasks.benchmark>`：去污染与泄漏扫描经录制所用的基准的加载器读基准数据（它的任务加载器，写了 `eval_loader` 时还有它）。
 
 ```bash
 uv run spectragent flywheel run --spec chain.yaml                     # 规格里配了的每一段

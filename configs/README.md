@@ -716,7 +716,8 @@ only writes their path fields (the trace writer's `trace_dir`, the `trace_branch
 `output_dir`) and runs the existing CLIs in this process. Relative paths are relative to the
 working directory. The recording stages run `tasks.benchmark` (an alias or a benchmark YAML's
 path; required), with `tasks.subset` as `--subset` when it is set; a branch stage names its
-own branches YAML (`benchmark`, required there and refused on a recording stage).
+own branches YAML (`benchmark`, required there and refused on a recording stage). Each export
+reads benchmark data through `tasks.benchmark` (`spectragent export --benchmark`).
 
 ```yaml
 name: first-live
