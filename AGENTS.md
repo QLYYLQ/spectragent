@@ -145,7 +145,7 @@ Branching remains ReAct-specific. `history_source: source | restored` is indepen
 
 Within a Capability, fragments are produced by **Resolvers** (the Browser Capability uses Watchdogs as Resolvers — adding a new fragment = adding one class, the capability does not change).
 
-`fragment_id` is a real serialized field defaulted from `__registry_key__`, and the WAL names observation files by the fully-qualified key (`000_browser.dom.json`). Both exist so a `RunTrace` says *which capability* produced a fragment — an evaluator has the file, not the config.
+`fragment_id` is a real serialized field defaulted from `__registry_key__`, and the WAL names observation files by the fully-qualified key (`000_browser.dom.json`). Both exist so a `RunTrace` says *which capability* produced a fragment — a verifier has the file, not the config.
 
 ### 2.5 Action system — symmetric to Observation
 

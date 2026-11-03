@@ -251,11 +251,12 @@ environment:
 
 # Cross-cutting hooks, woven onto agent/env/llm by core/aop. Without a
 # ``trace_writer`` entry a run leaves nothing on disk, which makes "Record
-# Once, Evaluate Many" unreachable from this file — evaluators read a
-# RunTrace, not in-memory state. ``spectragent bench`` installs its own
-# hooks and discovers the trace by duck-typing ``run_dir``, so declaring
-# them here is what makes a *direct* run (demo_yaml_compose.py, or any
-# AgentRuntime.execute caller) recordable too.
+# Once, Evaluate Many" unreachable from this file — offline verifiers read a
+# RunTrace, not in-memory state, and keep their verdicts in its verdicts/.
+# ``spectragent bench`` installs its own hooks and discovers the trace by
+# duck-typing ``run_dir``, so declaring them here is what makes a *direct*
+# run (demo_yaml_compose.py, or any AgentRuntime.execute caller) recordable
+# too.
 #
 # ``trace_dir`` is the root every run's WAL directory is created under:
 # traces land in ``<trace_dir>/<run_id>``. Relative paths resolve against

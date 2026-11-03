@@ -97,7 +97,7 @@ include = ["spectragent*"]
 include-package-data = false
 
 # Runtime data files. `spectragent/prompts/**` is read at runtime by every agent's
-# `_build_system_prompt` and by every evaluator (`path.read_text()` against
+# `_build_system_prompt` and by every verifier (`path.read_text()` against
 # `PROMPT_PATH`, a directory inside the installed package). The leaf prompt
 # directories hold no `__init__.py`, so `packages.find` does not see them and this
 # glob is the only reason they reach the wheel — without it an installed

@@ -18,7 +18,7 @@ replay   spectragent run --replay-archive DIR    configs/flywheel/replay_ui_tars
            network_source: archive (isolated, strict misses), base_time: from_archive,
            trace_writer.archive: browser.replay_log in browser.network's place
            -> env/steps/NNN/browser.replay_log/replay.jsonl.gz
-branch   spectragent bench --benchmark <branches YAML> --no-eval    configs/flywheel/branch_ui_tars_archive.yaml
+branch   spectragent bench --benchmark <branches YAML>    configs/flywheel/branch_ui_tars_archive.yaml
            agent_loop: branch (restorer: prefix_replay); tasks from configs/flywheel/branches_all_steps.yaml
            (benchmark: [{benchmark_id: trace_branches, task_loader: {benchmark_name: trace_branches, ...}}])
            -> branch runs: restored steps, the policy step(s), a terminal observation
@@ -57,12 +57,16 @@ features and no new design decisions, only the adaptations a cross-cutting chang
 keep their tests green (architecture §4.15). The one exception, the user's ruling of
 2026-10-25: the export may remove the waits a teacher took on a capped capture and rewrite
 the thoughts that affects (`wait_actions: drop_when_capped`, §2.4). Independent task
-judging was re-enabled by the user on 2026-10-14 as a separate stage (`spectragent eval`,
-architecture §4.11). It reads committed traces and explicit references, reports
-valid-verdict coverage separately from task correctness, and never changes restoration
-checks. No flywheel stage requires a verdict: filters remain optional and off by default,
-and decontamination checks only an explicit benchmark list, empty by default. Judge
-errors and missing evidence are unevaluable, not graded task failures. Time-sensitive tasks
+judging was re-enabled by the user on 2026-10-14 as a separate stage (architecture §4.11):
+a benchmark's offline verifiers, written in its block's `verifiers:` list, judge
+committed traces through `spectragent eval` or through `spectragent bench` after its
+sweep, each verdict into the run's own `verdicts/<slug>.json` (architecture §4.10.1,
+§5.3). They read committed traces and explicit references, report valid-verdict coverage
+separately from task correctness, and never change restoration checks. No flywheel stage
+requires a verdict: filters remain optional and off by default, the shipped benchmark
+YAMLs list no verifier, and decontamination checks only an explicit benchmark list, empty
+by default. Judge errors and missing evidence are unevaluable (nothing written), not
+graded task failures. Time-sensitive tasks
 are judged against their recorded date and evidence, never today's website or the model's
 current knowledge.
 
@@ -174,9 +178,10 @@ A custom Python benchmark harness must pass `task_id`, `benchmark` and `subset` 
 Use a distinct `run_id` for each recording and replay/branch execution while retaining
 the benchmark's original `task_id`. The viewer resolves source links by run identity;
 duplicate run IDs in its root correctly produce an ambiguous source, not a guessed link.
-Branch provenance takes `source_subset` from the source trace. The independent eval CLI
-refuses an empty or mismatched reference identity, even when the task text happens to
-match. Preserve an incorrectly labelled trace rather than editing it after recording;
+Branch provenance takes `source_subset` from the source trace. `spectragent eval` does not
+judge a trace whose recorded benchmark or subset is empty or differs from its benchmark's
+reference data with a verifier that needs a reference (an error, nothing written), even
+when the task text happens to match. Preserve an incorrectly labelled trace rather than editing it after recording;
 an explicitly bound reference assessment must disclose the missing identity separately.
 
 - The recorder connection, a second CDP client the capability owns, opens only when an
@@ -444,7 +449,7 @@ benchmark:
       step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps} | last
       branches_per_step: 3               # the shipped value; the branches differ only by sampling
       agent_outcome: any                 # done | max_steps | error | timeout | vetoed (result.json)
-      require_eval: null                 # {evaluator_id, label: 1, slug: null}
+      require_eval: null                 # {verifier_id, label: 1, slug: null}: a judged verdict in verdicts/
       # require_archive: [browser.network]   # the default; []: none
       on_unbranchable: raise             # skip
       task_variants: null                # a task-variants-1 file: another task per checkpoint
@@ -456,7 +461,7 @@ benchmark:
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
     --benchmark configs/flywheel/branches_all_steps.yaml --list    # task ids only
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
-    --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+    --benchmark configs/flywheel/branches_all_steps.yaml
 uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
     --benchmark configs/flywheel/branches_all_steps.yaml --task-id <source_run_id>/s<t>/b0
 ```
@@ -540,12 +545,15 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   renders every restored step's source reply, thought included
   (`agents/rendering/prompt_context.py::restored_history_message`, `source_material.recorded_reply`),
   and those thoughts were written for the source's task.
-  A variant has no benchmark reference: `spectragent eval` records it as an evaluation
-  error under a reference grader (`NoReferenceError`), and only an evaluator declaring
-  `__needs_reference__ = False` (WebJudge, `online_mind2web`) judges it, on the variant's
-  text (architecture §4.11).
-- `trace_branches` has no eval loader: pass `--no-eval`. A configured evaluator is refused
-  before the sweep starts.
+  A variant has no benchmark reference: a verifier whose `__needs__` holds `reference`
+  (`exact_match`, `browsecomp`, `lexbench_browser`) cannot judge it — `spectragent eval`
+  reports a `NoReferenceError` and writes nothing — and only one that needs none (WebJudge,
+  `online_mind2web`) judges it, on the variant's text, its verdict's evidence carrying
+  `task_variant` (architecture §4.11). Any other branch run is judged against its source
+  task's reference row (evidence `source_reference`).
+- A `trace_branches` block takes no `verifiers:` (written there, it is refused), so a
+  branch sweep judges nothing and needs no `--no-eval`; its tasks belong to their source
+  runs' benchmarks, and a branch run is judged afterwards with `spectragent eval`.
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
   `trace_dir` to `traces/branches`. A branch run is unbranchable, so under
   `on_unbranchable: raise` it would stop the next sweep.
@@ -605,7 +613,7 @@ exporter:
     sources: ["recorded/*"]            # null: ["*"]; branch runs included
     filters:
       agent_outcome: any               # done | max_steps | error | timeout | vetoed
-      require_eval: null               # optional: {evaluator_id, label: 1, slug: null}
+      require_eval: null               # optional: {verifier_id, label: 1, slug: null}
       exclude_restoration_diverged: true
       max_document_misses: 0           # unlimited: no replay-log filter
       exclude_sites: []
@@ -645,9 +653,13 @@ each one's task loader and its `eval_loader` block, knobs and all.
   not rewritten). Each one is listed in the dataset manifest's `steps.filtered`
   (`<source path>#s<t>` → reason; dataset format `af-sft-4`) and counted in an
   `ExportEmptyError`. Same rule as `exclude_unloaded_checkpoints`.
-- Independent evaluation is optional and the export does not need it: `filters.require_eval`
-  defaults to `null` (the shipped export too), so a run the teacher failed is exported as
-  well, labelled by `labels.step_status` and any verdicts.
+- Judging is optional and the export does not need it: `filters.require_eval` defaults to
+  `null` (the shipped export too), so a run the teacher failed is exported as well,
+  labelled by `labels.step_status` and `labels.verdicts`, one
+  `{verdict_slug, verifier_id, label, score}` per judged verdict in the run's `verdicts/`
+  (a branch run: its source run's). `require_eval` keeps a run with at least one judged
+  verdict of `verifier_id` labelled `label` (`slug` pins one), read through
+  `RunTrace.verdicts()`.
 - `decontamination.against` is an explicit list of `{benchmark, subset}` refs and nothing is
   inferred from verdicts. The default `[]` decontaminates nothing (the manifest says
   `decontaminated: false`); `null` is refused at composition. Listing the benchmark the
@@ -726,14 +738,19 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   stages get `--benchmark <tasks.benchmark>`, plus `--subset <tasks.subset>` when it is set;
   each export gets `--benchmark <tasks.benchmark>`, so decontamination and the leak scan read
   through that benchmark's loaders (its task loader, and its `eval_loader` when it writes one).
-- A chain's export YAML uses `filters.require_eval: null` (the chain does not evaluate) and
+- A chain's export YAML uses `filters.require_eval: null` (by default the chain judges nothing) and
   `decontamination: {against: []}` (the sources are the benchmark's own tasks) — both the
   defaults, and what the shipped `export_sft.yaml` writes.
 - A run stage succeeds when the bench exits 0 or 1 and wrote at least one new run; a task
   with an infrastructure failure is data. The bench exits 3 when a guard vetoed the sweep
   (the vetoed task is the summary's last row): the chain stops there and the vetoed stage's
   runs never feed the next one. It exits 4 when the sweep reached the token limit the chain
-  handed it (below). `same_path` and `branch` refuse `evaluate: true`. With the export selected,
+  handed it (below). A recording stage with `evaluate: true` runs the bench without
+  `--no-eval`, so the benchmark's offline verifiers judge its runs after the sweep, each
+  verdict into its run's `verdicts/` (the chain keeps no verdict directory of its own);
+  only a `tasks.benchmark` that lists `verifiers:` has any (a shipped alias lists none).
+  `same_path` and `branch` refuse `evaluate: true`. A stage's `verify_timeout` is the
+  bench's `--verify-timeout`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.
 - The token limit (the user's ruling of 2026-10-14). `token_limit` is the tokens every run
@@ -755,7 +772,8 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   calls_without_usage}` and each run stage's `token_use`, and `spectragent flywheel run`
   exits 4. A sweep runs one task at a time, so a task is never cut off and a sweep overshoots
   by at most one task. The bench's pre-flight refuses a limit when no hook writes a trace.
-  The evaluator's judge calls are not in any trace and are not counted.
+  An offline verifier's judge calls are not in any trace (their usage is in each verdict's
+  `usage`) and are not counted.
 - Exit codes: 0 done, 1 a stage failed (`ChainStageError`, recorded in `<root>/chain.json`;
   for `report`, also a published dataset that does not read back or an `--out` that cannot be
   written, named in the message), 2 a bad spec or argument, 4 the chain stopped at its token
@@ -1330,8 +1348,9 @@ value on an existing one.
 - Read through the manifest only: the `RunTrace` accessors, `archive_lines` for line-shaped
   evidence, `committed_files` / `read_committed` for byte accounting, and `ArchiveReader`
   from `open_archive` inside a capability. Files the manifest does not list are invisible
-  and are never served by a replay; `evals()` is the one accessor that lists a directory. A
-  replay leaves its source directory unchanged.
+  and are never served by a replay; `verdicts()` is the one accessor that lists a directory
+  (the verdict store, `verdicts/<slug>.json`, outside the manifest). A replay leaves its
+  source directory unchanged.
 - Tokens, never money. No field of the archive, negotiation, trace, export or flywheel
   models is about price. `test_archive_boundaries.py`, `test_export_boundaries.py` and
   `test_flywheel_boundaries.py` scan field names against `price|cost|usd|dollar`, so even a
@@ -1407,8 +1426,8 @@ value on an existing one.
 | A restored step right after a click shows `url_mismatch` against a URL from another tab | Compare the step's `focus_moved` in the source and the branch (any browser fragment of that step's observation): the branch's `new_tabs` differs from the recording's, or the tab opened later than the observation captured in one of the runs. Record, replay and branch keep one `new_tabs` |
 | An agent keeps clicking a link that opens a new tab and sees no change | The run has `new_tabs: stay`, or the tab never finished its first navigation within 10 s (a WARNING `the focus cannot move to tab ...`), or Chrome reported it opened without the user's activation (the tab is listed in `browser_meta.tabs`, the trace has no `focus_moved`) |
 | A branch sweep refuses its sources, or lists no tasks | The reasons in `loader.skipped` (`spectragent bench --list`); `on_unbranchable: skip`. Branch and replay runs are never sources |
-| The bench refuses before starting: no eval loader for `trace_branches` | Pass `--no-eval` |
-| `ExportEmptyError` | The counts in the message; most often a `require_eval` over runs nobody evaluated, or `decontamination.against` listing the benchmark the sources were recorded on (§2.4) |
+| The bench refuses before starting: a verifier judges against the task's reference row and the benchmark has no reference data | Drop that verifier from the benchmark block's `verifiers:`, or pass `--no-eval` |
+| `ExportEmptyError` | The counts in the message; most often a `require_eval` over runs no verifier judged (nothing of that kind in their `verdicts/`), or `decontamination.against` listing the benchmark the sources were recorded on (§2.4) |
 | `ExportConfigError` | More than one exporter block, a student YAML with hooks, several agents or a non-ReAct loop, or decontamination data that cannot be read |
 | `IncompatibleError ... needed for training export` | The student lacks `format_react_output`, or the teacher lacks `parse_react_thought` under `thought_source: teacher` |
 | `IncompatibleFragmentError` naming the source run | The student negotiates a fragment the source never recorded, such as a DOM student over a vision recording |

@@ -8,7 +8,7 @@
 # Two tasks per source: the same input twice, for replay determinism.
 #
 #   spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml \
-#     --benchmark configs/flywheel/branches_last_step.yaml --no-eval
+#     --benchmark configs/flywheel/branches_last_step.yaml
 #
 # Pair it with the recording config (record_ui_tars_pinned.yaml): the agent,
 # the tier and the browser block are the branch config's
@@ -16,7 +16,8 @@
 # (branches_last_step.yaml). The metrics chain (spectragent flywheel run)
 # writes that YAML's data_dir (its traces/record) and trace_writer.trace_dir
 # (its traces/same_path) itself; run it by hand by pointing data_dir at your
-# recordings. There is no eval loader for branch tasks: pass --no-eval.
+# recordings. A branch sweep lists no verifier, so it judges nothing and needs
+# no --no-eval.
 agent:
   - agent_id: ui_tars
     id: main

@@ -1,4 +1,4 @@
-# Independent review job; no Agent, browser or task-correctness evaluator.
+# Independent review job; no Agent, browser or task-correctness verifier.
 # spectragent replay-review --config configs/replay_review/jev_dmx.yaml --pairs pairs.json --out reviews/new-job
 #
 # questions, policy and evidence are required: the code has no defaults for them, and

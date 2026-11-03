@@ -59,7 +59,7 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 | 归档器 | `browser.network`（WARC）、`browser.storage`、`browser.dom_raw`、`browser.frames`、`browser.replay_log` |
 | 回放 | replayability `none`、`pinned`；网络来源 `live`、`archive`；miss 策略 `strict` |
 | 基准 | `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`，以及 `trace_branches`（分叉 sweep 的任务来源，从录制的 run 生成任务）；每个基准持有同名的任务加载器；发布在 `configs/benchmarks/<别名>.yaml`，用 `--benchmark <别名或路径>` 选；选步器 `explicit`、`every_k`、`all`、`last` |
-| Evaluator | `exact_match`、`online_mind2web`、`browsecomp`、`lexbench_browser` |
+| 判分器 | `exact_match`、`online_mind2web`、`browsecomp`、`lexbench_browser`；写在基准块的 `verifiers:` 列表里（发布的基准 YAML 一个也不列） |
 | 导出 | 导出器 `openai_messages`；翻译器 `identity`、`index_to_coordinate` |
 | 回放审查器 | `jev` |
 
@@ -186,7 +186,7 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
   --benchmark configs/flywheel/branches_all_steps.yaml --list
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
-  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+  --benchmark configs/flywheel/branches_all_steps.yaml
 uv run spectragent export --config configs/flywheel/export_sft.yaml
 uv run spectragent flywheel run --spec chain.yaml
 ```
@@ -219,10 +219,10 @@ traces/<run_id>/
   observations/000_browser.screenshot.png
   messages/000_call_00.json        # 每次模型调用一个文件；images/ 与 output_formats/ 每个 run 只存一份
   env/                             # 环境证据，只在设置了 archive 时出现
-  evals/                           # 事后判定，在 manifest 之外
+  verdicts/                        # 每份判定（活体与离线）一个 <slug>.json，在 manifest 之外
 ```
 
-trace 在声明的录制范围内是完整的；没有选的通道不算损坏的证据。token 用量按 provider 报告的数保存，没报告的保持未知。框架不计算价格。读取方拒绝格式 7 以外的 trace。
+trace 在声明的录制范围内是完整的；没有选的通道不算损坏的证据。token 用量按 provider 报告的数保存，没报告的保持未知。框架不计算价格。读取方拒绝格式 8 以外的 trace。
 
 在 Python 里通过 `spectragent.core.trace.RunTrace` 读取，它只提供已提交的文件，并核对大小和哈希。
 
@@ -232,7 +232,7 @@ trace 在声明的录制范围内是完整的；没有选的通道不算损坏�
 uv run spectragent runs list --search mind2web
 uv run spectragent runs show <run> --step 0
 uv run spectragent runs compare <run-a> <run-b>
-uv run spectragent runs compare-groups --left <hash> --right <hash> --evaluator <slug>
+uv run spectragent runs compare-groups --left <hash> --right <hash> --verifier <slug>
 uv run spectragent tui                                   # 浏览已有 run 的终端界面
 uv run spectragent run --config ... --task ... --tui     # 实时监控（bench 也有）
 uv run spectragent view --open                           # 本地网页查看器，127.0.0.1:8765
@@ -247,7 +247,7 @@ uv run spectragent view --annotations labels/ --annotator alice
 |---|---|
 | `run` | 跑一个任务；`--dry-run`、`--replay-archive`、`--tui` |
 | `bench` | 跑 benchmark 或分叉任务；`--list`、`--task-id`、`--limit`、`--no-eval`、`--token-limit`、`--tui` |
-| `eval` | 用一个 evaluator 和一个 eval loader 给已保存的 trace 判分 |
+| `eval` | 用基准的离线判分器判已保存的 trace，每份判定写进 run 的 `verdicts/` |
 | `export` | 从已保存的 trace 导出训练数据 |
 | `flywheel` | `run`、`report`、`diagnose` |
 | `replay-review` | 独立审查回放对 |
@@ -307,7 +307,7 @@ uv run pyright spectragent tests
 ## 状态与限制
 
 - 浏览器是唯一的环境。集成按抽样的端到端运行验收，没有跑完整的 agent × benchmark 矩阵。几个真实 agent 各自操作多个标签页的工作流还没有验证。
-- Evaluator 作为独立阶段运行（`spectragent eval`），只读已提交的 trace，把任务正确性与回放保真分开。飞轮的任何阶段都不需要判定结果。
+- 离线判分器作为独立阶段运行（`spectragent eval`，或 `spectragent bench` 跑完之后），只读已提交的 trace，把任务正确性与回放保真分开；每份判定写进 run 的 `verdicts/`。发布的基准 YAML 不列判分器，因为 LLM judge 的型号要先自己验证过。飞轮的任何阶段都不需要判定结果。
 - 录制完整不代表任务成功。trace 完整性、恢复校验和截图一致是不同的证据，任何一项都不能证明任务或登录成功。
 - 云后端不能录制或回放。不支持 WebSocket 回放。
 - `pinned` 固定页面配色，但宿主机自己的浅色或深色外观不被记录，headless Chrome 的原生滚动条看起来跟随它。正式运行请固定外观，恢复校验的结果只在同一外观下的运行之间比较。

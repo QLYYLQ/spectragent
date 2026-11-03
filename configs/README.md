@@ -21,7 +21,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
 | `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
 | `lookahead/judge_deepseek.yaml` | The judge model of `python -m lookahead variants` and `judge-forks` (`--judge-config`): one `llm` layer, DeepSeek's official API — see `lookahead/README.md`, "The judge model" |
-| `benchmarks/<alias>.yaml` | The shipped **benchmarks** — `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld` — each a `benchmark:` block holding its task loader; select one with `--benchmark <alias>` (or your own copy with `--benchmark path.yaml`) — see [Benchmarks](#benchmarks) |
+| `benchmarks/<alias>.yaml` | The shipped **benchmarks** — `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld` — each a `benchmark:` block holding its task loader and no verifier (the three browser ones carry a commented `verifiers:` example); select one with `--benchmark <alias>` (or your own copy with `--benchmark path.yaml`) — see [Benchmarks](#benchmarks) |
 
 ## Quick start
 
@@ -418,7 +418,7 @@ Point that loader's `data_dir` at the directory the recordings are in and run th
 
 ```bash
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
-  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+  --benchmark configs/flywheel/branches_all_steps.yaml
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
   --benchmark configs/flywheel/branches_all_steps.yaml --list   # the task ids only
 ```
@@ -464,7 +464,7 @@ benchmark:
       step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
       branches_per_step: 3            # b0, b1, b2 per selected step (the shipped value)
       agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
-      # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+      # require_eval: { verifier_id: online_mind2web, label: 1, slug: null }   # a judged verdict of that kind in the source's verdicts/
       # require_archive: [browser.network]   (default; [] requires none)
       on_unbranchable: raise          # skip: leave such a source out, with its reason
       exclude_unloaded_checkpoints: true   # false: branch from pages captured before they loaded too
@@ -563,8 +563,12 @@ benchmark:
   note) in their trace. They need `history_source: restored`; `source` is refused before the
   sweep starts. A malformed file fails the listing; an entry that cannot be used is left out
   with its reason (`docs/data_flywheel_runbook.md`, "任务变体").
-- **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
-  refused before the sweep starts — pass `--no-eval`.
+- **No verifier of its own**: a `trace_branches` block takes no `verifiers:`, so a branch
+  sweep judges nothing and needs no `--no-eval`. A branch run is judged afterwards like any
+  run, with `spectragent eval --benchmark <a benchmark YAML of its source's benchmark>`:
+  against its source task's reference (the verdict's evidence names it, `source_reference`).
+  A task-variant branch has no reference, so only a verifier that needs none (WebJudge)
+  judges it; one that needs a reference cannot (an error in the report, nothing written).
 
 ## Exporting training data
 
@@ -586,7 +590,7 @@ exporter:
     sources: ["recorded/*"]          # globs, sorted by path; branch runs included
     filters:
       agent_outcome: any             # done | max_steps | error | timeout | vetoed
-      require_eval: null             # optional: { evaluator_id, label: 1, slug: null }
+      require_eval: null             # optional: { verifier_id, label: 1, slug: null }
       exclude_restoration_diverged: true
       max_document_misses: 0         # replay-log main-frame document misses; unlimited: no limit
       exclude_sites: []              # host names, suffix-matched
@@ -616,10 +620,12 @@ benchmark:
 ```
 
 - **What becomes a sample.** Every policy step that ran at least one action, of every
-  source that is readable, format 2, not recorded with `record_secrets`, and passes the
-  filters (left-out sources are listed with their reasons in the manifest). No verdict is
-  needed: `require_eval` is an optional filter, `null` by default, so a run the teacher
-  failed is exported too and labelled `labels.step_status`. A branch run contributes its
+  source that is readable (the current trace format), not recorded with `record_secrets`,
+  and passes the filters (left-out sources are listed with their reasons in the manifest).
+  No verdict is needed: `require_eval` is an optional filter, `null` by default, so a run
+  the teacher failed is exported too and labelled `labels.step_status`. Every judged verdict
+  in the run's `verdicts/` is a label too, in `labels.verdicts`
+  (`{verdict_slug, verifier_id, label, score}`). A branch run contributes its
   policy steps, with its source run's prefix as context and its source run's verdicts (if
   any) as labels; branches of one checkpoint whose targets are identical are
   flagged `duplicate_of`, not removed. With `exclude_unloaded_steps: true` (the default) a
@@ -743,9 +749,15 @@ uv run spectragent flywheel report --root traces/chains/first-live --evidence li
 
 - **Layout**: `<root>/traces/{record,control,same_path,branch}/`, `<root>/datasets/{first,second}/`,
   `<root>/report/{report.json,report.md}`, `<root>/configs/<stage>.yaml` (what each stage ran;
-  a branch stage's branches YAML as `<stage>_branches.yaml`),
-  `<root>/evals/<stage>/` (a stage with `evaluate: true`), `<root>/chain.json` (argv, exit codes,
-  runs and times — provenance only).
+  a branch stage's branches YAML as `<stage>_branches.yaml`), `<root>/chain.json` (argv, exit
+  codes, runs and times — provenance only).
+- **Judging**: a recording stage with `evaluate: true` runs the bench without `--no-eval`, so
+  the benchmark's offline verifiers judge the stage's runs after its sweep, each verdict into
+  its run's `verdicts/` (the chain keeps no verdict directory of its own). Only a
+  `tasks.benchmark` that lists `verifiers:` has any to run: point it at a benchmark YAML of
+  your own (see [Benchmarks](#benchmarks)); a shipped alias lists none. `same_path` and
+  `branch` refuse `evaluate: true`. A stage's `verify_timeout` is the bench's
+  `--verify-timeout`, the limit of each live verifier at the scoring point.
 - **Outcomes**: a run stage that exits 0 or 1 and wrote a run directory ran (a failed task is
   data); anything else stops the chain naming the stage, except 4 below. An export never
   overwrites `datasets/first|second`: with the export selected and either one present, the
@@ -759,7 +771,7 @@ uv run spectragent flywheel report --root traces/chains/first-live --evidence li
   included) starts, the report is still computed from what exists and says why the chain
   stopped, `chain.json` records `stopped_by_token_limit`, and `spectragent flywheel run` exits 4.
   `unlimited` (the default) counts nothing and changes nothing.
-- **The export YAML** of a chain uses `filters.require_eval: null` (the chain does not evaluate)
+- **The export YAML** of a chain uses `filters.require_eval: null` (by default the chain judges nothing)
   and `decontamination: {against: []}` (the sources are the benchmark's own tasks) — the
   defaults, as in the shipped `export_sft.yaml`.
 - **After the report**: `sections.sites.yaml` is the exclusion list in `filters.exclude_sites`
@@ -811,9 +823,11 @@ opened. The other benchmarks already write complete URLs and are not changed.
 
 ## Benchmarks
 
-A benchmark is a registered component that owns where its tasks come from
-(`docs/architecture_design.md` §4.10.1): its task loader, and the eval loader that
-gives verdicts their reference answers. A benchmark YAML holds one block under
+A benchmark is a registered component that owns where its tasks come from and how its runs
+are judged (`docs/architecture_design.md` §4.10.1): its task loader, the eval loader that
+gives verdicts their reference answers, the verifiers that judge its runs (its block's
+`verifiers:` list, see [Verifiers](#verifiers)) and which verdict is its brief result (its
+primary verdict). A benchmark YAML holds one block under
 `benchmark:` and nothing else; a run configuration holds the agent, its environment and
 its hooks, never a benchmark (a `benchmark:` section in it is refused). Select one with
 `--benchmark`: a shipped alias (`configs/benchmarks/<alias>.yaml`) or the path of your own
@@ -823,8 +837,8 @@ its hooks, never a benchmark (a `benchmark:` section in it is refused). Select o
 uv run spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web --list
 uv run spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web --subset Hard --list
 uv run spectragent run --config configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
-uv run spectragent config check configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
-uv run spectragent eval --config judge.yaml --benchmark online_mind2web --traces traces --out evals/one
+uv run spectragent config check configs/browser_use_local.yaml --benchmark online_mind2web --subset Hard --task-id <id>
+uv run spectragent eval --benchmark ./my_online_mind2web.yaml --traces traces --out tmp/eval-reports/one
 ```
 
 ```yaml
@@ -838,15 +852,85 @@ benchmark:
     # eval_loader left out: the registered online_mind2web eval loader for the task loader's subset
 ```
 
-`--subset` (on `bench`, and on `run` with `--task-id`) is the one benchmark knob the
-command line sets: it is written into the selected block's task loader before the run is
-composed, so the resolved configuration, its `config_hash` and every run's identity record
-it as if the YAML had said it. For another data directory, copy the YAML and pass its path.
+`--subset` (on `bench`, on `run` with `--task-id`, and on `config check` / `config explain`
+with `--benchmark`) is the one benchmark knob the command line sets: it is written into the
+selected block's task loader before the run is composed, so the resolved configuration, its
+`config_hash` and every run's identity record it as if the YAML had said it; `config check`
+and `config explain` refuse it without `--benchmark`, and a `--task-id` the subset does not
+hold. For another data directory, copy the YAML and pass its path.
 `config check` / `config explain` take `--benchmark` alone too: the configuration and the
 benchmark are composed together and prepared with no task context. Each benchmark is a package, `spectragent/benchmarks/<benchmark_id>/`,
 imported only when a configuration names it. A branch sweep's tasks come from a branches
 YAML of the same shape (`benchmark_id: trace_branches`, see
 [Branching a recorded run](#branching-a-recorded-run)).
+
+### Verifiers
+
+A verifier judges a run (`VerifierRegistrar`, `verifier_id`; `docs/architecture_design.md`
+§4.10.1, §4.11). It is written only in a benchmark block's `verifiers:` list — a top-level
+`verifier:` or `evaluator:` section is refused — and a benchmark takes the kinds its
+`__wiring__` names. A benchmark's own verifier lives in its package
+(`spectragent/benchmarks/<benchmark_id>/verifier.py`), the generic `exact_match` in
+`spectragent/verifiers/`; prompts are under `spectragent/prompts/verifiers/<verifier_id>/`.
+
+| benchmark | verifiers its block takes | primary verdict (the sweep's success rate) |
+|---|---|---|
+| `online_mind2web` | `online_mind2web` (WebJudge: key points, one vision call per screenshot, a final call; reads no reference row) | `online_mind2web`, by its label |
+| `browsecomp` | `browsecomp` (its grader, against the decrypted answer), `exact_match` | `browsecomp`, by its label |
+| `lexbench_browser` | `lexbench_browser` (rubric-scored, with a per-task pass mark) | `lexbench_browser`, by its label |
+| `androidworld` | none: AndroidWorld's task oracle judges on the device at the scoring point (verifier `androidworld`, its pinned commit as `version`, `score` 0 to 1; `evidence`: the task's family, name, index, seeds, a digest of its parameters, the goal, and for an information-retrieval task whether an answer was sent) | the live `androidworld` verdict: its score counts only when the agent ended `done` (a MiniWoB++ task: the score alone, its page ends the episode) |
+| `trace_branches` | none: a branch sweep judges nothing | none |
+
+The shipped benchmark YAMLs list no verifier, because an LLM judge's model must be one you
+verified first (its route, structured replies and image input;
+`docs/browser_agent_runbook.md`, "独立评测已录下的任务"). Copy the YAML, list verifiers in
+its block — a judge's `llm` is written in the verifier's own block, and is required — and
+select your copy:
+
+```yaml
+# my_online_mind2web.yaml, selected with --benchmark ./my_online_mind2web.yaml
+benchmark:
+  - benchmark_id: online_mind2web
+    task_loader: { benchmark_name: online_mind2web, subset: All, data_dir: null }
+    verifiers:
+      - verifier_id: online_mind2web
+        require_screenshots: true      # a trace with no screenshot is an error, not a text-only verdict
+        llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct } }
+```
+
+Where a verifier is attached follows from what it declares it needs (`__needs__`): one that
+needs the live environment judges at the scoring point, after the run and before the
+teardown; every other one judges offline, from the committed trace — every verifier above.
+The offline ones run in `spectragent eval --benchmark <alias|path.yaml> --traces <runs or
+their parents> --out <new dir> [--dry-run]`, over exactly the traces given, and in
+`spectragent bench` after its sweep (unless `--no-eval`), which prints each verifier's
+counts under `verifiers:` and, after the three ledgers, the primary verdict's success rate
+over the tasks it judged (a task it did not judge is left out, never a failure). A verifier
+that needs reference rows on a benchmark without reference data is refused before anything
+runs. The scoring point's limit is `--verify-timeout` on `run` and `bench`.
+
+Every verdict, from either attachment, is one `Verdict` (`spectragent/schemas/verdict.py`)
+in the run's own store, `<run>/verdicts/<slug>.json`: who judged (`verifier`: `verifier_id`,
+`version`, `model`, `config_signature`), `attachment` (`live` | `offline`), `status`
+(`judged` | `not_judged`), `score`, `label` (1 passed, 0 failed), `rationale`, `evidence`,
+the judge's `usage`, why it was not judged (`reason`: `timeout` | `error`, and `detail`;
+only a live verdict is ever `not_judged`), `started_at` and `duration_ms`. The slug is
+`<verifier_id>_<first 8 hex of the settings' sha256>`, so judging again with the same
+settings replaces that verdict and other settings land beside it. The store is written
+atomically, outside the manifest, and read with `RunTrace.verdicts()`. An offline verifier
+that cannot judge a trace writes nothing. A verifier never changes the run: it is no part of
+`config_hash` or of the recorded `config.json` (the benchmark block is recorded with
+`verifiers: null`).
+
+`spectragent eval`'s `--out` holds the batch report only, never a copy of a verdict:
+`report.json` (format `af-independent-evaluation-2`: `benchmark`, `provided`, `verifiers`,
+one section per verifier with `slug`, its identity, `counts` {`provided`, `judged`,
+`passed`, `failed`, `errors`}, `coverage`, `success_rate` (passed over labelled verdicts),
+`judge_usage` and `calls_without_usage`, and `outcomes`, one row per trace and verifier,
+whose `verdict` is the path `verdicts/<slug>.json` inside the run, or `null`) and
+`report.md`. Exit codes: 0 every verifier judged every run (a failed task is still a
+verdict), 1 some verifier could not judge some run, 2 the benchmark (one that lists no
+offline verifier, say), the inputs or the output directory were refused.
 
 ## Single-task start flags
 

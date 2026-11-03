@@ -59,7 +59,7 @@ The browser is the only implemented environment. Output of `spectragent componen
 | Archivers | `browser.network` (WARC), `browser.storage`, `browser.dom_raw`, `browser.frames`, `browser.replay_log` |
 | Replay | replayability `none`, `pinned`; network source `live`, `archive`; miss policy `strict` |
 | Benchmarks | `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld`, and `trace_branches` (the branch sweep's tasks from recorded runs); each holds its task loader of the same name; shipped as `configs/benchmarks/<alias>.yaml` and selected with `--benchmark <alias or path>`; step selectors `explicit`, `every_k`, `all`, `last` |
-| Evaluators | `exact_match`, `online_mind2web`, `browsecomp`, `lexbench_browser` |
+| Verifiers | `exact_match`, `online_mind2web`, `browsecomp`, `lexbench_browser`; written in a benchmark block's `verifiers:` list (the shipped benchmark YAMLs list none) |
 | Export | exporter `openai_messages`; translators `identity`, `index_to_coordinate` |
 | Replay reviewer | `jev` |
 
@@ -186,7 +186,7 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
   --benchmark configs/flywheel/branches_all_steps.yaml --list
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
-  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+  --benchmark configs/flywheel/branches_all_steps.yaml
 uv run spectragent export --config configs/flywheel/export_sft.yaml
 uv run spectragent flywheel run --spec chain.yaml
 ```
@@ -219,10 +219,10 @@ traces/<run_id>/
   observations/000_browser.screenshot.png
   messages/000_call_00.json        # one file per model call; images/ and output_formats/ stored once per run
   env/                             # environment evidence, only when archive is set
-  evals/                           # post-run verdicts, outside the manifest
+  verdicts/                        # every verdict, live or offline, one <slug>.json each, outside the manifest
 ```
 
-A trace is complete within its declared recording scope; an omitted channel is not corrupt evidence. Token usage is stored as the provider reported it, and unreported usage stays unknown. No prices are computed. Readers refuse any trace format other than 7.
+A trace is complete within its declared recording scope; an omitted channel is not corrupt evidence. Token usage is stored as the provider reported it, and unreported usage stays unknown. No prices are computed. Readers refuse any trace format other than 8.
 
 Read it in Python through `spectragent.core.trace.RunTrace`, which only serves committed files and checks their sizes and hashes.
 
@@ -232,7 +232,7 @@ Read it in Python through `spectragent.core.trace.RunTrace`, which only serves c
 uv run spectragent runs list --search mind2web
 uv run spectragent runs show <run> --step 0
 uv run spectragent runs compare <run-a> <run-b>
-uv run spectragent runs compare-groups --left <hash> --right <hash> --evaluator <slug>
+uv run spectragent runs compare-groups --left <hash> --right <hash> --verifier <slug>
 uv run spectragent tui                                   # terminal browser for existing runs
 uv run spectragent run --config ... --task ... --tui     # live monitor (also on bench)
 uv run spectragent view --open                           # local web viewer on 127.0.0.1:8765
@@ -247,7 +247,7 @@ All of these share one read side and never start an agent or a model. The viewer
 |---|---|
 | `run` | One task; `--dry-run`, `--replay-archive`, `--tui` |
 | `bench` | Benchmark or branch tasks; `--list`, `--task-id`, `--limit`, `--no-eval`, `--token-limit`, `--tui` |
-| `eval` | Score saved traces with one evaluator and eval loader |
+| `eval` | Judge saved traces with a benchmark's offline verifiers; each verdict goes into the run's `verdicts/` |
 | `export` | Training data from saved traces |
 | `flywheel` | `run`, `report`, `diagnose` |
 | `replay-review` | Independent review of replay pairs |
@@ -307,7 +307,7 @@ uv run pyright spectragent tests
 ## Status and limits
 
 - The browser is the only environment. Integration was accepted on sampled end-to-end runs; no full agent-by-benchmark matrix was run. Workflows with several real agents each driving multiple tabs have not been verified.
-- Evaluators run as a separate stage (`spectragent eval`) that reads committed traces and keeps task correctness apart from replay fidelity. No flywheel stage needs a verdict.
+- Offline verifiers run as a separate stage (`spectragent eval`, or `spectragent bench` after its sweep) that reads committed traces and keeps task correctness apart from replay fidelity; every verdict goes into the run's `verdicts/`. The shipped benchmark YAMLs list no verifier, because an LLM judge's model must be one you verified first. No flywheel stage needs a verdict.
 - A complete recording does not mean the task succeeded. Trace completeness, restoration checks and matching screenshots are separate evidence; none of them proves a task or a login succeeded.
 - Cloud backends cannot record or replay. WebSocket replay is not supported.
 - `pinned` fixes the page colour scheme, but the host's own light or dark appearance is not recorded, and headless Chrome's native scrollbar seems to follow it. Keep it fixed for production runs and compare restoration results only between runs made under the same appearance.

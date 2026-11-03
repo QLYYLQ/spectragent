@@ -50,7 +50,7 @@ If a decision is easy to reverse, skip it — you'll just reverse it. If it's no
 - **Registry shape.** A new registrar, or a discriminator going flat vs nested (`loop_id` flat, `model_type.provider` nested). Which one a registry gets is a real trade-off and it's invisible from the code.
 - **Contract boundaries.** What belongs in an Agent method slot versus Loop orchestration versus a Capability method. Every one of these is expensive to move later.
 - **Negotiation semantics.** Anything changing how the three-party observation or action negotiation resolves — especially relative-vs-qualified key rules, or what happens on an ambiguous binding.
-- **Trace / WAL format.** File naming, the commit point, what a crash-recovery reader is allowed to assume. Evaluators read the trace, so the format is a public contract even though nothing imports it.
+- **Trace / WAL format.** File naming, the commit point, what a crash-recovery reader is allowed to assume. Verifiers read the trace, so the format is a public contract even though nothing imports it.
 - **Dependency choices that carry lock-in.** `conscribe`, `agent-cdp`, the cloud-browser lite SDKs. Not every library — the ones that would take a month to swap out.
 - **Deliberate deviations from the obvious path.** Anything a reasonable reader would assume the opposite of. These stop the next session from "fixing" something intentional.
 - **Explicit no-s.** "No SQLite for traces." "No `# deprecated` re-exports." A recorded no is worth as much as a yes — it's what stops the same suggestion returning in three months.
