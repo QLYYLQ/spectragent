@@ -96,6 +96,7 @@ class RuntimeHook(Protocol):
         identity: RunIdentity,
         call_context: RunCallContext,
         action_space: ActionSpace,
+        step_budget: int | None,
         agent_id: str,
         loop_id: str,
         env_type: str,
@@ -156,6 +157,11 @@ class RuntimeHook(Protocol):
           the source run, its trace and the checkpoint step — or ``None``
           for every run that is not a branch. Per task, like ``task_setup``;
           the runtime passes it through without reading it.
+        - ``step_budget``: the most policy steps the Loop allows this task
+          (``loop.step_budget(loop_inputs)``: a task's own budget lowers
+          ReAct's configured ``max_steps``; a branch's is its
+          ``1 + continue_steps``), or ``None`` when the Loop has no step
+          budget. Per task, like ``task_setup``.
         - ``config_source``: the source YAML path and consumed-byte digest supplied
           by the caller, or ``None`` when its source is unknown. It is provenance,
           not effective configuration; no hook derives it from resolved settings.

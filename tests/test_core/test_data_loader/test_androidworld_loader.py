@@ -28,6 +28,8 @@ from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
+from spectragent.core.loops import ReactLoop
+from spectragent.schemas.task import TaskContext
 from tests._helpers.fake_androidworld import fake_installation
 
 TASK_LIST_WRITER = (
@@ -91,6 +93,30 @@ def test_each_listed_task_is_an_android_task_whose_record_is_its_oracle_task(
     )
     assert task.tags == ["android"] and task.metadata == {"complexity": 1.2}
     assert loader.get_task_context(task_id).env == {"oracle_task": record}
+
+
+@pytest.mark.parametrize(
+    ("complexity", "budget"),
+    # The pinned commit's range runs from 1.0 (10 steps) to OsmAndTrack's 12.0
+    # (120); 0.15 is not on it and shows the truncation (1.5 steps is 1).
+    [(1.0, 10), (1.2, 12), (2.2, 22), (7.8, 78), (12.0, 120), (0.15, 1)],
+)
+def test_each_task_hands_the_loop_the_steps_androidworld_gives_it(
+    tmp_path: Path, complexity: float, budget: int
+) -> None:
+    """``int(10 * complexity)``, AndroidWorld's ``_allocate_step_budget``, as ReAct's Loop input."""
+    loader = _loader(tmp_path, _record(complexity=complexity))
+
+    (task_id,) = loader.task_ids()
+    context = loader.get_task_context(task_id)
+    assert budget == int(10 * complexity)
+    assert context.loop == {"max_steps": budget}
+    ReactLoop().check_loop_inputs(context.loop)
+    assert ReactLoop(max_steps=200).step_budget(context.loop) == budget
+
+
+def test_an_unknown_task_has_no_step_budget(tmp_path: Path) -> None:
+    assert _loader(tmp_path, _record()).get_task_context("NoSuchTask/42/0") == TaskContext()
 
 
 def test_information_retrieval_tasks_are_kept_and_the_oracle_accepts_them(

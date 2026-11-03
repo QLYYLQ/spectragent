@@ -11,7 +11,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from enum import Enum
@@ -185,6 +185,15 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         # The default for a hand-built loop; the Composer's injection, which
         # happens after construction, replaces it with the configured one.
         self.restorer = default_restorer()
+
+    def step_budget(self, loop_inputs: Mapping[str, object]) -> int:
+        """The policy step at the checkpoint and ``continue_steps`` more, within ``max_steps``.
+
+        A branch takes no step budget from its task (it declares only
+        ``checkpoint``); what its policy steps are told is the source's
+        (:meth:`loop_fragment_builders`).
+        """
+        return min(1 + self.continue_steps, self.max_steps)
 
     # ── assembly: is this checkpoint one this assembly can branch from? ──
 
@@ -408,6 +417,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             source=source,
             step_executor=ctx.get("step_executor", self),
             step_info=source.step_info(t),
+            max_steps=self.step_budget(ctx.get("loop_inputs", {})),
         )
         if self.history_source == "source":
             self._check_seed(run)
@@ -418,8 +428,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             return restored
         observation, check = restored
 
-        budget = min(1 + self.continue_steps, self.max_steps)
-        for offset in range(budget):
+        for offset in range(run.max_steps):
             result = await run.step_executor.execute_step(
                 run,
                 t + offset,

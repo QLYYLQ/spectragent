@@ -128,6 +128,7 @@ def test_unknown_usage_is_never_drawn_as_zero():
         "elapsed_s": 1.0,
         "policy_steps": 0,
         "max_steps": None,
+        "step_budget": None,
         "continue_steps": None,
         "calls": 2,
         "usage_missing": 2,
@@ -153,6 +154,15 @@ def test_branch_budget_is_a_configured_ceiling_never_a_fraction():
     text = plain(budget_parts(30, 0))
     assert text == "configured ceiling 30  continue_steps 0"
     assert "/" not in text
+    # A branch's budget is its continuation: it never shows as a task budget.
+    assert plain(budget_parts(30, 0, 1)) == "configured ceiling 30  continue_steps 0"
+
+
+def test_a_task_budget_below_the_ceiling_shows_beside_it():
+    """A run that stops at its task's budget says why on the card."""
+    assert plain(budget_parts(120, None, 10)) == "configured ceiling 120  task budget 10"
+    assert plain(budget_parts(100, None, 100)) == "configured ceiling 100"
+    assert plain(budget_parts(100, None, None)) == "configured ceiling 100"
 
 
 def test_replay_log_states_read_differently():

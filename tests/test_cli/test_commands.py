@@ -283,6 +283,23 @@ def test_config_prepare_failure_exposes_the_existing_negotiation_contract(tmp_pa
     assert error["missing"] and error["provided"] == []
 
 
+def test_a_refused_loop_input_is_named_in_the_contract():
+    from spectragent.cli.configuration_errors import contract_details
+    from spectragent.core.loops import ReactLoop
+    from spectragent.core.loops.validation import IncompatibleLoopInputError
+
+    with pytest.raises(IncompatibleLoopInputError) as refused:
+        ReactLoop().check_loop_inputs({"max_steps": 0})
+    assert contract_details(refused.value) == {
+        "contract": "loop_inputs",
+        "loop": "react",
+        "missing": [],
+        "unknown": [],
+        "mistyped": {},
+        "refused": {"max_steps": "must be a positive integer, got 0"},
+    }
+
+
 def test_composition_diagnosis_does_not_echo_constructor_exception_values():
     from spectragent.cli.app import _validation_error
     from spectragent.cli.configuration_errors import ConfigInspectionError

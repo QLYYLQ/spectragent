@@ -161,6 +161,9 @@ class _MockLoopBase:
     def execution_limits(self):
         return ExecutionLimits()
 
+    def step_budget(self, loop_inputs):
+        return None
+
 
 class _SlowLoop(_MockLoopBase):
     loop_id = "slow"

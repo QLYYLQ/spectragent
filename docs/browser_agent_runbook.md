@@ -91,7 +91,7 @@ uv run spectragent tui --root traces --run branch/RUN_KEY
 
 分叉页面直接显示 `source/restored` 历史策略与 `strict/warn` 恢复策略，时间线标出 checkpoint 和可测差异。Observation 中并排查看 Source record 与 Actual replay，包括截图、URL/DOM 校验、动作重定位、原结果与实际结果；通过恢复校验仍可能存在容差内的截图差异。Agent observation 默认按录制的 cursor 配置重建模型图片；Browser state 切回干净截图。cursor 开启但位置未知时保持原图并明确标注，精确发送的 prompt 图片在 Model calls 查看。
 
-恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
+恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算；任务自己的步数预算比上限低时（AndroidWorld 的任务），上限旁另写 `task budget`。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
 
 查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、评测、配置和分叉来源。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择 evaluator；重复尝试记为 ambiguous，不自动挑最好的一次。判分配置不同不合并统计。报告页读取同一根目录下的独立评测、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
 

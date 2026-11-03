@@ -12,6 +12,8 @@ from spectragent.monitoring import ProgressState, attach_progress
 from spectragent.schemas.action import Action
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
+from spectragent.tui.presentation import sheet_text
+from spectragent.tui.summary import summary_sheet
 from tests._helpers.browser_evidence import browser_evidence
 
 
@@ -176,6 +178,26 @@ def test_trace_location_is_observed_lazily_and_cleared_for_the_next_run():
     assert state.snapshot()["trace_path"] == "/recorded/task-one"
     attach_progress(ComposedRun(by_layer={}), state)
     assert state.snapshot()["trace_path"] is None
+
+
+async def test_the_card_shows_a_task_budget_below_the_ceiling():
+    state = ProgressState()
+    hook = LiveMonitor()
+    hook.bind(state, environment=False)
+    await hook.on_run_start(
+        loop=SimpleNamespace(max_steps=120), loop_id="react", task_id="t-1", step_budget=10
+    )
+    snapshot = state.snapshot()
+    assert (snapshot["max_steps"], snapshot["step_budget"]) == (120, 10)
+    steps = next(
+        line
+        for line in sheet_text(summary_sheet(snapshot, complete=False)).splitlines()
+        if line.startswith("Steps")
+    )
+    assert "configured ceiling 120  task budget 10" in steps
+    # The next task starts without the last one's budget.
+    state.start_task("t-2")
+    assert state.snapshot()["step_budget"] is None
 
 
 async def test_strict_restore_failure_keeps_zero_policy_steps_and_branch_context():

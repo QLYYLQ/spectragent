@@ -72,7 +72,7 @@ class AndroidWorldTask(BaseModel):
             instruction then, differently each time), so it is not known
             before.
         complexity: AndroidWorld's estimate; its own runner gives a task
-            ``int(10 * complexity)`` steps.
+            ``int(10 * complexity)`` steps (:attr:`step_budget`).
         start_on_home_screen: Whether the episode starts on the home screen
             (``/reset?go_home=``); MiniWoB tasks start in their app.
     """
@@ -89,6 +89,15 @@ class AndroidWorldTask(BaseModel):
     goal_made_at_initialize: bool
     complexity: float = Field(gt=0)
     start_on_home_screen: bool
+
+    @property
+    def step_budget(self) -> int:
+        """The steps AndroidWorld's own runner gives this task.
+
+        ``suite_utils._allocate_step_budget`` of the pinned commit, the same
+        expression on the same float: ``int(10 * complexity)``, truncated.
+        """
+        return int(10 * self.complexity)
 
     @model_validator(mode="after")
     def _the_seed_is_the_addressed_instances(self) -> Self:

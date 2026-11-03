@@ -931,14 +931,23 @@ def lineage_facts(
     return sheet
 
 
-def budget_parts(max_steps: int | None, continue_steps: int | None) -> list[Part]:
-    """The configured ceiling and the branch continuation, never a fork's budget as a fraction."""
+def budget_parts(
+    max_steps: int | None, continue_steps: int | None, step_budget: int | None = None
+) -> list[Part]:
+    """The configured ceiling and the branch continuation, never a fork's budget as a fraction.
+
+    A task that brings its own, lower step budget (*step_budget*, a ReAct
+    run's) shows it beside the ceiling, so a run that stops early says why. A
+    branch's budget is its continuation, already shown, so it never gets one.
+    """
     parts: list[Part] = [
         ("configured ceiling ", "muted"),
         (str(max_steps) if max_steps is not None else "—", "plain"),
     ]
     if continue_steps is not None:
         parts.extend([("  continue_steps ", "muted"), (str(continue_steps), "strong")])
+    elif step_budget is not None and step_budget != max_steps:
+        parts.extend([("  task budget ", "muted"), (str(step_budget), "strong")])
     return parts
 
 

@@ -60,6 +60,7 @@ def contract_details(exc: Exception) -> dict[str, Any]:
             "missing": list(exc.missing),
             "unknown": list(exc.unknown),
             "mistyped": dict(exc.mistyped),
+            "refused": dict(exc.refused),
         }
     if isinstance(exc, MissingEnvironmentError):
         return {"contract": "requires_environment", "loop": exc.loop_id}

@@ -679,14 +679,16 @@ class TraceConfig(BaseModel):
     under ``env/`` — the state of the world the agent acted in,
     privacy-marked on its own terms.
 
-    Two per-task facts sit beside the layers: :attr:`task_setup`, the
-    environment setup context the task started from, redacted by value; and
-    :attr:`branch`, where a branch run came from.
+    Three per-task facts sit beside the layers: :attr:`task_setup`, the
+    environment setup context the task started from, redacted by value;
+    :attr:`branch`, where a branch run came from; and :attr:`max_steps`, the
+    step budget the Loop ran the task under.
 
     **A per-task or per-feature field is written only when it has a
     value** (``docs/architecture_design.md`` §5.3): ``branch`` only in a
     branch run, ``task_setup`` only when the task was started with a setup
-    context, ``env_evidence_privacy`` only when archivers were bound,
+    context, ``max_steps`` only when the Loop has a step budget,
+    ``env_evidence_privacy`` only when archivers were bound,
     ``extra`` only when the caller passed some. A placeholder such as
     ``"branch": null`` in every other run's ``config.json`` would be one
     more thing to explain. An absent key reads back as the field's
@@ -759,6 +761,17 @@ class TraceConfig(BaseModel):
     #: ``resolved``. Not called "provenance": that word names the
     #: ``secrets_recorded`` / ``env_evidence_privacy`` layer above.
     branch: BranchProvenance | None = Field(default=None, exclude_if=_absent)
+    #: The most policy steps the Loop allowed this task: its ``step_budget``
+    #: for the task's Loop inputs, which ``AgentRuntime`` hands to
+    #: ``on_run_start``. ReAct's is its configured ``max_steps``, lowered by
+    #: the task's own step budget (the Loop input ``max_steps``,
+    #: AndroidWorld's ``int(10 * complexity)``); a branch's is
+    #: ``1 + continue_steps`` within it. ``None`` (not written) means not
+    #: recorded: the Loop has no step budget, or the trace predates this field
+    #: (an older ReAct run's budget was its configured ``max_steps``, in
+    #: ``resolved``). Per task, so not part of the digest: the configured
+    #: ceiling moves it through ``resolved``.
+    max_steps: int | None = Field(default=None, exclude_if=_absent)
 
     #: Which source file launched this run, across all historical versions.
     #: Absent for callers and older traces without explicit source provenance.
@@ -779,9 +792,9 @@ class TraceConfig(BaseModel):
         result — the archive binding (``active_archivers`` /
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
-        configuration), ``extra``, ``task_setup`` and ``branch`` (per-task
-        data) and the provenance fields ``config_source`` / ``secrets_recorded`` /
-        ``env_evidence_privacy``.
+        configuration), ``extra``, ``task_setup``, ``branch`` and
+        ``max_steps`` (per-task data) and the provenance fields
+        ``config_source`` / ``secrets_recorded`` / ``env_evidence_privacy``.
 
         Args:
             resolved: The **unredacted** config dump

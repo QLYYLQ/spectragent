@@ -211,7 +211,10 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
         """callable(getattr(agent, slot)) — 缺 slot 即 raise IncompatibleError"""
 
     def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
-        """键与类型对照 __loop_inputs__ — 多的、缺的、类型不对的一次报全：IncompatibleLoopInputError"""
+        """键与类型对照 __loop_inputs__ — 多的、缺的、类型不对的、Loop 拒绝的值（loop_input_refusal）一次报全：IncompatibleLoopInputError"""
+
+    def step_budget(self, loop_inputs: Mapping[str, object]) -> int | None:
+        """这个任务最多走几个策略步，只给 trace 与实时界面、不给 Agent；None：没有步数预算（下文"Loop 输入"）"""
 
     def get_action_space(self, *, active_actions, **context) -> list[ActionDescriptor]:
         """__loop_actions__ 里协商激活了的那些的 descriptor，接在环境的之后进提示词（§4.5 "Loop 提供的动作"）"""
@@ -247,11 +250,13 @@ class ReactLoop(AgentLoopBase):
     __optional_slots__ = {"get_react_output_model", "prepare",
                           "format_react_output", "format_action_fact",
                           "parse_react_thought"}   # 后三个：训练导出（M32，见下）
+    __loop_inputs__ = {"max_steps": LoopInput(int, required=False)}   # 任务自己的步数预算（下文"Loop 输入"）
 
     async def _execute(self, agent, task, *, ctx, **_):
         # deps 每次调用经 ctx 传入，不存在 self 上
-        run = LoopRun.from_ctx(agent, task, ctx, ...)   # 一个 run 的依赖与账本（core/loops/run.py）
-        for step_idx in range(self.max_steps):
+        run = ReactRun.from_ctx(agent, task, ctx, ...,  # 一个 run 的依赖与账本（core/loops/run.py）
+                                max_steps=self.step_budget(ctx["loop_inputs"]))
+        for step_idx in range(run.max_steps):
             result = await run.step_executor.execute_step(run, step_idx)   # observe → build_prompt → LLM → parse → act
             if result is not None:
                 return result
@@ -286,6 +291,7 @@ AgentLoop (Protocol)
 │     ├── slots: {build_react_prompt, parse_react_output}
 │     │           opt: {get_react_output_model, prepare,
 │     │                 format_react_output, parse_react_thought}   ← 后两个只有训练导出用（M32）
+│     ├── loop 输入：可选的 max_steps（任务自己的步数预算，配置的 max_steps 是上限）
 │     ├── 循环：observe → build_react_prompt → LLM → parse_react_output → act
 │     │
 │     └── BranchLoop (__registry_key__ = "branch")  ← M31（P2，数据飞轮）
@@ -429,7 +435,7 @@ class ReactLoop(AgentLoopBase):
         act_fn = ctx["act_fn"]                     # guarded_act，见 4.5 节
         negotiated_obs = ctx["negotiated_obs"]
 
-        for step in range(self.max_steps):
+        for step in range(self.step_budget(ctx["loop_inputs"])):   # 这个任务的步数预算（下文"Loop 输入"）
             # AOP hooks 在方法调用时自动触发 — Loop 完全不知道有 hook 存在
             obs = await env.observe(negotiated_obs)
             prompt_context = ReactPromptContext(step=step, phase="policy", policy_step=step)
@@ -476,10 +482,18 @@ class BranchLoop(ReactLoop):
     __loop_inputs__ = {"checkpoint": LoopInput(Checkpoint, description="源 run 目录 + 检查点步")}
 ```
 
-- **声明**：`AgentLoopBase.__loop_inputs__: ClassVar[Mapping[str, LoopInput]]`，默认为空，`ReactLoop` 不接受任何输入。
-- **校验**：`AgentLoopBase.check_loop_inputs(inputs)` 把多出来的键、缺的必需键、类型不对的值一次报全，抛 `IncompatibleLoopInputError`（`core/loops/validation.py`，点名 loop 与每个键）。`AgentRuntime.prepare()` 在 slot 校验之后立刻调它（早于协商与织入），`weave()` 再调一次（weave 是公开方法，直接调用的人得到同样的错误），与 slot 校验的形状相同。所以把一个检查点交给 `react`，会在装配期直接报错，不会从头跑一遍。
+- **声明**：`AgentLoopBase.__loop_inputs__: ClassVar[Mapping[str, LoopInput]]`，默认为空。`ReactLoop` 只接受一个可选的 `max_steps`（下面"任务自己的步数预算"），`BranchLoop` 只接受必需的 `checkpoint`（子类的声明取代父类的）。
+- **校验**：`AgentLoopBase.check_loop_inputs(inputs)` 把多出来的键、缺的必需键、类型不对的值，以及类型对、Loop 仍然拒绝的值（`loop_input_refusal(key, value)` 返回的原因，默认什么都不拒绝）一次报全，抛 `IncompatibleLoopInputError`（`core/loops/validation.py`，点名 loop 与每个键）。`AgentRuntime.prepare()` 在 slot 校验之后立刻调它（早于协商与织入），`weave()` 再调一次（weave 是公开方法，直接调用的人得到同样的错误），与 slot 校验的形状相同。所以把一个检查点交给 `react`，会在装配期直接报错，不会从头跑一遍。
 - **送达**：校验过的输入以只读映射放进 weave 的 deps（`ctx["loop_inputs"]`）。Loop 实例上不存任何东西。
 - **来源**：`TaskLoader.get_task_context(id)` 返回 `TaskContext{env, loop, branch}`（§4.10），`BenchmarkRunner` 把 `loop` 部分作为 `AgentRuntime.execute(loop_inputs=...)` 送进来。`prepare()` / `execute()` 原先那个把任意关键字原样转给 `weave` 的 `**kwargs` 通道已删除，由这条有类型的通道取代：拼错的关键字现在是 `TypeError`，不是 `ctx` 里一个没人读的键。
+
+**任务自己的步数预算：`max_steps`（2026-11-02）。** AndroidWorld 自己的 runner 给每个任务 `int(10 × complexity)` 步（钉住的 commit 上 10 到 120 步），要与它比就得按任务的预算跑。预算走上面这条通道，不另开：任务加载器在 `TaskContext.loop` 里给 `max_steps`（至少为 1 的整数），`ReactLoop` 把它声明为可选的输入（`androidworld` 加载器给每个任务，§11.2）。
+
+- **规则：配置是上限。** 这个任务的步数预算是任务的 `max_steps` 与配置的 `max_steps` 中小的那个；任务没给时就是配置的（`ReactLoop.step_budget(loop_inputs)`）。任务的预算只能降低它，不能抬高。理由：配置的 `max_steps` 在别处已经是上限（`BranchLoop` 跑 `min(1 + continue_steps, max_steps)` 个策略步，TUI 把它写成 "configured ceiling"，§4.17），这样它在每个 run 里都是真话；YAML 里配的旋钮从不被任务悄悄改掉；冒烟测试照样能用一个小的 `max_steps` 封顶。代价：要与 AndroidWorld 的 runner 逐个任务一致，配置的 `max_steps` 至少要 120（§11.2）。上限压低一个任务的预算时不是悄悄的：`ReactLoop` 在这个 run 开始时记一条 WARNING，点名任务、任务的预算与配置的上限。
+- **不是正整数就拒绝**：`0`、负数与 `True` / `False`（`bool` 是 `int` 的子类，不是步数）由 `ReactLoop.loop_input_refusal` 拒绝，`"12"`、`12.0` 是类型不对；都在 `prepare()` 报 `IncompatibleLoopInputError`，trace 打开之前，`spectragent bench` 的预检也看得到。
+- **Agent 只从 `loop.step_info` 知道它**：预算由 Loop 算（`step_budget(loop_inputs)`，`AgentLoopBase` 的默认是 `None`，即没有步数预算）。ReAct 的 run 到这里停（`ReactRun.max_steps`），`loop.step_info` 每一步告诉 Agent 的也是它（BrowserUse、Skyvern、UI-TARS 都写成第几步、共几步）。Runtime 校验 loop 输入之后向 Loop 要同一个数，按名字交给 `on_run_start`（`step_budget`），只给 trace（`TraceConfig.max_steps`，§5.3）与实时界面（§4.17）。它不进 `ExecutionLimits`：那是 Agent 可以写进种子提示词的限制，而分叉与训练导出把 `loop.step_info` 钉在源 run 的数上（`pinned_step_info`），种子却钉不住。`history_source: source` 的分叉要求种子与源 run 的第一条 prompt 逐字相同（`_check_seed`），分叉的预算却是 `1 + continue_steps`；导出给学生建种子时没有任务的 loop 输入。写进种子的预算会让这样的分叉在运行时被拒，并让 restored 分叉与导出样本里出现两个不同的数。
+- **`BranchLoop` 不接受它**：分叉的策略预算是 `1 + continue_steps`，在配置的 `max_steps` 之内（`BranchLoop.step_budget`），告诉模型的是源 run 在检查点录下的那个（`pinned_step_info`），所以它只声明 `checkpoint`；`trace_branches` 的任务从不带 `max_steps`（重新解析源 benchmark 的任务时只取 env 部分）。它的 `step_budget` 与 trace 记下的 `max_steps` 是这个策略预算，不是配置的上限。
+- **按任务变化**：同一次 sweep 里只差预算的两个任务共享一个 `config_hash`；配置的上限经 `resolved` 改变它（§5.3）。
 
 #### 一个 run 与一步：执行状态与公开步骤边界
 
@@ -517,7 +531,7 @@ ReAct 的公开 `read_reply`、`cap_actions`、`remember_rejected`、`remember_r
 
 原因：以前结束动作的 `success` 同时承担"执行了"与"agent 说完成了"两层意思。UI-TARS 的每个 run 都"自报成功"，包括说自己做不到的；一个 `done(success=false)` 在 trace 里记成一次失败的动作：执行错误（`StepRecord.execution_errors` 的 "action reported failure"）、训练导出的 `labels.step_status: action_failed`、动作标记的"（没有成功）"。不用动作效果（§4.5）承载结论：效果是动作执行前后测得的事实，`describe()` 不含任务判断，而结论正是 agent 的任务判断；它与答案 `extracted_content` 一样，是结束动作交出的内容。`AgentResult.schema_version` 因此升为 `4.0`，3.0 的结果在读取时被拒绝（"predates AgentResult schema 4.0"），不做转换；trace 格式版本不变（缺少 `reported_success` 就是没有结论，与动作效果同一条规则），旧录制按测试数据可丢弃的裁决重新生成。
 
-**执行限制显式传递。** Loop 的 `execution_limits() -> ExecutionLimits` 是唯一来源；Agent 用 `__execution_limit_fields__` 声明消费字段（显式空集表示不适用），通过原有 `prepare(..., execution_limits=...)` 收到有类型的限制。Runtime 在 `prepare()` 检查提供与消费及显式参数是否匹配，失败先于 setup 和模型调用。未声明不能静默省略限制。Agent 自己决定系统提示和每轮提示的布局，Runtime 不拼领域提示。观测的格式说明走同样的形状：Agent 用 `__fragment_formats__` 声明提示词引用哪些 fragment 的格式（用 wiring 里的名字），经 `prepare(..., fragment_formats=...)` 收到提供方的原话（§4.4 “观测格式由提供方描述”）；不声明的 Agent 签名不变。
+**执行限制显式传递。** Loop 的 `execution_limits() -> ExecutionLimits` 是唯一来源（步数预算不在其中：它随任务变，Agent 只从 `loop.step_info` 知道它，上文"Loop 输入"）；Agent 用 `__execution_limit_fields__` 声明消费字段（显式空集表示不适用），通过原有 `prepare(..., execution_limits=...)` 收到有类型的限制。Runtime 在 `prepare()` 检查提供与消费及显式参数是否匹配，失败先于 setup 和模型调用。未声明不能静默省略限制。Agent 自己决定系统提示和每轮提示的布局，Runtime 不拼领域提示。观测的格式说明走同样的形状：Agent 用 `__fragment_formats__` 声明提示词引用哪些 fragment 的格式（用 wiring 里的名字），经 `prepare(..., fragment_formats=...)` 收到提供方的原话（§4.4 “观测格式由提供方描述”）；不声明的 Agent 签名不变。
 
 **UI-TARS 的稳定上下文与执行反馈。** Task 只写入 `prepare` 生成的 system 种子；首次观测的实测 `browser.platform` 另生成一次 system 消息，后续轮次不重复 Task 或平台段。每次 `prepare` 重置平台声明，因此执行、source/restored 历史重建及从非零步开始的独立导出段都得到自己的平台上下文；同一执行的平台变化明确拒绝，不能使用旧值继续。平台仍经环境 fragment 提供、记录，不从宿主机推断。
 
@@ -654,8 +668,10 @@ class AgentRuntime:
 
         # 1. Slot 校验：loop.__required_slots__ ⊆ agent 的 callable 方法
         loop.validate_slots(agent)
-        # 1b. Loop 输入校验（M31，§4.1）：多的 / 缺的 / 类型不对 → IncompatibleLoopInputError
+        # 1b. Loop 输入校验（M31，§4.1）：多的 / 缺的 / 类型不对 / Loop 拒绝的值 → IncompatibleLoopInputError
         loop.check_loop_inputs(loop_inputs or {})
+        #     这个任务最多走几个策略步（§4.1 "任务自己的步数预算"）：只交给 on_run_start，不给 Agent
+        self._step_budget = loop.step_budget(loop_inputs or {})
         # 1c. Loop 要环境而这个 run 没有（§4.1 "Loop 的三条类级声明"）→ MissingEnvironmentError；
         #     不要环境的 Loop：缺席的环境什么都不提供，下面的协商照常进行
         if env is None and type(loop).__requires_env__:
@@ -763,6 +779,7 @@ class AgentRuntime:
             archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
             env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记；没绑定归档器时为 None
             task_setup=self._prepared_setup.recordable,       # owner 决定的记录投影；TraceWriter 只 snapshot / redact
+            step_budget=self._step_budget,                     # 这个任务的步数预算：trace 记成 TraceConfig.max_steps（§5.3），实时卡片显示它（§4.17）
             branch=branch)                                     # M31：分叉来源（BranchProvenance），非分叉 run 为 None
 
         self._finish_started = False
@@ -884,7 +901,7 @@ class AgentRuntime:
 
 协商结果留在 runtime 上：`negotiated_archive` 与 `negotiated_observation` / `negotiated_actions` 并列，`prepare()` 之后可读，没有归档消费者时为 `None`。它连同 `env_evidence_privacy`（没绑定归档器时为 `None`）、`task_setup` 一起按名字传给 `on_run_start`：runtime 是唯一同时握有这些事实的组件，由它解析，hook 只按名字接收、不自己推导（记录到哪些 `TraceConfig` 字段见 §5.3）。"有没有绑定归档器"就是 `archive_negotiation` 本身，没有另外一个布尔量。
 
-**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（相对的 `replay_archive` 先解析成绝对路径，§4.10；→ `prepare()` 的 setup 之前的检查 → 原样记进 `task_setup` → `setup_environment`，按 capability `setup()` 签名路由，§4.3）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
+**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（相对的 `replay_archive` 先解析成绝对路径，§4.10；→ `prepare()` 的 setup 之前的检查 → 原样记进 `task_setup` → `setup_environment`，按 capability `setup()` 签名路由，§4.3）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，并定下这个任务的执行限制，如 ReactLoop 的步数预算，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `writing`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
@@ -2930,9 +2947,9 @@ class TaskContext(BaseModel):
     branch: BranchProvenance | None = None  # → execute(branch=...)：分叉来源，只进 trace（TraceConfig.branch，§5.3）
 ```
 
-- `TaskLoaderBase.get_task_context(id)` 返回 `TaskContext(env=task.setup.to_context())`，任务不存在时返回空的 `TaskContext()`；`BaseTaskLoader` Protocol 的返回类型同步改成 `TaskContext`，不留返回 dict 的旧形状。
+- `TaskLoaderBase.get_task_context(id)` 返回 `TaskContext(env=task.setup.to_context())`，任务不存在时返回空的 `TaskContext()`；给 loop 部分的加载器覆盖它（`trace_branches` 给检查点，`androidworld` 给步数预算）；`BaseTaskLoader` Protocol 的返回类型同步改成 `TaskContext`，不留返回 dict 的旧形状。
 - `BenchmarkRunner.run_task` 把三部分分别交给 `AgentRuntime.execute`（§4.2）；开跑之前 `BenchmarkRunner.preflight` 用第一个任务的 loop 与 env 部分调一次 `prepare()`（§4.2 "sweep 先过一次 `prepare()`"）。`spectragent run` 只组 env 部分（`--start-url`、`--replay-archive`），`--dry-run` 也把它交给 `prepare()`。
-- loop 部分的词表：`checkpoint`（`Checkpoint{trace_dir: 源 run 目录的绝对路径, step: t, task_variant: 变体 id | null}`）→ `BranchLoop`。交给不声明它的 Loop 在 `prepare()` 报 `IncompatibleLoopInputError`。`task_variant` 不为空表示这个分叉在任务变体下决策（下面 `task_variants`），`BranchLoop` 据此拒绝 `history_source: source`（§4.1）。
+- loop 部分的词表：`checkpoint`（`Checkpoint{trace_dir: 源 run 目录的绝对路径, step: t, task_variant: 变体 id | null}`）→ `BranchLoop`；`max_steps`（至少为 1 的整数，任务自己的步数预算）→ `ReactLoop`，配置的 `max_steps` 是上限（§4.1 "任务自己的步数预算"；`androidworld` 加载器给每个任务 `int(10 × complexity)`，§11.2）。交给不声明它的 Loop 在 `prepare()` 报 `IncompatibleLoopInputError`。`task_variant` 不为空表示这个分叉在任务变体下决策（下面 `task_variants`），`BranchLoop` 据此拒绝 `history_source: source`（§4.1）。
 - branch 部分：`BranchProvenance{source_run_id, source_trace（源 run 目录相对 sources 根的 POSIX 路径）, source_benchmark, source_subset, source_task_id, checkpoint_step, branch_index, branch_group_id, task_variant}`（`spectragent/schemas/restoration.py`），按任务变化，不进配置摘要。`task_variant` 是 `BranchTaskVariant{variant_id, task_text, source_task_text, note}`，只有任务变体的分叉才有；没有时不写进 `config.json`。
 
 **分叉任务：`trace_branches` 加载器**（`core/data_loader/task/trace_branches.py`，`benchmark_name: trace_branches`）把已录制的 run 展开成分叉任务。它读源 trace 只经 `RunTrace`，只读已提交的部分。
@@ -4360,7 +4377,7 @@ Browser 的 `actions: null`（含省略）在没有匹配的顶层 action 实例
 
 **按任务浏览运行分支（2026-10-27）。** 网页运行区按记录的任务身份（benchmark、subset、task_id）聚类；分叉归到它明确引用的源任务，身份不足或来源有歧义时独立呈现并说明，绝不按任务文字、目录名字或相同步号猜来源。展开一个任务才加载轻量轨迹图：每条源运行是主干，每个已提交步骤是可访问的小圆点；分叉只从已记录的 checkpoint 伸出，分叉中的恢复前缀折叠，新的 policy 步和 terminal 观察分别标识。大量分叉分批展开，读取限制并发，不为了画图加载全部模型调用、图片或回放日志。源缺失、源不可读、来源歧义或被列表筛掉时显示真实状态，不画虚假的连线。run 标题打开完整 trajectory，步骤圆点打开那条 run 的具体步，动作入口定位该步中的具体 action；深链接与键盘操作保留这些选择。live、archive replay、fork 的身份只来自记录的网络来源与 branch provenance；记录状态不是进程存活证明。视觉沿用查看器的排版、离散谱色和明暗主题，不引入独立的图形应用。
 
-**回放与恢复显示。** 只由已录事实标记网络来源与分叉关系，不从目录名推测 same-path 或 fork 业务角色。分叉的来源链接指向源 run 的检查点；源缺失、ID 歧义或根外来源明确显示，查看器不越界打开。恢复步的普通 actions/action_results 是本次恢复中实际返回结果的配对；所有执行尝试、异常和重定位保存在 `restoration.actions`。旧回复与源动作只在 `source_history` 中作为来源材料展示，不能冒充本次新思考；顶层无返回结果的失败尝试也必须从完整恢复证据中显示。实时 TUI 显示配置的 max_steps 上限与 branch continue_steps，不能把 max_steps 当作分叉实际策略预算。浏览器回放决定通过既有 `iter_decisions` 读取和按权重计数，包含 trailing 的决定；未绑定日志、日志为空与已提交日志不可读三种情况分开，未知不能画成零 miss。
+**回放与恢复显示。** 只由已录事实标记网络来源与分叉关系，不从目录名推测 same-path 或 fork 业务角色。分叉的来源链接指向源 run 的检查点；源缺失、ID 歧义或根外来源明确显示，查看器不越界打开。恢复步的普通 actions/action_results 是本次恢复中实际返回结果的配对；所有执行尝试、异常和重定位保存在 `restoration.actions`。旧回复与源动作只在 `source_history` 中作为来源材料展示，不能冒充本次新思考；顶层无返回结果的失败尝试也必须从完整恢复证据中显示。实时 TUI 显示配置的 max_steps 上限与 branch continue_steps，不能把 max_steps 当作分叉实际策略预算。任务带着比上限低的步数预算时（§4.1 "任务自己的步数预算"，`on_run_start` 的 `step_budget`），卡片在上限旁写出它（`task budget`），提前停下的 run 因此看得出原因；分叉的卡片不写，它的预算就是 continue_steps。浏览器回放决定通过既有 `iter_decisions` 读取和按权重计数，包含 trailing 的决定；未绑定日志、日志为空与已提交日志不可读三种情况分开，未知不能画成零 miss。
 
 **历史与环境的差异视图（2026-10-16）。** 分叉页面与 TUI 显式展示已记录的 `history_source`、恢复器 `verify`、checkpoint 和 continuation 预算。源历史与实际恢复观测并列，动作重定位、返回结果、异常、URL、DOM signature、截图 dHash 和 document misses 使用既有恢复证据；容差内通过与存在可测差异同时显示，零 dHash 不宣称像素相同，未测不补零。这些量只从 browser 的证据读（`inspection/restoration.py::restoration_gap`）：别的 capability 的证据只写一行 `<capability>: not shown in this view`（差异记录的 `not_shown`），既不算测得的差异，也不算未测，那一步的判定照样由它自己的检查决定（恢复证据按 capability 分型，§4.9）；它可能没通过自己的检查，所以只剩它时差异记录的状态是 `not_shown`，TUI 计作“N not shown”，从不说“no measured difference”。网页查看器还不认 `not_shown`：证据表仍按 browser 的字段画每一份证据，摘要只看差异与未测，按 capability 拆开在后续工作里。TUI 与网页查看器（用户 2026-10-24 裁定）：一个未测项若在某 run 的每个已检查步骤（有恢复差异记录的步骤：恢复步及带恢复校验的步）上都未测（例如 DOM signature 未测），只在 run 级说明一次，仍显示为未知、绝不变成 0；步骤行与步骤列表只计其余、在各步之间不同的未测项，每步详情与 JSON 保留完整的逐步记录，并标明哪一项是全 run 都未测的。这一 run 级事实由读侧唯一计算：`inspection/restoration.py` 的 `unmeasured_everywhere`，经 `run` 详情的 `unmeasured_everywhere`（`facts` 与 `checked_steps`）提供给网页与历史 TUI；实时监控对目前已观测到的步骤调用同一函数。只在恢复步与显式 checkpoint 校验处建立源步骤对应，后续 policy 步不凭相同步号伪造配对。源不可读不遮蔽本次可读证据。截图可切换 Browser state 原图与 Agent observation：后者经 fragment 的公开 `ModelImage` 合同按已记录元数据重建 cursor，默认显示模型视图，标明光标关闭或位置未知；精确提交的模型输入仍看 recorded calls，不把重建视图宣称为已提交输入。TUI 详情与日志支持选择和复制；在文本区 Ctrl-C 复制，活动区 Ctrl-C 与 q 保留取消并等待收尾；日志选择期间冻结文本，防止刷新破坏选区。
 
@@ -5023,13 +5040,16 @@ class TraceConfig(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict, exclude_if=<空>)          # 调用方给的任务上下文
     env_evidence_privacy: list[str] | None = Field(None, exclude_if=<None>)    # 所绑定归档器 privacy_markers 的有序并集；没绑定归档器时为 None
     task_setup: TaskSetupRecord | None = Field(None, exclude_if=<None>)        # None：execute() 没有收到 env_context
+    max_steps: int | None = Field(None, exclude_if=<None>)                     # 这个任务的步数预算（Loop 的 step_budget）；None：没有记录
 ```
 
-**按任务、按功能的字段，有值才写（用户 2026-10-13 的裁决）。** `branch` 只在分叉 run 里写，`task_setup` 只在任务带着 setup context 起的时候写，`env_evidence_privacy` 只在绑定了归档器时写（绑定了、但归档器什么标记都没声明时写 `[]`），`extra` 只在调用方给了时写。普通 run 的 `config.json` 里因此没有 `"branch": null` 这类占位。读侧不用改：缺的键读回来就是字段的默认值，也不升 `format_version`。原先的 `env_evidence_recorded` 删掉了：它与 `negotiation.active_archivers` 是否为空重复，也没有读者。
+**按任务、按功能的字段，有值才写（用户 2026-10-13 的裁决）。** `branch` 只在分叉 run 里写，`task_setup` 只在任务带着 setup context 起的时候写，`max_steps` 只在 Loop 有步数预算时写（下面），`env_evidence_privacy` 只在绑定了归档器时写（绑定了、但归档器什么标记都没声明时写 `[]`），`extra` 只在调用方给了时写。普通 run 的 `config.json` 里因此没有 `"branch": null` 这类占位。读侧不用改：缺的键读回来就是字段的默认值，也不升 `format_version`。原先的 `env_evidence_recorded` 删掉了：它与 `negotiation.active_archivers` 是否为空重复，也没有读者。
 
 `TraceNegotiation.from_results(observation=None, action=None, archive=None)` 多收一个归档结果，三个都为 `None` 时才返回 `None`；绑定表原样记录（值都是 registry key，不是用户起的实例 id），排序的理由与另外两条轴相同。`task_setup` 回答的是"这个任务的环境是怎么起的"：分叉任务（M31）要靠它在没有源 benchmark 数据的情况下重建环境，所以从 M28 起就记录；它是按任务变化的数据，脱敏规则见 §5.6；其中相对的 `replay_archive` 在记录之前已经解析成绝对路径（§4.10）。`env_evidence_privacy` 是 provenance，和 `secrets_recorded` 一样回答"这个目录能不能直接分享"。
 
-**摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup` 按任务变化，`env_evidence_privacy` 是 provenance，都不进摘要，所以同一次 sweep 里只差 `start_url` 的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
+`TraceConfig.max_steps: int | None`（2026-11-02）回答"这个任务最多走几个策略步"：Loop 按这个任务的 loop 输入给出的 `step_budget`，Runtime 按名字交给 `on_run_start`（§4.1 "任务自己的步数预算"）。ReactLoop 的是配置的 `max_steps`，被任务自己的预算降低（AndroidWorld 的 `int(10 × complexity)`，§11.2）；分叉 run 的是 `1 + continue_steps`，在配置的上限之内。离线的评测器因此不读 benchmark 的数据就知道一个 run 有多少步；配置的上限照旧在 `resolved` 里。`None`（不写）是没有记录：Loop 没有步数预算，或者 trace 早于这个字段（那时 ReAct run 的预算就是 `resolved` 里配置的 `max_steps`）。新增的带默认值字段，不升 `format_version`。
+
+**摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup` 与 `max_steps` 按任务变化，`env_evidence_privacy` 是 provenance，都不进摘要，所以同一次 sweep 里只差 `start_url` 或步数预算的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
 
 **`evals/` 也是原子写。** `EvaluationRunner` 写 `evals/<verdict_slug>.json`，以及可选的平铺副本和 summary，都走 `fsio.atomic_write`：半写的 verdict 文件会被下一个读者当成损坏的评测。权限与普通写入相同（§5.2），共享的 `--evals-dir` 对其他用户照常可读，重新打分也不改动已有文件的权限。evals 是后置产物，不进 manifest。
 
@@ -5540,7 +5560,7 @@ environment:
 | **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot，经新增的 `RestorableCapability` 协议，要先改 `BranchLoop`；Android 阶段 3 不做任务中途快照，§11.2） |
 | **新增 capability 的检查点恢复** | capability 类实现 `RestorationSupport`（`retarget` / `verify_restoration`，§4.9）；在它自己的包里定义 `RestorationEvidence` 的子类：它量的事实、判定用的上限（取自它自己的旋钮，随证据记下）、类级 `REASONS` 与只由字段派生的 `failed_checks()`；在 capability 类上写 `RestorationEvidence = <这个子类>`、把子类的 `capability_id` 钉成 capability 的 registry key，trace 按它读回（`test_restoration_contract.py` 检查这些）；重定位方式写自己的词（`identity` 是框架的）；时钟上走着的状态要对齐时再实现 `RestorationAlignment`，参数做成 capability 的旋钮；不改任何框架文件 | browser 的 `BrowserRestorationEvidence`（§4.14）；Android 的（前台 app 与 Activity、界面树签名、截图距离、设备时钟差，§11.2） |
 | **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |
-| **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`） |
+| **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`，取值有范围的覆盖 `loop_input_refusal`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`）、`max_steps`（`ReactLoop`） |
 | **新增提示贡献** | 配置 `prompt_contribution` Hook 的稳定 Python 函数引用及可选 wired helper；函数按公开 context 返回贡献，Agent 决定 placement（§4.1） | 首策略步一次或每策略步一次；历史重建只读原贡献 |
 | **新增学生格式（训练导出）** | 一个新的 Agent 类（或已有 agent）实现 ReAct 的可选 slot `format_react_output(actions, *, thought=None)`：`parse_react_output` 的逆，写不出来的动作或参数抛 `UnrepresentableActionError`，满足 §4.15 的 round-trip；`tests/test_agents/test_format_react_output_round_trip.py` 自动覆盖每个定义了它的已注册 agent；文本协议放进 agent 自己的无状态编解码模块，slot 一行调它（`agents/ui_tars/codec.py` 的先例，§4.1）；学生的运行 YAML 就是服务时的那份 | v1 `ui_tars`；以后 Qwen3-VL 原生工具调用格式、OpenCUA |
 | **新增 teacher 的 thought 读法** | teacher agent 实现可选 slot `parse_react_thought(llm_output) -> (text, source_field) \| None`（`@staticmethod`，只读回复，§4.1） | `browser_use` / `ui_tars` / `skyvern`（M32） |
@@ -5828,7 +5848,7 @@ setup 先查设备有没有声明 `faketouch` 特性，再试点一次：没有�
 
 **启动器放在哪里。** 启动器（`oracle/androidworld_service/serve.py`）与生成任务列表的脚本（同一目录的 `task_list.py`）在 AndroidWorld 的解释器里跑、导入 `android_world`，Spectragent 从不导入它们，所以这个目录没有 `__init__.py`：它不是包，实现发现走不到它，打包靠 `pyproject.toml` 的 `package-data`。不用 `OPTIONAL_EXTRA_MODULES`：那里列的是 Spectragent 自己的模块，装了可选 extra 时由用到它们的实现在构造时导入（§4.2.1），启动器从来不被导入，只被执行。两个文件在顶上关掉 pyright 对缺失导入的报告（Spectragent 的 venv 里没有 `android_world`）。启动器只在运行时打补丁，钉住的检出保持原样：用 run 的私有 adb server（android_env 总是传 `-P 5037`，还删掉 `ANDROID_ADB_SERVER_PORT`）；设备命令失败之后不 `adb kill-server`（那会杀掉 run 共用的 server），改为重试；触摸与指针叠加层保持关闭（否则每张截图都带着它们）；agent 的回答不上屏幕：AndroidWorld 经 `adb shell am broadcast ... --es goal_string "<回答>"` 把回答显示出来，设备的 shell 读这段文字，回答里落单的双引号让回答动作答 HTTP 500（`no closing quote`），run 于是没判，AndroidWorld 自己的 runner 却照样按回答判分；回答里的 `$(...)` 以 root 在设备上执行；这个广播还不时卡到 adb 的超时，重试才成功（2026-11-02 实测：回答 `M$(touch /data/local/tmp/injected)all` 在设备上建了一个属于 root 的文件；卡住时回答动作要 9.8–11.2 s，不卡时 0.1 s）。回答照样先记下来判分，run 结束之后也没有人看屏幕；用缓存的转发器 APK（否则每次启动都下载）；每次 gRPC 调用带 `authorization: Bearer <token>`，连模拟器报的那个地址；服务起来之后重拍应用快照（Android 每次开机都删掉 AndroidWorld 的应用快照）；关掉一次性的应用 setup，adb 路径、控制台端口与 gRPC 端口取 run 的。这些补丁替换的是 android_env 的私有名字，所以启动器先核对 android_env 是钉住的 AndroidWorld 要求的 1.2.3，别的版本就带着原因退出：换了名字的属性只会被加上、不会被替换，漏掉 `_restart_server` 的补丁就会对 run 自己的 adb server 跑 `adb kill-server`。
 
-**任务列表与加载器。** `task_list.py` 离线、在 AndroidWorld 的 venv 里生成任务列表：照 AndroidWorld 自己的 `create_suite` 建套件，写一个 JSON 文档 `{"format": "androidworld-tasks-1", "tasks": [...]}`，每个任务记 `commit`（生成它的检出）、`family`（收着它的最窄的注册表：`android`、`information_retrieval`、`miniwob`）、`task`、`index`、`suite_seed`、`params`（实例种子在 `seed`）、`goal`、`goal_made_at_initialize`、`complexity` 与 `start_on_home_screen`，并在 `data_info.json` 里登记这个切分。不是 JSON 的参数写成平的形式：dataclass 写成它的字段，图像写成尺寸、模式与像素的 sha256。钉住的 commit 的 116 个任务里有 31 个这样，所以参数从不交回服务，服务按地址自己重建；列表里的参数只作来源记录。模型在 `oracle/androidworld_tasks.py`，加载器与裁判共用，它还核对 `params.seed` 就是 AndroidWorld 按（套件种子、任务、下标）算出的实例种子。`androidworld` 任务加载器（`core/data_loader/task/androidworld.py`）照常经 `data_dir` / `subset` 与 `data_info.json` 找到切分文件，严格读（类型不转换）：读不了、不是 JSON、格式不对、缺字段、多字段、类型不对、同一个任务列了两次，都报 `BenchmarkDataError`，一个任务也不发布。`UNREPRODUCIBLE` 里的任务（`MarkorCreateFolder`）跳过，原因记在 `skipped`（与裁判拒绝它时是同一句话），日志只记一行数目。信息检索任务照常发布：回答经判分时间点交给裁判（§4.2）。每个任务的 id 是 `<task>/<suite_seed>/<index>`，文本是 `goal`，记录原样成为 `AndroidSetup.oracle_task`，`tags` 是 family，`metadata` 留 `complexity`。加载器只在读文件的函数里导入 Android 包的这个模型，没点名 Android 的 run 不导入 Android 的实现（§4.2.1）。
+**任务列表与加载器。** `task_list.py` 离线、在 AndroidWorld 的 venv 里生成任务列表：照 AndroidWorld 自己的 `create_suite` 建套件，写一个 JSON 文档 `{"format": "androidworld-tasks-1", "tasks": [...]}`，每个任务记 `commit`（生成它的检出）、`family`（收着它的最窄的注册表：`android`、`information_retrieval`、`miniwob`）、`task`、`index`、`suite_seed`、`params`（实例种子在 `seed`）、`goal`、`goal_made_at_initialize`、`complexity` 与 `start_on_home_screen`，并在 `data_info.json` 里登记这个切分。不是 JSON 的参数写成平的形式：dataclass 写成它的字段，图像写成尺寸、模式与像素的 sha256。钉住的 commit 的 116 个任务里有 31 个这样，所以参数从不交回服务，服务按地址自己重建；列表里的参数只作来源记录。模型在 `oracle/androidworld_tasks.py`，加载器与裁判共用，它还核对 `params.seed` 就是 AndroidWorld 按（套件种子、任务、下标）算出的实例种子。`androidworld` 任务加载器（`core/data_loader/task/androidworld.py`）照常经 `data_dir` / `subset` 与 `data_info.json` 找到切分文件，严格读（类型不转换）：读不了、不是 JSON、格式不对、缺字段、多字段、类型不对、同一个任务列了两次，都报 `BenchmarkDataError`，一个任务也不发布。`UNREPRODUCIBLE` 里的任务（`MarkorCreateFolder`）跳过，原因记在 `skipped`（与裁判拒绝它时是同一句话），日志只记一行数目。信息检索任务照常发布：回答经判分时间点交给裁判（§4.2）。每个任务的 id 是 `<task>/<suite_seed>/<index>`，文本是 `goal`，记录原样成为 `AndroidSetup.oracle_task`，`tags` 是 family，`metadata` 留 `complexity`。任务上下文的 loop 部分是 AndroidWorld 自己的 runner 给它的步数，`max_steps = int(10 × complexity)`（`AndroidWorldTask.step_budget`，与钉住的 commit 的 `suite_utils._allocate_step_budget` 同一个式子），ReAct 把它当作这个任务的步数预算，配置的 `max_steps` 是上限（§4.1 "任务自己的步数预算"），trace 记下实际的预算（`TraceConfig.max_steps`，§5.3）。钉住的 commit 上加载器发布的 115 个任务的预算从 10 到 120 步：要与 AndroidWorld 的 runner 逐个任务一致，配置的 `max_steps` 至少写 120（`OsmAndTrack` 的预算）；默认的 100 把它压到 100，照抄浏览器配置的 30 会压低 21 个任务。加载器只在读文件的函数里导入 Android 包的这个模型，没点名 Android 的 run 不导入 Android 的实现（§4.2.1）。
 
 **片段。**
 
@@ -5868,7 +5888,6 @@ M3A 的文字是原始的树的 1/16 到 1/9，T3A 的是 1/7 到 1/4；表单�
 
 - `MarkorCreateFolder` 用宿主机生成任务那一刻的时间给文件夹起名（钉住的 commit 的 116 个任务里只有它读宿主机的时钟）。服务在 run 时按地址重建任务，文件夹名永远与列表记下的不同，所以它在 `UNREPRODUCIBLE` 里：加载器跳过它，裁判在 `prepare()` 拒绝它，不会开机之后才在目标比对上失败。要跑它，得让服务用列表记下的参数开局（参数都是 JSON 的任务做得到），还没做。
 - MiniWoB 的目标由它的 JavaScript 在开局时在设备上生成（同一个种子两次生成的目标也不同），任务文本却在开局之前就定了，所以加载器给的文本只是目标固定的那一半（"Follow the instructions shown on the top of the screen."），具体指令 agent 从屏幕上读；裁判把设备给的完整目标记在判分来源里。AndroidWorld 自己的 runner 把完整目标交给 agent，要做到一样得让任务文本在 setup 之后才定，还没设计。
-- AndroidWorld 给每个任务 `int(10 × complexity)` 步，框架没有按任务的步数上限（Loop 的 `max_steps` 对 sweep 里每个任务都一样），所以 `complexity` 只留在任务的 `metadata` 里；`metadata` 不进 trace，离线的评测器看不到这个步数预算。
 - AndroidWorld 只在 agent 声明完成时才计分（`suite_utils.py` 的 `agent_successful = task_successful if interaction_results.done else 0.0`）；`oracle_scores.json` 记的是设备上的分数，不管 agent 怎么结束。要与 AndroidWorld 自己的数字比，评测器读判分记录时要配上 `result.json` 的 `agent_done`。信息检索任务例外：答案只在 run 以 `loop.done` 结束时才有，没有答案的 run 判 0，所以它们的判分记录本来就与 AndroidWorld 的这道门槛一致。
 - UI 树来源 `uiautomator dump` 推迟（上面"策略轴"）；它接上时，裁判是 `androidworld` 的 run 在 `prepare()` 里拒绝那 7 个按界面树判分的任务（用户 2026-11-02 的裁决）。
 - 客体 Wi-Fi 一直没有默认路由的那种开机（约 24 次里 3 次）：任务在 `boot_timeout_s`（默认 180 s）之后以环境失败结束，报错带上客体经 `wlan0` 的路由。怎样救回这样的开机（例如关开一次 Wi-Fi）没有测，还没定。

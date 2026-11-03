@@ -216,8 +216,10 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
         """Check a task's loop inputs against ``__loop_inputs__``.
 
-        Unknown keys, missing required keys and values of the wrong type are
-        reported together, in one error naming this Loop and every key.
+        Unknown keys, missing required keys, values of the wrong type and
+        values of the right type this Loop still refuses
+        (:meth:`loop_input_refusal`) are reported together, in one error
+        naming this Loop and every key.
 
         Raises:
             IncompatibleLoopInputError: when anything does not fit.
@@ -230,14 +232,30 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             for key, value in inputs.items()
             if key in declared and not isinstance(value, declared[key].type)
         }
-        if unknown or missing or mistyped:
+        refused = {
+            key: reason
+            for key, value in inputs.items()
+            if key in declared and key not in mistyped
+            if (reason := self.loop_input_refusal(key, value)) is not None
+        }
+        if unknown or missing or mistyped or refused:
             raise IncompatibleLoopInputError(
                 self.__registry_key__,
                 unknown=unknown,
                 missing=missing,
                 mistyped=mistyped,
+                refused=refused,
                 accepted=declared,
             )
+
+    def loop_input_refusal(self, key: str, value: object) -> str | None:
+        """Why this Loop cannot take *value*, of the declared type, for its input *key*.
+
+        ``None`` (the default) takes it. A Loop whose input has a range
+        overrides this (ReAct's ``max_steps`` must be at least 1); the reason
+        completes the sentence "``<key>`` ...".
+        """
+        return None
 
     # ── the actions this Loop provides (shared by all loops) ──
 
@@ -313,6 +331,17 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     def execution_limits(self) -> ExecutionLimits:
         """Limits a consuming Agent must describe through its existing prompt inputs."""
         return ExecutionLimits()
+
+    def step_budget(self, loop_inputs: Mapping[str, object]) -> int | None:
+        """The most policy steps a run with these Loop inputs takes; ``None``: no budget.
+
+        *loop_inputs* are checked (:meth:`check_loop_inputs`). Runtime hands
+        the number to ``on_run_start`` for the trace (``TraceConfig.max_steps``)
+        and the live view, never to the Agent: an Agent learns its budget from
+        ``loop.step_info``, which a branch and the training export pin to the
+        source run's (``docs/architecture_design.md`` §4.1 "Loop 输入").
+        """
+        return None
 
     async def surrender(
         self, recorder: StepSink | None, record: StepRecord, observation: Any

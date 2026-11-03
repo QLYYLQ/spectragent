@@ -3,7 +3,7 @@
 A status word in reverse video, then labelled facts. Known token totals say
 "known" and a session whose every call lacked usage says so instead of 0;
 the configured ``max_steps`` is a ceiling next to the policy-step count,
-never a fraction of it.
+never a fraction of it, with the task's own budget beside it when that is lower.
 """
 
 from __future__ import annotations
@@ -113,7 +113,9 @@ def summary_sheet(snapshot: dict[str, Any], *, complete: bool) -> Sheet:
             ("policy steps ", "muted"),
             (str(snapshot["policy_steps"]), "strong"),
             ("  ", "plain"),
-            *budget_parts(snapshot["max_steps"], snapshot["continue_steps"]),
+            *budget_parts(
+                snapshot["max_steps"], snapshot["continue_steps"], snapshot["step_budget"]
+            ),
         )
     )
     sheet.append(

@@ -243,6 +243,9 @@ class _SlowLoop:
     def execution_limits(self):
         return ExecutionLimits()
 
+    def step_budget(self, loop_inputs):
+        return None
+
 
 class _BoomLoop(_SlowLoop):
     loop_id = "lifecycle_boom"
