@@ -1157,6 +1157,9 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
   **用户 2026-11-01 的裁决。** 阶段 3 只做前缀重放，不做任务中途快照：原先排在阶段 3 后半的 `capability_checkpoint` 与 `RestorableCapability`（要给 Environment 加方法）不建。同一天的一次对比认为，只有流逝时间造成的失败占多数、或前缀超过约 30 步时才值得再考虑快照；这次对比、会失败的情形与联网的 app 怎么办，见 architecture §11.2 "分支回放"。
 
 - **阶段 4：扩展。** AndroidWorld 之后的 benchmark 依次是 MiniWoB++、VenusBench-Mobile、MobileSafetyBench（用户 2026-11-01 的裁决；各自要补的见 architecture §11.2 "以后，或还没定的"）；MobileWorld 在本机只能经 Colima 与 Docker 跑它的 arm64 redroid 容器，允许装（用户："可以装，我感觉无所谓"），优先级低；AndroidLab 暂缓（它给 Mac 的 arm64 AVD 有人报坏了，维护者建议改用 Linux）；云手机（AgentBay 等先行，国内云手机怎么接到时再定）；真机（三星 S23 Ultra）；在组合环境里接手机 Chrome 和 WebView（进不进 v1 还没定，建议放在这里），做组合环境之前先把 `wait` 也迁到 Loop；网络归档档位（v1 不做，到阶段 4 前再确认）；输入拟人化。完成标准：每一项单独验收。
+
+  **用户 2026-11-03 的两条裁决：MiniWoB++ 照 AndroidWorld 自己的 runner 跑。** 一、setup 可以补全 run 的任务文本：capability 声明它的 setup 补全任务文本，`prepare()` 因此知道；setup 之后 Runtime 向环境读回文本、记进 trace（`task_text.json`，与加载器的文本并列），再建种子消息、启动 Loop，Agent 不改；读任务文本的地方都经一个优先读补全文本的访问器，去污染两份都比对；这样的 run 不能分叉，在 `prepare()` 被拒（architecture §4.1、§4.2、§4.10、§5.3）。二、环境可以结束 run：每个策略步之后，Loop 经环境问实现了新的可选 Protocol 的 capability episode 结束了没有，结束了就以 `episode_over` 结束，与 agent 的 `done` 和步数用完分开记（§4.1、§4.3、§4.9）；`androidworld` 裁判只对 MiniWoB 的任务经服务回答。MiniWoB 与 AndroidWorld 比时只看判分记录的分数；7 个给小数奖励的任务照 AndroidWorld 不判分；裁判拒绝空的目标；每个套件的指引是 M3A 的 `task_guidelines`，写在 MiniWoB sweep 的 YAML 里（§11.2）。2026-11-03 已写：设计，两个 capability Protocol 与 environment 的路由，裁判与服务一侧（开局后读完整目标、拒绝空目标、经启动器加的端点问 episode）。待做：Runtime、Loop、trace 与读者，以及在 `AndroidWorldAvd` 上实测 MiniWoB。
+
 - **以后，专项：飞轮与检查视图按 capability 调整。** 用户 2026-11-03 的裁决："以后flywheel和dashboard需要做一下专项调整"。用户说的 dashboard 是网页查看器（TUI 也这样叫它）。飞轮与网页查看器的两个比较页面现在都按 `start_url` 分组（用户确认："现在flywheel和dashboard也是start url分组的"）。这一项收拢下面三件。
 
   **起始点。** 实施"任务的起始点归 capability"的裁决（architecture §4.10），先定 Android 说什么（候选与它的问题记在那里）：`core/trace/sources.py::task_identity` 不再读 browser 的 `start_url`，飞轮与网页查看器的比较页面都改按各 capability 的任务 setup 类说出的起始点分组。
