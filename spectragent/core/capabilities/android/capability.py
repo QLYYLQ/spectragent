@@ -454,8 +454,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 description=(
                     "Seconds the device side may take to come up at setup (the APK installed, "
                     "the helper started, the service enabled and answering a ping; about 12 s "
-                    "after a read-only boot on the emulator), and to come back when something "
-                    "on the device unbound the service."
+                    "after a read-only boot on the emulator), to read the home screen's apps "
+                    "at setup when the run names apps by them (over 5 s on a cold device under "
+                    "load), and to come back when something on the device unbound the service."
                 ),
             ),
         ] = 60.0,
@@ -795,11 +796,14 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 self._events = await side.service.events()
                 self._newest_event_ms = None
             if self._configured_apps is None and (OPEN_APP in self._actions_by_name or start_app):
+                # Once, at setup, and on a device that may have just booted: a
+                # cold device under load took over 5 s to list its apps
+                # (2026-11-04), past one query's limit.
                 self._launcher_apps = await device.run(
                     lambda: _launcher_names(side),
                     what="reading the home screen's apps",
                     wait_s=self.queue_wait_s,
-                    run_s=self.query_timeout_s,
+                    run_s=self.service_start_timeout_s,
                 )
             if component is not None:
                 await component.start(session, oracle_task)
