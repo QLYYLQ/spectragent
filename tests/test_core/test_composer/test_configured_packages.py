@@ -47,6 +47,7 @@ _PROBE_PACKAGE = {
         STRATEGY_AXES = {}
         TASK_SETUP = ProbeSetup
         OPTIONAL_EXTRA_MODULES = ()
+        START_FLAGS = ()
     """,
     "observations.py": """
         from typing import Literal
@@ -351,6 +352,24 @@ def test_a_judge_configuration_imports_no_browser_module(probe_root: Path) -> No
     assert not set(BROWSER_AXES) & set(facts["layers"]), "no axis of a capability it never named"
     assert facts["browser_modules"] == [] and facts["agent_cdp"] is False
     assert facts["families"] == []
+
+
+def test_a_run_imports_only_the_benchmark_it_names() -> None:
+    """A benchmark is a package the run root names (``benchmark_id``), like an agent family."""
+    code = textwrap.dedent(
+        """
+        import json, sys
+        from spectragent.benchmarks.selection import read_benchmark, run_root
+        from spectragent.core.composer import ConfigComposer
+        from spectragent.core.registries import benchmark_ids
+
+        raw = run_root({}, read_benchmark("online_mind2web"))
+        ConfigComposer.for_config(raw).validate(raw)
+        imported = [b for b in benchmark_ids() if f"spectragent.benchmarks.{b}" in sys.modules]
+        print(json.dumps(imported))
+        """
+    )
+    assert _run(code) == ["online_mind2web"]
 
 
 def test_an_agent_composes_with_a_capability_lacking_some_of_its_actions(

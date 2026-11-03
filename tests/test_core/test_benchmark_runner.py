@@ -15,7 +15,7 @@ from spectragent.core.benchmark_runner import (
     PreflightError,
     TaskOutcome,
     TokenLimitReached,
-    _safe_run_id,
+    safe_run_id,
 )
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
@@ -224,12 +224,12 @@ async def test_task_context_failure_does_not_stop_later_tasks(tmp_path):
 
 class TestRunIdSafety:
     def test_unsafe_ids_are_sanitised_but_legible(self):
-        run_id = _safe_run_id("Cross-Task/2024 #7")
+        run_id = safe_run_id("Cross-Task/2024 #7")
         assert "/" not in run_id and " " not in run_id
         assert run_id.startswith("Cross-Task-2024-7_")
 
     def test_reruns_do_not_collide(self):
-        assert _safe_run_id("t-1") != _safe_run_id("t-1")
+        assert safe_run_id("t-1") != safe_run_id("t-1")
 
 
 class TestBenchmarkRunner:
@@ -534,8 +534,7 @@ class TestPreflight:
             [
                 "--session-dir",
                 str(tmp_path / ".sessions"),
-                "--config",
-                str(_branch_sweep_config(tmp_path)),
+                *_branch_sweep(tmp_path),
                 "--no-eval",
             ]
         )
@@ -833,8 +832,7 @@ class TestTheSummaryCountsThreeLedgers:
             [
                 "--session-dir",
                 str(tmp_path / ".sessions"),
-                "--config",
-                str(_branch_sweep_config(tmp_path)),
+                *_branch_sweep(tmp_path),
                 "--no-eval",
             ]
         )
@@ -944,23 +942,30 @@ class TestTaskContextRouting:
 # ── A trace_branches sweep (M31) ──────────────────────────────────────
 
 
-def _branch_sweep_config(tmp_path, **extra: Any) -> Any:
-    """A ``spectragent bench`` config whose tasks come from ``trace_branches``."""
+def _branch_sweep(tmp_path, *, loader: Any = None, **sections: Any) -> list[str]:
+    """``--config`` and ``--benchmark`` of a ``spectragent bench`` sweep over branch tasks.
+
+    The run configuration holds *sections* (none by default); the branches
+    YAML holds the ``trace_branches`` task loader over ``recorded/``, its
+    knobs updated with *loader*.
+    """
     import yaml
 
-    config = {
-        "task_loader": [
-            {
-                "benchmark_name": "trace_branches",
-                "data_dir": str(tmp_path / "recorded"),
-                "step_selector": {"selector_id": "explicit", "steps": [1]},
-            }
-        ],
-        **extra,
+    config = tmp_path / "branch.yaml"
+    config.write_text(yaml.safe_dump(sections))
+    task_loader = {
+        "benchmark_name": "trace_branches",
+        "data_dir": str(tmp_path / "recorded"),
+        "step_selector": {"selector_id": "explicit", "steps": [1]},
+        **(loader or {}),
     }
-    path = tmp_path / "branch.yaml"
-    path.write_text(yaml.safe_dump(config))
-    return path
+    branches = tmp_path / "branches.yaml"
+    branches.write_text(
+        yaml.safe_dump(
+            {"benchmark": [{"benchmark_id": "trace_branches", "task_loader": task_loader}]}
+        )
+    )
+    return ["--config", str(config), "--benchmark", str(branches)]
 
 
 class TestTraceBranchesSweep:
@@ -971,18 +976,18 @@ class TestTraceBranchesSweep:
         from tests._helpers.branch_sources import write_source
 
         write_source(tmp_path / "recorded", "run-a", steps=2)
-        path = _branch_sweep_config(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
+        sweep = _branch_sweep(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
         executed: list[str] = []
         monkeypatch.setattr(
             BenchmarkRunner, "run_task", lambda self, task_id: executed.append(task_id)
         )
         try:
-            main(["--session-dir", str(tmp_path / ".sessions"), "--config", str(path)])
+            main(["--session-dir", str(tmp_path / ".sessions"), *sweep])
         except SystemExit as exc:
             message = str(exc.code)
         else:  # pragma: no cover — the assertion below explains
             message = ""
-        assert "'trace_branches' has no registered eval loader" in message
+        assert f"benchmark {sweep[-1]!r} has no reference data to score against" in message
         assert "--no-eval" in message and executed == []
 
     def test_a_sweep_without_an_evaluator_never_asks_for_one(self, tmp_path, monkeypatch, capsys):
@@ -995,7 +1000,7 @@ class TestTraceBranchesSweep:
 
         # The configuration catalog may read eval-loader classes as schema
         # metadata; scoring nothing must skip actual reference resolution.
-        monkeypatch.setattr(benchmark_runner, "_resolve_eval_loader", no_lookup)
+        monkeypatch.setattr(benchmark_runner, "_reference_loader", no_lookup)
         write_source(tmp_path / "recorded", "run-a", steps=2)
 
         assert (
@@ -1003,8 +1008,7 @@ class TestTraceBranchesSweep:
                 [
                     "--session-dir",
                     str(tmp_path / ".sessions"),
-                    "--config",
-                    str(_branch_sweep_config(tmp_path)),
+                    *_branch_sweep(tmp_path),
                     "--list",
                 ]
             )
@@ -1012,38 +1016,19 @@ class TestTraceBranchesSweep:
         )
         assert capsys.readouterr().out.split() == ["run-a/s1/b0"]
         # --no-eval keeps a configured evaluator from asking, too.
-        with_judge = _branch_sweep_config(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
+        with_judge = _branch_sweep(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
         assert (
             main(
                 [
                     "--session-dir",
                     str(tmp_path / ".sessions"),
-                    "--config",
-                    str(with_judge),
+                    *with_judge,
                     "--list",
                     "--no-eval",
                 ]
             )
             == 0
         )
-
-    def test_the_registry_answers_for_every_other_benchmark(self, monkeypatch):
-        from spectragent.core.benchmark_runner import _resolve_eval_loader
-        from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
-
-        class _NoBlock:
-            def optional_single(self, layer):
-                return None
-
-        class _Reference:
-            def __init__(self, subset: str = "All") -> None:
-                self.subset = subset
-
-        with pytest.raises(SystemExit, match="'no_such_bench' has no registered eval loader"):
-            _resolve_eval_loader(_NoBlock(), "no_such_bench", None)  # type: ignore[arg-type]
-        monkeypatch.setattr(EvalLoaderRegistrar, "get_or_none", lambda key: _Reference)
-        built = _resolve_eval_loader(_NoBlock(), "online_mind2web", "Hard")  # type: ignore[arg-type]
-        assert isinstance(built, _Reference) and built.subset == "Hard"
 
     @pytest.mark.usefixtures("branch_fake_registered")
     async def test_each_branch_task_runs_from_its_context(self, tmp_path):
@@ -1142,17 +1127,15 @@ class TestTaskVariantSweep:
         from tests._helpers.branch_sources import write_source
 
         write_source(tmp_path / "recorded", "run-a", steps=3)
-        path = _branch_sweep_config(tmp_path)
-        import yaml
-
-        config = yaml.safe_load(path.read_text())
-        config["task_loader"][0].update(
-            step_selector={"selector_id": "all"},
-            branches_per_step=2,
-            task_variants=str(_variants_file(tmp_path, "run-a", 1)),
+        sweep = _branch_sweep(
+            tmp_path,
+            loader={
+                "step_selector": {"selector_id": "all"},
+                "branches_per_step": 2,
+                "task_variants": str(_variants_file(tmp_path, "run-a", 1)),
+            },
         )
-        path.write_text(yaml.safe_dump(config))
-        argv = ["--session-dir", str(tmp_path / ".sessions"), "--config", str(path), "--list"]
+        argv = ["--session-dir", str(tmp_path / ".sessions"), *sweep, "--list"]
         assert main(argv) == 0
         assert capsys.readouterr().out.split() == [
             "run-a/s1/vwarranty/b0",
@@ -1485,14 +1468,13 @@ class TestTheTokenLimit:
         monkeypatch.setattr(BenchmarkRunner, "run_task", ten_tokens)
         for name in ("run-a", "run-b", "run-c"):
             write_source(tmp_path / "recorded", name, steps=2)
-        config = str(_branch_sweep_config(tmp_path))
+        sweep = _branch_sweep(tmp_path)
 
         code = main(
             [
                 "--session-dir",
                 str(tmp_path / ".sessions"),
-                "--config",
-                config,
+                *sweep,
                 "--no-eval",
                 "--token-limit",
                 "15",
@@ -1538,18 +1520,14 @@ class TestTheTokenLimit:
 
         monkeypatch.setattr(BenchmarkRunner, "run", record_limit)
         write_source(tmp_path / "recorded", "run-a", steps=2)
-        config = str(_branch_sweep_config(tmp_path))
-        assert (
-            main(["--session-dir", str(tmp_path / ".sessions"), "--config", config, "--no-eval"])
-            == 0
-        )
+        sweep = _branch_sweep(tmp_path)
+        assert main(["--session-dir", str(tmp_path / ".sessions"), *sweep, "--no-eval"]) == 0
         assert (
             main(
                 [
                     "--session-dir",
                     str(tmp_path / ".sessions"),
-                    "--config",
-                    config,
+                    *sweep,
                     "--no-eval",
                     "--token-limit",
                     "unlimited",
@@ -1562,8 +1540,7 @@ class TestTheTokenLimit:
                 [
                     "--session-dir",
                     str(tmp_path / ".sessions"),
-                    "--config",
-                    config,
+                    *sweep,
                     "--no-eval",
                     "--token-limit",
                     "7",
@@ -1594,13 +1571,44 @@ def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     argv = [
         "--session-dir",
         str(tmp_path / ".sessions"),
-        "--config",
-        str(_branch_sweep_config(tmp_path)),
+        *_branch_sweep(tmp_path),
         "--no-eval",
     ]
     assert main(argv) == 0
     assert main([*argv, "--oracle-timeout", "12.5"]) == 0
     assert given == [ORACLE_TIMEOUT_S, 12.5]
+
+
+def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch, capsys):
+    """``--subset`` is written into the benchmark's task loader before the run is composed.
+
+    It selects the tasks, and the resolved configuration (so ``config_hash``)
+    and every run's identity record it, as if the benchmark YAML said it.
+    """
+    from pathlib import Path
+
+    from spectragent.core.benchmark_runner import main
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    task = {"task_text": "find the kettle", "start_url": "https://shop.example"}
+    tasks = [{**task, "task_id": "easy"}, {**task, "task_id": "hard"}]
+    benchmark = online_mind2web_benchmark(tmp_path, {"All": tasks, "Hard": tasks[1:]})
+    seen: list[tuple[str, Any]] = []
+    construct = BenchmarkRunner.__init__
+
+    def spy(self, **kwargs):
+        construct(self, **kwargs)
+        (block,) = kwargs["compose"]().top_level_cfg.model_dump()["benchmark"]
+        seen.append((kwargs["loader"].subset, block["task_loader"]["subset"]))
+
+    monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    config = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
+    argv = ["--config", str(config), "--benchmark", str(benchmark), "--no-eval", "--list"]
+    assert main([*argv, "--session-dir", str(tmp_path / ".sessions")]) == 0
+    assert capsys.readouterr().out.split() == ["easy", "hard"]
+    assert main([*argv, "--session-dir", str(tmp_path / ".sessions"), "--subset", "Hard"]) == 0
+    assert capsys.readouterr().out.split() == ["hard"]
+    assert seen == [("All", "All"), ("Hard", "Hard")]
 
 
 @pytest.mark.parametrize("flag", ["--timeout", "--oracle-timeout"])

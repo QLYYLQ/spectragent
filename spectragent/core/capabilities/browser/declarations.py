@@ -16,6 +16,7 @@ from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyR
 from spectragent.core.capabilities.browser.replay.network_source import NetworkSourceRegistrar
 from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityRegistrar
 from spectragent.core.capabilities.browser.task_setup import BrowserSetup
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY, StartFlag
 
 #: The browser's internal strategy axes, layer name → registrar. An axis left
 #: out is not collected: its YAML field degrades to a ``Literal`` of its keys
@@ -35,6 +36,28 @@ STRATEGY_AXES = {
 #: The browser task's setup (``start_url``, ``storage_state``, ...); importing
 #: it here registers it, so a loader finds it without importing the browser.
 TASK_SETUP = BrowserSetup
+
+#: Where a single task starts, as ``spectragent run`` flags (§4.9 "起始参数"):
+#: each fills the browser setup's context key of the same meaning.
+START_FLAGS = (
+    StartFlag(
+        "--start-url",
+        "start_url",
+        "Page to open before the agent starts: one complete http:// or https:// URL.",
+    ),
+    StartFlag(
+        "--storage-state",
+        "storage_state",
+        "Cookies and Web Storage to start the browser with: a JSON file of a browser storage "
+        "state, such as one the browser.storage archiver recorded.",
+    ),
+    StartFlag(
+        "--replay-archive",
+        REPLAY_ARCHIVE_KEY,
+        "Recorded run directory to replay the browser's network from (needs network_source: "
+        "archive).",
+    ),
+)
 
 #: Modules whose top-level imports need an optional extra, which discovery
 #: never imports. The numpy sampler (the ``learned-mouse`` extra) registers

@@ -414,6 +414,7 @@ def write_run(
         TraceConfig(
             agent_id="ui_tars",
             loop_id="branch" if branch is not None else "react",
+            env_type="browser",
             benchmark="bench",
             task_id=run_id,
             task=task,

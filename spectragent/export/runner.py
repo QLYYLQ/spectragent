@@ -10,11 +10,11 @@ its receptors, never a concrete class:
 1. **sources** — the runs ``sources`` matches under ``sources_root``, by
    relative path, read through ``RunTrace`` (``filters.open_sources``), then
    the filters, then decontamination (the benchmarks ``against`` lists;
-   benchmark data read through the document's loaders, ``benchmarks.py``) and
-   the split key (``filters``, ``split``), and each kept source's policy
-   steps captured before their initial load finished
-   (``filters.exclude_unloaded_steps``: rendered as context, never a sample,
-   each listed in the manifest's ``steps.filtered``);
+   benchmark data read through the loaders of the benchmarks ``--benchmark``
+   names, ``benchmarks.py``) and the split key (``filters``, ``split``), and
+   each kept source's policy steps captured before their initial load
+   finished (``filters.exclude_unloaded_steps``: rendered as context, never a
+   sample, each listed in the manifest's ``steps.filtered``);
 2. **canonical samples** — ``canonical.canonicalise`` per kept run (a branch
    run labelled by its source run's verdicts); under ``wait_actions:
    drop_when_capped`` the waits on capped captures leave them
@@ -227,8 +227,8 @@ class ExportRunner:
 
     Args:
         exporter: The composed exporter — its job fields and ``translator``.
-        benchmarks: The benchmark loaders the export document configures
-            (decontamination and the leak scan read through them).
+        benchmarks: The loaders of the benchmarks the export names with
+            ``--benchmark`` (decontamination and the leak scan read through them).
     """
 
     def __init__(self, exporter: Exporter, *, benchmarks: BenchmarkLoaders) -> None:
@@ -237,7 +237,7 @@ class ExportRunner:
 
     @classmethod
     def from_run(cls, run: ComposedRun, *, origin: str) -> ExportRunner:
-        """The export a composed document configures: its one exporter and its benchmark loaders.
+        """The export a composed run configures: its one exporter, and its benchmarks' loaders.
 
         Raises:
             ExportConfigError: *origin* (the document, for the message)
@@ -365,11 +365,15 @@ class ExportRunner:
             if reason is not None:
                 filtered[source.rel] = reason
                 continue
-            key = split_key(identity, exporter.split) if identity.task_id or identity.site else None
+            key = (
+                split_key(identity, exporter.split)
+                if identity.task_id or identity.start_point
+                else None
+            )
             if key is None:
                 skipped[source.rel] = (
                     f"no split key (split.by: {exporter.split.by} — the run recorded no "
-                    f"{'start_url' if exporter.split.by == 'site' else 'task id'})"
+                    f"{'start point' if exporter.split.by == 'site' else 'task id'})"
                 )
                 continue
             try:

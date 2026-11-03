@@ -1,0 +1,14 @@
+# AndroidWorld's tasks on an emulated phone. Select it with --benchmark androidworld:
+#
+#   spectragent bench --config <your Android run configuration> --benchmark androidworld
+#
+# The task list is made offline by task_list.py beside the androidworld task
+# oracle's launcher (docs/architecture_design.md §11.2). Its task oracle, the
+# device image and the open_app name table are still written in the run
+# configuration's Android capability block until they move here (§4.10.1).
+benchmark:
+  - benchmark_id: androidworld
+    task_loader:
+      benchmark_name: androidworld
+      subset: All
+      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/android/androidworld

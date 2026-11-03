@@ -1,4 +1,9 @@
-"""Evaluate existing traces as an independent, YAML-configured stage (§4.11)."""
+"""Evaluate existing traces as an independent, YAML-configured stage (§4.11).
+
+The evaluator comes from the YAML (``evaluator:``, and the judge's ``llm:``);
+the reference answers come from the benchmark ``--benchmark`` selects, an
+alias or a path, as for ``spectragent bench`` (§4.10.1).
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from spectragent.benchmarks.selection import read_benchmark, run_root
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.trace.fsio import atomic_write
@@ -35,16 +41,26 @@ def selected_traces(inputs: list[Path]) -> list[Path]:
     return list(selected)
 
 
-def compose_evaluation(config: Path):
-    """Use the ordinary Composer without constructing a browser or an agent."""
+def compose_evaluation(config: Path, benchmark: str):
+    """Use the ordinary Composer without constructing a browser or an agent.
+
+    The evaluator is the YAML's; the reference data is the reference loader of
+    the benchmark *benchmark* selects (``BenchmarkBase.reference_loader``).
+    """
     raw = yaml.safe_load(config.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("Evaluation config must be a YAML mapping")
-    unexpected = set(raw) - {"evaluator", "eval_loader", "llm"}
+    unexpected = set(raw) - {"evaluator", "llm", "benchmark"}
     if unexpected:
         raise ValueError(f"Independent evaluation does not accept layers {sorted(unexpected)}")
-    run = ConfigComposer.for_config(raw).compose(raw)
-    return run, run.single("evaluator"), run.single("eval_loader")
+    root = run_root(raw, read_benchmark(benchmark))
+    run = ConfigComposer.for_config(root).compose(root)
+    loader = run.single("benchmark").reference_loader()
+    if loader is None:
+        raise ValueError(
+            f"--benchmark {benchmark}: this benchmark has no reference data to score against"
+        )
+    return run, run.single("evaluator"), loader
 
 
 def _recording(path: Path) -> dict[str, Any]:
@@ -92,6 +108,7 @@ def render_report(report: dict[str, Any]) -> str:
 async def evaluate(
     *,
     config: Path,
+    benchmark: str,
     traces: list[Path],
     output: Path,
     write_into_trace: bool = True,
@@ -101,7 +118,7 @@ async def evaluate(
     if output.exists():
         raise ValueError(f"Evaluation output already exists: {output}; choose a new directory")
     paths = selected_traces(traces)
-    run, evaluator, loader = compose_evaluation(config)
+    run, evaluator, loader = compose_evaluation(config, benchmark)
     runner = EvaluationRunner(
         evaluator=evaluator,
         eval_loader=loader,
@@ -180,7 +197,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Evaluate recorded tasks without running agents or browsers."
     )
     parser.add_argument(
-        "--config", required=True, type=Path, help="YAML with one evaluator and eval_loader"
+        "--config", required=True, type=Path, help="YAML with one evaluator (and its judge model)"
+    )
+    parser.add_argument(
+        "--benchmark",
+        required=True,
+        help=(
+            "The benchmark the traces ran, whose reference answers score them: a shipped alias "
+            "(configs/benchmarks/<alias>.yaml) or the path of a benchmark YAML"
+        ),
     )
     parser.add_argument(
         "--traces",
@@ -211,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         report = asyncio.run(
             evaluate(
                 config=args.config,
+                benchmark=args.benchmark,
                 traces=args.traces,
                 output=args.out,
                 write_into_trace=not args.read_only_traces,

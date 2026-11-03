@@ -262,6 +262,44 @@ def test_missing_generated_files_are_reported_without_regeneration(tmp_path, mon
     assert not generated.exists()
 
 
+def test_config_commands_compose_a_benchmark_with_or_without_one_of_its_tasks(tmp_path, capsys):
+    """``--benchmark`` alone checks the combined configuration with no task context.
+
+    ``--task-id`` needs ``--benchmark`` and prepares with that task's context,
+    so a start setup refuses is refused here; start flags start a task written
+    on the command line, never a benchmark's.
+    """
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    def benchmark(name: str, start_url: str) -> str:
+        task = {"task_id": "t1", "task_text": "find the kettle", "start_url": start_url}
+        return str(online_mind2web_benchmark(tmp_path / name, {"All": [task]}))
+
+    argv = ["--json", "config", "explain", "configs/browser_use_local.yaml"]
+    good = benchmark("good", "https://shop.example/kettles")
+    assert main([*argv, "--benchmark", good]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["checked"] == "configuration_and_prepare"
+    (block,) = data["resolved"]["benchmark"]
+    assert block["task_loader"]["benchmark_name"] == "online_mind2web"
+    assert main([*argv, "--benchmark", good, "--task-id", "t1"]) == 0
+    assert json.loads(capsys.readouterr().out)["checked"] == "configuration_and_prepare"
+
+    bare = benchmark("bare", "shop.example")
+    assert main([*argv, "--benchmark", bare]) == 0, "no task, so no start to refuse"
+    capsys.readouterr()
+    assert main([*argv, "--benchmark", bare, "--task-id", "t1"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["stage"] == "prepare" and "start_url 'shop.example'" in error["message"]
+
+    for given, refusal in (
+        (["--task-id", "t1"], "give --benchmark with it"),
+        (["--benchmark", good, "--start-url", "https://a.example"], "leave the start flags out"),
+    ):
+        assert main([*argv, *given]) == 2
+        assert refusal in json.loads(capsys.readouterr().out)["error"]["message"]
+
+
 def test_human_explain_shows_negotiation_without_dumping_resolved_config(capsys):
     assert main(["config", "explain", "configs/browser_use_local.yaml"]) == 0
     text = capsys.readouterr().out
@@ -363,7 +401,6 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     code = await run_cli._run(
         config_path=path,
         task="task",
-        start_url=None,
         timeout=1,
         dry_run=False,
         report=report.update,

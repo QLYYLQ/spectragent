@@ -25,6 +25,8 @@ EvalLoaderRegistrar = create_registrar(
     "eval_loader",
     BaseEvalLoader,
     discriminator_field="benchmark_name",
+    # Written only inside a benchmark block (``docs/architecture_design.md`` §4.10.1).
+    inline_only=True,
 )
 
 

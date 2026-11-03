@@ -20,12 +20,16 @@ writes that summary as ``rehearsal.json``). What it does:
   (pinned does not fix it: replay must miss the document), and a page a
   Cloudflare challenge answers;
 - adapts the **shipped** configurations (``configs/flywheel/``: the UI-TARS
-  recording, its same-path replay, its branch sweep, the SFT export) the way
-  the replay, branch and export drivers do — the model's address and key, the fixture's routing
-  switches, the task data directory, absolute paths for the repository's own
-  files — plus a control group (the recording with ``archive: []``); the
-  export reads every run (``require_eval: null``) and decontaminates against
-  nothing (the sources are the benchmark's own tasks);
+  recording, its same-path replay and its branch sweep with their branches
+  YAMLs, the SFT export) the way the replay, branch and export drivers do — the
+  model's address and key, the fixture's routing switches, absolute paths for
+  the repository's own files — plus a control group (the recording with
+  ``archive: []``); the recordings run the shipped ``online_mind2web``
+  benchmark with its task and eval loaders pointed at the fixture's task data,
+  which the export reads its references through too (the chain names the
+  recordings' benchmark to it); the export reads every run
+  (``require_eval: null``) and decontaminates against nothing (the sources are
+  the benchmark's own tasks);
 - writes the chain spec (``evidence: rehearsal``, the planted credentials as
   literals, a token limit — :data:`REHEARSAL_TOKEN_LIMIT`, far above the
   scripted models' 15 tokens a call, so the real bench counts every call
@@ -255,13 +259,22 @@ def _absolute_rules(raw: dict[str, Any]) -> None:
 def stage_configs(
     site: FixtureSite, llms: dict[str, ScriptedLLMServer], data_dir: Path
 ) -> dict[str, dict[str, Any]]:
-    """The shipped configurations, adapted to the fixture (module docstring)."""
+    """The shipped configurations, adapted to the fixture (module docstring).
+
+    ``benchmark`` is the recordings' benchmark YAML; ``same_path_branches`` and
+    ``branch_branches`` are the branch stages' branches YAMLs.
+    """
+    benchmark = yaml.safe_load(
+        (REPO / "configs" / "benchmarks" / "online_mind2web.yaml").read_text()
+    )
+    (block,) = benchmark["benchmark"]
+    block["task_loader"]["data_dir"] = str(data_dir)
+    # The leak scan reads the tasks' references through this benchmark's eval loader:
+    # the fixture's tasks, not the packaged split.
+    block["eval_loader"] = {**block["task_loader"]}
     record = _shipped("record_ui_tars_pinned.yaml")
     _point_llm(record, llms["record"])
     _capability(record)["backend"]["extra_args"] = site.chrome_args(hermetic=True)
-    record["task_loader"] = [
-        {"benchmark_name": "online_mind2web", "subset": "All", "data_dir": str(data_dir)}
-    ]
     control = copy.deepcopy(record)
     _point_llm(control, llms["control"])
     (writer,) = [hook for hook in control["hook"] if hook["hook_id"] == "trace_writer"]
@@ -274,7 +287,8 @@ def stage_configs(
     branch = _shipped("branch_ui_tars_archive.yaml")
     _point_llm(branch, llms["branch"])
     _absolute_rules(branch)
-    (loader,) = branch["task_loader"]
+    branch_branches = _shipped("branches_all_steps.yaml")
+    loader = branch_branches["benchmark"][0]["task_loader"]
     loader["step_selector"] = {"selector_id": "explicit", "steps": [BRANCH_STEP]}
     loader["branches_per_step"] = len(BRANCH_DECISIONS)
 
@@ -283,16 +297,14 @@ def stage_configs(
     exporter["filters"]["require_eval"] = None
     exporter["decontamination"] = {"against": []}
     exporter["student_run_config"] = str(REPO / exporter["student_run_config"])
-    # The leak scan reads the tasks' references through the document's loaders:
-    # the fixture's tasks, not the packaged split.
-    loader = {"benchmark_name": "online_mind2web", "subset": "All", "data_dir": str(data_dir)}
-    export["eval_loader"] = [dict(loader)]
-    export["task_loader"] = [dict(loader)]
     return {
+        "benchmark": benchmark,
         "record": record,
         "control": control,
         "same_path": same_path,
+        "same_path_branches": _shipped("branches_last_step.yaml"),
         "branch": branch,
+        "branch_branches": branch_branches,
         "export": export,
     }
 
@@ -310,13 +322,21 @@ def chain_spec(out: Path, configs: dict[str, Path]) -> ChainSpec:
             "root": out / "chain",
             "evidence": "rehearsal",
             "tasks": {
-                "benchmark": "online_mind2web",
-                "subset": "All",
+                "benchmark": str(configs["benchmark"]),
                 "task_ids": [task.task_id for task in TASKS],
             },
             "token_limit": REHEARSAL_TOKEN_LIMIT,
             **{
-                stage: {"config": configs[stage], "timeout": TASK_TIMEOUT_S} for stage in RUN_STAGES
+                stage: {"config": configs[stage], "timeout": TASK_TIMEOUT_S}
+                for stage in ("record", "control")
+            },
+            **{
+                stage: {
+                    "config": configs[stage],
+                    "benchmark": configs[f"{stage}_branches"],
+                    "timeout": TASK_TIMEOUT_S,
+                }
+                for stage in ("same_path", "branch")
             },
             "export": {"config": configs["export"], "repeat": 2},
             "report": {"planted": [{"label": label, "value": value} for label, value in PLANTED]},

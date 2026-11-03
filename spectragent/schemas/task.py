@@ -19,6 +19,9 @@ A task setup subclasses :class:`SetupBase`, which registers it in
 ``to_context()``    the per-domain runtime context forwarded to
                     ``Capability.setup()``.
 
+It may also say where a task starts (:meth:`SetupBase.start_point`): the
+framework never reads a capability's own fields to know it.
+
 The setup classes live in their capability packages, each named
 ``TASK_SETUP`` in that package's ``declarations.py``; this module imports
 no capability. ``TaskDefinition.setup`` dispatches on ``setup_type`` among
@@ -31,6 +34,7 @@ See docs/architecture_design.md §4.10 and docs/execution_dag.md M15.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Final, Protocol, runtime_checkable
 
 from conscribe import create_registrar
@@ -102,6 +106,22 @@ class SetupBase(TaskSetupRegistrar.bridge(BaseModel)):  # type: ignore[misc]
         outside its class should introspect the setup type.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement to_context()")
+
+    @classmethod
+    def start_point(cls, context: Mapping[str, Any]) -> str | None:
+        """Where a task with this environment setup *context* starts, as this capability names it.
+
+        ``docs/architecture_design.md`` §4.10 "任务的起始点归 capability": the
+        capability says where its tasks take place (the browser: the start
+        URL's site), so the framework never reads a capability's own fields.
+        What groups runs by where they took place reads it: the training
+        export's ``split.by: site`` and ``exclude_sites``, decontamination,
+        the flywheel's sites and the viewer's comparisons. *context* is the
+        context :meth:`to_context` gives, or the one a trace recorded
+        (``TraceConfig.task_setup``). ``None``: this capability names no start
+        point, or the context carries none.
+        """
+        return None
 
 
 def _registered_setup(value: object) -> object:
@@ -260,6 +280,27 @@ class SetupTaskText(BaseModel):
 REPLAY_ARCHIVE_KEY: Final = "replay_archive"
 
 
+@dataclass(frozen=True)
+class StartFlag:
+    """A single-task start flag a capability declares in its ``declarations.py`` (``START_FLAGS``).
+
+    ``docs/architecture_design.md`` §4.9 "起始参数": ``spectragent run`` adds
+    every capability's flags, listed by capability, and refuses one whose
+    capability the run's configuration does not name. Its value is the task's
+    environment setup context entry *key* (§4.10), routed to the capability's
+    ``setup()`` like a loader task's.
+
+    Attributes:
+        flag: The command-line flag, ``--start-url``.
+        key: The environment setup context key it fills, ``start_url``.
+        help: What it sets, for ``--help`` and tab completion.
+    """
+
+    flag: str
+    key: str
+    help: str
+
+
 __all__ = [
     "SetupBase",
     "TaskSetup",
@@ -271,4 +312,5 @@ __all__ = [
     "TaskContext",
     "SetupTaskText",
     "REPLAY_ARCHIVE_KEY",
+    "StartFlag",
 ]

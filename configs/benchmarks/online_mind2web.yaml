@@ -1,0 +1,20 @@
+# Online-Mind2Web: live web tasks. Select it with --benchmark online_mind2web:
+#
+#   spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web
+#   spectragent run --config configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
+#
+# A benchmark YAML holds only this section; the run configuration holds the
+# agent, its environment and its hooks (docs/architecture_design.md §4.10.1).
+# For another subset add --subset Hard, which is written into the task loader
+# below; for a data directory of your own, copy this file and pass its path:
+# --benchmark ./my_online_mind2web.yaml.
+benchmark:
+  - benchmark_id: online_mind2web
+    task_loader:
+      benchmark_name: online_mind2web
+      subset: All                # All | Hard
+      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/online_mind2web
+    # eval_loader: the reference answers verdicts are scored against. Left out,
+    # it is the registered online_mind2web eval loader for the task loader's
+    # subset; write it to point at other data:
+    #   eval_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/data/online_mind2web }

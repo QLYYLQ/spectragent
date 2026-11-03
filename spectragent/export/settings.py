@@ -153,7 +153,8 @@ class SplitSettings:
     by: SplitBy = Field(
         default="site",
         description=(
-            "site: the source task's start_url host; task: <benchmark>/<subset>/<task_id>. "
+            "site: the source task's start point, as its capability states it (the browser's: "
+            "its start URL's site); task: <benchmark>/<subset>/<task_id>. "
             "A branch run uses its source task."
         ),
     )
@@ -177,10 +178,10 @@ class BenchmarkRef:
     subset: str | None = Field(
         default=None,
         description=(
-            "The subset to read: the export document's loaders of this subset (or, when it "
-            "configures none for the benchmark, the registered loader built with it). None: "
-            "every loader the document configures for the benchmark, else the registered "
-            "loader's default subset."
+            "The subset to read: the loaders of this subset that the benchmarks named with "
+            "--benchmark configure (or, when they configure none for the benchmark, the "
+            "registered loader built with it). None: every loader they configure for the "
+            "benchmark, else the registered loader's default subset."
         ),
     )
 
@@ -192,8 +193,8 @@ class Decontamination:
     against: tuple[BenchmarkRef, ...] = Field(
         default=(),
         description=(
-            "Benchmarks the student will be evaluated on, read through the export "
-            "document's eval_loader / task_loader blocks (by benchmark_name; else each "
+            "Benchmarks the student will be evaluated on, read through the loaders of the "
+            "benchmarks spectragent export --benchmark names (by benchmark_name; else each "
             "benchmark's registered loader with its defaults). Only the benchmarks listed "
             "here are checked. Default []: nothing is decontaminated, and the dataset "
             "manifest says decontaminated: false."
@@ -203,7 +204,7 @@ class Decontamination:
         default="either",
         description=(
             "task_id: the source task's id is one of the benchmark's tasks; "
-            "site_instruction: its start_url host and normalised instruction match one; "
+            "site_instruction: its start point and normalised instruction match one; "
             "either."
         ),
     )

@@ -826,7 +826,7 @@ class _FileRepository:
                     identity.benchmark,
                     identity.subset,
                     identity.task_id or identity.task,
-                    identity.start_url,
+                    identity.start_point,
                 )
             )
         configs = [_flatten(r["config"].get("resolved", {})) for r in runs]
@@ -903,7 +903,7 @@ class _FileRepository:
                 identity.benchmark,
                 identity.subset,
                 identity.task_id or identity.task,
-                identity.start_url,
+                identity.start_point,
             )
             record = grouped.setdefault(
                 key,

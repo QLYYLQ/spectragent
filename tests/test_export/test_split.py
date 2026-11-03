@@ -22,13 +22,13 @@ from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, w
 from tests._helpers.export_traces import START_URL, click_at, ui_tars_step, write_ui_tars_run
 
 
-def _identity(**fields: str) -> TaskIdentity:
-    values = {
+def _identity(**fields: str | None) -> TaskIdentity:
+    values: dict[str, str | None] = {
         "benchmark": "b",
         "subset": "s",
         "task_id": "t",
         "task": "Find the kettle",
-        "start_url": "https://shop.example.test/",
+        "start_point": "shop.example.test",
     }
     values.update(fields)
     return TaskIdentity(**values)  # type: ignore[arg-type]
@@ -54,7 +54,7 @@ class TestTheSplit:
         identity = _identity()
         assert split_key(identity, SplitSettings(by="site")) == "shop.example.test"
         assert split_key(identity, SplitSettings(by="task")) == "b/s/t"
-        assert split_key(_identity(start_url=""), SplitSettings(by="site")) is None
+        assert split_key(_identity(start_point=None), SplitSettings(by="site")) is None
 
     def test_never_by_step(self, composer: ConfigComposer, tmp_path: Path) -> None:
         """Every sample of a site lands in that site's split, whichever run and step it is."""
@@ -258,16 +258,16 @@ class TestDecontamination:
         assert (identity.task, identity.loader_task) == (made, loaded)
         assert identity.instructions == (made, loaded)
 
-    def test_the_documents_loaders_are_the_ones_read(
+    def test_the_named_benchmarks_loaders_are_the_ones_read(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Benchmark data the export document points at with ``data_dir`` is where it is read.
+        """Benchmark data a named benchmark points at with ``data_dir`` is where it is read.
 
         The environment's data root is empty, so a loader built from the
         registry with its defaults finds nothing: decontamination and the
-        leak scan both read the document's ``eval_loader`` / ``task_loader``
-        blocks — knobs and all — and a reference naming a ``subset`` reads
-        only the configured loaders of that subset.
+        leak scan both read the loaders of the benchmarks the export names —
+        knobs and all — and a reference naming a ``subset`` reads only the
+        configured loaders of that subset.
         """
         monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path / "empty"))
         data = tmp_path / "data"
@@ -296,16 +296,18 @@ class TestDecontamination:
                 subset="All",
                 task_id=task_id,
             )
-        loaders = {
-            layer: [
-                {"benchmark_name": "online_mind2web", "subset": subset, "data_dir": str(directory)}
-                for subset in subsets
-            ]
-            for layer, subsets in (("eval_loader", ("Hard", "All")), ("task_loader", ("Hard",)))
-        }
+
+        def benchmark(subset: str) -> dict[str, object]:
+            loader = {
+                "benchmark_name": "online_mind2web",
+                "subset": subset,
+                "data_dir": str(directory),
+            }
+            return {"benchmark_id": "online_mind2web", "task_loader": loader, "eval_loader": loader}
+
         against = {"against": [{"benchmark": "online_mind2web", "subset": "Hard"}]}
         entry = exporter_entry(sources, tmp_path / "out", decontamination=against)
-        report = run_export(composer, entry, **loaders)
+        report = run_export(composer, entry, benchmarks=[benchmark("Hard"), benchmark("All")])
         assert report.manifest.sources.filtered == {
             "eval-task": (
                 "decontaminated: task 't-eval' is an evaluation task of online_mind2web/Hard"
@@ -315,10 +317,9 @@ class TestDecontamination:
             compared=1, no_eval_loader={}, no_reference_answer={}
         )
 
-        only_all = {"eval_loader": loaders["eval_loader"][1:], "task_loader": []}
         entry = exporter_entry(sources, tmp_path / "o2", decontamination=against)
         with pytest.raises(ExportConfigError, match=r"subset\(s\) All only"):
-            run_export(composer, entry, **only_all)
+            run_export(composer, entry, benchmarks=[benchmark("All")])
 
     def test_recording_on_the_eval_benchmark_itself_empties_the_export(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

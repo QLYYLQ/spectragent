@@ -31,7 +31,7 @@ from spectragent.core.data_loader.task.lexbench_browser import (
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
 from spectragent.core.trace.reader import RunTrace
-from spectragent.core.trace.sources import task_identity
+from spectragent.core.trace.sources import start_point
 from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.archive_fakes import make_archive_run
 from tests._helpers.assembly import make_env, make_run
@@ -178,7 +178,12 @@ def test_every_shipped_l1_start_page_opens_or_is_refused_by_name() -> None:
 async def test_the_trace_records_the_completed_start_page_and_its_site(
     lexbench: LexBenchBrowserTaskLoader, tmp_path: Path
 ) -> None:
-    """The run's recorded start page has a host, so the site key the report and export use works."""
+    """The run's recorded start page has a host, so the site the browser states from it works.
+
+    The site key the report and export use is the start point the run's
+    capability states from the recorded context (``task_identity``); this
+    fake environment is no browser, so the browser setup is asked directly.
+    """
     traces = tmp_path / "traces"
 
     def compose() -> Any:
@@ -192,7 +197,7 @@ async def test_the_trace_records_the_completed_start_page_and_its_site(
     config = RunTrace(outcome.trace_dir).config
     assert config.task_setup is not None
     assert config.task_setup.context["start_url"] == "https://www.bilibili.com"
-    assert task_identity(config).site == "www.bilibili.com"
+    assert start_point("browser", config.task_setup.context) == "www.bilibili.com"
 
 
 class _BrowserAgent:

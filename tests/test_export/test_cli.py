@@ -71,14 +71,14 @@ def test_a_config_that_is_not_a_mapping(tmp_path: Path, capsys: pytest.CaptureFi
     assert "is not a YAML mapping" in capsys.readouterr().err
 
 
-def test_the_documents_loader_blocks_are_read(
+def test_the_named_benchmarks_loaders_are_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``eval_loader:`` / ``task_loader:`` blocks beside the exporter carry the benchmark data.
+    """The benchmarks ``--benchmark`` names carry the benchmark data, through their loaders.
 
-    The data is reachable only through their ``data_dir`` (the environment's
-    data root is empty), so a decontaminated source proves the CLI hands the
-    document's loaders to the export.
+    The data is reachable only through their loaders' ``data_dir`` (the
+    environment's data root is empty), so a decontaminated source proves the
+    CLI hands the named benchmarks' loaders to the export.
     """
     monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path / "empty"))
     directory = write_benchmark(
@@ -106,10 +106,17 @@ def test_the_documents_loader_blocks_are_read(
     )
     block = {"benchmark_name": "online_mind2web", "subset": "Hard", "data_dir": str(directory)}
     path = tmp_path / "export.yaml"
-    path.write_text(
-        yaml.safe_dump({"exporter": [entry], "eval_loader": [block], "task_loader": [block]})
-    )
-    assert main(["--config", str(path)]) == 1, "train-task has no reference: the scan fails"
+    path.write_text(yaml.safe_dump({"exporter": [entry]}))
+
+    def benchmark(name: str, loader: dict[str, str]) -> str:
+        document = tmp_path / f"{name}.yaml"
+        block = {"benchmark_id": "online_mind2web", "task_loader": loader, "eval_loader": loader}
+        document.write_text(yaml.safe_dump({"benchmark": [block]}))
+        return str(document)
+
+    hard = benchmark("hard", block)
+    argv = ["--config", str(path), "--benchmark", hard]
+    assert main(argv) == 1, "train-task has no reference: the scan fails"
     assert not out.exists()
 
     write_benchmark(
@@ -118,13 +125,8 @@ def test_the_documents_loader_blocks_are_read(
         [{"task_id": "t-train", "task_text": "x", "expected_answer": "an answer"}],
         subset="All",
     )
-    block_all = {**block, "subset": "All"}
-    path.write_text(
-        yaml.safe_dump(
-            {"exporter": [entry], "eval_loader": [block, block_all], "task_loader": [block]}
-        )
-    )
-    assert main(["--config", str(path)]) == 0
+    every = benchmark("every", {**block, "subset": "All"})
+    assert main([*argv, "--benchmark", every]) == 0
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["sources"]["filtered"] == {
         "eval-task": "decontaminated: task 't-eval' is an evaluation task of online_mind2web/Hard"

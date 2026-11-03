@@ -11,18 +11,27 @@ conscribe run root — so it never lives beside ``configs/*.yaml``, where every
 file must compose and prepare. Relative paths in it (the root, each stage's
 config) are relative to the working directory, as every af CLI reads them.
 
+**The tasks.** The recording stages run ``tasks.benchmark`` (a shipped alias
+or a benchmark YAML's path, handed to ``spectragent bench --benchmark``, with
+``tasks.subset`` as ``--subset`` when set);
+``same_path`` / ``branch`` each run their own branches YAML (the stage's
+``benchmark``: the ``trace_branches`` task source, arch §4.10.1 "分叉 sweep 是一种任务来源").
+
 **The chain only writes paths.** Each stage's YAML is read as it is and
 these fields alone are set before it is written to
 ``<root>/configs/<stage>.yaml`` (and run from there): the one
 ``trace_writer``'s ``trace_dir`` (``<root>/traces/<stage>``); for
-``same_path`` / ``branch``, the one ``trace_branches`` loader's ``data_dir``
-(``<root>/traces/record``); for the export, the one exporter's
+``same_path`` / ``branch``, their branches YAML's one ``trace_branches``
+loader's ``data_dir`` (``<root>/traces/record``), written to
+``<root>/configs/<stage>_branches.yaml``; for the export, the one exporter's
 ``sources_root`` (``<root>/traces``), ``sources`` (``record/*``,
 ``branch/*``) and ``output_dir`` (``<root>/datasets/first``, then
-``second``). A block missing, or there twice, is a :class:`ChainConfigError`
-naming the stage and the block — before any stage runs. Everything else
-(agent, tier, archivers, selector, branches, ``verify``, evaluator) is the
-stage YAML's; a control group's YAML says ``archive: []`` itself.
+``second``), and the export reads benchmark data through ``tasks.benchmark``
+(``spectragent export --benchmark``). A block missing, or there twice, is a
+:class:`ChainConfigError` naming the stage and the block — before any stage
+runs. Everything else (agent, tier, archivers, selector, branches,
+``verify``, evaluator) is the stage YAML's; a control group's YAML says
+``archive: []`` itself.
 
 **A stage's outcome.** A run stage that exits 0 or 1 (a task with an
 infrastructure failure is data to measure) and wrote at least one run
@@ -98,7 +107,7 @@ logger = logging.getLogger(__name__)
 STAGES: tuple[str, ...] = ("record", "control", "same_path", "branch", "export", "report")
 #: The stages run by ``spectragent bench``.
 RUN_STAGES: tuple[str, ...] = ("record", "control", "same_path", "branch")
-#: The stages whose tasks come from the recordings (a ``trace_branches`` loader).
+#: The stages whose tasks come from the recordings (a branches YAML: the ``trace_branches`` loader).
 BRANCH_STAGES: tuple[str, ...] = ("same_path", "branch")
 #: The export's sources, relative to ``<root>/traces``: the recordings and the branches.
 EXPORT_SOURCES: tuple[str, ...] = ("record/*", "branch/*")
@@ -123,8 +132,10 @@ class _Spec(BaseModel):
 class TasksSpec(_Spec):
     """The task selection handed to the recording stages as CLI flags."""
 
-    benchmark: str | None = None
-    subset: str | None = None
+    #: The benchmark the recording stages run: a shipped alias or a benchmark YAML's path.
+    benchmark: str = Field(min_length=1)
+    #: Which subset of it the recording stages run (``--subset``); ``None``: the YAML's own.
+    subset: str | None = Field(default=None, min_length=1)
     task_ids: list[str] | None = None
     limit: int | None = Field(default=None, ge=1)
 
@@ -133,6 +144,9 @@ class StageSpec(_Spec):
     """A ``spectragent bench`` stage: its YAML, the per-task timeouts, whether it evaluates."""
 
     config: Path
+    #: ``same_path`` / ``branch`` only, and required there: the branches YAML whose
+    #: ``trace_branches`` task source the stage runs (the recording stages run ``tasks``).
+    benchmark: Path | None = None
     timeout: float = Field(default=300.0, gt=0)
     #: Seconds each task oracle may take to score a task; ``None``: the bench's default.
     oracle_timeout: float | None = Field(default=None, gt=0)
@@ -170,7 +184,7 @@ class ChainSpec(_Spec):
     name: str = Field(min_length=1)
     root: Path
     evidence: Literal["live", "rehearsal"]
-    tasks: TasksSpec = Field(default_factory=TasksSpec)
+    tasks: TasksSpec
     token_limit: Annotated[int, Field(ge=1)] | Unlimited = Field(
         default=UNLIMITED,
         description=(
@@ -198,6 +212,23 @@ class ChainSpec(_Spec):
                 raise ValueError(
                     f"{stage}.evaluate: a trace_branches sweep has no eval loader (arch §4.10); "
                     f"it always runs with --no-eval"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _branch_stages_name_their_tasks(self) -> ChainSpec:
+        for stage in RUN_STAGES:
+            spec = getattr(self, stage)
+            if spec is None:
+                continue
+            if stage in BRANCH_STAGES and spec.benchmark is None:
+                raise ValueError(
+                    f"{stage}.benchmark: a branch stage runs the branches YAML this names (its "
+                    f"trace_branches task source, arch §4.10.1)"
+                )
+            if stage not in BRANCH_STAGES and spec.benchmark is not None:
+                raise ValueError(
+                    f"{stage}.benchmark: a recording stage runs tasks.benchmark; leave it out"
                 )
         return self
 
@@ -291,9 +322,20 @@ def run_stage_config(
     raw = _load_stage_yaml(stage, path, data=data)
     writer = _one(stage, path, raw, "hook", "hook_id", "trace_writer")
     writer["trace_dir"] = str(layout.traces(stage))
-    if stage in BRANCH_STAGES:
-        loader = _one(stage, path, raw, "task_loader", "benchmark_name", "trace_branches")
-        loader["data_dir"] = str(layout.traces("record"))
+    return raw
+
+
+def branches_stage_config(stage: str, path: Path, layout: ChainLayout) -> dict[str, Any]:
+    """A branch stage's branches YAML with the recordings as its sources (module docstring)."""
+    raw = _load_stage_yaml(stage, path)
+    block = _one(stage, path, raw, "benchmark", "benchmark_id", "trace_branches")
+    loader = block.get("task_loader")
+    if not (isinstance(loader, dict) and loader.get("benchmark_name") == "trace_branches"):
+        raise ChainConfigError(
+            f"stage {stage!r}: {path}'s trace_branches block has no task_loader with "
+            f"benchmark_name: trace_branches — the chain sets its data_dir and needs one"
+        )
+    loader["data_dir"] = str(layout.traces("record"))
     return raw
 
 
@@ -562,6 +604,7 @@ def run_chain(
     selected = selected_stages(spec, stages)
     layout = ChainLayout(spec.root.expanduser().resolve())
     effective: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    branches: dict[str, tuple[Path, dict[str, Any]]] = {}
     sources: dict[str, ConfigSource] = {}
     for stage in selected:
         if stage in RUN_STAGES:
@@ -575,6 +618,11 @@ def run_chain(
                     run_stage_config(stage, source_path, layout, data=source_bytes),
                 )
             ]
+            if stage_spec.benchmark is not None:
+                branches[stage] = (
+                    layout.configs_dir / f"{stage}_branches.yaml",
+                    branches_stage_config(stage, stage_spec.benchmark.expanduser(), layout),
+                )
         elif stage == "export":
             assert spec.export is not None
             datasets = DATASETS[: spec.export.repeat]
@@ -629,6 +677,7 @@ def run_chain(
                         bench_main,
                         log_level,
                         source=sources[stage],
+                        branches=branches.get(stage),
                         remaining=account.remaining if account is not None else None,
                     )
                 finally:
@@ -644,7 +693,9 @@ def run_chain(
                         account.limit,
                     )
             elif stage == "export":
-                _export_stage(effective[stage], outcome, export_main, log_level)
+                _export_stage(
+                    effective[stage], outcome, export_main, log_level, spec.tasks.benchmark
+                )
             else:
                 result.report = _report_stage(spec, layout)
         except ChainStageError as exc:
@@ -673,15 +724,17 @@ def _run_stage(
     log_level: str,
     *,
     source: ConfigSource,
+    branches: tuple[Path, dict[str, Any]] | None = None,
     remaining: int | None = None,
 ) -> bool:
     """Run one ``spectragent bench`` stage; whether its sweep stopped at the token limit.
 
-    *remaining* is what is left of the chain's token limit (``None``: the
-    chain has none), handed to the bench as ``--token-limit``; with it, the
-    tokens the stage's new runs recorded are counted into
-    ``outcome.token_use`` — before any failure is raised, so ``chain.json``
-    has them either way.
+    *branches* is a branch stage's branches YAML, with the chain's sources
+    written in, and where it is written. *remaining* is what is left of the
+    chain's token limit (``None``: the chain has none), handed to the bench as
+    ``--token-limit``; with it, the tokens the stage's new runs recorded are
+    counted into ``outcome.token_use`` — before any failure is raised, so
+    ``chain.json`` has them either way.
     """
     path, raw = config
     _write_yaml(path, raw)
@@ -700,11 +753,14 @@ def _run_stage(
     ]
     if stage_spec.oracle_timeout is not None:
         argv += ["--oracle-timeout", f"{stage_spec.oracle_timeout:g}"]
-    if stage in ("record", "control"):
+    if branches is not None:
+        branches_path, branches_raw = branches
+        _write_yaml(branches_path, branches_raw)
+        argv += ["--benchmark", str(branches_path)]
+    else:
         tasks = spec.tasks
-        if tasks.benchmark:
-            argv += ["--benchmark", tasks.benchmark]
-        if tasks.subset:
+        argv += ["--benchmark", tasks.benchmark]
+        if tasks.subset is not None:
             argv += ["--subset", tasks.subset]
         for task_id in tasks.task_ids or []:
             argv += ["--task-id", task_id]
@@ -794,12 +850,20 @@ def _export_stage(
     outcome: StageOutcome,
     entry: Entry,
     log_level: str,
+    benchmark: str,
 ) -> None:
+    """Run each export; *benchmark* (``tasks.benchmark``) is where it reads benchmark data.
+
+    ``--benchmark`` names the benchmark the chain recorded on: decontamination
+    and the reference-leak scan read through its loaders (its task loader, and
+    its ``eval_loader`` when it writes one) instead of only the registered
+    loaders' defaults.
+    """
     # An output that already existed was refused before any stage ran (``run_chain``); one
     # that appears since is the exporter's own refusal (a non-zero exit, nothing written).
     for path, raw in configs:
         _write_yaml(path, raw)
-        argv = ["--config", str(path), "--log-level", log_level]
+        argv = ["--config", str(path), "--benchmark", benchmark, "--log-level", log_level]
         outcome.argv.append(argv)
         code = _invoke("export", entry, argv)
         outcome.exit_codes.append(code)
@@ -823,6 +887,7 @@ __all__ = [
     "StageSpec",
     "TasksSpec",
     "TokenLimitStop",
+    "branches_stage_config",
     "build_spec_report",
     "export_stage_config",
     "resolve_planted",

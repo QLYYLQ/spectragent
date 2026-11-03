@@ -14,11 +14,14 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
-| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches`, the teacher at temperature 0.8 with three branches per step — see [Branching a recorded run](#branching-a-recorded-run) |
-| `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel): the branch sweep restoring every recording to its last step (`step_selector: last`, `continue_steps: 0`, `verify: warn`, two tasks per source) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
+| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, the teacher at temperature 0.8 — see [Branching a recorded run](#branching-a-recorded-run) |
+| `flywheel/branches_all_steps.yaml` | Its **task source**, a branches YAML selected with `--benchmark`: the `trace_branches` task loader over `traces/recorded`, every step, three branches per step |
+| `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel): the branch sweep restoring every recording to its last step (`continue_steps: 0`, `verify: warn`) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
+| `flywheel/branches_last_step.yaml` | Its task source: each source's last step (`step_selector: last`), two tasks per source |
 | `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
 | `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
 | `lookahead/judge_deepseek.yaml` | The judge model of `python -m lookahead variants` and `judge-forks` (`--judge-config`): one `llm` layer, DeepSeek's official API — see `lookahead/README.md`, "The judge model" |
+| `benchmarks/<alias>.yaml` | The shipped **benchmarks** — `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld` — each a `benchmark:` block holding its task loader; select one with `--benchmark <alias>` (or your own copy with `--benchmark path.yaml`) — see [Benchmarks](#benchmarks) |
 
 ## Quick start
 
@@ -36,7 +39,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 1. YAML schema validation against `ConfigComposer.top_level_type`.
 2. `ConfigComposer.compose()` — instantiates every layer, setattr-injects all wired receptors (including `capability.backend`, `agent.llm`, `agent.memory`).
 3. Surface report (`agent`, `loop`, `model`, `environment`, `capabilities` and their backends).
-4. `AgentRuntime.prepare()` — loop slots plus observation/action negotiation, and the environment's setup check: everything setup would refuse (the browser's cooperation rows, a task-context key no capability accepts), with `--start-url` / `--replay-archive` as the task context. A replaying config needs `--replay-archive DIR` here too, and its consistency with that recorded run is checked from the run's environment fingerprint.
+4. `AgentRuntime.prepare()` — loop slots plus observation/action negotiation, and the environment's setup check: everything setup would refuse (the browser's cooperation rows, a task-context key no capability accepts), with the start flags given (`--start-url` / `--replay-archive` …, see [Single-task start flags](#single-task-start-flags)) as the task context, or a benchmark task's own context with `--benchmark X --task-id Y`. A replaying config needs `--replay-archive DIR` here too, and its consistency with that recorded run is checked from the run's environment fingerprint.
 
 It does **not** start a browser or call the LLM — useful for CI smoke tests. `spectragent bench` makes the same check once for its first task before running any (the pre-flight); a refused config runs no task, opens no trace and exits 2.
 
@@ -408,12 +411,16 @@ replay's trace records the source run by absolute path.
 A branch task puts a recorded run back where it stood before step *t* and lets the agent
 decide that step again (`docs/architecture_design.md` §4.1 `BranchLoop`, §4.10
 `trace_branches`). `flywheel/branch_ui_tars_archive.yaml` branches runs recorded with
-`flywheel/record_ui_tars_pinned.yaml`; point its `task_loader.data_dir` at the directory
-the recordings are in and run the sweep:
+`flywheel/record_ui_tars_pinned.yaml`. Its tasks come from a branches YAML,
+`flywheel/branches_all_steps.yaml`, selected with `--benchmark` like any benchmark
+(`docs/architecture_design.md` §4.10.1): it holds only the `trace_branches` task loader.
+Point that loader's `data_dir` at the directory the recordings are in and run the sweep:
 
 ```bash
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list   # the task ids only
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+  --benchmark configs/flywheel/branches_all_steps.yaml --list   # the task ids only
 ```
 
 ```yaml
@@ -443,19 +450,25 @@ environment:
         media_time_tolerance_s: 1.0 # seconds a media position may differ and still pass
         media_seek_timeout_s: 2.0   # seconds an alignment seek (and play) may take
         media_end_lead_s: 0.5       # a video recorded at its end is played into it from this far before
+```
 
-task_loader:
-  - benchmark_name: trace_branches
-    data_dir: traces/recorded       # the sources root (default: traces)
-    # sources: ["*"]                # globs relative to data_dir, sorted
-    step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
-    branches_per_step: 3            # b0, b1, b2 per selected step (the shipped value)
-    agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
-    # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
-    # require_archive: [browser.network]   (default; [] requires none)
-    on_unbranchable: raise          # skip: leave such a source out, with its reason
-    exclude_unloaded_checkpoints: true   # false: branch from pages captured before they loaded too
-    # task_variants: variants.json  # another task per checkpoint (needs history_source: restored)
+```yaml
+# flywheel/branches_all_steps.yaml: the branches YAML, this block only. Each branch task
+# belongs to its source run's benchmark; the branch sweep is not a benchmark of its own.
+benchmark:
+  - benchmark_id: trace_branches
+    task_loader:
+      benchmark_name: trace_branches
+      data_dir: traces/recorded       # the sources root (default: traces)
+      # sources: ["*"]                # globs relative to data_dir, sorted
+      step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
+      branches_per_step: 3            # b0, b1, b2 per selected step (the shipped value)
+      agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
+      # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+      # require_archive: [browser.network]   (default; [] requires none)
+      on_unbranchable: raise          # skip: leave such a source out, with its reason
+      exclude_unloaded_checkpoints: true   # false: branch from pages captured before they loaded too
+      # task_variants: variants.json  # another task per checkpoint (needs history_source: restored)
 ```
 
 - **The tasks.** Every committed policy step of every selected source run whose prefix is
@@ -464,8 +477,9 @@ task_loader:
   condition: a trace never closed (`writing`) gives no candidate, an `incomplete` one every
   step before its hole. A task id is `<source_run_id>/s<t>/b<i>`; its context carries the source's
   setup context (`start_url` …), `replay_archive` (the source run directory, absolute; only
-  when the source recorded `browser.network`) and the `checkpoint` — nothing on the command
-  line. `agent_outcome` (how the agent ended,
+  when the source recorded `browser.network`) and the `checkpoint` — no start flag on the
+  command line. One branch task runs alone with `spectragent run --config <branch config>
+  --benchmark <branches YAML> --task-id <id>`. `agent_outcome` (how the agent ended,
   `any` by default) / `require_eval` filter sources; a source that cannot be branched (an
   unreadable trace — an older trace format included — itself a branch or a replay run, no
   `browser.network` archive or environment fingerprint, no unredacted setup context and no
@@ -590,11 +604,15 @@ exporter:
     wait_actions: keep               # drop_when_capped: see "Waits on capped captures" below
     length: { max_tokens: 65536 }    # image_tokens: qwen_vl (default) | fixed + fixed_image_tokens
     output_dir: datasets/sft_v1      # refused if it exists
-# optional: where decontamination and the leak scan read benchmark data (knobs and all)
-eval_loader:
-  - { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
-task_loader:
-  - { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
+```
+
+```yaml
+# optional: where decontamination and the leak scan read benchmark data (knobs and all),
+# a benchmark YAML named with `spectragent export --config ... --benchmark my_om2w.yaml`
+benchmark:
+  - benchmark_id: online_mind2web
+    task_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
+    eval_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
 ```
 
 - **What becomes a sample.** Every policy step that ran at least one action, of every
@@ -634,14 +652,15 @@ task_loader:
   samples were actually compared (`compared`) and why the rest were not
   (`no_eval_loader`, `no_reference_answer`).
 - **Benchmark data.** Decontamination and the reference-leak scan read benchmarks through
-  the `eval_loader:` / `task_loader:` blocks of the export YAML itself (matched by
-  `benchmark_name`, every knob — `data_dir`, `subset` — as configured); a benchmark with no
-  block there is read by its registered loader's defaults
+  the loaders of the benchmarks `spectragent export --benchmark` names (repeatable, an alias
+  or a path; matched by `benchmark_name`, every knob — `data_dir`, `subset` — as
+  configured): each one's task loader and its `eval_loader` block. A benchmark with no
+  loader of a kind there is read by its registered loader's defaults
   (`$SPECTRAGENT_BENCHMARK_DATA`, see [Benchmark data](#benchmark-data)), never beside a
-  configured one. A decontamination reference that names a `subset` reads only the blocks
-  of that subset; without one it reads every block of the benchmark — so when you add a
-  block for the subset you recorded on (for the leak scan), name the evaluation subset in
-  `against`.
+  configured one. A decontamination reference that names a `subset` reads only the loaders
+  of that subset; without one it reads every loader of the benchmark — so when you name a
+  benchmark for the subset you recorded on (for the leak scan), name the evaluation subset
+  in `against`.
 - **Length.** The student keeps every turn's screenshot, so a sample grows with its segment:
   the last step of a full 30-step segment at 1280x720 is ~36k image tokens before text.
   `max_tokens: 65536` holds that; for a shorter trainer context use a student with fewer
@@ -693,8 +712,12 @@ can be recomputed anywhere.
 The chain is a plain YAML spec — not a run root, so it does not live in `configs/flywheel/`
 (every file there must compose and prepare). Its stages name ordinary run YAMLs; the chain
 only writes their path fields (the trace writer's `trace_dir`, the `trace_branches` loader's
-`data_dir`, the exporter's `sources_root` / `sources` / `output_dir`) and runs the existing CLIs
-in this process. Relative paths are relative to the working directory.
+`data_dir` in a branch stage's branches YAML, the exporter's `sources_root` / `sources` /
+`output_dir`) and runs the existing CLIs in this process. Relative paths are relative to the
+working directory. The recording stages run `tasks.benchmark` (an alias or a benchmark YAML's
+path; required), with `tasks.subset` as `--subset` when it is set; a branch stage names its
+own branches YAML (`benchmark`, required there and refused on a recording stage). Each export
+reads benchmark data through `tasks.benchmark` (`spectragent export --benchmark`).
 
 ```yaml
 name: first-live
@@ -704,8 +727,8 @@ tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}  
 token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval; optional oracle_timeout → --oracle-timeout
 control:   {config: <the recording with archive: []>}                  # optional: the overhead control group
-same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
-branch:    {config: <branch YAML>}
+same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml, benchmark: configs/flywheel/branches_last_step.yaml}
+branch:    {config: <branch run YAML>, benchmark: <branches YAML>}
 export:    {config: <export YAML>, repeat: 2}                          # 2: export determinism
 report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}  # searched for, never written
 ```
@@ -719,7 +742,8 @@ uv run spectragent flywheel report --root traces/chains/first-live --evidence li
 ```
 
 - **Layout**: `<root>/traces/{record,control,same_path,branch}/`, `<root>/datasets/{first,second}/`,
-  `<root>/report/{report.json,report.md}`, `<root>/configs/<stage>.yaml` (what each stage ran),
+  `<root>/report/{report.json,report.md}`, `<root>/configs/<stage>.yaml` (what each stage ran;
+  a branch stage's branches YAML as `<stage>_branches.yaml`),
   `<root>/evals/<stage>/` (a stage with `evaluate: true`), `<root>/chain.json` (argv, exit codes,
   runs and times — provenance only).
 - **Outcomes**: a run stage that exits 0 or 1 and wrote a run directory ran (a failed task is
@@ -755,18 +779,21 @@ nothing to score are otherwise indistinguishable.
 Point the loaders at your own copy in one of two ways:
 
 ```bash
-# Whole-root relocation: every task_loader and eval_loader in the run.
+# Whole-root relocation: every task loader and eval loader in the run.
 # Expects <root>/<env_type>/<benchmark>/data_info.json, e.g.
 #   ~/agent-data/browser/browsecomp/data_info.json
 export SPECTRAGENT_BENCHMARK_DATA=~/agent-data
 ```
 
 ```yaml
-# Per-loader override, for a benchmark that lives somewhere of its own.
+# Per-loader override, for a benchmark that lives somewhere of its own: a copy
+# of configs/benchmarks/browsecomp.yaml, selected with --benchmark ./my_browsecomp.yaml.
 # Beats the environment variable; `~` is expanded.
-task_loader:
-  - benchmark_name: browsecomp
-    data_dir: ~/somewhere/else/browsecomp
+benchmark:
+  - benchmark_id: browsecomp
+    task_loader:
+      benchmark_name: browsecomp
+      data_dir: ~/somewhere/else/browsecomp
 ```
 
 Precedence is `data_dir:` > `$SPECTRAGENT_BENCHMARK_DATA` > the in-package
@@ -781,6 +808,56 @@ recognise a site by that URL's host. A start page written as text or as
 several sites (`www.xiachufang.com或其他美食网站`) is left as written, and
 `prepare()` refuses that task, naming its start page, before a trace is
 opened. The other benchmarks already write complete URLs and are not changed.
+
+## Benchmarks
+
+A benchmark is a registered component that owns where its tasks come from
+(`docs/architecture_design.md` §4.10.1): its task loader, and the eval loader that
+gives verdicts their reference answers. A benchmark YAML holds one block under
+`benchmark:` and nothing else; a run configuration holds the agent, its environment and
+its hooks, never a benchmark (a `benchmark:` section in it is refused). Select one with
+`--benchmark`: a shipped alias (`configs/benchmarks/<alias>.yaml`) or the path of your own
+(a selection ending in `.yaml` / `.yml` or holding a `/` is a path).
+
+```bash
+uv run spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web --list
+uv run spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web --subset Hard --list
+uv run spectragent run --config configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
+uv run spectragent config check configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
+uv run spectragent eval --config judge.yaml --benchmark online_mind2web --traces traces --out evals/one
+```
+
+```yaml
+# configs/benchmarks/online_mind2web.yaml
+benchmark:
+  - benchmark_id: online_mind2web
+    task_loader:
+      benchmark_name: online_mind2web
+      subset: All                # All | Hard; --subset Hard picks the other one
+      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/online_mind2web
+    # eval_loader left out: the registered online_mind2web eval loader for the task loader's subset
+```
+
+`--subset` (on `bench`, and on `run` with `--task-id`) is the one benchmark knob the
+command line sets: it is written into the selected block's task loader before the run is
+composed, so the resolved configuration, its `config_hash` and every run's identity record
+it as if the YAML had said it. For another data directory, copy the YAML and pass its path.
+`config check` / `config explain` take `--benchmark` alone too: the configuration and the
+benchmark are composed together and prepared with no task context. Each benchmark is a package, `spectragent/benchmarks/<benchmark_id>/`,
+imported only when a configuration names it. A branch sweep's tasks come from a branches
+YAML of the same shape (`benchmark_id: trace_branches`, see
+[Branching a recorded run](#branching-a-recorded-run)).
+
+## Single-task start flags
+
+`spectragent run --task "..."` starts where the start flags of the run's capabilities say.
+Each capability declares its own in its package's `declarations.py` (`START_FLAGS`;
+`docs/architecture_design.md` §4.9): the browser's are `--start-url`, `--storage-state` and
+`--replay-archive`. `spectragent run --help` lists every capability's flags in a group of
+their own, and tab completion offers them labelled `(browser)`; a flag of a capability the
+configuration does not name is refused before anything starts. `config check` and
+`config explain` take the same flags. A benchmark task (`--benchmark X --task-id Y`) starts
+where its benchmark says, so the start flags and `--task` are refused beside it.
 
 ## Regenerating the schema
 

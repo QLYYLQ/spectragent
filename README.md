@@ -58,7 +58,7 @@ The browser is the only implemented environment. Output of `spectragent componen
 | Hooks | `trace_writer`, `live_monitor`, `prompt_contribution`, `omit_source_replies`, `ui_navigation_guard` |
 | Archivers | `browser.network` (WARC), `browser.storage`, `browser.dom_raw`, `browser.frames`, `browser.replay_log` |
 | Replay | replayability `none`, `pinned`; network source `live`, `archive`; miss policy `strict` |
-| Task loaders | `online_mind2web`, `browsecomp`, `lexbench_browser`, `trace_branches` (tasks from recorded runs); step selectors `explicit`, `every_k`, `all`, `last` |
+| Benchmarks | `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld`, and `trace_branches` (the branch sweep's tasks from recorded runs); each holds its task loader of the same name; shipped as `configs/benchmarks/<alias>.yaml` and selected with `--benchmark <alias or path>`; step selectors `explicit`, `every_k`, `all`, `last` |
 | Evaluators | `exact_match`, `online_mind2web`, `browsecomp`, `lexbench_browser` |
 | Export | exporter `openai_messages`; translators `identity`, `index_to_coordinate` |
 | Replay reviewer | `jev` |
@@ -166,8 +166,8 @@ Record a browser run with its environment, replay it offline, branch it at a ste
 |---|---|---|
 | Record | `run` or `bench` | `configs/flywheel/record_ui_tars_pinned.yaml`: `pinned` fixes seed, clock, time zone, locale, DPR and colour scheme; archives network (WARC), storage and raw DOM |
 | Replay | `run --replay-archive DIR` | `configs/flywheel/replay_ui_tars_archive.yaml`: every request is answered from the archive; misses follow `strict` (main-frame document fails, beacons 204, other subresources 404) |
-| Branch | `bench` with `trace_branches` | `configs/flywheel/branch_ui_tars_archive.yaml`: restore to before step *t*, verify each restored step, let the teacher decide again |
-| Same-path replay | `bench` with `trace_branches` | `configs/flywheel/same_path_ui_tars_archive.yaml`: restore each recording to its last step, twice, to measure fidelity and determinism |
+| Branch | `bench --benchmark <branches YAML>` | `configs/flywheel/branch_ui_tars_archive.yaml` with `branches_all_steps.yaml`: restore to before step *t*, verify each restored step, let the teacher decide again |
+| Same-path replay | `bench --benchmark <branches YAML>` | `configs/flywheel/same_path_ui_tars_archive.yaml` with `branches_last_step.yaml`: restore each recording to its last step, twice, to measure fidelity and determinism |
 | Export | `export` | `configs/flywheel/export_sft.yaml` with student `configs/flywheel/ui_tars_student.yaml`: `openai_messages` rendered in the student's own format |
 | Measure | `flywheel run`, `flywheel report` | a chain spec you write; produces `report.json` and `report.md` |
 | Diagnose | `flywheel diagnose` | aligns recorded and replayed screenshots and marks changed grid cells, for human review |
@@ -183,8 +183,10 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   --replay-archive traces/recorded/<run>
 
 # Branch every recorded run, export, then run a measured chain
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+  --benchmark configs/flywheel/branches_all_steps.yaml --list
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
 uv run spectragent export --config configs/flywheel/export_sft.yaml
 uv run spectragent flywheel run --spec chain.yaml
 ```

@@ -760,7 +760,7 @@ Browser 特有的 CDP、tab/frame 和输入实现留在 capability 内；Runtime
 
 **优先级**: P1 | **前置依赖**: M05 | **被依赖方**: M18, M23, M31, M35
 
-**目标（M35，用户 2026-11-03 的裁决，还没实施）**：任务加载器与评测数据加载器挪到基准下，是基准的任务来源与参考答案来源，不再是运行根的顶层段（architecture §4.10.1）。
+**M35 a 段（用户 2026-11-03 的裁决，已完成）**：任务加载器与评测数据加载器挪到了基准下，是基准的任务来源与参考答案来源，不再是运行根的顶层段（architecture §4.10.1）。
 
 #### 业务实现
 
@@ -1501,7 +1501,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 **校验**：图片个数、坐标范围、round-trip、泄漏扫描（源 benchmark 的评测参考不得出现在种子消息与任务文本里）、凭证扫描（`SECRET_PATTERNS` 挪到 `core/trace/secret_patterns.py`，secret guard 与导出共用）、可插拔的长度估算（v1 文本字符 / 4 + 按模型的图像 token 公式，超长报错、从不截断）。
 
-**切分**：按站点（源任务 `start_url` 的主机）或任务，从不按步；同一个 `branch_group_id` 与它的源任务在同一个切分里；去污染只对着导出配置明确列出的 benchmark（默认 `[]`：不去污染，manifest 记 `decontaminated: false`；用户 2026-10-13 的裁决，原先从 `require_eval` 推断）；去污染与泄漏扫描的基准数据经导出文档自己的 `eval_loader` / `task_loader` 块读（旋钮俱全），没配的 benchmark 才用注册加载器的默认值。**分叉样本**：只导出策略步，历史来自源 run，带终止观测引用与 `branch_group_id`，组内重复的标 `duplicate_of`、不删。
+**切分**：按站点（源任务 `start_url` 的主机）或任务，从不按步；同一个 `branch_group_id` 与它的源任务在同一个切分里；去污染只对着导出配置明确列出的 benchmark（默认 `[]`：不去污染，manifest 记 `decontaminated: false`；用户 2026-10-13 的裁决，原先从 `require_eval` 推断）；去污染与泄漏扫描的基准数据经 `spectragent export --benchmark` 点名的基准的 `eval_loader` / `task_loader` 读（旋钮俱全，M35 a 段起；之前是导出文档自己的加载器块），没点名的 benchmark 才用注册加载器的默认值。**分叉样本**：只导出策略步，历史来自源 run，带终止观测引用与 `branch_group_id`，组内重复的标 `duplicate_of`、不删。
 
 **`skyvern_hit_test`**：同样的页内提取（`EXTRACTION_SCRIPT` 不改）之后逐个可交互元素做 `elementFromPoint` 命中测试，记 `hit_test{center_topmost, visible_point}`；`covered_elements: drop`（默认）不给整个被盖住的元素编号；`skyvern` 逐字节不变（`DOMElementNode.hit_test` 的 `TRACE_OMIT_NONE` 让别的 cleaner 的 trace 不多一个键）。
 
@@ -1526,7 +1526,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 学生就是一个 af agent：训练格式与服务格式一致，训练完的学生直接接回 af、用同一份 YAML 评测；新的学生格式就是新的 Agent 类。翻译只做与学生无关的换算（index → CSS px 的点），"学生写不写得出来"由学生自己的格式器判定，两处的不可译走同一个策略。导出不另立根（运行根的层本来都是可选的），也不另立 slot 机制：两个新 slot 是 ReAct 的可选 slot，谁用谁校验，与 runtime 用 `prepare` 是同一个安排。遮挡的证据按"谁录的就用谁的"排优先级；没有证据就直接报错，不把没检查过的当成检查过。
 
-**落地（2026-10-11；用户 2026-10-13 验收；学生一侧暂定、导出代码冻结，见 architecture §4.15）**：导出包 `spectragent/export/`——`_registrar.py`（`Exporter` / `ExporterRegistrar` / `ExporterBase`、`ImageStore`、`ExportRecord`）、`settings.py`、`openai_messages.py`、`translate/`、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`（`BenchmarkLoaders`：去污染与泄漏扫描读导出文档自己的 `eval_loader` / `task_loader` 块）、`render.py`（`StudentRenderer`、`RenderedSample`）、`validate.py`、`runner.py`（`ExportRunner`、`ExportRunner.from_run`）、`cli.py`（`spectragent-export`）、`errors.py`；`schemas/sample.py`。框架一侧：`core/trace/{sources,secret_patterns}.py`、`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）、`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`，分叉与导出共用）、`core/runtime.py::seed_messages`、`core/actions/params.py::point_params`、`core/capabilities/base.py`（`CaptureCheck`）与 `core/environments/_registrar.py::compare_capture`、`core/negotiation/observation.py`（`provider=`）；browser 一侧 `index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。发布的配置 `configs/flywheel/{ui_tars_student,export_sft}.yaml`；测试 `tests/test_export/`（真实 Chrome 验收 `test_export_live.py`：identity 导出与 `llm_messages` 逐条相同、只差记录形态之外的预期差异；BrowserUse + `browser.dom_raw` 与 `skyvern_hit_test` 两条 `index_to_coordinate` 导出）。与本条目文字的差异见 PRD 修订记录 G21 起。
+**落地（2026-10-11；用户 2026-10-13 验收；学生一侧暂定、导出代码冻结，见 architecture §4.15）**：导出包 `spectragent/export/`——`_registrar.py`（`Exporter` / `ExporterRegistrar` / `ExporterBase`、`ImageStore`、`ExportRecord`）、`settings.py`、`openai_messages.py`、`translate/`、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`（`BenchmarkLoaders`：去污染与泄漏扫描读导出文档自己的 `eval_loader` / `task_loader` 块；M35 a 段起改读 `--benchmark` 点名的基准的加载器）、`render.py`（`StudentRenderer`、`RenderedSample`）、`validate.py`、`runner.py`（`ExportRunner`、`ExportRunner.from_run`）、`cli.py`（`spectragent-export`）、`errors.py`；`schemas/sample.py`。框架一侧：`core/trace/{sources,secret_patterns}.py`、`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）、`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`，分叉与导出共用）、`core/runtime.py::seed_messages`、`core/actions/params.py::point_params`、`core/capabilities/base.py`（`CaptureCheck`）与 `core/environments/_registrar.py::compare_capture`、`core/negotiation/observation.py`（`provider=`）；browser 一侧 `index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。发布的配置 `configs/flywheel/{ui_tars_student,export_sft}.yaml`；测试 `tests/test_export/`（真实 Chrome 验收 `test_export_live.py`：identity 导出与 `llm_messages` 逐条相同、只差记录形态之外的预期差异；BrowserUse + `browser.dom_raw` 与 `skyvern_hit_test` 两条 `index_to_coordinate` 导出）。与本条目文字的差异见 PRD 修订记录 G21 起。
 
 **使用的 skill**：`af-add-a-receptor`、`af-add-an-action`、`af-add-a-loop`、`af-add-an-observation-fragment`、`af-regenerate-and-verify`、`af-trace-and-hooks`。
 
@@ -1594,7 +1594,7 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 
 ### M35: 基准层（基准组件、开局布置、判分器、capability 配置合并）
 
-**优先级**: P1（泛化层；排在这里是提议） | **前置依赖**: M08、M11、M15、M16；c 段另依赖 M26 的 Android 阶段 1–2（AndroidWorld 的任务裁判、服务与任务加载器） | **被依赖方**: 无 | **状态**: 设计已定，还没实施（用户 2026-11-03 的裁决，architecture §4.10.1）
+**优先级**: P1（泛化层；排在这里是提议） | **前置依赖**: M08、M11、M15、M16；c 段另依赖 M26 的 Android 阶段 1–2（AndroidWorld 的任务裁判、服务与任务加载器） | **被依赖方**: 无 | **状态**: 设计已定（用户 2026-11-03 的裁决，architecture §4.10.1）；a 段已完成（2026-11-03，Android 的起始点除外，见 a 段末），b–e 段还没实施
 
 #### 业务实现
 
@@ -1605,6 +1605,8 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 设计写在 2026-11-03 的文档分支里；之后分五段，每段单独验收（用户 2026-11-03 的裁决："可以，go"）。段之间：a 在 b、c 之前；b 与 c 并行；d 在 a 之后；e 在 a、b、c 之后，另开分支并行做。c 里只有 AndroidWorld 的活体判分器要等 b（协调者 2026-11-03 定的顺序，见 c 段）。
 
 - **a 段：骨架。** `BenchmarkRegistrar` 与基准包；任务加载器与评测数据加载器挪到基准下，运行根的顶层 `task_loader` / `eval_loader` 段删掉，发布的配置（`configs/*.yaml`、`configs/flywheel/` 与 `configs/lookahead/` 的分叉配置、度量链的 `tasks.benchmark`、导出的 YAML）随之迁移。写了 `task_loader` 的发布配置都是分叉 sweep：这五份（`configs/flywheel/` 两份、`configs/lookahead/` 三份）的 `task_loader` 段挪进分叉 YAML，即分叉任务来源，经 `--benchmark <alias|branches.yaml>` 选；运行配置里的分叉 Loop 与 hook 不变；分叉任务继承源 run 的基准（architecture §4.10.1 "分叉 sweep 是一种任务来源"）；`--benchmark <alias|path.yaml>`（`configs/benchmarks/<alias>.yaml`）与 `--benchmark X --task-id Y`；由各 capability 的 `declarations.py` 生成的单任务起始参数，框架 CLI 里写死的 `--start-url` 与 `--replay-archive` 删掉。"任务的起始点归 capability"的裁决（architecture §4.10）随这项工作落地，提议放在这一段，因为起始参数就是起始点在命令行上的写法：先定 Android 说什么（候选与它的问题记在 architecture §4.10），`core/trace/sources.py::task_identity` 不再读 browser 的 `start_url`，飞轮与网页查看器的比较页面都改按各 capability 的任务 setup 类说出的起始点分组。完成标准（提议）：发布的配置经 `--benchmark` 跑通，运行配置里没有加载器段；`spectragent run --help` 按 capability 列出起始参数，本 run 没有的 capability 的参数被拒。
+
+  **a 段的完成情况（2026-11-03）。** 提议的名字都照用了（`BenchmarkRegistrar` / `benchmark_id`、`START_FLAGS`），落地的形状记在 architecture §4.10.1 "a 段落地了什么"。完成标准的核对：`tests/test_core/test_composer/test_shipped_config_integration.py::TestShippedConfigsRunThroughTheirBenchmarks` 让每份发布的运行配置配 `--benchmark online_mind2web`、两份飞轮分叉配置配各自的分叉 YAML，各自为第一个任务过 `spectragent bench` 的 pre-flight，并检查没有一份运行配置写加载器段；`tests/test_cli/test_start_flags.py` 与 `tests/test_core/test_run_cli.py` 检查 `--help` 与 tab 补全按 capability 列出起始参数、没点名那个 capability 的 run 用了它的参数就被拒。没做的一件：Android 的起始点。a 段 Android 不说起始点、不声明起始参数，与以前一样；`--start-app`（用户批准）随 c 段的 app 名表一起来，起始点就是那个 app；AndroidWorld 任务的起始点留给飞轮与 dashboard 那一轮（architecture §4.10）。合并审查之后的补充：`bench`、带 `--task-id` 的 `run` 与链的 `tasks.subset` 留着 `--subset`，在组装之前写进所选基准块的任务加载器；链的两次导出带 `--benchmark <tasks.benchmark>`；`config check` / `config explain` 单给 `--benchmark` 时不带任务上下文检查。
 - **b 段：判分器与判定存放。** `VerifierRegistrar` 取代 `EvaluatorRegistrar`，判分器写在基准下，挂在哪里由它声明要的东西推出；判定统一存放（`oracle_scores.json` 与 `evals/` 并成一处；提议存放在 manifest 之外，trace 格式随之升一次版本）；主判定与成功规则（提议：进 `spectragent bench` 的汇总）；`spectragent eval` 重做成离线判分器的入口；读判定的地方（`trace_branches` 的 `require_eval`、导出的判定筛选与标签、查看器）改读这一处。完成标准（提议）：一个基准同时配规则判分与 LLM judge，两份判定在一处，各带自己的身份。
 - **c 段：capability 配置合并与 AndroidWorld。** c 段做合并、承载的 Protocol 与开局布置组件：运行配置与基准的 capability 贡献在 `prepare()` 里合并，冲突点名两边，缺项说明谁都没写，列表只给已有条目设旋钮、不增删（协调者 2026-11-03 定的规则）；判分器只写要求，在 `prepare()` 里核对（协调者 2026-11-03 的决定）；capability 承载基准组件（`SetupHost`、`LiveVerifierHost`，提议名）；AndroidWorld 的开局布置组件（architecture §11.2）；`open_app` 名称表由 AndroidWorld 基准从钉住的代码算出，没有基准的单任务读启动器标签。AndroidWorld 的活体判分器要 b 段的注册表与判定存放：b 合进去之后，它建在 b 上落地；两段之间不搭临时的桥（协调者 2026-11-03 定的顺序）。完成标准（提议）：活体判分器落地之后，AndroidWorld 的运行配置里没有任务裁判、名称表与任务加载器，`--benchmark androidworld` 跑通；名称表含 AndroidWorld 自己的启动表里的每个 app。
 - **d 段：数据获取。** 共用缓存 `$SPECTRAGENT_BENCHMARK_DATA`；`spectragent benchmark fetch <alias>` 与 `run` / `bench` 的 `--fetch`；钉住的数据源与版本，下载之后核对，trace 记数据版本；重的安装走 `spectragent benchmark setup <alias>`（AndroidWorld 的检出、venv 与 AVD）。缺了安装，`prepare()` 拒绝并给出命令；缺了数据，在任务加载器读数据之前（组装时）就拒绝，同样给出命令（architecture §4.10.1 "数据"）。

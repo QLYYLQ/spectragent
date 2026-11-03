@@ -25,7 +25,9 @@ from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmRegis
 from spectragent.core.registries import (
     capability_declarations,
     collect_registrars,
+    start_flags,
 )
+from spectragent.schemas.task import StartFlag
 
 #: Registrars YAML never selects: registered by import, never a config layer.
 NOT_CONFIG_LAYERS = frozenset({"observation", "negotiation_result", "task_setup"})
@@ -132,6 +134,8 @@ def test_a_layer_two_owners_declare_is_refused(monkeypatch: pytest.MonkeyPatch) 
         ("TASK_SETUP", None),
         # A capability may only keep its own modules out of discovery.
         ("OPTIONAL_EXTRA_MODULES", ("spectragent.core.registries",)),
+        ("START_FLAGS", None),
+        ("START_FLAGS", [StartFlag("--start-url", "start_url", "where it starts")]),
     ],
 )
 def test_a_malformed_declaration_is_refused(
@@ -140,3 +144,52 @@ def test_a_malformed_declaration_is_refused(
     monkeypatch.setattr(browser_declarations, name, value)
     with pytest.raises(TypeError, match=name):
         capability_declarations()
+
+
+@pytest.mark.parametrize(
+    ("flags", "problem"),
+    [
+        ((StartFlag("start-url", "start_url", "where"),), "needs a flag starting with '--'"),
+        ((StartFlag("--start-url", "", "where"),), "needs a flag starting with '--'"),
+        (
+            (StartFlag("--a", "start_url", "x"), StartFlag("--a", "other", "y")),
+            "declares one flag twice",
+        ),
+        (
+            (StartFlag("--a", "start_url", "x"), StartFlag("--b", "start_url", "y")),
+            "declares one key twice",
+        ),
+    ],
+)
+def test_a_malformed_start_flag_is_refused(
+    monkeypatch: pytest.MonkeyPatch, flags: tuple[StartFlag, ...], problem: str
+) -> None:
+    monkeypatch.setattr(browser_declarations, "START_FLAGS", flags)
+    with pytest.raises(ValueError, match=problem):
+        capability_declarations()
+
+
+def test_the_start_flags_are_every_capabilitys_by_capability() -> None:
+    flags = start_flags()
+    assert list(flags) == [capability.capability_id for capability in capability_declarations()]
+    assert [flag.flag for flag in flags["browser"]] == [
+        "--start-url",
+        "--storage-state",
+        "--replay-archive",
+    ]
+    assert [flag.key for flag in flags["browser"]] == [
+        "start_url",
+        "storage_state",
+        "replay_archive",
+    ]
+
+
+def test_one_start_flag_two_capabilities_declare_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from spectragent.core.capabilities.android import declarations as android_declarations
+
+    flag = StartFlag("--start-url", "start_url", "where an Android task starts")
+    monkeypatch.setattr(android_declarations, "START_FLAGS", (flag,))
+    with pytest.raises(ValueError, match="'android' and 'browser' both declare"):
+        start_flags()

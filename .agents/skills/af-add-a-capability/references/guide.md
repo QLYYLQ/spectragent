@@ -368,7 +368,7 @@ outside the package may wire to the package's own keys (Step 6, the environment)
 ```
 spectragent/core/capabilities/docker/
 ├── __init__.py          # imports nothing: declarations.py must stay light
-├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES
+├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES, START_FLAGS
 ├── task_setup.py        # DockerSetup(SetupBase), registered by subclassing
 ├── capability.py        # the DockerCapability class
 ├── environment.py       # DockerEnvironment, its single-capability environment
@@ -388,10 +388,14 @@ registrar definitions and the setup schema:
 # spectragent/core/capabilities/docker/declarations.py
 from spectragent.core.capabilities.docker.backends._registrar import DockerProviderRegistrar
 from spectragent.core.capabilities.docker.task_setup import DockerSetup
+from spectragent.schemas.task import StartFlag
 
 STRATEGY_AXES = {"docker_provider": DockerProviderRegistrar}  # layer name -> registrar
 TASK_SETUP = DockerSetup
 OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()  # modules importing an optional extra at top level
+START_FLAGS = (  # single-task start flags `spectragent run` generates; () when none
+    StartFlag("--image", "image", "Container image the task starts in."),
+)
 ```
 
 - **`STRATEGY_AXES`** — every internal registrar YAML chooses from, keyed by the
@@ -400,12 +404,22 @@ OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()  # modules importing an optional ex
 - **`TASK_SETUP`** — a `SetupBase` subclass (`schemas/task.py`) with `__registry_key__`
   (its `setup_type`), `__env_types__` (the `TaskDefinition.env_type` values that select
   it), `__raw_keys__` (raw-record keys a loader moves into the setup) and `to_context()`
-  (the env part handed to `setup()`). Subclassing registers it in `TaskSetupRegistrar`;
-  `browser/task_setup.py` is the model.
+  (the env part handed to `setup()`). It may also override the classmethod
+  `start_point(context)`: where a task with this context starts, as the capability names it
+  (the browser's: the start URL's site), which the export's split, the flywheel's sites and
+  the viewer's comparisons group by — framework code never reads the capability's own fields
+  (`docs/architecture_design.md` §4.10 "任务的起始点归 capability"). Subclassing registers it in
+  `TaskSetupRegistrar`; `browser/task_setup.py` is the model.
 - **`OPTIONAL_EXTRA_MODULES`** — fully qualified names of modules whose top-level imports
   need an optional extra; discovery never imports them, so the extra stays optional. They
   must register nothing; the implementation that needs them imports them when it is
   constructed (browser: `input._mouse_gan_v2`, numpy).
+- **`START_FLAGS`** — a tuple of `StartFlag(flag, key, help)` (`schemas/task.py`): each a
+  `spectragent run` flag that fills the task context key `key` (one your `setup()` takes).
+  `spectragent run`, `config check` and `config explain` offer every capability's flags,
+  listed by capability in `--help` and tab completion, and refuse one whose capability the
+  configuration does not name (§4.9 "起始参数"). A flag two packages declare is refused when
+  the declarations are read.
 
 Importing any module of the package runs every `__init__.py` on the way, so none of them
 imports an implementation; import from the defining module instead.
@@ -839,7 +853,7 @@ Before you call a capability done:
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] If a recorded run can resume here: `RestorationSupport` (and, for state that moves on its own clock, `RestorationAlignment`) implemented as pure measurements and requests; unknown values never decide
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
-- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`) and any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`); the package's `__init__.py` files import no implementation; no framework file edited
+- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`) and its single-task start flags (`START_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
 - [ ] `uv run pytest tests/test_core/test_capabilities/test_capability_declarations.py` passes
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts

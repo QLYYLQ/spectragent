@@ -13,6 +13,7 @@
 # Media-area rules change restoration comparisons, never the saved/model-visible images.
 # Copy this file to a round directory and replace tmp/lookahead/round before execution.
 # Only the reviewed health exclusions feed branching; preserve the raw health output.
+# Its tasks: --benchmark "$ROUND_DIR/configs/branches_task_variants.yaml".
 agent:
 - agent_id: ui_tars
   id: main
@@ -140,14 +141,3 @@ hook:
     capture_timeout_s: 3.0
     max_action_wait_s: 1.0
     allow_session_state: false
-task_loader:
-- benchmark_name: trace_branches
-  data_dir: tmp/lookahead/round/record
-  exclude_runs: tmp/lookahead/round/out/health/reviewed-exclusions.json
-  branches_per_step: 1
-  agent_outcome: any
-  on_unbranchable: skip
-  exclude_unloaded_checkpoints: true
-  step_selector:
-    selector_id: all
-  task_variants: tmp/lookahead/round/variants/variants.json

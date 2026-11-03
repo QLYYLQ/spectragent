@@ -135,3 +135,28 @@ class TestBrowserContext:
             login_type="sso",
         ).to_context()
         assert context == {"start_url": "https://example.com"}
+
+
+class TestTheStartPoint:
+    """Where a task starts is its capability's to say (``docs/architecture_design.md`` §4.10)."""
+
+    def test_the_browser_says_its_start_urls_site(self) -> None:
+        assert BrowserSetup.start_point({"start_url": "https://Shop.Example.test/a?b=1"}) == (
+            "shop.example.test"
+        )
+        assert BrowserSetup.start_point({"storage_state": "state.json"}) is None
+        # A start page that is not a URL names no site (setup refuses it anyway).
+        assert BrowserSetup.start_point({"start_url": "www.xiachufang.com或其他美食网站"}) is None
+
+    def test_a_setup_that_states_none_has_none(self) -> None:
+        from spectragent.core.capabilities.android.task_setup import AndroidSetup
+
+        assert AndroidSetup.start_point({"oracle_task": {"task": "SimpleSmsSend"}}) is None
+
+    def test_the_framework_asks_the_setup_of_the_environment_type(self) -> None:
+        from spectragent.core.trace.sources import start_point
+
+        context = {"start_url": "https://shop.example.test/"}
+        assert start_point("browser", context) == "shop.example.test"
+        assert start_point("android", context) is None
+        assert start_point("no_such_environment", context) is None

@@ -36,7 +36,7 @@ assert "archiver" not in schema["properties"]
 assert schema["additionalProperties"] is False
 assert "archiver" not in result.top_level_layers
 
-for path in sorted(Path("configs").glob("*.yaml")) + sorted(Path("configs/flywheel").glob("*.yaml")) + sorted(Path("configs/replay_review").glob("*.yaml")):
+for path in sorted(Path("configs").glob("*.yaml")) + sorted(Path("configs/flywheel").glob("*.yaml")) + sorted(Path("configs/replay_review").glob("*.yaml")) + sorted(Path("configs/benchmarks").glob("*.yaml")):
     raw = yaml.safe_load(path.read_text())
     assert runtime.model_validate(raw).model_dump(mode="json") == ComposedConfig.model_validate(raw).model_dump(mode="json"), path
 
@@ -61,7 +61,7 @@ for bad in bad_inputs:
     assert errors[0] == errors[1], errors
 
 for model in (runtime, ComposedConfig):
-    branch = model.model_validate({"task_loader": [{"benchmark_name": "trace_branches", "step_selector": {"selector_id": "all"}}]}).task_loader[0]
+    branch = model.model_validate({"benchmark": [{"benchmark_id": "trace_branches", "task_loader": {"benchmark_name": "trace_branches", "step_selector": {"selector_id": "all"}}}]}).benchmark[0].task_loader
     assert branch.sources == ("*",)
     assert branch.require_archive == ("browser.network",)
     export = model.model_validate({"exporter": [{"exporter_id": "openai_messages", "student_run_config": "student.yaml", "output_dir": "dataset", "translator": {"translator_id": "identity"}}]}).exporter[0]

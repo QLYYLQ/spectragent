@@ -181,7 +181,7 @@ def filtered_out(
         misses = document_miss_total(source.trace)
         if misses > limit:
             return f"{misses} main-frame document miss(es) in replay (max_document_misses: {limit})"
-    site = task_identity(source.config).site
+    site = task_identity(source.config).start_point
     if site is not None:
         for entry in filters.exclude_sites:
             excluded = entry.lower()

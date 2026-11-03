@@ -1,15 +1,14 @@
 """Where an export reads benchmark data (arch §4.15 "基准数据"): decontamination's task
 lists and the reference-leak scan's answers.
 
-Through the loaders the export document configures — its own ``eval_loader:`` /
-``task_loader:`` layers, the run root's layers, composed with every knob
-(``data_dir``, ``subset``) — matched to a benchmark by ``benchmark_name``. A
-benchmark the document configures no loader for is read by its registered
-loader built with its defaults: the rule ``spectragent bench`` resolves its
-eval loader by (config first, then the registry). A benchmark it does
-configure is read only through those loaders — never by a default-built
-instance beside a configured one, which would ignore the knobs the document
-set.
+Through the loaders the benchmarks the export names configure (``spectragent
+export --benchmark``, an alias or a path, §4.10.1) — each benchmark's task
+loader and its ``eval_loader`` block, composed with every knob (``data_dir``,
+``subset``) — matched to a benchmark by ``benchmark_name``. A benchmark with no
+configured loader of a kind is read by its registered loader built with its
+defaults: the rule a benchmark resolves its own reference data by (its block
+first, then the registry). A configured loader is the only one read — never a
+default-built instance beside it, which would ignore the knobs its YAML set.
 """
 
 from __future__ import annotations
@@ -32,8 +31,8 @@ class BenchmarkLoaders:
     """The benchmark loaders one export reads through (module docstring).
 
     Args:
-        eval_loaders: The document's configured eval loaders, in document order.
-        task_loaders: The document's configured task loaders, in document order.
+        eval_loaders: The named benchmarks' reference loaders, in the order named.
+        task_loaders: The named benchmarks' task loaders, in the order named.
     """
 
     def __init__(
@@ -47,14 +46,20 @@ class BenchmarkLoaders:
 
     @classmethod
     def from_run(cls, run: ComposedRun) -> BenchmarkLoaders:
-        """The loaders a composed export document configures (``eval_loader`` / ``task_loader``)."""
+        """The loaders the benchmarks a composed export names configure: task and eval loaders.
+
+        A named benchmark without an ``eval_loader`` block configures no eval
+        loader here: its references come from the registered default, built
+        when first needed (:meth:`registered_default`).
+        """
+        benchmarks = run.instances("benchmark")
         return cls(
-            eval_loaders=run.instances("eval_loader"),
-            task_loaders=run.instances("task_loader"),
+            eval_loaders=[b.eval_loader for b in benchmarks if b.eval_loader is not None],
+            task_loaders=[b.task_loader for b in benchmarks],
         )
 
     def configured(self, kind: LoaderKind, benchmark: str) -> tuple[Any, ...]:
-        """The *kind* loaders the document configures for *benchmark*, in document order."""
+        """The *kind* loaders the named benchmarks configure for *benchmark*, in the order named."""
         return tuple(
             loader
             for loader in self._configured[kind]
@@ -64,7 +69,7 @@ class BenchmarkLoaders:
     def registered_default(self, kind: LoaderKind, benchmark: str, subset: str | None) -> Any:
         """*benchmark*'s registered *kind* loader, built once with its defaults (and *subset*).
 
-        For a benchmark the document configures no *kind* loader for — a
+        For a benchmark the export names no *kind* loader for — a
         configured one is never shadowed by a default-built second instance.
 
         Returns:
@@ -72,13 +77,13 @@ class BenchmarkLoaders:
             *benchmark*.
 
         Raises:
-            ValueError: The document configures a *kind* loader for *benchmark*.
+            ValueError: A named benchmark configures a *kind* loader for *benchmark*.
             Exception: Whatever the loader raises when its data does not load.
         """
         if self.configured(kind, benchmark):
             raise ValueError(
-                f"the export document's {kind}_loader blocks configure {benchmark!r}: read it "
-                f"through them, not through a default-built loader"
+                f"a benchmark the export names configures the {kind} loader of {benchmark!r}: "
+                f"read it through that loader, not through a default-built one"
             )
         key = (kind, benchmark, subset)
         if key not in self._defaults:

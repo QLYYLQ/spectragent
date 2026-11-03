@@ -22,9 +22,11 @@ generic examples. The templates are not frozen copies of the 2026-10-25 experime
 | File | Adopted role |
 |---|---|
 | `record_ui_tars_deepseek.yaml` | UI-TARS computer-use teacher, screenshot-pixel coordinates; m17 on the requested private route through the DeepSeek adapter; 30 steps, 4 actions, one parse retry, 200-message memory, 32768 output ceiling |
-| `branch_same_task.yaml` | every fourth policy step, offset 1; 2 forks per checkpoint; source history; one new decision per fork |
-| `branch_task_variants.yaml` | checkpoints and tasks from `variants`; 1 fork per variant; restored history |
-| `branch_task_variants_without_source_thoughts.yaml` | the same variants and budget, with `omit_source_replies` as a separate control |
+| `branch_same_task.yaml` | source history; one new decision per fork; its tasks come from `branches_same_task.yaml` |
+| `branches_same_task.yaml` | its task source (a branches YAML, selected with `--benchmark`): every fourth policy step, offset 1; 2 forks per checkpoint |
+| `branch_task_variants.yaml` | restored history; its tasks come from `branches_task_variants.yaml` |
+| `branch_task_variants_without_source_thoughts.yaml` | the same variants and budget, with `omit_source_replies` as a separate control; the same task source |
+| `branches_task_variants.yaml` | the variant arms' shared task source: checkpoints and tasks from `variants`; 1 fork per variant |
 | `judge_deepseek.yaml` | independent official DeepSeek judge, `deepseek-flash`, high reasoning, 16384 output ceiling; use its own API key |
 
 The teacher's `base_url: null` is an unfilled template. Resolve it from the already supplied
@@ -64,7 +66,8 @@ folder, copies the current rules, and refuses an existing config folder. Prepare
 LexBench `All` task directory first, including `data_info.json` and the intended per-task
 `setup.storage_state`; set `LOOKAHEAD_TASK_DATA` to that frozen directory. Use local seed
 paths whose contents stay fixed for the round. The script explicitly binds that dataset
-to the recording config, rather than silently falling back to the installed anonymous data.
+as the round's own benchmark YAML (`$ROUND_DIR/configs/lexbench_private.yaml`), rather than
+silently falling back to the installed anonymous data.
 
 ```bash
 uv sync --extra dev --extra learned-mouse
@@ -100,11 +103,12 @@ def paths(value):
         return value.replace("tmp/lookahead/round", str(round_dir))
     return value
 
+benchmark = yaml.safe_load(Path("configs/benchmarks/lexbench_browser.yaml").read_text())
+benchmark["benchmark"][0]["task_loader"]["data_dir"] = str(task_data)
+(config_dir / "lexbench_private.yaml").write_text(yaml.safe_dump(benchmark, sort_keys=False))
+
 for source in Path("configs/lookahead").glob("*.yaml"):
     data = paths(yaml.safe_load(source.read_text()))
-    if source.name == "record_ui_tars_deepseek.yaml":
-        data["task_loader"] = [{"benchmark_name": "lexbench_browser", "subset": "All",
-                                "data_dir": str(task_data)}]
     for agent in data.get("agent", []):
         agent["llm"]["base_url"] = os.environ["OPENAI_BASE_URL"]
     for environment in data.get("environment", []):
@@ -127,15 +131,17 @@ re-recording.
 
 For the same ten-site task set, preserve the explicit eight seeded sites and two fresh sites
 (Tonghuashun and Steam). `All` describes the public task dataset, not an anonymous browser.
-The preparation script binds `LOOKAHEAD_TASK_DATA` as the record copy's explicit
-`lexbench_browser / All` task loader. Keep this private dataset and seed contents fixed;
+The preparation script binds `LOOKAHEAD_TASK_DATA` as the round's benchmark YAML
+(`lexbench_private.yaml`: the `lexbench_browser / All` task loader over that directory),
+which the recording selects with `--benchmark`. Keep this private dataset and seed contents fixed;
 its directory contains `data_info.json`. Check the visible
 account in a pilot. For an anonymous experiment use a separate round and record that change.
 If using the installed public task data without seeds, pass `--benchmark lexbench_browser
 --subset All` explicitly; that is a different task setup from the authenticated ten-site run.
 
 For the pilot, record one task, run health and create its reviewed exclusion file, then
-use `branch_same_task --list` and run one selected branch task ID. Keep an unsuccessful
+use `branch_same_task` with `--benchmark .../branches_same_task.yaml --list` and run one
+selected branch task ID. Keep an unsuccessful
 pilot in its own output. If the pilot uses the frozen formal configuration and is retained
 in the formal source set, do not record that task again unnoticed; after expanding the
 source set, rerun health and freeze a new reviewed list before variants or bulk forks.
@@ -148,8 +154,9 @@ three site sweeps, sequential within each site. Preserve failed/incomplete attem
 rerun those tasks separately; inspect recording health before consuming them.
 
 ```bash
-# 1. Record from the round's explicit task-loader configuration; example Bilibili tasks.
+# 1. Record from the round's own benchmark YAML; example Bilibili tasks.
 uv run spectragent bench --config "$ROUND_DIR/configs/record_ui_tars_deepseek.yaml" \
+  --benchmark "$ROUND_DIR/configs/lexbench_private.yaml" \
   --task-id 6 --task-id 118 --task-id 158 --no-eval --timeout 1800 \
   --session-dir "$ROUND_DIR/sessions/bilibili" > "$ROUND_DIR/logs/record-bilibili.log" 2>&1
 uv run python -m lookahead health --root "$ROUND_DIR/record" --viewer-root "$ROUND_DIR" \
@@ -166,15 +173,17 @@ OPENAI_API_KEY="$LOOKAHEAD_JUDGE_API_KEY" uv run python -m lookahead variants \
   --root "$ROUND_DIR/record" --viewer-root "$ROUND_DIR" --exclude-runs "$EXCLUDE" \
   --steps-per-run 2 --per-step 2 --judge-config "$ROUND_DIR/configs/judge_deepseek.yaml" \
   --out "$ROUND_DIR/variants/variants.json"
+# Each arm's tasks come from its branches YAML; the two variant arms share one, so they
+# share a task list, and the same-task forks have their own.
+tasks_of() { case "$1" in branch_same_task) echo branches_same_task ;; *) echo branches_task_variants ;; esac; }
 for arm in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
-  uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" --no-eval --list \
+  uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" \
+    --benchmark "$ROUND_DIR/configs/$(tasks_of "$arm").yaml" --no-eval --list \
     > "$ROUND_DIR/logs/$arm-list.txt"
 done
-cmp "$ROUND_DIR/logs/branch_task_variants-list.txt" \
-    "$ROUND_DIR/logs/branch_task_variants_without_source_thoughts-list.txt" || exit 2
-# Only the two variant arms share a task list; same-task forks have their own list.
 for arm in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
-  uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" --no-eval --timeout 1500 \
+  uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" \
+    --benchmark "$ROUND_DIR/configs/$(tasks_of "$arm").yaml" --no-eval --timeout 1500 \
     --session-dir "$ROUND_DIR/sessions/$arm" > "$ROUND_DIR/logs/$arm.log" 2>&1
 done
 

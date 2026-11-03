@@ -9,15 +9,19 @@ framework needs before importing it (``docs/architecture_design.md``
 ``STRATEGY_AXES``           its internal strategy axes, layer name → registrar;
 ``TASK_SETUP``              its task setup class (§4.10);
 ``OPTIONAL_EXTRA_MODULES``  modules whose top-level imports need an optional
-                            extra, which discovery never imports.
+                            extra, which discovery never imports;
+``START_FLAGS``             its single-task start flags, which ``spectragent
+                            run`` generates (§4.9 "起始参数").
 
 So adding a capability edits no file here. Every subpackage of
 ``spectragent/agents/`` is an agent family, named by the part of an
 ``agent_id`` before its first ``.``, except the framework's own packages
-listed below. A run imports the framework's own packages and only the
-capability packages and agent families its configuration names
-(:func:`discover_implementations` narrowed to them); generation and the other
-whole-catalog tools import everything (:func:`discover_every_implementation`).
+listed below, and every subpackage of ``spectragent/benchmarks/`` is a
+benchmark, named by its ``benchmark_id`` (§4.10.1). A run imports the
+framework's own packages and only the capability packages, agent families and
+benchmarks its configuration names (:func:`discover_implementations` narrowed
+to them); generation and the other whole-catalog tools import everything
+(:func:`discover_every_implementation`).
 Nothing is cached: every call reads the declarations afresh and returns new
 objects.
 """
@@ -33,7 +37,7 @@ from typing import TYPE_CHECKING
 from conscribe import LayerRegistrar, discover, get_registry
 
 if TYPE_CHECKING:
-    from spectragent.schemas.task import SetupBase
+    from spectragent.schemas.task import SetupBase, StartFlag
 
 #: The package whose every subpackage is one capability.
 CAPABILITIES_PACKAGE = "spectragent.core.capabilities"
@@ -42,9 +46,17 @@ AGENTS_PACKAGE = "spectragent.agents"
 #: The subpackages of :data:`AGENTS_PACKAGE` that are the framework's, not families:
 #: the memory axis and the prompt rendering the families share.
 AGENT_FRAMEWORK_PACKAGES = frozenset({"memory", "rendering"})
-#: Where a run finds the framework's own implementations. The capability packages
-#: and agent families below them are walked only when a configuration names them.
-FRAMEWORK_PACKAGES = (AGENTS_PACKAGE, "spectragent.core", "spectragent.schemas")
+#: The package whose every subpackage is one benchmark (``docs/architecture_design.md`` §4.10.1).
+BENCHMARKS_PACKAGE = "spectragent.benchmarks"
+#: Where a run finds the framework's own implementations. The capability packages,
+#: agent families and benchmarks below them are walked only when a configuration
+#: names them.
+FRAMEWORK_PACKAGES = (
+    AGENTS_PACKAGE,
+    BENCHMARKS_PACKAGE,
+    "spectragent.core",
+    "spectragent.schemas",
+)
 #: The module each capability package declares itself in.
 DECLARATIONS_MODULE = "declarations"
 
@@ -59,6 +71,8 @@ class CapabilityDeclarations:
     task_setup: type[SetupBase]
     #: Fully qualified names, all inside the package.
     optional_extra_modules: tuple[str, ...]
+    #: Its single-task start flags, in declared order.
+    start_flags: tuple[StartFlag, ...]
 
 
 def capability_ids() -> tuple[str, ...]:
@@ -73,6 +87,11 @@ def agent_families() -> tuple[str, ...]:
     )
 
 
+def benchmark_ids() -> tuple[str, ...]:
+    """Every benchmark package's ``benchmark_id``, sorted. Imports no benchmark package."""
+    return _subpackages(BENCHMARKS_PACKAGE)
+
+
 def capability_declarations(
     capabilities: Iterable[str] | None = None,
 ) -> tuple[CapabilityDeclarations, ...]:
@@ -83,6 +102,31 @@ def capability_declarations(
     """
     selected = capability_ids() if capabilities is None else sorted(set(capabilities))
     return tuple(_read_declarations(capability_id) for capability_id in selected)
+
+
+def start_flags() -> dict[str, tuple[StartFlag, ...]]:
+    """Every capability package's single-task start flags, by ``capability_id``, in that order.
+
+    The static union ``spectragent run`` offers (``docs/architecture_design.md``
+    §4.9 "起始参数"): read from every package's declarations, whatever a run
+    names, so ``--help`` and tab completion list them all. Imports no
+    implementation.
+
+    Raises:
+        ValueError: two packages declare one flag.
+    """
+    flags: dict[str, tuple[StartFlag, ...]] = {}
+    owners: dict[str, str] = {}
+    for capability in capability_declarations():
+        for flag in capability.start_flags:
+            owner = owners.setdefault(flag.flag, capability.capability_id)
+            if owner != capability.capability_id:
+                raise ValueError(
+                    f"capabilities {owner!r} and {capability.capability_id!r} both declare the "
+                    f"start flag {flag.flag}"
+                )
+        flags[capability.capability_id] = capability.start_flags
+    return flags
 
 
 def collect_registrars(capabilities: Iterable[str] | None = None) -> dict[str, type]:
@@ -114,21 +158,22 @@ def discover_implementations(
     exclude: Iterable[str] = (),
     capabilities: Collection[str] | None = None,
     families: Collection[str] | None = None,
+    benchmarks: Collection[str] | None = None,
 ) -> None:
     """Import every module under *packages* so that its classes register.
 
     conscribe's strict ``discover``, minus *exclude* and every module a
     capability lists in ``OPTIONAL_EXTRA_MODULES``: those import an optional
     extra at top level and register nothing, so a machine without the extra
-    still composes, generates and reads traces. *capabilities* and *families*
-    narrow the walk to those capability packages and agent families (``None``:
-    every one), as a run narrows it to what its configuration names: the walk
-    excludes the others and reads no excluded capability's declarations. It
-    does not stop a walked module from importing an excluded one itself, so
-    framework code imports a capability's modules only inside the functions
-    that use them; ``tests/test_core/test_composer/test_configured_packages.py``
-    checks in fresh interpreters that a run imports no package it does not
-    name.
+    still composes, generates and reads traces. *capabilities*, *families* and
+    *benchmarks* narrow the walk to those capability packages, agent families
+    and benchmarks (``None``: every one), as a run narrows it to what its
+    configuration names: the walk excludes the others and reads no excluded
+    capability's declarations. It does not stop a walked module from
+    importing an excluded one itself, so framework code imports a
+    capability's modules only inside the functions that use them;
+    ``tests/test_core/test_composer/test_configured_packages.py`` checks in
+    fresh interpreters that a run imports no package it does not name.
     """
     walked = capability_ids() if capabilities is None else capabilities
     optional = [
@@ -136,13 +181,16 @@ def discover_implementations(
         for capability in capability_declarations(walked)
         for module in capability.optional_extra_modules
     ]
-    discover(*packages, exclude=[*exclude, *unnamed_packages(capabilities, families), *optional])
+    unnamed = unnamed_packages(capabilities, families, benchmarks)
+    discover(*packages, exclude=[*exclude, *unnamed, *optional])
 
 
 def unnamed_packages(
-    capabilities: Collection[str] | None = None, families: Collection[str] | None = None
+    capabilities: Collection[str] | None = None,
+    families: Collection[str] | None = None,
+    benchmarks: Collection[str] | None = None,
 ) -> tuple[str, ...]:
-    """The capability packages and agent families outside *capabilities* and *families*.
+    """The capability packages, agent families and benchmarks outside the ones named.
 
     ``None`` names every one. What a run does not walk, and what may not decide
     which layers its schema holds: an earlier import can have left one of
@@ -158,6 +206,11 @@ def unnamed_packages(
             f"{AGENTS_PACKAGE}.{name}"
             for name in agent_families()
             if families is not None and name not in families
+        ),
+        *(
+            f"{BENCHMARKS_PACKAGE}.{name}"
+            for name in benchmark_ids()
+            if benchmarks is not None and name not in benchmarks
         ),
     )
 
@@ -218,6 +271,7 @@ def setup_class_for_env(env_type: str) -> type[SetupBase]:
 def _framework_axes() -> dict[str, type]:
     from spectragent.agents._registrar import AgentRegistrar
     from spectragent.agents.memory._registrar import MemoryRegistrar
+    from spectragent.benchmarks._registrar import BenchmarkRegistrar
     from spectragent.core.actions._registrar import ActionRegistrar
     from spectragent.core.archive._registrar import ArchiverRegistrar
     from spectragent.core.capabilities._registrar import CapabilityRegistrar
@@ -250,6 +304,7 @@ def _framework_axes() -> dict[str, type]:
         "step_selector": StepSelectorRegistrar,
         "task_loader": TaskLoaderRegistrar,
         "eval_loader": EvalLoaderRegistrar,
+        "benchmark": BenchmarkRegistrar,
         "evaluator": EvaluatorRegistrar,
         "action_translator": ActionTranslatorRegistrar,
         "exporter": ExporterRegistrar,
@@ -275,10 +330,10 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         raise ImportError(
             f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
             f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
-            f"axes, task setup and optional-extra modules there "
+            f"axes, task setup, optional-extra modules and start flags there "
             f"(docs/architecture_design.md §4.2.1)."
         ) from exc
-    from spectragent.schemas.task import SetupBase
+    from spectragent.schemas.task import SetupBase, StartFlag
 
     axes = getattr(module, "STRATEGY_AXES", None)
     if not isinstance(axes, Mapping):
@@ -297,11 +352,25 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
             f"{name}.OPTIONAL_EXTRA_MODULES must be a tuple of module names inside {package}, "
             f"not {optional!r}"
         )
+    flags = getattr(module, "START_FLAGS", None)
+    if not (isinstance(flags, tuple) and all(isinstance(flag, StartFlag) for flag in flags)):
+        raise TypeError(f"{name}.START_FLAGS must be a tuple of StartFlag, not {flags!r}")
+    for flag in flags:
+        if not flag.flag.startswith("--") or not flag.key or not flag.help:
+            raise ValueError(
+                f"{name}.START_FLAGS: {flag!r} needs a flag starting with '--', a context key "
+                f"and a help text"
+            )
+    for field in ("flag", "key"):
+        values = [getattr(flag, field) for flag in flags]
+        if len(set(values)) != len(values):
+            raise ValueError(f"{name}.START_FLAGS declares one {field} twice: {values}")
     return CapabilityDeclarations(
         capability_id=capability_id,
         strategy_axes=dict(axes),
         task_setup=setup,
         optional_extra_modules=optional,
+        start_flags=flags,
     )
 
 
