@@ -59,6 +59,9 @@ class _Memory:
 class _Env:
     """Just enough page for a BrowserUse prompt."""
 
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, _negotiated: Any) -> Any:
         return SimpleNamespace(
             task=SimpleNamespace(user_request="task", follow_ups=[]),

@@ -437,6 +437,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             )
             if result is not None:
                 return result
+            ended = await self.end_of_episode(run)
+            if ended is not None:
+                return ended
         return await self.with_terminal(
             run,
             self.build_result(

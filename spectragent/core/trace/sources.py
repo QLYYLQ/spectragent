@@ -51,7 +51,9 @@ logger = logging.getLogger(__name__)
 #: ``agent_outcome``, the export's ``filters.agent_outcome``): ``any`` keeps
 #: every source; any other value keeps the runs whose ``result.json`` says the
 #: agent ended that way (``AgentDoneStatus``).
-AgentOutcomeFilter = Literal["any", "done", "max_steps", "error", "timeout", "vetoed"]
+AgentOutcomeFilter = Literal[
+    "any", "done", "max_steps", "episode_over", "error", "timeout", "vetoed"
+]
 #: :data:`AgentOutcomeFilter`'s values, for a check outside pydantic.
 AGENT_OUTCOMES: tuple[str, ...] = get_args(AgentOutcomeFilter)
 #: The local name every capability's capture state carries

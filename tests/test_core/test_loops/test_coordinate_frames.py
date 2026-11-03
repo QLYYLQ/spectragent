@@ -554,6 +554,9 @@ class _Env:
     def __init__(self, screenshots: list[ScreenshotObs]) -> None:
         self._screenshots = screenshots
 
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, negotiated: Any) -> Any:
         return SimpleNamespace(screenshot=self._screenshots.pop(0))
 

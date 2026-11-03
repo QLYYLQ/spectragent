@@ -37,6 +37,7 @@ from tests._helpers.branch_fakes import (
     DONE,
     PAGE_KEY,
     BranchFakeAgent,
+    BranchFakeCap,
     BranchFakeEnv,
     make_cap,
     record_source,
@@ -131,6 +132,38 @@ class TestBudget:
             tmp_path, source, 1, ["click 102"], loop=BranchLoop(terminal_observation=False)
         )
         assert _origins(out.run_dir) == [(0, "restored"), (1, "policy")]
+
+
+class _EpisodeEndingCap(BranchFakeCap):
+    """The same site, whose environment says the episode is over whenever asked (``EpisodeEnd``)."""
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+    asked: int = 0
+
+    async def episode_over(self) -> bool:
+        self.asked += 1
+        return True
+
+
+class TestEpisodeEnd:
+    async def test_the_environment_ends_the_branch_after_its_first_policy_step(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        """Asked after policy steps only: a restored step is the source's, already decided."""
+        cap = make_cap(cls=_EpisodeEndingCap)
+        assert isinstance(cap, _EpisodeEndingCap)
+        out = await run_branch(
+            tmp_path,
+            source,
+            1,
+            ["click 102", "click 100"],
+            loop=BranchLoop(continue_steps=2),
+            cap=cap,
+        )
+        assert out.result is not None
+        assert (out.result.agent_done.value, out.result.metrics.steps) == ("episode_over", 1)
+        assert cap.asked == 1
+        assert _origins(out.run_dir) == [(0, "restored"), (1, "policy"), (2, "terminal")]
 
 
 class TestRecords:

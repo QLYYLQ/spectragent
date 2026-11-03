@@ -405,6 +405,54 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             metrics=AgentMetrics(steps=run.policy_steps),
         )
 
+    async def end_if_episode_over(self, run: LoopRun) -> AgentResult | None:
+        """After a policy step that did not end the run: its result when the environment ends it.
+
+        Some benchmarks end an episode themselves (AndroidWorld ends a MiniWoB++
+        episode once the page reports a reward), so after every policy step that
+        did not end the run, a Loop asks its environment (``env.episode_over``,
+        ``docs/architecture_design.md`` §4.1). Over: an ``episode_over`` result,
+        apart from the agent's ``done`` and from running out of steps, keeping
+        the best answer seen as ``max_steps`` does; the oracles are handed no
+        answer for it, which only ``loop.done`` gives. Not over: ``None``. A
+        question that fails is an environment failure: an ``error`` result with
+        ``env_status: failed`` naming it and the step it followed. A veto and a
+        cancellation propagate. An env-less run has no episode to end.
+
+        The caller applies its own terminal observation to an ``episode_over``
+        result, as to any normal ending.
+        """
+        if run.env is None:
+            return None
+        try:
+            over = await run.env.episode_over()
+        except RunAbort:
+            raise
+        except Exception as exc:
+            step = run.step_records[-1].step if run.step_records else None
+            logger.warning(
+                "Loop %r: asking whether the episode is over after step %s failed: %s: %s",
+                self.loop_id,
+                step,
+                type(exc).__name__,
+                exc,
+            )
+            return self.build_result(
+                run,
+                agent_done="error",
+                env_status="failed",
+                answer=run.last_answer,
+                error=(
+                    f"asking the environment whether the episode is over after step {step} "
+                    f"failed: {type(exc).__name__}: {exc}"
+                ),
+            )
+        if not over:
+            return None
+        return self.build_result(
+            run, agent_done="episode_over", env_status="success", answer=run.last_answer
+        )
+
     async def observe_after_result(self, run: LoopRun, result: AgentResult) -> AgentResult:
         """Observe after a decided outcome; keep it when observation is interrupted."""
         step = run.step_records[-1].step + 1 if run.step_records else 0

@@ -287,10 +287,11 @@ class TestFilters:
     @pytest.mark.parametrize(
         ("wanted", "kept"),
         [
-            ("any", {"done", "failed", "timed-out"}),
+            ("any", {"done", "failed", "timed-out", "ended"}),
             ("done", {"done"}),
             ("error", {"failed"}),
             ("timeout", {"timed-out"}),
+            ("episode_over", {"ended"}),
             ("vetoed", set()),
         ],
     )
@@ -299,9 +300,10 @@ class TestFilters:
         write_source(tmp_path, "done", steps=1)
         write_source(tmp_path, "failed", steps=1, agent_done=AgentDoneStatus.ERROR)
         write_source(tmp_path, "timed-out", steps=1, agent_done=AgentDoneStatus.TIMEOUT)
+        write_source(tmp_path, "ended", steps=1, agent_done=AgentDoneStatus.EPISODE_OVER)
         tasks = loader(tmp_path, agent_outcome=wanted)
         assert {task_id.split("/")[0] for task_id in tasks.task_ids()} == kept
-        for name in {"done", "failed", "timed-out"} - kept:
+        for name in {"done", "failed", "timed-out", "ended"} - kept:
             assert tasks.skipped[name].startswith("filtered: its agent ended ")
             assert f"(agent_outcome: {wanted})" in tasks.skipped[name]
 

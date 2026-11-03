@@ -110,7 +110,7 @@ def setup_record(
 
 _DEFAULT = object()
 #: Agent outcomes a result carries no error for.
-_CLEAN = frozenset({AgentDoneStatus.DONE, AgentDoneStatus.MAX_STEPS})
+_CLEAN = frozenset({AgentDoneStatus.DONE, AgentDoneStatus.MAX_STEPS, AgentDoneStatus.EPISODE_OVER})
 
 
 def write_source(

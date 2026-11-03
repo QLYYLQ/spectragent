@@ -221,6 +221,9 @@ class _Env2:
         self._observation = observation
         self.acted: list[str] = []
 
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, *args: Any, **kwargs: Any) -> Any:
         return self._observation
 

@@ -217,6 +217,9 @@ class _FakeEnv:
             dom=None,
         )
 
+    async def episode_over(self) -> bool:
+        return False
+
     async def act(self, action: Action, **_kw: Any) -> ActionResult:
         return ActionResult(success=True, is_done=True, extracted_content="ok")
 

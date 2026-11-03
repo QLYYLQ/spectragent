@@ -199,10 +199,10 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             Field(
                 description=(
                     "Filter: keep sources whose agent ended this way, as their result.json "
-                    "says (done, max_steps, error, timeout, vetoed); 'any' (the default) keeps "
-                    "every outcome. Separate from the hard condition on the trace itself: a "
-                    "checkpoint is always a step the source's trace is closed and complete "
-                    "through."
+                    "says (done, max_steps, episode_over, error, timeout, vetoed); 'any' (the "
+                    "default) keeps every outcome. Separate from the hard condition on the "
+                    "trace itself: a checkpoint is always a step the source's trace is closed "
+                    "and complete through."
                 ),
             ),
         ] = "any",

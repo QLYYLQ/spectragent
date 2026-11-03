@@ -617,6 +617,10 @@ class SurfacelessEnv:
         # Every run that reaches the scoring point calls it, archiving or not.
         return await self._inner.read_oracle_scores(timeout_s=timeout_s, answer=answer)
 
+    async def episode_over(self) -> bool:
+        # A Loop asks after every policy step, archiving or not.
+        return await self._inner.episode_over()
+
     async def observe(self, negotiated: Any) -> Any:
         return await self._inner.observe(negotiated)
 

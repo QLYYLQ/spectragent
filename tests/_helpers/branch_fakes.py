@@ -221,8 +221,13 @@ def register_branch_fake() -> None:
         __registry_key__ = CAP_ID
 
 
-def make_cap(*, id_offset: int = 100, urls: dict[int, str] | None = None) -> BranchFakeCap:
-    cap = BranchFakeCap()
+def make_cap(
+    *,
+    id_offset: int = 100,
+    urls: dict[int, str] | None = None,
+    cls: type[BranchFakeCap] = BranchFakeCap,
+) -> BranchFakeCap:
+    cap = cls()
     cap.clicks = []
     cap.cycle = 0
     cap.id_offset = id_offset

@@ -38,6 +38,9 @@ class _DummyObs:
 class _FakeEnv:
     env_type = "fake"
 
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, *_a: Any, **_kw: Any) -> _DummyObs:
         return _DummyObs()
 
