@@ -35,6 +35,8 @@ from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
+from spectragent.core.trace.models import TraceConfig
+from spectragent.core.trace.redaction import redact_config
 
 Block = dict[str, JsonValue]
 
@@ -442,3 +444,26 @@ def test_a_setting_inside_such_a_block_two_sides_write_differently_is_refused_at
     assert refused.issue.path == (
         "environment[0].capabilities[0].network_source.matcher.fuzzy_threshold"
     )
+
+
+def _digest(raw: dict[str, JsonValue]) -> str:
+    """The run's ``config_hash`` over its resolved configuration, as the trace hook computes it."""
+    config = ConfigComposer.for_config(raw).validate(raw)
+    resolved = redact_config(config, record_secrets=True)
+    return TraceConfig(agent_id="a", loop_id="react", resolved=resolved).configuration_digest(
+        resolved=resolved
+    )
+
+
+def test_where_a_setting_is_written_never_moves_the_config_hash(tmp_path: Path) -> None:
+    """The resolved config records the benchmark's part and the merged block; the hash reads one."""
+    data = _table(tmp_path)
+    avd: Block = {"provider_id": "local_emulator", "avd": "AW"}
+    in_the_run = _run(_android(backend=avd), data)
+    in_the_benchmark = _run(
+        _android(backend=None), data, {"capability_id": "android", "backend": avd}
+    )
+    elsewhere = _run(_android(backend={**avd, "avd": "Other"}), data)
+
+    assert _digest(in_the_run) == _digest(in_the_benchmark)
+    assert _digest(elsewhere) != _digest(in_the_run), "the merged blocks are still hashed"
