@@ -367,7 +367,7 @@ def test_a_rewritten_goal_must_be_a_goal(goal: object, message: str | None) -> N
 async def test_an_empty_goal_fails_the_start_and_the_service_is_stopped(
     root: Path, tmp_path: Path
 ) -> None:
-    """A page that had not loaded when AndroidWorld read its instruction leaves only the prefix."""
+    """A page that had shown no instruction when AndroidWorld read it leaves only the prefix."""
     empty = "Follow the instructions shown on the top of the screen: "
     write_behaviour(root, {"/task/goal": {"json": {"goal": empty}}})
     oracle = _oracle(root)
@@ -375,7 +375,7 @@ async def test_an_empty_goal_fails_the_start_and_the_service_is_stopped(
     with pytest.raises(
         AndroidWorldError,
         match=r"click-button #0 \(suite seed 42\) the goal '.*: ', which says nothing after its "
-        r"fixed part: the page had not shown its instruction",
+        r"fixed part: the page had shown no instruction when AndroidWorld read it",
     ):
         await oracle.start(_device(tmp_path), _miniwob_task())
     await oracle.stop()  # what the capability's teardown does after a failed setup
@@ -623,6 +623,242 @@ def test_the_launcher_counts_only_a_pull_as_one_that_lost_a_file() -> None:
     assert _launcher().pull_lost_a_file(RuntimeError(_PULL_LOST_A_FILE))
     assert not _launcher().pull_lost_a_file(RuntimeError(_RM_LOST_A_FILE))
     assert not _launcher().pull_lost_a_file(RuntimeError("No such file or directory"))
+
+
+@dataclass
+class _AppOps:
+    """The device's shell, faked for the launcher's All files access grant: each app's uid mode."""
+
+    allowed: set[str]
+    commands: list[list[str]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def shell(self, command: list[str]) -> str:
+        self.commands.append(command)
+        verb, _, package, op, *mode = command[1:]
+        assert (command[0], op) == ("appops", "MANAGE_EXTERNAL_STORAGE")
+        if verb == "set":
+            assert mode == ["allow"]
+            self.allowed.add(package)
+            return ""
+        if package in self.allowed:
+            return "MANAGE_EXTERNAL_STORAGE: allow; time=+1m ago\n"
+        return "No operations.\nDefault mode: default\n"
+
+    def grant(self) -> None:
+        _launcher().grant_all_files_access(self.shell, warn=self.notes.append)
+
+
+def test_the_launcher_grants_all_files_access_where_androidworlds_setup_left_none() -> None:
+    ops = _AppOps(allowed={"org.videolan.vlc"})
+
+    ops.grant()
+
+    assert ops.allowed == {
+        "net.gsantner.markor",
+        "com.simplemobiletools.gallery.pro",
+        "org.videolan.vlc",
+    }
+    assert [command[1] for command in ops.commands] == ["get", "set", "get", "set", "get"]
+    assert ops.commands[1] == [
+        "appops",
+        "set",
+        "--uid",
+        "net.gsantner.markor",
+        "MANAGE_EXTERNAL_STORAGE",
+        "allow",
+    ]
+    assert len(ops.notes) == 2 and all("All files access" in note for note in ops.notes)
+
+
+_UTTERANCE = "com.google.androidenv.miniwob.app.GET_UTTERANCE_ACTION"
+
+
+@dataclass
+class _Broadcasts:
+    """AndroidWorld's issue_generic_request and extract_broadcast_data, faked for the launcher's reads."""
+
+    #: What the app answers each broadcast, in turn (``None``: the receiver gave no result).
+    answers: list[str | None]
+    env: object = field(default_factory=object)
+    sent: list[list[str]] = field(default_factory=list)
+
+    def issue(self, command: list[str], env: object) -> str:
+        assert env is self.env
+        self.sent.append(command)
+        answer = self.answers.pop(0)
+        if answer is None:
+            return "Broadcasting: Intent { flg=0x10400000 }\nBroadcast completed: result=0\n"
+        return f'Broadcasting: Intent {{ flg=0x10400000 }}\nBroadcast completed: result=-1, data="{answer}"\n'
+
+    @staticmethod
+    def parse(output: str) -> str | None:
+        """AndroidWorld's extract_broadcast_data, for the two answers above."""
+        if "result=-1, data=" in output:
+            return output.split("data=")[1].strip('"\r\n')
+        return None
+
+    def read(self, action: str = _UTTERANCE) -> str | None:
+        extract_data = _launcher().read_in_the_foreground(self.issue, self.parse, pause_s=0.01)
+        return extract_data(action, self.env)
+
+
+def test_the_launcher_sends_miniwob_reads_to_the_foreground_queue() -> None:
+    broadcasts = _Broadcasts(answers=["Click the Submit button."])
+
+    assert broadcasts.read() == "Click the Submit button."
+    assert broadcasts.sent == [
+        ["shell", "am", "broadcast", "--receiver-foreground", "-a", _UTTERANCE]
+    ]
+
+
+def test_the_launcher_asks_three_times_like_androidworld_before_it_gives_up() -> None:
+    """An empty instruction is an answer; only a broadcast nobody answered is asked again."""
+    assert _Broadcasts(answers=[None, ""]).read() == ""
+    unanswered = _Broadcasts(answers=[None, None, None])
+    assert unanswered.read() is None
+    assert len(unanswered.sent) == 3
+
+
+@dataclass
+class _Page:
+    """What AndroidWorld's UI tree shows of a MiniWoB++ page, faked for the launcher's waits for it."""
+
+    #: The ids each look sees on the screen, in turn; the last one repeats.
+    screens: list[set[str]]
+    looks: int = 0
+    notes: list[str] = field(default_factory=list)
+
+    def shown(self) -> set[str]:
+        self.looks += 1
+        return self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+
+    def wait(self, *, there: bool, wait_s: float = 5.0) -> None:
+        _launcher().wait_for_the_cover(
+            self.shown, there=there, warn=self.notes.append, wait_s=wait_s, poll_s=0.01
+        )
+
+
+#: A page still loading (only the status bar has ids), one whose onload has covered
+#: the task until its episode starts, and one whose reset has started the episode
+#: and hidden the cover.
+_LOADING = {"com.android.systemui:id/clock"}
+_COVERED = {"click-canvas", "sync-task-cover", "query", "subbtn"}
+_RUNNING = {"click-canvas", "query", "subbtn"}
+
+
+def test_the_launcher_resets_a_page_that_loaded_within_androidworlds_second_at_once() -> None:
+    page = _Page(screens=[_COVERED])
+
+    page.wait(there=True)
+
+    assert page.looks == 1 and page.notes == []
+
+
+def test_the_launcher_waits_for_a_page_still_loading_after_androidworlds_second() -> None:
+    page = _Page(screens=[_LOADING, _LOADING, _COVERED])
+
+    page.wait(there=True)
+
+    assert page.looks == 3
+    assert len(page.notes) == 1 and page.notes[0].endswith("its reset waited")
+
+
+def test_the_launcher_reads_the_instruction_once_the_reset_has_started_the_episode() -> None:
+    """count-shape: read before the page had made it, the instruction was empty."""
+    page = _Page(screens=[_COVERED, _COVERED, _RUNNING])
+
+    page.wait(there=False)
+
+    assert page.looks == 3
+    assert len(page.notes) == 1 and page.notes[0].endswith("the instruction's read waited")
+
+
+@pytest.mark.parametrize(
+    ("there", "screen", "message"),
+    [
+        (
+            True,
+            _LOADING,
+            r"cover was not in AndroidWorld's UI tree 0.2 s after AndroidWorld's 1 s; "
+            r"the tree last showed \['com.android.systemui:id/clock'\]",
+        ),
+        (
+            False,
+            _COVERED,
+            r"cover was still in AndroidWorld's UI tree 0.2 s after its reset; the tree last "
+            r"showed \['click-canvas', 'query', 'subbtn', 'sync-task-cover'\]",
+        ),
+    ],
+)
+def test_the_launcher_fails_initialize_on_a_page_that_never_gets_there(
+    there: bool, screen: set[str], message: str
+) -> None:
+    page = _Page(screens=[screen])
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match=message):
+        page.wait(there=there, wait_s=0.2)
+
+    assert 0.2 <= time.monotonic() - started < 1.0
+    assert page.notes == []
+
+
+@dataclass
+class _MiniWoBApp:
+    """The MiniWoB++ app and AndroidWorld's UI tree, faked for the launcher's steps that start an episode."""
+
+    #: What each look sees on the screen, in turn; the last one repeats.
+    screens: list[set[str]]
+    env: object = field(default_factory=object)
+    #: Each step, in order: an intent's extras, a sleep, a look or the read.
+    steps: list[object] = field(default_factory=list)
+
+    def start(self, env: object, extras: list[str]) -> None:
+        assert env is self.env
+        self.steps.append(extras)
+
+    def sleep(self, seconds: float) -> None:
+        self.steps.append(("sleep", seconds))
+
+    def shown(self, env: object) -> set[str]:
+        assert env is self.env
+        self.steps.append("look")
+        return self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+
+    def read(self, env: object) -> str:
+        assert env is self.env
+        self.steps.append("read")
+        return "Select hPh22 and click Submit."
+
+
+def test_the_launcher_starts_an_episode_in_androidworlds_order_with_its_two_waits() -> None:
+    """The order is the fix: the reset waits for the loaded page, the read for the started episode."""
+    app = _MiniWoBApp(screens=[_LOADING, _COVERED, _COVERED, _RUNNING])
+
+    instruction = _launcher().start_the_episode(
+        "click-option",
+        app.env,
+        start=app.start,
+        shown=app.shown,
+        read=app.read,
+        warn=lambda note: None,
+        sleep=app.sleep,
+        poll_s=0.01,
+    )
+
+    assert instruction == "Select hPh22 and click Submit."
+    assert app.steps == [
+        ["--es", "RL_TASK_APP_CONFIG", """'{"task":"click-option"}'"""],
+        ("sleep", 1),
+        "look",  # still loading
+        "look",  # the cover is there: the page has loaded
+        ["--ez", "reset", "true"],
+        ["--ez", "step", "true"],
+        "look",  # the cover is still there
+        "look",  # the cover is gone: the episode has started
+        "read",
+    ]
 
 
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(

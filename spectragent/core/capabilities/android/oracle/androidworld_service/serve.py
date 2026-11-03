@@ -34,10 +34,23 @@ it was cloned:
   emulator reported;
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
   states tasks restore are taken again once the service is up;
+- AndroidWorld's one-time app setup gives Markor, Simple Gallery Pro and VLC
+  All files access, which a fresh boot of AndroidWorld's AVD lacks: it is
+  granted again once the service is up (:func:`grant_all_files_access`);
 - AndroidWorld clears an app's table before a task, and when the table is
   missing it launches the app and deletes 7 s later, while OsmAnd, started on a
   fresh boot, makes its markers table 12-16 s after its process starts: the
-  launcher waits until the table is there (:func:`wait_for_the_table`).
+  launcher waits until the table is there (:func:`wait_for_the_table`);
+- AndroidWorld reads the MiniWoB++ app (the instruction at initialize, the
+  reward for the score and the episode question) through ordered broadcasts,
+  which after a boot wait in the background queue behind Play Services' burst,
+  past adb's 10 s timeout: they go to the foreground queue
+  (:func:`read_in_the_foreground`);
+- AndroidWorld's MiniWoB++ initialize resets the task's page a fixed 1 s after
+  loading it and reads its instruction right after: a page that has not
+  loaded by then starts no episode, and a read before the page has made the
+  instruction hands over an empty one. The reset waits for the page to load,
+  and the read for its episode to start (:func:`wait_for_the_cover`).
 
 It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
@@ -56,7 +69,7 @@ import importlib.metadata
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 #: The android_env these patches replace private names of: the version the
@@ -69,6 +82,20 @@ ANDROID_ENV = "1.2.3"
 TABLE_WAIT_S = 30.0
 #: The pause between two looks; each look pulls the database's whole directory.
 TABLE_POLL_S = 1.0
+#: The apps AndroidWorld's one-time app setup (``env/setup_device/apps.py``) gives
+#: All files access: ``MarkorApp``, ``SimpleGalleryProApp`` and ``VlcApp`` tap
+#: "Allow access to manage all files" on the system's page
+#: (:func:`grant_all_files_access`).
+ALL_FILES_ACCESS = ("net.gsantner.markor", "com.simplemobiletools.gallery.pro", "org.videolan.vlc")
+#: The id of the cover MiniWoB++'s ``core.js`` puts over the task when its page
+#: has loaded (``core.startEpisode``, which every page's ``window.onload`` runs),
+#: until an episode starts (``core.startEpisodeReal`` hides it).
+COVER = "sync-task-cover"
+#: How long the launcher waits for a MiniWoB++ page to load, and then for its
+#: episode to start (:func:`wait_for_the_cover`).
+PAGE_WAIT_S = 30.0
+#: The pause between two looks; each look reads AndroidWorld's UI tree.
+PAGE_POLL_S = 0.5
 
 #: AndroidWorld's ``sqlite_utils.delete_all_rows_from_table``: it deletes every
 #: row of a table, given the table, the database's path on the device, the
@@ -181,6 +208,184 @@ def pull_lost_a_file(error: Exception) -> bool:
     )
 
 
+def grant_all_files_access(
+    shell: Callable[[list[str]], str], *, warn: Callable[[str], object]
+) -> None:
+    """Give the apps in :data:`ALL_FILES_ACCESS` All files access, as AndroidWorld's setup does, where it is missing.
+
+    AndroidWorld's setup opens Markor, Simple Gallery Pro and VLC and taps
+    "Allow access to manage all files" on the system's All files access page,
+    which sets the app's ``MANAGE_EXTERNAL_STORAGE`` app op to allow for its
+    uid. A fresh boot of AndroidWorld's AVD has every runtime permission and
+    the overlay app op the same setup grants, but not this one for any of the
+    three (``appops get`` answers "No operations", 2026-11-03). So every run
+    of a task in those apps met the app's storage dialog and the system page
+    first: in our seed-42 runs, 16 paid 4-7 steps for it; AndroidWorld's own
+    runner keeps its device, so only its first such task of a slice did
+    (``docs/architecture_design.md`` §11.2).
+
+    For each package it asks the uid's mode with *shell* (``appops get --uid
+    <package> MANAGE_EXTERNAL_STORAGE``) and, unless it is allow, sets it as
+    the system's page does (``appops set --uid <package>
+    MANAGE_EXTERNAL_STORAGE allow``). *warn* hears each grant.
+    """
+    for package in ALL_FILES_ACCESS:
+        op = ["--uid", package, "MANAGE_EXTERNAL_STORAGE"]
+        if "MANAGE_EXTERNAL_STORAGE: allow" in shell(["appops", "get", *op]):
+            continue
+        shell(["appops", "set", *op, "allow"])
+        warn(f"{package} lacked the All files access AndroidWorld's app setup gives it: granted")
+
+
+def read_in_the_foreground(
+    issue: Callable[[list[str], object], str],
+    parse: Callable[[str], str | None],
+    *,
+    pause_s: float = 1.0,
+) -> Callable[[str, object], str | None]:
+    """AndroidWorld's ``miniwob_base._extract_data``, its broadcasts sent to the foreground queue.
+
+    AndroidWorld reads the MiniWoB++ app through this one function: the
+    instruction at initialize, the reward for the score, and the reward the
+    launcher's ``/task/episode_over`` reads. It sends ``am broadcast -a
+    <action>``, an ordered broadcast in the background queue, within
+    AndroidWorld's 10 s adb timeout, which android_env tries twice and then
+    raises on. After a boot, Play Services queues about 200 ordered broadcasts
+    there (``gms.phenotype.UPDATE``). On freshly booted emulators a broadcast
+    nobody receives took up to 17.1 s in that queue and at most 0.29 s with
+    ``--receiver-foreground`` (64 probes, 2026-11-03), and 14 of 92 MiniWoB++
+    tasks failed their initialize or first episode question on the timeout
+    (``docs/architecture_design.md`` §11.2). The flag only moves the broadcast
+    to the foreground queue: the same receiver answers it the same way.
+
+    The function returned takes ``_extract_data``'s arguments, the action and
+    android_env's environment. It sends ``am broadcast --receiver-foreground
+    -a <action>`` with *issue* (AndroidWorld's ``issue_generic_request``, here
+    handing back the command's output) and reads the answer with *parse*
+    (AndroidWorld's ``extract_broadcast_data``). As AndroidWorld does, it
+    returns the first answer that is not ``None``, and ``None`` after three
+    broadcasts *pause_s* apart.
+    """
+
+    def extract_data(action: str, env: object) -> str | None:
+        for _ in range(3):
+            answer = parse(
+                issue(["shell", "am", "broadcast", "--receiver-foreground", "-a", action], env)
+            )
+            if answer is not None:
+                return answer
+            time.sleep(pause_s)
+        return None
+
+    return extract_data
+
+
+def wait_for_the_cover(
+    shown: Callable[[], Collection[str]],
+    *,
+    there: bool,
+    warn: Callable[[str], object],
+    wait_s: float = PAGE_WAIT_S,
+    poll_s: float = PAGE_POLL_S,
+) -> None:
+    """Wait until a MiniWoB++ page's cover is on the screen (*there*), or gone from it.
+
+    AndroidWorld's initialize (``MiniWoBTask.initialize_task``) loads the
+    task's page, sleeps a fixed 1 s, sends the app ``reset`` and ``step``, and
+    reads the instruction. ``reset`` runs ``core.startEpisodeReal()`` in the
+    page: it makes the problem (unseeded, ``Math.random``), logs its
+    instruction, which the app keeps for the read, and then hides the cover
+    the page's ``window.onload`` put over the task. On a fresh boot the app
+    starts cold, and its page can take far longer than that second. Then the
+    episode went wrong (2026-11-03): the instruction was still empty when
+    AndroidWorld read it, so the goal was the fixed part alone (count-sides;
+    in a reproduction click-pie's page showed up 10 s after initialize began,
+    running an episode its reset had made, while AndroidWorld had read an
+    empty instruction at 8 s); or the script made the problem before
+    ``onload``, failed to hide the cover it did not have yet, and ``onload``
+    then covered the page for good (click-option's agent spent 30 steps on
+    the black cover). The read can beat the script on a loaded page too: with
+    the reset sent to a loaded page, count-shape's instruction still came
+    back empty.
+
+    So the launcher's initialize waits twice. After AndroidWorld's 1 s it
+    waits until the cover is there: the page has loaded and waits for its
+    episode, as AndroidWorld's sleep assumes. After the reset and the step it
+    waits until the cover is gone: the episode has started, and its
+    instruction, logged before the cover went, is there for the read. It
+    looks at the screen with *shown*, the ids of the visible elements in
+    AndroidWorld's UI tree, *poll_s* apart, at most *wait_s*; *warn* hears how
+    long a wait took when the first look missed.
+
+    Raises:
+        RuntimeError: The cover was not there, or still there, after *wait_s*.
+            The message says what the tree showed last: it can lag behind the
+            screen, and the status bar's ids alone are not a page without its
+            cover.
+    """
+    began = time.monotonic()
+    last: Collection[str] = ()
+
+    def done() -> bool:
+        nonlocal last
+        last = shown()
+        return (COVER in last) == there
+
+    if done():
+        return
+    if not _look_until(done, began + wait_s, poll_s):
+        raise RuntimeError(
+            (
+                f"the MiniWoB++ page's cover was not in AndroidWorld's UI tree {wait_s:g} s "
+                "after AndroidWorld's 1 s"
+                if there
+                else f"the MiniWoB++ page's cover was still in AndroidWorld's UI tree {wait_s:g} s "
+                "after its reset"
+            )
+            + f"; the tree last showed {sorted(last) or 'no element ids'}"
+        )
+    took = time.monotonic() - began
+    warn(
+        f"the MiniWoB++ page loaded {took:.1f} s after AndroidWorld's 1 s; its reset waited"
+        if there
+        else f"the MiniWoB++ page started its episode {took:.1f} s after its reset; "
+        "the instruction's read waited"
+    )
+
+
+def start_the_episode(
+    task_name: str,
+    env: object,
+    *,
+    start: Callable[[object, list[str]], object],
+    shown: Callable[[object], Collection[str]],
+    read: Callable[[object], str],
+    warn: Callable[[str], object],
+    sleep: Callable[[float], object] = time.sleep,
+    wait_s: float = PAGE_WAIT_S,
+    poll_s: float = PAGE_POLL_S,
+) -> str:
+    """AndroidWorld's MiniWoB++ initialize after its task's own part, step by step, with the two waits.
+
+    ``MiniWoBTask.initialize_task`` loads the page of the task *task_name*,
+    sleeps a fixed 1 s, sends ``reset`` and ``step``, and reads the
+    instruction. This takes the same steps in the same order with *start*
+    (AndroidWorld's ``start_activity`` of the MiniWoB++ app's activity, given
+    *env* and the intent's extras), *sleep* and *read* (its
+    ``_get_episode_utterance``), and waits for the cover to be there before
+    the reset and gone before the read (:func:`wait_for_the_cover`, through
+    *shown*, *warn*, *wait_s* and *poll_s*). It returns the instruction.
+    """
+    task_config = f'{{"task":"{task_name}"}}'
+    start(env, ["--es", "RL_TASK_APP_CONFIG", f"'{task_config}'"])
+    sleep(1)
+    wait_for_the_cover(lambda: shown(env), there=True, warn=warn, wait_s=wait_s, poll_s=poll_s)
+    start(env, ["--ez", "reset", "true"])
+    start(env, ["--ez", "step", "true"])
+    wait_for_the_cover(lambda: shown(env), there=False, warn=warn, wait_s=wait_s, poll_s=poll_s)
+    return read(env)
+
+
 def reward_ends_episode(raw: str) -> bool:
     """Whether a MiniWoB++ page's stored raw reward *raw* ends its episode, as AndroidWorld's runner says.
 
@@ -205,19 +410,18 @@ def _add_episode_over(android_server) -> None:
     As AndroidWorld's runner decides: only a task whose name starts with
     ``miniwob`` has an episode the environment ends, and it is over when the
     reward the MiniWoB++ app stores ends it (:func:`reward_ends_episode`), read
-    through the same broadcast ``miniwob_base`` reads it with (three tries, a
-    second apart). A reward the app does not give answers HTTP 500.
+    through ``miniwob_base._extract_data`` as ``miniwob_base`` reads it (the
+    launcher has sent those reads to the foreground queue). A reward the app
+    does not give answers HTTP 500.
     """
     import fastapi
     from android_world.task_evals.miniwob import miniwob_base
 
     # A renamed private name would fail every question at run time; refuse to start.
-    if not callable(getattr(miniwob_base, "_extract_data", None)) or not isinstance(
-        getattr(miniwob_base, "_APP_NAME", None), str
-    ):
+    if not isinstance(getattr(miniwob_base, "_APP_NAME", None), str):
         raise SystemExit(
-            "serve.py reads a MiniWoB++ reward through miniwob_base._extract_data and "
-            "_APP_NAME, which this AndroidWorld does not define"
+            "serve.py asks the MiniWoB++ app for its reward by its package name, "
+            "miniwob_base._APP_NAME, which this AndroidWorld does not define"
         )
     app = android_server.app
 
@@ -264,10 +468,20 @@ def _patch(args: argparse.Namespace) -> None:
     from android_env.components.simulators.emulator import emulator_simulator
     from android_env.proto import emulator_controller_pb2_grpc, snapshot_service_pb2_grpc
     from android_env.wrappers import a11y_grpc_wrapper
-    from android_world.env import adb_utils, env_launcher, interface
+    from android_world.env import (
+        adb_utils,
+        android_world_controller,
+        env_launcher,
+        interface,
+        representation_utils,
+    )
+    from android_world.task_evals.miniwob import miniwob_base
     from android_world.task_evals.utils import sqlite_utils
 
     logging.set_verbosity(logging.WARNING)
+
+    def warn(note: str) -> None:
+        logging.warning("serve.py: %s", note)
 
     settings_init = config_classes.DeviceSettingsConfig.__init__
 
@@ -310,8 +524,66 @@ def _patch(args: argparse.Namespace) -> None:
         sqlite_utils.delete_all_rows_from_table,
         exists=sqlite_utils.table_exists,
         launch=launch,
-        warn=lambda note: logging.warning("serve.py: %s", note),
+        warn=warn,
     )
+
+    # A renamed function would be added, not replaced, and MiniWoB++'s reads
+    # would queue behind Play Services' broadcasts again after a boot.
+    if "_extract_data" not in vars(miniwob_base) or not all(
+        callable(getattr(adb_utils, name, None))
+        for name in ("issue_generic_request", "extract_broadcast_data")
+    ):
+        raise SystemExit(
+            "serve.py sends MiniWoB++'s reads to the foreground queue by replacing "
+            "miniwob_base._extract_data, through adb_utils.issue_generic_request and "
+            "adb_utils.extract_broadcast_data, which this AndroidWorld does not all define"
+        )
+    miniwob_base._extract_data = read_in_the_foreground(
+        lambda command, env: adb_utils.issue_generic_request(command, env).generic.output.decode(
+            "utf-8"
+        ),
+        adb_utils.extract_broadcast_data,
+    )
+
+    # A renamed method would be added, not replaced, and a page AndroidWorld
+    # resets or reads too early would start no episode or give no goal again.
+    task_class = miniwob_base.MiniWoBTask
+    if (
+        "initialize_task" not in vars(task_class)
+        or not isinstance(getattr(miniwob_base, "_MAIN_ACTIVITY", None), str)
+        or not callable(getattr(miniwob_base, "_get_episode_utterance", None))
+        or not callable(getattr(adb_utils, "start_activity", None))
+        or not callable(
+            getattr(android_world_controller.AndroidWorldController, "get_ui_elements", None)
+        )
+        or "resource_name"
+        not in getattr(representation_utils.UIElement, "__dataclass_fields__", {})
+    ):
+        raise SystemExit(
+            "serve.py waits for a MiniWoB++ page by replacing MiniWoBTask.initialize_task with "
+            "its own steps, through adb_utils.start_activity, miniwob_base._MAIN_ACTIVITY and "
+            "miniwob_base._get_episode_utterance, and looks at the page through "
+            "AndroidWorldController.get_ui_elements and UIElement.resource_name, which this "
+            "AndroidWorld does not all define"
+        )
+
+    def start(env, extras: list[str]) -> None:  # env: AndroidWorld's AsyncEnv
+        adb_utils.start_activity(miniwob_base._MAIN_ACTIVITY, extras, env.controller)
+
+    def shown(env) -> set[str]:
+        elements = env.controller.get_ui_elements()  # visible ones, from its forwarder's tree
+        return {element.resource_name for element in elements if element.resource_name}
+
+    def read(env) -> str:
+        return miniwob_base._get_episode_utterance(env.controller)
+
+    def initialize_task(self, env) -> None:  # self: a MiniWoBTask
+        super(task_class, self).initialize_task(env)
+        self._params["utterance"] = start_the_episode(
+            self.params["task_name"], env, start=start, shown=shown, read=read, warn=warn
+        )
+
+    task_class.initialize_task = initialize_task
 
     adb_init = adb_controller.AdbController.__init__
 
@@ -393,6 +665,12 @@ def _patch(args: argparse.Namespace) -> None:
             emulator_setup=False,
         )
         env = load(*rest, **named)
+        grant_all_files_access(
+            lambda command: adb_utils.issue_generic_request(
+                ["shell", *command], env.controller
+            ).generic.output.decode("utf-8"),
+            warn=warn,
+        )
         from android_world.env.setup_device import setup
         from android_world.utils import app_snapshot
 

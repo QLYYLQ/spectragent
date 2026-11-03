@@ -243,10 +243,13 @@ def goal_after_initialize(task: AndroidWorldTask, goal: object) -> str:
     records only its fixed part: the template before its placeholder, ending in
     a full stop ("Follow the instructions shown on the top of the screen.").
     The device's goal goes on with the instruction the page made (": Click on
-    the Submit button."). The page gets 1 s to load before AndroidWorld reads
-    the instruction, and a page that had not shown it yet leaves an empty one
-    (an empty string, which AndroidWorld does not ask again for), so the goal
-    is the fixed part alone. A ``rewritten`` goal (information retrieval) has
+    the Submit button."). A page that had shown none when AndroidWorld read it
+    leaves an empty one (an empty string, which AndroidWorld does not ask
+    again for), so the goal is the fixed part alone. AndroidWorld gives the
+    page a fixed 1 s to load; the launcher's initialize waits for the page to
+    load before AndroidWorld's reset, and for its episode to start before the
+    read (``serve.py``'s ``wait_for_the_cover``). A ``rewritten`` goal
+    (information retrieval) has
     the date it names reworded, so only its being a goal is checked here; the
     check before initialize compared the rest (``docs/architecture_design.md``
     §11.2).
@@ -268,8 +271,8 @@ def goal_after_initialize(task: AndroidWorldTask, goal: object) -> str:
         )
     if not goal[len(fixed) :].strip(" \t\n:."):
         raise AndroidWorldError(
-            f"{what} {goal!r}, which says nothing after its fixed part: the page had not shown "
-            f"its instruction when AndroidWorld read it (it gives the page 1 s to load)"
+            f"{what} {goal!r}, which says nothing after its fixed part: the page had shown no "
+            f"instruction when AndroidWorld read it"
         )
     return goal
 
