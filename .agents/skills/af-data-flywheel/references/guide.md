@@ -651,7 +651,7 @@ each one's task loader and its `eval_loader` block, knobs and all.
   step whose recorded capture state says `loaded: false` produces no sample, but is rendered
   into the student's context like a branch's source prefix (the segment goes on, history is
   not rewritten). Each one is listed in the dataset manifest's `steps.filtered`
-  (`<source path>#s<t>` → reason; dataset format `af-sft-4`) and counted in an
+  (`<source path>#s<t>` → reason; dataset format `af-sft-5`) and counted in an
   `ExportEmptyError`. Same rule as `exclude_unloaded_checkpoints`.
 - Judging is optional and the export does not need it: `filters.require_eval` defaults to
   `null` (the shipped export too), so a run the teacher failed is exported as well,
@@ -695,7 +695,7 @@ each one's task loader and its `eval_loader` block, knobs and all.
   `thought_rewrite_cache`. Both are required with `drop_when_capped` and
   `thought_source: teacher` and refused otherwise (`settings.py::thought_rewrite_problem`,
   checked at construction and again by the runner). Provenance is the sample's
-  `wait_removal` and the manifest's `wait_actions` (format `af-sft-4`). Cache hits and model
+  `wait_removal` and the manifest's `wait_actions` (format `af-sft-4` and later). Cache hits and model
   calls are in `ExportReport.thought_rewrites` and the CLI output, never in the dataset:
   the chain compares two exports' tree digests, and the first misses what the second hits.
   The shipped export stays `keep`, so the scripted rehearsal needs no API key.
