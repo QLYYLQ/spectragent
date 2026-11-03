@@ -1,4 +1,4 @@
-"""MiniWoB++ tasks prepared on fresh boots by AndroidWorld's own service, through the launcher's two MiniWoB patches.
+"""MiniWoB++ tasks prepared on fresh boots by AndroidWorld's own service, through the two launcher patches they need.
 
 Opt-in, like ``test_androidworld_live.py`` (marker ``requires_android_emulator``;
 ``SPECTRAGENT_TEST_AVD``, ``SPECTRAGENT_TEST_ANDROIDWORLD`` and
@@ -11,8 +11,8 @@ and AndroidWorld's service initializes it there. The tasks are ones the
   Services' burst after the boot until adb's 10 s timeout: the instruction at
   initialize (``click-checkboxes-soft``, ``email-inbox-forward``; ``click-pie``
   and ``login-user-popup`` in the sweep) or the reward at the first episode
-  question (``count-shape``). The launcher now sends them to the foreground
-  queue (``serve.py``'s ``read_in_the_foreground``);
+  question (``count-shape``). The launcher now sends every broadcast to the
+  foreground queue (``serve.py``'s ``broadcast_in_the_foreground``);
 - AndroidWorld resets the page a fixed 1 s after loading it and reads the
   instruction right after: it read an empty one (``count-sides``;
   ``click-pie`` and ``login-user-popup`` in the rerun), or the page was

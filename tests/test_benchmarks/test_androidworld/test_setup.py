@@ -670,53 +670,119 @@ def test_the_launcher_grants_all_files_access_where_androidworlds_setup_left_non
     assert len(ops.notes) == 2 and all("All files access" in note for note in ops.notes)
 
 
-_UTTERANCE = "com.google.androidenv.miniwob.app.GET_UTTERANCE_ACTION"
-
-
 @dataclass
-class _Broadcasts:
-    """AndroidWorld's issue_generic_request and extract_broadcast_data, faked for the launcher's reads."""
+class _Adb:
+    """android_env's AdbController.execute_command, faked: what each command reached it with."""
 
-    #: What the app answers each broadcast, in turn (``None``: the receiver gave no result).
-    answers: list[str | None]
-    env: object = field(default_factory=object)
-    sent: list[list[str]] = field(default_factory=list)
+    ran: list[tuple[object, list[str], float | None, bool]] = field(default_factory=list)
 
-    def issue(self, command: list[str], env: object) -> str:
-        assert env is self.env
-        self.sent.append(command)
-        answer = self.answers.pop(0)
-        if answer is None:
-            return "Broadcasting: Intent { flg=0x10400000 }\nBroadcast completed: result=0\n"
-        return f'Broadcasting: Intent {{ flg=0x10400000 }}\nBroadcast completed: result=-1, data="{answer}"\n'
-
-    @staticmethod
-    def parse(output: str) -> str | None:
-        """AndroidWorld's extract_broadcast_data, for the two answers above."""
-        if "result=-1, data=" in output:
-            return output.split("data=")[1].strip('"\r\n')
-        return None
-
-    def read(self, action: str = _UTTERANCE) -> str | None:
-        extract_data = _launcher().read_in_the_foreground(self.issue, self.parse, pause_s=0.01)
-        return extract_data(action, self.env)
+    def execute(
+        self, controller: object, args: list[str], timeout: float | None, device_specific: bool
+    ) -> bytes:
+        self.ran.append((controller, args, timeout, device_specific))
+        return b"what adb printed\n"
 
 
-def test_the_launcher_sends_miniwob_reads_to_the_foreground_queue() -> None:
-    broadcasts = _Broadcasts(answers=["Click the Submit button."])
+_FORWARDER_FLAGS = (
+    "com.google.androidenv.accessibilityforwarder/"
+    "com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver"
+)
+#: Every broadcast the service can send, as AndroidWorld 55ddaf5 and android_env
+#: 1.2.3 hand it to execute_command: AndroidWorld's through issue_generic_request,
+#: directly or through send_android_intent, and android_env's own through its
+#: send_broadcast request.
+_BROADCASTS = {
+    "the MiniWoB++ app's reads (miniwob_base._extract_data)": [
+        "-a",
+        "com.google.androidenv.miniwob.app.GET_REWARD_ACTION",
+    ],
+    "Clipper's clipboard write (adb_utils.set_clipboard_contents)": [
+        "-a",
+        "clipper.set",
+        "-e",
+        "text",
+        "Hello\\ there",
+    ],
+    "Clipper's clipboard read (adb_utils.get_clipboard_contents)": ["-a", "clipper.get"],
+    "Retro Music's media scan (retro_music._scan_music_directory)": [
+        "-a",
+        "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+        "-d",
+        '"file:///storage/emulated/0/Music"',
+    ],
+    "the overlay (AsyncAndroidEnv.display_message, suite_utils' demo mode)": [
+        "-a",
+        "com.example.ACTION_UPDATE_OVERLAY",
+        "--es",
+        "task_type_string",
+        '"Agent answered:"',
+        "--es",
+        "goal_string",
+        '"Paris"',
+    ],
+    "the forwarder's tree logs (A11yGrpcWrapper._enable_a11y_tree_logs)": [
+        "-a",
+        "accessibility_forwarder.intent.action.ENABLE_ACCESSIBILITY_TREE_LOGS",
+        "-n",
+        _FORWARDER_FLAGS,
+    ],
+    "the forwarder's gRPC port (A11yGrpcWrapper._configure_grpc)": [
+        "-a",
+        'accessibility_forwarder.intent.action.SET_GRPC --ei "port" 41123',
+        "-n",
+        _FORWARDER_FLAGS,
+    ],
+}
+#: Commands that are no broadcast, among them the other intent send_android_intent
+#: builds and the activity start of android_env's start_activity request.
+_OTHER_COMMANDS = {
+    "an activity started by intent (send_android_intent's start)": [
+        "shell",
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.VIEW",
+        "-d",
+        "content://contacts/people/",
+    ],
+    "an activity started by name (start_activity)": [
+        "shell",
+        "am",
+        "start",
+        "",
+        "-W",
+        "-n",
+        "ca.zgrs.clipper/ca.zgrs.clipper.Main",
+    ],
+    "the task stack (get_current_activity)": ["shell", "am", "stack", "list"],
+    "a shell command": ["shell", "appops", "get", "--uid", "org.videolan.vlc"],
+    "a pull": ["pull", "/data/data/net.osmand/databases/map_markers_db", "/tmp/x"],
+    "the devices (init_server)": ["devices"],
+}
 
-    assert broadcasts.read() == "Click the Submit button."
-    assert broadcasts.sent == [
-        ["shell", "am", "broadcast", "--receiver-foreground", "-a", _UTTERANCE]
+
+@pytest.mark.parametrize("intent", _BROADCASTS.values(), ids=_BROADCASTS)
+def test_the_launcher_sends_every_broadcast_to_the_foreground_queue(intent: list[str]) -> None:
+    adb, controller = _Adb(), object()
+    execute_command = _launcher().broadcast_in_the_foreground(adb.execute)
+    command = ["shell", "am", "broadcast", *intent]
+
+    assert execute_command(controller, command, 10) == b"what adb printed\n"
+
+    assert adb.ran == [
+        (controller, ["shell", "am", "broadcast", "--receiver-foreground", *intent], 10, True)
     ]
 
 
-def test_the_launcher_asks_three_times_like_androidworld_before_it_gives_up() -> None:
-    """An empty instruction is an answer; only a broadcast nobody answered is asked again."""
-    assert _Broadcasts(answers=[None, ""]).read() == ""
-    unanswered = _Broadcasts(answers=[None, None, None])
-    assert unanswered.read() is None
-    assert len(unanswered.sent) == 3
+@pytest.mark.parametrize("command", _OTHER_COMMANDS.values(), ids=_OTHER_COMMANDS)
+def test_the_launcher_runs_every_other_adb_command_as_it_came(command: list[str]) -> None:
+    adb, controller = _Adb(), object()
+    execute_command = _launcher().broadcast_in_the_foreground(adb.execute)
+
+    assert execute_command(controller, command) == b"what adb printed\n"
+    execute_command(controller, command, timeout=5, device_specific=False)
+
+    assert adb.ran == [(controller, command, None, True), (controller, command, 5, False)]
 
 
 @dataclass
