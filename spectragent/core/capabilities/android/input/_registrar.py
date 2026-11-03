@@ -89,6 +89,16 @@ class AndroidTapInjectorBase(metaclass=AndroidTapInjectorRegistrar.Meta):
         return self.__registry_key__
 
 
+#: The codes of a typing backend's refusals that leave the field as it was: the
+#: device answered before any text went in (``android/service/``: ``set_text``'s
+#: and ``commit_text``'s own checks, and an ``ACTION_SET_TEXT`` the field did not
+#: perform). Any other device error, such as ``internal``, says nothing about
+#: the field: some of the text may have gone in.
+UNCHANGED_FIELD_CODES = frozenset(
+    {"no_focused_field", "password_field", "set_text_failed", "no_input_method"}
+)
+
+
 class TypingBackendUnsupported(ValueError):
     """The device's API level cannot run the configured typing backend; the message says why."""
 
@@ -104,14 +114,27 @@ class AndroidTypingBackend(Protocol):
         """Why this backend cannot enter text on a device of API level *sdk_int*; ``None`` when it can."""
         ...
 
+    async def finds_field(self, device: DevicePrograms) -> bool:
+        """Whether this backend finds a field to enter text into now, as the device shows it.
+
+        Typing waits for it within the action's ``focus_wait_ms`` before it
+        enters text, once the shared focus rule lets the text in; when the
+        wait runs out it enters the text as asked, and :meth:`enter` says why
+        it could not (``docs/architecture_design.md`` §11.2, "动作").
+        """
+        ...
+
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         """Enter *text*: over the field's whole text with *replace*, else at its cursor.
 
         Returns the field that took it, as the device names it.
 
         Raises:
-            RemoteError: No field took it; the code says why
-                (``no_focused_field``).
+            RemoteError: No text went in and the field is as it was, when the
+                code is one of :data:`UNCHANGED_FIELD_CODES`
+                (``no_focused_field``, ``password_field``, ``set_text_failed``,
+                ``no_input_method``); any other code (``internal``) says
+                nothing about the field.
         """
         ...
 
@@ -134,3 +157,10 @@ class AndroidTypingBackendBase(metaclass=AndroidTypingBackendRegistrar.Meta):
     @property
     def typing_id(self) -> str:
         return self.__registry_key__
+
+    async def finds_field(self, device: DevicePrograms) -> bool:
+        """Yes: a backend that types through the input connection needs no more than the shared focus rule checked.
+
+        ``set_text`` finds its field otherwise, and says so itself.
+        """
+        return True

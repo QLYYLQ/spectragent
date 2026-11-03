@@ -186,6 +186,12 @@ class ScriptedPhone:
             bottom)``; ``None``: the service names no focused node.
         field_node: That node's hash, as the service reports it: another
             number is another field.
+        field_editable: Whether that node takes text; ``False``: a node that
+            does not, as a WebView's own node is before its page gives the
+            field focus. ``set_text`` then finds no field, as on the device;
+            ``commit_text`` types through the input connection all the same.
+        text_failure: The error code ``set_text`` and ``commit_text`` answer
+            with instead of entering text, whatever has focus; ``None``: none.
         drawn_bounds: Where the field that node belongs to is, as drawn, when
             the service is asked (``field_bounds``): ``None``, the node's own
             bounds, a field with nothing around it.
@@ -224,6 +230,8 @@ class ScriptedPhone:
     window_over: str | None = None
     field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
     field_node: int = 1
+    field_editable: bool = True
+    text_failure: str | None = None
     drawn_bounds: tuple[int, int, int, int] | None = None
     drawn_bounds_given: bool = True
     label_bounds: tuple[int, int, int, int] | None = None
@@ -381,7 +389,7 @@ class ScriptedPhone:
             "field_bounds_in_screen": drawn,
             "label_bounds_in_screen": label,
             "window_at_point": self.top_window if asked and "x" in params else None,
-            "is_editable": True,
+            "is_editable": self.field_editable,
             "window_id": 7,
             "node_hash": self.field_node,
             "package_name": self.focused.partition("/")[0],
@@ -392,7 +400,9 @@ class ScriptedPhone:
 
     def _text(self, method: str) -> Method:
         async def enter(params: JsonObject) -> Answer:
-            if not self.text_field:
+            if self.text_failure is not None:
+                raise Failure(self.text_failure, "the device failed while entering the text")
+            if not self.text_field or (method == "set_text" and not self.field_editable):
                 raise Failure("no_focused_field", "no editable field has input focus")
             how = "replace" if params.get("replace") else "at the cursor"
             self.inputs.append(f"service {method} {params['text']!r} {how}")
