@@ -640,6 +640,7 @@ async def test_a_tree_that_never_shows_an_app_ends_the_wait_at_its_limit_and_say
     assert isinstance(tree, AndroidUITreeObs) and tree.settle is not None
     assert tree.settle.outcome == "capped" and tree.settle.pending[-1] == "app_window"
     assert len(phone.tree_reads) >= 2, "it waited again and looked again"
+    assert tree.settle.waited_ms >= 400, "each wait again counts from the first, within one limit"
 
 
 async def test_every_fragment_of_a_capture_records_its_wait_without_capture_state() -> None:
