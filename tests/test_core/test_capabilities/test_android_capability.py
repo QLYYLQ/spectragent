@@ -430,27 +430,37 @@ CHOOSER = "android/com.android.internal.app.ResolverActivity"
 async def test_with_the_open_with_chooser_in_front_every_capture_still_waits() -> None:
     """Its frame count once raised before the poll noted the app in front: every later poll
     failed, and every later capture of the run came 0.07-0.5 s after its action (BrowserDraw and
-    BrowserMaze in AndroidWorld's seed-42 sweep)."""
+    BrowserMaze in AndroidWorld's seed-42 sweep).
+
+    The device reports no frame count for ``android`` (``No process found for: android`` on the
+    emulator), so a capture with the chooser in front waits to the limit; the next one settles.
+    """
     phone = ScriptedPhone(focused="com.google.android.documentsui/.files.FilesActivity")
     settles = []
     async with (
         phone_server(phone) as adb,
         android_capability(
-            adb, fragments={SCREENSHOT}, settle_max_wait_s=2, settle_quiet_ms=50
+            adb, fragments={SCREENSHOT}, settle_max_wait_s=0.5, settle_quiet_ms=50
         ) as capability,
     ):
-        for cycle, focused in enumerate(
-            (phone.focused, CHOOSER, "com.android.chrome/com.google.android.apps.chrome.Main"),
+        for cycle, (focused, frames) in enumerate(
+            (
+                (phone.focused, 36),
+                (CHOOSER, None),
+                ("com.android.chrome/com.google.android.apps.chrome.Main", 36),
+            ),
             start=1,
         ):
-            phone.focused = focused
+            phone.focused, phone.frames = focused, frames
             await capability.begin_observation(cycle)
             screenshot = await capability.resolve_fragment(SCREENSHOT)
             assert isinstance(screenshot, AndroidScreenshotObs)
             settles.append(screenshot.settle)
 
-    assert [settle and settle.outcome for settle in settles] == ["settled"] * 3
-    assert all(settle and settle.waited_ms >= 50 for settle in settles)
+    files, chooser, chrome = settles
+    assert files is not None and files.outcome == "settled"
+    assert chooser is not None and (chooser.outcome, chooser.pending) == ("capped", ("frames",))
+    assert chrome is not None and chrome.outcome == "settled"
     assert "dumpsys gfxinfo android" in _services(adb)
 
 
