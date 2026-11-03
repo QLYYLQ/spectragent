@@ -2911,7 +2911,7 @@ context 在实际 capability owner 准备出的 `recordable` projection 上按�
 - `core/registries.py::setup_class_for_env(env_type)` 返回声明了这个 env 类型的已注册 setup 类。它先在已注册的 setup 类里找；找不到才读一遍每个 capability 包的声明（导入 `declarations.py` 就注册了包的 setup）再找。所以直接构造加载器的调用方（包括测试）不必先导入哪个 capability，而一个还在写的包的 `declarations.py` 导入失败，只影响要读它才找得到的查找，不影响 browser 的。查不到就报错，点名已知的 env 类型。两个包的 setup 声明同一个 env 类型，由 `tests/test_core/test_capabilities/test_capability_declarations.py` 对每个包检查，确定地发现，不靠运行时读到了哪些包。任务加载器（`TaskLoaderBase.normalize_raw`）与 `trace_branches` 都经它取 setup 类。
 - `BrowserSetup` 在 `core/capabilities/browser/task_setup.py`，字段、`__env_types__ = ("browser",)`、`__raw_keys__` 与 `to_context()` 不变。`DockerSetup` 与 `VMSetup` 删除：它们没有对应的 capability，docker / desktop_vm 包落地时由各自的包注册（M19 / M26）。trace 只记 setup 的 context（`TaskSetupRecord`），不记 `setup_type`，已有的录制不受影响。
 
-**任务的起始点归 capability（用户 2026-11-03 的裁决，还没实施）。** 用户："任务起始点是和capabilitis绑定的"。任务在哪里发生，由 capability 自己的任务 setup 类说出（上面经 `TaskSetupRegistrar` 按 capability 注册的那个类）：browser 说起始 URL 的站点，Android 说任务用到的 app（一个或几个，AndroidWorld 的加载器从任务类知道）。框架代码从不读 browser 的字段。现在还是框架在读：`core/trace/sources.py::task_identity` 从录下的 `task_setup.context` 取 browser 的 `start_url`；导出的切分、去污染与 `exclude_sites`（§4.15）和飞轮的站点（§4.16）按它的主机认站点，没有 `start_url` 的 run（Android 的都是）就没有站点；检查视图的运行比较（`inspection/repository.py`）把它放进分组的键。实施归 `docs/execution_dag.md` Android 分阶段路线里的专项"飞轮与检查视图按 capability 调整"。
+**任务的起始点归 capability（用户 2026-11-03 的裁决，还没实施）。** 用户："任务起始点是和capabilitis绑定的"。任务在哪里发生，由 capability 自己的任务 setup 类说出（上面经 `TaskSetupRegistrar` 按 capability 注册的那个类）：browser 说起始 URL 的站点；Android 说什么还没定，留给实施它的专项（本段末）。一个候选是 AndroidWorld 任务类的 `app_names`，但很多任务从主屏幕开局（`start_on_home_screen`），我们的加载器现在也不知道它：`androidworld-tasks-1` 任务列表里没有 app 这一项，生成列表的 `task_list.py` 不写 `app_names`。框架代码从不读 browser 的字段。现在还是框架在读：`core/trace/sources.py::task_identity` 从录下的 `task_setup.context` 取 browser 的 `start_url`；导出的切分、去污染与 `exclude_sites`（§4.15）和飞轮的站点（§4.16）按它的主机认站点，没有 `start_url` 的 run（Android 的都是）就没有站点；网页查看器的两个比较页面（`inspection/repository.py` 的 `compare` 与 `compare_groups`）把它放进分组的键。实施归 `docs/execution_dag.md` Android 分阶段路线里的专项"飞轮与检查视图按 capability 调整"。
 
 **登录的两条路径。** 预置登录态沿上面的 `storage_state` 输入，或在 `none` 档位显式选择 provider 的持久 profile；需要操作网页登录时，把账号、密码和登录步骤放进现有 `task_text`，Agent 用自己的 prompt 和既有 type / click 动作执行。框架不自动登录，不新增 credential store、加密机制或 `TaskContext.agent` / `agent_inputs` 通道。`BrowserSetup.login_required` / `login_type` 只保留 benchmark 元数据，不路由 setup、不触发自动登录；无实现的 `credentials_ref` 现在明确拒绝，旧 `LoginSnapshot` 删除，不能再拿它声称保存了分区登录态。
 
@@ -4189,10 +4189,10 @@ round-trip 在渲染里做（它要学生在这一步的坐标系），其余的
 - **`exclude_sites` 永远匹配不上 Android 的 run**：它只对有站点的 run 起作用，写了什么都不排除，也不说。
 - **Android 没有采集检查，manifest 却说没有没查的**：`AndroidCapability` 没实现 `CaptureCheck`（`android.ui_tree` 也只记 `producer`，不记清洗器与序列化器），学生的序列化器与录制时的不同也没人拒绝，`capture.unchecked` 却是 `[]`，读起来像全比过了。
 - **丢 index 记号的规则只认 browser 的 `[123]`**：`thought_index_refs: drop` 的模式是 `\[\d+\]`，认不出 M3A 写的 "index 6"，看截图的学生会学到引用它看不到的编号的 thought（M3A 合进 main 之后才会碰到）。
-- **一个读不回来的 trace 让整个导出停下**：选源时读不回来的源会跳过（上面"源级检查与筛选"），canonical 化时读不回来的 fragment 却抛 `TraceSchemaError`，整个导出失败、一个文件也不写。
+- **一个读不回来的 fragment 让整个导出停下**：读不回来的 trace 在选源时跳过（上面"源级检查与筛选"），`canonicalise` 里一个 fragment 解码失败却抛 `TraceSchemaError`，整个导出失败、一个文件也不写。
 - **只导 Android 也要导入 browser 包**：`max_document_misses`（默认 0）对每个源都导入 browser 的回放日志，`index_to_coordinate` 导入 `browser.index_points`，trace 读取器遇到没注册的键就导入每个 capability 包；结果不错，但违反 §4.2.1 "一次组装只导入它的配置点名的包"。
 
-长度预算不在单子上：它是配置，不是代码（发布的 `length` 按浏览器的截图定，全分辨率的手机截图约 20 步就超出，Android 的学生要换只留最近几张截图的 memory）。
+长度预算不在单子上：它是配置，不是代码（发布的 `length` 按浏览器的截图定，全分辨率的手机截图下，留全部截图的学生约 20 步就超出；怎么改归学生一侧，还没定）。
 
 **导出恢复时的实验规则（用户 2026-11-03 的裁决）**：AndroidWorld 的 116 个任务模板分成录制集与评测集，去污染按模板：评测集里的模板，录下的每个种子都排除。任务实例 id 只挡得住同一个种子：同一个模板换个种子录下来训练、再拿来评测，报出的成功率就是分布内的。
 
