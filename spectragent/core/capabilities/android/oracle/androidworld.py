@@ -53,7 +53,9 @@ them, so they never reach a booted device.
 Timings measured on the spike (Apple M1 Pro, load 6-14, 2026-11-01): start
 17-32 s, initialize 0.6-8 s, reset 0.1-1.2 s (22-27 s when AndroidWorld
 reinstalled its accessibility forwarder), score median 0.1 s, p90 6.1 s, max
-18.2 s, tear-down 0.3-2.2 s.
+18.2 s, tear-down 0.3-2.2 s. OsmAndMarker's initialize took 46 s on a fresh
+boot (2026-11-03), while the launcher waited for OsmAnd to make the table
+AndroidWorld clears (``serve.py``'s ``launch_and_wait_for_table``).
 """
 
 from __future__ import annotations
@@ -537,12 +539,14 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             description=(
                 "Seconds each call that prepares or ends the task may take (the suite, the "
                 "goal, initialize, reset, tear-down), and each question after a step whether "
-                "a MiniWoB++ episode is over; initialize took up to 8 s and reset up to 27 s "
-                "when AndroidWorld reinstalled its accessibility forwarder. The score is "
-                "limited by the run's oracle_timeout instead."
+                "a MiniWoB++ episode is over. Initialize took up to 8 s, except OsmAndMarker: "
+                "46 s on a fresh boot, where the launcher twice waits up to 30 s for OsmAnd "
+                "to make the table AndroidWorld clears. Reset took up to 27 s when "
+                "AndroidWorld reinstalled its accessibility forwarder. The score is limited "
+                "by the run's oracle_timeout instead."
             ),
         ),
-    ] = 60.0
+    ] = 120.0
 
     _service: _Service | None = field(default=None, init=False, repr=False)
     _stopping: asyncio.Future[None] | None = field(default=None, init=False, repr=False)
