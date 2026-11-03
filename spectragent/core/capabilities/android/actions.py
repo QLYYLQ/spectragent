@@ -281,7 +281,14 @@ _START_HINT = "the swipe starts there; never with index"
 
 @dataclass
 class AndroidScrollAction(ActionBase):
-    """Swipe to scroll: from the start point, from the centre of an element, or from the middle of the screen."""
+    """Swipe to scroll: from the start point, from the centre of an element, or from the middle of the screen.
+
+    The swipe goes the agent's ``amount``; given none, ``swipe_to`` says where
+    it ends: ``default_amount`` px on, or at the edge of its target (the
+    element, else the screen) in the direction the finger moves, which is how
+    AndroidWorld scrolls for its M3A agent (``docs/architecture_design.md``
+    §4.1 "M3A"). Either way the end stays on the screen.
+    """
 
     __registry_key__ = "android.scroll"
     Effect = AndroidTouchEffect
@@ -303,6 +310,17 @@ class AndroidScrollAction(ActionBase):
             ),
         ),
     ] = 500
+    swipe_to: Annotated[
+        Literal["default_amount", "target_edge"],
+        PydanticField(
+            description=(
+                "Where a swipe the agent gives no amount ends: default_amount px from its "
+                "start, or the edge of its target in the direction the finger moves (the "
+                "element given by index, its bounds cut to the screen, else the screen), as "
+                "AndroidWorld scrolls for M3A."
+            )
+        ),
+    ] = "default_amount"
 
     class Params(BaseModel):
         """The browser's ``scroll`` params; ``index`` names an element of ``android.ui_tree``."""
@@ -332,9 +350,13 @@ class AndroidScrollAction(ActionBase):
             return self
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
+        reach = (
+            f"(default {self.default_amount}px)"
+            if self.swipe_to == "default_amount"
+            else "to the edge of the element, or of the screen, unless given an amount"
+        )
         return self.describe(
-            f"Scroll the screen by swiping (default {self.default_amount}px). down shows what "
-            f"is further down.",
+            f"Scroll the screen by swiping {reach}. down shows what is further down.",
             hints={"start_x": _START_HINT, "start_y": _START_HINT},
             **context,
         )
@@ -344,23 +366,32 @@ class AndroidScrollAction(ActionBase):
     ) -> ActionResult:
         given = self.Params.model_validate(params)
         width, height = capability.screen_size
+        left, top, right, bottom = 0, 0, width, height  # the target: the screen, or the element
         start = (width // 2, height // 2)
         if given.start_x is not None and given.start_y is not None:
             start = (given.start_x, given.start_y)
         elif given.index is not None:
             try:
-                start = capability.element_centre(given.index)
+                left, top, right, bottom = capability.element_bounds(given.index)
             except ElementIndexError as exc:
                 return ActionResult(success=False, error=str(exc))
-        distance = max(1, min(given.amount or self.default_amount, self.max_amount))
+            start = ((left + right) // 2, (top + bottom) // 2)
         # The content follows the finger, so it moves against the direction scrolled.
-        dx, dy = {
-            "down": (0, -distance),
-            "up": (0, distance),
-            "right": (-distance, 0),
-            "left": (distance, 0),
-        }[given.direction]
-        end = (min(max(start[0] + dx, 0), width - 1), min(max(start[1] + dy, 0), height - 1))
+        x, y = start
+        if given.amount is None and self.swipe_to == "target_edge":
+            end = {"down": (x, top), "up": (x, bottom), "right": (left, y), "left": (right, y)}[
+                given.direction
+            ]
+        else:
+            distance = max(1, min(given.amount or self.default_amount, self.max_amount))
+            dx, dy = {
+                "down": (0, -distance),
+                "up": (0, distance),
+                "right": (-distance, 0),
+                "left": (distance, 0),
+            }[given.direction]
+            end = (x + dx, y + dy)
+        end = (min(max(end[0], 0), width - 1), min(max(end[1], 0), height - 1))
         swiped = await touch(capability, "swipe", start, end, self.duration_ms)
         return ActionResult(
             success=True, effect=AndroidTouchEffect(effect_id=self.action_id, touch=swiped)

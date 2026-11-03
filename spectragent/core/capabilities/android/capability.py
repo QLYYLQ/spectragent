@@ -467,18 +467,29 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         return self._screen_size
 
     def element_centre(self, index: int) -> tuple[int, int]:
-        """The centre of element *index*'s bounds on the screen, in the UI tree the agent last saw.
+        """The centre of element *index*'s bounds on the screen (:meth:`element_bounds`).
 
-        That tree is the latest capture's, while the action asking is the first
-        to start since: after another action the screen may have changed, and
-        the numbers with it. The bounds are cut to the screen first, as
-        AndroidWorld does before it scrolls inside an element, so an element
-        partly off the screen is touched where it shows.
+        So an element partly off the screen is touched where it shows.
+
+        Raises:
+            ElementIndexError: As :meth:`element_bounds`.
+        """
+        left, top, right, bottom = self.element_bounds(index)
+        return (left + right) // 2, (top + bottom) // 2
+
+    def element_bounds(self, index: int) -> tuple[int, int, int, int]:
+        """Element *index*'s bounds cut to the screen: ``(left, top, right, bottom)``.
+
+        The element is the one of the UI tree the agent last saw: the latest
+        capture's, while the action asking is the first to start since. After
+        another action the screen may have changed, and the numbers with it.
+        The bounds are cut to the screen, as AndroidWorld cuts them before it
+        scrolls inside an element.
 
         Raises:
             ElementIndexError: The run captures no UI tree, none was captured
-                yet, an action started since it was, or it has no element
-                *index*; the message says which.
+                yet, an action started since it was, it has no element *index*,
+                or the element is not on the screen; the message says which.
         """
         tree = self._ui_tree
         if UI_TREE not in self.provided_fragments:
@@ -506,7 +517,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         right, bottom = min(box.right, width), min(box.bottom, height)
         if left >= right or top >= bottom:
             raise ElementIndexError(f"Element {index} is not on the screen.")
-        return (left + right) // 2, (top + bottom) // 2
+        return left, top, right, bottom
 
     # ── how the fragments read as text (FragmentFormats, §4.4) ────────
 

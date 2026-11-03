@@ -25,6 +25,7 @@ from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import point_params
 from spectragent.core.capabilities.android.actions import (
     KEYCODES,
+    AndroidScrollAction,
     AndroidTypeAction,
     AndroidTypeCoordinateAction,
     SystemKey,
@@ -372,6 +373,57 @@ async def test_a_scroll_with_an_index_swipes_from_that_elements_centre(
     scrolled = await act(capability, "scroll", direction="down", index=0, amount=200)
 
     assert scrolled.success and phone.inputs == ["helper stroke (540,375)@0 (540,175)@500"]
+
+
+def _swiping_to_the_edge(capability: AndroidCapability) -> None:
+    """The scroll a run for M3A configures: to its target's edge, in ``input swipe``'s 300 ms."""
+    capability.actions = [
+        AndroidScrollAction(swipe_to="target_edge", duration_ms=300)
+        if action.action_id == "android.scroll"
+        else action
+        for action in capability.actions
+    ]
+
+
+@pytest.mark.parametrize(
+    ("direction", "swipe"),
+    [
+        # AndroidWorld's scroll: from the centre to the edge the finger moves towards.
+        ("down", "helper stroke (540,1200)@0 (540,0)@300"),
+        ("up", "helper stroke (540,1200)@0 (540,2399)@300"),  # AndroidWorld's ends on 2400
+        ("right", "helper stroke (540,1200)@0 (0,1200)@300"),
+        ("left", "helper stroke (540,1200)@0 (1079,1200)@300"),
+    ],
+)
+async def test_a_scroll_to_the_edge_swipes_from_the_middle_of_the_screen_to_its_edge(
+    capability: AndroidCapability, phone: ScriptedPhone, direction: str, swipe: str
+) -> None:
+    _swiping_to_the_edge(capability)
+
+    assert (await act(capability, "scroll", direction=direction)).success
+
+    assert phone.inputs == [swipe]
+
+
+async def test_a_scroll_to_the_edge_stops_at_its_targets_edge_unless_given_an_amount(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """Element 0 is (0, 300)-(1080, 450); a start point's target is the screen."""
+    _swiping_to_the_edge(capability)
+    descriptor = next(d for d in capability.get_action_descriptors() if d.name == "android.scroll")
+    assert "to the edge of the element, or of the screen" in descriptor.description
+
+    await observe_tree(capability)
+    assert (await act(capability, "scroll", direction="down", index=0)).success
+    await observe_tree(capability, cycle=2)
+    assert (await act(capability, "scroll", direction="up", index=0, amount=200)).success
+    assert (await act(capability, "scroll", direction="down", start_x=300, start_y=2000)).success
+
+    assert phone.inputs == [
+        "helper stroke (540,375)@0 (540,300)@300",
+        "helper stroke (540,375)@0 (540,575)@300",
+        "helper stroke (300,2000)@0 (300,0)@300",
+    ]
 
 
 async def test_a_long_press_by_index_holds_the_centre_of_that_element(
