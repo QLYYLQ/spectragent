@@ -417,6 +417,41 @@ def test_a_quiet_period_the_wait_could_never_reach_is_refused() -> None:
     AndroidCapability(service_apk="a.apk", settle_quiet_ms=3000, settle_max_wait_s=0)  # wait off
 
 
+async def test_every_fragment_of_a_capture_records_its_wait_without_capture_state() -> None:
+    """Recorded in the trace and never shown to the agent: the browser's ``settle`` is the same."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb,
+            fragments={SCREENSHOT, UI_TREE, FOREGROUND_APP},
+            settle_max_wait_s=2,
+            settle_quiet_ms=50,
+        ) as capability,
+    ):
+        await capability.begin_observation(1)
+        fragments = [
+            await capability.resolve_fragment(key) for key in (SCREENSHOT, UI_TREE, FOREGROUND_APP)
+        ]
+    async with phone_server(ScriptedPhone()) as adb, android_capability(adb) as capability:
+        await capability.begin_observation(1)
+        unwaited = await capability.resolve_fragment(SCREENSHOT)
+
+    screenshot = fragments[0]
+    assert isinstance(screenshot, AndroidScreenshotObs) and screenshot.settle is not None
+    assert screenshot.settle.outcome == "settled"
+    assert [getattr(fragment, "settle", None) for fragment in fragments] == [screenshot.settle] * 3
+    binary = screenshot.trace_binary()
+    assert binary is not None
+    payload = screenshot.model_dump(mode="json", exclude=screenshot.trace_json_exclude())
+    assert payload["settle"]["outcome"] == "settled"
+    assert AndroidScreenshotObs.from_trace(payload, binary[1]) == screenshot
+    assert isinstance(unwaited, AndroidScreenshotObs) and unwaited.settle is None
+    assert "settle" not in unwaited.model_dump(exclude=unwaited.trace_json_exclude()), (
+        "a capture without a wait writes what it always wrote"
+    )
+
+
 async def test_a_screenshot_reads_back_from_its_trace_files_as_it_was() -> None:
     async with (
         phone_server(ScriptedPhone()) as adb,

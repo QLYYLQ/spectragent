@@ -44,7 +44,9 @@ source that fails fails the whole capture, once: the error is kept for the
 rest of the cycle and raised for every fragment asked for. The next cycle
 captures again. Only the negotiated fragments are captured, so a run whose
 agent reads no tree never asks the service for one, unless a bound archiver
-needs it (below).
+needs it (below). How the wait ended rides on every fragment of the capture
+(``settle``), whether or not the run negotiates ``capture_state``: recorded,
+never shown to the agent.
 
 **An action is one job of the same queue**, so a capture never interleaves
 with it, and it drops the capture it came after: whatever reads next sees the
@@ -144,6 +146,7 @@ from spectragent.core.capabilities.android.observations import (
     PLATFORM,
     SCREENSHOT,
     UI_TREE,
+    AndroidCaptureFragment,
     AndroidCaptureStateObs,
     AndroidForegroundAppObs,
     AndroidPlatformObs,
@@ -347,7 +350,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 description=(
                     "The longest wait for a still screen before each capture, in seconds; the "
                     "capture is taken then whether or not the screen is still. 0 turns the "
-                    "wait off: capture_state then reports no settle."
+                    "wait off: no capture then records a wait."
                 ),
             ),
         ] = 2.0,
@@ -968,6 +971,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         In a run that negotiates no tree, a bound archiver that needs one gets
         the tree asked for it alone, beside the other sources; when that ask
         fails, the capture goes on and the archive misses the tree.
+
+        Every fragment of the capture carries the wait's record
+        (``observations.py``).
         """
         await self._keep_service()
         wanted = self.provided_fragments
@@ -1013,6 +1019,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             )
         elif for_archive is not None:
             tree = MissingTree(cycle=cycle, error=for_archive)
+        for fragment in fragments.values():
+            if isinstance(fragment, AndroidCaptureFragment):
+                fragment.settle = settle
         if CAPTURE_STATE in wanted:
             fragments[CAPTURE_STATE] = AndroidCaptureStateObs(settle=settle)
         return fragments, tree

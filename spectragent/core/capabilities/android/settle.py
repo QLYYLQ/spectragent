@@ -41,7 +41,8 @@ its limit, ``pending`` naming what changed within the last quiet period
 (``events``, ``focus``, ``frames``); or ``unknown`` at once when a poll fails
 or the event stream has ended, the reason in ``detail``. It never fails a
 capture. ``loaded`` is always ``None``: none of the three says whether an app
-has finished its initial load.
+has finished its initial load. The capability records the outcome on every
+fragment of the capture (``observations.py``).
 """
 
 from __future__ import annotations
