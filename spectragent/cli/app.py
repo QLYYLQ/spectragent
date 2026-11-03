@@ -52,7 +52,7 @@ _LEAF_COMMANDS: tuple[tuple[str, str, str], ...] = (
     (
         "eval",
         "spectragent.verifiers.cli",
-        "Judge recorded runs with a benchmark's offline verifiers.",
+        "Judge recorded runs with a benchmark's offline verifiers. Supports --json.",
     ),
     (
         "export",

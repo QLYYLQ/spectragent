@@ -340,6 +340,13 @@ def test_a_reference_need_without_reference_data_is_refused_up_front():
         _runner(ExactMatchVerifier())
 
 
+def test_one_verifier_listed_twice_with_the_same_settings_is_refused(loader):
+    """Both would write the one verdict file of their slug, the second over the first."""
+    with pytest.raises(ValueError, match="more than once") as refused:
+        _runner(ExactMatchVerifier(), ExactMatchVerifier(), loader=loader)
+    assert ExactMatchVerifier().identity().slug in str(refused.value)
+
+
 class _Live:
     verifier_id = "on_the_device"
     needs: frozenset[VerifierNeed] = frozenset({"live_environment", "answer"})

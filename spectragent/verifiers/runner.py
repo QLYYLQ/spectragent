@@ -123,8 +123,9 @@ class VerificationRunner:
             A branch run is always checked against its source's.
 
     Raises:
-        ValueError: A verifier is attached live, or needs a reference row and
-            there is no reference data — before any trace is read.
+        ValueError: A verifier is attached live, needs a reference row and
+            there is no reference data, or shares its slug with another (one
+            verdict file for two verifiers) — before any trace is read.
     """
 
     def __init__(
@@ -149,6 +150,12 @@ class VerificationRunner:
         # Read once, up front: a verifier whose identity cannot be read is
         # refused here, never recorded under a guessed one.
         self._identities = [verifier.identity() for verifier in self._verifiers]
+        slugs = [identity.slug for identity in self._identities]
+        if repeated := sorted({slug for slug in slugs if slugs.count(slug) > 1}):
+            raise ValueError(
+                f"verifier(s) {', '.join(repeated)} listed more than once with the same "
+                f"settings: each would overwrite the other's verdict"
+            )
         self._loader = reference_loader
         self._verify_reference_identity = verify_reference_identity
 
