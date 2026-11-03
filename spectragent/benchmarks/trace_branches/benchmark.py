@@ -17,9 +17,16 @@ from spectragent.benchmarks._registrar import BenchmarkBase
 
 
 class TraceBranches(BenchmarkBase):
-    """Branch tasks from recorded runs (the ``trace_branches`` task loader, §4.10)."""
+    """Branch tasks from recorded runs (the ``trace_branches`` task loader, §4.10).
+
+    It never takes a part of a capability's configuration of its own: a branch
+    task's are its source benchmark's (§4.10.1).
+    """
 
     __registry_key__ = "trace_branches"
     __wiring__: ClassVar[dict[str, Any]] = {
         "task_loader": ("task_loader", ["trace_branches"]),
     }
+
+    def __init__(self) -> None:
+        super().__init__()

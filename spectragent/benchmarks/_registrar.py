@@ -5,7 +5,11 @@ loader that gives verdicts their reference answers — the verifiers that judge
 its runs, and which of their verdicts is its brief result: its primary verdict
 and success rule (§4.10.1 "主判定"). It may own its own setup of each task, a
 setup component a capability hosts (``setup``,
-:mod:`spectragent.benchmarks._setup_registrar`). All are written inside its
+:mod:`spectragent.benchmarks._setup_registrar`), and facts of the environment
+its tasks need: its part of a capability's configuration, written in its
+block's ``capability`` list or computed in code (:meth:`BenchmarkBase.computed_capability`),
+which the Composer merges with the run configuration's
+(:mod:`spectragent.core.capability_merge`). All of it is written inside its
 block, or declared by its class, never as top-level sections, and a benchmark
 YAML holds that one block under ``benchmark:``. A run selects it with
 ``--benchmark <alias|path>``; the run configuration never holds one
@@ -21,9 +25,10 @@ package too.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 from conscribe import create_registrar
+from pydantic import BaseModel, Field, JsonValue
 
 from spectragent.benchmarks._setup_registrar import BenchmarkSetup, BenchmarkSetupBase
 from spectragent.core.data_loader.eval._registrar import EvalLoaderBase, EvalLoaderRegistrar
@@ -117,10 +122,38 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
     verifiers: list[VerifierBase] | None
     setup: BenchmarkSetupBase | None
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        capability: Annotated[
+            tuple[dict[str, JsonValue], ...],
+            Field(
+                description=(
+                    "This benchmark's part of the configuration of the capabilities its tasks run "
+                    "on: blocks in the capability schema, each with its capability_id, writing "
+                    "only what the benchmark needs (the device image, ...). Each is merged field "
+                    "by field into the run configuration's block of that capability: a field "
+                    "both write with different values is refused, naming both; on a list of "
+                    "blocks (actions) a part sets options on the entries there, matched by their "
+                    "discriminator, and never adds or removes one. [] (the default): none."
+                )
+            ),
+        ] = (),
+    ) -> None:
+        self.capability = capability
         self.eval_loader = None
         self.verifiers = []
         self.setup = None
+
+    @classmethod
+    def computed_capability(cls, config: BaseModel) -> list[dict[str, JsonValue]]:
+        """This benchmark's part of capability configurations computed in code, given its validated *config*.
+
+        Merged like the blocks of its ``capability`` list, and refused in the
+        same way when it disagrees with them or with the run configuration.
+        ``[]`` here; AndroidWorld's is its ``open_app`` name table. The
+        Composer asks only for a run that starts an environment.
+        """
+        return []
 
     @property
     def benchmark_id(self) -> str:

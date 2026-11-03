@@ -66,7 +66,7 @@ from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldC
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
 from spectragent.core.capabilities.base import EpisodeEnd, SetupHost, TaskTextFromSetup
-from spectragent.core.composer import ConfigComposer
+from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
@@ -1109,15 +1109,21 @@ def _android_block(**written: JsonValue) -> dict[str, JsonValue]:
 def test_a_run_names_its_apk_its_input_strategies_and_its_tree_cleaner_and_serializer() -> None:
     """Which program delivers a touch, and which enters text, change what the device receives;
     which nodes become elements, and how they are printed, change what the agent sees. The tree's
-    source has one value, so a block may leave it out."""
+    source has one value, so a block may leave it out. A setting left out is named, and the
+    refusal says no side wrote it (``docs/architecture_design.md`` §4.10.1)."""
     required = ("service_apk", "tap_injector", "typing_backend")
     for left_out in (*required, "ui_tree_cleaner", "ui_tree_serializer"):
         block = _android_block()
         del block[left_out]
         raw: dict[str, JsonValue] = {"capability": [block]}
-        with pytest.raises(ValidationError) as refused:
+        with pytest.raises(ComposeError) as refused:
             ConfigComposer.for_config(raw).validate(raw)
-        assert {error["type"] for error in refused.value.errors()} == {"missing"}, left_out
+        issue = refused.value.issue
+        assert issue is not None, left_out
+        assert (issue.code, issue.path) == (
+            "capability_setting_missing",
+            f"capability[0].{left_out}",
+        )
 
     raw = {"capability": [_android_block()]}
     capability = ConfigComposer.for_config(raw).compose(raw).single("capability")

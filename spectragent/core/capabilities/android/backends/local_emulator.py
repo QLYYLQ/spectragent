@@ -121,6 +121,7 @@ from spectragent.core.capabilities.android.backends.base import (
     UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
+from spectragent.core.trace.redaction import trace_safe
 
 T = TypeVar("T")
 
@@ -351,7 +352,10 @@ class LocalEmulatorProvider(AndroidProviderBase):
 
     avd: Annotated[
         str,
-        Field(description="The AVD to boot, by name, as `emulator -list-avds` prints it."),
+        trace_safe(
+            "an AVD's name on this machine, not a credential",
+            description="The AVD to boot, by name, as `emulator -list-avds` prints it.",
+        ),
     ]
     sdk_root: Annotated[
         str | None,

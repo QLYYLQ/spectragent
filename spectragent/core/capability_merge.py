@@ -1,0 +1,472 @@
+"""Merging the parts of a capability's configuration that a run and its benchmark write.
+
+``docs/architecture_design.md`` §4.10.1 "capability 配置合并", §4.2 "基准层在
+``prepare()`` 里加的检查". The run configuration, the benchmark and later its
+verifiers each write their part of one capability's configuration in the same
+schema; no field belongs to one side. A benchmark writes its part in its
+block's ``capability`` list and may compute more in code (AndroidWorld: its
+``open_app`` name table). Each part is checked against the capability's own
+schema for what it writes (:meth:`CapabilityMerge.check`, never for what it
+leaves out), then merged field by field into the run configuration's block of
+that capability (:meth:`CapabilityMerge.merge`):
+
+- a field one side writes is taken from it; one neither writes keeps the
+  schema's default, and one required that neither writes is refused afterwards,
+  by the Composer, naming the field;
+- a field two sides write with different values is refused, naming the field
+  and both sides: there is no precedence, as two providers of one action are
+  refused (§4.3 "消歧靠拒绝"); a strategy block both write (``backend``) is
+  merged inside when both name the same strategy, refused when they name two;
+- a list of strategy blocks (``actions``) is the run configuration's, or the
+  whole default list when it leaves the list out: a part may set options on an
+  entry already there, matched by its discriminator (``action_id``), and never
+  adds or removes one (coordinator ruling 2026-11-03), since a benchmark that
+  sets one action's knob would otherwise delete the others.
+
+The per-task data stays in the per-task setup channel (``TaskContext.env``)
+and is never merged. The merged block is what the run validates, constructs
+and records (``resolved``), so the trace and ``config_hash`` hold the merged
+configuration (§5.3 "实验身份").
+"""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import cast
+
+from conscribe import LayerRegistrar
+from conscribe.introspect import WiringSlot, wiring_slots
+from pydantic import JsonValue, ValidationError
+
+from spectragent.core.configuration_catalog import ConfigurationCatalog
+
+#: The top-level section of capability blocks, and an environment's receptor of them.
+CAPABILITY_SECTION = "capability"
+ENVIRONMENT_SECTION = "environment"
+ENVIRONMENT_CAPABILITIES = "capabilities"
+#: How long a value shown in a conflict may be before it is cut.
+_SHOWN = 120
+
+
+@dataclass(frozen=True)
+class Contribution:
+    """One side's part of a capability's configuration.
+
+    Attributes:
+        block: The part, a capability block holding only what this side writes,
+            with its ``capability_id``.
+        source: Who writes it, for messages: ``the benchmark androidworld``.
+        path: Where it is written: ``benchmark[0].capability[0]``.
+    """
+
+    block: Mapping[str, JsonValue]
+    source: str
+    path: str
+
+
+@dataclass(frozen=True)
+class MergeProblem:
+    """One problem of the merge, at the path its author wrote."""
+
+    path: str
+    message: str
+
+
+class CapabilityMergeError(ValueError):
+    """The parts of a capability's configuration cannot be merged; every problem named.
+
+    ``code`` says which kind: ``capability_contribution_invalid`` (a part
+    breaks the capability's schema), ``capability_without_block`` (a part for
+    a capability the run configuration has no block of) or
+    ``capability_setting_conflict`` (two sides write one field differently).
+    """
+
+    def __init__(self, code: str, problems: Sequence[MergeProblem]) -> None:
+        self.code = code
+        self.problems = tuple(problems)
+        super().__init__(
+            "\n".join(f"{problem.path}: {problem.message}" for problem in self.problems)
+        )
+
+
+@dataclass
+class _Side:
+    """Who wrote a value already in the merged block."""
+
+    source: str
+    path: str
+
+    def __str__(self) -> str:
+        return f"{self.source} ({self.path})" if self.path else self.source
+
+
+@dataclass
+class _Block:
+    """A capability block of the run configuration being merged: its path, its fields, who wrote each."""
+
+    path: str
+    fields: dict[str, JsonValue]
+    #: Field path within the block (``backend.avd``) → who wrote it; the run
+    #: configuration for what this map leaves out.
+    written_by: dict[str, _Side] = field(default_factory=dict)
+
+
+class CapabilityMerge:
+    """The merge of capability parts into a run's capability blocks, over one Composer's catalog."""
+
+    def __init__(
+        self,
+        catalog: ConfigurationCatalog,
+        registrars: Mapping[str, type[LayerRegistrar[object]]],
+    ) -> None:
+        self._catalog = catalog
+        self._registrars = registrars
+
+    def check(self, contribution: Contribution) -> None:
+        """Refuse a part that breaks its capability's schema in what it writes.
+
+        A field it leaves out is never a problem: another side may write it.
+
+        Raises:
+            CapabilityMergeError: ``capability_contribution_invalid``, each
+                problem at the path the part writes it.
+        """
+        capability_id = contribution.block.get("capability_id")
+        components = self._catalog.components.get(CAPABILITY_SECTION, {})
+        if not isinstance(capability_id, str) or capability_id not in components:
+            known = ", ".join(sorted(components)) or "none"
+            raise CapabilityMergeError(
+                "capability_contribution_invalid",
+                [
+                    MergeProblem(
+                        f"{contribution.path}.capability_id",
+                        f"{contribution.source} writes a part of the {capability_id!r} "
+                        f"capability, which this run has no schema for (capabilities: {known})",
+                    )
+                ],
+            )
+        model = components[capability_id].config_model
+        try:
+            model.model_validate(contribution.block)
+        except ValidationError as exc:
+            problems = [
+                MergeProblem(
+                    _joined(contribution.path, error["loc"], contribution.block),
+                    f"{contribution.source} writes it: {error['msg']}",
+                )
+                for error in exc.errors()
+                if error["type"] != "missing"
+            ]
+            if problems:
+                raise CapabilityMergeError("capability_contribution_invalid", problems) from None
+
+    def merge(
+        self, sections: Mapping[str, object], contributions: Sequence[Contribution]
+    ) -> dict[str, object]:
+        """*sections* with every part of *contributions* merged into its capability's blocks.
+
+        The run configuration's blocks are the top-level ``capability`` entries
+        and each environment's ``capabilities``; a part goes into every block of
+        its ``capability_id``. *sections* is not changed: the result is a copy.
+
+        Raises:
+            CapabilityMergeError: ``capability_without_block`` when a part's
+                capability has no block here; ``capability_setting_conflict``
+                naming every field two sides write differently.
+        """
+        merged = copy.deepcopy(dict(sections))
+        blocks = _capability_blocks(merged)
+        problems: list[MergeProblem] = []
+        missing: list[MergeProblem] = []
+        for contribution in contributions:
+            capability_id = contribution.block.get("capability_id")
+            targets = [
+                block for block in blocks if block.fields.get("capability_id") == capability_id
+            ]
+            if not targets:
+                missing.append(
+                    MergeProblem(
+                        contribution.path,
+                        f"{contribution.source} writes a part of the {capability_id!r} capability, "
+                        f"and the run configuration has no {capability_id!r} capability block to "
+                        f"merge it into",
+                    )
+                )
+                continue
+            assert isinstance(capability_id, str)
+            implementation = self._catalog.components[CAPABILITY_SECTION][capability_id]
+            side = _Side(contribution.source, contribution.path)
+            for target in targets:
+                problems += self._merge_block(
+                    target,
+                    target.fields,
+                    contribution.block,
+                    side,
+                    implementation.implementation,
+                    here="",
+                )
+        if missing:
+            raise CapabilityMergeError("capability_without_block", missing)
+        if problems:
+            raise CapabilityMergeError("capability_setting_conflict", problems)
+        return merged
+
+    # -- one block --------------------------------------------------------
+
+    def _merge_block(
+        self,
+        target: _Block,
+        into: dict[str, JsonValue],
+        part: Mapping[str, JsonValue],
+        side: _Side,
+        owner: type,
+        *,
+        here: str,
+    ) -> list[MergeProblem]:
+        """Merge *part*, a block of the component *owner*, into *into* (inside *target* at *here*).
+
+        A field *part* writes ``null`` is not written: ``null`` says an
+        optional setting is not set.
+        """
+        problems: list[MergeProblem] = []
+        slots = wiring_slots(owner)
+        for name, value in part.items():
+            if value is None:
+                continue
+            at = f"{here}.{name}" if here else name
+            existing = into.get(name)
+            if existing is None:
+                if isinstance(value, list) and self._list_receptor(slots.get(name)):
+                    # Left out by the run configuration: the default list, set on.
+                    entry = slots[name]
+                    problems += self._merge_list(target, into, name, value, side, entry, at=at)
+                else:
+                    into[name] = copy.deepcopy(value)
+                    target.written_by[at] = side
+                continue
+            entry = slots.get(name)
+            if (
+                isinstance(value, list)
+                and isinstance(existing, list)
+                and self._list_receptor(entry)
+            ):
+                assert entry is not None
+                problems += self._merge_list(target, into, name, value, side, entry, at=at)
+            elif (
+                isinstance(value, Mapping)
+                and isinstance(existing, dict)
+                and self._strategy_receptor(entry)
+            ):
+                assert entry is not None
+                problems += self._merge_strategy(target, existing, value, side, entry, at=at)
+            elif existing != value:
+                problems.append(self._conflict(target, at, existing, value, side))
+        return problems
+
+    def _merge_strategy(
+        self,
+        target: _Block,
+        existing: dict[str, JsonValue],
+        value: Mapping[str, JsonValue],
+        side: _Side,
+        entry: WiringSlot,
+        *,
+        at: str,
+    ) -> list[MergeProblem]:
+        """Merge one strategy block (``backend``) two sides write: inside it, when both name one strategy.
+
+        A side that names none takes the layer's only strategy: the part's
+        check refused a block without its discriminator where there are two.
+        """
+        layer = entry.spec.registry_name
+        discriminator = _discriminator(self._registrars.get(layer))
+        if discriminator is None:
+            return [] if existing == value else [self._conflict(target, at, existing, value, side)]
+        mine, theirs = existing.get(discriminator), value.get(discriminator)
+        if mine is not None and theirs is not None and mine != theirs:
+            return [self._conflict(target, f"{at}.{discriminator}", mine, theirs, side)]
+        owner = self._implementation(layer, mine if mine is not None else theirs)
+        if owner is None:
+            return [] if existing == value else [self._conflict(target, at, existing, value, side)]
+        return self._merge_block(target, existing, value, side, owner, here=at)
+
+    def _merge_list(
+        self,
+        target: _Block,
+        into: dict[str, JsonValue],
+        name: str,
+        value: list[JsonValue],
+        side: _Side,
+        entry: WiringSlot,
+        *,
+        at: str,
+    ) -> list[MergeProblem]:
+        """Merge a list of strategy blocks (``actions``): options on entries already there, none added or removed.
+
+        The entries are the run configuration's list, or the whole default
+        list when it leaves the list out: every key the receptor takes, in
+        its order.
+        """
+        layer = entry.spec.registry_name
+        discriminator = _discriminator(self._registrars.get(layer))
+        base = into.get(name)
+        if discriminator is None:
+            if base is None:
+                into[name] = copy.deepcopy(value)
+                target.written_by[at] = side
+                return []
+            return [] if base == value else [self._conflict(target, at, base, value, side)]
+        if not isinstance(base, list):
+            base = [_entry(discriminator, key) for key in entry.spec.allowed_keys or ()]
+            into[name] = base
+        entries = {
+            item.get(discriminator): item for item in reversed(base) if isinstance(item, dict)
+        }
+        problems: list[MergeProblem] = []
+        seen: set[JsonValue] = set()
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            key = item.get(discriminator)
+            where = f"{at}[{key}]"
+            if key in seen:
+                problems.append(
+                    MergeProblem(f"{target.path}.{where}", f"{side} sets its options twice")
+                )
+                continue
+            seen.add(key)
+            existing = entries.get(key)
+            if existing is None:
+                problems.append(
+                    MergeProblem(
+                        f"{target.path}.{where}",
+                        f"{side} sets options on {key!r}, and the run configuration's {name} "
+                        f"({target.path}.{at}) leave it out; a part sets options on the entries "
+                        f"there and never adds or removes one: list {key!r} in the run "
+                        f"configuration's {name}, or drop its options",
+                    )
+                )
+                continue
+            owner = self._implementation(layer, key)
+            if owner is None:
+                if existing != item:
+                    problems.append(self._conflict(target, where, existing, item, side))
+                continue
+            problems += self._merge_block(target, existing, item, side, owner, here=where)
+        return problems
+
+    @staticmethod
+    def _list_receptor(entry: WiringSlot | None) -> bool:
+        return (
+            entry is not None
+            and not entry.declare_only
+            and entry.slot is not None
+            and entry.slot.shape == "list"
+        )
+
+    @staticmethod
+    def _strategy_receptor(entry: WiringSlot | None) -> bool:
+        return (
+            entry is not None
+            and not entry.declare_only
+            and entry.slot is not None
+            and entry.slot.shape == "scalar"
+        )
+
+    def _implementation(self, layer: str, key: JsonValue) -> type | None:
+        """The implementation of *key* in *layer*; with no key, the layer's only one."""
+        components = self._catalog.components.get(layer, {})
+        if key is None:
+            only = list(components.values())
+            return only[0].implementation if len(only) == 1 else None
+        definition = components.get(key) if isinstance(key, str) else None
+        return None if definition is None else definition.implementation
+
+    def _conflict(
+        self, target: _Block, at: str, existing: object, value: object, side: _Side
+    ) -> MergeProblem:
+        first = _first_writer(target, at)
+        return MergeProblem(
+            f"{target.path}.{at}",
+            f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}; a run takes "
+            f"each setting from one side only: leave it out of one of them, or write the same "
+            f"value in both",
+        )
+
+
+def _first_writer(target: _Block, at: str) -> _Side:
+    """Who wrote the value at *at* first: the nearest recorded writer of it or of a block holding it."""
+    parts = at.split(".")
+    for end in range(len(parts), 0, -1):
+        side = target.written_by.get(".".join(parts[:end]))
+        if side is not None:
+            return side
+    return _Side("the run configuration", target.path)
+
+
+def _capability_blocks(sections: dict[str, object]) -> list[_Block]:
+    """The run configuration's capability blocks in *sections*, each a live view of its dict."""
+    blocks: list[_Block] = []
+    top = sections.get(CAPABILITY_SECTION)
+    for index, item in enumerate(top if isinstance(top, list) else []):
+        if isinstance(item, dict):
+            blocks.append(_Block(f"{CAPABILITY_SECTION}[{index}]", _json(item)))
+    environments = sections.get(ENVIRONMENT_SECTION)
+    for index, environment in enumerate(environments if isinstance(environments, list) else []):
+        if not isinstance(environment, dict):
+            continue
+        held = environment.get(ENVIRONMENT_CAPABILITIES)
+        where = f"{ENVIRONMENT_SECTION}[{index}].{ENVIRONMENT_CAPABILITIES}"
+        if isinstance(held, dict):
+            blocks.append(_Block(where, _json(held)))
+        elif isinstance(held, list):
+            for position, item in enumerate(held):
+                if isinstance(item, dict):
+                    blocks.append(_Block(f"{where}[{position}]", _json(item)))
+    return blocks
+
+
+def _json(block: dict[object, object]) -> dict[str, JsonValue]:
+    """A capability block a YAML document wrote, as the JSON object it is."""
+    return cast(dict[str, JsonValue], block)
+
+
+def _entry(discriminator: str, key: str) -> JsonValue:
+    """A list entry that names *key* and writes nothing else: the default's form of it."""
+    return {discriminator: key}
+
+
+def _discriminator(registrar: type[LayerRegistrar[object]] | None) -> str | None:
+    field_name = getattr(registrar, "discriminator_field", None)
+    return field_name if isinstance(field_name, str) else None
+
+
+def _joined(path: str, loc: tuple[int | str, ...], block: Mapping[str, JsonValue]) -> str:
+    """*path* followed by a pydantic location inside *block*, as written (union tags left out)."""
+    written = path
+    node = cast(object, block)
+    for part in loc:
+        if isinstance(part, int):
+            written += f"[{part}]"
+            node = node[part] if isinstance(node, list) and part < len(node) else None
+        elif isinstance(node, Mapping) and part not in node:
+            continue
+        else:
+            written += f".{part}"
+            node = node.get(part) if isinstance(node, Mapping) else None
+    return written
+
+
+def _shown(value: object) -> str:
+    text = repr(value)
+    return text if len(text) <= _SHOWN else f"{text[: _SHOWN - 3]}..."
+
+
+__all__ = [
+    "CapabilityMerge",
+    "CapabilityMergeError",
+    "Contribution",
+    "MergeProblem",
+]

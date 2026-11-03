@@ -56,6 +56,7 @@ from spectragent.core.capabilities.android.effects import (
 )
 from spectragent.core.capabilities.android.input._registrar import UNCHANGED_FIELD_CODES
 from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError
+from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -807,14 +808,15 @@ class AndroidOpenAppAction(ActionBase):
 
     apps: Annotated[
         dict[str, AppTarget],
-        PydanticField(
+        trace_safe(
+            "app names and the packages or components they open, not credentials",
             description=(
                 "The apps an agent can open by name: name -> package, which opens the "
                 "package's launcher activity, or name -> component (package/activity), which "
                 "starts that activity, as AndroidWorld opens its apps. A name matches ignoring "
                 "case and extra spaces; an installed package name opens too. The default "
                 "lists the launcher apps of the stock Google APIs image."
-            )
+            ),
         ),
     ] = field(default_factory=stock_apps)
 
