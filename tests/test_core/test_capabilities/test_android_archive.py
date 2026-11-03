@@ -41,6 +41,7 @@ from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.observations import (
     SCREENSHOT,
     UI_TREE,
+    AndroidScreenshotObs,
     AndroidUITreeObs,
 )
 from spectragent.core.capabilities.android.session import CaptureError
@@ -443,6 +444,24 @@ async def test_a_failed_capture_for_the_archive_is_its_gap_and_the_observation_g
     assert RawUITree.decode(file.data).forest == AndroidAccessibilityForest.model_validate(
         driver.phone.forest
     )
+
+
+async def test_a_tree_asked_for_the_archive_alone_never_holds_the_wait() -> None:
+    """What a run records does not change what it sees: a tree that shows no app makes a
+    capture wait again only where the agent reads that tree (``settle.py``)."""
+    driver = AndroidArchiveDriver(fragments=frozenset({SCREENSHOT}))
+    driver.capability.settle_max_wait_s, driver.capability.settle_quiet_ms = 2.0, 50
+    driver.phone.forest = {"windows": [{"id": 16, "window_type": "TYPE_APPLICATION"}]}
+    driver.capability.bind_archivers(list(driver.archivers))
+    try:
+        await driver.observe()
+        screenshot = await driver.capability.resolve_fragment(SCREENSHOT)
+    finally:
+        await driver.close()
+
+    assert isinstance(screenshot, AndroidScreenshotObs) and screenshot.settle is not None
+    assert screenshot.settle.outcome == "settled"
+    assert driver.phone.service_calls("tree") == 1, "asked once, for the archive alone"
 
 
 # ── chosen ────────────────────────────────────────────────────────────

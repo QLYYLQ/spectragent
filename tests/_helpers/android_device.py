@@ -576,6 +576,7 @@ async def android_capability(
     fragments: Iterable[str] | None = None,
     settle_max_wait_s: float = 0.0,
     settle_quiet_ms: int = 300,
+    settle_min_after_action_ms: int = 0,
     query_timeout_s: float = 5.0,
     tap_injector: AndroidTapInjector | None = None,
     typing_backend: AndroidTypingBackend | None = None,
@@ -592,6 +593,7 @@ async def android_capability(
             service_apk=str(fake_service_apk(Path(directory))),
             settle_max_wait_s=settle_max_wait_s,
             settle_quiet_ms=settle_quiet_ms,
+            settle_min_after_action_ms=settle_min_after_action_ms,
             query_timeout_s=query_timeout_s,
         )
         configured(capability, adb, tap_injector=tap_injector, typing_backend=typing_backend)

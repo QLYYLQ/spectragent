@@ -44,7 +44,9 @@ source that fails fails the whole capture, once: the error is kept for the
 rest of the cycle and raised for every fragment asked for. The next cycle
 captures again. Only the negotiated fragments are captured, so a run whose
 agent reads no tree never asks the service for one, unless a bound archiver
-needs it (below). How the wait ended rides on every fragment of the capture
+needs it (below). A negotiated tree that shows no app means the screen had
+not finished changing, and the capture waits again within the same limit
+(``settle.py``). How the wait ended rides on every fragment of the capture
 (``settle``), whether or not the run negotiates ``capture_state``: recorded,
 never shown to the agent.
 
@@ -168,7 +170,13 @@ from spectragent.core.capabilities.android.session import (
     ask,
     fan_out,
 )
-from spectragent.core.capabilities.android.settle import EventsEnded, ScreenPoll, wait_until_still
+from spectragent.core.capabilities.android.settle import (
+    EventsEnded,
+    ScreenPoll,
+    shows_an_app,
+    wait_until_still,
+    without_an_app,
+)
 from spectragent.core.capabilities.android.ui_tree import (  # noqa: F401 — registration
     cleaning,
     serializers,
@@ -272,6 +280,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
 
     service_apk: str
     settle_quiet_ms: int
+    settle_min_after_action_ms: int
     settle_max_wait_s: float
     screenshot_timeout_s: float
     query_timeout_s: float
@@ -292,6 +301,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _newest_event_ms: int | None
     #: The app the last poll of a still screen found in front.
     _polled_package: str | None
+    #: When the last action ended, on the event loop's clock; ``None`` before the first.
+    _acted_at: float | None
     #: The screen in the pixels touches take: from ``wm size`` at setup, then each screenshot's.
     _screen_size: tuple[int, int] | None
     _fingerprint: str | None
@@ -343,6 +354,18 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 ),
             ),
         ] = 300,
+        settle_min_after_action_ms: Annotated[
+            int,
+            PydanticField(
+                ge=0,
+                description=(
+                    "How long after an action ends the screen cannot count as still yet, in ms: "
+                    "the wait polls as usual and ends no sooner. 0 (the default) adds nothing. "
+                    "AndroidWorld's M3A sleeps 2000 ms after every action before it reads the "
+                    "screen again; a run that runs M3A as AndroidWorld does sets 2000."
+                ),
+            ),
+        ] = 0,
         settle_max_wait_s: Annotated[
             float,
             PydanticField(
@@ -350,7 +373,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 description=(
                     "The longest wait for a still screen before each capture, in seconds; the "
                     "capture is taken then whether or not the screen is still. 0 turns the "
-                    "wait off: no capture then records a wait."
+                    "wait off: no capture then records a wait. AndroidWorld's runner waits up "
+                    "to 6 s for the element list to stop changing."
                 ),
             ),
         ] = 2.0,
@@ -441,8 +465,16 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 "would wait the whole limit. Shorten the period, raise the limit, or set "
                 "settle_max_wait_s: 0 to turn the wait off."
             )
+        if settle_min_after_action_ms > settle_max_wait_s * 1000:
+            raise ValueError(
+                f"settle_min_after_action_ms ({settle_min_after_action_ms}) is longer than "
+                f"settle_max_wait_s ({settle_max_wait_s:g} s): the wait would end at its limit "
+                "before the minimum passed (0 turns the wait off), so the minimum would never "
+                "hold. Raise the limit, or shorten the minimum."
+            )
         self.service_apk = service_apk
         self.settle_quiet_ms = settle_quiet_ms
+        self.settle_min_after_action_ms = settle_min_after_action_ms
         self.settle_max_wait_s = settle_max_wait_s
         self.screenshot_timeout_s = screenshot_timeout_s
         self.query_timeout_s = query_timeout_s
@@ -459,6 +491,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._events = None
         self._newest_event_ms = None
         self._polled_package = None
+        self._acted_at = None
         self._screen_size = None
         self._fingerprint = None
         self._cycle = 0
@@ -645,7 +678,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         backend = self._backend()
         tap_injector, typing_backend, *_ = self._strategies()
         self._ui_tree, self._actions_since_tree = None, 0
-        self._polled_package = None
+        self._polled_package = self._acted_at = None
         self.check_setup({"oracle_task": oracle_task})
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
@@ -908,6 +941,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             )
         except Exception as exc:
             return ActionResult(success=False, error=f"{type(exc).__name__}: {exc}")
+        finally:  # the minimum wait after an action counts from here (``settle.py``)
+            self._acted_at = asyncio.get_running_loop().time()
 
     # ── observation ───────────────────────────────────────────────────
 
@@ -973,12 +1008,16 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         the tree asked for it alone, beside the other sources; when that ask
         fails, the capture goes on and the archive misses the tree.
 
-        Every fragment of the capture carries the wait's record
-        (``observations.py``).
+        A negotiated tree that shows no app (``settle.py``) means the screen
+        had not finished changing: when the wait had counted it as still and
+        a quiet period still fits before its limit, the capture waits again,
+        within that limit, and is taken again; otherwise the wait's record
+        says ``app_window``. A tree asked for the archive alone never decides
+        it: what a run records does not change what it sees. Every fragment
+        of the capture carries the wait's record (``observations.py``).
         """
         await self._keep_service()
         wanted = self.provided_fragments
-        settle = await self._settle()
         sources: dict[str, Source[FragmentBase | TreeCapture]] = {}
         if SCREENSHOT in wanted:
             sources[SCREENSHOT] = Source(self._screenshot, self.screenshot_timeout_s)
@@ -988,10 +1027,21 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             sources[PLATFORM] = Source(self._platform, self.query_timeout_s)
         if UI_TREE in wanted:
             sources[UI_TREE] = Source(self._read_tree, self.ui_tree_timeout_s)
-        if UI_TREE in wanted or not self._archive_needs_tree:
-            answers, for_archive = await fan_out(sources), None
-        else:
-            answers, for_archive = await self._fan_out_beside_a_tree(sources)
+        clock = asyncio.get_running_loop()
+        started = clock.time()
+        while True:
+            settle = await self._settle(started)
+            if UI_TREE in wanted or not self._archive_needs_tree:
+                answers, for_archive = await fan_out(sources), None
+            else:
+                answers, for_archive = await self._fan_out_beside_a_tree(sources)
+            seen = answers.get(UI_TREE)
+            if settle is None or not isinstance(seen, TreeCapture) or shows_an_app(seen.forest):
+                break
+            left_s = self.settle_max_wait_s - (clock.time() - started)
+            if settle.outcome != "settled" or left_s < self.settle_quiet_ms / 1000:
+                settle = without_an_app(settle)
+                break
         fragments: dict[str, FragmentBase] = {}
         tree: CommittedTree | MissingTree | None = None
         for key, answer in answers.items():
@@ -1061,14 +1111,20 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             return answers, for_archive
         raise for_archive  # cancelled
 
-    async def _settle(self) -> SettleState | None:
-        """Wait for a still screen (``settle.py``), inside a job of the device's queue; ``None`` when the wait is off."""
+    async def _settle(self, started: float | None = None) -> SettleState | None:
+        """Wait for a still screen (``settle.py``), inside a job of the device's queue; ``None`` when the wait is off.
+
+        *started* continues a wait that began then, on the event loop's clock.
+        """
         if self.settle_max_wait_s <= 0:
             return None
+        acted = self._acted_at
         return await wait_until_still(
             self._poll_screen,
             quiet_s=self.settle_quiet_ms / 1000,
             max_wait_s=self.settle_max_wait_s,
+            started=started,
+            not_before=None if acted is None else acted + self.settle_min_after_action_ms / 1000,
         )
 
     async def _poll_screen(self) -> ScreenPoll:
