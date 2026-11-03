@@ -9,9 +9,12 @@ import pytest
 
 from lookahead.cli import run
 from lookahead.extract import all_rows, step_rows
+from lookahead.health import assess
 from lookahead.rows import StepRow
 from lookahead.runs import LookaheadInputError, open_runs, run_kind
-from tests.test_lookahead.conftest import SPANS, TASK, VARIANT, VARIANT_TASK, World
+from spectragent.schemas.task import SetupTaskText
+from tests.test_lookahead.conftest import BASE, SPANS, TASK, VARIANT, VARIANT_TASK, World
+from tests.test_lookahead.traces import StepSpec, wait, write_run
 
 
 def _rows(world: World) -> dict[tuple[str, int], StepRow]:
@@ -214,3 +217,19 @@ def test_cli_writes_one_json_line_per_row(world: World, tmp_path: Path) -> None:
     lines = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert {line["format"] for line in lines} == {"lookahead-step-1"}
     assert len(lines) == len(_rows(world))
+
+
+def test_a_run_whose_setup_completed_its_task_shows_that_text(tmp_path: Path) -> None:
+    """The agent was given the completed text: rows and the health check name it, not the loader's."""
+    made = SetupTaskText(capability_id="android", text=f"{TASK} Then note the shop's name.")
+    write_run(
+        tmp_path / "record",
+        "rec-made",
+        task=TASK,
+        steps=[StepSpec(step=0, image=BASE, url="https://shop.example/", actions=[wait()])],
+        made=made,
+    )
+    runs = open_runs(tmp_path)
+    (run,) = runs.runs
+    assert {row.task for row in step_rows(run, runs)} == {made.text}
+    assert assess(run).task == made.text
