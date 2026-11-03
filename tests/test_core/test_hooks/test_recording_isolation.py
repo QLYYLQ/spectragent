@@ -852,7 +852,9 @@ async def test_unselected_usage_and_error_details_do_not_leak_through_trajectory
 
 
 async def test_timed_out_finalizer_cannot_mutate_the_next_runs_result(writer_factory, monkeypatch):
-    writer = writer_factory(close_timeout=0.01)
+    # The first close's budget must outlast saving both steps, or the close stops the
+    # writer before it reaches the held result write, and the write never starts.
+    writer = writer_factory(close_timeout=1.0)
     loop = asyncio.get_running_loop()
     blocked = asyncio.Event()
     write_returned = asyncio.Event()
@@ -864,7 +866,7 @@ async def test_timed_out_finalizer_cannot_mutate_the_next_runs_result(writer_fac
     def write(wal, result):
         if wal.run_dir.name == "first":
             loop.call_soon_threadsafe(blocked.set)
-            assert release.wait(3), "test did not release the old recording write"
+            assert release.wait(30), "test did not release the old recording write"
         try:
             return original_write(wal, result)
         finally:
@@ -886,12 +888,14 @@ async def test_timed_out_finalizer_cannot_mutate_the_next_runs_result(writer_fac
             await seal(writer, step)
         first = agent_result(metrics=AgentMetrics(steps=2))
         closing = asyncio.create_task(writer.on_run_end(result=first))
-        await asyncio.wait_for(blocked.wait(), timeout=1)
-        await asyncio.wait_for(closing, timeout=1)
+        await asyncio.wait_for(blocked.wait(), timeout=10)
+        # Under the default close budget (5 s): a close that waits for the held write, or
+        # ignores its own budget, fails here.
+        await asyncio.wait_for(closing, timeout=3)
         assert first.metrics.recording_health is not None
         assert first.metrics.recording_health.status == "incomplete"
 
-        writer.close_timeout = 1.0
+        writer.close_timeout = 10.0
         await start(writer, run_id="second")
         await call(writer, returns=completion())
         await seal(writer, 0)
@@ -900,7 +904,7 @@ async def test_timed_out_finalizer_cannot_mutate_the_next_runs_result(writer_fac
         assert second.metrics.recording_health is not None
         assert second.metrics.recording_health.status == "complete"
         release.set()
-        await asyncio.wait_for(write_returned.wait(), timeout=1)
+        await asyncio.wait_for(write_returned.wait(), timeout=10)
         await asyncio.sleep(0.01)
         assert second.model_dump() == second_snapshot
         assert first_finalizations == []
