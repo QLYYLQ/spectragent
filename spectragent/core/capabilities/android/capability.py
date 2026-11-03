@@ -239,7 +239,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         # Required: which program delivers a touch, and which enters text,
         # changes what the device receives, so a run names both (§4.2.1).
         "tap_injector": ("android_tap_injector", ["accessibility_gesture", "shell_injection"]),
-        "typing_backend": ("android_typing_backend", ["set_text", "commit_text"]),
+        "typing_backend": ("android_typing_backend", ["set_text", "commit_text", "key_events"]),
         # Omitted in YAML: ``none``, the oracle ``__init__`` installs. The
         # strategy is the switch: what the device must offer comes from it,
         # never from a provider setting.
@@ -885,9 +885,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         except AttributeError:
             raise RuntimeError(
                 "AndroidCapability needs a tap_injector (injector_id: accessibility_gesture or "
-                "shell_injection), a typing_backend (typing_id: set_text or commit_text), a "
-                "ui_tree_cleaner (cleaner_id: androidworld) and a ui_tree_serializer "
-                "(serializer_id: m3a or t3a)"
+                "shell_injection), a typing_backend (typing_id: set_text, commit_text or "
+                "key_events), a ui_tree_cleaner (cleaner_id: androidworld) and a "
+                "ui_tree_serializer (serializer_id: m3a or t3a)"
             ) from None
 
     @property

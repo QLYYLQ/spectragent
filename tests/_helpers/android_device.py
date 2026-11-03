@@ -209,10 +209,14 @@ class ScriptedPhone:
             wire form (:data:`FOREST` unless changed).
         tree_reads: The node limit each ``tree`` request asked for, in order.
         tree_delay_s: How long the service takes to answer ``tree``.
+        typing_fails: The error code the helper's ``type_text`` answers with
+            from now on (``typed_partly``: a key failed after others went
+            in); ``None``: it types.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
-            KEYCODE_..."``, ``"service set_text '...' replace|at the cursor"``,
-            ``"service commit_text '...' replace|at the cursor"``.
+            KEYCODE_..."``, ``"helper type_text '...' replace|at the cursor"``,
+            ``"service set_text '...' replace|at the cursor"``, ``"service
+            commit_text '...' replace|at the cursor"``.
     """
 
     width: int = 1080
@@ -241,6 +245,7 @@ class ScriptedPhone:
     forest: JsonObject = field(default_factory=lambda: dict(FOREST))
     tree_reads: list[JsonValue] = field(default_factory=list)
     tree_delay_s: float = 0.0
+    typing_fails: str | None = None
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
@@ -262,6 +267,7 @@ class ScriptedPhone:
                 "screenshot": self._screenshot("shell_helper"),
                 "gesture": self._stroke("helper"),
                 "key": self._key,
+                "type_text": self._type_text,
             },
             fallback=self._adb,
         )
@@ -353,6 +359,22 @@ class ScriptedPhone:
         self.inputs.append(f"helper key {code}")
         if code == "KEYCODE_HOME":
             self.focused = LAUNCHER
+        return Answer()
+
+    async def _type_text(self, params: JsonObject) -> Answer:
+        """Key events go wherever focus is. This key map keeps to printable ASCII, Enter and Tab;
+        the emulator's also reaches ç, Ç and ß through Alt (2026-11-03)."""
+        text = params["text"]
+        assert isinstance(text, str)
+        keyless = sorted({c for c in text if not (" " <= c <= "~" or c in "\n\t")})
+        if keyless:
+            named = ", ".join(f"{c!r} (U+{ord(c):04X})" for c in keyless)
+            raise Failure("unmappable_text", f"the device's key map has no key for {named}")
+        how = "replace" if params.get("replace") else "at the cursor"
+        if self.typing_fails is not None:
+            self.inputs.append(f"helper type_text {text!r} {how}, failed partway")
+            raise Failure(self.typing_fails, "2 key events went in before one failed")
+        self.inputs.append(f"helper type_text {text!r} {how}")
         return Answer()
 
     async def _tree(self, params: JsonObject) -> Answer:

@@ -15,7 +15,9 @@ cached forwarder, and ffmpeg on PATH;
 why a module skips, :func:`write_task_list` writes a task list under
 AndroidWorld's interpreter, and :func:`androidworld_capability` composes the
 Android capability from one YAML block, so a receptor the capability starts
-to require is written here once.
+to require is written here once. It types with ``key_events`` and
+``fold_accents``, as AndroidWorld and MiniWoB++ runs do, for parity with
+AndroidWorld's own typing.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from spectragent import PACKAGE_ROOT
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.oracle.androidworld import Installation
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.messages import BaseMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 #: The AndroidWorld installation to run; the live modules skip when it is unset.
@@ -41,11 +43,26 @@ APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 TASK_LIST_WRITER = (
     PACKAGE_ROOT / "core/capabilities/android/oracle/androidworld_service/task_list.py"
 )
+#: AndroidWorld's runner adds it to M3A's prompt for its MiniWoB tasks (``run.py``).
+MINIWOB_GUIDELINE = (
+    "This task is running in a mock app, you must stay in this app and DO NOT use the "
+    "`navigate_home` action."
+)
+#: M3A's action-selection prompt says the goal on this line; its summary prompt does not.
+M3A_GOAL_LINE = "The current user goal/request is: "
 #: AndroidWorld's accessibility forwarder, as the setting names it.
 FORWARDER = (
     "com.google.androidenv.accessibilityforwarder/"
     "com.google.androidenv.accessibilityforwarder.AccessibilityForwarder"
 )
+
+
+def prompt_text(messages: Sequence[BaseMessage]) -> str:
+    """The text of the last user message: the step's prompt."""
+    (prompt,) = [message for message in messages if isinstance(message, UserMessage)][-1:]
+    if isinstance(prompt.content, str):
+        return prompt.content
+    return "\n".join(part.text for part in prompt.content if part.type == "text")
 
 
 class ScriptedModel:
@@ -110,7 +127,9 @@ def androidworld_capability() -> AndroidCapability:
                 },
                 "service_apk": os.environ[APK_VARIABLE],
                 "tap_injector": {"injector_id": "shell_injection"},
-                "typing_backend": {"typing_id": "set_text"},
+                # AndroidWorld's own typing, for parity (user ruling 2026-11-03): key
+                # events, with accents folded away as AndroidWorld folds them.
+                "typing_backend": {"typing_id": "key_events", "fold_accents": True},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
                 "task_oracle": {"oracle_id": "androidworld", "root": str(installation().root)},

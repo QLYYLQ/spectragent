@@ -46,17 +46,20 @@ from spectragent.core.capabilities.android.oracle.androidworld import (
 )
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.llm.messages import BaseMessage, UserMessage
+from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace import RunTrace
 from spectragent.schemas.action import Action, ActionResult
 from tests._helpers.android_runs import (
+    M3A_GOAL_LINE,
+    MINIWOB_GUIDELINE,
     ScriptedModel,
     androidworld_capability,
     installation,
     installation_problem,
+    prompt_text,
     write_task_list,
 )
 from tests._helpers.assembly import AGENT_ID, make_run
@@ -68,13 +71,6 @@ pytestmark = [
 
 #: The fixed part a MiniWoB++ goal starts with, which the task list records.
 MINIWOB_PREFIX = "Follow the instructions shown on the top of the screen"
-#: AndroidWorld's runner adds it to M3A's prompt for its MiniWoB tasks (``run.py``).
-MINIWOB_GUIDELINE = (
-    "This task is running in a mock app, you must stay in this app and DO NOT use the "
-    "`navigate_home` action."
-)
-#: M3A's action-selection prompt says the goal on this line; its summary prompt does not.
-GOAL_LINE = "The current user goal/request is: "
 #: The answer AndroidWorld expects of an information-retrieval instance and the goal its
 #: initialize rewords it to, worked out offline as initialize does: ``random`` seeded
 #: with the instance's seed, the task's proto filled in, then the dates reworded.
@@ -92,14 +88,6 @@ answer = ", ".join(str(value) for value in proto_utils.get_expected_answer(task.
 information_retrieval._maybe_replace_date(task.params)
 print(json.dumps({"answer": answer, "goal": task.goal}))
 """
-
-
-def _prompt_text(messages: Sequence[BaseMessage]) -> str:
-    """The text of the last user message: the step's prompt."""
-    (prompt,) = [message for message in messages if isinstance(message, UserMessage)][-1:]
-    if isinstance(prompt.content, str):
-        return prompt.content
-    return "\n".join(part.text for part in prompt.content if part.type == "text")
 
 
 def _all_text(messages: Sequence[BaseMessage]) -> str:
@@ -134,10 +122,10 @@ class ClickWhatTheGoalQuotes:
         self, messages: Sequence[BaseMessage], output_format: object = None
     ) -> ChatInvokeCompletion[str]:
         self.calls.append(list(messages))
-        text = _prompt_text(messages)
-        if GOAL_LINE not in text:
+        text = prompt_text(messages)
+        if M3A_GOAL_LINE not in text:
             return ChatInvokeCompletion(completion="The page changed after the click.", usage=None)
-        goal = text.split(GOAL_LINE, 1)[1].split("\n", 1)[0]
+        goal = text.split(M3A_GOAL_LINE, 1)[1].split("\n", 1)[0]
         self.goals.append(goal)
         quoted = re.search(r'"([^"]+)"', goal.removeprefix(MINIWOB_PREFIX))
         if quoted is not None:

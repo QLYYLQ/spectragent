@@ -4,8 +4,9 @@
 (:class:`ServiceClient`) is the main route: the window forest, every
 accessibility event, gestures, global actions, screenshots and text. The
 shell helper (:class:`HelperClient`) adds what the service cannot do:
-screenshots without the service's limit of one per 333 ms, any key, touches
-injected as ``input`` injects them, and turning the service on and off.
+screenshots without the service's limit of one per 333 ms, any key, text
+typed as key events and touches injected as ``input`` injects them, and
+turning the service on and off.
 
 Each method is one request. None sets a deadline of its own: the device
 session's queue bounds every job (``session.py``), and a cancelled call
@@ -419,6 +420,25 @@ class HelperClient:
     async def key(self, keycode: str) -> None:
         """Press and release one key, named as Android names it (``KEYCODE_ENTER``)."""
         await self.channel.call("key", {"code": keycode})
+
+    async def type_text(self, text: str, *, replace: bool = False) -> None:
+        """Type *text* as key events, as ``input text`` types it, into whatever has focus.
+
+        The device's virtual keyboard key map gives each character the keys a
+        keyboard presses for it (shift with a capital, Enter for a newline).
+        With *replace*, ctrl+A and Delete go first: the field's text selected
+        and deleted. The keys go to the window with focus, so nothing names
+        the field that took them.
+
+        Raises:
+            RemoteError: ``unmappable_text`` when the key map has no key for a
+                character of *text* (Chinese, an accented letter, a combining
+                accent, whose key is a dead key), naming those characters; no
+                key was pressed. ``typed_partly`` when a key failed after
+                others went in: part of the text (and the clear) went in, and
+                every key still down was lifted.
+        """
+        await self.channel.call("type_text", {"text": text, "replace": replace})
 
     async def gesture(self, stroke: Stroke) -> int:
         """Inject one finger's timed stroke, each event at its planned time; returns, once it lifted, how long it took in ms."""

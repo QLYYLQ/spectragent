@@ -379,6 +379,27 @@ async def test_helper_keys_timed_strokes_and_screenshots() -> None:
     assert (shot.producer, shot.waited_ms, shot.width) == ("shell_helper", 0, 1080)
 
 
+async def test_helper_types_text_as_key_events_and_raises_for_a_character_without_a_key() -> None:
+    async def type_text(params: JsonObject) -> Answer:
+        if params["text"] == "蓝牙":
+            raise Failure("unmappable_text", "the device's key map has no key for '蓝' (U+84DD)")
+        return Answer()
+
+    async with _client("helper", {"type_text": type_text}) as (program, channel):
+        helper = HelperClient(channel)
+        await helper.type_text("Wi-Fi & more")
+        await helper.type_text("over it all", replace=True)
+        with pytest.raises(RemoteError) as refused:
+            await helper.type_text("蓝牙")
+
+    assert program.calls == [
+        ("type_text", {"text": "Wi-Fi & more", "replace": False}),
+        ("type_text", {"text": "over it all", "replace": True}),
+        ("type_text", {"text": "蓝牙", "replace": False}),
+    ]
+    assert refused.value.code == "unmappable_text"
+
+
 async def test_helper_reports_what_enabling_and_disabling_did_to_the_setting() -> None:
     async def enable(params: JsonObject) -> Answer:
         return Answer(

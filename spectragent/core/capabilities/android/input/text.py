@@ -1,16 +1,24 @@
 """The typing backends (``docs/architecture_design.md`` §11.2 "策略轴"; the axis is in ``_registrar.py``).
 
-Both enter text through our accessibility service, into the field that has
-input focus, and take any text. ``set_text`` replaces the field's text in one
-action, or sets the text at its selection; ``commit_text`` commits through the
-service's own input method at the cursor, and for a replacement selects the
-whole text first through the same input connection, so it never follows a
-``set_text``: right after one the field restarts its input, and a commit then
-can land on the connection it replaced and be lost without an error (measured,
-§11.2).
+Each enters text into the field that has input focus. ``set_text`` and
+``commit_text`` go through our accessibility service and take any text.
+``set_text`` replaces the field's text in one action, or sets the text at its
+selection; ``commit_text`` commits through the service's own input method at
+the cursor, and for a replacement selects the whole text first through the
+same input connection, so it never follows a ``set_text``: right after one the
+field restarts its input, and a commit then can land on the connection it
+replaced and be lost without an error (measured, §11.2). ``key_events`` types
+through the shell helper as AndroidWorld types (``adb shell input text``), one
+key event after another, so a page that listens for keys sees them.
 """
 
 from __future__ import annotations
+
+import unicodedata
+from dataclasses import dataclass
+from typing import Annotated
+
+from pydantic import Field
 
 from spectragent.core.capabilities.android.device.clients import TextTarget
 from spectragent.core.capabilities.android.input._registrar import (
@@ -60,3 +68,52 @@ class CommitTextBackend(AndroidTypingBackendBase):
 
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         return await device.service.commit_text(text, replace=replace)
+
+
+@dataclass
+class KeyEventsBackend(AndroidTypingBackendBase):
+    """Key events injected by the shell helper, as AndroidWorld's ``adb shell input text`` types.
+
+    The device's virtual keyboard key map turns each character into the keys a
+    keyboard presses for it, shift with a capital and Enter for a newline, so
+    the app gets key events: a page that reads ``keydown`` (MiniWoB's
+    ``terminal``) sees every key, which the service's two backends never send.
+    Only characters the key map has keys for can be typed: text with any other
+    (Chinese, an accented letter) is refused and no key is pressed, where
+    AndroidWorld drops those characters and types the rest. A combining accent
+    counts as having no key: the map's are dead keys, which would put the
+    accent on the character typed after them. With ``fold_accents`` the text
+    is folded first, as AndroidWorld folds it (``Sauté`` types as ``Saute``),
+    and only what still has no key is refused. A replacement is
+    ctrl+A then Delete before the text, as AndroidWorld clears a field. The keys
+    go to the window with focus and the helper learns nothing of the field, so
+    the effect names none.
+    """
+
+    __registry_key__ = "key_events"
+
+    fold_accents: Annotated[
+        bool,
+        Field(
+            description=(
+                "Fold accents away before typing, as AndroidWorld does: the text is decomposed "
+                "(NFKD) and its combining marks dropped, so 'Sauté' types as 'Saute' and "
+                "'Schönberg' as 'Schonberg'. What still has no key (Chinese) is refused, where "
+                "AndroidWorld drops it. The action's effect records the folded text. Off, a "
+                "text with an accented letter is refused whole."
+            )
+        ),
+    ] = False
+
+    def unsupported(self, sdk_int: int) -> str | None:
+        return None
+
+    def text_to_type(self, text: str) -> str:
+        if not self.fold_accents:
+            return text
+        decomposed = unicodedata.normalize("NFKD", text)
+        return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+    async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
+        await device.helper.type_text(text, replace=replace)
+        return TextTarget()

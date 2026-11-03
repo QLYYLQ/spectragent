@@ -39,7 +39,7 @@ from spectragent.core.capabilities.android.effects import (
     ScreenPoint,
 )
 from spectragent.core.capabilities.android.input.tap import AccessibilityGestureInjector
-from spectragent.core.capabilities.android.input.text import CommitTextBackend
+from spectragent.core.capabilities.android.input.text import CommitTextBackend, KeyEventsBackend
 from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
 from spectragent.core.trace.effects import registered_effect, restore_effects
 from spectragent.schemas.action import Action, ActionResult
@@ -579,6 +579,104 @@ async def test_the_commit_text_backend_types_through_the_services_input_method()
     assert typed.success and appended.success
     assert isinstance(typed.effect, AndroidTextEffect) and typed.effect.entered_by == "commit_text"
     assert typed.effect.field_class is None, "an input method knows only the field's package"
+
+
+async def test_the_key_events_backend_types_through_the_shell_helper() -> None:
+    """AndroidWorld's typing: key events from the helper into whatever has focus, which names no
+    field; text with a character its key map has no key for is refused whole."""
+    phone = ScriptedPhone(text_field=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend()) as capability,
+    ):
+        typed = await act(capability, "type_coordinate", text="rm cats.png")
+        appended = await act(capability, "type_coordinate", text="!", clear=False)
+        typed_so_far = list(phone.inputs)
+        refused = await act(capability, "type_coordinate", text="café", clear=False)
+
+    assert typed_so_far[-2:] == [
+        "helper type_text 'rm cats.png' replace",
+        "helper type_text '!' at the cursor",
+    ]
+    assert phone.inputs == typed_so_far, "no key for 'é', so no key at all"
+    assert typed.success and appended.success
+    assert isinstance(typed.effect, AndroidTextEffect) and typed.effect.entered_by == "key_events"
+    assert (typed.effect.field_package, typed.effect.field_class) == (None, None)
+    assert typed.effect.describe() == "Entered the text into the field, replacing its text."
+    assert not refused.success
+    assert refused.error is not None and "'é' (U+00E9)" in refused.error
+    effect = refused.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered, (
+        "refused before any key: the field is as it was"
+    )
+
+
+async def test_a_key_events_refusal_keeps_the_tap_and_partial_typing_leaves_no_effect() -> None:
+    """``unmappable_text`` comes before the clear and the first key, so the field is as it was
+    and the effect keeps the tap; ``typed_partly`` comes after some keys went in, so the action
+    leaves no effect, which would otherwise say no text went in."""
+    phone = ScriptedPhone(text_field=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend()) as capability,
+    ):
+        refused = await act(
+            capability, "type_coordinate", coordinate_x=5, coordinate_y=160, text="café"
+        )
+        phone.typing_fails = "typed_partly"
+        partly = await act(
+            capability, "type_coordinate", coordinate_x=5, coordinate_y=160, text="cafe"
+        )
+
+    assert not refused.success and refused.error is not None
+    assert "unmappable_text" in refused.error
+    effect = refused.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered
+    assert effect.tap is not None and effect.tap.start == ScreenPoint(x=5, y=160)
+    assert effect.describe() == "Tapped (5, 160). No text was entered."
+    assert not partly.success and partly.error is not None and "typed_partly" in partly.error
+    assert partly.effect is None, "part of the text went in: no effect may say none did"
+
+
+async def test_key_events_fold_accents_as_androidworld_does_and_the_effect_records_it() -> None:
+    """``fold_accents`` types ``Sauté`` as ``Saute`` (decomposed, combining marks dropped); the
+    effect records the folded text, never the text as given, and only when a fold changed it."""
+    phone = ScriptedPhone(text_field=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend(fold_accents=True)) as capability,
+    ):
+        folded = await act(capability, "type_coordinate", text="Sauté in Schönberg")
+        plain = await act(capability, "type_coordinate", text="Saute", clear=False)
+        typed_so_far = list(phone.inputs)
+        refused = await act(capability, "type_coordinate", text="蓝牙", clear=False)
+
+    assert typed_so_far[-2:] == [
+        "helper type_text 'Saute in Schonberg' replace",
+        "helper type_text 'Saute' at the cursor",
+    ]
+    assert isinstance(folded.effect, AndroidTextEffect)
+    assert folded.effect.folded_text == "Saute in Schonberg"
+    assert folded.effect.describe() == "Entered the text into the field, replacing its text."
+    assert isinstance(plain.effect, AndroidTextEffect) and plain.effect.folded_text is None
+    assert phone.inputs == typed_so_far, "what still has no key is refused, folded or not"
+    assert refused.error is not None and "unmappable_text" in refused.error
+
+
+async def test_a_text_that_fails_partway_is_reported_as_partly_typed() -> None:
+    """Some keys went in before one failed, so the action fails without saying that no text
+    went in."""
+    phone = ScriptedPhone(text_field=True, typing_fails="typed_partly")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend()) as capability,
+    ):
+        result = await act(capability, "type_coordinate", text="rm cats.png")
+
+    assert phone.inputs[-1] == "helper type_text 'rm cats.png' replace, failed partway"
+    assert not result.success
+    assert result.error is not None and "typed_partly" in result.error
+    assert result.effect is None, "never 'No text was entered'"
 
 
 async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_refused(
