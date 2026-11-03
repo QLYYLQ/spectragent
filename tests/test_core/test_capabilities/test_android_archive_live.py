@@ -214,6 +214,15 @@ async def _costs(up: Up, rounds: int) -> tuple[list[float], list[float], list[Ra
     return without, with_tree, trees
 
 
+def _nodes(tree: RawUITree) -> int:
+    return sum(len(window.tree.nodes) for window in tree.forest.windows)
+
+
+#: A licence page that shows its WebView's content has more nodes than this.
+#: Not ``omitted_offscreen``: on API 30 the page left no subtree out.
+_LOADED_NODES = 1000
+
+
 def _ms(times: list[float]) -> str:
     ordered = sorted(times)
     p90 = ordered[min(len(ordered) - 1, round(0.9 * (len(ordered) - 1)))]
@@ -235,7 +244,7 @@ async def test_a_run_that_reads_only_the_screen_archives_a_tree_it_cannot_read(u
         assert shown.exit_code == 0, shown.stderr.decode(errors="replace")
         without, with_tree, trees = await _costs(up, rounds=8)
         assert all(tree.forest.windows for tree in trees)
-        main_nodes = max(sum(len(w.tree.nodes) for w in tree.forest.windows) for tree in trees)
+        main_nodes = max(_nodes(tree) for tree in trees)
         report = [
             f"Settings' main page ({main_nodes} nodes): capture {_ms(without)} without the "
             f"archiver, {_ms(with_tree)} with it"
@@ -249,13 +258,14 @@ async def test_a_run_that_reads_only_the_screen_archives_a_tree_it_cannot_read(u
         while not loaded and time.monotonic() < deadline:
             await _capture_s(up)
             batch = await up.capability.collect_archive()
-            loaded = any(RawUITree.decode(f.data).omitted_offscreen for f in batch.files)
-        assert loaded, f"the licence page never passed the node limit within {_LOADED_S:g} s"
+            loaded = any(_nodes(RawUITree.decode(f.data)) > _LOADED_NODES for f in batch.files)
+        assert loaded, f"the licence page showed no content within {_LOADED_S:g} s"
         without, with_tree, trees = await _costs(up, rounds=5)
-        assert all(tree.omitted_offscreen for tree in trees)
+        assert all(_nodes(tree) > _LOADED_NODES for tree in trees)
         report.append(
-            f"licence page (5000 nodes and more): capture {_ms(without)} without the archiver, "
-            f"{_ms(with_tree)} with it"
+            f"licence page ({max(_nodes(tree) for tree in trees)} nodes, "
+            f"{max(tree.omitted_offscreen for tree in trees)} off-screen subtrees left out): "
+            f"capture {_ms(without)} without the archiver, {_ms(with_tree)} with it"
         )
         print(
             f"\nscreenshot-only captures, screenshots by {up.capability.bridge.screen.producer}, "
