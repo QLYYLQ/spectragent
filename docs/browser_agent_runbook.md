@@ -146,7 +146,7 @@ uv run spectragent eval --benchmark tmp/lexbench_judged.yaml \
 
 `--dry-run` 验证基准、它的判分器与输入选择，不调用模型、不写文件。`--traces` 可接单个 run 或直接包含多个 run 的目录；不递归搜索，重复路径只算一次。基准的每个离线判分器判每一份给出的 trace。分叉通过自身 provenance 用源 benchmark/subset/task 的参考，判定仍写在分叉 run 自己那里，证据的 `source_reference` 记着用的是哪个源任务；任务变体分叉怎么判见 [数据飞轮运行手册](data_flywheel_runbook.md) 的"任务变体"。
 
-每份判定写进它那个 run 的判定存放 `verdicts/<slug>.json`，所以这个命令会写进 run 目录。slug 是 `<verifier_id>_<设置的 sha256 前 8 位>`：用同一组设置重判，替换那一份；换了设置（另一个模型、另一档 `eval_strategy`），新判定落在旁边。写入是原子的，不在 manifest 里，`RunTrace.verdicts()` 读它们。`--out` 必须是新目录，只放这一批的报告，从不存判定的副本。
+每份判定写进它那个 run 的判定存放 `verdicts/<slug>.json`，所以这个命令会写进 run 目录。slug 是 `<verifier_id>_<设置的 sha256 前 8 位>`：用同一组设置重判，替换那一份；换了设置（另一个模型、判分模型的另一组采样设置、另一档 `eval_strategy`），新判定落在旁边。写入是原子的，不在 manifest 里，`RunTrace.verdicts()` 读它们。`--out` 必须是新目录，只放这一批的报告，从不存判定的副本。
 
 主要结果是 `report.json`（格式 `af-independent-evaluation-2`）与中文 `report.md`，每个判分器一节：输入轨迹数、有效判定数、判对、判错、无法判定分别列出（`counts` 的 `provided`、`judged`、`passed`、`failed`、`errors`），正确率是“判对 / 带标签的有效判定”（`success_rate`），覆盖率是“有效判定 / 提供的轨迹”（`coverage`）。没有有效判定时正确率为 `null`。`outcomes` 每行是一份 trace 上的一个判分器：`trace`、`task_id`、`run_id`、录制时间与 trace 状态、`slug`，`verdict` 是判定在 run 里的路径（`verdicts/<slug>.json`，没判成时为 `null`），以及 `error`、`error_evidence`、`error_usage`。没有提供的其他 benchmark 任务不进入分母；同一任务的不同轨迹分别计数，所以这是本批轨迹的任务正确性，不应称为整个 benchmark 的任务成功率。
 

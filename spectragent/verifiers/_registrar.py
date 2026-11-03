@@ -124,12 +124,18 @@ class VerifierBase(metaclass=VerifierRegistrar.Meta):
             provider = getattr(instance, "provider", None)
             signature["judge_route"] = {
                 "implementation": type(instance).__name__,
-                "provider": type(provider).__name__ if provider is not None else None,
+                "provider": str(provider) if provider is not None else None,
                 # A free-form endpoint can carry credentials. Compare routes without
                 # recording URL credentials, path tokens or query strings.
                 "endpoint_sha256": (
                     hashlib.sha256(str(endpoint).encode()).hexdigest() if endpoint else None
                 ),
+            }
+            # Two judges on one model that sample differently are two judges.
+            signature["judge_settings"] = {
+                name: _jsonable(getattr(instance, name))
+                for name in JUDGE_SETTINGS
+                if hasattr(instance, name)
             }
         return signature
 
@@ -149,6 +155,28 @@ class VerifierBase(metaclass=VerifierRegistrar.Meta):
             if isinstance(value, str) and value:
                 return value
         return type(judge).__name__
+
+
+#: The judge model's settings that can change its reply, as the providers name
+#: them: sampling, length and reasoning. An LLM judge's identity records each
+#: one its model has. Named, never collected: a model's other fields hold
+#: credentials (``api_key``, ``aws_secret_key``, ``auth_token`` …), its
+#: endpoint (recorded hashed) and transport knobs that change no reply.
+JUDGE_SETTINGS = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "seed",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop_sequences",
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "reasoning_effort",
+    "thinking_budget",
+    "thinking_level",
+)
 
 
 def _jsonable(value: object) -> JsonValue:

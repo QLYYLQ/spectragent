@@ -146,6 +146,34 @@ def test_every_judge_can_have_its_model_named_in_yaml(key, cls):
     assert issubclass(cls, LLMJudgeVerifier)
 
 
+def test_a_judges_sampling_settings_are_part_of_its_identity():
+    """Two judges on one model that sample differently judge differently: two slugs, no secrets."""
+    from spectragent.core.llm.providers.openai import ChatOpenAI
+
+    def judge(**settings) -> BrowseCompVerifier:
+        verifier = BrowseCompVerifier()
+        verifier.llm = ChatOpenAI(  # type: ignore[assignment]
+            model="gpt-4.1",
+            api_key="sk-secret",
+            base_url="https://user:pw@gateway.example/v1",
+            **settings,
+        )
+        return verifier
+
+    cold, hot = judge(temperature=0.0), judge(temperature=1.0)
+    signature = cold.identity().config_signature
+
+    assert cold.identity().slug != hot.identity().slug
+    assert judge(temperature=0.0).identity().slug == cold.identity().slug
+    assert signature["judge_settings"]["temperature"] == 0.0  # type: ignore[index]
+    assert judge(seed=7).identity().slug != judge(seed=8).identity().slug
+    assert judge(reasoning_effort="high").identity().slug != judge().identity().slug
+    assert judge(max_completion_tokens=64).identity().slug != judge().identity().slug
+    assert signature["judge_route"]["provider"] == "direct"  # type: ignore[index]
+    written = json.dumps(signature)
+    assert "sk-secret" not in written and "user:pw" not in written
+
+
 def test_a_text_only_judge_advertises_no_vision_knob():
     """A judge that sends no images must not advertise a vision knob."""
     from spectragent.generated._composed import BrowsecompVerifierConfig
