@@ -171,6 +171,8 @@ class ScriptedPhone:
         launchable: Installed packages with their launcher activities.
         labels: The label the home screen shows for each of those packages;
             one it leaves out is labelled with its package name.
+        more_launcher_apps: Further launcher activities the service lists,
+            each ``{"label", "package", "activity"}``: a package with two.
         helper_screenshots: Whether the helper takes screenshots (API 31-33);
             otherwise it answers ``unsupported`` and the service takes them.
         screenshot_fails: Every screenshot fails from now on.
@@ -230,6 +232,7 @@ class ScriptedPhone:
         default_factory=lambda: {"com.android.settings": "com.android.settings/.Settings"}
     )
     labels: dict[str, str] = field(default_factory=lambda: {"com.android.settings": "Settings"})
+    more_launcher_apps: list[JsonValue] = field(default_factory=list)
     helper_screenshots: bool = True
     screenshot_fails: bool = False
     screen: bytes | None = None
@@ -327,7 +330,7 @@ class ScriptedPhone:
                     "activity": f"{package}{activity}" if activity.startswith(".") else activity,
                 }
             )
-        return Answer({"apps": apps})
+        return Answer({"apps": [*apps, *self.more_launcher_apps]})
 
     async def _helper_ping(self, params: JsonObject) -> Answer:
         return Answer({"uptime_ms": self.uptime_ms})

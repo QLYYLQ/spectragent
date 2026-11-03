@@ -1392,17 +1392,23 @@ async def _launcher_names(side: DeviceSide) -> dict[str, str]:
     """The home screen's names from the service: label → ``package/activity``.
 
     A label two launcher activities share would name neither, so each is
-    written with its package: ``Gallery (com.example.gallery)``.
+    written with its package (``Gallery (com.example.gallery)``), or, when
+    both are of one package, with its component
+    (``Gallery (com.example.gallery/com.example.gallery.Albums)``).
     """
-    apps = await side.service.launcher_apps()
-    shared = Counter(app.label for app in apps)
-    return {
-        (app.label if shared[app.label] == 1 else f"{app.label} ({app.package})"): (
-            f"{app.package}/{app.activity}"
-        )
-        for app in apps
-        if app.label.strip()
-    }
+    apps = [app for app in await side.service.launcher_apps() if app.label.strip()]
+    by_label = Counter(app.label for app in apps)
+    by_package = Counter((app.label, app.package) for app in apps)
+    names: dict[str, str] = {}
+    for app in apps:
+        component = f"{app.package}/{app.activity}"
+        if by_label[app.label] == 1:
+            names[app.label] = component
+        elif by_package[app.label, app.package] == 1:
+            names[f"{app.label} ({app.package})"] = component
+        else:
+            names[f"{app.label} ({component})"] = component
+    return names
 
 
 def _hostable(setup: BenchmarkSetup | None) -> AndroidBenchmarkSetup | None:

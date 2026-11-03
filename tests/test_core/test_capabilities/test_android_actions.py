@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, get_args
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import point_params
@@ -1173,6 +1173,24 @@ async def test_a_name_the_table_gives_an_activity_starts_that_activity(
     assert (await act(capability, "open_app", app_name="de.dennisguse.opentracks")).success
     assert phone.focused == launcher
     assert not (await act(capability, "open_app", app_name=track_list)).success
+
+
+async def test_a_label_two_activities_of_one_package_share_is_written_with_each_component() -> None:
+    gallery: list[JsonValue] = [
+        {"label": "Gallery", "package": "com.example.gallery", "activity": activity}
+        for activity in ("com.example.gallery.Albums", "com.example.gallery.Videos")
+    ]
+    phone = ScriptedPhone(more_launcher_apps=gallery)
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        assert capability.launcher_apps == {
+            "Settings": "com.android.settings/com.android.settings.Settings",
+            "Gallery (com.example.gallery/com.example.gallery.Albums)": (
+                "com.example.gallery/com.example.gallery.Albums"
+            ),
+            "Gallery (com.example.gallery/com.example.gallery.Videos)": (
+                "com.example.gallery/com.example.gallery.Videos"
+            ),
+        }
 
 
 async def test_an_app_that_is_not_there_is_refused_naming_the_apps_that_are_known(
