@@ -114,7 +114,11 @@ def explain_config(
         # is prepared, so the listed interceptions follow the same rule on
         # the configuration's own environments.
         declare_environment_presence(run.hooks, present=bool(run.instances("environment")))
-    full = redact_config(run.top_level_cfg, record_secrets=True)
+    # What a run of this configuration records as its own (verifiers left
+    # out, ``docs/architecture_design.md`` §5.3 "实验身份"); the verifiers
+    # stay visible under ``components`` and ``provenance``.
+    recorded = run.run_configuration()
+    full = redact_config(recorded, record_secrets=True)
     digest = hashlib.sha256(
         json.dumps(full, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -174,7 +178,7 @@ def explain_config(
             }
             for hook in run.hooks
         ],
-        "resolved": redact_config(run.top_level_cfg),
+        "resolved": redact_config(recorded),
         "provenance": provenance,
     }
 

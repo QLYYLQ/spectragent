@@ -300,6 +300,42 @@ def test_config_commands_compose_a_benchmark_with_or_without_one_of_its_tasks(tm
         assert refusal in json.loads(capsys.readouterr().out)["error"]["message"]
 
 
+def test_config_explain_hashes_what_a_run_records_with_the_verifiers_left_out(tmp_path, capsys):
+    """Verifiers are no part of a run's recorded configuration, so neither of what explain hashes."""
+    import yaml
+
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    task = {"task_id": "t1", "task_text": "find the kettle", "start_url": "https://shop.example"}
+    path = online_mind2web_benchmark(tmp_path, {"All": [task]})
+    unjudged = path.read_text()
+    raw = yaml.safe_load(unjudged)
+    raw["benchmark"][0]["verifiers"] = [
+        {
+            "verifier_id": "online_mind2web",
+            "llm": {
+                "model_type": "openai",
+                "provider": {"name": "direct"},
+                "model": "judge-model",
+                "api_key": "test",
+            },
+        }
+    ]
+    judged = tmp_path / "judged.yaml"
+    judged.write_text(yaml.safe_dump(raw))
+    argv = ["--json", "config", "explain", "configs/browser_use_local.yaml", "--benchmark"]
+
+    assert main([*argv, str(judged)]) == 0
+    with_verifier = json.loads(capsys.readouterr().out)
+    assert main([*argv, str(path)]) == 0
+    without = json.loads(capsys.readouterr().out)
+
+    assert with_verifier["resolved_config_sha256"] == without["resolved_config_sha256"]
+    (block,) = with_verifier["resolved"]["benchmark"]
+    assert block["verifiers"] is None
+    assert with_verifier["components"]["verifier"][0]["implementation"] == "online_mind2web"
+
+
 @pytest.mark.parametrize("command", ["check", "explain"])
 def test_config_commands_take_the_subset_of_the_benchmark(tmp_path, capsys, command):
     """``--subset`` is written into the benchmark's task loader before composing, as bench does."""
