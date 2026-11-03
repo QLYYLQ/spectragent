@@ -85,12 +85,12 @@ def installation() -> Installation:
     return Installation(Path(os.environ[ANDROIDWORLD_VARIABLE]).expanduser())
 
 
-def write_task_list(out: Path, task: str) -> None:
-    """Write the list of *task* (suite seed 42, index 0) into the data directory *out*."""
+def write_task_list(out: Path, task: str, *, family: str = "android_world") -> None:
+    """Write the list of *task* (suite seed 42, index 0) of *family* into the data directory *out*."""
     aw = installation()
     subprocess.run(
         [str(aw.python), "-I", str(TASK_LIST_WRITER), "--src", str(aw.src)]
-        + ["--out", str(out), "--tasks", task],
+        + ["--out", str(out), "--family", family, "--tasks", task],
         check=True,
         capture_output=True,
         timeout=180,
