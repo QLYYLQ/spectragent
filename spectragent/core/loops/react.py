@@ -148,7 +148,8 @@ class ReactLoop(AgentLoopBase):
       that task (AndroidWorld's ``int(10 * complexity)``) and never raises it
     - ``max_actions_per_step``: maximum actions per LLM response
     - ``max_consecutive_parse_errors``: consecutive unparseable *steps*
-      before termination
+      before termination; ``None`` never ends the run on them (``max_steps``
+      still does)
     - ``parse_retries_per_step``: extra re-asks inside one step, on the
       observation that step already took
     - ``today_override``: pins ``StepInfoObs.today`` for replay
@@ -196,10 +197,14 @@ class ReactLoop(AgentLoopBase):
         int, Field(default=1, description="Maximum actions per LLM response.")
     ] = 1
     max_consecutive_parse_errors: Annotated[
-        int,
+        int | None,
         Field(
             default=3,
-            description="Consecutive ParseError failures before termination.",
+            description=(
+                "Consecutive steps whose reply could not be read before the run "
+                "ends in failure. null: unreadable replies never end the run; "
+                "max_steps still does."
+            ),
         ),
     ] = 3
     parse_retries_per_step: Annotated[
@@ -283,8 +288,14 @@ class ReactLoop(AgentLoopBase):
         return min(budget, self.max_steps) if isinstance(budget, int) else self.max_steps
 
     def execution_limits(self) -> ExecutionLimits:
-        """The action cap the Agent must communicate in its own prompt."""
-        return ExecutionLimits(max_actions_per_step=self.max_actions_per_step)
+        """The action cap an Agent writes in its prompt, and the parse settings it may check."""
+        unbounded = self.max_consecutive_parse_errors is None
+        return ExecutionLimits(
+            max_actions_per_step=self.max_actions_per_step,
+            parse_retries_per_step=self.parse_retries_per_step,
+            max_consecutive_parse_errors=self.max_consecutive_parse_errors,
+            unbounded=frozenset({"max_consecutive_parse_errors"}) if unbounded else frozenset(),
+        )
 
     # -- AgentLoopBase._execute() implementation ----------------
 
@@ -614,10 +625,11 @@ class ReactLoop(AgentLoopBase):
             # cross-step streak, which stays "consecutive *steps* that
             # could not be parsed", not consecutive LLM calls.
             run.parse_error_streak += 1
+            limit = self.max_consecutive_parse_errors
             logger.warning(
-                "ReactLoop: parse error (%d/%d): %s",
+                "ReactLoop: parse error (%d/%s): %s",
                 run.parse_error_streak,
-                self.max_consecutive_parse_errors,
+                "no limit" if limit is None else limit,
                 parse_failure.detail,
             )
 
@@ -638,7 +650,7 @@ class ReactLoop(AgentLoopBase):
             run.step_records.append(record)
             run.prev_step_record = record
 
-            if run.parse_error_streak < self.max_consecutive_parse_errors:
+            if limit is None or run.parse_error_streak < limit:
                 await self.surrender(run.recorder, record, observation)
                 return None
             # The run ends on this step, in failure: recording it must

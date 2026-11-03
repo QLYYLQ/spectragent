@@ -46,7 +46,7 @@ class ParseError(Exception):
     1. Logs a warning.
     2. Feeds ``detail`` back into the next prompt as error feedback.
     3. Terminates after ``max_consecutive_parse_errors`` consecutive
-       failures.
+       failures (never, when that is ``None``).
 
     Attributes:
         detail: Human-readable explanation of what went wrong.
