@@ -119,6 +119,22 @@ class TestWhatEachActionRunsAs:
             Action(name="press_key", params={"key": "enter"}),
         ]
 
+    @pytest.mark.parametrize(
+        "action",
+        [
+            "{'action_type': 'input_text', 'text': 'hello', 'clear_text': True}",
+            "{'action_type': 'input_text', 'text': 'hello', 'clear_text': True, 'x': 10}",
+        ],
+    )
+    def test_input_text_without_an_element_types_into_the_field_with_focus(
+        self, action: str
+    ) -> None:
+        """Without an index or a whole point AndroidWorld taps nothing and types where focus is."""
+        assert _actions(action) == [
+            Action(name="type_coordinate", params={"text": "hello", "clear": True}),
+            Action(name="press_key", params={"key": "enter"}),
+        ]
+
     @pytest.mark.parametrize("direction", ["up", "down", "left", "right"])
     def test_a_scroll_keeps_its_direction_which_means_what_the_capabilitys_does(
         self, direction: str
@@ -167,9 +183,11 @@ class TestWhatEachActionRunsAs:
             "{'action_type': 'click', 'x': 10, 'y': 20}",  # a point, which this port does not run
             "{'action_type': 'click', 'index': 1, 'x': 10}",  # JSONAction: index or a point
             "{'action_type': 'click', 'index': 'first'}",
+            "{'action_type': 'click', 'index': 1e999}",  # int() of it overflows
+            '{"action_type": "click", "index": Infinity}',  # read as JSON
             "{'action_type': 'click', 'index': 1, 'target': 'ok'}",  # not a JSONAction field
             "{'action_type': 'input_text', 'index': 1}",  # no text: AndroidWorld types nothing
-            "{'action_type': 'input_text', 'text': 'hi'}",  # no element to type into
+            "{'action_type': 'input_text', 'text': 'hi', 'x': 10, 'y': 20}",  # a point
             "{'action_type': 'scroll'}",  # no direction: AndroidWorld scrolls nothing
             "{'action_type': 'scroll', 'direction': 'Down'}",
             "{'action_type': 'open_app'}",

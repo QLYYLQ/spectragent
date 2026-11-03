@@ -26,7 +26,7 @@ Text Related Operations:
 - To copy some text: first select the exact text you want to copy, which usually also brings up the text selection bar, then click the `copy` button in bar.
 - To paste text into a text box, first long press the text box, then usually the text selection bar will appear with a `paste` button in it.
 - When typing into a text field, sometimes an auto-complete dropdown list will appear. This usually indicating this is a enum field and you should try to select the best match by clicking the corresponding one in the list.
-
+{task_guidelines}
 Now output an action from the above list in the correct JSON format, following the reason why you do that. Your answer should look like:
 Reason: ...
 Action: {{"action_type":...}}

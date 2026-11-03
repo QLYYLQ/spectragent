@@ -1,3 +1,28 @@
+# Portions of this module are derived from AndroidWorld's
+# android_world/agents/m3a_utils.py (add_ui_element_mark, add_screenshot_label)
+# (https://github.com/google-research/android_world, commit
+# 55ddaf5edc6f6c25673aed343907d5b9dca66f84):
+#
+#   Copyright 2026 The android_world Authors.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# Modified by Spectragent (2026-11-03): rewritten with Pillow. Kept: each
+# element's green box, the white patch with its number, the white label patch, and
+# their places, sizes and colours. Changed: Pillow's default font, sized so a digit
+# stands as tall as OpenCV's Hershey font draws it, instead of OpenCV's font; each
+# element's bounds placed on the image by the framework's point grid.
+
 """Set-of-marks: M3A's numbered boxes on a screenshot, and the label its summary's screenshot carries.
 
 Ported from AndroidWorld (``google-research/android_world`` at commit

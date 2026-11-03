@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 from PIL import Image
+from pydantic import ValidationError
 
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.m3a import M3AAgent
@@ -40,6 +41,7 @@ from spectragent.core.capabilities.android.observations import (
     AndroidUITreeObs,
 )
 from spectragent.core.capabilities.android.ui_tree.models import UITreeElement
+from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.base import PromptModelOwner
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.call_context import CallAttribution, RunCallContext
@@ -52,7 +54,6 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
-from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionResult
@@ -66,6 +67,7 @@ from tests._helpers.android_device import (
     phone_server,
     settings_forest,
 )
+from tests._helpers.android_runs import ScriptedModel
 from tests._helpers.assembly import AGENT_ID, NoModel, make_env, make_run
 
 _ANDROIDWORLD = json.loads(
@@ -221,6 +223,22 @@ async def test_a_screen_with_no_elements_says_not_available() -> None:
     assert _text(message) == _ANDROIDWORLD["cases"]["action_selection_no_elements"]
 
 
+async def test_the_tasks_own_guidelines_are_written_as_androidworld_writes_them() -> None:
+    """The guideline AndroidWorld's runner sets for its MiniWoB tasks, and a second one."""
+    agent = M3AAgent(
+        task_guidelines=(
+            "This task is running in a mock app, you must stay in this app and DO NOT use the "
+            "`navigate_home` action.",
+            "Answer in one word.",
+        )
+    )
+    observation = _Observation(task=TaskObs(user_request="Click the button."))
+
+    (message,) = await agent.build_react_prompt(observation, context=_context(0))
+
+    assert _text(message) == _ANDROIDWORLD["cases"]["action_selection_with_guidelines"]
+
+
 async def test_the_history_holds_the_summary_of_a_step_and_m3as_line_for_an_unread_reply() -> None:
     """Three steps: an action that ran (summarized), a reply M3A could not read (its own line,
     no call), then the prompt AndroidWorld writes for that history."""
@@ -326,11 +344,52 @@ async def test_a_contribution_goes_where_the_memory_keeps_it() -> None:
 # ── What M3A asks of a run ───────────────────────────────────────────
 
 
-def test_the_loop_must_run_two_actions_per_reply_for_input_text() -> None:
-    space = AgentRuntime.for_agent(_assembly(), AGENT_ID)
-    space.prepare(task_id="assembly")
-    with pytest.raises(ValueError, match="max_actions_per_step at 2 or more; it is 1"):
-        M3AAgent().prepare("t", space.action_space, ExecutionLimits(max_actions_per_step=1))
+@pytest.mark.parametrize(
+    ("loop", "window", "refusal"),
+    [
+        ({"max_actions_per_step": 1}, 1, "max_actions_per_step at 2 or more; it is 1"),
+        ({"parse_retries_per_step": 1}, 1, "parse_retries_per_step to 0; it is 1"),
+        ({"max_consecutive_parse_errors": 3}, 1, "max_consecutive_parse_errors to null; it is 3"),
+        ({}, 2, "sliding_window with window_size 1; it is 2"),
+    ],
+    ids=["one-action-per-reply", "a-re-ask", "a-limit-on-unread-replies", "a-wider-window"],
+)
+def test_a_run_that_would_not_run_m3a_as_androidworld_does_is_refused(
+    loop: dict[str, int], window: int, refusal: str
+) -> None:
+    """input_text runs as two actions; an unread reply costs its step, never more, never less;
+    the memory keeps the step's one message."""
+    runtime = AgentRuntime.for_agent(_assembly(loop=loop, window=window), AGENT_ID)
+    runtime.prepare(task_id="assembly")
+
+    with pytest.raises(ValueError, match=refusal):
+        runtime.seed_messages("Turn wifi off.")
+
+
+def test_m3a_takes_no_memory_but_sliding_window() -> None:
+    def config(memory: dict[str, object]) -> dict[str, object]:
+        android = {
+            "capability_id": "android",
+            "backend": {"provider_id": "local_emulator", "avd": "AndroidWorldAvd"},
+            "service_apk": "spectragent-device.apk",
+            "tap_injector": {"injector_id": "shell_injection"},
+            "typing_backend": {"typing_id": "set_text"},
+            "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+            "ui_tree_serializer": {"serializer_id": "m3a"},
+        }
+        agent = {
+            "agent_id": "m3a",
+            "agent_loop": {"loop_id": "react"},
+            "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+            "memory": memory,
+        }
+        return {"capability": [android], "agent": [agent]}
+
+    window = config({"memory_id": "sliding_window", "window_size": 1})
+    ConfigComposer.for_config(window).validate(window)
+    simple = config({"memory_id": "simple"})
+    with pytest.raises(ValidationError, match="sliding_window"):
+        ConfigComposer.for_config(simple).validate(simple)
 
 
 def test_a_space_without_an_action_m3as_prompt_teaches_is_refused() -> None:
@@ -348,16 +407,26 @@ def test_a_space_without_an_action_m3as_prompt_teaches_is_refused() -> None:
         M3AAgent().check_action_space(narrowed)
 
 
-def _assembly(tmp_path: Path | None = None) -> Any:
+#: The Loop settings M3A runs on: AndroidWorld's (``M3AAgent.prepare``).
+_ANDROIDWORLD_LOOP: dict[str, Any] = {
+    "max_actions_per_step": 2,
+    "max_consecutive_parse_errors": None,
+}
+
+
+def _assembly(
+    tmp_path: Path | None = None, *, loop: dict[str, int] | None = None, window: int = 1
+) -> Any:
+    """M3A on the Android capability, on a ReAct Loop with AndroidWorld's settings but *loop*."""
     directory = tmp_path or Path(__import__("tempfile").mkdtemp())
     capability = AndroidCapability(service_apk=str(fake_service_apk(directory)))
     env = make_env(AndroidEnvironment, {"android#0": capability})
     return make_run(
         agent=M3AAgent(),
-        loop=ReactLoop(max_actions_per_step=2),
+        loop=ReactLoop(**{**_ANDROIDWORLD_LOOP, **(loop or {})}),
         env=env,
         llm=NoModel(),
-        memory=SlidingWindowMemory(window_size=1),
+        memory=SlidingWindowMemory(window_size=window),
     )
 
 
@@ -375,6 +444,7 @@ def test_m3a_assembles_against_the_android_capability_and_owns_its_summary_model
         "click": "android.click",
         "long_press": "android.long_press",
         "type": "android.type",
+        "type_coordinate": "android.type_coordinate",
         "scroll": "android.scroll",
         "press_key": "android.press_key",
         "open_app": "android.open_app",
@@ -397,26 +467,6 @@ def test_m3a_assembles_against_the_android_capability_and_owns_its_summary_model
 # ── A run on Android ──────────────────────────────────────────────────
 
 
-class _ScriptedModel:
-    """Answers each call with the next reply of its script, and keeps the messages of every call."""
-
-    inference_kind = "chat"
-    model = name = "scripted"
-
-    def __init__(self, *replies: str) -> None:
-        self.replies = list(replies)
-        self.calls: list[list[BaseMessage]] = []
-
-    async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: object = None
-    ) -> ChatInvokeCompletion:
-        self.calls.append(list(messages))
-        return ChatInvokeCompletion(completion=self.replies.pop(0), usage=None)
-
-    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
-        return ()
-
-
 async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_success(
     tmp_path: Path,
 ) -> None:
@@ -426,7 +476,7 @@ async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_s
     phone.forest = settings_forest(
         ("Network & internet", (0, 300, 1080, 450)), ("Search settings", (0, 450, 1080, 600))
     )
-    model = _ScriptedModel(
+    model = ScriptedModel(
         "Reason: Search for it.\nAction: {'action_type': 'input_text', 'text': 'wifi', 'index': 1}",
         "Typed wifi and searched.",
         "Reason: Done.\nAction: {'action_type': 'status', 'goal_status': 'complete'}",
@@ -440,7 +490,7 @@ async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_s
         writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
         run = make_run(
             agent=M3AAgent(),
-            loop=ReactLoop(max_actions_per_step=2),
+            loop=ReactLoop(**_ANDROIDWORLD_LOOP),
             env=env,
             llm=model,
             memory=SlidingWindowMemory(window_size=1),

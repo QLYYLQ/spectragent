@@ -1,3 +1,31 @@
+# Portions of this module are derived from AndroidWorld's
+# android_world/agents/m3a_utils.py (parse_reason_action_output, extract_json),
+# android_world/agents/agent_utils.py (extract_json),
+# android_world/env/json_action.py (JSONAction's checks) and
+# android_world/env/actuation.py (what each action type does)
+# (https://github.com/google-research/android_world, commit
+# 55ddaf5edc6f6c25673aed343907d5b9dca66f84):
+#
+#   Copyright 2026 The android_world Authors.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# Modified by Spectragent (2026-11-03): rewritten to read a reply into Spectragent's
+# actions, by relative name. Kept: the reading of the reason and the action,
+# JSONAction's checks, and M3A's two sentences for a reply it cannot read. Changed:
+# each action type runs as the capability's actions and the Loop's done; the
+# departures from AndroidWorld are listed in the module docstring.
+
 """M3A's reply, read as AndroidWorld reads it, and the framework actions it means.
 
 Ported from AndroidWorld (``google-research/android_world`` at commit
@@ -23,12 +51,17 @@ history says the same (``agent.py``).
 - ``input_text``: ``type`` with the ``index``, the ``text`` and ``clear`` set
   only by ``clear_text`` (M3A never clears unless told), then ``press_key``
   ``enter``, because AndroidWorld's ``input_text`` taps the field, types and
-  presses Enter. So one reply can run as two actions;
+  presses Enter. So one reply can run as two actions. Without an index (and
+  without a point) it is ``type_coordinate`` without a point, into the field
+  that has focus, as AndroidWorld then types without a tap;
 - ``keyboard_enter`` / ``navigate_home`` / ``navigate_back``: ``press_key``
   ``enter`` / ``home`` / ``back``;
 - ``scroll``: ``scroll`` with the ``direction`` and the optional ``index``.
   M3A's direction is the content's, as ours is: ``down`` shows what is
-  further down (AndroidWorld swipes from the centre towards the top for it);
+  further down. AndroidWorld swipes for it from the centre of the element (or
+  the screen) up to its top edge in 300 ms, ``input swipe``'s default; the
+  Android ``scroll`` swipes so with ``swipe_to: target_edge`` and
+  ``duration_ms: 300``, which a run for M3A sets;
 - ``open_app``: ``open_app`` with the ``app_name``; ``wait``: ``wait``;
 - ``answer``: ``done`` with the text as its answer and no claim;
 - ``status``: ``done`` with no answer, claiming success for ``complete`` and
@@ -36,11 +69,34 @@ history says the same (``agent.py``).
   AndroidWorld's does, with no claim (``docs/architecture_design.md`` §4.1,
   "agent 的任务结论": the claim and the answer stay apart).
 
-Two departures, both refusals: a point (``x``, ``y``), which M3A's prompt
-never teaches and this port does not offer, and the action types M3A's prompt
-does not teach (``double_tap``, ``swipe``, ``unknown``). A ``scroll`` with
-``index`` 0 scrolls element 0; AndroidWorld's ``if action.index`` reads 0 as
-no index and scrolls the whole screen.
+**Where this departs from AndroidWorld** (``docs/architecture_design.md`` §4.1
+"M3A" and ``THIRD_PARTY_NOTICES.md`` list the same):
+
+- *Points.* ``click``, ``long_press`` and ``input_text`` given a point (``x``
+  and ``y``) instead of an index are refused: M3A's prompt never teaches
+  points, and AndroidWorld would touch the point. A point beside an index is
+  refused, as ``JSONAction`` refuses it; the other action types ignore a
+  point, as AndroidWorld's actuation does.
+- *Index 0.* A ``scroll`` with ``index`` 0 scrolls element 0; AndroidWorld's
+  ``if action.index:`` reads 0 as no index and scrolls the whole screen.
+- *Typing needs a text field with focus.* ``type`` taps the element and then
+  types only once a text field has focus; ``type_coordinate`` without a point
+  types only into a text field that has focus (the capability's focus rule,
+  ``docs/architecture_design.md`` §4.9). AndroidWorld types whether or not a
+  field took focus.
+- *Refused before running*, with :data:`NOT_AN_ACTION`: the action types
+  M3A's prompt does not teach (``double_tap``, ``swipe``, ``unknown``), which
+  AndroidWorld runs (``unknown`` as nothing); ``input_text`` without text and
+  ``scroll`` without a direction, for which AndroidWorld runs nothing and
+  summarizes the step; ``click`` or ``long_press`` with neither an index nor
+  a point, and ``open_app`` without an app name, which AndroidWorld fails
+  while running.
+- *A failed action* gets the history line ``Action selected: <action>. The
+  action failed: <error>``, in the capability's words (``agent.py``):
+  AndroidWorld writes no line for an action that failed while running, and
+  refuses an index past the element list before running, in its own words.
+- *``answer`` ends the run* with its text as the answer; AndroidWorld keeps
+  the answer and goes on until ``status``.
 """
 
 from __future__ import annotations
@@ -215,11 +271,14 @@ def _actions(fields: dict[str, object]) -> list[Action]:
     if kind == "input_text":
         if not text:
             raise _Refused  # AndroidWorld then runs nothing
-        typed = {"index": _required(index), "text": text}
-        return [
-            Action(name="type", params={**typed, "clear": bool(fields.get("clear_text"))}),
-            Action(name="press_key", params={"key": "enter"}),
-        ]
+        typed: dict[str, object] = {"text": text, "clear": bool(fields.get("clear_text"))}
+        if index is not None:
+            typing = Action(name="type", params={"index": index, **typed})
+        elif fields.get("x") is not None and fields.get("y") is not None:
+            raise _Refused  # a point, which M3A's prompt never teaches
+        else:  # into the field with focus, as AndroidWorld then types without a tap
+            typing = Action(name="type_coordinate", params=typed)
+        return [typing, Action(name="press_key", params={"key": "enter"})]
     if isinstance(kind, str) and kind in _KEYS:
         return [Action(name="press_key", params={"key": _KEYS[kind]})]
     if kind == "scroll":
@@ -249,7 +308,7 @@ def _index(fields: dict[str, object]) -> int | None:
     if isinstance(index, (int, float, str)):  # ``int()`` as ``JSONAction`` converts
         try:
             return int(index)
-        except ValueError:
+        except (ValueError, OverflowError):  # ``"two"``, ``nan``; ``Infinity``, ``1e999``
             pass
     raise _Refused
 

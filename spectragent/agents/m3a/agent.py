@@ -1,3 +1,31 @@
+# Portions of this module are derived from AndroidWorld's
+# android_world/agents/m3a.py (M3A.step and the prompts it renders)
+# (https://github.com/google-research/android_world, commit
+# 55ddaf5edc6f6c25673aed343907d5b9dca66f84):
+#
+#   Copyright 2026 The android_world Authors.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# Modified by Spectragent (2026-11-03): rewritten as a Spectragent agent over the
+# negotiated screenshot and UI tree. Kept: one message per step holding the
+# action-selection prompt, the screenshot and its marked copy; the task's own
+# guidelines; the history of one line per step; the summary call on the same model
+# with the marked screens before and after. Changed: the summary is written when the
+# next step's observation arrives, as a helper call the runtime weaves and
+# attributes; a step whose action failed gets a history line with its error; the
+# run's Loop and memory are checked to run M3A as AndroidWorld does.
+
 """M3AAgent: AndroidWorld's Multimodal Autonomous Agent for Android, which reads the UI tree.
 
 Ported from AndroidWorld (``google-research/android_world`` at commit
@@ -11,14 +39,20 @@ message, its text and two images. The text is AndroidWorld's action-selection
 prompt (``prompts/agents/m3a/action_selection.md``): what M3A can do, the
 goal, a history of one line per earlier step, the screen's UI elements as the
 configured serializer prints them (``android.ui_tree``'s ``serialized``; M3A's
-line format with the ``m3a`` serializer), guidance and the reply format. The
-images are the screenshot as captured and the same screenshot with every
-element's set-of-mark drawn on it (``marks.py``), both JPEG as AndroidWorld
-sends them. So the memory a run gives it should keep this step's message
-alone: ``sliding_window`` with ``window_size: 1``, and the Loop's
-``parse_retries_per_step: 0``, since a re-ask would see only its feedback
-(AndroidWorld never re-asks: a reply it cannot read costs the step, and the
-history says so).
+line format with the ``m3a`` serializer), guidance, the task's own guidelines
+when the run sets some (``task_guidelines``: AndroidWorld's runner sets one for
+its MiniWoB tasks) and the reply format. The images are the screenshot as
+captured and the same screenshot with every element's set-of-mark drawn on it
+(``marks.py``), both JPEG as AndroidWorld sends them.
+
+**A run must run M3A as AndroidWorld does**, and :meth:`M3AAgent.prepare`
+refuses one that would not. The memory keeps this step's message alone:
+``sliding_window`` (the only memory its wiring takes) with ``window_size: 1``.
+The Loop never asks again within a step (``parse_retries_per_step: 0``) and
+never ends the run on replies it cannot read (``max_consecutive_parse_errors:
+null``), only on its step budget: AndroidWorld spends the step on such a
+reply, its history says so, and the run goes on. A re-ask would also see only
+its feedback, the window holding nothing else.
 
 **The history is M3A's own, and its lines come from a second model call.**
 After a step's action ran, AndroidWorld asks the same model to summarize the
@@ -38,12 +72,14 @@ run). The summary call fails the step when it fails, like any helper call. As
 AndroidWorld does, the screenshot before is sent without its ``before`` label
 (it labels a copy it does not send), though the prompt says it has one.
 
-**What M3A's replies run as** is ``reply.py``'s: an element ``index`` for
-``click``, ``long_press``, ``type`` and ``scroll``; ``input_text`` is ``type``
-then ``press_key`` ``enter``, so the Loop's ``max_actions_per_step`` must be
-at least 2; ``answer`` and ``status`` are ``loop.done``, the answer and the
-claim apart. M3A's prompt lists every action it can take, so a run must offer
-them all (:meth:`M3AAgent.check_action_space`).
+**What M3A's replies run as** is ``reply.py``'s, which also lists where it
+departs from AndroidWorld: an element ``index`` for ``click``, ``long_press``,
+``type`` and ``scroll``; ``input_text`` is ``type`` (without an index,
+``type_coordinate`` without a point, into the field with focus) then
+``press_key`` ``enter``, so the Loop's ``max_actions_per_step`` must be at
+least 2; ``answer`` and ``status`` are ``loop.done``, the answer and the claim
+apart. M3A's prompt lists every action it can take, so a run must offer them
+all (:meth:`M3AAgent.check_action_space`).
 
 M3A runs on the ``react`` Loop only: a branch replays recorded decisions
 through the prompt builder, and M3A's history lines come from summary calls a
@@ -56,9 +92,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Protocol
+from typing import Annotated, Any, ClassVar, Protocol
 
 from PIL import Image
+from pydantic import Field as PydanticField
 
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.m3a.marks import Bounds, jpeg, label, mark_elements, open_image
@@ -90,6 +127,7 @@ REQUIRED_ACTIONS = (
     "click",
     "long_press",
     "type",
+    "type_coordinate",
     "scroll",
     "press_key",
     "open_app",
@@ -156,7 +194,9 @@ class M3AAgent(AgentBase):
 
     __registry_key__ = "m3a"
 
-    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset(
+        {"max_actions_per_step", "parse_retries_per_step", "max_consecutive_parse_errors"}
+    )
 
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react"]),
@@ -171,7 +211,22 @@ class M3AAgent(AgentBase):
             "declare_only": True,
         },
         "llm": "llm",
+        # One message per step: the window keeps it alone (``prepare``).
+        "memory": ("memory", ["sliding_window"]),
     }
+
+    # ── config ─────────────────────────────────────────────────
+    task_guidelines: Annotated[
+        tuple[str, ...],
+        PydanticField(
+            description=(
+                "The task's own guidelines, written into each step's prompt after M3A's "
+                "guidance as AndroidWorld writes them: under 'For The Current Task:', one "
+                "'- ' line each. AndroidWorld's runner sets one for its MiniWoB tasks; "
+                "empty (the default) writes nothing."
+            )
+        ),
+    ] = ()
 
     # ── internal state ─────────────────────────────────────────
     #: The history lines so far, one per step, without their ``Step N-``.
@@ -237,14 +292,35 @@ class M3AAgent(AgentBase):
         The goal is read off each step's ``task`` fragment, so *task* is not kept.
 
         Raises:
-            ValueError: The Loop runs fewer than 2 actions per reply: M3A's
-                ``input_text`` runs as typing and then Enter.
+            ValueError: The run would not run M3A as AndroidWorld does (module
+                docstring): the Loop runs fewer than 2 actions per reply (M3A's
+                ``input_text`` runs as typing and then Enter), asks again within
+                a step, or ends the run on replies it cannot read; or the
+                memory keeps more than the step's one message.
         """
         limit = execution_limits.max_actions_per_step
         if limit is None or limit < 2:
             raise ValueError(
                 f"M3A's input_text runs as two actions, typing then Enter, so it needs the Loop's "
                 f"max_actions_per_step at 2 or more; it is {limit}"
+            )
+        retries = execution_limits.parse_retries_per_step
+        if retries:
+            raise ValueError(
+                "AndroidWorld never asks M3A again within a step: a reply it cannot read costs "
+                f"the step. Set the Loop's parse_retries_per_step to 0; it is {retries}"
+            )
+        streak = execution_limits.max_consecutive_parse_errors
+        if streak is not None:
+            raise ValueError(
+                "AndroidWorld never ends a run on replies M3A cannot read, only on its step "
+                f"budget. Set the Loop's max_consecutive_parse_errors to null; it is {streak}"
+            )
+        window = getattr(self.memory, "window_size", None)
+        if window != 1:
+            raise ValueError(
+                "M3A keeps no conversation, each step is one message: its memory must be "
+                f"sliding_window with window_size 1; it is {window}"
             )
         self.check_action_space(action_space)
         self._history, self._before, self._prompt_snapshot = [], None, None
@@ -275,6 +351,7 @@ class M3AAgent(AgentBase):
                 "goal": goal,
                 "history": history or NO_HISTORY,
                 "ui_elements": screen.elements or "Not available",
+                "task_guidelines": _guidelines(self.task_guidelines),
             },
         )
         content: list[ContentPartTextParam | ContentPartImageParam] = [
@@ -394,6 +471,13 @@ def _screen(observation: M3AObservation, step: int) -> tuple[_Screen, Image.Imag
     )
     screen = _Screen(step=step, raw=jpeg(image), marked=jpeg(marked), elements=tree.serialized)
     return screen, marked
+
+
+def _guidelines(guidelines: Sequence[str]) -> str:
+    """The task's own guidelines as AndroidWorld writes them into the prompt; none, nothing."""
+    if not guidelines:
+        return ""
+    return "For The Current Task:\n" + "".join(f"- {line}\n" for line in guidelines)
 
 
 def _prefix(agent_id: str) -> str:
