@@ -148,8 +148,8 @@ class ReactLoop(AgentLoopBase):
       that task (AndroidWorld's ``int(10 * complexity)``) and never raises it
     - ``max_actions_per_step``: maximum actions per LLM response
     - ``max_consecutive_parse_errors``: consecutive unparseable *steps*
-      before termination; ``None`` never ends the run on them (``max_steps``
-      still does)
+      before termination; ``None`` never ends the run on them (the step
+      budget still does)
     - ``parse_retries_per_step``: extra re-asks inside one step, on the
       observation that step already took
     - ``today_override``: pins ``StepInfoObs.today`` for replay
@@ -202,8 +202,8 @@ class ReactLoop(AgentLoopBase):
             default=3,
             description=(
                 "Consecutive steps whose reply could not be read before the run "
-                "ends in failure. null: unreadable replies never end the run; "
-                "max_steps still does."
+                "ends in failure. null: unreadable replies never end the run; the "
+                "step budget still does."
             ),
         ),
     ] = 3
