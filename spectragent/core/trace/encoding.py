@@ -69,15 +69,17 @@ OBSERVATIONS_DIR = "observations"
 MESSAGES_DIR = "messages"
 OUTPUT_FORMATS_DIR = f"{MESSAGES_DIR}/output_formats"
 PROMPT_IMAGES_DIR = f"{MESSAGES_DIR}/images"
-EVALS_DIR = "evals"
 METRICS_DIR = "metrics"
+#: The verdict store: every verdict of the run, one ``<slug>.json`` each, outside
+#: the manifest (``core/trace/verdicts.py``, ``docs/architecture_design.md`` §5.3).
+VERDICTS_DIR = "verdicts"
 
 #: Names the WAL and this module decide. An extra file may not land on one:
 #: a producer that could write ``steps/007.json`` could forge a step.
 WAL_OWNED_FILES = frozenset(
     {MANIFEST_FILE, CONFIG_FILE, RESULT_FILE, ORACLE_SCORES_FILE, TASK_TEXT_FILE}
 )
-WAL_OWNED_DIRS = frozenset({STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, EVALS_DIR, METRICS_DIR})
+WAL_OWNED_DIRS = frozenset({STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, VERDICTS_DIR, METRICS_DIR})
 
 
 def step_record_path(step: int) -> str:
@@ -118,6 +120,18 @@ def call_path(step: int, call: int) -> str:
 def output_format_path(sha256: str) -> str:
     """``messages/output_formats/<sha256>.json`` — content-addressed."""
     return f"{OUTPUT_FORMATS_DIR}/{sha256}.json"
+
+
+def verdict_path(slug: str) -> str:
+    """``verdicts/<slug>.json`` — one verdict of the run, named by its verifier's slug.
+
+    Raises:
+        ValueError: *slug* is not one plain path segment.
+    """
+    check_relative_path(slug)
+    if "/" in slug:
+        raise ValueError(f"a verdict slug is one path segment, not {slug!r}")
+    return f"{VERDICTS_DIR}/{slug}.json"
 
 
 def prompt_image_path(sha256: str, suffix: str) -> str:

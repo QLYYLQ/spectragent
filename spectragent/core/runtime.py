@@ -925,7 +925,7 @@ class AgentRuntime:
                 loop_id=self._identity.loop_id,
                 env_type=self._identity.environment_id,
                 llm_model=self._identity.model_id,
-                resolved_config=self._run.top_level_cfg,
+                resolved_config=self._run.run_configuration(),
                 observation_negotiation=self._negotiated_obs,
                 action_negotiation=self._negotiated_actions,
                 action_space=self.action_space,

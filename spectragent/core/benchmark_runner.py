@@ -43,13 +43,14 @@ Everything else — env setup/teardown ordering, lifecycle dispatch,
 timeout, result construction — belongs to :class:`AgentRuntime` and is
 deliberately *not* duplicated here.
 
-Scoring stays a separate pass, driven by
-:class:`~spectragent.evaluator.runner.EvaluationRunner` over the trace
-directories once every task has finished. The runner never hands an
-Evaluator a live agent or environment — an Evaluator reads persisted
-traces, which is what lets the same sweep be re-scored later, by a
-different judge, on a machine with no browser. Wiring it in here only
-saves you from typing the second command.
+The benchmark's offline verifiers judge the sweep in a separate pass, driven
+by :class:`~spectragent.verifiers.runner.VerificationRunner` over the trace
+directories once every task has finished (``docs/architecture_design.md``
+§4.10.1 "只有两个挂接点"). The runner never hands a verifier a live agent or
+environment — an offline verifier reads committed traces, which is what lets
+the same sweep be judged again later, by a different judge, on a machine with
+no browser; each verdict goes into its run's own verdict store. Running the
+pass here only saves you from typing ``spectragent eval``.
 """
 
 from __future__ import annotations
@@ -87,6 +88,9 @@ from spectragent.schemas._types import (
     limit_value,
 )
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.verifiers.base import OfflineVerifier
+from spectragent.verifiers.report import VerifierTally, tallies
+from spectragent.verifiers.runner import VerificationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -276,17 +280,20 @@ class BenchmarkRunSummary:
     The counters are the three ledgers: how the agents ended
     (:meth:`count_by_done`), whether the environment held up
     (:meth:`count_by_environment`), whether each trace is a complete record
-    (:meth:`count_by_trace`). Whether an answer was correct stays an
-    Evaluator's business and lives in ``eval_summary``, which is ``None``
-    unless the config declared an ``evaluator:`` layer — a sweep is
-    perfectly valid without one.
+    (:meth:`count_by_trace`). Whether an answer was correct is the
+    verifiers' business: ``verification`` holds each offline verifier's
+    counts over the sweep, and is empty when the benchmark configures none
+    (or with ``--no-eval``) — a sweep is perfectly valid without one.
     """
 
     benchmark: str
     subset: str
     outcomes: list[TaskOutcome] = field(default_factory=list)
-    eval_summary: Any = None
-    eval_errors: list[str] = field(default_factory=list)
+    #: Each offline verifier's counts over the sweep's traces.
+    verification: list[VerifierTally] = field(default_factory=list)
+    #: ``<task> (<slug>): <why>`` for each trace a verifier could not judge,
+    #: or the pass's own failure.
+    verification_errors: list[str] = field(default_factory=list)
 
     #: Set when a guard vetoed the sweep (``RunAbort``), naming the task that
     #: did it. ``outcomes`` ends with that task, so without this a short sweep
@@ -418,13 +425,11 @@ class BenchmarkRunSummary:
                 f"limit of {reached.limit} after {reached.task_id}; {reached.not_started} task(s) "
                 f"not started"
             )
-        if self.eval_summary is not None:
-            from spectragent.evaluator.summary import format_summary
-
-            lines.append("evaluation:")
-            lines.extend(f"  {line}" for line in format_summary(self.eval_summary).splitlines())
-        for message in self.eval_errors:
-            lines.append(f"  eval error: {message}")
+        if self.verification:
+            lines.append("verifiers:")
+            lines.extend(f"  {tally.describe()}" for tally in self.verification)
+        for message in self.verification_errors:
+            lines.append(f"  could not judge: {message}")
         return "\n".join(lines)
 
     def as_dict(self) -> dict[str, Any]:
@@ -445,7 +450,20 @@ class BenchmarkRunSummary:
             "not_started": self.token_limit_reached.not_started
             if self.token_limit_reached
             else None,
-            "evaluation_errors": list(self.eval_errors),
+            "verification": [
+                {
+                    "slug": tally.verifier.slug,
+                    "verifier_id": tally.verifier.verifier_id,
+                    "provided": tally.provided,
+                    "judged": tally.judged,
+                    "passed": tally.passed,
+                    "failed": tally.failed,
+                    "errors": tally.errors,
+                    "success_rate": tally.success_rate,
+                }
+                for tally in self.verification
+            ],
+            "verification_errors": list(self.verification_errors),
         }
 
 
@@ -575,13 +593,11 @@ class BenchmarkRunner:
         oracle_timeout: Seconds each task oracle may take to score a task
             after its run (``AgentRuntime.execute``'s ``oracle_timeout``).
         run_id_prefix: Prepended to every generated trace directory name.
-        evaluator: Optional ``BaseEvaluator``. When given, every trace the
-            sweep produced is scored after the last task finishes.
-        eval_loader: Source of ``EvalReference`` rows for that evaluator.
-            Required whenever *evaluator* is set — a verdict needs ground
-            truth, and the task loader does not carry it.
-        evals_dir: Optional flat output directory for verdicts and the
-            summary. Verdicts always also land in each trace's ``evals/``.
+        verifiers: The benchmark's offline verifiers. Every trace the sweep
+            produced is judged by each of them after the last task finishes,
+            each verdict into its run's verdict store.
+        reference_loader: The benchmark's reference rows, for a verifier
+            that judges against one (``Benchmark.reference_loader()``).
         token_limit: The most tokens the sweep's runs may record: a number
             of at least 1, or ``"unlimited"`` (the default), which reads no
             usage at all. With a number, each finished task's tokens are
@@ -599,9 +615,8 @@ class BenchmarkRunner:
         timeout: float = 300.0,
         oracle_timeout: float = ORACLE_TIMEOUT_S,
         run_id_prefix: str = "",
-        evaluator: Any = None,
-        eval_loader: Any = None,
-        evals_dir: Path | None = None,
+        verifiers: Sequence[OfflineVerifier] = (),
+        reference_loader: BaseEvalLoader | None = None,
         token_limit: int | Unlimited = UNLIMITED,
         progress: TaskProgress | None = None,
         session: SessionLedger | None = None,
@@ -623,15 +638,14 @@ class BenchmarkRunner:
         self._benchmark = getattr(loader, "benchmark_name", "")
         self._subset = getattr(loader, "subset", "")
         self._run_id_prefix = run_id_prefix
-        if evaluator is not None and eval_loader is None:
-            raise ValueError(
-                "BenchmarkRunner was given an evaluator but no eval_loader. "
-                "Scoring needs reference data; pass the benchmark's eval "
-                "loader or drop the evaluator."
-            )
-        self._evaluator = evaluator
-        self._eval_loader = eval_loader
-        self._evals_dir = evals_dir
+        # Built before any task runs: a verifier that needs reference rows the
+        # benchmark does not have, or one attached live, is refused now, not
+        # hours later at the judging pass.
+        self._verification = (
+            VerificationRunner(verifiers=verifiers, reference_loader=reference_loader)
+            if verifiers
+            else None
+        )
         self._progress = progress
         self._session = session
         self._config_source = config_source
@@ -709,7 +723,7 @@ class BenchmarkRunner:
             else "token_limit"
             if summary.token_limit_reached is not None
             else "completed_with_failures"
-            if summary.failed or summary.eval_errors
+            if summary.failed or summary.verification_errors
             else "completed"
         )
         self._finish_observers(reason)
@@ -790,53 +804,40 @@ class BenchmarkRunner:
                     reached.not_started,
                 )
                 break
-        stopped = aborted is not None or reached is not None
-        eval_summary, eval_errors = await self._evaluate(
-            outcomes, selected[: len(outcomes)] if stopped else selected
-        )
+        verification, verification_errors = await self._verify(outcomes)
         return BenchmarkRunSummary(
             benchmark=self._benchmark,
             subset=self._subset,
             outcomes=outcomes,
-            eval_summary=eval_summary,
-            eval_errors=eval_errors,
+            verification=verification,
+            verification_errors=verification_errors,
             aborted=aborted,
             token_limit=self._token_limit,
             token_limit_reached=reached,
         )
 
-    async def _evaluate(
-        self, outcomes: Sequence[TaskOutcome], selected: Sequence[str]
-    ) -> tuple[Any, list[str]]:
-        """Score the traces this sweep produced, if an evaluator is wired.
+    async def _verify(
+        self, outcomes: Sequence[TaskOutcome]
+    ) -> tuple[list[VerifierTally], list[str]]:
+        """Judge the traces this sweep produced with the benchmark's offline verifiers.
 
-        Runs *after* every task, over trace directories rather than live
-        objects — so an evaluation crash cannot destroy a sweep's worth of
-        compute, and the same traces can be re-scored later without
-        re-running anything.
+        Runs *after* every task (a vetoed sweep's and one stopped at its token
+        limit included: only what ran is judged), over trace directories
+        rather than live objects — so a judging crash cannot destroy a
+        sweep's worth of compute, and the same traces can be judged again
+        later without re-running anything.
         """
-        if self._evaluator is None:
-            return None, []
-
-        from spectragent.evaluator.runner import EvaluationRunner
-
-        runner = EvaluationRunner(
-            evaluator=self._evaluator,
-            eval_loader=self._eval_loader,
-            evals_dir=self._evals_dir,
-        )
+        if self._verification is None:
+            return [], []
         trace_dirs = [o.trace_dir for o in outcomes if o.trace_dir is not None]
         try:
-            report = await runner.run(
-                trace_dirs,
-                expected_task_ids=selected,
-                benchmark=self._benchmark,
-                subset=self._subset,
-            )
+            report = await self._verification.run(trace_dirs)
         except Exception as exc:
-            logger.exception("BenchmarkRunner: evaluation pass failed")
-            return None, [f"{type(exc).__name__}: {exc}"]
-        return report.summary(), [f"{o.task_id}: {o.error}" for o in report.errors if o.error]
+            logger.exception("BenchmarkRunner: the judging pass failed")
+            return [], [f"{type(exc).__name__}: {exc}"]
+        return tallies(report), [
+            f"{outcome.task_id} ({outcome.slug}): {outcome.error}" for outcome in report.errors
+        ]
 
     def preflight(self, task_id: str) -> ComposedRun:
         """Check the configuration once for *task_id*, before the sweep starts; return its stack.
@@ -1022,56 +1023,25 @@ def task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 # ── CLI ────────────────────────────────────────────────────────────
 
 
-def _resolve_evaluator(run: ComposedRun, evaluator_id: str | None) -> Any:
-    """Pick the evaluator instance the config built, if any.
+def _reference_loader(
+    benchmark: Benchmark, verifiers: Sequence[OfflineVerifier], selection: str
+) -> BaseEvalLoader | None:
+    """The reference rows the sweep's verifiers judge against; ``None`` when none needs one.
 
-    Evaluators are resolved from the composed run rather than constructed
-    from the registry, because an LLM-judge evaluator's judge model is a
-    wired dependency: building one straight off ``EvaluatorRegistrar.get``
-    would leave ``self.llm`` uninjected and fail at the first call. Declare
-    the evaluator in YAML and it arrives with its judge attached.
+    The benchmark's own (:meth:`BenchmarkBase.reference_loader`). A verifier
+    that needs one on a benchmark with none stops the sweep before anything
+    runs, naming it: a sweep must not run for hours to fail at its judging
+    pass.
     """
-    instances = run.instances("evaluator")
-    if not instances:
-        if evaluator_id:
-            raise SystemExit(
-                f"--evaluator {evaluator_id!r} was requested but the config "
-                f"declares no 'evaluator:' layer. Add one so its judge model "
-                f"is wired from YAML like every other component."
-            )
+    needing = [verifier.verifier_id for verifier in verifiers if "reference" in verifier.needs]
+    if not needing:
         return None
-    if evaluator_id is None:
-        if len(instances) > 1:
-            raise SystemExit(
-                f"The config declares {len(instances)} evaluators "
-                f"({sorted(run.ids('evaluator'))}). Pass --evaluator to say "
-                f"which one should score this sweep."
-            )
-        return instances[0]
-    matches = [e for e in instances if e.evaluator_id == evaluator_id]
-    if not matches:
-        raise SystemExit(
-            f"No evaluator with evaluator_id={evaluator_id!r} in the config "
-            f"(found: {sorted({e.evaluator_id for e in instances})})."
-        )
-    return matches[0]
-
-
-def _reference_loader(benchmark: Benchmark, selection: str) -> BaseEvalLoader:
-    """The reference data a configured evaluator scores this sweep against.
-
-    The benchmark's own (:meth:`BenchmarkBase.reference_loader`). A benchmark
-    with none stops the sweep before anything runs, naming it: a branch
-    sweep's task source has none in v1 (how a branch result becomes a training
-    signal is open, §4.10), and a sweep must not run for hours to fail at its
-    scoring pass.
-    """
     loader = benchmark.reference_loader()
     if loader is None:
         raise SystemExit(
-            f"An evaluator is configured, but benchmark {selection!r} has no reference data to "
-            f"score against (a branch sweep's task source has none): drop the evaluator, or pass "
-            f"--no-eval."
+            f"Verifier(s) {', '.join(needing)} of benchmark {selection!r} judge against the "
+            f"task's reference row, and the benchmark has no reference data: drop them from its "
+            f"verifiers, or pass --no-eval."
         )
     return loader
 
@@ -1176,22 +1146,12 @@ def main(
         help="List the selected task ids and exit without running.",
     )
     parser.add_argument(
-        "--evaluator",
-        help=("evaluator_id to score with. Only needed when the config declares more than one."),
-    )
-    parser.add_argument(
-        "--evals-dir",
-        type=Path,
-        default=Path("evals"),
-        help=(
-            "Flat output directory for EvalResults and the EvalSummary. "
-            "Verdicts also always land in each trace's own evals/."
-        ),
-    )
-    parser.add_argument(
         "--no-eval",
         action="store_true",
-        help="Record traces only; skip the scoring pass.",
+        help=(
+            "Record traces only; skip the pass of the benchmark's offline verifiers (each "
+            "verdict of that pass goes into its run's verdicts/)."
+        ),
     )
     parser.add_argument(
         "--token-limit",
@@ -1229,10 +1189,10 @@ def main(
     chosen: Benchmark = probe.single("benchmark")
     loader = chosen.task_loader
 
-    evaluator = None if args.no_eval else _resolve_evaluator(probe, args.evaluator)
+    verifiers = [] if args.no_eval else chosen.offline_verifiers()
     benchmark = loader.benchmark_name
     subset = getattr(loader, "subset", "")
-    eval_loader = _reference_loader(chosen, args.benchmark) if evaluator is not None else None
+    reference_loader = _reference_loader(chosen, verifiers, args.benchmark)
 
     from spectragent.core.benchmark_session import BatchSession
 
@@ -1256,9 +1216,8 @@ def main(
         env_id=args.env_id,
         timeout=args.timeout,
         oracle_timeout=args.oracle_timeout,
-        evaluator=evaluator,
-        eval_loader=eval_loader,
-        evals_dir=args.evals_dir if evaluator is not None else None,
+        verifiers=verifiers,
+        reference_loader=reference_loader,
         token_limit=args.token_limit,
         progress=progress,
         session=session,

@@ -8,19 +8,21 @@ import pytest
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.trace.encoding import PendingLLMCall, encode_call_metrics
 from spectragent.core.trace.models import TraceConfig, TraceStatus
+from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection import RepositoryError, open_repository
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Verdict
 from tests._helpers.trace_builder import (
     PNG_BYTES,
     agent_result,
     build_reference_trace,
     cancelled_call,
-    eval_result,
     screenshot,
     step_record,
+    verdict,
 )
 
 
@@ -168,14 +170,22 @@ def test_comparison_reports_config_differences_and_task_mismatch(tmp_path: Path)
 
 def test_reports_do_not_expose_arbitrary_files_or_run_contents(tmp_path: Path) -> None:
     fixture = build_reference_trace(tmp_path)
-    fake = {"format": "af-independent-evaluation-1", "coverage": 0.5, "success_rate": None}
+    fake = {
+        "format": "af-independent-evaluation-2",
+        "benchmark": "fixture",
+        "provided": 2,
+        "verifiers": [{"slug": verdict().slug, "coverage": 0.5, "success_rate": None}],
+        "outcomes": [],
+    }
     (fixture.run_dir / "report.json").write_text(json.dumps(fake))
     report_dir = tmp_path / "evaluation"
     report_dir.mkdir()
     (report_dir / "report.json").write_text(json.dumps(fake))
     (tmp_path / "private.json").write_text('{"secret": "not a report"}')
     repo = open_repository(tmp_path)
-    assert repo.report("evaluation/report.json")["data"]["success_rate"] is None
+    report = repo.report("evaluation/report.json")
+    assert report["kind"] == "evaluation"
+    assert report["data"]["verifiers"][0]["success_rate"] is None
     with pytest.raises(FileNotFoundError):
         repo.report("private.json")
     with pytest.raises(FileNotFoundError):
@@ -207,52 +217,87 @@ def test_the_run_names_its_actions_with_the_wording_marks_owns(tmp_path: Path) -
     assert run["action_verbs"] == {"browser.click": "点击"}
 
 
-def test_broken_evaluation_does_not_hide_an_intact_trace(tmp_path: Path) -> None:
+def test_a_broken_verdict_does_not_hide_an_intact_trace(tmp_path: Path) -> None:
     fixture = build_reference_trace(tmp_path)
-    (fixture.run_dir / "evals" / "broken.json").write_text("{")
+    (fixture.run_dir / "verdicts").mkdir()
+    (fixture.run_dir / "verdicts" / "broken.json").write_text("{")
     repo = open_repository(tmp_path)
     row = repo.list_runs()[0]
     assert row["trace_status"] == "complete"
     assert row["read_error"] is None
-    assert row["evaluation_error"]
+    assert row["verdict_error"]
+    assert row["verdicts"] == []
     run = repo.run("run-test")
     assert len(run["steps"]) == 2
-    assert run["evaluation_error"]
-    assert run["evaluations"] == {}
+    assert run["verdict_error"]
+    assert run["verdicts"] == {}
     assert repo.step("run-test", 0)["calls"]
 
 
+def test_a_run_lists_each_verdict_by_slug_and_a_comparison_lines_them_up(tmp_path: Path) -> None:
+    judged = build_reference_trace(tmp_path, "judged")
+    build_reference_trace(tmp_path, "unjudged")
+    live = verdict("androidworld", label=None, score=0.5, attachment="live")
+    write_verdict(judged.run_dir, live)
+    repo = open_repository(tmp_path)
+    rows = {row["key"]: row for row in repo.list_runs()}
+    assert rows["judged"]["verdicts"] == [
+        {
+            "slug": live.slug,
+            "verifier_id": "androidworld",
+            "attachment": "live",
+            "status": "judged",
+            "label": None,
+            "score": 0.5,
+        }
+    ]
+    assert rows["judged"]["verdict_error"] is None
+    assert rows["unjudged"]["verdicts"] == []
+    assert repo.run("judged")["verdicts"] == {live.slug: live.model_dump(mode="json")}
+    comparison = repo.compare(["judged", "unjudged"])
+    assert comparison["verifier_comparisons"] == [
+        {"slug": live.slug, "verdicts": [live.model_dump(mode="json"), None]}
+    ]
+
+
 def test_group_comparison_matches_tasks_and_refuses_cherry_picking(tmp_path: Path) -> None:
-    def make(group: str, task: str, verdict: int | None, suffix: str = "") -> str:
-        name = f"{group}-{task}{suffix}"
-        wal = WALWriter(tmp_path, name)
+    def make(group: str, task: str, found: Verdict | None, suffix: str = "") -> str:
+        wal = WALWriter(tmp_path, f"{group}-{task}{suffix}")
         config = TraceConfig(task_id=task, benchmark="fixture", resolved={"variant": group})
         wal.init_run(config)
         wal.write_result(agent_result(task_id=task))
         wal.finalize(TraceStatus.COMPLETE)
-        if verdict is not None:
-            result = eval_result(task_id=task, run_id=name, predicted_label=verdict)
-            (wal.run_dir / "evals" / "judge.json").write_text(result.model_dump_json())
+        if found is not None:
+            write_verdict(wal.run_dir, found)
         return config.configuration_digest()
 
-    left = make("left", "different", 1)
-    right = make("right", "different", 0)
+    passed, failed = verdict(label=1), verdict(label=0)
+    left = make("left", "different", passed)
+    right = make("right", "different", failed)
     make("left", "unknown", None)
-    make("right", "unknown", 0)
-    make("left", "repeated", 1)
-    make("left", "repeated", 0, "-retry")
-    make("right", "repeated", 0)
-    make("left", "missing", 1)
-    comparison = open_repository(tmp_path).compare_groups(left, right, "judge")
+    make("right", "unknown", failed)
+    make("left", "repeated", passed)
+    make("left", "repeated", failed, "-retry")
+    make("right", "repeated", failed)
+    make("left", "missing", passed)
+    # A verdict that judged nothing, or found a score and no pass or fail, is
+    # never a failed task.
+    make("left", "timed-out", verdict(status="not_judged", label=None, reason="timeout"))
+    make("right", "timed-out", passed)
+    make("left", "scored", verdict(label=None, score=0.4))
+    make("right", "scored", passed)
+    comparison = open_repository(tmp_path).compare_groups(left, right, passed.slug)
+    assert comparison["verifier"] == passed.slug
     assert comparison["counts"]["left_only_passed"] == 1
-    assert comparison["counts"]["ungraded"] == 1
+    assert comparison["counts"]["unjudged"] == 3
     assert comparison["counts"]["ambiguous"] == 1
     assert comparison["counts"]["unpaired"] == 1
-    assert sum(comparison["counts"].values()) == 4
+    assert sum(comparison["counts"].values()) == 6
 
 
 def test_different_judge_configurations_are_not_aggregated(tmp_path: Path) -> None:
-    hashes = []
+    """Two settings of one verifier are two slugs: neither side's verdict pairs with the other."""
+    hashes, slugs = [], []
     for name in ("left", "right"):
         wal = WALWriter(tmp_path, name)
         config = TraceConfig(task_id="same", resolved={"variant": name})
@@ -260,10 +305,30 @@ def test_different_judge_configurations_are_not_aggregated(tmp_path: Path) -> No
         wal.init_run(config)
         wal.write_result(agent_result())
         wal.finalize(TraceStatus.COMPLETE)
-        verdict = eval_result(evaluator_config={"judge_model": name})
-        (wal.run_dir / "evals" / "judge.json").write_text(verdict.model_dump_json())
-    report = open_repository(tmp_path).compare_groups(hashes[0], hashes[1], "judge")
-    assert report["counts"]["incompatible_evaluator"] == 1
+        slugs.append(write_verdict(wal.run_dir, verdict(config_signature={"llm": name})).stem)
+    assert slugs[0] != slugs[1]
+    report = open_repository(tmp_path).compare_groups(hashes[0], hashes[1], slugs[0])
+    assert report["counts"]["unjudged"] == 1
+    assert report["counts"]["both_passed"] == 0
+
+
+def test_one_verifier_of_two_versions_is_not_aggregated(tmp_path: Path) -> None:
+    """One slug, two versions of the verifier behind it: not one judge, so never paired."""
+    hashes = []
+    for name, version in (("left", "v1"), ("right", "v2")):
+        wal = WALWriter(tmp_path, name)
+        config = TraceConfig(task_id="same", resolved={"variant": name})
+        hashes.append(config.configuration_digest())
+        wal.init_run(config)
+        wal.write_result(agent_result())
+        wal.finalize(TraceStatus.COMPLETE)
+        judged = verdict("online_mind2web", label=1)
+        judged = judged.model_copy(
+            update={"verifier": judged.verifier.model_copy(update={"version": version})}
+        )
+        slug = write_verdict(wal.run_dir, judged).stem
+    report = open_repository(tmp_path).compare_groups(hashes[0], hashes[1], slug)
+    assert report["counts"]["incompatible_verifier"] == 1
     assert report["counts"]["both_passed"] == 0
 
 

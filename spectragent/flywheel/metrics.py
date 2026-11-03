@@ -169,9 +169,9 @@ class ChainLayout:
 
     ``traces/{record,control,same_path,branch}/``, ``datasets/{first,second}/``,
     ``report/{report.json,report.md}``, ``configs/<stage>.yaml`` (the
-    configuration each stage actually ran), ``evals/<stage>/`` (verdicts of
-    a stage that evaluates) and ``chain.json`` (provenance; nothing in the
-    report reads it).
+    configuration each stage actually ran) and ``chain.json`` (provenance;
+    nothing in the report reads it). A stage that evaluates keeps each
+    verdict in its run's own store, under ``traces/<stage>/``.
     """
 
     root: Path
@@ -197,9 +197,6 @@ class ChainLayout:
     @property
     def configs_dir(self) -> Path:
         return self.root / "configs"
-
-    def evals(self, stage: str) -> Path:
-        return self.root / "evals" / stage
 
     @property
     def chain_record(self) -> Path:

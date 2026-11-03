@@ -179,8 +179,8 @@ def create_app(
         return repository.compare([_key(value) for value in key])
 
     @app.get("/api/compare-groups")
-    def compare_groups(left: str, right: str, evaluator: str) -> dict[str, Any]:
-        return repository.compare_groups(left=left, right=right, evaluator=evaluator)
+    def compare_groups(left: str, right: str, verifier: str) -> dict[str, Any]:
+        return repository.compare_groups(left=left, right=right, verifier=verifier)
 
     @app.get("/api/reports")
     def reports() -> list[dict[str, Any]]:

@@ -141,7 +141,7 @@ class TasksSpec(_Spec):
 
 
 class StageSpec(_Spec):
-    """A ``spectragent bench`` stage: its YAML, the per-task timeouts, whether it evaluates."""
+    """A ``spectragent bench`` stage: its YAML, the per-task timeouts, whether its verifiers judge it."""
 
     config: Path
     #: ``same_path`` / ``branch`` only, and required there: the branches YAML whose
@@ -150,6 +150,8 @@ class StageSpec(_Spec):
     timeout: float = Field(default=300.0, gt=0)
     #: Seconds each task oracle may take to score a task; ``None``: the bench's default.
     oracle_timeout: float | None = Field(default=None, gt=0)
+    #: Whether the benchmark's offline verifiers judge the stage's runs after
+    #: it (``False``: ``--no-eval``); each verdict goes into its run's store.
     evaluate: bool = False
 
 
@@ -210,8 +212,8 @@ class ChainSpec(_Spec):
             spec = getattr(self, stage)
             if spec is not None and spec.evaluate:
                 raise ValueError(
-                    f"{stage}.evaluate: a trace_branches sweep has no eval loader (arch §4.10); "
-                    f"it always runs with --no-eval"
+                    f"{stage}.evaluate: a trace_branches sweep configures no verifier of its own "
+                    f"(arch §4.10.1); it always runs with --no-eval"
                 )
         return self
 
@@ -766,9 +768,7 @@ def _run_stage(
             argv += ["--task-id", task_id]
         if tasks.limit is not None:
             argv += ["--limit", str(tasks.limit)]
-    if stage_spec.evaluate and stage not in BRANCH_STAGES:
-        argv += ["--evals-dir", str(layout.evals(stage))]
-    else:
+    if not stage_spec.evaluate or stage in BRANCH_STAGES:
         argv.append("--no-eval")
     if remaining is not None:
         argv += ["--token-limit", str(remaining)]

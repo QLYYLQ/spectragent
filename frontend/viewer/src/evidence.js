@@ -28,16 +28,30 @@ export function restoredActionOutcome(action) {
   return "unknown";
 }
 
-/** A synthetic evaluator record is coverage evidence, not a task verdict. */
+/**
+ * A verdict's pass or fail, as a badge value. A verdict that judged nothing is
+ * `not_judged`, never a failed task; one that found only a score has no pass
+ * or fail (`null`), and the page shows its score instead (`verdictScore`).
+ */
 export function verdictLabel(verdict) {
-  if (verdict.verdict_source !== "graded")
-    return verdict.verdict_source || "not_evaluated";
-  return verdict.predicted_label === 1
+  if (verdict.status !== "judged") return "not_judged";
+  return verdict.label === 1
     ? "success"
-    : verdict.predicted_label === 0
+    : verdict.label === 0
       ? "failure"
       : null;
 }
+
+/** A judged verdict's score, on its benchmark's own scale; null when it found none. */
+export function verdictScore(verdict) {
+  return verdict.status === "judged" && verdict.score != null
+    ? `分数 ${Number(verdict.score).toLocaleString("zh-CN")}`
+    : null;
+}
+
+/** Where a verifier judged: at the scoring point, against the live environment, or offline from the trace. */
+const ATTACHMENT_LABELS = { live: "活体判分", offline: "离线判分" };
+export const attachmentLabel = (value) => ATTACHMENT_LABELS[value] ?? String(value);
 
 /** Missing call channels are unknown, while a selected empty channel is zero. */
 export function trailingCallCount(run) {

@@ -14,4 +14,5 @@ class LexBenchBrowserBenchmark(BenchmarkBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "task_loader": ("task_loader", ["lexbench_browser"]),
         "eval_loader": ("eval_loader", ["lexbench_browser"]),
+        "verifiers": ("verifier", ["lexbench_browser"]),
     }

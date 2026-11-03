@@ -211,9 +211,9 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             RequireEval | None,
             Field(
                 description=(
-                    "Filter: keep sources an evaluator graded 'label' (evaluator_id, "
-                    "label: 1, slug: null — read from each source's evals/). None: no "
-                    "evaluation needed."
+                    "Filter: keep sources a verifier judged 'label' (verifier_id, "
+                    "label: 1, slug: null — read from each source's verdict store). None: no "
+                    "verdict needed."
                 ),
             ),
         ] = None,
@@ -547,13 +547,13 @@ class _Scan:
         need = loader.require_eval
         if need is not None:
             try:
-                verdicts = trace.evals()
+                verdicts = trace.verdicts()
             except TraceSchemaError as exc:
-                raise _Unbranchable(f"its evaluations do not read back: {exc}") from exc
+                raise _Unbranchable(f"its verdicts do not read back: {exc}") from exc
             if not need.satisfied_by(verdicts):
                 pinned = f", slug {need.slug!r}" if need.slug is not None else ""
                 return (
-                    f"no graded verdict from {need.evaluator_id!r} with predicted_label "
+                    f"no judged verdict from {need.verifier_id!r} with label "
                     f"{need.label}{pinned} (require_eval)"
                 )
         return None

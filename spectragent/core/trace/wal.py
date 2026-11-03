@@ -62,7 +62,6 @@ from pydantic import TypeAdapter
 from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import (
     CONFIG_FILE,
-    EVALS_DIR,
     MANIFEST_FILE,
     MESSAGES_DIR,
     METRICS_DIR,
@@ -73,6 +72,7 @@ from spectragent.core.trace.encoding import (
     RESULT_FILE,
     STEPS_DIR,
     TASK_TEXT_FILE,
+    VERDICTS_DIR,
     WAL_OWNED_DIRS,
     WAL_OWNED_FILES,
     EncodedFragment,
@@ -113,7 +113,7 @@ class WALWriter:
 
         traces/{run_id}/
             manifest.json   config.json   result.json   [oracle_scores.json]   [task_text.json]
-            steps/  observations/  messages/  evals/  [env/]
+            steps/  observations/  messages/  metrics/  [env/]  [verdicts/]
 
     ``env/`` holds environment evidence when a run binds archivers. It is
     made of ordinary extra files — this writer neither knows nor names
@@ -213,7 +213,7 @@ class WALWriter:
         # config.json first and durable, the manifest that makes the run
         # exist after it — never a manifest whose config is not there.
         directories = fsio.write_durable(self._run_dir / CONFIG_FILE, config_bytes)
-        own_dirs = (STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, METRICS_DIR, EVALS_DIR)
+        own_dirs = (STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, METRICS_DIR)
         for name in own_dirs:
             (self._run_dir / name).mkdir(exist_ok=True)
         # The run directory holds config.json and the subdirectories;
@@ -224,10 +224,12 @@ class WALWriter:
         # durable.
         _fsync_all(directories | {self._run_dir})
         self._committed = set()
-        # The WAL's own directories, and the ones it creates on demand: no
-        # file may ever take one of these names.
+        # The WAL's own directories, the ones it creates on demand and the
+        # verdict store beside the WAL (``core/trace/verdicts.py``): no file may
+        # ever take one of these names.
         self._committed_dirs = {
-            fold_path(name) for name in (*own_dirs, OUTPUT_FORMATS_DIR, PROMPT_IMAGES_DIR)
+            fold_path(name)
+            for name in (*own_dirs, OUTPUT_FORMATS_DIR, PROMPT_IMAGES_DIR, VERDICTS_DIR)
         }
         self._committed_blobs = set()
         self._durable_dirs = {self._run_dir / name for name in own_dirs}

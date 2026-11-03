@@ -56,7 +56,8 @@ class TestWALWriter:
         assert (run_dir / "steps").is_dir()
         assert (run_dir / "observations").is_dir()
         assert (run_dir / "messages").is_dir()
-        assert (run_dir / "evals").is_dir()
+        # The verdict store is made by the first verdict, never empty at init.
+        assert not (run_dir / "verdicts").exists()
 
     def test_init_run_writes_config(self, wal, config):
         wal.init_run(config)

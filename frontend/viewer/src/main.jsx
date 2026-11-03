@@ -6,6 +6,8 @@ import {
   restoredActionOutcome,
   trailingCallCount,
   verdictLabel,
+  verdictScore,
+  attachmentLabel,
   historyLabel,
   historyExplanation,
   cursorLabel,
@@ -151,27 +153,39 @@ function Stat({ label, value, detail }) {
   );
 }
 
-function Verdicts({ verdicts = [], evaluationError }) {
-  if (evaluationError)
+/** What one verdict found: its pass or fail, its score, or that it judged nothing. */
+function VerdictFinding({ verdict }) {
+  const label = verdictLabel(verdict);
+  const score = verdictScore(verdict);
+  return (
+    <>
+      {label && <Badge value={label} />}
+      {score && <span className="badge neutral">{score}</span>}
+    </>
+  );
+}
+
+function Verdicts({ verdicts = [], verdictError }) {
+  if (verdictError)
     return (
-      <span className="row-error" title={evaluationError}>
-        评测结果无法读取
+      <span className="row-error" title={verdictError}>
+        判定无法读取
       </span>
     );
   return verdicts.length ? (
     <div className="verdicts">
-      {verdicts.map((verdict, i) => (
-        <div key={`${verdict.evaluator}-${i}`}>
-          <span className="verdict-name">{verdict.evaluator}</span>
-          <Badge value={verdictLabel(verdict)} />
+      {verdicts.map((verdict) => (
+        <div key={verdict.slug}>
+          <span className="verdict-name">{verdict.slug}</span>
+          <VerdictFinding verdict={verdict} />
           <span className="muted small">
-            {statusLabel(verdict.verdict_source)}
+            {attachmentLabel(verdict.attachment)}
           </span>
         </div>
       ))}
     </div>
   ) : (
-    <span className="muted">未评测</span>
+    <span className="muted">没有判定</span>
   );
 }
 
@@ -198,10 +212,10 @@ function Ledger({ row }) {
         </small>
       </div>
       <div>
-        <span className="eyebrow">评测</span>
+        <span className="eyebrow">判定</span>
         <Verdicts
           verdicts={row.verdicts}
-          evaluationError={row.evaluation_error}
+          verdictError={row.verdict_error}
         />
       </div>
     </div>
@@ -253,7 +267,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
         <div>
           <span className="eyebrow">实验工作区</span>
           <h1>运行</h1>
-          <p>从任务开始，一路查看到评测判定的证据。</p>
+          <p>从任务开始，一路查看到判定的证据。</p>
         </div>
         <div className="inline">
           <button
@@ -290,7 +304,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
           )}
         />
         <Stat
-          label="已有评测"
+          label="已有判定"
           value={number(rows.filter((row) => row.verdicts?.length).length)}
         />
       </div>
@@ -382,7 +396,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
                       <th>智能体结果</th>
                       <th>环境</th>
                       <th>记录状态</th>
-                      <th>评测</th>
+                      <th>判定</th>
                       <th className="numeric">步数</th>
                       <th className="numeric">Token</th>
                       <th className="numeric">用时</th>
@@ -463,7 +477,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
                         <td>
                           <Verdicts
                             verdicts={row.verdicts}
-                            evaluationError={row.evaluation_error}
+                            verdictError={row.verdict_error}
                           />
                         </td>
                         <td className="numeric">
@@ -516,7 +530,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
         </div>
       </div>
       <p className="footnote">
-        智能体结果、环境状态、记录是否完整、评测判定，这几项彼此独立。记录未关闭，并不说明进程仍在运行。
+        智能体结果、环境状态、记录是否完整、判定，这几项彼此独立。记录未关闭，并不说明进程仍在运行。
       </p>
     </>
   );
@@ -1471,50 +1485,66 @@ function Trajectory({ run, route, revision }) {
   );
 }
 
-function Evaluations({ evaluations, error }) {
+/** Why a verdict judged nothing: its reason and diagnostic. It is no failed task. */
+function NotJudged({ verdict }) {
+  return (
+    <div className="notice">
+      <strong>没有判出结果 · 原因：{statusLabel(verdict.reason)}</strong>
+      {verdict.detail && <p>{verdict.detail}</p>}
+      <p>未判定不算任务失败。</p>
+    </div>
+  );
+}
+
+function VerdictDetails({ verdicts, error }) {
   if (error)
     return (
       <div className="notice error" role="alert">
-        <strong>评测证据无法读取</strong>
+        <strong>判定无法读取</strong>
         <p>{error}</p>
         <p>这次运行记录的步和模型调用仍可查看。</p>
       </div>
     );
-  return !Object.keys(evaluations).length ? (
-    <Empty title="未评测">
-      评测判定与智能体结果分开记录。运行一次评测即可添加判定。
+  return !Object.keys(verdicts).length ? (
+    <Empty title="没有判定">
+      判定与智能体结果分开记录。运行一次评测即可添加离线判定。
     </Empty>
   ) : (
-    <div className="evaluation-list">
-      {Object.entries(evaluations).map(([slug, result]) => (
+    <div className="verdict-list">
+      {Object.entries(verdicts).map(([slug, verdict]) => (
         <article className="panel padded" key={slug}>
           <div className="section-heading">
             <div>
               <span className="eyebrow">
-                {statusLabel(result.verdict_source)}
+                {attachmentLabel(verdict.attachment)} ·{" "}
+                {statusLabel(verdict.status)}
               </span>
-              <h3>{result.evaluator_id || slug}</h3>
+              <h3>{verdict.verifier.verifier_id}</h3>
+              <span className="muted small mono">{slug}</span>
             </div>
-            <Badge value={verdictLabel(result)} />
+            <div className="inline">
+              <VerdictFinding verdict={verdict} />
+            </div>
           </div>
           <p className="muted small">
-            {date(result.timestamp)} · {result.benchmark} / {result.subset}
+            {date(verdict.started_at * 1000)} · 用时{" "}
+            {duration(verdict.duration_ms)}
+            {verdict.verifier.model && ` · 判分模型 ${verdict.verifier.model}`}
+            {verdict.verifier.version && ` · 版本 ${verdict.verifier.version}`}
           </p>
-          {result.failure_category && (
-            <p>
-              失败类别：<strong>{result.failure_category}</strong>
-            </p>
+          {verdict.status !== "judged" && <NotJudged verdict={verdict} />}
+          {verdict.rationale && (
+            <>
+              <span className="eyebrow">判定依据</span>
+              <pre className="prose-code">{verdict.rationale}</pre>
+            </>
           )}
+          <JsonPanel title="判定证据" value={verdict.evidence} initialOpen />
           <JsonPanel
-            title="评测详情"
-            value={result.evaluation_details}
-            initialOpen
+            title="判分器设置"
+            value={verdict.verifier.config_signature}
           />
-          <JsonPanel
-            title="评测器配置"
-            value={result.evaluator_config}
-          />
-          <JsonPanel title="完整评测记录" value={result} />
+          <JsonPanel title="完整判定记录" value={verdict} />
         </article>
       ))}
     </div>
@@ -1927,10 +1957,10 @@ function RunDetail({ route, revision }) {
               {[
                 ["trajectory", "轨迹"],
                 [
-                  "evaluations",
-                  run.evaluation_error
-                    ? "评测 (!)"
-                    : `评测 (${Object.keys(run.evaluations).length})`,
+                  "verdicts",
+                  run.verdict_error
+                    ? "判定 (!)"
+                    : `判定 (${Object.keys(run.verdicts).length})`,
                 ],
                 [
                   "trailing",
@@ -1965,10 +1995,10 @@ function RunDetail({ route, revision }) {
             {tab === "trajectory" && (
               <Trajectory run={run} route={route} revision={revision} />
             )}
-            {tab === "evaluations" && (
-              <Evaluations
-                evaluations={run.evaluations}
-                error={run.evaluation_error}
+            {tab === "verdicts" && (
+              <VerdictDetails
+                verdicts={run.verdicts}
+                error={run.verdict_error}
               />
             )}
             {tab === "trailing" && (
@@ -2290,7 +2320,7 @@ function Compare({ route, revision }) {
         <div>
           <span className="eyebrow">对比证据</span>
           <h1>运行对比</h1>
-          <p>并排查看各次运行的结果、评测判定和配置差异。</p>
+          <p>并排查看各次运行的结果、判定和配置差异。</p>
         </div>
       </div>
       {keys.length < 2 ? (
@@ -2360,35 +2390,56 @@ function Compare({ route, revision }) {
                         ))}
                       </tr>
                     ))}
-                    {comparison.runs.some((run) => run.evaluation_error) && (
+                    {comparison.runs.some((run) => run.verdict_error) && (
                       <tr>
-                        <th>评测证据</th>
+                        <th>判定</th>
                         {comparison.runs.map((run) => (
                           <td key={run.key}>
                             <Verdicts
                               verdicts={run.verdicts}
-                              evaluationError={run.evaluation_error}
+                              verdictError={run.verdict_error}
                             />
                           </td>
                         ))}
                       </tr>
                     )}
-                    {comparison.evaluator_comparisons.map((item) => (
-                      <tr key={item.evaluator}>
-                        <th>评测器 · {item.evaluator}</th>
+                    {comparison.verifier_comparisons.map((item) => (
+                      <tr key={item.slug}>
+                        <th>判分器 · {item.slug}</th>
                         {item.verdicts.map((verdict, index) => (
                           <td key={index}>
-                            {comparison.runs[index]?.evaluation_error ? (
+                            {comparison.runs[index]?.verdict_error ? (
                               <span
                                 className="row-error"
-                                title={comparison.runs[index].evaluation_error}
+                                title={comparison.runs[index].verdict_error}
                               >
-                                评测结果无法读取
+                                判定无法读取
                               </span>
                             ) : verdict == null ? (
-                              <span className="muted">未评测</span>
+                              <span className="muted">没有判定</span>
                             ) : (
-                              <StructuredData value={verdict} />
+                              <>
+                                <div className="verdicts">
+                                  <div>
+                                    <VerdictFinding verdict={verdict} />
+                                    <span className="muted small">
+                                      {attachmentLabel(verdict.attachment)}
+                                    </span>
+                                  </div>
+                                </div>
+                                {verdict.status !== "judged" && (
+                                  <NotJudged verdict={verdict} />
+                                )}
+                                {verdict.rationale && (
+                                  <pre className="prose-code">
+                                    {verdict.rationale}
+                                  </pre>
+                                )}
+                                <JsonPanel
+                                  title="完整判定记录"
+                                  value={verdict}
+                                />
+                              </>
                             )}
                           </td>
                         ))}
@@ -2453,19 +2504,19 @@ function ExperimentComparison({ route, revision }) {
   const runs = useRemote("/api/runs", revision);
   const [left, setLeft] = useState(route.left || "");
   const [right, setRight] = useState(route.right || "");
-  const [evaluator, setEvaluator] = useState(route.evaluator || "");
+  const [verifier, setVerifier] = useState(route.verifier || "");
   const [filter, setFilter] = useState("");
   useEffect(() => {
     setLeft(route.left || "");
     setRight(route.right || "");
-    setEvaluator(route.evaluator || "");
-  }, [route.left, route.right, route.evaluator]);
+    setVerifier(route.verifier || "");
+  }, [route.left, route.right, route.verifier]);
   const comparison = useRemote(
-    route.left && route.right && route.evaluator
+    route.left && route.right && route.verifier
       ? query("compare-groups", {
           left: route.left,
           right: route.right,
-          evaluator: route.evaluator,
+          verifier: route.verifier,
         })
       : null,
     revision,
@@ -2480,10 +2531,10 @@ function ExperimentComparison({ route, revision }) {
     group.count += 1;
     groups.set(run.config_hash, group);
   });
-  const evaluators = [
+  const verifiers = [
     ...new Set(
       (runs.data || []).flatMap((run) =>
-        (run.verdicts || []).map((verdict) => verdict.evaluator),
+        (run.verdicts || []).map((verdict) => verdict.slug),
       ),
     ),
   ].sort();
@@ -2493,9 +2544,9 @@ function ExperimentComparison({ route, revision }) {
     right_only_passed: "B 通过 / A 失败",
     both_failed: "两边都失败",
     unpaired: "无法配对的任务",
-    ungraded: "未评分的任务",
+    unjudged: "未判定的任务",
     ambiguous: "多次尝试、无法确定",
-    incompatible_evaluator: "评测器设置不同",
+    incompatible_verifier: "判分器设置不同",
   };
   const runLinks = (values) =>
     values.length ? (
@@ -2509,9 +2560,9 @@ function ExperimentComparison({ route, revision }) {
               {run.run_id || run.key}
             </button>
             <Badge value={run.agent_done} />
-            {run.evaluation_error && (
-              <div className="row-error" title={run.evaluation_error}>
-                评测结果无法读取
+            {run.verdict_error && (
+              <div className="row-error" title={run.verdict_error}>
+                判定无法读取
               </div>
             )}
           </div>
@@ -2539,7 +2590,7 @@ function ExperimentComparison({ route, revision }) {
             className="panel padded compare-form"
             onSubmit={(event) => {
               event.preventDefault();
-              navigate({ view: "groups", left, right, evaluator });
+              navigate({ view: "groups", left, right, verifier });
             }}
           >
             {[
@@ -2563,21 +2614,21 @@ function ExperimentComparison({ route, revision }) {
               </label>
             ))}
             <label>
-              <span className="eyebrow">评测器</span>
+              <span className="eyebrow">判分器</span>
               <select
                 required
-                value={evaluator}
-                onChange={(event) => setEvaluator(event.target.value)}
+                value={verifier}
+                onChange={(event) => setVerifier(event.target.value)}
               >
-                <option value="">选择评测器</option>
-                {evaluators.map((name) => (
-                  <option key={name}>{name}</option>
+                <option value="">选择判分器</option>
+                {verifiers.map((slug) => (
+                  <option key={slug}>{slug}</option>
                 ))}
               </select>
             </label>
             <button
               className="button primary"
-              disabled={!left || !right || left === right || !evaluator}
+              disabled={!left || !right || left === right || !verifier}
             >
               对比实验
             </button>
@@ -2585,7 +2636,7 @@ function ExperimentComparison({ route, revision }) {
         )}
       </RemoteState>
       <p className="footnote">
-        按基准测试、子集和任务配对。只对比评测器设置相同、且已评分的判定。同一任务有多次尝试时视为无法确定，不会替你挑选其中一次。
+        按基准测试、子集和任务配对。只对比同一判分器在相同设置下判出的通过或失败；没有这份判定、判分器没判出结果或只给了分数的任务，都计入“未判定的任务”。同一任务有多次尝试时视为无法确定，不会替你挑选其中一次。
       </p>
       {comparison.data || comparison.loading || comparison.error ? (
         <RemoteState state={comparison}>
@@ -2647,7 +2698,7 @@ function ExperimentComparison({ route, revision }) {
                 </div>
                 {!data.rows.length && (
                   <Empty title="没有符合条件的任务证据">
-                    请选择有任务记录和评测结果的配置。
+                    请选择有任务记录和判定的配置。
                   </Empty>
                 )}
               </div>
@@ -2656,7 +2707,7 @@ function ExperimentComparison({ route, revision }) {
           )}
         </RemoteState>
       ) : (
-        <Empty title="请选择两种配置和一个评测器">
+        <Empty title="请选择两种配置和一个判分器">
           之后可以打开任意一次配对的运行，查看它的轨迹和证据。
         </Empty>
       )}

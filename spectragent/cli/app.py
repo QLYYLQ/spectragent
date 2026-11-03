@@ -51,8 +51,8 @@ _LEAF_COMMANDS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "eval",
-        "spectragent.evaluator.cli",
-        "Evaluate recorded runs independently. Supports --json.",
+        "spectragent.verifiers.cli",
+        "Judge recorded runs with a benchmark's offline verifiers.",
     ),
     (
         "export",
@@ -158,26 +158,22 @@ class Output:
                     "Agent outcome",
                     "Environment",
                     "Trace",
-                    "Evaluation",
+                    "Verdicts",
                     "Steps",
                     "Tokens",
                 ):
                     table.add_column(label)
                 for row in rows:
-                    verdicts = row.get("verdicts", [])
-                    evaluation = (
+                    verdicts = (
                         "unreadable"
-                        if row.get("evaluation_error")
+                        if row.get("verdict_error")
                         else ", ".join(
-                            f"{item['evaluator']}: "
-                            + ("passed" if item["predicted_label"] == 1 else "failed")
-                            if item["verdict_source"] == "graded"
-                            else f"{item['evaluator']}: {item['verdict_source']}"
-                            for item in verdicts
+                            f"{item['slug']}: {_verdict_word(item)}"
+                            for item in row.get("verdicts", [])
                         )
-                        or "not evaluated"
+                        or "none"
                     )
-                    presented = {**row, "evaluation": evaluation}
+                    presented = {**row, "verdicts": verdicts}
                     table.add_row(
                         *[
                             Text(str(presented.get(key) if presented.get(key) is not None else "—"))
@@ -188,7 +184,7 @@ class Output:
                                 "agent_done",
                                 "env_status",
                                 "trace_status",
-                                "evaluation",
+                                "verdicts",
                                 "policy_steps",
                                 "tokens",
                             )
@@ -222,6 +218,15 @@ class Output:
                 Console(stderr=True).print(Text(json.dumps(value["error"], ensure_ascii=False)))
         else:
             console.print_json(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _verdict_word(item: dict[str, Any]) -> str:
+    """One verdict of a run summary in a word: passed, failed, its score, or not judged."""
+    if item["status"] != "judged":
+        return "not judged"
+    if item["label"] is not None:
+        return "passed" if item["label"] == 1 else "failed"
+    return f"score {item['score']}"
 
 
 def _output(ctx: typer.Context, json_output: bool = False) -> Output:
@@ -674,16 +679,19 @@ def create_app() -> typer.Typer:
         ctx: typer.Context,
         left: str = typer.Option(..., help="Left configuration hash."),
         right: str = typer.Option(..., help="Right configuration hash."),
-        evaluator: str = typer.Option(..., help="Exact evaluator slug used on both groups."),
+        verifier: str = typer.Option(
+            ...,
+            help="The verdict slug both groups were judged by (the same verifier and settings).",
+        ),
         root: Annotated[Path, typer.Option()] = Path("traces"),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
-        """Compare configuration groups on their common evaluated tasks."""
+        """Compare configuration groups on their common judged tasks."""
         from spectragent.inspection.repository import open_repository
 
         _checked(
             _output(ctx, json_output),
-            lambda: open_repository(root).compare_groups(left, right, evaluator),
+            lambda: open_repository(root).compare_groups(left, right, verifier),
         )
 
     @app.command("view")

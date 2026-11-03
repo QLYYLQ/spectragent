@@ -969,66 +969,58 @@ def _branch_sweep(tmp_path, *, loader: Any = None, **sections: Any) -> list[str]
 
 
 class TestTraceBranchesSweep:
-    """No eval loader exists for branch tasks in v1; the CLI says so before running anything."""
+    """A branch sweep's task source lists no verifier of its own (§4.10.1)."""
 
-    def test_an_evaluator_with_no_eval_loader_is_refused_by_name(self, tmp_path, monkeypatch):
+    def test_a_branches_yaml_cannot_list_verifiers(self, tmp_path):
+        import yaml
+        from pydantic import ValidationError
+
         from spectragent.core.benchmark_runner import main
         from tests._helpers.branch_sources import write_source
 
         write_source(tmp_path / "recorded", "run-a", steps=2)
-        sweep = _branch_sweep(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
-        executed: list[str] = []
-        monkeypatch.setattr(
-            BenchmarkRunner, "run_task", lambda self, task_id: executed.append(task_id)
-        )
-        try:
-            main(["--session-dir", str(tmp_path / ".sessions"), *sweep])
-        except SystemExit as exc:
-            message = str(exc.code)
-        else:  # pragma: no cover — the assertion below explains
-            message = ""
-        assert f"benchmark {sweep[-1]!r} has no reference data to score against" in message
-        assert "--no-eval" in message and executed == []
+        sweep = _branch_sweep(tmp_path)
+        from pathlib import Path
 
-    def test_a_sweep_without_an_evaluator_never_asks_for_one(self, tmp_path, monkeypatch, capsys):
-        from spectragent.core import benchmark_runner
+        branches = Path(sweep[-1])
+        document = yaml.safe_load(branches.read_text())
+        document["benchmark"][0]["verifiers"] = [{"verifier_id": "exact_match"}]
+        branches.write_text(yaml.safe_dump(document))
+        with pytest.raises(ValidationError, match="verifiers"):
+            main(["--session-dir", str(tmp_path / ".sessions"), *sweep, "--list"])
+
+    def test_a_sweep_that_judges_nothing_never_asks_for_reference_data(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from spectragent.benchmarks import BenchmarkBase
         from spectragent.core.benchmark_runner import main
         from tests._helpers.branch_sources import write_source
 
         def no_lookup(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("a sweep that scores nothing resolved an eval loader")
+            raise AssertionError("a sweep that judges nothing resolved reference data")
 
-        # The configuration catalog may read eval-loader classes as schema
-        # metadata; scoring nothing must skip actual reference resolution.
-        monkeypatch.setattr(benchmark_runner, "_reference_loader", no_lookup)
+        monkeypatch.setattr(BenchmarkBase, "reference_loader", no_lookup)
         write_source(tmp_path / "recorded", "run-a", steps=2)
 
         assert (
-            main(
-                [
-                    "--session-dir",
-                    str(tmp_path / ".sessions"),
-                    *_branch_sweep(tmp_path),
-                    "--list",
-                ]
-            )
+            main(["--session-dir", str(tmp_path / ".sessions"), *_branch_sweep(tmp_path), "--list"])
             == 0
         )
         assert capsys.readouterr().out.split() == ["run-a/s1/b0"]
-        # --no-eval keeps a configured evaluator from asking, too.
-        with_judge = _branch_sweep(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
-        assert (
-            main(
-                [
-                    "--session-dir",
-                    str(tmp_path / ".sessions"),
-                    *with_judge,
-                    "--list",
-                    "--no-eval",
-                ]
-            )
-            == 0
-        )
+
+    def test_a_verifier_needing_reference_rows_the_benchmark_lacks_stops_it_by_name(self):
+        from spectragent.core.benchmark_runner import _reference_loader
+        from spectragent.verifiers.exact_match import ExactMatchVerifier
+
+        class _NoReferenceData:
+            def reference_loader(self) -> None:
+                return None
+
+        with pytest.raises(SystemExit) as stopped:
+            _reference_loader(_NoReferenceData(), [ExactMatchVerifier()], "mine.yaml")  # type: ignore[arg-type]
+        message = str(stopped.value.code)
+        assert "exact_match" in message and "'mine.yaml'" in message
+        assert "no reference data" in message and "--no-eval" in message
 
     @pytest.mark.usefixtures("branch_fake_registered")
     async def test_each_branch_task_runs_from_its_context(self, tmp_path):

@@ -89,6 +89,7 @@ BLOCK_ONLY: dict[str, tuple[Block, str]] = {
     "restorer": (_AGENT, "agent[ui_tars].agent_loop[branch].restorer"),
     "task_loader": (_BRANCHES, "benchmark[trace_branches].task_loader"),
     "eval_loader": (_ONLINE_MIND2WEB, "benchmark[online_mind2web].eval_loader"),
+    "verifier": (_ONLINE_MIND2WEB, "benchmark[online_mind2web].verifiers"),
     "step_selector": (
         _BRANCHES,
         "benchmark[trace_branches].task_loader[trace_branches].step_selector",

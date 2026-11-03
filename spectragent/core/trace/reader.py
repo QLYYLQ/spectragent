@@ -76,9 +76,9 @@ from spectragent.core.trace.effects import (
 from spectragent.core.trace.encoding import (
     ARCHIVE_META_KEY,
     CONFIG_FILE,
-    EVALS_DIR,
     MANIFEST_FILE,
     RESULT_FILE,
+    VERDICTS_DIR,
     archive_blob_path,
     check_relative_path,
     decode_fragment,
@@ -106,7 +106,6 @@ from spectragent.core.trace.models import (
     TraceManifest,
 )
 from spectragent.schemas.agent_result import AgentResult
-from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation._registrar import (
     FragmentBase,
     ObservationRegistrar,
@@ -117,6 +116,7 @@ from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import RecordingTiming
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Verdict
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -751,37 +751,46 @@ class RunTrace:
 
     # ── after the run: not in the manifest ────────────────────
 
-    def evals(self) -> dict[str, EvalResult]:
-        """Every verdict in this run's ``evals/``: ``verdict_slug`` → :class:`EvalResult`, by slug.
+    def verdicts(self) -> dict[str, Verdict]:
+        """Every verdict on this run (``verdicts/<slug>.json``): slug → :class:`Verdict`, by slug.
 
-        Verdicts are written after the run, each atomically, by
-        ``EvaluationRunner`` (``evals/<verdict_slug>.json``) and are not in the
-        manifest, so this is the one accessor that lists a directory — in
-        sorted order. Only ``*.json`` files count (an interrupted atomic
-        write leaves a ``tmp….tmp``); the slug is the file name without
-        ``.json``. No ``evals/`` → ``{}``. Not cached: a verdict written
-        after this ``RunTrace`` was opened is seen by the next call.
+        The one place every verdict is kept, from the scoring point and from
+        offline verifiers alike (``docs/architecture_design.md`` §5.3
+        "判定统一存放"). Verdicts are written atomically outside the manifest
+        (``core/trace/verdicts.py``), so this is the one accessor that lists a
+        directory — in sorted order, so which bad file is named first does not
+        depend on the order the file system lists them in. Only ``*.json``
+        files count (an interrupted atomic write leaves a ``tmp….tmp``); the
+        slug is the file name without ``.json``. No ``verdicts/`` → ``{}``. Not
+        cached: a verdict written after this ``RunTrace`` was opened is seen by
+        the next call.
 
         Raises:
-            TraceSchemaError: ``evals/`` or a file in it resolves outside the
+            TraceSchemaError: ``verdicts/`` or a file in it resolves outside the
                 run directory (symlinks resolved — a trace only reads its own
-                files), or a file does not read as an ``EvalResult`` (naming it).
+                files), a file does not read as a :class:`Verdict`, or one is
+                named by another slug than its verifier's (each naming the file).
         """
-        directory = self._trace_dir / EVALS_DIR
-        self._require_inside(directory, EVALS_DIR, listed_in=self._trace_dir)
+        directory = self._trace_dir / VERDICTS_DIR
+        self._require_inside(directory, VERDICTS_DIR, listed_in=self._trace_dir)
         if not directory.is_dir():
             return {}
-        verdicts: dict[str, EvalResult] = {}
-        # Sorted, so which bad file is named first does not depend on the
-        # order the file system lists them in.
+        verdicts: dict[str, Verdict] = {}
         for path in sorted(directory.iterdir()):
             if path.suffix != ".json":
                 continue
-            self._require_inside(path, f"{EVALS_DIR}/{path.name}", listed_in=directory)
+            self._require_inside(path, f"{VERDICTS_DIR}/{path.name}", listed_in=directory)
             if not path.is_file():
                 continue
-            verdicts[path.stem] = _read_persisted_eval_result(path)
-        return dict(sorted(verdicts.items()))
+            verdict = _read_model(path, Verdict)
+            if verdict.slug != path.stem:
+                raise TraceSchemaError(
+                    f"{path} holds the verdict of {verdict.slug!r}, not of {path.stem!r}: the "
+                    f"store names each verdict by its verifier's slug",
+                    path=path,
+                )
+            verdicts[path.stem] = verdict
+        return verdicts
 
     # ── internals ─────────────────────────────────────────────
 
@@ -1286,23 +1295,6 @@ def _why_not_read(found: Any) -> str:
 def _read_model(path: Path, model: type[M]) -> M:
     """Read a committed JSON file as *model* — the reader's single entry for JSON."""
     return _parse(path, _read_bytes(path), model.model_validate, model.__name__)
-
-
-def _read_persisted_eval_result(path: Path) -> EvalResult:
-    """Require the provenance that a stored verdict needs to be interpretable.
-
-    ``EvalResult`` supplies construction defaults for a freshly graded
-    result. A saved JSON document must have actually recorded these fields;
-    otherwise an older score could silently become a current graded verdict.
-    """
-    value = _read_json_object(path)
-    missing = {"schema_version", "evaluator_config", "verdict_source"} - value.keys()
-    if missing:
-        raise TraceSchemaError(
-            f"{path} is missing persisted EvalResult field(s) {sorted(missing)}",
-            path=path,
-        )
-    return _validated(path, value, EvalResult.model_validate, "EvalResult")
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

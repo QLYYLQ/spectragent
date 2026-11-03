@@ -14,4 +14,6 @@ class BrowseCompBenchmark(BenchmarkBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "task_loader": ("task_loader", ["browsecomp"]),
         "eval_loader": ("eval_loader", ["browsecomp"]),
+        # Its grader, and exact matching for a short answer the reference spells out.
+        "verifiers": ("verifier", ["browsecomp", "exact_match"]),
     }

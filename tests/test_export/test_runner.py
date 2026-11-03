@@ -35,7 +35,7 @@ from tests._helpers.export_traces import (
     ui_tars_step,
     write_ui_tars_run,
 )
-from tests._helpers.trace_builder import eval_result
+from tests._helpers.trace_builder import verdict
 
 
 def _write_sources(root: Path, order: list[str]) -> None:
@@ -238,7 +238,7 @@ class TestDeterminism:
         names both without the sources root, so two roots export to the same
         bytes.
         """
-        passed = {"judge": eval_result(evaluator_id="online_mind2web")}
+        passed = [verdict("online_mind2web")]
         reports = []
         for name in ("src1", "elsewhere/src2"):
             root = tmp_path / name
@@ -249,14 +249,14 @@ class TestDeterminism:
             broken.mkdir()
             (broken / "manifest.json").write_text("{not json")
             damaged = write_ui_tars_run(
-                root, "run-evals", [ui_tars_step(click_at(9, 9))], task_id="e", verdicts=passed
+                root, "run-verdicts", [ui_tars_step(click_at(9, 9))], task_id="e", verdicts=passed
             )
-            (damaged / "evals" / "judge.json").write_text("{not json")
+            (damaged / "verdicts" / f"{passed[0].slug}.json").write_text("{not json")
             entry = exporter_entry(
                 root,
                 tmp_path / f"out-{len(reports)}",
                 filters={
-                    "require_eval": {"evaluator_id": "online_mind2web"},
+                    "require_eval": {"verifier_id": "online_mind2web"},
                     "max_document_misses": "unlimited",
                 },
             )
@@ -265,8 +265,8 @@ class TestDeterminism:
         assert first.manifest.sources.skipped == {
             "run-broken": "not a readable trace: manifest.json does not read back "
             "(TraceSchemaError)",
-            "run-evals": "not a readable trace: evals/judge.json does not read back "
-            "(TraceSchemaError)",
+            "run-verdicts": f"not a readable trace: verdicts/{passed[0].slug}.json does not "
+            "read back (TraceSchemaError)",
         }
         text = (tmp_path / "out-0" / "manifest.json").read_text()
         assert str(tmp_path) not in text and "/private/" not in text

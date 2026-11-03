@@ -18,7 +18,7 @@ from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.sample import ThoughtRecord
 from tests._helpers.export_traces import ExportStep, screenshot, setup_record, write_run
-from tests._helpers.trace_builder import eval_result
+from tests._helpers.trace_builder import verdict
 
 
 def _click(index: int, **extra: object) -> Action:
@@ -194,23 +194,30 @@ class TestReferencesAndLabels:
             "viewport_height": 720,
         }
 
-    def test_graded_verdicts_in_slug_order_and_the_redaction_ledger(self, tmp_path: Path) -> None:
+    def test_judged_verdicts_in_slug_order_and_the_redaction_ledger(self, tmp_path: Path) -> None:
+        first = verdict("online_mind2web", config_signature={"llm": "judge-a"}, label=1)
+        second = verdict("online_mind2web", config_signature={"llm": "judge-b"}, label=0)
+        live = verdict("androidworld", attachment="live", label=None, score=0.5)
+        skipped = verdict(
+            "exact_match", attachment="live", status="not_judged", label=None, reason="error"
+        )
         run = write_run(
             tmp_path,
             "run-i",
             [ExportStep(actions=[_click(1)])],
             task_setup=setup_record(redacted=True),
-            verdicts={
-                "z-judge": eval_result(evaluator_id="online_mind2web", predicted_label=0),
-                "a-judge": eval_result(evaluator_id="online_mind2web", predicted_label=1),
-                "skipped": eval_result(evaluator_id="exact_match", verdict_source="not_evaluated"),
-            },
+            verdicts=[second, first, live, skipped],
         )
         (sample,) = _samples(run)
-        assert [(v.verdict_slug, v.predicted_label) for v in sample.labels.verdicts] == [
-            ("a-judge", 1),
-            ("z-judge", 0),
-        ]
+        assert [
+            (v.verdict_slug, v.verifier_id, v.label, v.score) for v in sample.labels.verdicts
+        ] == sorted(
+            [
+                (first.slug, "online_mind2web", 1, None),
+                (second.slug, "online_mind2web", 0, None),
+                (live.slug, "androidworld", None, 0.5),
+            ]
+        )
         assert sample.labels.step_status == "ok"
         assert sample.labels.loss_weight == 1.0
         assert [r.model_dump() for r in sample.redactions] == [
@@ -232,11 +239,12 @@ class TestReferencesAndLabels:
 
 class TestBranchSamples:
     def test_policy_steps_only_with_branch_meta_and_the_terminal_ref(self, tmp_path: Path) -> None:
+        judged = verdict("online_mind2web", label=1)
         source = write_run(
             tmp_path,
             "src",
             [ExportStep(actions=[_click(i)]) for i in range(3)],
-            verdicts={"judge": eval_result(evaluator_id="online_mind2web", predicted_label=1)},
+            verdicts=[judged],
         )
         terminal_shot = screenshot(color=10)
         branch = write_run(
@@ -272,8 +280,8 @@ class TestBranchSamples:
                 "terminal_image_sha256": hashlib.sha256(terminal_shot.image_bytes).hexdigest(),
                 "duplicate_of": None,
             }
-            assert [v.verdict_slug for v in sample.labels.verdicts] == ["judge"]
-        assert _samples(branch)[0].labels.verdicts == []  # its own evals/: none
+            assert [v.verdict_slug for v in sample.labels.verdicts] == [judged.slug]
+        assert _samples(branch)[0].labels.verdicts == []  # its own verdicts: none
 
     def test_a_branch_without_a_terminal_step(self, tmp_path: Path) -> None:
         branch = write_run(

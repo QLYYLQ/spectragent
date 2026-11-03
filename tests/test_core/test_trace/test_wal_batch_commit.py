@@ -188,7 +188,7 @@ class TestInitRun:
             ("write", "manifest.json"),
             ("fsync_dir", "."),
         ]
-        for name in ("steps", "observations", "messages", "metrics", "evals"):
+        for name in ("steps", "observations", "messages", "metrics"):
             assert (wal.run_dir / name).is_dir(), name
 
     STAGES: dict[str, Callable[[str, str], bool]] = {
@@ -631,7 +631,7 @@ class TestPathRules:
             "Steps/007.json",
             "observations/000_browser.dom.json",
             "messages/000_call_00.json",
-            "evals/judge.json",
+            "verdicts/exact_match_00000000.json",
             "steps",
         ],
     )

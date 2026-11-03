@@ -23,6 +23,7 @@ from spectragent.core.trace.models import TraceStatus
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.task import TaskContext
+from spectragent.schemas.verdict import Verdict
 from tests._helpers.branch_sources import (
     CAPTURE_FAILED,
     NEVER_QUIET,
@@ -33,7 +34,7 @@ from tests._helpers.branch_sources import (
     setup_record,
     write_source,
 )
-from tests._helpers.trace_builder import eval_result
+from tests._helpers.trace_builder import verdict
 
 
 def _composed_loader(**block: Any) -> Any:
@@ -393,55 +394,50 @@ class TestTheTracesOwnLedger:
     @pytest.mark.parametrize(
         ("verdicts", "kept"),
         [
-            ({"exact_match": eval_result(predicted_label=1)}, True),
-            ({"exact_match": eval_result(predicted_label=0)}, False),
+            ([verdict(label=1)], True),
+            ([verdict(label=0)], False),
             (
-                {"exact_match": eval_result(predicted_label=1, verdict_source="evaluation_error")},
+                [verdict(attachment="live", status="not_judged", label=None, reason="timeout")],
                 False,
             ),
-            (
-                {"exact_match": eval_result(predicted_label=1, verdict_source="not_evaluated")},
-                False,
-            ),
-            ({"judge": eval_result(evaluator_id="online_mind2web", predicted_label=1)}, False),
-            ({}, False),
+            ([verdict("online_mind2web", label=1)], False),
+            ([], False),
         ],
-        ids=["graded_pass", "graded_fail", "evaluation_error", "not_evaluated", "other", "none"],
+        ids=["judged_pass", "judged_fail", "not_judged", "other", "none"],
     )
-    def test_require_eval(self, tmp_path: Path, verdicts: dict[str, Any], kept: bool) -> None:
+    def test_require_eval(self, tmp_path: Path, verdicts: list[Verdict], kept: bool) -> None:
         write_source(tmp_path, "run-a", steps=1, verdicts=verdicts)
-        tasks = loader(tmp_path, require_eval=RequireEval(evaluator_id="exact_match"))
+        tasks = loader(tmp_path, require_eval=RequireEval(verifier_id="exact_match"))
         assert (tasks.task_ids() == ["run-a/s0/b0"]) is kept
         if not kept:
             assert "(require_eval)" in tasks.skipped["run-a"]
 
     def test_require_eval_label_and_slug(self, tmp_path: Path) -> None:
-        verdicts = {
-            "exact_match-strict": eval_result(predicted_label=0),
-            "exact_match-loose": eval_result(predicted_label=1),
-        }
-        write_source(tmp_path, "run-a", steps=1, verdicts=verdicts)
+        strict = verdict(config_signature={"case_sensitive": True}, label=0)
+        loose = verdict(config_signature={"allow_substring": True}, label=1)
+        write_source(tmp_path, "run-a", steps=1, verdicts=[strict, loose])
         for need, kept in [
-            (RequireEval(evaluator_id="exact_match"), True),
-            (RequireEval(evaluator_id="exact_match", label=0), True),
-            (RequireEval(evaluator_id="exact_match", slug="exact_match-strict"), False),
-            (RequireEval(evaluator_id="exact_match", slug="exact_match-loose"), True),
-            (RequireEval(evaluator_id="exact_match", slug="exact_match-strict", label=0), True),
+            (RequireEval(verifier_id="exact_match"), True),
+            (RequireEval(verifier_id="exact_match", label=0), True),
+            (RequireEval(verifier_id="exact_match", slug=strict.slug), False),
+            (RequireEval(verifier_id="exact_match", slug=loose.slug), True),
+            (RequireEval(verifier_id="exact_match", slug=strict.slug, label=0), True),
         ]:
             tasks = loader(tmp_path, require_eval=need)
             assert bool(tasks.task_ids()) is kept, need
 
     def test_result_json_is_never_read(self, tmp_path: Path) -> None:
-        source = write_source(tmp_path, "run-a", steps=1, verdicts={"exact_match": eval_result()})
+        source = write_source(tmp_path, "run-a", steps=1, verdicts=[verdict()])
         (source / "result.json").write_text("{not json")
-        tasks = loader(tmp_path, require_eval=RequireEval(evaluator_id="exact_match"))
+        tasks = loader(tmp_path, require_eval=RequireEval(verifier_id="exact_match"))
         assert tasks.task_ids() == ["run-a/s0/b0"]
 
     def test_a_corrupt_verdict_is_a_source_that_cannot_be_branched(self, tmp_path: Path) -> None:
         source = write_source(tmp_path, "run-a", steps=1)
-        (source / "evals" / "exact_match.json").write_text("{not json")
-        with pytest.raises(BenchmarkDataError, match="evaluations do not read back"):
-            loader(tmp_path, require_eval=RequireEval(evaluator_id="exact_match")).task_ids()
+        (source / "verdicts").mkdir()
+        (source / "verdicts" / "exact_match_00000000.json").write_text("{not json")
+        with pytest.raises(BenchmarkDataError, match="verdicts do not read back"):
+            loader(tmp_path, require_eval=RequireEval(verifier_id="exact_match")).task_ids()
 
 
 # ── preconditions ────────────────────────────────────────────────────
@@ -681,13 +677,13 @@ class TestKnobs:
             {
                 "data_dir": "traces/recorded",
                 "sources": ["2026-*"],
-                "require_eval": {"evaluator_id": "online_mind2web", "slug": "online_mind2web-ab"},
+                "require_eval": {"verifier_id": "online_mind2web", "slug": "online_mind2web-ab"},
                 "step_selector": {"selector_id": "every_k", "k": 2},
                 "exclude_unloaded_checkpoints": False,
             }
         )
         assert config.require_eval == RequireEval(
-            evaluator_id="online_mind2web", label=1, slug="online_mind2web-ab"
+            verifier_id="online_mind2web", label=1, slug="online_mind2web-ab"
         )
         assert config.exclude_unloaded_checkpoints is False
         assert (

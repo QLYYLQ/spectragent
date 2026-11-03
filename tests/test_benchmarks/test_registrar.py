@@ -118,3 +118,81 @@ def test_a_branch_sweep_has_no_references(tmp_path: Path) -> None:
     )
     assert benchmark.reference_loader() is None  # type: ignore[attr-defined]
     assert benchmark.task_loader.task_ids() == []  # type: ignore[attr-defined]
+
+
+def test_each_benchmark_names_the_verifier_kinds_it_takes() -> None:
+    """A branch sweep's task source takes none: a branch task is judged by its source's benchmark."""
+    ConfigComposer.for_every_package()
+    taken = {
+        key: list(cls.__wiring__.get("verifiers", (None, []))[1])
+        for key, cls in BenchmarkRegistrar.get_all().items()
+    }
+    assert taken == {
+        "androidworld": [],
+        "browsecomp": ["browsecomp", "exact_match"],
+        "lexbench_browser": ["lexbench_browser"],
+        "online_mind2web": ["online_mind2web"],
+        "trace_branches": [],
+    }
+
+
+def test_a_block_that_lists_no_verifier_has_none(tmp_path: Path) -> None:
+    directory = _data(tmp_path, "browsecomp", "All", "t1")
+    loader = {"benchmark_name": "browsecomp", "subset": "All", "data_dir": str(directory)}
+    benchmark = _benchmark(benchmark_id="browsecomp", task_loader=loader)
+    assert benchmark.verifiers == []  # type: ignore[attr-defined]
+    assert benchmark.offline_verifiers() == []  # type: ignore[attr-defined]
+
+
+def test_the_offline_verifiers_are_the_listed_ones_in_order(tmp_path: Path) -> None:
+    directory = _data(tmp_path, "browsecomp", "All", "t1")
+    loader = {"benchmark_name": "browsecomp", "subset": "All", "data_dir": str(directory)}
+    benchmark = _benchmark(
+        benchmark_id="browsecomp",
+        task_loader=loader,
+        verifiers=[
+            {"verifier_id": "exact_match", "allow_substring": True},
+            {"verifier_id": "exact_match"},
+        ],
+    )
+    listed = benchmark.offline_verifiers()  # type: ignore[attr-defined]
+    assert [verifier.allow_substring for verifier in listed] == [True, False]
+
+
+def test_another_benchmarks_verifier_is_refused() -> None:
+    raw = {
+        "benchmark": [
+            {
+                "benchmark_id": "online_mind2web",
+                "task_loader": {"benchmark_name": "online_mind2web"},
+                "verifiers": [{"verifier_id": "exact_match"}],
+            }
+        ]
+    }
+    with pytest.raises(ValidationError, match="exact_match"):
+        ConfigComposer.for_config(raw).validate(raw)
+
+
+def test_verifiers_are_no_part_of_the_runs_configuration_or_its_hash(tmp_path: Path) -> None:
+    """Judging a sweep with another judge leaves its runs one experiment (§5.3 "实验身份")."""
+    from spectragent.core.trace.models import TraceConfig
+    from spectragent.core.trace.redaction import redact_config
+
+    directory = _data(tmp_path, "browsecomp", "All", "t1")
+    loader = {"benchmark_name": "browsecomp", "subset": "All", "data_dir": str(directory)}
+
+    def recorded(verifiers: list[dict[str, object]] | None) -> dict[str, object]:
+        block: dict[str, object] = {"benchmark_id": "browsecomp", "task_loader": loader}
+        if verifiers is not None:
+            block["verifiers"] = verifiers
+        raw = {"benchmark": [block]}
+        run = ConfigComposer.for_config(raw).compose(raw)
+        return redact_config(run.run_configuration(), record_secrets=True)
+
+    none = recorded(None)
+    judged = recorded([{"verifier_id": "exact_match", "allow_substring": True}])
+    assert none == judged
+    assert judged["benchmark"][0]["verifiers"] is None  # type: ignore[index]
+    assert judged["benchmark"][0]["task_loader"]["subset"] == "All"  # type: ignore[index]
+    digest = TraceConfig().configuration_digest
+    assert digest(resolved=none) == digest(resolved=judged)

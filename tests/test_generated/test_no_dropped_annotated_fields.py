@@ -1,7 +1,7 @@
 """Every ``Annotated`` knob a registered class declares must be configurable.
 
 This is the package-wide tripwire for the PEP 563 trap documented on
-``spectragent/evaluator/_registrar.py`` and
+``spectragent/verifiers/_registrar.py`` and
 ``spectragent/core/capabilities/browser/actions/_mixins.py``:
 
 A base or mixin module that uses ``from __future__ import annotations``

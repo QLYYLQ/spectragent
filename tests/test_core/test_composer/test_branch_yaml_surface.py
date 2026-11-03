@@ -303,7 +303,7 @@ class TestTheTaskLoaderSurface:
                 data_dir="/recorded",
                 branches_per_step=3,
                 agent_outcome="done",
-                require_eval={"evaluator_id": "online_mind2web", "slug": "online_mind2web-ab"},
+                require_eval={"verifier_id": "online_mind2web", "slug": "online_mind2web-ab"},
                 require_archive=[],
                 on_unbranchable="skip",
                 step_selector={"selector_id": "every_k", "k": 2, "offset": 1},
@@ -319,7 +319,7 @@ class TestTheTaskLoaderSurface:
             "done",
         )
         assert loader.require_eval == RequireEval(
-            evaluator_id="online_mind2web", label=1, slug="online_mind2web-ab"
+            verifier_id="online_mind2web", label=1, slug="online_mind2web-ab"
         )
         assert (loader.require_archive, loader.on_unbranchable) == ((), "skip")
 

@@ -128,14 +128,17 @@ class Untranslatable(_Record):
 
 
 class VerdictLabel(_Record):
-    """One graded verdict of the run (a branch run: of its source run).
+    """One judged verdict of the run (a branch run: of its source run).
 
-    Only the verdict itself: a reference answer never enters a sample.
+    Only what the verifier found: a reference answer never enters a sample.
     """
 
     verdict_slug: str
-    evaluator_id: str
-    predicted_label: int
+    verifier_id: str
+    #: 1 passed, 0 failed; ``None`` for a verifier that gives a score only.
+    label: int | None = None
+    #: The verifier's own score, when it gives one.
+    score: float | None = None
 
 
 class SampleLabels(_Record):
@@ -147,7 +150,7 @@ class SampleLabels(_Record):
             Loop did not execute, because the action before them failed (so
             ``step_status`` is ``action_failed``). 0: every target action ran.
         loss_weight: The target turn's weight (earlier turns weigh 0).
-        verdicts: Every graded verdict, in slug order.
+        verdicts: Every judged verdict, in slug order.
     """
 
     step_status: StepStatus

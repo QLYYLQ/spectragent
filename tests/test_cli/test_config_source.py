@@ -61,7 +61,8 @@ def _stub_composer(monkeypatch, path, *, change_source=False):
             assert raw == {"version": "consumed", "benchmark": [block]}
             path.write_bytes(b"version: changed\n")
         loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
-        return ComposedRun(by_layer={"benchmark": {"fixture": SimpleNamespace(task_loader=loader)}})
+        chosen = SimpleNamespace(task_loader=loader, offline_verifiers=lambda: [])
+        return ComposedRun(by_layer={"benchmark": {"fixture": chosen}})
 
     monkeypatch.setattr(
         benchmark_runner,

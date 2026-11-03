@@ -134,9 +134,9 @@ def test_an_exporter_only_yaml_composes_and_every_knob_arrives(composer: ConfigC
 def test_a_verdict_filter_still_arrives_when_written(composer: ConfigComposer) -> None:
     """The evaluator is dormant, not deleted: ``require_eval`` is optional, null by default."""
     entry = copy.deepcopy(ENTRY)
-    entry["filters"]["require_eval"] = {"evaluator_id": "online_mind2web", "label": 1, "slug": None}
+    entry["filters"]["require_eval"] = {"verifier_id": "online_mind2web", "label": 1, "slug": None}
     exporter = _compose(composer, entry).single("exporter")
-    assert exporter.filters.require_eval == RequireEval(evaluator_id="online_mind2web", label=1)
+    assert exporter.filters.require_eval == RequireEval(verifier_id="online_mind2web", label=1)
 
 
 def test_the_unloaded_step_filter_can_be_turned_off(composer: ConfigComposer) -> None:

@@ -58,7 +58,6 @@ from spectragent.core.trace.encoding import (
     restore_prompt_images,
     sha256_hex,
 )
-from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.models import (
     RecordedChatCall,
     RecordedLLMCall,
@@ -69,11 +68,11 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
-from spectragent.schemas.eval_result import AgentResultRef, EvalDetails, EvalResult
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.observation.image import image_media_type
 from spectragent.schemas.step_record import StepRecord, TokenUsage
+from spectragent.schemas.verdict import Verdict, VerifierIdentity
 from tests._helpers.fragment_samples import JPEG_BYTES, PNG_BYTES, SAMPLES
 
 if TYPE_CHECKING:
@@ -239,29 +238,32 @@ def agent_result(**overrides: Any) -> AgentResult:
     return AgentResult(**fields)
 
 
-def eval_result(**overrides: Any) -> EvalResult:
-    """A verdict with every required field filled; *overrides* replace any of them."""
-    now = datetime.now(UTC)
+def verdict(
+    verifier_id: str = "exact_match",
+    *,
+    config_signature: dict[str, Any] | None = None,
+    model: str | None = None,
+    **overrides: Any,
+) -> Verdict:
+    """A judged offline verdict (label 1) with every required field filled.
+
+    *verifier_id*, *config_signature* and *model* make its identity, so its
+    slug; *overrides* replace any other field (``label=0``;
+    ``status="not_judged", label=None, reason="error"`` for one that judged
+    nothing).
+    """
     fields: dict[str, Any] = {
-        "task_id": "task-001",
-        "evaluator_id": "exact_match",
-        "benchmark": "test",
-        "run_id": "run-test",
-        "timestamp": now,
-        "agent_result_ref": AgentResultRef(task_id="task-001", timestamp=now, result_dir="."),
-        "predicted_label": 1,
-        "evaluation_details": EvalDetails(),
+        "verifier": VerifierIdentity(
+            verifier_id=verifier_id, model=model, config_signature=config_signature or {}
+        ),
+        "attachment": "offline",
+        "status": "judged",
+        "label": 1,
+        "started_at": 1_700_000_000.0,
+        "duration_ms": 5,
     }
     fields.update(overrides)
-    return EvalResult(**fields)
-
-
-def write_verdict(run_dir: Path, slug: str, verdict: EvalResult) -> Path:
-    """Write *verdict* the way ``EvaluationRunner._persist`` does: ``evals/<slug>.json``, atomically."""
-    path = run_dir / "evals" / f"{slug}.json"
-    payload = json.dumps(verdict.model_dump(mode="json"), ensure_ascii=False, indent=2)
-    atomic_write(path, payload.encode("utf-8"))
-    return path
+    return Verdict(**fields)
 
 
 def new_wal(base: Path, run_id: str = "run-test") -> WALWriter:

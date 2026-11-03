@@ -8,11 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from spectragent.core.trace.models import TraceConfig, TraceStatus
+from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection import RepositoryError
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.viewer import create_app
-from tests._helpers.trace_builder import PNG_BYTES, agent_result, build_reference_trace, eval_result
+from tests._helpers.trace_builder import PNG_BYTES, agent_result, build_reference_trace, verdict
 
 
 @pytest.fixture
@@ -172,7 +173,13 @@ def test_read_only_routes_never_expose_arbitrary_files(tmp_path: Path):
 
 
 def test_reports_use_shared_report_reader(tmp_path: Path):
-    data = {"format": "af-independent-evaluation-1", "coverage": 0.5, "success_rate": None}
+    data = {
+        "format": "af-independent-evaluation-2",
+        "benchmark": "fixture",
+        "provided": 2,
+        "verifiers": [{"slug": "exact_match_44136fa3", "coverage": 0.5, "success_rate": None}],
+        "outcomes": [],
+    }
     report = tmp_path / "eval" / "report.json"
     report.parent.mkdir()
     report.write_text(json.dumps(data))
@@ -194,28 +201,29 @@ def test_comparison_reads_multiple_runs_and_bounds_request(tmp_path: Path):
 
 def test_experiment_comparison_exposes_matched_verdicts(tmp_path: Path):
     hashes = []
-    for name, verdict in [("first", 1), ("second", 0)]:
+    slug = verdict().slug
+    for name, label in [("first", 1), ("second", 0)]:
         config = TraceConfig(task_id="shared-task", resolved={"variant": name})
         hashes.append(config.configuration_digest())
         writer = WALWriter(tmp_path, name)
         writer.init_run(config)
         writer.write_result(agent_result())
         writer.finalize(TraceStatus.COMPLETE)
-        (writer.run_dir / "evals" / "judge.json").write_text(
-            eval_result(predicted_label=verdict).model_dump_json()
-        )
+        write_verdict(writer.run_dir, verdict(label=label))
     client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
     response = client.get(
         "/api/compare-groups",
-        params={"left": hashes[0], "right": hashes[1], "evaluator": "judge"},
+        params={"left": hashes[0], "right": hashes[1], "verifier": slug},
     )
     assert response.status_code == 200
+    assert response.json()["verifier"] == slug
     assert response.json()["counts"]["left_only_passed"] == 1
     assert response.json()["rows"][0]["task_id"] == "shared-task"
+    assert client.get("/api/run", params={"key": "second"}).json()["verdicts"][slug]["label"] == 0
     assert (
         client.get(
             "/api/compare-groups",
-            params={"left": hashes[0], "right": hashes[0], "evaluator": "judge"},
+            params={"left": hashes[0], "right": hashes[0], "verifier": slug},
         ).status_code
         == 400
     )

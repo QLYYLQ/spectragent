@@ -194,6 +194,33 @@ def test_unreadable_runs_show_their_reason_in_the_row():
     assert any("manifest does not parse" in cell for cell in cells)
 
 
+def test_a_verdict_shows_its_label_its_score_or_that_it_judged_nothing():
+    """A score without a label is shown as the score, never as a failure."""
+
+    def brief(slug, attachment, status, label=None, score=None):
+        return {
+            "slug": slug,
+            "verifier_id": slug.rsplit("_", 1)[0],
+            "attachment": attachment,
+            "status": status,
+            "label": label,
+            "score": score,
+        }
+
+    verdicts = [
+        brief("exact_match_44136fa3", "offline", "judged", label=0),
+        brief("androidworld_5e6f7a8b", "live", "judged", score=0.5),
+        brief("androidworld_9c0d1e2f", "live", "not_judged"),
+    ]
+    text = sheet_text(run_facts({"summary": {"verdicts": verdicts}}))
+    assert "Verdicts    exact_match_44136fa3: label 0  (offline, judged)" in text
+    assert "androidworld_5e6f7a8b: score 0.5  (live, judged)" in text
+    assert "androidworld_9c0d1e2f: not judged  (live, not_judged)" in text
+    unreadable = run_facts({"summary": {"verdicts": [], "verdict_error": "broken.json"}})
+    assert "Verdicts    unreadable: broken.json" in sheet_text(unreadable)
+    assert "Verdicts    none recorded" in sheet_text(run_facts({"summary": {}}))
+
+
 def test_config_source_is_shown_relative_to_the_browsed_root():
     root = Path("/experiments")
     assert config_label({"path": "/experiments/configs/a.yaml"}, root) == "configs/a.yaml"

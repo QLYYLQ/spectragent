@@ -783,17 +783,24 @@ def run_facts(detail: dict[str, Any], root: Path | None = None) -> Sheet:
     if summary.get("error"):
         sheet.append(fact("Error", (str(summary["error"]), "bad")))
     verdicts = summary.get("verdicts") or []
-    if summary.get("evaluation_error"):
-        sheet.append(fact("Evaluations", (f"unreadable: {summary['evaluation_error']}", "bad")))
+    if summary.get("verdict_error"):
+        sheet.append(fact("Verdicts", (f"unreadable: {summary['verdict_error']}", "bad")))
     elif not verdicts:
-        sheet.append(fact("Evaluations", ("none recorded", "muted")))
+        sheet.append(fact("Verdicts", ("none recorded", "muted")))
     for index, item in enumerate(verdicts):
+        found = (
+            f"label {item.get('label')}"
+            if item.get("label") is not None
+            else f"score {item.get('score')}"
+            if item.get("score") is not None
+            else "not judged"
+        )
         sheet.append(
             fact(
-                "Evaluations" if index == 0 else "",
-                (f"{item.get('evaluator')}: ", "muted"),
-                (str(item.get("predicted_label")), "strong"),
-                (f"  ({item.get('verdict_source')})", "muted"),
+                "Verdicts" if index == 0 else "",
+                (f"{item.get('slug')}: ", "muted"),
+                (found, "strong"),
+                (f"  ({item.get('attachment')}, {item.get('status')})", "muted"),
             )
         )
     relationship = execution.get("relationship")
