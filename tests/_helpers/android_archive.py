@@ -15,7 +15,7 @@ from contextlib import AsyncExitStack, ExitStack
 from pathlib import Path
 from unittest import mock
 
-from spectragent.core.archive import ArchiveFile
+from spectragent.core.archive import ArchiveBatch
 from spectragent.core.capabilities.android.archive.ui_tree_raw import (
     RawUITreeArchiver,
     RawUITreeSession,
@@ -72,7 +72,7 @@ class AndroidArchiveDriver:
     def break_collect(self) -> None:
         """Encoding the tree fails from now on: every collection names the loss."""
 
-        async def failing(session: RawUITreeSession) -> list[ArchiveFile]:
+        async def failing(session: RawUITreeSession) -> ArchiveBatch:
             raise OSError("the tree could not be encoded")
 
         self._patches.enter_context(mock.patch.object(RawUITreeSession, "collect", failing))
