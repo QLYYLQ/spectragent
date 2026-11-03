@@ -377,19 +377,18 @@ def _add_episode_over(android_server) -> None:
     As AndroidWorld's runner decides: only a task whose name starts with
     ``miniwob`` has an episode the environment ends, and it is over when the
     reward the MiniWoB++ app stores ends it (:func:`reward_ends_episode`), read
-    through the same broadcast ``miniwob_base`` reads it with (three tries, a
-    second apart). A reward the app does not give answers HTTP 500.
+    through ``miniwob_base._extract_data`` as ``miniwob_base`` reads it (the
+    launcher has sent those reads to the foreground queue). A reward the app
+    does not give answers HTTP 500.
     """
     import fastapi
     from android_world.task_evals.miniwob import miniwob_base
 
     # A renamed private name would fail every question at run time; refuse to start.
-    if not callable(getattr(miniwob_base, "_extract_data", None)) or not isinstance(
-        getattr(miniwob_base, "_APP_NAME", None), str
-    ):
+    if not isinstance(getattr(miniwob_base, "_APP_NAME", None), str):
         raise SystemExit(
-            "serve.py reads a MiniWoB++ reward through miniwob_base._extract_data and "
-            "_APP_NAME, which this AndroidWorld does not define"
+            "serve.py asks the MiniWoB++ app for its reward by its package name, "
+            "miniwob_base._APP_NAME, which this AndroidWorld does not define"
         )
     app = android_server.app
 
@@ -436,7 +435,13 @@ def _patch(args: argparse.Namespace) -> None:
     from android_env.components.simulators.emulator import emulator_simulator
     from android_env.proto import emulator_controller_pb2_grpc, snapshot_service_pb2_grpc
     from android_env.wrappers import a11y_grpc_wrapper
-    from android_world.env import adb_utils, env_launcher, interface
+    from android_world.env import (
+        adb_utils,
+        android_world_controller,
+        env_launcher,
+        interface,
+        representation_utils,
+    )
     from android_world.task_evals.miniwob import miniwob_base
     from android_world.task_evals.utils import sqlite_utils
 
@@ -515,11 +520,18 @@ def _patch(args: argparse.Namespace) -> None:
         or not isinstance(getattr(miniwob_base, "_MAIN_ACTIVITY", None), str)
         or not callable(getattr(miniwob_base, "_get_episode_utterance", None))
         or not callable(getattr(adb_utils, "start_activity", None))
+        or not callable(
+            getattr(android_world_controller.AndroidWorldController, "get_ui_elements", None)
+        )
+        or "resource_name"
+        not in getattr(representation_utils.UIElement, "__dataclass_fields__", {})
     ):
         raise SystemExit(
             "serve.py waits for a MiniWoB++ page by replacing MiniWoBTask.initialize_task with "
             "its own steps, through adb_utils.start_activity, miniwob_base._MAIN_ACTIVITY and "
-            "miniwob_base._get_episode_utterance, which this AndroidWorld does not all define"
+            "miniwob_base._get_episode_utterance, and looks at the page through "
+            "AndroidWorldController.get_ui_elements and UIElement.resource_name, which this "
+            "AndroidWorld does not all define"
         )
 
     def shown(env) -> set[str]:  # env: AndroidWorld's AsyncEnv
