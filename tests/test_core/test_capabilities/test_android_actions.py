@@ -1202,6 +1202,36 @@ async def test_an_app_that_is_not_there_is_refused_naming_the_apps_that_are_know
         assert result.error is not None and "Settings" in result.error
 
 
+async def test_a_refusal_names_only_the_apps_of_the_table_that_are_installed(
+    capability: AndroidCapability,
+) -> None:
+    """A benchmark's table names apps its device lacks; an agent keeps the refusal in its history."""
+    keep = "com.google.android.keep/.activities.BrowseActivity"
+    capability.actions = [
+        AndroidOpenAppAction(
+            apps={
+                "system settings": "com.android.settings",
+                "settings": "com.android.settings/.Settings",
+                "google keep": keep,
+                "keep": keep,
+                "vlc": "org.videolan.vlc/.gui.MainActivity",
+            }
+        )
+    ]
+    installed = "installed apps by name: settings, system settings, or an installed package name"
+
+    for name in ("Notes", "Google Keep"):  # not in the table; in it, its app not installed
+        refused = await act(capability, "open_app", app_name=name)
+        assert not refused.success
+        assert refused.error == f"no app {name!r} is installed; {installed}"
+
+    capability.actions = [AndroidOpenAppAction(apps={"keep": keep})]
+    refused = await act(capability, "open_app", app_name="keep")
+    assert refused.error == (
+        "no app 'keep' is installed; installed apps by name: none, or an installed package name"
+    )
+
+
 async def test_a_wait_touches_nothing_and_refuses_a_wait_past_its_maximum(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:

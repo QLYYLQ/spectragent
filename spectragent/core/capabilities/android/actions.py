@@ -795,6 +795,10 @@ async def open_app(
 
     Only the table names an activity: a name of one's own is a package or
     nothing. Returns why nothing opened, or ``None`` once the app is shown.
+    The reason lists only the names in *apps* whose app is installed, asked
+    of the device when it refuses: a benchmark's table also names apps its
+    device lacks (AndroidWorld's holds 117 names), and an agent keeps the
+    error in its history.
     """
     package, activity = app_target(apps, app_name) or (app_name.strip(), None)
     launcher = capability.bridge.launcher
@@ -803,9 +807,11 @@ async def open_app(
     except ValueError:  # neither a known name nor a package name
         installed = False
     if not installed:
+        packages = await launcher.installed_packages()
+        names = sorted(name for name, target in apps.items() if target.split("/")[0] in packages)
         return (
-            f"no app {app_name!r} is installed; apps by name: {', '.join(sorted(apps))}, or an "
-            f"installed package name"
+            f"no app {app_name!r} is installed; installed apps by name: "
+            f"{', '.join(names) or 'none'}, or an installed package name"
         )
     await launcher.launch(package, activity)
     return None

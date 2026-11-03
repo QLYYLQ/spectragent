@@ -488,6 +488,9 @@ class ScriptedPhone:
             if words[2] in self.launchable:
                 return ShellResult(stdout=f"package:/system/app/{words[2]}.apk\n".encode())
             return ShellResult(exit_code=1)
+        if command == "pm list packages":
+            listed = "".join(f"package:{package}\n" for package in self.launchable)
+            return ShellResult(stdout=listed.encode())
         if command.startswith(f"cmd package resolve-activity --brief {_LAUNCHABLE} "):
             component = self.launchable[words[-1]]
             return ShellResult(stdout=f"priority=0 isDefault=true\n{component}\n".encode())

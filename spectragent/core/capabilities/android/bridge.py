@@ -207,6 +207,10 @@ class AppLauncher(Protocol):
 
     async def is_installed(self, package: str) -> bool: ...
 
+    async def installed_packages(self) -> frozenset[str]:
+        """Every package installed on the device."""
+        ...
+
     async def launch(self, package: str, activity: str | None = None) -> None:
         """Start *activity* of *package* (its launcher activity when ``None``); wait until it is shown."""
         ...
@@ -321,6 +325,14 @@ class AdbQueries:
             return False
         raise BridgeError(
             f"pm path {package} failed (exit {result.exit_code}): {_first_line(result)}"
+        )
+
+    async def installed_packages(self) -> frozenset[str]:
+        listed = (await self._check("pm list packages")).decode(errors="replace")
+        return frozenset(
+            line.removeprefix("package:").strip()
+            for line in listed.splitlines()
+            if line.startswith("package:")
         )
 
     async def launch(self, package: str, activity: str | None = None) -> None:
