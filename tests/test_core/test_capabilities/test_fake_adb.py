@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import errno
 import os
+import socket
 import struct
 
 import pytest
@@ -242,3 +243,21 @@ async def test_a_fault_in_a_device_script_fails_the_test(fault: Exception) -> No
     with pytest.raises(type(fault)):
         async with FakeAdbServer({SERIAL: faulty}) as adb:
             await _call(adb, f"host:transport:{SERIAL}", "shell,v2:ls")
+
+
+async def test_a_client_that_resets_before_any_request_is_not_the_servers_error() -> None:
+    """A client may reset its connection before it sends a request; the server reads that as a hang-up.
+
+    The reset reaches the server's read of the next request as a ``ConnectionResetError``. A full
+    answer on a second connection afterwards takes several turns of the loop, by which time the
+    first connection's read has seen the reset.
+    """
+    device = scripted({"ls": ShellResult(stdout=b"x\n")})
+    async with FakeAdbServer({SERIAL: device}) as adb:
+        _, resetting = await asyncio.open_connection(adb.host, adb.port)
+        sock = resetting.get_extra_info("socket")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        resetting.transport.abort()  # closes with a reset, nothing sent
+        statuses, _ = await _call(adb, f"host:transport:{SERIAL}", "shell,v2:ls")
+
+    assert statuses == [b"OKAY", b"OKAY"]

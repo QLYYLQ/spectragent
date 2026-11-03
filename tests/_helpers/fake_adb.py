@@ -323,16 +323,16 @@ class FakeAdbServer:
 
 
 async def _read_request(reader: asyncio.StreamReader) -> str | None:
-    """The next request, or ``None`` when the client closed the connection or sent garbage."""
+    """The next request, or ``None`` when the client hung up, reset the connection or sent garbage."""
     try:
         head = await reader.readexactly(4)
-    except asyncio.IncompleteReadError:
+    except (asyncio.IncompleteReadError, ConnectionError):
         return None
     if not _LENGTH.fullmatch(head):
         return None
     try:
         return (await reader.readexactly(int(head, 16))).decode()
-    except asyncio.IncompleteReadError:
+    except (asyncio.IncompleteReadError, ConnectionError):
         return None
 
 
