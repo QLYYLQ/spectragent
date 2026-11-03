@@ -2,11 +2,13 @@
 
 Recording environment evidence adds time to every step: a capability's
 collection, the evidence's commit. :data:`ARCHIVE_MAX_P50_OVERHEAD_MS` is the
-budget for that time at the median step, whichever capability archives. Two
+budget for that time at the median step, whichever capability archives. Three
 readers judge against it and must agree: the browser's overhead benchmark
-(``tests/test_core/test_capabilities/test_browser_archive_live.py``, which a
-noisy machine may override with ``SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS``) and
-the flywheel report's archive-overhead rule (``spectragent/flywheel/report.py``).
+(``tests/test_core/test_capabilities/test_browser_archive_live.py``), the
+Android collection of a long page's UI tree
+(``tests/test_core/test_capabilities/test_android_archive_live.py``), both of
+which a noisy machine may override with ``SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS``,
+and the flywheel report's archive-overhead rule (``spectragent/flywheel/report.py``).
 """
 
 #: Milliseconds archiving may add to a step at the median (archived minus not archived).

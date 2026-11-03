@@ -69,6 +69,14 @@ device. The capability hands the provider what the oracle needs of the device
 (``device_needs``), passes it the task's ``oracle_task`` unread, starts it once
 the device is up, stops it first at teardown, and implements ``TaskOracle`` and
 ``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``").
+
+**Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
+and chosen only by the trace hook's ``archive`` list. Setup assembles the
+recording's context and opens a session per bound archiver; a capture that
+succeeded hands its UI tree to the context while a bound archiver needs it;
+``collect_archive`` asks every session for what it has. A run that binds none
+records nothing, and an archiver that needs the tree is refused in a run that
+captures none.
 """
 
 from __future__ import annotations
@@ -84,10 +92,20 @@ from pydantic import JsonValue
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.base import BaseAction
-from spectragent.core.archive._registrar import ArchiverBase
-from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.archive import ArchiveBatch, ArchiveFile, ArchiveGap, ArchiverBase
+from spectragent.core.capabilities._registrar import CapabilityBase, negotiated_fragment_keys
 from spectragent.core.capabilities.android.actions import ACTIONS
 from spectragent.core.capabilities.android.adb import AdbClient
+from spectragent.core.capabilities.android.archive import ui_tree_raw  # noqa: F401 — registration
+from spectragent.core.capabilities.android.archive.base import (
+    AndroidArchiveContext,
+    AndroidArchiverBase,
+    AndroidArchiveSession,
+    CommittedTree,
+    TreeStore,
+    UnmetArchiverNeeds,
+    android_archivers,
+)
 from spectragent.core.capabilities.android.backends.base import (
     AndroidProviderSession,
     BaseAndroidProvider,
@@ -150,6 +168,7 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
     AndroidUITreeCleaner,
     AndroidUITreeSerializer,
     AndroidUITreeSource,
+    ScreenSize,
     default_ui_tree_source,
 )
 from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError, UITree
@@ -221,6 +240,15 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         # what the agent sees, so a run names both (§4.2.1).
         "ui_tree_cleaner": ("android_ui_tree_cleaner", ["androidworld"]),
         "ui_tree_serializer": ("android_ui_tree_serializer", ["m3a", "t3a"]),
+        # Archive provides (§4.5), declared like ``observation``: what a run
+        # records is the trace hook's ``archive`` list, bound here by
+        # ``bind_archivers``. The classes are imported above, so the keys
+        # resolve when conscribe reads this entry.
+        "archiver": {
+            "registry": "archiver",
+            "keys": ["android.ui_tree_raw"],
+            "declare_only": True,
+        },
     }
 
     backend: BaseAndroidProvider  # type: ignore[misc]
@@ -262,6 +290,11 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     #: actions started since: an element index is good for the first one only.
     _ui_tree: UITree | None
     _actions_since_tree: int
+    #: The bound archivers (``bind_archivers``), in binding order.
+    _archivers: list[AndroidArchiverBase]
+    #: The recording's context, from setup to teardown, and the bound archivers' sessions.
+    _archive: AndroidArchiveContext | None
+    _archive_sessions: list[AndroidArchiveSession]
 
     def __init__(
         self,
@@ -419,6 +452,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._capture = None
         self._ui_tree = None
         self._actions_since_tree = 0
+        self._archivers = []
+        self._archive = None
+        self._archive_sessions = []
         self.actions = actions
         self.task_oracle = default_task_oracle()
         self.ui_tree_source = default_ui_tree_source()
@@ -543,10 +579,13 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
     ) -> None:
-        """Refuse now what setup would: a device the provider cannot give the oracle or the typing
-        backend, the APK, then the task.
+        """Refuse now what setup would: an archiver the run's capture cannot feed, a device the
+        provider cannot give the oracle or the typing backend, the APK, then the task.
 
         Raises:
+            TypeError: An archiver that is not an Android archiver.
+            UnmetArchiverNeeds: An archiver that needs the UI tree, in a run
+                whose negotiation leaves ``android.ui_tree`` out; names both.
             UnmetDeviceNeeds: The provider cannot meet what the oracle needs
                 of the device; names the oracle, the needs and the provider.
             TypingBackendUnsupported: The device's API level, as the provider
@@ -556,6 +595,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 outside the directory named by its SHA-256.
             Exception: The oracle's own refusal of its installation or task.
         """
+        _check_archivers(android_archivers(archivers), negotiated_fragment_keys(negotiation))
         oracle = self.task_oracle
         try:  # setup refuses a capability without a backend or a typing backend itself
             backend: BaseAndroidProvider | None = self.backend
@@ -588,14 +628,19 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """Bring the device and its device side up, read the facts that do not change, start the oracle.
 
         *oracle_task* is the task's data for its oracle (``AndroidSetup``),
-        handed over unread.
+        handed over unread. The recording's archive context and the bound
+        archivers' sessions open first: pure construction.
         """
         await super().setup(negotiation=negotiation)
         oracle = self.task_oracle
         backend = self._backend()
         tap_injector, typing_backend, *_ = self._strategies()
         self._ui_tree, self._actions_since_tree = None, 0
-        self.check_setup({"oracle_task": oracle_task})
+        self.check_setup(
+            {"oracle_task": oracle_task}, negotiation=negotiation, archivers=self._archivers
+        )
+        self._archive = AndroidArchiveContext(trees=TreeStore())
+        self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
         self._apk = apk = ServiceApk.load(self.service_apk)
         session = await backend.open(oracle.device_needs)
         self._session = session
@@ -645,12 +690,17 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             raise
 
     async def teardown(self) -> None:
-        """Stop the oracle, drain the device's queue, stop the device side, release the device. Safe to repeat."""
+        """Stop the oracle, drain the device's queue, stop the device side, release the device. Safe to repeat.
+
+        The recording's archive closes too: the runtime collects for the last
+        time before it tears down.
+        """
         device, side, session = self._device, self._side, self._session
         self._device = self._bridge = None
         self._side = self._session = None
         self._events = None
         self._capture = None
+        self._archive, self._archive_sessions = None, []
         try:
             await self.task_oracle.stop()
         finally:
@@ -678,6 +728,44 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     @property
     def is_alive(self) -> bool:
         return self._device is not None
+
+    # ── archive (§4.5, §4.9) ──────────────────────────────────────────
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        """Replace the binding (an empty one unbinds). Acquires nothing.
+
+        Bound before setup, which is the runtime's order, the archivers are
+        given sessions at setup. Bound again between setup and teardown,
+        sessions are opened for the new binding; a tree committed and not yet
+        collected stays with the recording until a session collects it.
+
+        Raises:
+            TypeError: An archiver that is not an Android archiver.
+        """
+        self._archivers = android_archivers(archivers)
+        if self._archive is not None:
+            self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
+
+    async def collect_archive(self) -> ArchiveBatch:
+        """Hand over what every bound archiver's session has, in binding order (§4.9).
+
+        A session that cannot collect is named in the batch's gaps, and the
+        others' evidence is handed over. Never set up, or nothing bound: an
+        empty batch.
+        """
+        files: list[ArchiveFile] = []
+        gaps: list[ArchiveGap] = []
+        for session in self._archive_sessions:
+            try:
+                files.extend(await session.collect())
+            except Exception as exc:
+                gaps.append(ArchiveGap.of(session.archiver_id, exc))
+        return ArchiveBatch(files=tuple(files), gaps=tuple(gaps))
+
+    def _archive_tree(self, tree: CommittedTree) -> None:
+        """Hand a successful capture's tree to the recording, while a bound archiver needs it."""
+        if self._archive is not None and any("ui_tree" in a.needs for a in self._archivers):
+            self._archive.trees.commit(tree)
 
     def _backend(self) -> BaseAndroidProvider:
         try:
@@ -768,14 +856,22 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._cycle = cycle
 
     async def resolve_fragment(self, fragment_key: str) -> FragmentBase:
-        """Serve *fragment_key* from this cycle's capture, taking it on the first call."""
+        """Serve *fragment_key* from this cycle's capture, taking it on the first call.
+
+        A capture that succeeded hands its UI tree to the recording, so the
+        archive holds only trees whose fragments were served.
+        """
         capture = self._capture
         if capture is None or capture.cycle != self._cycle:
             cycle = self._cycle
             try:
-                capture = _Capture(cycle, fragments=await self._capture_now())
+                fragments, tree = await self._capture_now(cycle)
             except Exception as exc:  # kept: the rest of the cycle fails with it, uncaptured
                 capture = _Capture(cycle, error=exc)
+            else:
+                capture = _Capture(cycle, fragments=fragments)
+                if tree is not None:
+                    self._archive_tree(tree)
             self._capture = capture
         if capture.error is not None:
             raise capture.error
@@ -787,7 +883,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             )
         return fragment
 
-    async def _capture_now(self) -> dict[str, FragmentBase]:
+    async def _capture_now(
+        self, cycle: int
+    ) -> tuple[dict[str, FragmentBase], CommittedTree | None]:
         device = self._device
         if device is None:
             raise RuntimeError("the Android device is not set up")
@@ -802,10 +900,13 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             + 1
         )
         return await device.run(
-            self._capture_job, what="capture", wait_s=self.queue_wait_s, run_s=limit
+            lambda: self._capture_job(cycle), what="capture", wait_s=self.queue_wait_s, run_s=limit
         )
 
-    async def _capture_job(self) -> dict[str, FragmentBase]:
+    async def _capture_job(
+        self, cycle: int
+    ) -> tuple[dict[str, FragmentBase], CommittedTree | None]:
+        """Every negotiated fragment of one capture, and its UI tree as the source returned it."""
         await self._keep_service()
         wanted = self.provided_fragments
         settle = None
@@ -825,15 +926,26 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         if UI_TREE in wanted:
             sources[UI_TREE] = Source(self._read_tree, self.ui_tree_timeout_s)
         fragments: dict[str, FragmentBase] = {}
+        tree: CommittedTree | None = None
         for key, answer in (await fan_out(sources)).items():
+            if not isinstance(answer, TreeCapture):
+                fragments[key] = answer
+                continue
             # Cleaned once every source answered: against the screen this
             # capture's screenshot measured, when it took one.
-            fragments[key] = (
-                self._ui_tree_fragment(answer) if isinstance(answer, TreeCapture) else answer
+            screen = self.screen_size
+            fragment = self._ui_tree_fragment(answer, screen)
+            fragments[key] = fragment
+            tree = CommittedTree(
+                capture=answer,
+                producer=self.ui_tree_source.source_id,
+                screen=screen,
+                cycle=cycle,
+                captured_at=fragment.captured_at,
             )
         if CAPTURE_STATE in wanted:
             fragments[CAPTURE_STATE] = AndroidCaptureStateObs(settle=settle)
-        return fragments
+        return fragments, tree
 
     async def _poll_screen(self) -> ScreenPoll:
         """One poll of the wait for a still screen (``settle.py``).
@@ -908,9 +1020,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             raise RuntimeError("the Android device is not set up")
         return await self.ui_tree_source.capture(side)
 
-    def _ui_tree_fragment(self, capture: TreeCapture) -> AndroidUITreeObs:
-        """Clean and print *capture*, and keep its tree for the element indexes of the next action."""
-        tree = self.ui_tree_cleaner.clean(capture.forest, self.screen_size)
+    def _ui_tree_fragment(self, capture: TreeCapture, screen: ScreenSize) -> AndroidUITreeObs:
+        """Clean *capture* on a screen of *screen* pixels and print it; keep its tree for the element
+        indexes of the next action."""
+        tree = self.ui_tree_cleaner.clean(capture.forest, screen)
         self._ui_tree, self._actions_since_tree = tree, 0
         return AndroidUITreeObs(
             producer=self.ui_tree_source.source_id,
@@ -961,6 +1074,27 @@ def _check_build(side: DeviceSide, apk: ServiceApk, typing_backend: AndroidTypin
             f"run installed {apk.path} with SHA-256 {apk.info.sha256}"
         )
     _check_typing(typing_backend, hello.sdk_int, "the device")
+
+
+def _check_archivers(
+    archivers: Sequence[AndroidArchiverBase], negotiated: frozenset[str] | None
+) -> None:
+    """Refuse an archiver that needs the UI tree in a run whose negotiation leaves the tree out.
+
+    Such a run never captures a tree (an agent that reads only the screen
+    negotiates none), so the archiver would record nothing. *negotiated* is
+    ``None`` before negotiation narrowed anything: every fragment is captured.
+    """
+    if negotiated is None or UI_TREE in negotiated:
+        return
+    unfed = [archiver.archiver_id for archiver in archivers if "ui_tree" in archiver.needs]
+    if unfed:
+        raise UnmetArchiverNeeds(
+            f"This run captures no UI tree: its negotiation leaves {UI_TREE!r} out (an agent "
+            f"that reads only the screen negotiates none), so {', '.join(map(repr, unfed))}, "
+            "which records the tree of each capture, would record nothing. Leave it out of "
+            "trace_writer.archive, or run an agent that reads the UI tree."
+        )
 
 
 def _check_typing(typing_backend: AndroidTypingBackend, level: int, device: str) -> None:
