@@ -449,6 +449,8 @@ def _mk(agent, loop, env, *, memory=None, hooks=None):
         llm=_LLM(),
         memory=memory or _Memory(),
         hooks=hooks,
+        # A scoring environment carries the benchmark whose live verifier judges on it.
+        benchmark=getattr(env, "benchmark", None),
     )
 
 
@@ -1472,29 +1474,30 @@ async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(mo
 # ── the scoring point: after the Loop, before on_run_end and teardown ─
 
 
-class _OracleCap(_DoneCap):
-    """``_DoneCap`` with a task oracle that writes ``score`` into the shared log when asked.
+class _LifecycleVerifier:
+    """A live verifier the scoring capability hosts, judging as ``lifecycle_verifier``.
 
-    It judges as ``lifecycle_oracle``; it keeps each run answer it is handed in
-    *given* and replies with a score;
-    with *fails* it raises, and with *hangs* it waits until it is cancelled,
-    writes ``score cancelled``, and lets the cancellation through.
+    It writes ``score`` into the shared log when asked, keeps each run answer
+    it is handed in *given* and replies with a score; with *fails* it raises,
+    and with *hangs* it waits until it is cancelled, writes ``score
+    cancelled``, and lets the cancellation through.
     """
 
-    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+    verifier_id = "lifecycle_verifier"
+    capability_id = "lifecycle_done_cap"
+    needs = frozenset({"live_environment", "answer"})
 
-    def __init__(self, log: list[str], *, fails: bool = False, hangs: bool = False, **kw):
-        super().__init__(**kw)
+    def __init__(self, log: list[str], *, fails: bool = False, hangs: bool = False):
         self.log = log
         self.fails = fails
         self.hangs = hangs
         self.asked = asyncio.Event()
         self.given: list[str | None] = []
 
-    def oracle_identity(self) -> VerifierIdentity | None:
-        return VerifierIdentity(verifier_id="lifecycle_oracle")
+    def identity(self) -> VerifierIdentity:
+        return VerifierIdentity(verifier_id=self.verifier_id)
 
-    async def read_score(self, *, answer: str | None) -> Judgment:
+    async def judge(self, answer: str | None) -> Judgment:
         self.log.append("score")
         self.given.append(answer)
         self.asked.set()
@@ -1509,6 +1512,39 @@ class _OracleCap(_DoneCap):
         return Judgment(score=1.0)
 
 
+class _JudgingCap(_DoneCap):
+    """``_DoneCap`` hosting live verifiers (``LiveVerifierHost``): it judges by asking each."""
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+    def check_setup(
+        self, context, *, negotiation=None, archivers=(), setup=None, live_verifiers=()
+    ):
+        return None
+
+    def bind_setup(self, setup):
+        return None
+
+    def bind_live_verifiers(self, verifiers):
+        self.verifiers = tuple(verifiers)
+
+    async def verify_live(self, verifier, *, answer: str | None) -> Judgment:
+        assert verifier in self.verifiers
+        return await verifier.judge(answer)
+
+
+class _Judged:
+    """The run's benchmark: no setup component, *verifier* its one live verifier."""
+
+    setup = None
+
+    def __init__(self, verifier: _LifecycleVerifier) -> None:
+        self.verifier = verifier
+
+    def live_verifiers(self) -> list[_LifecycleVerifier]:
+        return [self.verifier]
+
+
 class _ScoringEnv(_Env):
     """``_Env`` whose teardown joins the shared log, keeping every ``timeout_s`` it is given."""
 
@@ -1518,6 +1554,7 @@ class _ScoringEnv(_Env):
         super().__init__(**kw)
         self.log: list[str] = []
         self.timeouts: list[float] = []
+        self.benchmark: _Judged | None = None
 
     async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
         self.timeouts.append(timeout_s)
@@ -1564,19 +1601,20 @@ class _EndingLoop(_SlowLoop):
 
 def _scoring(
     env_cls: type[_ScoringEnv] = _ScoringEnv, *, fails: bool = False, hangs: bool = False
-) -> tuple[Any, _OracleCap, list[str]]:
-    """An environment with one oracle capability, and the log both of them write into."""
+) -> tuple[Any, _LifecycleVerifier, list[str]]:
+    """An environment hosting one live verifier its benchmark lists, and the log both write into."""
     log: list[str] = []
-    oracle = _OracleCap(log, fails=fails, hangs=hangs)
-    env = make_env(env_cls, {"lifecycle_done_cap": oracle})
+    verifier = _LifecycleVerifier(log, fails=fails, hangs=hangs)
+    env = make_env(env_cls, {"lifecycle_done_cap": _JudgingCap()})
     env.log = log
-    return env, oracle, log
+    env.benchmark = _Judged(verifier)
+    return env, verifier, log
 
 
 class TestTheScoringPoint:
     """docs/architecture_design.md §4.2 "Loop 结束之后、teardown 之前的判分时间点".
 
-    The woven environment's task oracles score the run once its Loop has
+    The woven environment's live verifiers judge the run once its Loop has
     returned or raised, before ``on_run_end`` and teardown, handed the run's
     final answer: the text of ``loop.done``, ``None`` on every other ending. A
     failed setup and an outside cancellation are not scored. Scoring never
@@ -1597,7 +1635,7 @@ class TestTheScoringPoint:
     async def test_every_ending_is_scored_after_the_loop_and_before_the_close_out(
         self, ending: str, agent_done: AgentDoneStatus, answer: str | None
     ):
-        env, oracle, log = _scoring()
+        env, verifier, log = _scoring()
         hook = _RecordingHook(log)
         loop = _EndingLoop(ending, log)
         runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
@@ -1619,40 +1657,40 @@ class TestTheScoringPoint:
         ]
         assert env.timeouts == [VERIFY_TIMEOUT_S]
         assert hook.end_kwargs["result"].agent_done == agent_done
-        assert oracle.given == [answer]
+        assert verifier.given == [answer]
 
     @pytest.mark.parametrize(("text", "answer"), [("Mall", "Mall"), (None, None), ("", None)])
-    async def test_the_oracle_is_handed_the_text_loop_done_handed_over(
+    async def test_the_verifier_is_handed_the_text_loop_done_handed_over(
         self, text: str | None, answer: str | None
     ):
         """The Loop's own ``loop.done`` ends the run; a ``done`` without text hands over none."""
-        env, oracle, _log = _scoring()
+        env, verifier, _log = _scoring()
         runtime = AgentRuntime.for_agent(_mk(_AnsweringAgent(text), ReactLoop(), env), AGENT_ID)
 
         result = await runtime.execute("t", task_id="t-1")
 
         assert (result.agent_done, result.answer) == (AgentDoneStatus.DONE, text or "")
-        assert oracle.given == [answer]
+        assert verifier.given == [answer]
 
     async def test_a_done_whose_recording_the_timeout_cut_off_still_hands_over_its_answer(self):
         """The run closes out with the result the Loop had built, and is scored on its answer."""
-        env, oracle, _log = _scoring()
+        env, verifier, _log = _scoring()
         ended = agent_result(task_id="t-1", answer="Mall")
         runtime = AgentRuntime.for_agent(_mk(_Agent(), _CutOffLoop(ended), env), AGENT_ID)
 
         result = await runtime.execute("t", task_id="t-1", timeout=0.05)
 
         assert (result.agent_done, result.answer) == (AgentDoneStatus.DONE, "Mall")
-        assert oracle.given == ["Mall"]
+        assert verifier.given == ["Mall"]
 
     async def test_its_time_limit_is_the_verify_timeout_not_the_runs(self):
-        env, _oracle, _log = _scoring()
+        env, _verifier, _log = _scoring()
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env), AGENT_ID)
         await runtime.execute("t", task_id="t-1", timeout=30, verify_timeout=7.5)
         assert env.timeouts == [7.5]
 
     async def test_the_verdict_lands_in_the_runs_verdict_store(self, tmp_path):
-        env, _oracle, _log = _scoring()
+        env, _verifier, _log = _scoring()
         writer = TraceWriter(trace_dir=str(tmp_path))
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[writer]), AGENT_ID)
 
@@ -1662,15 +1700,15 @@ class TestTheScoringPoint:
         trace = RunTrace(writer.run_dir)
         (verdict,) = trace.verdicts().values()
         assert (verdict.verifier.verifier_id, verdict.attachment, verdict.status) == (
-            "lifecycle_oracle",
+            "lifecycle_verifier",
             "live",
             "judged",
         )
         assert verdict.score == 1.0
         assert trace.manifest.status.value == "complete"
 
-    async def test_a_failing_oracle_judges_nothing_and_the_outcome_stands(self, tmp_path):
-        env, _oracle, _log = _scoring(fails=True)
+    async def test_a_failing_verifier_judges_nothing_and_the_outcome_stands(self, tmp_path):
+        env, _verifier, _log = _scoring(fails=True)
         writer = TraceWriter(trace_dir=str(tmp_path))
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[writer]), AGENT_ID)
 
@@ -1694,7 +1732,7 @@ class TestTheScoringPoint:
             async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
                 raise RuntimeError("judging broke its contract")
 
-        env, _oracle, log = _scoring(_BrokenScoring)
+        env, _verifier, log = _scoring(_BrokenScoring)
         hook = _RecordingHook(log)
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
 
@@ -1706,7 +1744,7 @@ class TestTheScoringPoint:
         assert log[-1] == "teardown"
 
     async def test_a_broken_environment_is_still_scored(self):
-        env, _oracle, log = _scoring()
+        env, _verifier, log = _scoring()
         env.alive = False
         runtime = AgentRuntime.for_agent(_mk(_Agent(), _EndingLoop("timeout", log), env), AGENT_ID)
         result = await runtime.execute("t", task_id="t-1", timeout=0.05)
@@ -1723,7 +1761,7 @@ class TestTheScoringPoint:
                     raise RunAbort("risk-control page at the start URL", source="setup_guard")
                 raise RuntimeError("emulator refused to boot")
 
-        env, _oracle, log = _scoring(_FailingSetup)
+        env, _verifier, log = _scoring(_FailingSetup)
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env), AGENT_ID)
         if failure == "veto":
             with pytest.raises(RunAbort):
@@ -1733,7 +1771,7 @@ class TestTheScoringPoint:
         assert (log, env.timeouts) == (["teardown"], [])
 
     async def test_an_outside_cancellation_is_not_scored(self):
-        env, _oracle, log = _scoring()
+        env, _verifier, log = _scoring()
         hook = _RecordingHook(log)
         loop = _GatedLoop()
         runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
@@ -1747,11 +1785,11 @@ class TestTheScoringPoint:
         assert "score" not in log and env.timeouts == []
         assert hook.end_kwargs["result"].error == "Execution cancelled"
 
-    async def test_a_cancellation_during_scoring_waits_for_the_oracle_then_closes_the_run_out(
+    async def test_a_cancellation_during_scoring_waits_for_the_verifier_then_closes_the_run_out(
         self, tmp_path
     ):
-        """The oracle is cancelled and waited for; the run is closed out as cancelled, unscored."""
-        env, oracle, log = _scoring(hangs=True)
+        """The verifier is cancelled and waited for; the run is closed out as cancelled, unjudged."""
+        env, verifier, log = _scoring(hangs=True)
         writer = TraceWriter(trace_dir=str(tmp_path))
         hook = _RecordingHook(log)
         runtime = AgentRuntime.for_agent(
@@ -1761,7 +1799,7 @@ class TestTheScoringPoint:
         task = asyncio.create_task(
             runtime.execute("t", task_id="t-1", timeout=30, verify_timeout=30)
         )
-        await asyncio.wait_for(oracle.asked.wait(), timeout=10)
+        await asyncio.wait_for(verifier.asked.wait(), timeout=10)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1787,12 +1825,10 @@ class TestTheScoringPoint:
         clock = SimpleNamespace(now=10.0)
         monkeypatch.setattr(runtime_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
 
-        class _SlowOracle(_OracleCap):
-            __abstract__ = True  # Directly assembled fake; never a YAML implementation.
-
-            async def read_score(self, *, answer: str | None) -> Judgment:
+        class _SlowVerifier(_LifecycleVerifier):
+            async def judge(self, answer: str | None) -> Judgment:
                 clock.now += 13.0
-                return await super().read_score(answer=answer)
+                return await super().judge(answer)
 
         class _TimedLoop(_SlowLoop):
             def weave(self, agent, **deps):
@@ -1804,7 +1840,8 @@ class TestTheScoringPoint:
                 return agent
 
         log: list[str] = []
-        env = make_env(_ScoringEnv, {"lifecycle_done_cap": _SlowOracle(log)})
+        env = make_env(_ScoringEnv, {"lifecycle_done_cap": _JudgingCap()})
+        env.benchmark = _Judged(_SlowVerifier(log))
         runtime = AgentRuntime.for_agent(_mk(_Agent(), _TimedLoop(), env), AGENT_ID)
 
         result = await runtime.execute("t")

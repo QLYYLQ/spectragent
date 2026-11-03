@@ -42,6 +42,7 @@ from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from tests._helpers.android_runs import (
     androidworld_capability,
     androidworld_setup,
+    bind_androidworld,
     installation_problem,
     write_task_list,
 )
@@ -104,8 +105,7 @@ async def test_a_miniwob_task_initializes_on_a_fresh_boot_and_its_episode_runs(
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(f"{task}/42/0")
     capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env, setups=[setup])
-    env.bind_setups([setup])
+    bind_androidworld(env, context.env, setup)
     started = time.monotonic()
     await env.setup(context.env)
     try:

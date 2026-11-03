@@ -8,11 +8,13 @@
 # docs/architecture_design.md §11.2). The setup component prepares each task on
 # the device through AndroidWorld's own service, run from the installation under
 # the benchmark data root ($SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation,
-# whatever the task loader's data_dir says) unless root says otherwise. Until
-# AndroidWorld's live verifier lands, the same component judges each task on
-# the device at the scoring point, within --verify-timeout; its verdict
-# (verifier androidworld) goes into the run's verdicts/ and is this
-# benchmark's primary verdict. This block takes no verifiers.
+# whatever the task loader's data_dir says) unless root says otherwise.
+#
+# Its verifier, androidworld, is AndroidWorld's own success check: it needs the
+# live device, so it judges each task at the scoring point, after the agent's
+# run and before the device goes, within --verify-timeout, through the service
+# the setup component started. Its verdict goes into the run's verdicts/ and is
+# this benchmark's primary verdict. Leave it out and the runs are not judged.
 #
 # The benchmark's part of the Android capability's configuration is merged into
 # the run configuration's Android block (§4.10.1): the AVD AndroidWorld's one-time
@@ -28,6 +30,8 @@ benchmark:
     setup:
       setup_id: androidworld
       root: null                 # null: $SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation
+    verifiers:
+      - verifier_id: androidworld
     capability:
       - capability_id: android
         backend: {provider_id: local_emulator, avd: AndroidWorldAvd}

@@ -98,8 +98,10 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
     assert isinstance(benchmark, AndroidWorldBenchmark)
     setup = benchmark.setup
     context = benchmark.task_loader.get_task_context(TASK_ID)
-    env.check_setup(context.env, setups=[setup])
+    verifiers = benchmark.live_verifiers()  # the benchmark's own, as the YAML lists it
+    env.check_setup(context.env, setups=[setup], live_verifiers=verifiers)
     env.bind_setups([setup])
+    env.bind_live_verifiers(verifiers)
     await env.setup(context.env)
     try:
         session, service, provider = capability._session, setup._service, capability.backend

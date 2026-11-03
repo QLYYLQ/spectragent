@@ -24,7 +24,9 @@ class AndroidWorldBenchmark(BenchmarkBase):
     """AndroidWorld: tasks on an emulated phone, set up by its own service and judged on the device (§11.2).
 
     Its ``setup`` block is required: without the component no task starts.
-    Its part of the Android capability's configuration is its device image,
+    Its verifier, ``androidworld``, judges each task on the device at the
+    scoring point (``verifier.py``); a block that lists none leaves its runs
+    unjudged. Its part of the Android capability's configuration is its device image,
     written in its block's ``capability`` list, and its ``open_app`` name
     table, computed in code (:meth:`computed_capability`).
     """
@@ -33,6 +35,7 @@ class AndroidWorldBenchmark(BenchmarkBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "task_loader": ("task_loader", ["androidworld"]),
         "setup": ("benchmark_setup", ["androidworld"]),
+        "verifiers": ("verifier", ["androidworld"]),
     }
     __primary_verifier__ = "androidworld"
 

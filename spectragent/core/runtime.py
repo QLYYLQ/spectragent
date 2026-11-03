@@ -69,10 +69,12 @@ from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
 
 if TYPE_CHECKING:
+    from spectragent.benchmarks._registrar import Benchmark
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
     from spectragent.schemas.restoration import BranchProvenance
+    from spectragent.verifiers.base import LiveVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -399,12 +401,14 @@ class AgentRuntime:
         ``env.bind_archivers`` is the final statement. With no such hook
         the environment receives no archive call at all.
 
-        The run's benchmark setup component (its benchmark's ``setup``,
-        ``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载") goes
-        the same way: ``Environment.check_setup`` routes it to the capability
-        it names, whose own check asks it, and ``env.bind_setups`` binds it
-        with the archivers, last. A run whose benchmark has none makes no
-        binding call.
+        The run's benchmark setup component and live verifiers (its
+        benchmark's ``setup`` and the ``verifiers`` that need the live
+        environment, ``docs/architecture_design.md`` §4.9 "基准组件由
+        capability 承载") go the same way: ``Environment.check_setup`` routes
+        each to the capability it names, whose own check asks it (and refuses
+        a verifier whose requirements the run cannot meet), and
+        ``env.bind_setups`` and ``env.bind_live_verifiers`` bind them with the
+        archivers, last. A run whose benchmark has none makes no binding call.
 
         Raises:
             IncompatibleError: The agent lacks a slot the Loop requires.
@@ -430,8 +434,9 @@ class AgentRuntime:
                 agent declares none (``negotiation.platform.check_input_platform``).
             ValueError: A setup context key no capability accepts (or any
                 key, in a run with no environment), a benchmark setup
-                component no capability here hosts, or two capabilities
-                whose setups would each complete the task's text. Also UI-TARS's refusal,
+                component or live verifier no capability here hosts, two live
+                verifiers that would write one verdict file, or two
+                capabilities whose setups would each complete the task's text. Also UI-TARS's refusal,
                 from its ``check_action_space`` (``ActionSpaceCheck``), of a
                 verb whose points differ from its action's; another agent's
                 check raises its own errors.
@@ -541,6 +546,7 @@ class AgentRuntime:
         self._prepared_setup = PreparedSetupContext({}, {})
         self._task_text_setter = None
         setups = self._benchmark_setups()
+        live_verifiers = self._live_verifiers()
         if env is not None:
             self._prepared_setup = env.prepare_setup_context(env_context)
             env.check_setup(
@@ -548,6 +554,7 @@ class AgentRuntime:
                 negotiation=negotiated_obs,
                 archivers=archivers,
                 setups=setups,
+                live_verifiers=live_verifiers,
             )
             # Step 2.95: Whose setup completes this task's text, if any (a
             # MiniWoB++ page makes its instruction as the task starts). Known
@@ -564,12 +571,19 @@ class AgentRuntime:
                 f"setup key(s) {sorted(env_context)} were given, but this run has no environment "
                 f"to set up."
             )
-        elif setups:
+        elif setups or live_verifiers:
             raise ValueError(
                 "; ".join(
-                    f"the benchmark setup {setup.setup_id!r} is hosted by the "
-                    f"{setup.capability_id!r} capability, and this run has no environment"
-                    for setup in setups
+                    [
+                        f"the benchmark setup {setup.setup_id!r} is hosted by the "
+                        f"{setup.capability_id!r} capability, and this run has no environment"
+                        for setup in setups
+                    ]
+                    + [
+                        f"the live verifier {verifier.verifier_id!r} is hosted by the "
+                        f"{verifier.capability_id!r} capability, and this run has no environment"
+                        for verifier in live_verifiers
+                    ]
                 )
             )
 
@@ -716,9 +730,12 @@ class AgentRuntime:
         # without an environment — the check is for the type checker.)
         if negotiated_archive is not None and env is not None:
             env.bind_archivers(archivers)
-        # The benchmark's setup component, bound the same way and as late.
+        # The benchmark's setup component and live verifiers, bound the same
+        # way and as late.
         if setups and env is not None:
             env.bind_setups(setups)
+        if live_verifiers and env is not None:
+            env.bind_live_verifiers(live_verifiers)
 
         return wrapped_agent
 
@@ -730,6 +747,16 @@ class AgentRuntime:
         benchmark = self._run.optional_single("benchmark")
         setup = getattr(benchmark, "setup", None)
         return [] if setup is None else [setup]
+
+    def _live_verifiers(self) -> list[LiveVerifier]:
+        """The run's benchmark's verifiers that judge at the scoring point; ``[]`` with no benchmark.
+
+        Raises:
+            TypeError: A verifier needs the live environment and names no
+                capability to host it (``Benchmark.live_verifiers``).
+        """
+        benchmark: Benchmark | None = self._run.optional_single("benchmark")
+        return [] if benchmark is None else benchmark.live_verifiers()
 
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).

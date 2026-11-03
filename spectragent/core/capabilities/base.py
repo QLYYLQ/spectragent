@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
-from spectragent.schemas.verdict import Judgment, VerifierIdentity
+from spectragent.schemas.verdict import Judgment
 
 if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.archive._registrar import ArchiverBase
+    from spectragent.verifiers.base import LiveVerifier
 
 
 @runtime_checkable
@@ -437,48 +438,71 @@ class SetupHost(Protocol):
 
 
 @runtime_checkable
-class TaskOracle(Protocol):
-    """Optional: this task's verdict, judged against the live environment once the Loop has ended.
+class LiveVerifierHost(SetupHost, Protocol):
+    """Optional: this capability hosts a benchmark's live verifiers, besides its setup component.
 
     Some benchmarks can only be judged against the environment itself
     (AndroidWorld reads databases, files and settings on the device), and only
-    the capability reaches it. ``AgentRuntime`` calls the woven environment's
-    ``verify_live`` after the Loop returned or raised, before the close-out and
-    the teardown (``docs/architecture_design.md`` §4.2 "判分时间点"); the
-    environment asks every capability implementing this whose oracle judges
-    the run, concurrently and each within the run's ``verify_timeout``, and
-    the trace writer keeps each verdict in the run's verdict store (§5.3
-    "判定统一存放"). Not part of :class:`BaseCapability`; ``CapabilityBase``
-    gives no default.
+    the capability reaches it. Their verifiers need the live environment and
+    name the capability that hosts them (``LiveVerifier``,
+    ``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载").
+    ``AgentRuntime.prepare()`` routes them here through the environment: this
+    capability's :meth:`check_setup` gets them with the setup component and
+    the archivers about to be bound, and :meth:`bind_live_verifiers` is called
+    as the last step. At the scoring point (§4.2 "判分时间点"), after the Loop
+    returned or raised and before the close-out and the teardown, the
+    environment asks :meth:`verify_live` once for each, concurrently and each
+    within the run's ``verify_timeout``, and the trace writer keeps each
+    verdict in the run's verdict store (§5.3 "判定统一存放"). Not part of
+    :class:`BaseCapability`; ``CapabilityBase`` gives no default.
 
-    An oracle turns its own transport failures into ordinary exceptions (a
+    A verifier turns its own transport failures into ordinary exceptions (a
     ``ConnectionError``, say) and never lets a ``CancelledError`` escape: the
     framework takes any ``CancelledError`` for the run being cancelled, closes
     the run out as cancelled and records no verdict, as it does for every
     other capability call.
     """
 
-    def oracle_identity(self) -> VerifierIdentity | None:
-        """Who this run's oracle judges as, recorded in its verdict however it goes; ``None``: no oracle.
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+        setup: BenchmarkSetup | None = None,
+        live_verifiers: Sequence[LiveVerifier] = (),
+    ) -> None:
+        """``SetupHost.check_setup``, with the live verifiers about to be bound too (``()``: none).
 
-        Reads configuration only. Known before the oracle is asked, so a
-        verdict that timed out or failed still names its verifier.
+        Refuses, among the rest, a verifier this capability cannot host and one
+        whose requirements the run, as configured, cannot meet. A verifier
+        only states requirements and never changes the run (§4.10.1 "capability
+        配置合并"), so the refusal names the verifier and the requirement
+        instead of meeting it. Reads configuration and its arguments only.
         """
         ...
 
-    async def read_score(self, *, answer: str | None) -> Judgment:
-        """Judge this task against the live environment.
+    def bind_live_verifiers(self, verifiers: Sequence[LiveVerifier]) -> None:
+        """Host *verifiers* from the next setup on (``()``: host none). Acquires nothing.
+
+        Raises:
+            TypeError: One is no verifier this capability can host.
+        """
+        ...
+
+    async def verify_live(self, verifier: LiveVerifier, *, answer: str | None) -> Judgment:
+        """Judge this task with *verifier*, one of those bound here, against the live environment.
 
         *answer* is the run's final answer: the text the agent handed over with
         ``loop.done``, or ``None`` when the run ended any other way or
         ``loop.done`` carried no text (§4.2). It is only the answer, never the
-        agent's reasoning or history; an oracle whose benchmark judges no
+        agent's reasoning or history; a verifier whose benchmark judges no
         answer ignores it.
 
         Executes none of the run's actions and tears nothing down; handing
         *answer* to the benchmark's own judge is part of judging. The judgment
-        holds only what the oracle found: its score, what it judged. The
-        environment adds who judged (:meth:`oracle_identity`), the
+        holds only what the verifier found: its score, what it judged. The
+        environment adds who judged (the verifier's ``identity()``), the
         attachment, and when it was asked and how long it took, on its own
         clock; it enforces the time limit and turns a timeout or an exception
         into a not-judged verdict.
@@ -501,7 +525,7 @@ class TaskTextFromSetup(Protocol):
     :class:`BaseCapability`; ``CapabilityBase`` gives no default.
 
     Transport failures become ordinary exceptions; a ``CancelledError`` of
-    its own never escapes (the ``TaskOracle`` convention).
+    its own never escapes (the ``LiveVerifierHost`` convention).
     """
 
     def sets_task_text(
@@ -534,12 +558,12 @@ class EpisodeEnd(Protocol):
     episode when it has. The Loop asks, through ``Environment.episode_over``,
     after every step of the agent's that did not end the run, and ends the run
     as ``episode_over`` when it is (``docs/architecture_design.md`` §4.1).
-    Only whether it is over: the score is still read at the scoring point
-    (:class:`TaskOracle`). Not part of :class:`BaseCapability`;
+    Only whether it is over: the run is still judged at the scoring point
+    (:class:`LiveVerifierHost`). Not part of :class:`BaseCapability`;
     ``CapabilityBase`` gives no default.
 
     Transport failures become ordinary exceptions; a ``CancelledError`` of
-    its own never escapes (the ``TaskOracle`` convention).
+    its own never escapes (the ``LiveVerifierHost`` convention).
     """
 
     async def episode_over(self) -> bool:

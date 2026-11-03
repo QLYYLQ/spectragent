@@ -8,12 +8,10 @@ over, unless the run ended without one; then ``/task/score``. HTTP 500, a
 broken reply or a dead service raise ``AndroidWorldError``, so the environment
 records a verdict that judged nothing.
 
-Until AndroidWorld's live verifier lands (§4.10.1 "分段实施"), the
-``androidworld`` setup component hands this judgment to the Android
-capability's ``read_score`` (``TaskOracle``), and the environment keeps it as
-the run's live verdict under :func:`identity`. The verifier will call
-:func:`read_score` itself, on the service and task it shares with the setup
-component.
+AndroidWorld's live verifier (``verifier.py``) calls :func:`read_score` at the
+scoring point, on the service and task the ``androidworld`` setup component
+started, and the environment keeps the judgment as the run's live verdict
+(§4.10.1, §5.3 "判定统一存放").
 """
 
 from __future__ import annotations
@@ -21,22 +19,12 @@ from __future__ import annotations
 import math
 
 from spectragent.benchmarks.androidworld.service import (
-    PINNED_COMMIT,
     AndroidWorldError,
     AndroidWorldService,
     params_digest,
 )
 from spectragent.benchmarks.androidworld.tasks import INFORMATION_RETRIEVAL, AndroidWorldTask
-from spectragent.schemas.verdict import Judgment, VerifierIdentity
-
-#: Who judges, the verifier kind every verdict it gives names: the
-#: benchmark's primary verifier (``AndroidWorldBenchmark``).
-VERIFIER_ID = "androidworld"
-
-
-def identity() -> VerifierIdentity:
-    """AndroidWorld at the pinned commit its service runs, with no setting that changes a verdict."""
-    return VerifierIdentity(verifier_id=VERIFIER_ID, version=PINNED_COMMIT)
+from spectragent.schemas.verdict import Judgment
 
 
 async def read_score(
@@ -91,4 +79,4 @@ async def read_score(
     return Judgment(score=float(score), evidence=dict(provenance))
 
 
-__all__ = ["VERIFIER_ID", "identity", "read_score"]
+__all__ = ["read_score"]

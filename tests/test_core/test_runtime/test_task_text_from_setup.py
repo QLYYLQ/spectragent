@@ -39,7 +39,8 @@ DONE = f"{CAP}.done"
 
 
 class _TextCap(CapabilityBase):
-    """Completes the task text at setup when *sets*, handing back *text* (or raising it); scores."""
+    """Completes the task text at setup when *sets*, handing back *text* (or raising it); hosts the
+    run's live verifier and writes ``score`` when it judges."""
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = CAP
@@ -71,12 +72,46 @@ class _TextCap(CapabilityBase):
             raise self.text
         return self.text  # type: ignore[return-value]  # a breach of contract on purpose
 
-    def oracle_identity(self) -> VerifierIdentity | None:
-        return VerifierIdentity(verifier_id="setup_text_oracle")
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Any = (),
+        setup: Any = None,
+        live_verifiers: Any = (),
+    ) -> None:
+        return None
 
-    async def read_score(self, *, answer: str | None) -> Judgment:
+    def bind_setup(self, setup: Any) -> None:
+        return None
+
+    def bind_live_verifiers(self, verifiers: Any) -> None:
+        return None
+
+    async def verify_live(self, verifier: Any, *, answer: str | None) -> Judgment:
         self.log.append("score")
         return Judgment(score=1.0)
+
+
+class _Verifier:
+    """The run's live verifier, hosted by the text capability."""
+
+    verifier_id = "setup_text_verifier"
+    capability_id = CAP
+    needs = frozenset({"live_environment"})
+
+    def identity(self) -> VerifierIdentity:
+        return VerifierIdentity(verifier_id=self.verifier_id)
+
+
+class _Benchmark:
+    """The run's benchmark: no setup component, one live verifier."""
+
+    setup = None
+
+    def live_verifiers(self) -> list[_Verifier]:
+        return [_Verifier()]
 
 
 class _OtherTextCap(_TextCap):
@@ -176,6 +211,7 @@ def _runtime(
         llm=_LLM(),
         memory=memory,
         hooks=[start, writer],
+        benchmark=_Benchmark() if any(cap.capability_id == CAP for cap in caps) else None,
     )
     return AgentRuntime.for_agent(run, AGENT_ID), agent, memory, start, writer
 

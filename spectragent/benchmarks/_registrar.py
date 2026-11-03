@@ -38,7 +38,7 @@ from spectragent.core.data_loader.task.base import BaseTaskLoader
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers._registrar import VerifierBase
-from spectragent.verifiers.base import OfflineVerifier, attachment_of
+from spectragent.verifiers.base import LiveVerifier, OfflineVerifier, attachment_of
 
 
 @runtime_checkable
@@ -62,6 +62,10 @@ class Benchmark(Protocol):
 
     def offline_verifiers(self) -> list[OfflineVerifier]:
         """Its verifiers that judge a run from the recorded trace, in the order its block lists them."""
+        ...
+
+    def live_verifiers(self) -> list[LiveVerifier]:
+        """Its verifiers that judge a run against the live environment, at the scoring point, in its block's order."""
         ...
 
     @property
@@ -192,6 +196,30 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
             for verifier in self.verifiers or []
             if attachment_of(verifier) == "offline" and isinstance(verifier, OfflineVerifier)
         ]
+
+    def live_verifiers(self) -> list[LiveVerifier]:
+        """Its verifiers attached live (needing the live environment), in its block's order.
+
+        They judge at the scoring point, each hosted by the capability it names
+        (``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载"):
+        ``AgentRuntime.prepare()`` routes and binds them as it does the setup
+        component.
+
+        Raises:
+            TypeError: One needs the live environment and names no capability
+                to host it.
+        """
+        live: list[LiveVerifier] = []
+        for verifier in self.verifiers or []:
+            if attachment_of(verifier) != "live":
+                continue
+            if not isinstance(verifier, LiveVerifier):
+                raise TypeError(
+                    f"verifier {verifier.verifier_id!r} needs the live environment and names no "
+                    f"capability to host it (LiveVerifier)"
+                )
+            live.append(verifier)
+        return live
 
     def primary_verdict(self, verdicts: Mapping[str, Verdict]) -> Verdict | None:
         """Its primary verdict among a run's *verdicts* (slug → verdict); ``None`` when there is none.

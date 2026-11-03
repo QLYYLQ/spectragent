@@ -609,10 +609,15 @@ class SurfacelessEnv:
         negotiation: Any = None,
         archivers: Any = (),
         setups: Any = (),
+        live_verifiers: Any = (),
     ) -> None:
         # Every run calls it (``prepare()``'s setup check), archiving or not.
         self._inner.check_setup(
-            context, negotiation=negotiation, archivers=archivers, setups=setups
+            context,
+            negotiation=negotiation,
+            archivers=archivers,
+            setups=setups,
+            live_verifiers=live_verifiers,
         )
 
     async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:

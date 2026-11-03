@@ -33,13 +33,13 @@ from spectragent.core.capabilities.base import (
     CaptureComparison,
     EpisodeEnd,
     FragmentFormats,
+    LiveVerifierHost,
     PreparedSetupContext,
     RestorationAlignment,
     RestorationSupport,
     SetupCheck,
     SetupContextPreparation,
     SetupHost,
-    TaskOracle,
     TaskTextFromSetup,
 )
 from spectragent.core.environments.base import Environment
@@ -60,6 +60,7 @@ from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 
 if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
+    from spectragent.verifiers.base import LiveVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,11 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         #: ones :meth:`collect_archive` pulls from. Replaced whole by
         #: every bind.
         self._archiving: list[BaseCapability] = []
+        #: The live verifiers the last :meth:`bind_live_verifiers` bound: each
+        #: with its host and its identity, read once when bound, in capability
+        #: order — exactly what :meth:`verify_live` asks. Replaced whole by
+        #: every bind.
+        self._judging: list[tuple[LiveVerifierHost, LiveVerifier, VerifierIdentity]] = []
         if capabilities is not None:
             self.capabilities = capabilities
             # Reject a colliding capability set at construction rather
@@ -626,6 +632,78 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             if isinstance(cap, SetupHost):
                 cap.bind_setup(groups.get(cap.capability_id))
 
+    # ── Benchmark live verifiers: routing the binding ─────────────
+
+    def _live_verifier_groups(
+        self, verifiers: Sequence[LiveVerifier]
+    ) -> dict[str, list[tuple[LiveVerifier, VerifierIdentity]]]:
+        """Each live verifier with its identity, under the ``capability_id`` it names: the routing
+        of :meth:`check_setup` and :meth:`bind_live_verifiers`.
+
+        That capability must be here and host live verifiers
+        (``LiveVerifierHost``). Each identity is read here, once: a verifier
+        whose identity cannot be read is refused before anything starts, never
+        recorded under a guessed one, and two that would write one verdict
+        file (one slug) are refused, as the offline runner refuses them. Every
+        routing problem is collected before anything is returned.
+
+        Raises:
+            ValueError: Naming every verifier that cannot be hosted here and
+                why, or every slug two verifiers share.
+        """
+        by_cap = self._by_capability_id()
+        groups: dict[str, list[tuple[LiveVerifier, VerifierIdentity]]] = {}
+        problems: list[str] = []
+        slugs: dict[str, list[str]] = {}
+        for verifier in verifiers:
+            host = verifier.capability_id
+            cap = by_cap.get(host)
+            if cap is None:
+                problems.append(
+                    f"the live verifier {verifier.verifier_id!r} is hosted by the {host!r} "
+                    f"capability, and this environment has none (it has "
+                    f"{', '.join(sorted(by_cap)) or 'no capability'})"
+                )
+                continue
+            if not isinstance(cap, LiveVerifierHost):
+                problems.append(
+                    f"the live verifier {verifier.verifier_id!r} is hosted by the {host!r} "
+                    f"capability, which hosts no live verifier (LiveVerifierHost)"
+                )
+                continue
+            identity = verifier.identity()
+            slugs.setdefault(identity.slug, []).append(verifier.verifier_id)
+            groups.setdefault(host, []).append((verifier, identity))
+        for slug, ids in slugs.items():
+            if len(ids) > 1:
+                problems.append(
+                    f"the live verifiers {', '.join(repr(i) for i in ids)} would all write the "
+                    f"verdict {slug!r}: listed more than once with the same settings"
+                )
+        if problems:
+            raise ValueError("; ".join(problems))
+        return groups
+
+    def bind_live_verifiers(self, verifiers: Sequence[LiveVerifier]) -> None:
+        """Route each live verifier to the capability it names, then bind.
+
+        Validate first, bind second, as :meth:`bind_setups`: every verifier is
+        routed and its identity read before any capability is called, and
+        every hosting capability receives its verifiers, ``()`` when it gets
+        none. Acquires nothing.
+
+        Raises:
+            ValueError: As :meth:`_live_verifier_groups`, with nothing bound.
+        """
+        groups = self._live_verifier_groups(verifiers)
+        judging: list[tuple[LiveVerifierHost, LiveVerifier, VerifierIdentity]] = []
+        for cap in self.capabilities.values():
+            if isinstance(cap, LiveVerifierHost):
+                group = groups.get(cap.capability_id, [])
+                cap.bind_live_verifiers([verifier for verifier, _ in group])
+                judging += [(cap, verifier, identity) for verifier, identity in group]
+        self._judging = judging
+
     async def collect_archive(self) -> ArchiveBatch:
         """Pull every bound capability's evidence; merge in capability order.
 
@@ -720,33 +798,28 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
         """Judge this task against the live environment; the verdicts in capability order.
 
-        One task per capability implementing
-        :class:`~spectragent.core.capabilities.base.TaskOracle` whose oracle
-        judges this run (``oracle_identity()`` is not ``None``), run
+        One task per live verifier the last :meth:`bind_live_verifiers` bound,
+        each asked through the capability hosting it
+        (:class:`~spectragent.core.capabilities.base.LiveVerifierHost`), run
         **concurrently**, each limited to *timeout_s* and handed the same
         *answer*, the run's final answer (``loop.done``'s text, or ``None``),
         and every task is waited for before anything is returned. A judgment
-        becomes a ``judged`` live verdict carrying the oracle's identity and
-        the start time and duration measured here around the call. An oracle
+        becomes a ``judged`` live verdict carrying the verifier's identity and
+        the start time and duration measured here around the call. A verifier
         that runs out of time, raises, or hands back something other than a
         :class:`Judgment` comes back as a ``not_judged`` verdict saying why,
         under the same identity. Nothing here raises ``Exception``: judging
         never fails the run (``docs/architecture_design.md`` §4.3 "判分的路由").
-        No oracle: an empty list.
+        No live verifier: an empty list.
 
-        A cancellation propagates unchanged, after every oracle still running
+        A cancellation propagates unchanged, after every verifier still running
         was cancelled and waited for, as in :meth:`collect_archive`.
         """
-        judging = [
-            (cap, identity)
-            for cap in self.capabilities.values()
-            if isinstance(cap, TaskOracle) and (identity := cap.oracle_identity()) is not None
-        ]
-        if not judging:
+        if not self._judging:
             return []
         tasks = [
-            asyncio.ensure_future(self._verify_one(cap, identity, timeout_s, answer))
-            for cap, identity in judging
+            asyncio.ensure_future(self._verify_one(host, verifier, identity, timeout_s, answer))
+            for host, verifier, identity in self._judging
         ]
         try:
             return list(await asyncio.gather(*tasks))
@@ -754,7 +827,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             # Only a cancellation reaches here — ``_verify_one`` returns every
             # ``Exception``. ``gather`` lets the siblings of a child that raised
             # ``CancelledError`` keep running; cancel whatever is still pending
-            # and wait it out, so no oracle outlives this call.
+            # and wait it out, so no verifier outlives this call.
             for task in tasks:
                 task.cancel()
             await asyncio.wait(tasks)
@@ -762,27 +835,29 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     @staticmethod
     async def _verify_one(
-        cap: BaseCapability, identity: VerifierIdentity, timeout_s: float, answer: str | None
+        host: LiveVerifierHost,
+        verifier: LiveVerifier,
+        identity: VerifierIdentity,
+        timeout_s: float,
+        answer: str | None,
     ) -> Verdict:
-        """One oracle's verdict: built from its judgment, or the not-judged verdict standing in for it.
+        """One verifier's verdict: built from its judgment, or the not-judged verdict standing in for it.
 
         The start time and duration are this method's own, measured around the
-        call, never the oracle's. Catches ``Exception`` only: a
+        call, never the verifier's. Catches ``Exception`` only: a
         ``CancelledError`` (a ``BaseException``) propagates. The limit is this
-        method's own clock, so an oracle that raises ``TimeoutError`` itself,
+        method's own clock, so a verifier that raises ``TimeoutError`` itself,
         inside the limit, failed with an ``error``; ``timeout`` means the limit
         cut it off.
         """
-        # Only capabilities that passed the isinstance check above are asked.
-        oracle = cast(TaskOracle, cap)
         started_at, started = time.time(), time.monotonic()
         limit = asyncio.timeout(timeout_s)
         judgment: object = None
         failure: Exception | None = None
         try:
             async with limit:
-                judgment = await oracle.read_score(answer=answer)
-        except Exception as exc:  # per-oracle isolation
+                judgment = await host.verify_live(verifier, answer=answer)
+        except Exception as exc:  # per-verifier isolation
             failure = exc
         duration_ms = int((time.monotonic() - started) * 1000)
         if failure is None:
@@ -790,7 +865,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 return Verdict.judged(
                     identity, "live", judgment, started_at=started_at, duration_ms=duration_ms
                 )
-            failure = TypeError(f"read_score() returned {type(judgment).__name__}, not a Judgment")
+            failure = TypeError(f"verify_live() returned {type(judgment).__name__}, not a Judgment")
         timed_out = limit.expired()
         return Verdict(
             verifier=identity,
@@ -1187,15 +1262,17 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
         setups: Sequence[BenchmarkSetup] = (),
+        live_verifiers: Sequence[LiveVerifier] = (),
     ) -> None:
         """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
 
         ``AgentRuntime.prepare()`` calls this with the task's setup context,
-        the observation negotiation result, and the archivers and benchmark
-        setup components it is about to bind (``docs/architecture_design.md``
-        §4.3 "setup 之前的检查"), so a configuration that cannot run fails
-        before the trace is opened and before anything is launched — on a dry
-        run too. In order, each step raising on its own:
+        the observation negotiation result, and the archivers, benchmark
+        setup components and live verifiers it is about to bind
+        (``docs/architecture_design.md`` §4.3 "setup 之前的检查"), so a
+        configuration that cannot run fails before the trace is opened and
+        before anything is launched — on a dry run too. In order, each step
+        raising on its own:
 
         1. the capability set must route (:meth:`_by_capability_id`);
         2. every context key must be one some capability's ``setup()``
@@ -1205,20 +1282,27 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
            :meth:`bind_archivers` uses);
         4. every setup component must route to a capability that hosts it
            (:meth:`_setup_groups`, the routing :meth:`bind_setups` uses);
-        5. every capability implementing
-           :class:`~spectragent.core.capabilities.base.SetupHost` checks its
-           own slice — its routed context, its archivers and its setup
-           component, ``None`` when it has none — and every other one
-           implementing :class:`~spectragent.core.capabilities.base.SetupCheck`
-           its routed context and archivers, in capability order. A
-           capability with neither protocol is checked for routing only.
+        5. every live verifier must route to a capability that hosts it, with
+           an identity that can be read and a verdict file of its own
+           (:meth:`_live_verifier_groups`, the routing
+           :meth:`bind_live_verifiers` uses);
+        6. every capability implementing
+           :class:`~spectragent.core.capabilities.base.LiveVerifierHost`
+           checks its own slice — its routed context, its archivers, its
+           setup component (``None`` when it has none) and its live verifiers
+           — every other one implementing
+           :class:`~spectragent.core.capabilities.base.SetupHost` the same
+           without verifiers, and every other one implementing
+           :class:`~spectragent.core.capabilities.base.SetupCheck` its routed
+           context and archivers, in capability order. A capability with none
+           of these protocols is checked for routing only.
 
         Changes nothing: no capability is set up, bound or narrowed.
 
         Raises:
             ValueError: A colliding capability set, a context key no
-                capability accepts, or a setup component no capability here
-                hosts.
+                capability accepts, or a setup component or live verifier no
+                capability here hosts.
             UnroutableArchiverError: An archiver that cannot be bound here.
             Exception: A capability's own refusal (browser:
                 ``BrowserCooperationError``, naming both parties of every
@@ -1228,8 +1312,17 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         routed = self.route_setup_context(context or {})
         groups = self._archiver_groups(archivers)
         hosted = self._setup_groups(setups)
+        judging = self._live_verifier_groups(live_verifiers)
         for inst_id, cap in self.capabilities.items():
-            if isinstance(cap, SetupHost):
+            if isinstance(cap, LiveVerifierHost):
+                cap.check_setup(
+                    routed[inst_id],
+                    negotiation=negotiation,
+                    archivers=groups.get(cap.capability_id, []),
+                    setup=hosted.get(cap.capability_id),
+                    live_verifiers=[v for v, _ in judging.get(cap.capability_id, [])],
+                )
+            elif isinstance(cap, SetupHost):
                 cap.check_setup(
                     routed[inst_id],
                     negotiation=negotiation,
