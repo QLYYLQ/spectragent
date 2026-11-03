@@ -15,3 +15,5 @@ benchmark:
     #     - verifier_id: browsecomp          # its grader, against the decrypted reference answer
     #       llm: { model_type: openai, model: <a verified model>, provider: { name: direct } }
     #     - verifier_id: exact_match         # no model: normalised string equality with the answer
+    #       (it needs a plaintext expected_answer; the official dataset carries the answer
+    #       encrypted, so it judges none of its runs yet: docs/architecture_design.md §4.11)

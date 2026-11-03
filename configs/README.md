@@ -876,7 +876,7 @@ A verifier judges a run (`VerifierRegistrar`, `verifier_id`; `docs/architecture_
 | benchmark | verifiers its block takes | primary verdict (the sweep's success rate) |
 |---|---|---|
 | `online_mind2web` | `online_mind2web` (WebJudge: key points, one vision call per screenshot, a final call; reads no reference row) | `online_mind2web`, by its label |
-| `browsecomp` | `browsecomp` (its grader, against the decrypted answer), `exact_match` | `browsecomp`, by its label |
+| `browsecomp` | `browsecomp` (its grader, against the decrypted answer), `exact_match` (needs a plaintext `expected_answer`; the official dataset carries the answer encrypted, so it judges none of its runs yet, §4.11) | `browsecomp`, by its label |
 | `lexbench_browser` | `lexbench_browser` (rubric-scored, with a per-task pass mark) | `lexbench_browser`, by its label |
 | `androidworld` | none: AndroidWorld's task oracle judges on the device at the scoring point (verifier `androidworld`, its pinned commit as `version`, `score` 0 to 1; `evidence`: the task's family, name, index, seeds, a digest of its parameters, the goal, and for an information-retrieval task whether an answer was sent) | the live `androidworld` verdict: its score counts only when the agent ended `done` (a MiniWoB++ task: the score alone, its page ends the episode); a run whose ending is unknown gets no success value |
 | `trace_branches` | none: a branch sweep judges nothing | none |

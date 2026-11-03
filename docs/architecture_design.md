@@ -3282,6 +3282,7 @@ def attachment_of(verifier: Verifier) -> Attachment: ...   # 要 live_environmen
 
 - **种类**：通用的规则判分 `exact_match`（`verifiers/exact_match.py`），与各基准自己的判分器：放在基准的包里、用基准的键注册（`spectragent/benchmarks/<benchmark_id>/verifier.py`：`online_mind2web` 的 WebJudge、`browsecomp`、`lexbench_browser`），所以一个基准名同时找到任务、参考答案与判分器，没有别名表。LLM judge 都继承 `LLMJudgeVerifier`（`verifiers/_registrar.py`），判分模型经它的 `llm` 受体（`__wiring__ = {"llm": "llm"}`）写在判分器自己的块里、必填（见 §4.10.1 "b 段落地了什么"）。提示词在 `prompts/verifiers/<verifier_id>/`。
 - **基准收哪些**：每个基准在自己的 `__wiring__` 里写它收的种类（`"verifiers": ("verifier", [...])`）：`online_mind2web` 收 `online_mind2web`，`browsecomp` 收 `browsecomp` 与 `exact_match`，`lexbench_browser` 收 `lexbench_browser`；`androidworld` 与分叉 sweep 的任务来源 `trace_branches` 不收（AndroidWorld 的活体判分器在 c 段，分叉任务从源基准继承判分器，§4.10.1）。块里不写 `verifiers` 就是不判。发布的基准 YAML 都不列判分器：LLM judge 的模型要用户先验证过（`docs/browser_agent_runbook.md`），列判分器的是用户自己的基准 YAML。
+- **还没解决：`exact_match` 判不了真实的 BrowseComp run**（2026-11-04 合并审查时查明，没在 b 段修）。BrowseComp 的官方数据（它的 `data_info.json` 记着来源：OpenAI 的测试集 CSV 与 Hugging Face 的 `MultiturnRL/BrowseComp`；数据根下的 `browser/browsecomp/tasks.jsonl`，1266 行，不入库）只带加密的题目与答案（`reference.encrypted_question` / `encrypted_answer`，按 `metadata.canary` 解密），没有明文的 `expected_answer`；`browsecomp` 的评测数据加载器用通用的 `normalize_raw`，不解密，所以参考行的 `expected_answer` 是空的。`exact_match` 因此对每一个真实的 BrowseComp run 都报 `ReferenceMismatchError`（记为判不了，不写判定）；判得了的只有 `browsecomp` 的 LLM judge，它自己解密。`browsecomp` 收 `exact_match` 的测试用的是带明文答案的测试数据。修法（加载器解密出 `expected_answer`，或让 `exact_match` 读解密后的答案）留给以后。
 - **挂接由要求推出**（§4.10.1）：`__needs__` 默认是 `{"trace", "reference"}`；`LLMJudgeVerifier` 加上 `model`；WebJudge 是 `{"trace", "model"}`：它从 trace 记下的任务文本生成关键点，从不读参考行（取代了评测器的 `__needs_reference__ = False`）。要 `live_environment` 的挂在判分时间点（§4.2），其余离线。b 段还没有活体判分器的种类：判分时间点今天的判定来自 capability 的任务裁判（§4.9 `TaskOracle`），c 段由 AndroidWorld 的活体判分器取代。离线的 runner 拒收要活体环境的判分器。
 - **只交回判出的东西**：`verify` 交回一份 `Judgment`（分数、标签、理由、证据、判分模型的用量，至少有分数或标签；`schemas/verdict.py`），与 `TaskOracle.read_score` 交回的是同一个类型。身份、挂接点、开始时间与耗时由挂它的一方加（离线是 `VerificationRunner`，判分时间点是 environment），所以判定的计时不取决于判分器自己的时钟。判不了时抛异常：`VerificationError`（带着已知的证据与用量）及其子类 `TraceIncompleteError`、`ReferenceMismatchError`、`NoReferenceError`（`verifiers/errors.py`）。
 
@@ -3293,7 +3294,7 @@ def attachment_of(verifier: Verifier) -> Attachment: ...   # 要 live_environmen
 
 | verifier_id | 判分方式 | 状态 | 适用 benchmark |
 |-------------|---------|------|---------------|
-| `exact_match` | 答案规则匹配（大小写、标点与冠词归一，子串匹配可选） | ✅ | BrowseComp（GAIA 等） |
+| `exact_match` | 答案规则匹配（大小写、标点与冠词归一，子串匹配可选） | ✅（要明文的 `expected_answer`：BrowseComp 的官方数据它还判不了，见上） | BrowseComp（GAIA 等） |
 | `online_mind2web` | WebJudge：LLM 从任务文本生成关键点，再看截图与动作判 | ✅ | Online-Mind2Web |
 | `browsecomp` | LLM 对照参考答案判 | ✅ | BrowseComp |
 | `lexbench_browser` | 图像 judge：0–100 总分与通过标签 | ✅ | LexBench-Browser |
