@@ -18,7 +18,8 @@ does is read from ``<root>/behaviour.json``, again for every request, so a test
 can change an endpoint's answer while the service runs: per path, ``{"status": 500}``
 answers an error and then logs a traceback, as uvicorn logs one after Starlette
 has answered (``"log"`` is the text it logs, ``"log_after_s"`` how long after
-the answer), ``{"hang": true}`` never answers, ``{"text": ...}`` answers
+the answer; ``"log_before"`` is text it logs before it answers, as AndroidWorld
+logs while it handles the request), ``{"hang": true}`` never answers, ``{"text": ...}`` answers
 that text, ``{"json": ...}`` answers that object, ``{"json_in_turn": [...]}``
 answers the path's first request with the first object, its second with the
 second, and every later one with the last (a goal AndroidWorld rewrites at
@@ -174,6 +175,7 @@ def _serve(argv: list[str]) -> None:
             )
             if "status" in rule:
                 status, body, kind = rule["status"], "Internal Server Error", "text/plain"
+                print(rule.get("log_before", ""), end="", flush=True)
                 logged = rule.get("log", TRACEBACK)
                 threading.Timer(
                     rule.get("log_after_s", 0), lambda: print(logged, end="", flush=True)

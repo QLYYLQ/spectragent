@@ -14,6 +14,8 @@ import asyncio
 import importlib.util
 import os
 import shutil
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
@@ -489,6 +491,140 @@ def test_the_launcher_refuses_a_reward_that_is_no_number() -> None:
         _launcher().reward_ends_episode("lost")
 
 
+#: What android_env raises when a pull finds a file the directory listing named gone.
+_PULL_LOST_A_FILE = (
+    "Error executing adb command: [adb -P 41000 -s emulator-5556 pull /data/data/net.osmand/"
+    "databases/map_markers_db-journal /tmp/x]\nCaused by: Command 'adb pull' returned non-zero "
+    "exit status 1.\nadb stdout: [b\"adb: error: failed to stat remote object '/data/data/"
+    "net.osmand/databases/map_markers_db-journal': No such file or directory\\n\"]\n"
+    "adb stderr: [None]"
+)
+#: The same words from the ``rm -r`` that empties the directory before the push.
+_RM_LOST_A_FILE = (
+    "Error executing adb command: [adb -P 41000 -s emulator-5556 shell rm -r /data/data/"
+    "net.osmand/databases/*]\nCaused by: Command 'adb shell rm' returned non-zero exit "
+    "status 1.\nadb stdout: [b'rm: /data/data/net.osmand/databases/map_markers_db-journal: "
+    "No such file or directory\\n']\nadb stderr: [None]"
+)
+_TABLE = ("map_markers", "/data/data/net.osmand/databases/map_markers_db")
+
+
+@dataclass
+class _Tables:
+    """AndroidWorld's table_exists, launch_app and delete_all_rows_from_table, faked for the launcher's wait."""
+
+    #: What each look answers, in turn; the last one repeats.
+    looks: list[bool | Exception]
+    #: What each clear does, in turn (``None`` deletes the rows); later ones succeed.
+    clears: list[Exception | None] = field(default_factory=list)
+    env: object = field(default_factory=object)
+    launched: list[str] = field(default_factory=list)
+    cleared: list[tuple[object, ...]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def exists(self, table_name: str, remote_db_file_path: str, env: object) -> bool:
+        assert (table_name, remote_db_file_path, env) == (*_TABLE, self.env)
+        answer = self.looks.pop(0) if len(self.looks) > 1 else self.looks[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def launch(self, app_name: str, env: object) -> None:
+        assert env is self.env
+        self.launched.append(app_name)
+
+    def clear(self, *arguments: object) -> None:
+        self.cleared.append(arguments)
+        outcome = self.clears.pop(0) if self.clears else None
+        if outcome is not None:
+            raise outcome
+
+    def clear_once_the_table_is_there(self, wait_s: float = 5.0) -> None:
+        wrapped = _launcher().wait_for_the_table(
+            self.clear,
+            exists=self.exists,
+            launch=self.launch,
+            warn=self.notes.append,
+            wait_s=wait_s,
+            poll_s=0.01,
+        )
+        wrapped(*_TABLE, self.env, "osmand")
+
+
+def test_the_launcher_clears_a_table_that_is_there_without_launching_the_app() -> None:
+    tables = _Tables(looks=[True])
+
+    tables.clear_once_the_table_is_there()
+
+    assert tables.launched == [] and tables.notes == []
+    assert tables.cleared == [(*_TABLE, tables.env, "osmand", None)]
+
+
+def test_the_launcher_launches_the_app_once_and_clears_once_its_table_is_there() -> None:
+    tables = _Tables(looks=[False, False, True])
+
+    tables.clear_once_the_table_is_there()
+
+    assert tables.launched == ["osmand"]
+    assert tables.cleared == [(*_TABLE, tables.env, "osmand", None)]
+    assert len(tables.notes) == 1 and tables.notes[0].startswith("osmand made table map_markers")
+
+
+def test_the_launcher_hands_a_table_the_app_never_makes_over_after_its_limit() -> None:
+    """AndroidWorld's own function then launches, sleeps and fails, as it always did."""
+    tables = _Tables(looks=[False])
+
+    started = time.monotonic()
+    tables.clear_once_the_table_is_there(wait_s=0.2)
+    waited = time.monotonic() - started
+
+    assert 0.2 <= waited < 1.0
+    assert tables.launched == ["osmand"] and len(tables.cleared) == 1
+    assert tables.notes[0].startswith("osmand had made no table map_markers")
+
+
+def test_the_launcher_counts_a_look_whose_pull_lost_a_file_as_no_table_yet() -> None:
+    tables = _Tables(looks=[RuntimeError(_PULL_LOST_A_FILE), True])
+
+    tables.clear_once_the_table_is_there()
+
+    assert tables.launched == ["osmand"] and len(tables.cleared) == 1
+    with pytest.raises(RuntimeError, match="device 'emulator-5556' not found"):
+        _Tables(
+            looks=[RuntimeError("device 'emulator-5556' not found")]
+        ).clear_once_the_table_is_there()
+
+
+def test_the_launcher_clears_once_more_when_androidworlds_own_pull_lost_a_file() -> None:
+    """Its pulls come before it changes anything on the device; it runs once more, and only once."""
+    tables = _Tables(looks=[True], clears=[RuntimeError(_PULL_LOST_A_FILE)])
+
+    tables.clear_once_the_table_is_there()
+
+    assert tables.cleared == [(*_TABLE, tables.env, "osmand", None)] * 2
+    assert tables.launched == [] and "clearing again" in tables.notes[0]
+    twice = _Tables(looks=[True], clears=[RuntimeError(_PULL_LOST_A_FILE)] * 2)
+    with pytest.raises(RuntimeError, match="failed to stat remote object"):
+        twice.clear_once_the_table_is_there()
+    assert len(twice.cleared) == 2
+
+
+def test_the_launcher_raises_the_rm_emptying_the_directory_without_clearing_again() -> None:
+    """The same words from ``rm -r`` come after it deleted files, so the device has changed."""
+    tables = _Tables(looks=[True], clears=[RuntimeError(_RM_LOST_A_FILE)])
+
+    with pytest.raises(RuntimeError, match="shell rm -r"):
+        tables.clear_once_the_table_is_there()
+
+    assert len(tables.cleared) == 1
+
+
+def test_the_launcher_counts_only_a_pull_as_one_that_lost_a_file() -> None:
+    assert _launcher().pull_lost_a_file(RuntimeError(_PULL_LOST_A_FILE))
+    assert not _launcher().pull_lost_a_file(RuntimeError(_RM_LOST_A_FILE))
+    assert not _launcher().pull_lost_a_file(RuntimeError("No such file or directory"))
+
+
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(
     root: Path, tmp_path: Path
 ) -> None:
@@ -686,6 +822,47 @@ async def test_a_server_error_ends_with_the_traceback_the_service_logs_after_ans
             await oracle.read_score(answer=None)
     finally:
         await oracle.stop()
+
+    assert str(caught.value).endswith(cause)
+
+
+async def test_a_server_error_ends_with_the_handlers_traceback_not_one_logged_on_the_way(
+    root: Path, tmp_path: Path
+) -> None:
+    """While it handles a request, AndroidWorld logs tracebacks of its own: absl's, of an adb command it retries."""
+    retried = (
+        "ERROR:absl:Failed to execute ADB command (try 1 of 3): [adb shell am start  -W -n "
+        "net.osmand/net.osmand.plus.activities.MapActivity]\n"
+        "Traceback (most recent call last):\n"
+        '  File "adb_controller.py", line 122, in execute_command\n'
+        "subprocess.TimeoutExpired: Command 'am start' timed out after 5.0 seconds\n"
+        "WARNING:absl:serve.py: not restarting the adb server the run shares; retrying\n"
+    )
+    cause = "sqlite3.OperationalError: no such table: map_markers"
+    traceback = (
+        "ERROR:    Exception in ASGI application\n"
+        "Traceback (most recent call last):\n"
+        '  File "sqlite_utils.py", line 164, in delete_all_rows_from_table\n'
+        f"{cause}\n"
+    )
+    write_behaviour(
+        root,
+        {
+            "/task/initialize": {
+                "status": 500,
+                "log_before": retried,
+                "log": traceback,
+                "log_after_s": 0.5,
+            }
+        },
+    )
+    oracle = _oracle(root)
+
+    with pytest.raises(
+        AndroidWorldError, match="POST /task/initialize answered HTTP 500"
+    ) as caught:
+        await oracle.start(_device(tmp_path), _task())
+    await oracle.stop()
 
     assert str(caught.value).endswith(cause)
 

@@ -33,7 +33,11 @@ it was cloned:
   read from the emulator's discovery file, and goes to the exact address the
   emulator reported;
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
-  states tasks restore are taken again once the service is up.
+  states tasks restore are taken again once the service is up;
+- AndroidWorld clears an app's table before a task, and when the table is
+  missing it launches the app and deletes 7 s later, while OsmAnd, started on a
+  fresh boot, makes its markers table 12-16 s after its process starts: the
+  launcher waits until the table is there (:func:`wait_for_the_table`).
 
 It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
@@ -51,6 +55,8 @@ import argparse
 import importlib.metadata
 import os
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 #: The android_env these patches replace private names of: the version the
@@ -58,6 +64,121 @@ from pathlib import Path
 #: would be added, not patched (a missed _restart_server would run adb
 #: kill-server on the run's own server), so the launcher refuses to start.
 ANDROID_ENV = "1.2.3"
+#: How long after launching an app the launcher looks for the table AndroidWorld
+#: is about to clear (:func:`wait_for_the_table`).
+TABLE_WAIT_S = 30.0
+#: The pause between two looks; each look pulls the database's whole directory.
+TABLE_POLL_S = 1.0
+
+#: AndroidWorld's ``sqlite_utils.delete_all_rows_from_table``: it deletes every
+#: row of a table, given the table, the database's path on the device, the
+#: environment, the app and a timeout.
+Clear = Callable[[str, str, object, str, float | None], object]
+
+
+def wait_for_the_table(
+    clear: Clear,
+    *,
+    exists: Callable[[str, str, object], bool],
+    launch: Callable[[str, object], object],
+    warn: Callable[[str], object],
+    wait_s: float = TABLE_WAIT_S,
+    poll_s: float = TABLE_POLL_S,
+) -> Clear:
+    """AndroidWorld's *clear*, run once the app has made the table it clears.
+
+    AndroidWorld clears an app's table before a task. When the table is
+    missing it launches the app, sleeps a fixed 7 s and deletes, and the delete
+    raises ``no such table`` when the app has not made it yet. The snapshot
+    OsmAnd's tasks restore has no markers table (AndroidWorld's setup closes
+    OsmAnd before it makes one), and OsmAnd, started on a fresh boot, made it
+    12-16 s after its process started (2026-11-03). So OsmAndMarker failed
+    every initialize there (``docs/architecture_design.md`` §11.2).
+
+    The function returned takes *clear*'s arguments. It looks with *exists*
+    (AndroidWorld's ``table_exists``). When the table is missing, it launches
+    the app with *launch*, as AndroidWorld does, and looks again until the
+    table is there, at most *wait_s* after the launch. A look whose pull finds
+    a listed file gone counts as "not there yet" (:func:`pull_lost_a_file`).
+    Then it hands the same arguments to *clear*, which finds the table and
+    skips its own launch and sleep. If *wait_s* passed first, *clear* launches,
+    sleeps and fails as it always did.
+
+    *clear* pulls the directory twice itself, and a pull of either can lose a
+    file the app is still replacing. Both pulls come before it changes anything
+    on the device, so after such a failure the function looks until the table
+    is there again and runs *clear* once more. Any other failure of *clear* is
+    raised. That includes the ``rm -r`` emptying the directory before the push,
+    which can print the same words after it has deleted files. *warn* hears how
+    each wait ended and each second run.
+    """
+
+    def look(table_name: str, remote_db_file_path: str, env: object) -> bool:
+        try:
+            return exists(table_name, remote_db_file_path, env)
+        except Exception as error:
+            if not pull_lost_a_file(error):
+                raise
+            return False
+
+    def clear_once_the_table_is_there(
+        table_name: str,
+        remote_db_file_path: str,
+        env: object,
+        app_name: str,
+        timeout_sec: float | None = None,
+    ) -> None:
+        def there() -> bool:
+            return look(table_name, remote_db_file_path, env)
+
+        if not there():
+            launched = time.monotonic()
+            launch(app_name, env)
+            made = _look_until(there, launched + wait_s, poll_s)
+            warn(
+                f"{app_name} {'made' if made else 'had made no'} table {table_name} "
+                f"{time.monotonic() - launched:.1f} s after its launch"
+            )
+        try:
+            clear(table_name, remote_db_file_path, env, app_name, timeout_sec)
+        except Exception as error:
+            if not pull_lost_a_file(error):
+                raise
+            warn(
+                f"{app_name} replaced a file while AndroidWorld read it to clear {table_name}; "
+                "clearing again once the table is there"
+            )
+            _look_until(there, time.monotonic() + wait_s, poll_s)
+            clear(table_name, remote_db_file_path, env, app_name, timeout_sec)
+
+    return clear_once_the_table_is_there
+
+
+def _look_until(look: Callable[[], bool], deadline: float, poll_s: float) -> bool:
+    """Ask *look* until it says yes or the monotonic clock passes *deadline*; whether it said yes."""
+    while not look():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_s)
+    return True
+
+
+def pull_lost_a_file(error: Exception) -> bool:
+    """Whether *error* is android_env's failed ``adb pull`` of a file that was gone.
+
+    AndroidWorld reads a database by listing its directory and pulling each
+    file. An app making its database meanwhile replaces some of them (OsmAnd
+    swaps its journal for WAL files), and the pull of one fails with ``No such
+    file or directory``; nothing on the device has changed then. Only a pull
+    counts: another command can print the same words after it changed
+    something (``rm -r <dir>/*`` when a file went first).
+    """
+    command, _, output = str(error).partition("\n")
+    return (
+        command.startswith("Error executing adb command: [")
+        and " pull " in command
+        and "No such file or directory" in output
+    )
 
 
 def reward_ends_episode(raw: str) -> bool:
@@ -143,7 +264,8 @@ def _patch(args: argparse.Namespace) -> None:
     from android_env.components.simulators.emulator import emulator_simulator
     from android_env.proto import emulator_controller_pb2_grpc, snapshot_service_pb2_grpc
     from android_env.wrappers import a11y_grpc_wrapper
-    from android_world.env import env_launcher, interface
+    from android_world.env import adb_utils, env_launcher, interface
+    from android_world.task_evals.utils import sqlite_utils
 
     logging.set_verbosity(logging.WARNING)
 
@@ -168,6 +290,28 @@ def _patch(args: argparse.Namespace) -> None:
             "AsyncAndroidEnv.display_message, which this AndroidWorld does not define"
         )
     interface.AsyncAndroidEnv.display_message = answer_off_the_screen
+
+    # A renamed function would be added, not replaced, and OsmAndMarker's
+    # initialize would race its 7 s again.
+    if not all(
+        callable(getattr(sqlite_utils, name, None))
+        for name in ("delete_all_rows_from_table", "table_exists")
+    ):
+        raise SystemExit(
+            "serve.py waits for the table AndroidWorld clears by replacing "
+            "sqlite_utils.delete_all_rows_from_table and asking sqlite_utils.table_exists, "
+            "which this AndroidWorld does not both define"
+        )
+
+    def launch(app_name: str, env) -> None:  # env: AndroidWorld's AsyncEnv
+        adb_utils.launch_app(app_name, env.controller)
+
+    sqlite_utils.delete_all_rows_from_table = wait_for_the_table(
+        sqlite_utils.delete_all_rows_from_table,
+        exists=sqlite_utils.table_exists,
+        launch=launch,
+        warn=lambda note: logging.warning("serve.py: %s", note),
+    )
 
     adb_init = adb_controller.AdbController.__init__
 
