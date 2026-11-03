@@ -139,11 +139,19 @@ class AndroidWorldSetup(BenchmarkSetupBase):
         return DeviceNeeds(emulator_grpc=True, root=True, guest_wifi=True, fresh=True)
 
     def check_setup(self, task: OracleTask | None) -> None:
+        """Refuse, naming every problem, an installation the service cannot start from, and a task
+        :meth:`start` would refuse.
+
+        With no task (``config check --benchmark androidworld`` checks the
+        configuration alone) only the installation is checked: :meth:`start`
+        refuses a missing task, at setup.
+        """
         problems = self.installation.problems()
-        try:
-            self._parse(task)
-        except AndroidWorldSetupError as exc:
-            problems.append(str(exc))
+        if task is not None:
+            try:
+                self._parse(task)
+            except AndroidWorldSetupError as exc:
+                problems.append(str(exc))
         if problems:
             raise AndroidWorldSetupError(
                 "the androidworld setup cannot start: " + "; ".join(problems)
@@ -201,7 +209,8 @@ class AndroidWorldSetup(BenchmarkSetupBase):
             self._device_goal = goal_after_initialize(task, goal)
 
     def makes_goal(self, task: OracleTask | None) -> bool:
-        return self._parse(task).goal_at_initialize != "unchanged"
+        """Whether the task's goal is made or reworded at initialize; ``False`` with no task to start."""
+        return task is not None and self._parse(task).goal_at_initialize != "unchanged"
 
     def made_goal(self) -> str | None:
         return self._device_goal

@@ -1314,7 +1314,6 @@ async def test_a_path_without_ffmpeg_is_refused_before_the_service_starts(
 @pytest.mark.parametrize(
     ("task", "message"),
     [
-        (None, "the task carries no AndroidWorld task"),
         ({"task": "SystemBrightnessMax"}, "the task's oracle_task is not an AndroidWorld task"),
         (_task(commit="f" * 40), "the task list was made with AndroidWorld ffff"),
         (_task(params={"seed": 1}), "params.seed is 1, and the instance AndroidWorld makes"),
@@ -1335,8 +1334,24 @@ def test_every_problem_is_named_at_once(root: Path) -> None:
     (root / "cache" / "a11y" / FORWARDER_APK).unlink()
 
     with pytest.raises(AndroidWorldSetupError) as refused:
-        _setup(root).check_setup(None)
-    assert "forwarder" in str(refused.value) and "no AndroidWorld task" in str(refused.value)
+        _setup(root).check_setup({"task": "SystemBrightnessMax"})
+    assert "forwarder" in str(refused.value) and "not an AndroidWorld task" in str(refused.value)
+
+
+async def test_without_a_task_only_the_installation_is_checked_and_start_refuses(
+    root: Path, tmp_path: Path
+) -> None:
+    """``config check --benchmark androidworld`` prepares with no task: the task is setup's to refuse."""
+    setup = _setup(root)
+
+    setup.check_setup(None)
+    assert not setup.makes_goal(None)
+    with pytest.raises(AndroidWorldSetupError, match="the task carries no AndroidWorld task"):
+        await setup.start(_device(tmp_path), None)
+
+    (root / "cache" / "a11y" / FORWARDER_APK).unlink()
+    with pytest.raises(AndroidWorldSetupError, match="forwarder"):
+        setup.check_setup(None)
 
 
 @pytest.mark.parametrize("layout", ["detached", "loose ref", "packed ref", "gitdir file"])
