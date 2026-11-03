@@ -11,6 +11,7 @@ class BrowseCompBenchmark(BenchmarkBase):
     """BrowseComp: questions answered by browsing, with encrypted reference answers."""
 
     __registry_key__ = "browsecomp"
+    __primary_verifier__ = "browsecomp"
     __wiring__: ClassVar[dict[str, Any]] = {
         "task_loader": ("task_loader", ["browsecomp"]),
         "eval_loader": ("eval_loader", ["browsecomp"]),

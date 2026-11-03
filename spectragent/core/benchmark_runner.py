@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import logging
 import re
 import sys
@@ -88,6 +89,7 @@ from spectragent.schemas._types import (
     limit_value,
 )
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers.base import OfflineVerifier
 from spectragent.verifiers.report import VerifierTally, tallies
 from spectragent.verifiers.runner import VerificationRunner
@@ -205,6 +207,14 @@ class TaskOutcome:
     #: Why the task's tokens could not be counted: its trace, or one of its
     #: recorded calls, does not read back.
     usage_note: str | None = None
+    #: The benchmark's primary verdict on the run (§4.10.1 "主判定"), read once
+    #: the sweep's verifiers have judged it; ``None`` when there is none.
+    primary: Verdict | None = None
+    #: How far the task succeeded by it, from 0 to 1 (the benchmark's success
+    #: rule); ``None`` when no primary verdict judged the run.
+    success: float | None = None
+    #: Why the run's verdicts do not read back.
+    primary_note: str | None = None
 
     @property
     def agent_done(self) -> str:
@@ -294,6 +304,9 @@ class BenchmarkRunSummary:
     #: ``<task> (<slug>): <why>`` for each trace a verifier could not judge,
     #: or the pass's own failure.
     verification_errors: list[str] = field(default_factory=list)
+    #: The verifier kind whose verdict is the benchmark's brief result (its
+    #: primary verdict); ``None`` when it declares none or none was asked for.
+    primary_verifier: str | None = None
 
     #: Set when a guard vetoed the sweep (``RunAbort``), naming the task that
     #: did it. ``outcomes`` ends with that task, so without this a short sweep
@@ -348,6 +361,23 @@ class BenchmarkRunSummary:
         return len(self.outcomes)
 
     @property
+    def judged(self) -> int:
+        """Tasks a primary verdict judged."""
+        return sum(1 for o in self.outcomes if o.success is not None)
+
+    @property
+    def success_rate(self) -> float | None:
+        """The mean success over the tasks a primary verdict judged; ``None`` when it judged none.
+
+        A task with no judged primary verdict (no trace, a verifier that
+        could not judge it, a live verdict that timed out) is not counted as
+        a failure: it is left out, and :attr:`judged` against :attr:`total`
+        says how much the rate covers.
+        """
+        values = [o.success for o in self.outcomes if o.success is not None]
+        return sum(values) / len(values) if values else None
+
+    @property
     def completed(self) -> int:
         return sum(1 for o in self.outcomes if o.ok)
 
@@ -385,6 +415,12 @@ class BenchmarkRunSummary:
         ):
             listed = ", ".join(f"{key}={count}" for key, count in sorted(counts.items()))
             lines.append(f"  {label}: {listed or '-'}")
+        if self.primary_verifier is not None:
+            rate = f"{self.success_rate:.1%}" if self.success_rate is not None else "-"
+            lines.append(
+                f"  primary verdict ({self.primary_verifier}): success rate {rate} over the "
+                f"{self.judged} of {self.total} task(s) it judged"
+            )
         if self.token_limit is not None:
             lines.append(
                 f"  tokens: {self.tokens} recorded by {self.calls} call(s); "
@@ -408,9 +444,10 @@ class BenchmarkRunSummary:
                 if outcome.usage is not None and outcome.usage.tokens is not None
                 else ""
             )
+            primary = f", {_primary_words(outcome)}" if self.primary_verifier is not None else ""
             lines.append(
                 f"  {outcome.task_id}: {outcome.agent_done} "
-                f"({outcome.elapsed_ms} ms, trace={where}{tokens}){detail}"
+                f"({outcome.elapsed_ms} ms, trace={where}{tokens}{primary}){detail}"
             )
         lines += [f"  no usage reported (not counted): {call}" for call in self.calls_without_usage]
         lines += [f"  tokens not counted: {task}" for task in self.uncounted]
@@ -464,7 +501,29 @@ class BenchmarkRunSummary:
                 for tally in self.verification
             ],
             "verification_errors": list(self.verification_errors),
+            "primary": {
+                "verifier_id": self.primary_verifier,
+                "judged": self.judged,
+                "success_rate": self.success_rate,
+            }
+            if self.primary_verifier is not None
+            else None,
         }
+
+
+def _primary_words(outcome: TaskOutcome) -> str:
+    """A task's primary verdict in a few words, for its line of the table."""
+    verdict = outcome.primary
+    if outcome.primary_note is not None:
+        return f"verdicts unreadable: {outcome.primary_note}"
+    if verdict is None:
+        return "no primary verdict"
+    if verdict.status != "judged":
+        return f"primary not judged ({verdict.reason})"
+    found = f"label {verdict.label}" if verdict.label is not None else f"score {verdict.score}"
+    if outcome.success is None:
+        return f"primary {found}"
+    return f"primary {found}, success {outcome.success:g}"
 
 
 def _outcome_dict(outcome: TaskOutcome) -> dict[str, Any]:
@@ -478,6 +537,8 @@ def _outcome_dict(outcome: TaskOutcome) -> dict[str, Any]:
         "infrastructure_failure": outcome.infrastructure_error is not None,
         "vetoed": outcome.vetoed is not None,
         "tokens": outcome.usage.tokens if outcome.usage is not None else None,
+        "primary": outcome.primary.slug if outcome.primary is not None else None,
+        "success": outcome.success,
     }
 
 
@@ -598,6 +659,10 @@ class BenchmarkRunner:
             each verdict into its run's verdict store.
         reference_loader: The benchmark's reference rows, for a verifier
             that judges against one (``Benchmark.reference_loader()``).
+        primary_rule: The benchmark that states which verdict is a run's
+            brief result and how it counts (its ``primary_verdict`` and
+            ``success``); the summary reports it once the verifiers have
+            judged the sweep. ``None``: no primary verdict is reported.
         token_limit: The most tokens the sweep's runs may record: a number
             of at least 1, or ``"unlimited"`` (the default), which reads no
             usage at all. With a number, each finished task's tokens are
@@ -617,6 +682,7 @@ class BenchmarkRunner:
         run_id_prefix: str = "",
         verifiers: Sequence[OfflineVerifier] = (),
         reference_loader: BaseEvalLoader | None = None,
+        primary_rule: Benchmark | None = None,
         token_limit: int | Unlimited = UNLIMITED,
         progress: TaskProgress | None = None,
         session: SessionLedger | None = None,
@@ -646,6 +712,7 @@ class BenchmarkRunner:
             if verifiers
             else None
         )
+        self._primary_rule = primary_rule
         self._progress = progress
         self._session = session
         self._config_source = config_source
@@ -805,12 +872,18 @@ class BenchmarkRunner:
                 )
                 break
         verification, verification_errors = await self._verify(outcomes)
+        primary_verifier = (
+            self._primary_rule.primary_verifier if self._primary_rule is not None else None
+        )
+        if primary_verifier is not None:
+            outcomes = [self._with_primary(outcome) for outcome in outcomes]
         return BenchmarkRunSummary(
             benchmark=self._benchmark,
             subset=self._subset,
             outcomes=outcomes,
             verification=verification,
             verification_errors=verification_errors,
+            primary_verifier=primary_verifier,
             aborted=aborted,
             token_limit=self._token_limit,
             token_limit_reached=reached,
@@ -838,6 +911,22 @@ class BenchmarkRunner:
         return tallies(report), [
             f"{outcome.task_id} ({outcome.slug}): {outcome.error}" for outcome in report.errors
         ]
+
+    def _with_primary(self, outcome: TaskOutcome) -> TaskOutcome:
+        """*outcome* with the benchmark's primary verdict on its run and how far the task succeeded."""
+        rule = self._primary_rule
+        if rule is None or outcome.trace_dir is None:
+            return outcome
+        try:
+            verdicts = RunTrace(outcome.trace_dir).verdicts()
+        except TraceSchemaError as exc:
+            return dataclasses.replace(outcome, primary_note=str(exc))
+        primary = rule.primary_verdict(verdicts)
+        if primary is None:
+            return outcome
+        return dataclasses.replace(
+            outcome, primary=primary, success=rule.success(primary, outcome.result)
+        )
 
     def preflight(self, task_id: str) -> ComposedRun:
         """Check the configuration once for *task_id*, before the sweep starts; return its stack.
@@ -1218,6 +1307,7 @@ def main(
         verify_timeout=args.verify_timeout,
         verifiers=verifiers,
         reference_loader=reference_loader,
+        primary_rule=chosen,
         token_limit=args.token_limit,
         progress=progress,
         session=session,

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from spectragent.benchmarks import BenchmarkRegistrar
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
 from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
+from spectragent.schemas.verdict import Verdict, VerifierIdentity
 
 
 def _data(root: Path, benchmark: str, subset: str, *task_ids: str) -> Path:
@@ -196,3 +198,119 @@ def test_verifiers_are_no_part_of_the_runs_configuration_or_its_hash(tmp_path: P
     assert judged["benchmark"][0]["task_loader"]["subset"] == "All"  # type: ignore[index]
     digest = TraceConfig().configuration_digest
     assert digest(resolved=none) == digest(resolved=judged)
+
+
+# ── the primary verdict and the success rule (§4.10.1 "主判定") ──────────
+
+
+def _judged(
+    verifier_id: str,
+    *,
+    attachment: Literal["live", "offline"] = "offline",
+    config: dict[str, JsonValue] | None = None,
+    label: Literal[0, 1] | None = None,
+    score: float | None = None,
+    evidence: dict[str, JsonValue] | None = None,
+) -> Verdict:
+    return Verdict(
+        verifier=VerifierIdentity(verifier_id=verifier_id, config_signature=config or {}),
+        attachment=attachment,
+        status="judged",
+        label=label,
+        score=score,
+        evidence=evidence or {},
+        started_at=1.0,
+        duration_ms=1,
+    )
+
+
+def test_each_browser_benchmark_declares_its_own_judge_primary() -> None:
+    ConfigComposer.for_every_package()
+    primary = {key: cls.__primary_verifier__ for key, cls in BenchmarkRegistrar.get_all().items()}
+    assert primary == {
+        "androidworld": "androidworld",
+        "browsecomp": "browsecomp",
+        "lexbench_browser": "lexbench_browser",
+        "online_mind2web": "online_mind2web",
+        "trace_branches": None,
+    }
+
+
+def test_the_primary_verdict_is_the_first_listed_verifier_of_the_primary_kind() -> None:
+    from spectragent.benchmarks.browsecomp import BrowseCompBenchmark, BrowseCompVerifier
+    from spectragent.verifiers.exact_match import ExactMatchVerifier
+
+    first, second = BrowseCompVerifier(), BrowseCompVerifier()
+    first.llm = type("Judge", (), {"model": "judge-a"})()  # type: ignore[assignment]
+    second.llm = type("Judge", (), {"model": "judge-b"})()  # type: ignore[assignment]
+    benchmark = BrowseCompBenchmark()
+    benchmark.verifiers = [ExactMatchVerifier(), first, second]
+    passed, failed = first.identity(), second.identity()
+    verdicts = {
+        passed.slug: _judged("browsecomp", label=1, config=passed.config_signature),
+        failed.slug: _judged("browsecomp", label=0, config=failed.config_signature),
+    }
+    verdicts[ExactMatchVerifier().identity().slug] = _judged("exact_match", label=0)
+
+    primary = benchmark.primary_verdict(verdicts)
+    assert primary is not None and primary.slug == first.identity().slug
+    assert benchmark.success(primary, None) == 1.0
+    # The listed one judged nothing: there is no primary verdict, never the other judge's.
+    del verdicts[first.identity().slug]
+    assert benchmark.primary_verdict(verdicts) is None
+
+
+def test_with_none_listed_the_primary_verdict_is_the_one_live_verdict_of_its_kind() -> None:
+    from spectragent.benchmarks.androidworld import AndroidWorldBenchmark
+
+    benchmark = AndroidWorldBenchmark()
+    live = _judged("androidworld", attachment="live", score=1.0)
+    other = _judged("exact_match", label=1)
+    assert benchmark.primary_verdict({live.slug: live, other.slug: other}) == live
+    assert benchmark.primary_verdict({other.slug: other}) is None
+    second = _judged("androidworld", attachment="live", score=0.0, config={"x": 1})
+    assert benchmark.primary_verdict({live.slug: live, second.slug: second}) is None
+
+
+def test_the_default_success_rule_reads_the_label() -> None:
+    from spectragent.benchmarks.online_mind2web import OnlineMind2WebBenchmark
+
+    benchmark = OnlineMind2WebBenchmark()
+    assert benchmark.success(_judged("online_mind2web", label=1), None) == 1.0
+    assert benchmark.success(_judged("online_mind2web", label=0), None) == 0.0
+    assert benchmark.success(_judged("online_mind2web", score=3.0), None) is None
+    unjudged = Verdict(
+        verifier=VerifierIdentity(verifier_id="online_mind2web"),
+        attachment="live",
+        status="not_judged",
+        reason="timeout",
+        started_at=1.0,
+        duration_ms=1,
+    )
+    assert benchmark.success(unjudged, None) is None
+    assert benchmark.primary_verifier == "online_mind2web"
+
+
+@pytest.mark.parametrize(
+    ("family", "agent_done", "score", "success"),
+    [
+        ("android", "done", 1.0, 1.0),
+        ("android", "done", 0.5, 0.5),
+        ("android", "max_steps", 1.0, 0.0),
+        ("information_retrieval", "error", 1.0, 0.0),
+        ("miniwob", "episode_over", 1.0, 1.0),
+        ("miniwob", "max_steps", 0.0, 0.0),
+    ],
+)
+def test_androidworld_counts_the_score_only_when_the_agent_declared_done(
+    family: str, agent_done: str, score: float, success: float
+) -> None:
+    """Its runner's ``task_successful if done else 0``; a MiniWoB++ page ends its own episode."""
+    from spectragent.benchmarks.androidworld import AndroidWorldBenchmark
+    from tests._helpers.trace_builder import agent_result
+
+    verdict = _judged("androidworld", attachment="live", score=score, evidence={"family": family})
+    result = agent_result(agent_done=agent_done, agent_reported_success=None)
+    assert AndroidWorldBenchmark().success(verdict, result) == success
+    if family != "miniwob":
+        assert AndroidWorldBenchmark().success(verdict, None) == 0.0
