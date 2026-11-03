@@ -3,25 +3,34 @@
 A benchmark owns where its tasks come from — its task loader, and the eval
 loader that gives verdicts their reference answers — the verifiers that judge
 its runs, and which of their verdicts is its brief result: its primary verdict
-and success rule (§4.10.1 "主判定"). All are written inside its block, or
-declared by its class, never as top-level
-sections, and a benchmark YAML holds that one block under ``benchmark:``. A
-run selects it with ``--benchmark <alias|path>``; the run configuration never
-holds one (:mod:`spectragent.benchmarks.selection`).
+and success rule (§4.10.1 "主判定"). It may own its own setup of each task, a
+setup component a capability hosts (``setup``,
+:mod:`spectragent.benchmarks._setup_registrar`), and facts of the environment
+its tasks need: its part of a capability's configuration, written in its
+block's ``capability`` list or computed in code (:meth:`BenchmarkBase.computed_capability`),
+which the Composer merges with the run configuration's
+(:mod:`spectragent.core.capability_merge`). All of it is written inside its
+block, or declared by its class, never as top-level sections, and a benchmark
+YAML holds that one block under ``benchmark:``. A run selects it with
+``--benchmark <alias|path>``; the run configuration never holds one
+(:mod:`spectragent.benchmarks.selection`).
 
 Each benchmark is a class in its own package, ``spectragent/benchmarks/<benchmark_id>/``,
 imported only when a configuration names it (§4.2.1), and writes its complete
-``__wiring__``: the task loader keys, the eval loader keys and the verifier
-kinds it takes. A verifier of its own lives in its package too.
+``__wiring__``: the task loader keys, the eval loader keys, the verifier kinds
+and the setup component keys it takes. A verifier of its own lives in its
+package too.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 from conscribe import create_registrar
+from pydantic import BaseModel, Field, JsonValue
 
+from spectragent.benchmarks._setup_registrar import BenchmarkSetup, BenchmarkSetupBase
 from spectragent.core.data_loader.eval._registrar import EvalLoaderBase, EvalLoaderRegistrar
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
@@ -41,6 +50,11 @@ class Benchmark(Protocol):
 
     @property
     def task_loader(self) -> BaseTaskLoader: ...
+
+    @property
+    def setup(self) -> BenchmarkSetup | None:
+        """Its own setup of each task, hosted by a capability; ``None`` when it has none."""
+        ...
 
     def reference_loader(self) -> BaseEvalLoader | None:
         """The reference data its verdicts are scored against, or ``None`` when it has none."""
@@ -72,17 +86,20 @@ BenchmarkRegistrar = create_registrar(
 
 
 class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
-    """Common base of every benchmark: its task loader, its eval loader and its verifiers.
+    """Common base of every benchmark: its task loader, its eval loader, its verifiers and its setup.
 
     A concrete benchmark sets ``__registry_key__`` and writes its complete
     ``__wiring__``, naming the task loader key it takes, the eval loader key
-    when it has reference data, and the verifier kinds that can judge its
-    runs. ``task_loader`` is required: the block says where the tasks come
-    from and with which knobs (``subset``, ``data_dir``). ``eval_loader`` may
-    be left out (:meth:`reference_loader`), and so may ``verifiers``: none
-    judges its runs then. A verifier writes no setting of the run, so its
-    block is never part of the run's configuration identity
-    (``docs/architecture_design.md`` §5.3 "实验身份").
+    when it has reference data, the verifier kinds that can judge its runs,
+    and when it sets its tasks up itself, the setup component key.
+    ``task_loader`` is required: the block says where the tasks come from and
+    with which knobs (``subset``, ``data_dir``). ``eval_loader`` may be left
+    out (:meth:`reference_loader`), and so may ``verifiers``: none judges its
+    runs then. A verifier writes no setting of the run, so its block is never
+    part of the run's configuration identity (``docs/architecture_design.md``
+    §5.3 "实验身份"). ``setup`` is ``None`` unless the benchmark wires one; a
+    benchmark that cannot run without its setup declares the receptor without
+    ``None``, which makes the block required.
     """
 
     __abstract__ = True
@@ -103,10 +120,40 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
     # ``None`` on an instance: ``__init__`` sets ``[]``, and the Composer
     # replaces it only with the verifiers a block lists.
     verifiers: list[VerifierBase] | None
+    setup: BenchmarkSetupBase | None
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        capability: Annotated[
+            tuple[dict[str, JsonValue], ...],
+            Field(
+                description=(
+                    "This benchmark's part of the configuration of the capabilities its tasks run "
+                    "on: blocks in the capability schema, each with its capability_id, writing "
+                    "only what the benchmark needs (the device image, ...). Each is merged field "
+                    "by field into the run configuration's block of that capability: a field "
+                    "both write with different values is refused, naming both; on a list of "
+                    "blocks (actions) a part sets options on the entries there, matched by their "
+                    "discriminator, and never adds or removes one. [] (the default): none."
+                )
+            ),
+        ] = (),
+    ) -> None:
+        self.capability = capability
         self.eval_loader = None
         self.verifiers = []
+        self.setup = None
+
+    @classmethod
+    def computed_capability(cls, config: BaseModel) -> list[dict[str, JsonValue]]:
+        """This benchmark's part of capability configurations computed in code, given its validated *config*.
+
+        Merged like the blocks of its ``capability`` list, and refused in the
+        same way when it disagrees with them or with the run configuration.
+        ``[]`` here; AndroidWorld's is its ``open_app`` name table. The
+        Composer asks only for a run that starts an environment.
+        """
+        return []
 
     @property
     def benchmark_id(self) -> str:

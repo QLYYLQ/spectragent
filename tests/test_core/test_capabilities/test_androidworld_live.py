@@ -7,22 +7,27 @@ the AndroidWorld installation (its venv, its checkout at the pinned commit,
 its cached forwarder; ``docs/architecture_design.md`` §11.2), and
 ``SPECTRAGENT_TEST_SERVICE_APK`` the device-side APK. In file order:
 
-- ``task_list.py`` writes the task list for ``SystemBrightnessMax`` under
-  AndroidWorld's interpreter, and the ``androidworld`` loader reads it;
-- the capability, composed from YAML with ``task_oracle: androidworld``, boots
-  the device with what the oracle needs and starts the service, which
-  prepares the task;
+- ``task_list.py`` writes the task list for ``SystemBrightnessMax`` and
+  AndroidWorld's ``open_app`` table under AndroidWorld's interpreter;
+- the Android environment and the ``androidworld`` benchmark are composed
+  through the real ``ConfigComposer``: the run's Android block writes no AVD
+  and no app table, and the benchmark's part (the test AVD, AndroidWorld's
+  table) is merged into it;
+- the capability, hosting the benchmark's setup component, boots the device
+  with what the component needs and starts the service, which prepares the
+  task;
 - the touch and pointer overlays are off, so screenshots do not carry them;
 - our accessibility service is bound beside AndroidWorld's forwarder, which
   AndroidWorld's service wrote over the setting when it started;
 - the unsolved task scores 0 and, once the brightness is set over adb, 1, with
-  the oracle's version in the verdict's identity and the task in its evidence;
+  the pinned commit in the verdict's identity and the task in its evidence;
 - teardown leaves no service, emulator or adb server, and nothing listens on
   adb's default port 5037 that did not before.
 """
 
 from __future__ import annotations
 
+import os
 import socket
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -30,20 +35,19 @@ from dataclasses import dataclass
 import pytest
 import pytest_asyncio
 
+from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
+from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.core.capabilities.android.actions import AndroidOpenAppAction
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
-from spectragent.core.capabilities.android.oracle.androidworld import (
-    PINNED_COMMIT,
-    AndroidWorldOracle,
-)
-from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.schemas.verdict import Verdict
 from tests._helpers.android_runs import (
     FORWARDER,
-    androidworld_capability,
+    androidworld_composed,
     installation_problem,
     write_task_list,
 )
@@ -71,7 +75,7 @@ class Prepared:
 
     env: AndroidEnvironment
     capability: AndroidCapability
-    oracle: AndroidWorldOracle
+    setup: AndroidWorldSetup
     session: AndroidProviderSession
     service: dict[str, int]
     emulator_group: int
@@ -84,15 +88,21 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
     listening = _listening(5037)
     data = tmp_path_factory.mktemp("androidworld")
     write_task_list(data, TASK)
-    context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(TASK_ID)
-    capability = androidworld_capability()
-    oracle = capability.task_oracle
-    assert isinstance(oracle, AndroidWorldOracle)
-    env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env)
+    run = androidworld_composed(data)
+    env, capability, benchmark = (
+        run.single("environment"),
+        run.single("capability"),
+        run.single("benchmark"),
+    )
+    assert isinstance(env, AndroidEnvironment) and isinstance(capability, AndroidCapability)
+    assert isinstance(benchmark, AndroidWorldBenchmark)
+    setup = benchmark.setup
+    context = benchmark.task_loader.get_task_context(TASK_ID)
+    env.check_setup(context.env, setups=[setup])
+    env.bind_setups([setup])
     await env.setup(context.env)
     try:
-        session, service, provider = capability._session, oracle._service, capability.backend
+        session, service, provider = capability._session, setup._service, capability.backend
         assert session is not None and service is not None
         assert isinstance(provider, LocalEmulatorProvider)
         run = provider._runs[session.session_id]  # what the run owns, for the last test
@@ -100,7 +110,7 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
         yield Prepared(
             env=env,
             capability=capability,
-            oracle=oracle,
+            setup=setup,
             session=session,
             service={"pid": service.process.pid, "group": service.group.id},
             emulator_group=run.emulator_group.id,
@@ -114,6 +124,19 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
 async def _shell(prepared: Prepared, command: str) -> str:
     client = AdbClient(prepared.session.endpoint.host, prepared.session.endpoint.port)
     return (await client.shell(prepared.session.serial, command)).stdout.decode().strip()
+
+
+async def test_the_benchmark_gives_the_avd_and_androidworlds_app_table(prepared: Prepared) -> None:
+    """Merged from the benchmark's part into a run block that writes neither (§4.10.1)."""
+    capability = prepared.capability
+    (open_app,) = [a for a in capability.actions if isinstance(a, AndroidOpenAppAction)]
+
+    assert capability.backend.avd == os.environ["SPECTRAGENT_TEST_AVD"]  # type: ignore[attr-defined]
+    assert open_app.apps is not None
+    assert open_app.apps["opentracks"] == (
+        "de.dennisguse.opentracks/de.dennisguse.opentracks.TrackListActivity"
+    )
+    assert open_app.apps["vlc"] == "org.videolan.vlc/.gui.MainActivity"
 
 
 async def test_the_touch_and_pointer_overlays_are_off(prepared: Prepared) -> None:

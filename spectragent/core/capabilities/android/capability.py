@@ -66,17 +66,21 @@ run: AndroidWorld's own service writes its accessibility forwarder over the
 setting when it starts, and a task may force-stop every app. Each job first
 pings the service and, when it does not answer, enables it again and confirms
 it (``DeviceSide.ensure_bound``), then subscribes afresh; setup does the same
-once the task oracle has started. A ping costs about 3 ms.
+once a benchmark's setup component has started. A ping costs about 3 ms.
 
-**The task oracle** (``oracle/``, the ``task_oracle`` receptor; ``none``
-selects no benchmark) prepares, scores and ends a benchmark's task on the
-device. The capability hands the provider what the oracle needs of the device
-(``device_needs``), passes it the task's ``oracle_task`` unread, starts it once
-the device is up, stops it first at teardown, and implements ``TaskOracle`` and
-``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``"). It implements
-``TaskTextFromSetup`` and ``EpisodeEnd`` by asking it too: the goal an oracle
-makes on the device completes the run's task text, and an oracle whose
-benchmark ends episodes says when (§11.2 "MiniWoB++").
+**A benchmark's setup component** (``SetupHost``, ``benchmark_setup.py``;
+AndroidWorld's, written under its benchmark) prepares and ends each of the
+benchmark's tasks on the device. ``prepare()`` routes it here and binds it last
+(``bind_setup``); without one the device boots with no needs and no task data
+is accepted. The capability hands the provider what the component needs of the
+device (``device_needs``), passes it the task's ``oracle_task`` unread, starts
+it once the device is up, stops it first at teardown, and implements
+``SetupCheck`` by asking it (§4.9 "基准组件由 capability 承载", §11.2). It
+implements ``TaskTextFromSetup`` and ``EpisodeEnd`` by asking it too: the goal
+a component makes on the device completes the run's task text, and one whose
+benchmark ends episodes says when (§11.2 "MiniWoB++"). Until a benchmark's live
+verifier judges its runs itself, ``TaskOracle`` asks a component that judges
+(AndroidWorld's) for its judgment at the scoring point.
 
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
@@ -94,9 +98,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 from pydantic import Field as PydanticField
 from pydantic import JsonValue
@@ -105,7 +110,11 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.base import BaseAction
 from spectragent.core.archive import ArchiveBatch, ArchiveGap, ArchiverBase
 from spectragent.core.capabilities._registrar import CapabilityBase
-from spectragent.core.capabilities.android.actions import ACTIONS
+from spectragent.core.capabilities.android.actions import (
+    ACTIONS,
+    AndroidOpenAppAction,
+    open_app,
+)
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.archive import ui_tree_raw  # noqa: F401 — registration
 from spectragent.core.capabilities.android.archive.base import (
@@ -120,7 +129,12 @@ from spectragent.core.capabilities.android.archive.base import (
 from spectragent.core.capabilities.android.backends.base import (
     AndroidProviderSession,
     BaseAndroidProvider,
+    DeviceNeeds,
     UnmetDeviceNeeds,
+)
+from spectragent.core.capabilities.android.benchmark_setup import (
+    AndroidBenchmarkSetup,
+    OracleTask,
 )
 from spectragent.core.capabilities.android.bridge import (
     AdbQueries,
@@ -155,14 +169,6 @@ from spectragent.core.capabilities.android.observations import (
     AndroidScreenshotObs,
     AndroidUITreeObs,
 )
-from spectragent.core.capabilities.android.oracle import (  # noqa: F401 — registration
-    androidworld,
-    none,
-)
-from spectragent.core.capabilities.android.oracle._registrar import (
-    AndroidTaskOracle,
-    default_task_oracle,
-)
 from spectragent.core.capabilities.android.session import (
     DeviceBusyError,
     DeviceSession,
@@ -190,16 +196,22 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
     default_ui_tree_source,
 )
 from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError, UITree
+from spectragent.core.capabilities.base import TaskOracle
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import SettleState
 from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
+if TYPE_CHECKING:
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetup
+
 logger = logging.getLogger(__name__)
 
 #: Every action this capability offers; a YAML ``actions:`` block narrows it.
 ACTION_KEYS = tuple(action.__registry_key__ for action in ACTIONS)
+#: The action whose table names the apps an agent opens, and a task starts in.
+OPEN_APP = AndroidOpenAppAction.__registry_key__
 
 
 class _AndroidReceptors:
@@ -240,14 +252,6 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         # changes what the device receives, so a run names both (§4.2.1).
         "tap_injector": ("android_tap_injector", ["accessibility_gesture", "shell_injection"]),
         "typing_backend": ("android_typing_backend", ["set_text", "commit_text", "key_events"]),
-        # Omitted in YAML: ``none``, the oracle ``__init__`` installs. The
-        # strategy is the switch: what the device must offer comes from it,
-        # never from a provider setting.
-        "task_oracle": {
-            "registry": "android_task_oracle",
-            "keys": ["none", "androidworld"],
-            "default": "none",
-        },
         # Omitted in YAML: our accessibility service, the only source there is
         # (``uiautomator dump`` is deferred, §11.2), which ``__init__`` installs.
         "ui_tree_source": {
@@ -273,7 +277,6 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     backend: BaseAndroidProvider  # type: ignore[misc]
     tap_injector: AndroidTapInjector  # type: ignore[misc]
     typing_backend: AndroidTypingBackend  # type: ignore[misc]
-    task_oracle: AndroidTaskOracle  # type: ignore[misc]
     ui_tree_source: AndroidUITreeSource  # type: ignore[misc]
     ui_tree_cleaner: AndroidUITreeCleaner  # type: ignore[misc]
     ui_tree_serializer: AndroidUITreeSerializer  # type: ignore[misc]
@@ -317,6 +320,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     #: The recording's context, from setup to teardown, and the bound archivers' sessions.
     _archive: AndroidArchiveContext | None
     _archive_sessions: list[AndroidArchiveSession]
+    #: The benchmark's setup component this capability hosts (``bind_setup``); ``None``: none.
+    _setup: AndroidBenchmarkSetup | None
+    #: The home screen's names, read at setup when the run names apps by them.
+    _launcher_apps: dict[str, str] | None
 
     def __init__(
         self,
@@ -501,8 +508,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._archivers = []
         self._archive = None
         self._archive_sessions = []
+        self._setup = None
+        self._launcher_apps = None
         self.actions = actions
-        self.task_oracle = default_task_oracle()
         self.ui_tree_source = default_ui_tree_source()
 
     # ── actions ───────────────────────────────────────────────────────
@@ -624,21 +632,32 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         *,
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
+        setup: BenchmarkSetup | None = None,
     ) -> None:
-        """Refuse now what setup would: a device the provider cannot give the oracle or the typing
-        backend, the APK, then the task.
+        """Refuse now what setup would: a device the provider cannot give the setup component or
+        the typing backend, the APK, then the task (``SetupHost``).
+
+        *setup* is the benchmark setup component about to be bound, ``None``
+        when the run's benchmark has none: then a task carrying data for one
+        (``oracle_task``) is refused, as nothing would prepare it.
 
         Raises:
-            UnmetDeviceNeeds: The provider cannot meet what the oracle needs
-                of the device; names the oracle, the needs and the provider.
+            TypeError: *setup* is no component this capability can host.
+            UnmetDeviceNeeds: The provider cannot meet what the component
+                needs of the device; names the component, the needs and the
+                provider.
             TypingBackendUnsupported: The device's API level, as the provider
                 reads it from configuration, cannot run the typing backend.
             ServiceApkError: ``service_apk`` names no APK with a sidecar that
                 describes it, one built for another protocol or package, or one
                 outside the directory named by its SHA-256.
-            Exception: The oracle's own refusal of its installation or task.
+            ValueError: A task carrying ``oracle_task`` with no component.
+            Exception: The component's own refusal of its installation or task.
         """
-        oracle = self.task_oracle
+        self._check(context, _hostable(setup))
+
+    def _check(self, context: Mapping[str, Any], setup: AndroidBenchmarkSetup | None) -> None:
+        """:meth:`check_setup` with *setup* already known to be a component this capability hosts."""
         try:  # setup refuses a capability without a backend or a typing backend itself
             backend: BaseAndroidProvider | None = self.backend
         except AttributeError:
@@ -648,42 +667,73 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         except AttributeError:
             typing_backend = None
         if backend is not None:
-            needs = oracle.device_needs
-            unmet = backend.unmet_needs(needs)
-            if unmet:
-                raise UnmetDeviceNeeds(
-                    f"task_oracle {oracle.oracle_id!r} needs {', '.join(needs.named())} of the "
-                    f"device, and the {backend.provider_id!r} provider cannot meet: "
-                    + "; ".join(unmet)
-                )
+            if setup is not None:
+                needs = setup.device_needs
+                unmet = backend.unmet_needs(needs)
+                if unmet:
+                    raise UnmetDeviceNeeds(
+                        f"the benchmark setup {setup.setup_id!r} needs "
+                        f"{', '.join(needs.named())} of the device, and the "
+                        f"{backend.provider_id!r} provider cannot meet: " + "; ".join(unmet)
+                    )
             level = backend.api_level()
             if typing_backend is not None and level is not None:
                 _check_typing(
                     typing_backend, level, f"the {backend.provider_id!r} provider's device"
                 )
         ServiceApk.load(self.service_apk)
-        oracle.check_setup(context.get("oracle_task"))
+        start_app = context.get("start_app")
+        if start_app is not None and not (isinstance(start_app, str) and start_app.strip()):
+            raise ValueError(f"start_app {start_app!r} names no app")
+        task: OracleTask | None = context.get("oracle_task")
+        if setup is not None:
+            setup.check_setup(task)
+        elif task is not None:
+            raise ValueError(
+                "the task carries data for a benchmark's setup (oracle_task), and the run's "
+                "benchmark has no setup component for the android capability to host: the task "
+                "would run unprepared, and nothing would say so. Run it through the benchmark it "
+                "comes from (--benchmark)."
+            )
+
+    def bind_setup(self, setup: BenchmarkSetup | None) -> None:
+        """Host *setup* from the next setup on (``None``: host none). Acquires nothing (``SetupHost``).
+
+        Raises:
+            TypeError: *setup* is no ``AndroidBenchmarkSetup``.
+        """
+        self._setup = _hostable(setup)
 
     async def setup(
-        self, *, negotiation: Any = None, oracle_task: Mapping[str, JsonValue] | None = None
+        self,
+        *,
+        negotiation: Any = None,
+        oracle_task: Mapping[str, JsonValue] | None = None,
+        start_app: str | None = None,
     ) -> None:
-        """Bring the device and its device side up, read the facts that do not change, start the oracle.
+        """Bring the device and its device side up, read the facts that do not change, start the
+        benchmark's setup component, open the task's start app.
 
-        *oracle_task* is the task's data for its oracle (``AndroidSetup``),
-        handed over unread. The recording's archive context and the bound
-        archivers' sessions open first: pure construction.
+        *oracle_task* is the task's data for the bound setup component
+        (``AndroidSetup``), handed over unread. *start_app* is the app the task
+        starts in, by a name the run's ``open_app`` takes, opened last. The
+        home screen's names are read from the device when the run names apps
+        by them: ``open_app`` given no table of its own, or a start app to find.
+        The recording's archive context and the bound archivers' sessions open
+        first: pure construction.
         """
         await super().setup(negotiation=negotiation)
-        oracle = self.task_oracle
+        component = self._setup
         backend = self._backend()
         tap_injector, typing_backend, *_ = self._strategies()
         self._ui_tree, self._actions_since_tree = None, 0
         self._polled_package = self._acted_at = None
-        self.check_setup({"oracle_task": oracle_task})
+        self._launcher_apps = None
+        self._check({"oracle_task": oracle_task, "start_app": start_app}, component)
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
         self._apk = apk = ServiceApk.load(self.service_apk)
-        session = await backend.open(oracle.device_needs)
+        session = await backend.open(DeviceNeeds() if component is None else component.device_needs)
         self._session = session
         try:
             adb = AdbClient(session.endpoint.host, session.endpoint.port)
@@ -711,13 +761,23 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             if self._reads_events:
                 self._events = await side.service.events()
                 self._newest_event_ms = None
-            await oracle.start(session, oracle_task)
-            await device.run(
-                self._keep_service,
-                what="confirming the service once the task oracle started",
-                wait_s=self.queue_wait_s,
-                run_s=self.service_start_timeout_s + self.query_timeout_s,
-            )
+            if self._configured_apps is None and (OPEN_APP in self._actions_by_name or start_app):
+                self._launcher_apps = await device.run(
+                    lambda: _launcher_names(side),
+                    what="reading the home screen's apps",
+                    wait_s=self.queue_wait_s,
+                    run_s=self.query_timeout_s,
+                )
+            if component is not None:
+                await component.start(session, oracle_task)
+                # AndroidWorld's own service writes its forwarder over the
+                # accessibility setting when it starts.
+                await device.run(
+                    self._keep_service,
+                    what="confirming the service once the benchmark setup started",
+                    wait_s=self.queue_wait_s,
+                    run_s=self.service_start_timeout_s + self.query_timeout_s,
+                )
             self._bridge = DeviceBridge(
                 screen=ProgramScreen(side, producer),
                 input=DeviceInput(side, tap_injector, typing_backend),
@@ -726,12 +786,59 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 facts=queries,
             )
             self._device = device
+            if start_app is not None:
+                await self._open_start_app(device, start_app)
         except BaseException:
             await self.teardown()
             raise
 
+    @property
+    def launcher_apps(self) -> Mapping[str, str]:
+        """The names the device's home screen shows, read at setup: label → launcher component.
+
+        A label two apps share is written ``label (package)`` for each.
+
+        Raises:
+            RuntimeError: The run read none: its ``open_app`` has a table of its own.
+        """
+        apps = self._launcher_apps
+        if apps is None:
+            raise RuntimeError(
+                "the home screen's apps were not read: the run's open_app has a table of its own"
+            )
+        return apps
+
+    @property
+    def _configured_apps(self) -> Mapping[str, str] | None:
+        """The run's ``open_app`` table, as configured or given by a benchmark; ``None`` without one."""
+        action = self._actions_by_name.get(OPEN_APP)
+        return action.apps if isinstance(action, AndroidOpenAppAction) else None
+
+    async def _open_start_app(self, device: DeviceSession, start_app: str) -> None:
+        """Open *start_app*, as ``open_app`` would, before the agent's first step.
+
+        Raises:
+            ValueError: No app has that name, and no installed package either.
+        """
+        apps = self._configured_apps
+        names = apps if apps is not None else self.launcher_apps
+
+        async def job() -> str | None:
+            await self._keep_service()
+            return await open_app(self, names, start_app)
+
+        refused = await device.run(
+            job,
+            what=f"opening the start app {start_app!r}",
+            wait_s=self.queue_wait_s,
+            run_s=self.action_timeout_s,
+        )
+        if refused is not None:
+            raise ValueError(f"the task starts in {start_app!r}, and {refused}")
+
     async def teardown(self) -> None:
-        """Stop the oracle, drain the device's queue, stop the device side, release the device. Safe to repeat.
+        """Stop the setup component, drain the device's queue, stop the device side, release the
+        device. Safe to repeat.
 
         The recording's archive closes too: the runtime collects for the last
         time before it tears down.
@@ -743,7 +850,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._capture = None
         self._archive, self._archive_sessions = None, []
         try:
-            await self.task_oracle.stop()
+            if self._setup is not None:
+                await self._setup.stop()
         finally:
             try:
                 if device is not None:
@@ -763,36 +871,62 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                     await self._backend().close(session)
 
     def oracle_identity(self) -> VerifierIdentity | None:
-        """Who the task oracle judges as; ``None`` with ``none``, which judges nothing (``TaskOracle``)."""
-        return self.task_oracle.identity()
+        """Who judges this run at the scoring point: the bound setup component, when it judges (``TaskOracle``).
+
+        ``None`` when no bound component judges, and the environment asks
+        nothing. AndroidWorld's does, until its live verifier judges the run
+        itself.
+        """
+        component = self._setup
+        return component.oracle_identity() if isinstance(component, TaskOracle) else None
 
     async def read_score(self, *, answer: str | None) -> Judgment:
-        """The task oracle's judgment, given the run's *answer* (``TaskOracle``)."""
-        return await self.task_oracle.read_score(answer=answer)
+        """The bound setup component's judgment, given the run's *answer* (``TaskOracle``).
 
-    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
-        """Whether the task oracle makes this task's goal on the device (``TaskTextFromSetup``)."""
-        return self.task_oracle.makes_goal(context.get("oracle_task"))
+        Asked only when :meth:`oracle_identity` is not ``None``.
+        """
+        component = self._setup
+        if not isinstance(component, TaskOracle):
+            raise RuntimeError("no bound setup component judges this run: its identity is None")
+        return await component.read_score(answer=answer)
+
+    def sets_task_text(
+        self, context: Mapping[str, Any], *, setup: BenchmarkSetup | None = None
+    ) -> bool:
+        """Whether *setup*, the component about to be bound, makes this task's goal on the device
+        (``TaskTextFromSetup``).
+
+        Asked in ``prepare()`` before the component is bound, so it answers
+        for *setup* and never for the one bound now.
+
+        Raises:
+            TypeError: *setup* is no component this capability can host.
+        """
+        component = _hostable(setup)
+        return component is not None and component.makes_goal(context.get("oracle_task"))
 
     async def task_text_from_setup(self) -> str | None:
-        """The goal the task oracle made on the device; ``None`` when the task's goal is the listed one."""
-        return self.task_oracle.made_goal()
+        """The goal the setup component made on the device; ``None`` when the task's goal is the
+        listed one."""
+        component = self._setup
+        return None if component is None else component.made_goal()
 
     async def episode_over(self) -> bool:
-        """Whether the task oracle says the task's episode is over (``EpisodeEnd``), once the screen is still.
+        """Whether the setup component says the task's episode is over (``EpisodeEnd``), once the
+        screen is still.
 
-        Only a task whose oracle answers the question
+        Only a task whose component answers the question
         (``answers_episode_over``: AndroidWorld's MiniWoB++) is asked, and only
         after the wait for a still screen a capture takes, with the same
         settings: asked at once, a page may not yet have stored the reward the
         step's last action earned (``docs/architecture_design.md`` §11.2).
         Every other task answers ``False`` with no wait.
         """
-        oracle = self.task_oracle
-        if not oracle.answers_episode_over():
+        component = self._setup
+        if component is None or not component.answers_episode_over():
             return False
         await self._wait_until_still()
-        return await oracle.episode_over()
+        return await component.episode_over()
 
     async def _wait_until_still(self) -> None:
         """The wait for a still screen a capture takes, as a job of the device's queue; none when it is off."""
@@ -1252,6 +1386,43 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             else None,
             service_apk_signing_certificate_sha256=apk.info.signing_certificate_sha256,
         )
+
+
+async def _launcher_names(side: DeviceSide) -> dict[str, str]:
+    """The home screen's names from the service: label → ``package/activity``.
+
+    A label two launcher activities share would name neither, so each is
+    written with its package (``Gallery (com.example.gallery)``), or, when
+    both are of one package, with its component
+    (``Gallery (com.example.gallery/com.example.gallery.Albums)``).
+    """
+    apps = [app for app in await side.service.launcher_apps() if app.label.strip()]
+    by_label = Counter(app.label for app in apps)
+    by_package = Counter((app.label, app.package) for app in apps)
+    names: dict[str, str] = {}
+    for app in apps:
+        component = f"{app.package}/{app.activity}"
+        if by_label[app.label] == 1:
+            names[app.label] = component
+        elif by_package[app.label, app.package] == 1:
+            names[f"{app.label} ({app.package})"] = component
+        else:
+            names[f"{app.label} ({component})"] = component
+    return names
+
+
+def _hostable(setup: BenchmarkSetup | None) -> AndroidBenchmarkSetup | None:
+    """*setup* as a component the Android capability hosts.
+
+    Raises:
+        TypeError: *setup* is no ``AndroidBenchmarkSetup``.
+    """
+    if setup is None or isinstance(setup, AndroidBenchmarkSetup):
+        return setup
+    raise TypeError(
+        f"the benchmark setup {setup.setup_id!r} names the android capability as its host, and "
+        f"it is no setup component the android capability can host (AndroidBenchmarkSetup)"
+    )
 
 
 def _check_build(side: DeviceSide, apk: ServiceApk, typing_backend: AndroidTypingBackend) -> None:

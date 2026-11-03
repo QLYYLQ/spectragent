@@ -55,6 +55,15 @@ _BRANCHES: Block = {
         }
     ]
 }
+_ANDROIDWORLD: Block = {
+    "benchmark": [
+        {
+            "benchmark_id": "androidworld",
+            "task_loader": {"benchmark_name": "androidworld"},
+            "setup": {"setup_id": "androidworld"},
+        }
+    ]
+}
 _ONLINE_MIND2WEB: Block = {
     "benchmark": [
         {
@@ -80,7 +89,6 @@ BLOCK_ONLY: dict[str, tuple[Block, str]] = {
     "android_provider": (_ON_ANDROID, "capability[android].backend"),
     "android_tap_injector": (_ON_ANDROID, "capability[android].tap_injector"),
     "android_typing_backend": (_ON_ANDROID, "capability[android].typing_backend"),
-    "android_task_oracle": (_ON_ANDROID, "capability[android].task_oracle"),
     "android_ui_tree_source": (_ON_ANDROID, "capability[android].ui_tree_source"),
     "android_ui_tree_cleaner": (_ON_ANDROID, "capability[android].ui_tree_cleaner"),
     "android_ui_tree_serializer": (_ON_ANDROID, "capability[android].ui_tree_serializer"),
@@ -90,6 +98,7 @@ BLOCK_ONLY: dict[str, tuple[Block, str]] = {
     "task_loader": (_BRANCHES, "benchmark[trace_branches].task_loader"),
     "eval_loader": (_ONLINE_MIND2WEB, "benchmark[online_mind2web].eval_loader"),
     "verifier": (_ONLINE_MIND2WEB, "benchmark[online_mind2web].verifiers"),
+    "benchmark_setup": (_ANDROIDWORLD, "benchmark[androidworld].setup"),
     "step_selector": (
         _BRANCHES,
         "benchmark[trace_branches].task_loader[trace_branches].step_selector",

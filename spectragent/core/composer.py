@@ -22,10 +22,20 @@ top-level section is refused, naming where the instances go
 capability's strategies, the agent's ``agent_loop`` and ``memory``). An
 inline-only layer that no block the configuration can write holds is left
 out.
+
+**A run's capability blocks are merged before they are validated.** The
+benchmark's part of a capability's configuration (its block's ``capability``
+list, and what it computes in code) is merged field by field into the run
+configuration's block of that capability (:mod:`spectragent.core.capability_merge`,
+``docs/architecture_design.md`` §4.10.1 "capability 配置合并"); a conflict is
+refused naming both sides, and a required setting neither writes is refused
+naming it. The merged blocks are what the run validates, constructs and
+records.
 """
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
@@ -44,6 +54,13 @@ from spectragent.agents.prompts import agent_family
 from spectragent.benchmarks._registrar import BenchmarkRegistrar
 from spectragent.core.actions._registrar import ActionRegistrar, is_loop_action
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
+from spectragent.core.capability_merge import (
+    CAPABILITY_SECTION,
+    ENVIRONMENT_SECTION,
+    CapabilityMerge,
+    CapabilityMergeError,
+    Contribution,
+)
 from spectragent.core.composition_evidence import (
     CompositionEvidence,
     CompositionIssue,
@@ -425,18 +442,74 @@ class ConfigComposer:
                 for layer in sorted(raw, key=str)
                 if layer in self._left_out
             ]
-            sections = {key: value for key, value in raw.items() if key not in self._left_out}
+            sections = self._merged(
+                {str(key): value for key, value in raw.items() if key not in self._left_out}
+            )
         try:
             cfg = self.top_level_type.model_validate(sections)
         except ValidationError as exc:
-            errors = exc.errors()
-            if not problems and all(e["type"] != NO_IMPLEMENTATION_ERROR_TYPE for e in errors):
+            problems += [_Problem.of(error, sections) for error in exc.errors()]
+            if not any(problem.code for problem in problems):
                 raise
-            problems += [_Problem.of(error, raw) for error in errors]
             raise _refusal(problems) from exc
         if problems:
             raise _refusal(problems)
         return cfg
+
+    def _merged(self, sections: dict[str, object]) -> dict[str, object]:
+        """*sections* with the benchmark's parts merged into the run's capability blocks.
+
+        Only a run that starts an environment (it writes ``environment`` or
+        ``capability``) takes a benchmark's parts; any other root (an export's,
+        an evaluation's) has nothing to merge them into and leaves them. The
+        benchmark blocks are validated first: what a benchmark computes in code
+        reads its validated block.
+
+        Raises:
+            ValidationError: A benchmark block is invalid.
+            ComposeError: A part breaks its capability's schema, names a
+                capability the run has no block of, or writes a field the run
+                configuration or another part writes differently.
+        """
+        benchmarks = sections.get(BENCHMARK_LAYER)
+        if not (
+            isinstance(benchmarks, list)
+            and benchmarks
+            and BENCHMARK_LAYER in self._registrars
+            and (ENVIRONMENT_SECTION in sections or CAPABILITY_SECTION in sections)
+        ):
+            return sections
+        validated = getattr(
+            self.top_level_type.model_validate({BENCHMARK_LAYER: benchmarks}), BENCHMARK_LAYER
+        )
+        contributions: list[Contribution] = []
+        for index, (block, config) in enumerate(zip(benchmarks, validated, strict=True)):
+            benchmark_id = block.get(BenchmarkRegistrar.discriminator_field)
+            who = f"the benchmark {benchmark_id}"
+            contributions += [
+                Contribution(part, who, f"{BENCHMARK_LAYER}[{index}].capability[{position}]")
+                for position, part in enumerate(block.get("capability") or ())
+            ]
+            computed = BenchmarkRegistrar.get(benchmark_id).computed_capability(config)
+            contributions += [
+                Contribution(part, f"{who}, computed in code", f"{BENCHMARK_LAYER}[{index}]")
+                for part in computed
+            ]
+        if not contributions:
+            return sections
+        merge = CapabilityMerge(self._catalog, self._registrars)
+        try:
+            for contribution in contributions:
+                merge.check(contribution)
+            return merge.merge(sections, contributions)
+        except CapabilityMergeError as exc:
+            remedy = _MERGE_REMEDIES[exc.code]
+            raise _refusal(
+                [
+                    _Problem(problem.path, problem.message, exc.code, remedy)
+                    for problem in exc.problems
+                ]
+            ) from None
 
     def _left_out_problem(self, layer: str) -> _Problem:
         """Why a written section of *layer*, which this run left out, has nowhere to go."""
@@ -449,7 +522,7 @@ class ConfigComposer:
                     layer,
                     f"the {layer!r} layer takes no top-level section, and nothing this "
                     f"configuration names takes it",
-                    True,
+                    _NO_IMPLEMENTATION,
                     "Leave it out, or name the agent family, capability or benchmark whose block "
                     "holds it",
                 )
@@ -458,7 +531,7 @@ class ConfigComposer:
                 f"the {layer!r} layer takes no top-level section: its instances are written "
                 f"under {where}, and come from the package of a capability the configuration "
                 f"names",
-                True,
+                _NO_IMPLEMENTATION,
                 f"Leave it out, or write its instances under {where} and name the capability "
                 f"that provides them",
             )
@@ -468,7 +541,7 @@ class ConfigComposer:
             f"names implements that layer. Environments, actions and archivers come from the "
             f"package of a capability the configuration names, agents from their family's "
             f"package: name the one this section needs",
-            True,
+            _NO_IMPLEMENTATION,
         )
 
     def _receptors_of(self, layer: str) -> str:
@@ -568,7 +641,7 @@ class ConfigComposer:
                 # refuses it at validation.
                 if _is_populated(value):
                     unimplemented = _unimplemented(spec.registry_name, name)
-                    raise _refusal([_Problem(f"{path}.{name}", unimplemented, True)])
+                    raise _refusal([_Problem(f"{path}.{name}", unimplemented, _NO_IMPLEMENTATION)])
                 retained.append((name, entry))
                 continue
             if spec.registry_name not in self._registrars:
@@ -914,6 +987,9 @@ class ConfigComposer:
 # -- Module-level helpers --------------------------------------------
 
 
+#: The layer of the benchmark blocks whose capability parts a run merges.
+BENCHMARK_LAYER = "benchmark"
+
 #: The receptor every environment inherits from ``EnvironmentBase``. An
 #: environment's own class lives in its capability's package, which is not
 #: imported yet when names are read, so its capability blocks are found here.
@@ -957,6 +1033,12 @@ def named_packages(raw: object) -> NamedPackages:
                     environment.get(_ENVIRONMENT_CAPABILITIES),
                     f"{path}.{_ENVIRONMENT_CAPABILITIES}",
                 )
+            ),
+            # A benchmark's part of a capability's configuration (§4.10.1).
+            *(
+                held
+                for benchmark, path in _blocks(sections.get("benchmark"), "benchmark")
+                for held in _blocks(benchmark.get("capability"), f"{path}.capability")
             ),
         ],
         CapabilityRegistrar.discriminator_field,
@@ -1069,45 +1151,91 @@ def _unimplemented(layer: object, name: object) -> str:
     )
 
 
+#: The issue of an implementation this run does not hold.
+_NO_IMPLEMENTATION = "no_implementation"
+#: The issue of a required capability setting neither the run configuration nor a benchmark writes.
+_SETTING_MISSING = "capability_setting_missing"
+_MISSING_MESSAGE = "required, and neither the run configuration nor a benchmark writes it"
+_MISSING_REMEDY = (
+    "Write it in the run configuration's capability block, or select the benchmark whose "
+    "block writes it"
+)
+
+
 @dataclass(frozen=True)
 class _Problem:
     """One problem of a configuration, at the path its author wrote."""
 
     path: str
     message: str
-    #: Whether it is an implementation this run does not hold.
-    unimplemented: bool
+    #: The issue it raises a refusal with; ``""`` for an ordinary problem,
+    #: listed beside one but never raising one.
+    code: str = ""
     remedy: str = "Leave it out, or name the package that provides it"
 
     @classmethod
     def of(cls, error: ErrorDetails, raw: object) -> _Problem:
-        path = _location(error["loc"], raw)
+        loc = error["loc"]
+        if error["type"] == "missing" and loc:
+            # The field is not written, so the walk would leave its name out.
+            path = f"{_location(loc[:-1], raw)}.{loc[-1]}"
+        else:
+            path = _location(loc, raw)
+        if error["type"] == "missing" and _in_capability_block(path):
+            return cls(path, _MISSING_MESSAGE, _SETTING_MISSING, _MISSING_REMEDY)
         if error["type"] != NO_IMPLEMENTATION_ERROR_TYPE:
-            return cls(path, safe_error_message(error), False)
+            return cls(path, safe_error_message(error))
         context = error.get("ctx") or {}
-        return cls(path, _unimplemented(context.get("layer"), context.get("field")), True)
+        return cls(
+            path, _unimplemented(context.get("layer"), context.get("field")), _NO_IMPLEMENTATION
+        )
 
 
 def _refusal(problems: list[_Problem]) -> ComposeError:
     """One refusal listing every problem, in its text and in its issue.
 
-    ``config check`` shows the issue, not the text. The issue's path and
-    remedy are the first unimplemented problem's.
+    ``config check`` shows the issue, not the text. The issue's code, path and
+    remedy are the first coded problem's. The packages that exist are listed
+    only when some problem is an implementation the run does not hold.
     """
-    known = _known_packages()
-    first = next(problem for problem in problems if problem.unimplemented)
+    first = next(problem for problem in problems if problem.code)
+    unimplemented = any(problem.code == _NO_IMPLEMENTATION for problem in problems)
+    known = f" ({_known_packages()})" if unimplemented else ""
     if len(problems) == 1:
-        message = f"{first.path}: {first.message} ({known})."
+        message = f"{first.path}: {first.message}{known}."
         summary = f"{first.message[0].upper()}{first.message[1:]}."
     else:
         listed = "\n".join(f"  {problem.path}: {problem.message}" for problem in problems)
-        message = f"{len(problems)} problems in the configuration ({known}):\n{listed}"
+        message = f"{len(problems)} problems in the configuration{known}:\n{listed}"
         summary = f"{len(problems)} problems in the configuration:\n{listed}"
-    return ComposeError(
-        message,
-        issue=CompositionIssue(
-            "no_implementation", first.path, summary, f"{first.remedy} ({known})."
-        ),
+    remedy = (
+        f"{first.remedy} ({_known_packages()})."
+        if first.code == _NO_IMPLEMENTATION
+        else (f"{first.remedy}.")
+    )
+    return ComposeError(message, issue=CompositionIssue(first.code, first.path, summary, remedy))
+
+
+#: How to put right each kind of merge problem (``CapabilityMergeError.code``).
+_MERGE_REMEDIES = {
+    "capability_setting_conflict": "Leave the setting out of one side, or write the same value on both",
+    "capability_without_block": (
+        "Add a block of that capability to the run configuration's environment, or select a "
+        "benchmark for the capabilities the run has"
+    ),
+    "capability_contribution_invalid": (
+        "Correct the benchmark's part of the capability configuration"
+    ),
+}
+
+
+def _in_capability_block(path: str) -> bool:
+    """Whether *path* (as :func:`_location` writes it) is inside one of the run's capability blocks."""
+    return (
+        re.match(
+            rf"^({CAPABILITY_SECTION}|{ENVIRONMENT_SECTION}\[\d+\]\.capabilities)(\[\d+\])?\.", path
+        )
+        is not None
     )
 
 

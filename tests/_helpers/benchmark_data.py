@@ -28,3 +28,55 @@ def online_mind2web_benchmark(
         yaml.safe_dump({"benchmark": [{"benchmark_id": "online_mind2web", "task_loader": loader}]})
     )
     return path
+
+
+#: The ``open_app`` table :func:`androidworld_data` writes, in short.
+ANDROIDWORLD_APPS = {
+    "clock": "com.google.android.deskclock/com.android.deskclock.DeskClock",
+    "markor": "net.gsantner.markor/net.gsantner.markor.activity.MainActivity",
+}
+
+
+def androidworld_task(
+    task: str = "SystemBrightnessMax",
+    *,
+    family: str = "android",
+    goal: str = "Turn brightness to the max value.",
+    goal_at_initialize: str = "unchanged",
+    params: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """One AndroidWorld task record of the pinned commit, suite seed 42, index 0, as the list holds it."""
+    from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+    from spectragent.benchmarks.androidworld.tasks import instance_seed
+
+    return {
+        "commit": PINNED_COMMIT,
+        "family": family,
+        "task": task,
+        "index": 0,
+        "suite_seed": 42,
+        "params": {**(params or {}), "seed": instance_seed(42, task, 0)},
+        "goal": goal,
+        "goal_at_initialize": goal_at_initialize,
+        "complexity": 1.0,
+        "start_on_home_screen": family != "miniwob",
+    }
+
+
+def androidworld_data(directory: Path, tasks: Sequence[Mapping[str, object]] = ()) -> Path:
+    """AndroidWorld's data in *directory*, as ``task_list.py`` writes it: the tasks, and the app table.
+
+    *tasks* (``SystemBrightnessMax`` alone when none are given) form the subset
+    ``All``; ``open_app.json`` holds :data:`ANDROIDWORLD_APPS`.
+    """
+    from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+    from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+    from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT
+
+    directory.mkdir(parents=True, exist_ok=True)
+    listed = list(tasks) or [androidworld_task(params={"max_or_min": "max"})]
+    (directory / "All.json").write_text(json.dumps({"format": TASK_LIST_FORMAT, "tasks": listed}))
+    (directory / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+    table = {"format": OPEN_APP_FORMAT, "commit": PINNED_COMMIT, "apps": ANDROIDWORLD_APPS}
+    (directory / OPEN_APP_FILE).write_text(json.dumps(table))
+    return directory

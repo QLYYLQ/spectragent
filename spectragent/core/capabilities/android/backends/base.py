@@ -7,9 +7,9 @@ keys stay with Spectragent, as the CDP protocol does for the browser: a provider
 hands over an address, never a client.
 
 What a run needs of its device beyond ADB (:class:`DeviceNeeds`) is never a
-provider setting: the capability derives it from the strategies the run
-selected (the task oracle's ``device_needs``) and hands it to ``open()``, so no
-provider boolean can disagree with the strategy that needs it (§11.2 "任务裁判与
+provider setting: the capability derives it from what the run hosts (the
+benchmark setup component's ``device_needs``) and hands it to ``open()``, so no
+provider boolean can disagree with the component that needs it (§11.2 "任务裁判与
 ``AndroidSetup``"; the browser's isolation, derived from its network source, is
 the precedent, §4.14).
 """

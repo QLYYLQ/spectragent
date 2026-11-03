@@ -811,6 +811,12 @@ class TraceConfig(BaseModel):
         ``max_steps`` and ``task_text_setter`` (per-task data) and the
         provenance fields
         ``config_source`` / ``secrets_recorded`` / ``env_evidence_privacy``.
+        Also left out: each benchmark block's ``capability`` list, its part
+        of a capability's configuration. The resolved capability blocks
+        already hold it merged (``docs/architecture_design.md`` §4.10.1), so
+        where a setting was written, in the run configuration or in the
+        benchmark, never moves the hash; the recorded ``resolved`` keeps the
+        list.
 
         Args:
             resolved: The **unredacted** config dump
@@ -852,7 +858,7 @@ class TraceConfig(BaseModel):
         differently from a pre-archive trace of the same configuration.
         Compare manifests written by one framework version.
         """
-        source = self.resolved if resolved is None else resolved
+        source = _merged_view(self.resolved if resolved is None else resolved)
         payload = {
             "recording": self.recording.model_dump(mode="json"),
             "action_space": (
@@ -882,6 +888,27 @@ class TraceConfig(BaseModel):
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _merged_view(resolved: dict[str, Any]) -> dict[str, Any]:
+    """*resolved* without each benchmark block's ``capability`` list: what the hash reads of it.
+
+    The merged capability blocks already hold those parts (§4.10.1), so
+    hashing them again would let the place a setting was written move the
+    hash. *resolved* itself is not changed.
+    """
+    benchmarks = resolved.get("benchmark")
+    if not isinstance(benchmarks, list):
+        return resolved
+    return {
+        **resolved,
+        "benchmark": [
+            {key: value for key, value in block.items() if key != "capability"}
+            if isinstance(block, dict)
+            else block
+            for block in benchmarks
+        ],
+    }
 
 
 def recorded_prefix(committed: Set[int], problems: Iterable[RecordingProblem]) -> int:

@@ -1,16 +1,16 @@
 """AndroidWorld task loader: a task list made offline in AndroidWorld's own venv.
 
 ``docs/architecture_design.md`` §11.2 ("任务裁判与 ``AndroidSetup``"). The list
-(format ``androidworld-tasks-2``,
-``core/capabilities/android/oracle/androidworld_tasks.py``) is a split file in
-the usual data layout: ``data_dir`` (default
+(format ``androidworld-tasks-2``, ``spectragent/benchmarks/androidworld/tasks.py``)
+is a split file in the usual data layout: ``data_dir`` (default
 ``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``) holds ``data_info.json``,
 whose ``split`` maps the ``subset`` to the file. ``task_list.py`` beside the
-oracle's launcher writes both.
+AndroidWorld launcher (``spectragent/benchmarks/androidworld/androidworld_service/``)
+writes both.
 
 Each listed task becomes one Android task: its id ``<task>/<suite seed>/<index>``,
 its text the goal, and its record, unchanged, the setup's ``oracle_task``, which
-the ``androidworld`` oracle reads. The list is read strictly at construction:
+the ``androidworld`` benchmark's setup component reads. The list is read strictly at construction:
 a file that cannot be read, is not JSON, declares another format, misses or
 adds a field, or lists one task twice raises ``BenchmarkDataError`` and the
 loader publishes nothing.
@@ -24,14 +24,14 @@ runner on every task configures at least 120 (``docs/architecture_design.md``
 
 **Left out, with the reason in** :attr:`AndroidWorldTaskLoader.skipped`, and
 counted in one log line: the tasks AndroidWorld's service cannot build again
-from their address (``UNREPRODUCIBLE``, with its reason), which the oracle
-would refuse. Information-retrieval tasks (family ``information_retrieval``,
+from their address (``UNREPRODUCIBLE``, with its reason), which the setup
+component would refuse. Information-retrieval tasks (family ``information_retrieval``,
 25 of the 116) are kept like any other: they are scored on the agent's answer,
-which the Runtime hands the oracle at the scoring point (§4.2).
+which the Runtime hands over at the scoring point (§4.2).
 
-The list's model is the Android package's, imported where the file is read:
-every run imports this loader with the framework, and a run that names no
-Android imports no Android module (§4.2.1).
+The list's model is the AndroidWorld benchmark's, imported where the file is
+read: every run imports this loader with the framework, and a run that names
+neither the benchmark nor Android imports neither (§4.2.1).
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AndroidWorldTaskLoader(TaskLoaderBase):
-    """AndroidWorld's tasks, scored on the device by the ``androidworld`` task oracle."""
+    """AndroidWorld's tasks, prepared and scored on the device by AndroidWorld's own service."""
 
     __registry_key__ = "androidworld"
 
@@ -83,7 +83,7 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
         return context
 
     def _load(self) -> None:
-        from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
+        from spectragent.benchmarks.androidworld.tasks import (
             TASK_LIST_FORMAT,
             UNREPRODUCIBLE,
             AndroidWorldTaskList,

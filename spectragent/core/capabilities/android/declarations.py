@@ -11,7 +11,6 @@ from spectragent.core.capabilities.android.input._registrar import (
     AndroidTapInjectorRegistrar,
     AndroidTypingBackendRegistrar,
 )
-from spectragent.core.capabilities.android.oracle._registrar import AndroidTaskOracleRegistrar
 from spectragent.core.capabilities.android.task_setup import AndroidSetup
 from spectragent.core.capabilities.android.ui_tree._registrar import (
     AndroidUITreeCleanerRegistrar,
@@ -21,13 +20,12 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
 from spectragent.schemas.task import StartFlag
 
 #: The Android capability's internal strategy axes, layer name → registrar: the
-#: provider, the tap injector, the typing backend, the task oracle, and the UI
-#: tree's source, cleaner and serializer (§11.2).
+#: provider, the tap injector, the typing backend, and the UI tree's source,
+#: cleaner and serializer (§11.2).
 STRATEGY_AXES = {
     "android_provider": AndroidProviderRegistrar,
     "android_tap_injector": AndroidTapInjectorRegistrar,
     "android_typing_backend": AndroidTypingBackendRegistrar,
-    "android_task_oracle": AndroidTaskOracleRegistrar,
     "android_ui_tree_source": AndroidUITreeSourceRegistrar,
     "android_ui_tree_cleaner": AndroidUITreeCleanerRegistrar,
     "android_ui_tree_serializer": AndroidUITreeSerializerRegistrar,
@@ -37,11 +35,20 @@ STRATEGY_AXES = {
 #: it without importing the Android implementation.
 TASK_SETUP = AndroidSetup
 
-#: No single-task start flag yet: the Android setup takes no key that says where a
-#: task starts. ``--start-app`` comes with the app name table, when AndroidWorld
-#: becomes a full benchmark; the task then starts in that app
-#: (``docs/architecture_design.md`` §4.10 "任务的起始点归 capability").
-START_FLAGS: tuple[StartFlag, ...] = ()
+#: The single-task start flag: the app the task starts in, by its name on the
+#: home screen (or its package name), opened before the agent's first step;
+#: that app is the task's start point (``docs/architecture_design.md`` §4.9
+#: "起始参数", §4.10 "任务的起始点归 capability").
+START_FLAGS: tuple[StartFlag, ...] = (
+    StartFlag(
+        flag="--start-app",
+        key="start_app",
+        help=(
+            "The app the task starts in, by its name on the home screen (or its package name), "
+            "opened before the agent's first step"
+        ),
+    ),
+)
 
 #: No module of this package needs an optional extra.
 OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()

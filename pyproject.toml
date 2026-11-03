@@ -103,8 +103,8 @@ include-package-data = false
 # glob is the only reason they reach the wheel — without it an installed
 # (non-editable) spectragent raises FileNotFoundError on first prepare().
 #
-# `core/capabilities/android/oracle/androidworld_service/*.py` are programs the
-# androidworld task oracle runs under AndroidWorld's own interpreter. Their
+# `benchmarks/androidworld/androidworld_service/*.py` are programs the
+# androidworld benchmark runs under AndroidWorld's own interpreter. Their
 # directory is deliberately not a package, so discovery never imports them
 # (they import android_world), and this glob is what ships them.
 #
@@ -118,7 +118,7 @@ include-package-data = false
     "prompts/**/*",
     "viewer/static/*",
     "viewer/static/**/*",
-    "core/capabilities/android/oracle/androidworld_service/*.py",
+    "benchmarks/androidworld/androidworld_service/*.py",
 ]
 
 [tool.setuptools.exclude-package-data]

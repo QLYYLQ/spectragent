@@ -24,6 +24,7 @@ own). The one boot covers, in file order:
   helper where its screenshot works (API 31-33), else from the service, with
   the screen's geometry;
 - ``open_app`` with the foreground app checked, and the back and home keys;
+  its names are the home screen's labels, read from the device at setup;
 - ``type_coordinate`` without a point: refused on Settings' main page, where
   no text field has focus, and typed into the search field a tap opens;
 - ``type_coordinate`` at a point (user rulings of 2026-11-02): refused after a
@@ -235,7 +236,6 @@ async def booted() -> AsyncIterator[Booted]:
                 "typing_backend": {"typing_id": TYPING_BACKEND},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
-                "task_oracle": {"oracle_id": "none"},
             }
         ]
     }
@@ -392,6 +392,16 @@ async def test_open_app_brings_settings_to_the_front_and_back_and_home_leave_it(
 
     for front in (after_back, after_home):
         assert front.package is not None and "launcher" in front.package
+
+
+async def test_open_app_takes_the_names_the_home_screen_shows(booted: Booted) -> None:
+    """With no table of its own, open_app's names are the launcher's labels, read at setup, each
+    opening the activity the home screen opens (``docs/architecture_design.md`` §11.2)."""
+    apps = booted.capability.launcher_apps
+
+    assert apps["Settings"].startswith("com.android.settings/")
+    assert apps["Clock"].startswith("com.google.android.deskclock/")
+    assert all("/" in target for target in apps.values())
 
 
 async def test_typing_without_a_point_goes_into_the_field_that_has_focus_or_nowhere(

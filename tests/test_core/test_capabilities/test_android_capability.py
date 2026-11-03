@@ -18,6 +18,7 @@ import sys
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import JsonValue, ValidationError
@@ -31,6 +32,7 @@ from spectragent.core.capabilities.android.backends.base import (
     UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
+from spectragent.core.capabilities.android.benchmark_setup import OracleTask
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
@@ -58,16 +60,14 @@ from spectragent.core.capabilities.android.observations import (
     AndroidScreenshotObs,
     AndroidUITreeObs,
 )
-from spectragent.core.capabilities.android.oracle._registrar import OracleTask
-from spectragent.core.capabilities.android.oracle.androidworld import AndroidWorldOracle
-from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
 from spectragent.core.capabilities.android.session import CaptureError
 from spectragent.core.capabilities.android.settle import ScreenPoll
+from spectragent.core.capabilities.android.task_setup import AndroidSetup
 from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
-from spectragent.core.capabilities.base import EpisodeEnd, TaskTextFromSetup
-from spectragent.core.composer import ConfigComposer
+from spectragent.core.capabilities.base import EpisodeEnd, SetupHost, TaskTextFromSetup
+from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
@@ -761,12 +761,12 @@ def test_ui_tars_assembles_against_the_android_capability(tmp_path: Path) -> Non
     assert runtime.seed_messages("open the settings app")
 
 
-# ── the task oracle ──────────────────────────────────────────────────
+# ── the benchmark's setup component ────────────────────────────────
 
 
 @dataclass
-class _RecordingOracle:
-    """A task oracle that records what the capability asks of it, in order."""
+class _RecordingSetup:
+    """A benchmark setup component that records what the capability asks of it, in order."""
 
     needs: DeviceNeeds = field(default_factory=lambda: DeviceNeeds(root=True, guest_wifi=True))
     fail_start: bool = False
@@ -781,8 +781,12 @@ class _RecordingOracle:
     asked_at: float | None = None
 
     @property
-    def oracle_id(self) -> str:
+    def setup_id(self) -> str:
         return "recording"
+
+    @property
+    def capability_id(self) -> str:
+        return "android"
 
     @property
     def device_needs(self) -> DeviceNeeds:
@@ -791,13 +795,13 @@ class _RecordingOracle:
     def check_setup(self, task: OracleTask | None) -> None:
         self.calls.append("check_setup")
         if task == {"refuse": True}:
-            raise ValueError("refused by the oracle")
+            raise ValueError("refused by the setup")
 
     async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
         self.calls.append(f"start {device.serial}")
         self.tasks.append(task)
         if self.fail_start:
-            raise RuntimeError("the oracle could not start")
+            raise RuntimeError("the setup could not start")
 
     def makes_goal(self, task: OracleTask | None) -> bool:
         self.calls.append("makes_goal")
@@ -817,20 +821,25 @@ class _RecordingOracle:
         self.asked_at = asyncio.get_running_loop().time()
         return self.over
 
-    def identity(self) -> VerifierIdentity | None:
+    async def stop(self) -> None:
+        self.calls.append("stop")
+
+
+@dataclass
+class _ScoringSetup(_RecordingSetup):
+    """A setup component that also scores, as AndroidWorld's does until its live verifier lands."""
+
+    def oracle_identity(self) -> VerifierIdentity | None:
         return VerifierIdentity(verifier_id="recording")
 
     async def read_score(self, *, answer: str | None) -> Judgment:
         self.calls.append(f"read_score {answer}")
         return Judgment(score=0.5)
 
-    async def stop(self) -> None:
-        self.calls.append("stop")
-
 
 @dataclass
 class _ClosingProvider(FakeServerProvider):
-    """Records, in the oracle's own log, when the device is released."""
+    """Records, in the setup component's own log, when the device is released."""
 
     log: list[str] = field(default_factory=list)
 
@@ -839,16 +848,26 @@ class _ClosingProvider(FakeServerProvider):
         await super().close(session)
 
 
-async def test_the_oracle_shapes_the_boot_and_is_stopped_before_the_device_goes(
+def test_the_capability_hosts_a_setup_component_and_refuses_another_kind() -> None:
+    capability = unset_capability()
+    assert isinstance(capability, SetupHost)
+
+    capability.bind_setup(_RecordingSetup())
+    capability.bind_setup(None)
+    with pytest.raises(TypeError, match="no setup component the android capability can host"):
+        capability.bind_setup(SimpleNamespace(setup_id="other", capability_id="android"))  # type: ignore[arg-type]
+
+
+async def test_the_setup_shapes_the_boot_and_is_stopped_before_the_device_goes(
     tmp_path: Path,
 ) -> None:
     task: dict[str, JsonValue] = {"opaque": ["to", "the", "capability"]}
     async with phone_server(ScriptedPhone()) as adb:
-        oracle = _RecordingOracle()
+        setup = _ScoringSetup()
         capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
         configured(capability, adb)
-        capability.task_oracle = oracle
-        provider = _ClosingProvider(adb.host, adb.port, log=oracle.calls)
+        capability.bind_setup(setup)
+        provider = _ClosingProvider(adb.host, adb.port, log=setup.calls)
         capability.backend = provider
         await capability.setup(oracle_task=task)
         identity = capability.oracle_identity()
@@ -856,10 +875,10 @@ async def test_the_oracle_shapes_the_boot_and_is_stopped_before_the_device_goes(
         await capability.teardown()
 
     assert provider.needs == [DeviceNeeds(root=True, guest_wifi=True)]
-    assert oracle.tasks == [task] and oracle.tasks[0] is task, "handed over as it came"
+    assert setup.tasks == [task] and setup.tasks[0] is task, "handed over as it came"
     assert identity == VerifierIdentity(verifier_id="recording")
     assert reading == Judgment(score=0.5)
-    assert oracle.calls == [
+    assert setup.calls == [
         "check_setup",
         f"start {SERIAL}",
         "read_score Mall",  # the run's answer, handed over as it came
@@ -868,28 +887,56 @@ async def test_the_oracle_shapes_the_boot_and_is_stopped_before_the_device_goes(
     ]
 
 
-async def test_an_oracle_that_fails_to_start_is_stopped_and_the_device_released(
+async def test_without_a_setup_the_device_boots_with_no_needs_and_nothing_judges(
     tmp_path: Path,
 ) -> None:
     async with phone_server(ScriptedPhone()) as adb:
-        oracle = _RecordingOracle(fail_start=True)
         capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
         configured(capability, adb)
-        capability.task_oracle = oracle
-        capability.backend = _ClosingProvider(adb.host, adb.port, log=oracle.calls)
-        with pytest.raises(RuntimeError, match="the oracle could not start"):
+        provider = FakeServerProvider(adb.host, adb.port)
+        capability.backend = provider
+        await capability.setup()
+        try:
+            assert capability.oracle_identity() is None, "the environment asks nothing"
+        finally:
+            await capability.teardown()
+
+    assert provider.needs == [DeviceNeeds()]
+
+
+async def test_a_setup_that_judges_nothing_leaves_no_verdict() -> None:
+    capability = unset_capability()
+    capability.bind_setup(_RecordingSetup())
+    env = make_env(AndroidEnvironment, {"android": capability})
+
+    assert capability.oracle_identity() is None
+    assert await env.verify_live(timeout_s=1.0, answer=None) == []
+    with pytest.raises(RuntimeError, match="no bound setup component judges this run"):
+        await capability.read_score(answer=None)
+
+
+async def test_a_setup_that_fails_to_start_is_stopped_and_the_device_released(
+    tmp_path: Path,
+) -> None:
+    async with phone_server(ScriptedPhone()) as adb:
+        setup = _RecordingSetup(fail_start=True)
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
+        capability.bind_setup(setup)
+        capability.backend = _ClosingProvider(adb.host, adb.port, log=setup.calls)
+        with pytest.raises(RuntimeError, match="the setup could not start"):
             await capability.setup(oracle_task={"a": 1})
 
-    assert oracle.calls[-2:] == ["stop", "provider closed"]
+    assert setup.calls[-2:] == ["stop", "provider closed"]
     assert not capability.is_alive
 
 
-async def test_an_oracle_that_refuses_the_task_stops_setup_before_any_boot(
+async def test_a_setup_that_refuses_the_task_stops_setup_before_any_boot(
     tmp_path: Path,
 ) -> None:
-    oracle = _RecordingOracle()
+    setup = _RecordingSetup()
     capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
-    capability.task_oracle = oracle
+    capability.bind_setup(setup)
     capability.tap_injector = AccessibilityGestureInjector()
     capability.typing_backend = CommitTextBackend()
     capability.ui_tree_cleaner = AndroidWorldCleaner()
@@ -897,47 +944,67 @@ async def test_an_oracle_that_refuses_the_task_stops_setup_before_any_boot(
     provider = FakeServerProvider("127.0.0.1", 1)
     capability.backend = provider
 
-    with pytest.raises(ValueError, match="refused by the oracle"):
+    with pytest.raises(ValueError, match="refused by the setup"):
         await capability.setup(oracle_task={"refuse": True})
     assert provider.needs == [], "the device was never asked for"
 
 
-def test_prepare_routes_the_task_to_the_oracle_and_refuses_what_it_refuses(
+def test_prepare_routes_the_setup_and_the_task_to_it_and_refuses_what_it_refuses(
     tmp_path: Path,
 ) -> None:
     capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
     env = make_env(AndroidEnvironment, {"android#0": capability})
 
-    env.check_setup({})  # no task, no oracle: nothing to refuse
-    with pytest.raises(ValueError, match="task_oracle is 'none'"):
+    env.check_setup({})  # no task, no setup: nothing to refuse
+    with pytest.raises(ValueError, match="has no setup component for the android capability"):
         env.check_setup({"oracle_task": {"family": "android"}})
 
-    oracle = _RecordingOracle()
-    capability.task_oracle = oracle
-    with pytest.raises(ValueError, match="refused by the oracle"):
-        env.check_setup({"oracle_task": {"refuse": True}})
-    assert oracle.calls == ["check_setup"], "only a check: nothing started"
+    setup = _RecordingSetup()
+    with pytest.raises(ValueError, match="refused by the setup"):
+        env.check_setup({"oracle_task": {"refuse": True}}, setups=[setup])
+    assert setup.calls == ["check_setup"], "only a check: nothing started"
+    env.check_setup({"oracle_task": {"a": 1}}, setups=[setup])
+    assert capability._setup is None, "checking binds nothing"
+
+    env.bind_setups([setup])
+    assert capability._setup is setup
 
 
-async def test_the_oracle_completes_the_task_text(tmp_path: Path) -> None:
+def test_a_setup_hosted_by_a_capability_the_environment_lacks_is_refused(
+    tmp_path: Path,
+) -> None:
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    env = make_env(AndroidEnvironment, {"android#0": capability})
+    elsewhere = SimpleNamespace(setup_id="kernelbench", capability_id="docker")
+
+    with pytest.raises(ValueError, match="hosted by the 'docker' capability, and this environment"):
+        env.check_setup({}, setups=[elsewhere])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="both name the 'android' capability"):
+        env.bind_setups([_RecordingSetup(), _RecordingSetup()])
+    assert capability._setup is None, "nothing bound"
+
+
+async def test_the_setup_completes_the_task_text(tmp_path: Path) -> None:
     capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
     assert isinstance(capability, TaskTextFromSetup) and isinstance(capability, EpisodeEnd)
     env = make_env(AndroidEnvironment, {"android#0": capability})
 
-    # ``none``: no goal is made on the device, and no episode ends: nothing to wait for.
+    # No setup: no goal is made on the device, and no episode ends: nothing to wait for.
     assert env.task_text_setter({}) is None
     assert await env.task_text_from_setup() is None
     assert await env.episode_over() is False
 
     goal = "Follow the instructions shown on the top of the screen: Click on the Submit button."
-    oracle = _RecordingOracle(goal=goal)
-    capability.task_oracle = oracle
+    setup = _RecordingSetup(goal=goal)
     task: dict[str, JsonValue] = {"opaque": ["to", "the", "capability"]}
 
-    assert env.task_text_setter({"oracle_task": task}) == "android"
-    assert oracle.tasks == [task] and oracle.tasks[0] is task, "handed over as it came"
+    # Asked as prepare() asks: with the component about to be bound, before it is.
+    assert env.task_text_setter({"oracle_task": task}, setups=[setup]) == "android"
+    assert setup.tasks == [task] and setup.tasks[0] is task, "handed over as it came"
+    assert env.task_text_setter({"oracle_task": task}) is None, "none bound, none asked about"
+    env.bind_setups([setup])
     assert await env.task_text_from_setup() == SetupTaskText(capability_id="android", text=goal)
-    assert oracle.calls == ["makes_goal", "made_goal"]
+    assert setup.calls == ["makes_goal", "made_goal"]
 
 
 def _polls_counted(capability: AndroidCapability, log: list[str]) -> None:
@@ -958,9 +1025,9 @@ async def test_the_episode_question_is_asked_only_once_the_screen_is_still() -> 
         phone_server(phone) as adb,
         android_capability(adb, settle_max_wait_s=5, settle_quiet_ms=100) as capability,
     ):
-        oracle = _RecordingOracle(answers=True, over=True)
-        capability.task_oracle = oracle
-        _polls_counted(capability, oracle.calls)
+        setup = _RecordingSetup(answers=True, over=True)
+        capability.bind_setup(setup)
+        _polls_counted(capability, setup.calls)
         clock = asyncio.get_running_loop().time
         emitted: list[float] = []
 
@@ -976,85 +1043,53 @@ async def test_the_episode_question_is_asked_only_once_the_screen_is_still() -> 
         finally:
             await reacting
 
-    asked = oracle.calls[: oracle.calls.index("stop")]
+    asked = setup.calls[: setup.calls.index("stop")]
     assert asked[0] == "answers_episode_over" and asked[-1] == "episode_over"
     assert set(asked[1:-1]) == {"poll"} and len(asked) > 3, "the wait polled, then asked"
-    asked_at = oracle.asked_at
+    asked_at = setup.asked_at
     assert asked_at is not None
     last = max(at for at in emitted if at <= asked_at)
     assert asked_at - last >= 0.09, "a quiet period after the page's last event before it"
 
 
-async def test_a_task_whose_oracle_does_not_answer_the_question_makes_no_wait() -> None:
+async def test_a_task_whose_setup_does_not_answer_the_question_makes_no_wait() -> None:
     """AndroidWorld answers it for MiniWoB++ alone; every other task pays nothing."""
     phone = ScriptedPhone(focused="com.android.settings/.Settings")
     async with (
         phone_server(phone) as adb,
         android_capability(adb, settle_max_wait_s=5, settle_quiet_ms=300) as capability,
     ):
-        oracle = _RecordingOracle(answers=False, over=True)
-        capability.task_oracle = oracle
-        _polls_counted(capability, oracle.calls)
+        setup = _RecordingSetup(answers=False, over=True)
+        capability.bind_setup(setup)
+        _polls_counted(capability, setup.calls)
         clock = asyncio.get_running_loop().time
         started = clock()
         assert await capability.episode_over() is False
         took = clock() - started
 
-    assert oracle.calls[: oracle.calls.index("stop")] == ["answers_episode_over"]
+    assert setup.calls[: setup.calls.index("stop")] == ["answers_episode_over"]
     assert took < 0.3, "no quiet period was waited for"
 
 
-def test_prepare_refuses_a_device_the_provider_cannot_give_naming_oracle_needs_and_provider(
+def test_prepare_refuses_a_device_the_provider_cannot_give_naming_setup_needs_and_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    oracle = _RecordingOracle(needs=DeviceNeeds(emulator_grpc=True, fresh=True))
+    setup = _RecordingSetup(needs=DeviceNeeds(emulator_grpc=True, fresh=True))
     capability = unset_capability()
-    capability.task_oracle = oracle
     capability.backend = LocalEmulatorProvider(avd="AndroidWorldAvd", read_only=False)
     env = make_env(AndroidEnvironment, {"android#0": capability})
     monkeypatch.setattr(sys, "platform", "linux")
 
     with pytest.raises(UnmetDeviceNeeds) as refused:
-        env.check_setup({"oracle_task": {"a": 1}})
+        env.check_setup({"oracle_task": {"a": 1}}, setups=[setup])
 
     message = str(refused.value)
     assert message.startswith(
-        "task_oracle 'recording' needs emulator_grpc, fresh of the device, and the "
+        "the benchmark setup 'recording' needs emulator_grpc, fresh of the device, and the "
         "'local_emulator' provider cannot meet: emulator_grpc: "
     )
     assert "measured on macOS only" in message and "fresh: read_only is false" in message
-    assert oracle.calls == [], "the device comes first: the oracle's own check never ran"
-
-
-def test_a_capability_block_that_leaves_its_oracle_out_selects_none() -> None:
-    def composed(**block: JsonValue) -> AndroidCapability:
-        raw = {
-            "capability": [
-                {
-                    "capability_id": "android",
-                    "backend": {"provider_id": "local_emulator", "avd": "AndroidWorldAvd"},
-                    "service_apk": "~/.cache/spectragent/android-service/0/spectragent-device.apk",
-                    "tap_injector": {"injector_id": "shell_injection"},
-                    "typing_backend": {"typing_id": "set_text"},
-                    "ui_tree_cleaner": {"cleaner_id": "androidworld"},
-                    "ui_tree_serializer": {"serializer_id": "m3a"},
-                    **block,
-                }
-            ]
-        }
-        capability = ConfigComposer.for_config(raw).compose(raw).single("capability")
-        assert isinstance(capability, AndroidCapability)
-        return capability
-
-    assert isinstance(composed().task_oracle, NoTaskOracle)
-    assert isinstance(composed(task_oracle={"oracle_id": "none"}).task_oracle, NoTaskOracle)
-    with pytest.raises(ValidationError, match="union_tag_invalid"):
-        composed(task_oracle={"oracle_id": "android_world"})
-    selected = composed(
-        task_oracle={"oracle_id": "androidworld", "root": "~/aw", "call_timeout_s": 30}
-    ).task_oracle
-    assert isinstance(selected, AndroidWorldOracle)
-    assert (selected.root, selected.call_timeout_s) == ("~/aw", 30)
+    assert setup.calls == [], "the device comes first: the setup's own check never ran"
 
 
 # ── the device side and its strategies ────────────────────────────────
@@ -1077,15 +1112,21 @@ def _android_block(**written: JsonValue) -> dict[str, JsonValue]:
 def test_a_run_names_its_apk_its_input_strategies_and_its_tree_cleaner_and_serializer() -> None:
     """Which program delivers a touch, and which enters text, change what the device receives;
     which nodes become elements, and how they are printed, change what the agent sees. The tree's
-    source has one value, so a block may leave it out."""
+    source has one value, so a block may leave it out. A setting left out is named, and the
+    refusal says no side wrote it (``docs/architecture_design.md`` §4.10.1)."""
     required = ("service_apk", "tap_injector", "typing_backend")
     for left_out in (*required, "ui_tree_cleaner", "ui_tree_serializer"):
         block = _android_block()
         del block[left_out]
         raw: dict[str, JsonValue] = {"capability": [block]}
-        with pytest.raises(ValidationError) as refused:
+        with pytest.raises(ComposeError) as refused:
             ConfigComposer.for_config(raw).validate(raw)
-        assert {error["type"] for error in refused.value.errors()} == {"missing"}, left_out
+        issue = refused.value.issue
+        assert issue is not None, left_out
+        assert (issue.code, issue.path) == (
+            "capability_setting_missing",
+            f"capability[0].{left_out}",
+        )
 
     raw = {"capability": [_android_block()]}
     capability = ConfigComposer.for_config(raw).compose(raw).single("capability")
@@ -1253,8 +1294,8 @@ async def test_setup_refuses_a_capability_without_the_strategies_a_run_names(
 
 
 @dataclass
-class _ForceStoppingOracle(_RecordingOracle):
-    """An oracle whose start unbinds our service, as AndroidWorld's own service does."""
+class _ForceStoppingSetup(_RecordingSetup):
+    """A setup component whose start unbinds our service, as AndroidWorld's own service does."""
 
     phone: ScriptedPhone | None = None
 
@@ -1267,14 +1308,14 @@ class _ForceStoppingOracle(_RecordingOracle):
 async def test_the_service_is_bound_again_when_something_on_the_device_unbinds_it(
     tmp_path: Path,
 ) -> None:
-    """Once during setup, after the oracle started, and once between steps."""
+    """Once during setup, after the benchmark's setup started, and once between steps."""
     phone = ScriptedPhone(focused="com.android.settings/.Settings")
     async with phone_server(phone) as adb:
         capability = AndroidCapability(
             service_apk=str(fake_service_apk(tmp_path)), settle_max_wait_s=2, settle_quiet_ms=50
         )
         configured(capability, adb, tap_injector=AccessibilityGestureInjector())
-        capability.task_oracle = _ForceStoppingOracle(phone=phone)
+        capability.bind_setup(_ForceStoppingSetup(phone=phone))
         await capability.setup(oracle_task={"a": 1})
         phone.inputs.clear()  # setup's test tap
         try:
@@ -1340,3 +1381,89 @@ async def test_an_event_stream_that_ended_is_subscribed_afresh_on_a_new_channel(
     assert isinstance(again, AndroidCaptureStateObs) and again.settle is not None
     assert again.settle.outcome == "settled"
     assert phone.service_calls("subscribe") == 2
+
+
+# ── the task's start app ──────────────────────────────────────────────
+
+
+async def test_the_start_app_opens_by_its_name_on_the_home_screen_before_the_first_step(
+    tmp_path: Path,
+) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
+        await capability.setup(start_app="settings")
+        try:
+            assert phone.focused == "com.android.settings/com.android.settings.Settings"
+        finally:
+            await capability.teardown()
+
+
+async def test_a_start_app_no_name_opens_fails_setup_naming_the_names_and_releases_the_device(
+    tmp_path: Path,
+) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
+        with pytest.raises(ValueError, match="the task starts in 'Notes'") as refused:
+            await capability.setup(start_app="Notes")
+
+    assert "apps by name: Settings" in str(refused.value)
+    assert not capability.is_alive
+
+
+async def test_a_table_of_its_own_names_the_start_app_and_no_name_is_read_from_the_device(
+    tmp_path: Path,
+) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)),
+            actions=[AndroidOpenAppAction(apps={"Preferences": "com.android.settings"})],
+        )
+        configured(capability, adb)
+        await capability.setup(start_app="Preferences")
+        try:
+            assert phone.focused == "com.android.settings/.Settings"
+            assert phone.service_calls("launcher_apps") == 0
+            with pytest.raises(RuntimeError, match="has a table of its own"):
+                capability.launcher_apps  # noqa: B018 — the read is the assertion
+        finally:
+            await capability.teardown()
+
+
+async def test_a_run_that_opens_no_app_reads_no_names(tmp_path: Path) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)),
+            actions=[
+                action
+                for action in AndroidCapability(service_apk="x").actions
+                if action.action_id != "android.open_app"
+            ],
+        )
+        configured(capability, adb)
+        await capability.setup()
+        await capability.teardown()
+
+    assert phone.service_calls("launcher_apps") == 0
+
+
+def test_a_blank_start_app_is_refused_before_anything_starts(tmp_path: Path) -> None:
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    env = make_env(AndroidEnvironment, {"android#0": capability})
+
+    with pytest.raises(ValueError, match="start_app '  ' names no app"):
+        env.check_setup({"start_app": "  "})
+
+
+def test_the_start_app_is_the_tasks_start_point() -> None:
+    setup = AndroidSetup(start_app="  Simple  Calendar ")
+
+    assert setup.to_context() == {"start_app": "  Simple  Calendar "}
+    assert AndroidSetup.start_point(setup.to_context()) == "simple calendar"
+    assert AndroidSetup.start_point({}) is None
+    assert AndroidSetup.start_point({"oracle_task": {"task": "SystemBrightnessMax"}}) is None

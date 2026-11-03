@@ -568,7 +568,7 @@ class _TextSettingCap(BranchFakeCap):
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-    def sets_task_text(self, context: Any) -> bool:
+    def sets_task_text(self, context: Any, *, setup: object = None) -> bool:
         return True
 
     async def task_text_from_setup(self) -> str | None:

@@ -3,6 +3,8 @@ package org.spectragent.device;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Path;
 import android.graphics.Rect;
@@ -35,8 +37,8 @@ import org.json.JSONObject;
  * home, recents); {@code focus} (the node with input focus and where it is on the screen);
  * {@code set_text} (ACTION_SET_TEXT on the field with input focus: its whole text, or the text at
  * its selection) and {@code commit_text} (API 33, through the service's own input method: at the
- * cursor, or over the field's whole text); and {@code subscribe}, after which every accessibility
- * event is pushed.
+ * cursor, or over the field's whole text); {@code launcher_apps} (every app the home screen
+ * lists, with its label); and {@code subscribe}, after which every accessibility event is pushed.
  */
 public final class DeviceService extends AccessibilityService {
     static final String SOCKET = "spectragent_device";
@@ -120,9 +122,31 @@ public final class DeviceService extends AccessibilityService {
                 return setText(params);
             case "commit_text":
                 return commitText(params);
+            case "launcher_apps":
+                return launcherApps();
             default:
                 throw new Failure("unknown_method", "the service has no method " + method);
         }
+    }
+
+    /**
+     * Every launcher activity on the device, with the label the home screen shows for it: the
+     * activity's own label, else its app's. The manifest declares the launcher intent in its
+     * {@code <queries>}: from API 30 an app sees only the packages it declares.
+     */
+    @SuppressWarnings("deprecation") // the int-flags overload, the one there is on API 30-32
+    private Reply launcherApps() {
+        PackageManager manager = getPackageManager();
+        Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        JSONArray apps = new JSONArray();
+        for (ResolveInfo found : manager.queryIntentActivities(launcher, 0)) {
+            CharSequence label = found.loadLabel(manager);
+            apps.put(Json.obj(
+                    "label", label == null ? "" : label.toString(),
+                    "package", found.activityInfo.packageName,
+                    "activity", found.activityInfo.name));
+        }
+        return Reply.of(Json.obj("apps", apps));
     }
 
     private Reply tree(JSONObject params) throws Failure {

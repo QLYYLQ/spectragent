@@ -60,6 +60,7 @@ def make_run(
     llm: Any,
     memory: Any,
     hooks: list[Any] | None = None,
+    benchmark: Any | None = None,
 ) -> Any:
     """Build a ``ComposedRun`` from pre-assembled mock parts.
 
@@ -67,7 +68,9 @@ def make_run(
     agents/envs/LLMs without touching Pydantic validation, while
     mirroring what the Composer does: loop / llm / memory are injected
     onto the *agent*, because that is where
-    :meth:`AgentRuntime.for_agent` reads them from.
+    :meth:`AgentRuntime.for_agent` reads them from. A *benchmark* is the
+    run's benchmark block, whose ``setup`` ``prepare()`` routes to the
+    environment.
 
     Use :data:`AGENT_ID` / :data:`ENV_ID` with
     ``AgentRuntime.for_agent(run, AGENT_ID)``.
@@ -91,6 +94,8 @@ def make_run(
         by_layer["environment"] = {ENV_ID: env}
     if hooks:
         by_layer["hook"] = {f"hook#{i}": h for i, h in enumerate(hooks)}
+    if benchmark is not None:
+        by_layer["benchmark"] = {"benchmark#0": benchmark}
     return ComposedRun(by_layer=by_layer)
 
 

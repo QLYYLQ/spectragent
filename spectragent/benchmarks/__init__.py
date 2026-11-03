@@ -9,5 +9,17 @@ this file first, so it imports no subpackage.
 """
 
 from spectragent.benchmarks._registrar import Benchmark, BenchmarkBase, BenchmarkRegistrar
+from spectragent.benchmarks._setup_registrar import (
+    BenchmarkSetup,
+    BenchmarkSetupBase,
+    BenchmarkSetupRegistrar,
+)
 
-__all__ = ["Benchmark", "BenchmarkBase", "BenchmarkRegistrar"]
+__all__ = [
+    "Benchmark",
+    "BenchmarkBase",
+    "BenchmarkRegistrar",
+    "BenchmarkSetup",
+    "BenchmarkSetupBase",
+    "BenchmarkSetupRegistrar",
+]

@@ -4,7 +4,7 @@ Opt-in, like ``test_androidworld_live.py`` (marker ``requires_android_emulator``
 ``SPECTRAGENT_TEST_AVD``, ``SPECTRAGENT_TEST_ANDROIDWORLD`` and
 ``SPECTRAGENT_TEST_SERVICE_APK``). AndroidWorld's four Retro Music tasks make
 their mp3 files at initialize with pydub, which runs ffmpeg from PATH; the
-service's PATH reaches the host's ffmpeg only through the link the oracle makes
+service's PATH reaches the host's ffmpeg only through the link the setup makes
 (``docs/architecture_design.md`` §11.2). With the system's
 directories alone, initialize failed and the task never started.
 ``RetroCreatePlaylist`` writes the 15 songs its parameters name into
@@ -36,6 +36,7 @@ from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from tests._helpers.android_runs import (
     androidworld_capability,
+    androidworld_setup,
     installation_problem,
     write_task_list,
 )
@@ -74,9 +75,10 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
         names = oracle_task["params"][key]
         assert isinstance(names, list)
         songs += [str(name) for name in names]
-    capability = androidworld_capability()
+    capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env)
+    env.check_setup(context.env, setups=[setup])
+    env.bind_setups([setup])
     started = time.monotonic()
     await env.setup(context.env)
     print(f"setup, the task's initialize included, took {time.monotonic() - started:.1f} s")

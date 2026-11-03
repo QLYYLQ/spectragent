@@ -2,7 +2,7 @@
 """Write an AndroidWorld task list for Spectragent's ``androidworld`` task loader.
 
 Runs offline (no device) under AndroidWorld's own interpreter, against the
-checkout the oracle pins; like ``serve.py`` beside it, it is not a module of
+checkout the ``androidworld`` setup pins; like ``serve.py`` beside it, it is not a module of
 Spectragent::
 
     <root>/.venv/bin/python -I task_list.py --src <root>/src --out <data dir> \\
@@ -11,10 +11,20 @@ Spectragent::
 It makes the suite AndroidWorld's own runner makes (``create_suite``: each
 task's instances, their seeds derived from the suite seed, the task and the
 index) and writes ``<data dir>/<split>.json``, format
-``androidworld-tasks-2`` (``spectragent/core/capabilities/android/oracle/androidworld_tasks.py``),
+``androidworld-tasks-2`` (``spectragent/benchmarks/androidworld/tasks.py``),
 then names the split in ``<data dir>/data_info.json``. Point the loader's
 ``data_dir`` there, or write it to
 ``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``.
+
+Beside the lists it writes ``<data dir>/open_app.json``, format
+``androidworld-open-app-1`` (``spectragent/benchmarks/androidworld/open_app.py``):
+AndroidWorld's app name table, every name of each pattern of
+``adb_utils._PATTERN_TO_ACTIVITY`` with the component AndroidWorld starts for
+it, read off the same checkout. Each name is checked to open its own pattern's
+component under AndroidWorld's own matcher (``get_adb_activity``: a prefix
+match, the first pattern first), so the table opens what AndroidWorld opens.
+The benchmark hands it to the Android capability's ``android.open_app``
+(``docs/architecture_design.md`` §11.2 "``open_app`` 的名称表").
 
 Each task records the narrowest family whose registry holds it
 (``android``, ``information_retrieval`` or ``miniwob``); asking for
@@ -48,6 +58,7 @@ if TYPE_CHECKING:
     from android_world.task_evals.task_eval import TaskEval
 
 FORMAT = "androidworld-tasks-2"
+OPEN_APP_FORMAT = "androidworld-open-app-1"
 #: Searched in this order for the family that holds a task.
 FAMILIES = ("android", "information_retrieval", "miniwob")
 
@@ -99,6 +110,25 @@ def _goal_at_initialize(instance: TaskEval) -> str:
     return "unchanged"
 
 
+def _open_app_table() -> dict[str, str]:
+    """AndroidWorld's app names, each with the component its ``launch_app`` starts for it."""
+    from android_world.env import adb_utils
+
+    apps: dict[str, str] = {}
+    for pattern, component in adb_utils._PATTERN_TO_ACTIVITY.items():
+        for name in pattern.split("|"):
+            # AndroidWorld matches a name as a regex prefix, the first pattern
+            # first: a name an earlier pattern takes would open that pattern's
+            # component there, and this one here.
+            if adb_utils.get_adb_activity(name) != component:
+                raise SystemExit(
+                    f"AndroidWorld opens {name!r} with {adb_utils.get_adb_activity(name)!r}, "
+                    f"not with its own pattern's {component!r}"
+                )
+            apps[name] = component
+    return apps
+
+
 def main() -> None:
     args = _arguments()
     sys.path.insert(0, args.src)
@@ -146,8 +176,14 @@ def main() -> None:
     info = json.loads(info_path.read_text()) if info_path.exists() else {}
     info.setdefault("split", {})[args.split] = listing.name
     info_path.write_text(json.dumps(info, indent=2) + "\n")
+    apps = _open_app_table()
+    table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": apps}
+    (out / "open_app.json").write_text(json.dumps(table, indent=1, sort_keys=True) + "\n")
     families = Counter(task["family"] for task in tasks)
-    print(f"wrote {len(tasks)} tasks to {listing} ({dict(families)}), commit {commit}")
+    print(
+        f"wrote {len(tasks)} tasks to {listing} ({dict(families)}) and {len(apps)} app names "
+        f"to {out / 'open_app.json'}, commit {commit}"
+    )
 
 
 if __name__ == "__main__":

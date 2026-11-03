@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
+    from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.archive._registrar import ArchiverBase
     from spectragent.core.archive.types import ArchiveBatch
     from spectragent.core.capabilities.base import PreparedSetupContext
@@ -282,19 +283,28 @@ class Environment(Protocol):
 
     # ── The task text a setup completes; the episode the environment ends ──
 
-    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+    def task_text_setter(
+        self,
+        context: Mapping[str, Any] | None = None,
+        *,
+        setups: Sequence[BenchmarkSetup] = (),
+    ) -> str | None:
         """The capability whose setup completes this task's text; ``None`` when none does.
 
         ``AgentRuntime.prepare()`` asks it after :meth:`check_setup`, with the
-        same context (``docs/architecture_design.md`` §4.2, §4.10). The context
-        is routed as :meth:`setup` routes it, and every capability implementing
+        same context and the same benchmark setup components, before it binds
+        them (``docs/architecture_design.md`` §4.2, §4.10). The context is
+        routed as :meth:`setup` routes it and the components as
+        :meth:`check_setup` routes them, and every capability implementing
         ``TaskTextFromSetup`` (``core/capabilities/base.py``) answers for its
-        own slice. Reads configuration and task data only, so a structural
-        implementation needs it too: Runtime asks on every run.
+        own slice and the component it is about to host. Reads configuration
+        and task data only, so a structural implementation needs it too:
+        Runtime asks on every run.
 
         Raises:
-            ValueError: A context key no capability accepts, or more than one
-                capability would complete the text: a run has one task text.
+            ValueError: A context key no capability accepts, a setup component
+                no capability here hosts, or more than one capability would
+                complete the text: a run has one task text.
         """
         ...
 
@@ -340,24 +350,42 @@ class Environment(Protocol):
         *,
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
+        setups: Sequence[BenchmarkSetup] = (),
     ) -> None:
         """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
 
         ``AgentRuntime.prepare()`` calls it — before the trace is opened and
         before anything is launched, on a dry run too — with the task's setup
-        context, the observation negotiation result and the archivers it is
-        about to bind. The context is routed exactly as :meth:`setup` routes
-        it (a key no capability's ``setup()`` declares is refused), each
-        archiver goes to the capability its prefix names, and every
-        capability implementing ``SetupCheck``
+        context, the observation negotiation result, and the archivers and
+        benchmark setup components it is about to bind. The context is routed
+        exactly as :meth:`setup` routes it (a key no capability's ``setup()``
+        declares is refused), each archiver goes to the capability its prefix
+        names, each setup component to the capability it names, and every
+        capability implementing ``SetupCheck`` or ``SetupHost``
         (``core/capabilities/base.py``) checks its own slice.
 
         Raises:
-            ValueError: A colliding capability set, or a context key no
-                capability accepts.
+            ValueError: A colliding capability set, a context key no
+                capability accepts, or a setup component no capability here
+                hosts.
             UnroutableArchiverError: An archiver that cannot be bound here.
             Exception: A capability's own refusal, naming both parties
                 (browser: ``BrowserCooperationError``).
+        """
+        ...
+
+    def bind_setups(self, setups: Sequence[BenchmarkSetup]) -> None:
+        """Route each benchmark setup component to the capability it names, and bind.
+
+        Validates every component before binding any, as :meth:`bind_archivers`
+        does, then hands every hosting capability its component, ``None`` to
+        those that get none. Acquires no resource: ``AgentRuntime.prepare``
+        calls it as its last step, with the archivers, only when the run's
+        benchmark has a setup component.
+
+        Raises:
+            ValueError: A component whose capability is not here, does not
+                host setup components, or is named by two components.
         """
         ...
 

@@ -369,6 +369,60 @@ def test_config_commands_take_the_subset_of_the_benchmark(tmp_path, capsys, comm
     assert "give --benchmark with it" in json.loads(capsys.readouterr().out)["error"]["message"]
 
 
+def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without_a_task(
+    tmp_path, capsys, monkeypatch
+):
+    """The shipped ``androidworld`` alias, with no task: its setup checks the installation and
+    what it needs of the device, its part of the Android block (the AVD, the ``open_app`` table) is
+    merged in, and the task is setup's to refuse (``docs/architecture_design.md`` §4.10.1)."""
+    import sys
+
+    from tests._helpers.android_device import fake_service_apk
+    from tests._helpers.benchmark_data import ANDROIDWORLD_APPS, androidworld_data
+    from tests._helpers.fake_androidworld import fake_installation
+
+    data = androidworld_data(tmp_path / "data" / "android" / "androidworld")
+    fake_installation(data / "installation", monkeypatch)
+    monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path / "data"))
+    # The emulator's gRPC token was measured on macOS only (``local_emulator``).
+    monkeypatch.setattr(sys, "platform", "darwin")
+    android = {
+        "capability_id": "android",
+        "service_apk": str(fake_service_apk(tmp_path)),
+        "tap_injector": {"injector_id": "shell_injection"},
+        "typing_backend": {"typing_id": "set_text"},
+        "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+        "ui_tree_serializer": {"serializer_id": "m3a"},
+    }
+    agent = {
+        "agent_id": "m3a",
+        "agent_loop": {"loop_id": "react", "max_steps": 120},
+        "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+        "memory": {"memory_id": "sliding_window", "window_size": 1},
+    }
+    config = tmp_path / "android.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {"agent": [agent], "environment": [{"env_type": "android", "capabilities": [android]}]}
+        )
+    )
+
+    assert main(["--json", "config", "check", str(config), "--benchmark", "androidworld"]) == 0
+    assert json.loads(capsys.readouterr().out)["checked"] == "configuration_and_prepare"
+    task = ["--task-id", "SystemBrightnessMax/42/0"]
+    assert (
+        main(["--json", "config", "check", str(config), "--benchmark", "androidworld", *task]) == 0
+    )
+    capsys.readouterr()
+
+    assert main(["--json", "config", "explain", str(config), "--benchmark", "androidworld"]) == 0
+    explained = json.loads(capsys.readouterr().out)
+    (block,) = explained["resolved"]["environment"][0]["capabilities"]
+    assert block["backend"]["avd"] == "AndroidWorldAvd"
+    (open_app,) = [a for a in block["actions"] if a["action_id"] == "android.open_app"]
+    assert open_app["apps"] == ANDROIDWORLD_APPS
+
+
 def test_human_explain_shows_negotiation_without_dumping_resolved_config(capsys):
     assert main(["config", "explain", "configs/browser_use_local.yaml"]) == 0
     text = capsys.readouterr().out
