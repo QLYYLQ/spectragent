@@ -645,6 +645,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         backend = self._backend()
         tap_injector, typing_backend, *_ = self._strategies()
         self._ui_tree, self._actions_since_tree = None, 0
+        self._polled_package = None
         self.check_setup({"oracle_task": oracle_task})
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
@@ -1078,6 +1079,12 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         of the app the last poll found in front, which counts as not drawn
         yet when another app is in front now. A poll took 200-500 ms under
         load when they went one after another.
+
+        The app in front is noted before anything can raise, so the next poll
+        asks about the app that is in front, whatever this one met. A frame
+        count that could not be read is no count (``settle.py``), and the wait
+        goes on: once a package the count refused stayed noted, every later
+        poll failed, and every later capture of the run came without a wait.
         """
         side, events = self._side, self._events
         if side is None or events is None:
@@ -1093,14 +1100,17 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             ask(Source(frames_of_last, limit)),
             return_exceptions=True,
         )
+        self._polled_package = None if isinstance(front, BaseException) else front.package
         if isinstance(ping, BaseException):
             raise ping
         if isinstance(front, BaseException):
             raise front
-        if isinstance(frames, BaseException):
+        if isinstance(frames, Exception):
+            logger.debug("android: no frame count of %s: %s", asked, frames)
+            frames = None
+        elif isinstance(frames, BaseException):
             raise frames
-        self._polled_package = front.package
-        if front.package != asked:
+        elif front.package != asked:
             frames = None  # another app's count
         # Every event the service received before it answered the ping is in.
         try:

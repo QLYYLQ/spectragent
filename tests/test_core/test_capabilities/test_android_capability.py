@@ -417,6 +417,68 @@ def test_a_quiet_period_the_wait_could_never_reach_is_refused() -> None:
     AndroidCapability(service_apk="a.apk", settle_quiet_ms=3000, settle_max_wait_s=0)  # wait off
 
 
+#: The system's "Open with" chooser in front: its package, ``android``, has no dot.
+CHOOSER = "android/com.android.internal.app.ResolverActivity"
+
+
+async def test_with_the_open_with_chooser_in_front_every_capture_still_waits() -> None:
+    """Its frame count once raised before the poll noted the app in front: every later poll
+    failed, and every later capture of the run came 0.07-0.5 s after its action (BrowserDraw and
+    BrowserMaze in AndroidWorld's seed-42 sweep)."""
+    phone = ScriptedPhone(focused="com.google.android.documentsui/.files.FilesActivity")
+    settles = []
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb, fragments={SCREENSHOT}, settle_max_wait_s=2, settle_quiet_ms=50
+        ) as capability,
+    ):
+        for cycle, focused in enumerate(
+            (phone.focused, CHOOSER, "com.android.chrome/com.google.android.apps.chrome.Main"),
+            start=1,
+        ):
+            phone.focused = focused
+            await capability.begin_observation(cycle)
+            screenshot = await capability.resolve_fragment(SCREENSHOT)
+            assert isinstance(screenshot, AndroidScreenshotObs)
+            settles.append(screenshot.settle)
+
+    assert [settle and settle.outcome for settle in settles] == ["settled"] * 3
+    assert all(settle and settle.waited_ms >= 50 for settle in settles)
+    assert "dumpsys gfxinfo android" in _services(adb)
+
+
+async def test_a_frame_count_that_fails_is_no_count_and_the_wait_goes_on() -> None:
+    """No count is "not drawn yet" (``settle.py``): the wait lasts to its limit, every time."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+
+    async def counts_fail(command: str) -> ShellResult:
+        if command.startswith("dumpsys gfxinfo "):
+            return ShellResult(stderr=b"Can't find service: gfxinfo\n", exit_code=1)
+        return await phone(command)
+
+    settles = []
+    async with (
+        FakeAdbServer(
+            {SERIAL: counts_fail},
+            streams={SERIAL: phone.side.streams},
+            sockets={SERIAL: phone.side.sockets},
+        ) as adb,
+        android_capability(
+            adb, fragments={SCREENSHOT}, settle_max_wait_s=0.3, settle_quiet_ms=50
+        ) as capability,
+    ):
+        for cycle in (1, 2):
+            await capability.begin_observation(cycle)
+            screenshot = await capability.resolve_fragment(SCREENSHOT)
+            assert isinstance(screenshot, AndroidScreenshotObs)
+            settles.append(screenshot.settle)
+
+    for settle in settles:
+        assert settle is not None and (settle.outcome, settle.pending) == ("capped", ("frames",))
+        assert settle.waited_ms >= 300
+
+
 async def test_every_fragment_of_a_capture_records_its_wait_without_capture_state() -> None:
     """Recorded in the trace and never shown to the agent: the browser's ``settle`` is the same."""
     phone = ScriptedPhone(focused="com.android.settings/.Settings")

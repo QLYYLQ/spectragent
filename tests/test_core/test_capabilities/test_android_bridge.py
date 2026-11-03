@@ -249,7 +249,7 @@ async def test_an_unset_input_method_is_unknown_not_a_failure() -> None:
         assert await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).input_method() is None
 
 
-@pytest.mark.parametrize("name", ["x; reboot", "com.example/.Main", "settings", ""])
+@pytest.mark.parametrize("name", ["x; reboot", "com.example/.Main", "1android", "com.", ""])
 async def test_only_a_package_name_reaches_a_command_line(name: str) -> None:
     async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
         queries = AdbQueries(AdbClient(adb.host, adb.port), SERIAL)
@@ -259,6 +259,15 @@ async def test_only_a_package_name_reaches_a_command_line(name: str) -> None:
             await queries.frames_drawn(name)
 
     assert adb.requests == []
+
+
+async def test_the_systems_own_package_has_no_dot_and_is_asked_for_its_frames() -> None:
+    """``android`` owns the "Open with" chooser; the window manager names it in front."""
+    phone = ScriptedPhone(focused="android/com.android.internal.app.ResolverActivity", frames=7)
+    async with FakeAdbServer({SERIAL: phone}) as adb:
+        assert await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).frames_drawn("android") == 7
+
+    assert [request.service for request in adb.requests] == ["shell,v2:dumpsys gfxinfo android"]
 
 
 @pytest.mark.parametrize("activity", [".Main; reboot", "$(reboot)", "gui/Main", ""])

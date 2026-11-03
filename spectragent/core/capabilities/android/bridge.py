@@ -56,13 +56,14 @@ from spectragent.core.capabilities.android.input._registrar import (
     AndroidTypingBackend,
 )
 
-#: A package name as Android writes it, and an activity as a component names it
-#: after the package's ``/``: its class name, or ``.`` and its name within the
-#: package (``.gui.MainActivity``), ``$`` joining a nested class. Nothing else
-#: reaches a command line.
+#: An app's package name as Android writes it (``open_app``'s table takes it), and an
+#: activity as a component names it after the package's ``/``: its class name, or ``.``
+#: and its name within the package (``.gui.MainActivity``), ``$`` joining a nested class.
 PACKAGE_PATTERN = r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+"
 ACTIVITY_PATTERN = r"\.?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
-_PACKAGE = re.compile(PACKAGE_PATTERN)
+#: What reaches a command line, and nothing else: a package, an app's (with a dot) or the
+#: system's own, ``android``, which owns the "Open with" chooser and has none; an activity.
+_PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*")
 _ACTIVITY = re.compile(ACTIVITY_PATTERN)
 _KEYCODE = re.compile(r"KEYCODE_[A-Z0-9_]+")
 #: ``mFocusedApp=ActivityRecord{6dbdd1 u0 com.android.settings/.Settings t9}``.

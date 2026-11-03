@@ -15,7 +15,8 @@ things:
 - the window manager's focus (``dumpsys window``): which app and which window
   have it. No window with focus is a transition in progress;
 - how many frames the focused app has rendered (``dumpsys gfxinfo <package>``).
-  An app that reports no count, or none rendered, has not drawn yet. One new
+  An app that reports no count, or none rendered, has not drawn yet; a count
+  that could not be read is no count either, and the wait goes on. One new
   frame within the quiet period is allowed: a focused text field's cursor
   redraws about every 500 ms and sends no event, and a poll took 200-300 ms
   under load, so "no new frame for 300 ms" fell between two blinks too seldom
@@ -71,7 +72,7 @@ class ScreenPoll:
         package: The focused app, as the window manager reports it.
         window: The window with input focus; ``None`` when none has it.
         frames: How many frames the focused app has rendered; ``None`` when it
-            reports no count.
+            reports no count, or the count could not be read.
     """
 
     since_event_ms: int | None
