@@ -918,15 +918,24 @@ class BenchmarkRunner:
         if rule is None or outcome.trace_dir is None:
             return outcome
         try:
-            verdicts = RunTrace(outcome.trace_dir).verdicts()
+            trace = RunTrace(outcome.trace_dir)
+            verdicts = trace.verdicts()
         except TraceSchemaError as exc:
             return dataclasses.replace(outcome, primary_note=str(exc))
         primary = rule.primary_verdict(verdicts)
         if primary is None:
             return outcome
-        return dataclasses.replace(
-            outcome, primary=primary, success=rule.success(primary, outcome.result)
-        )
+        result = outcome.result
+        if result is None:
+            # ``execute`` raised after the close-out (a blocking hook failing
+            # in ``on_run_end``): how the run ended is still in its result.json.
+            # One that does not read back leaves it unknown; the trace ledger
+            # already reports why.
+            try:
+                result = trace.result
+            except TraceSchemaError:
+                result = None
+        return dataclasses.replace(outcome, primary=primary, success=rule.success(primary, result))
 
     def preflight(self, task_id: str) -> ComposedRun:
         """Check the configuration once for *task_id*, before the sweep starts; return its stack.

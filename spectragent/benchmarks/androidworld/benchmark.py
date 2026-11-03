@@ -9,10 +9,6 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
 
-#: The task family whose episode its page ends (AndroidWorld's MiniWoB++), as
-#: the task list and the verdict's evidence name it (§11.2).
-MINIWOB_FAMILY = "miniwob"
-
 
 class AndroidWorldBenchmark(BenchmarkBase):
     """AndroidWorld: tasks on an emulated phone, judged on the device at the scoring point (§11.2)."""
@@ -28,11 +24,19 @@ class AndroidWorldBenchmark(BenchmarkBase):
 
         Its runner records ``task_successful if done else 0``, partial credit
         included. A MiniWoB++ task's ending comes from its page, so its score
-        alone counts (§11.2 "怎样与 AndroidWorld 比").
+        alone counts (§11.2 "怎样与 AndroidWorld 比"). With no *result* the
+        run's ending is unknown, so no success is claimed either way.
         """
+        # The family as the task list and the verdict's evidence name it; read
+        # where Android's own code defines it, so a rename cannot silently
+        # zero every MiniWoB++ result. Imported here: naming the benchmark
+        # imports no Android module.
+        from spectragent.core.capabilities.android.oracle.androidworld_tasks import MINIWOB
+
         if verdict.status != "judged" or verdict.score is None:
             return None
-        if verdict.evidence.get("family") == MINIWOB_FAMILY:
+        if verdict.evidence.get("family") == MINIWOB:
             return verdict.score
-        done = result is not None and result.agent_done == AgentDoneStatus.DONE
-        return verdict.score if done else 0.0
+        if result is None:
+            return None
+        return verdict.score if result.agent_done == AgentDoneStatus.DONE else 0.0

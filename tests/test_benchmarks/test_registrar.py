@@ -312,5 +312,7 @@ def test_androidworld_counts_the_score_only_when_the_agent_declared_done(
     verdict = _judged("androidworld", attachment="live", score=score, evidence={"family": family})
     result = agent_result(agent_done=agent_done, agent_reported_success=None)
     assert AndroidWorldBenchmark().success(verdict, result) == success
-    if family != "miniwob":
-        assert AndroidWorldBenchmark().success(verdict, None) == 0.0
+    # No result: the run's ending is unknown, so no success either way; a
+    # MiniWoB++ task's page ended it, so its score still stands.
+    unknown = score if family == "miniwob" else None
+    assert AndroidWorldBenchmark().success(verdict, None) == unknown

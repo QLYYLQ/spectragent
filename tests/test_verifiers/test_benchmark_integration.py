@@ -180,7 +180,7 @@ class _EvalLoader:
 
 @pytest.fixture
 def runner_factory(tmp_path):
-    def build(**kwargs):
+    def build(*, hooks: tuple[Any, ...] = (), **kwargs):
         def compose():
             writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
             return make_run(
@@ -189,7 +189,7 @@ def runner_factory(tmp_path):
                 env=make_env(_Env, {"eval_e2e_cap": _Cap()}),
                 llm=_LLM(),
                 memory=_Memory(),
-                hooks=[writer],
+                hooks=[writer, *hooks],
             )
 
         return BenchmarkRunner(loader=_TaskLoader(), compose=compose, timeout=10, **kwargs)
@@ -359,3 +359,42 @@ async def test_a_task_its_primary_verifier_could_not_judge_is_left_out_of_the_ra
     assert (summary.judged, summary.success_rate) == (1, 1.0)
     assert "over the 1 of 2 task(s) it judged" in summary.format_table()
     assert "no primary verdict" in summary.format_table()
+
+
+async def test_a_run_whose_close_out_raised_is_counted_by_its_recorded_ending(runner_factory):
+    """``execute`` raised after the trace writer closed the run: the ending is in result.json.
+
+    Without it, a benchmark whose success depends on how the run ended
+    (AndroidWorld's "declared done") would count a done run as failed.
+    """
+    from spectragent.core.hooks._registrar import HookBase
+
+    class FailsAfterTheRecord(HookBase):
+        priority = HookBase.PRIORITY_PERSIST + 50
+
+        async def on_run_end(self, **kwargs):
+            raise RuntimeError("a hook failed after the close-out")
+
+    class CountsTheEnding(_ExactMatchBenchmark):
+        __abstract__ = True
+        __registry_key__ = "offline_e2e_ending"
+
+        def success(self, verdict, result):
+            if result is None:
+                return None
+            return float(verdict.label or 0) if result.agent_done == "done" else 0.0
+
+    verifier = ExactMatchVerifier()
+    benchmark = CountsTheEnding()
+    benchmark.verifiers = [verifier]
+    runner = runner_factory(
+        hooks=(FailsAfterTheRecord(),),
+        verifiers=[verifier],
+        reference_loader=_EvalLoader(),
+        primary_rule=benchmark,
+    )
+
+    summary = await runner.run()
+
+    assert all(o.result is None and o.error for o in summary.outcomes)
+    assert [(o.task_id, o.success) for o in summary.outcomes] == [("t-1", 1.0), ("t-2", 0.0)]
