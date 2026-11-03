@@ -5529,7 +5529,7 @@ class StepRecord(BaseModel):
 
 ```python
 class RunTrace:
-    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 6 就抛 TraceSchemaError
+    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 8 就抛 TraceSchemaError
 
     @property
     def trace_dir(self) -> Path: ...
@@ -5627,8 +5627,8 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 情况 | 表现 | 含义 |
 |---|---|---|
 | 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件、归档文件、setup 补全的任务文本不在 manifest 里；或没有 `verdicts/` | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`、`archive_run_file`、`setup_task_text`）、`[]`（`llm_messages`、`extra_files`、`archive_files`）或 `{}`（`verdicts`）；`read_extra` / `output_schema` / `blob` / `read_committed` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
-| 存在但不可读 | 抛 `TraceSchemaError`，点名文件（以及 model、key 或版本） | trace 本身不可读，重跑评测也没用，只能重跑任务 |
-| 评测器自己失败 | `EvaluationError` | 与 trace 无关（judge 429、prompt 缺失等） |
+| 存在但不可读 | 抛 `TraceSchemaError`，点名文件（以及 model、key 或版本） | trace 本身不可读，重新判分也没用，只能重跑任务 |
+| 判分器自己判不了 | `VerificationError`（`verifiers/errors.py`） | 与 trace 无关（judge 429、prompt 缺失等）；离线判分把它记为这一批的错误，不写判定 |
 
 `TraceSchemaError` 的全部来源：
 

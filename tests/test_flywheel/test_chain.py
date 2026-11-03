@@ -190,9 +190,8 @@ class TestThePaths:
             "b",
             "--no-eval",
         ]
-        # An evaluating stage runs the benchmark's offline verifiers: no --no-eval, and no
-        # flat verdict directory (each verdict is in its run's own store).
-        assert "--no-eval" not in control and "--evals-dir" not in control
+        # An evaluating stage runs the benchmark's offline verifiers: no --no-eval.
+        assert "--no-eval" not in control
         for stage, call in (("same_path", same_path), ("branch", branch)):
             branches = str(root / "configs" / f"{stage}_branches.yaml")
             assert call[call.index("--benchmark") + 1] == branches

@@ -95,9 +95,9 @@ def load_judge_model(path: Path) -> JudgeModel:
     """The chat model a YAML file holding exactly one ``llm`` layer composes.
 
     Composed by the ordinary ``ConfigComposer`` outside an agent run, as
-    ``spectragent eval`` composes its judge (``compose_evaluation``).
-    Composing opens no connection: the client is created at the first
-    request.
+    ``spectragent eval`` composes a benchmark's judges
+    (``verifiers/cli.py::compose_benchmark``). Composing opens no connection:
+    the client is created at the first request.
 
     Raises:
         LookaheadInputError: The file cannot be read, holds another layer or

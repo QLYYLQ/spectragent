@@ -44,9 +44,9 @@ class TraceSchemaError(RuntimeError):
     Deliberately distinct from both neighbours it used to be confused
     with. "The file is absent" is reported as ``None`` — that is a run
     which died before it recorded anything, not a broken trace. "The
-    grader failed" is an ``EvaluationError`` — that says nothing about
-    what is on disk. This one means the trace itself is unreadable, and
-    re-running the evaluation pass will never fix it.
+    verifier could not judge" is a ``VerificationError`` — that says nothing
+    about what is on disk. This one means the trace itself is unreadable,
+    and judging it again will never fix it.
     """
 
     def __init__(self, message: str, *, path: Path | None = None) -> None:

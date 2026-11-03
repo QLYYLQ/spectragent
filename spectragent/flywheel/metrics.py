@@ -19,7 +19,7 @@ trace stay on the machine that recorded them and are not searched (arch §5.6).
 
 **Every number has its denominator.** A ratio over nothing is ``null`` with
 the reason, never ``0`` — "not measured" must not read as "measured zero"
-(the ``evaluator/summary.py`` rule). A percentile of no values raises. A
+(the ``verifiers/report.py`` rule). A percentile of no values raises. A
 measure that skips a run's damaged evidence says so in its ``skipped``, and
 every measure a recommendation rests on counts the distinct ``sites`` its data
 came from: the report's breadth rule reads it.

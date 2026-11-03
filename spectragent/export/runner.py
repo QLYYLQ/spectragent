@@ -1,6 +1,6 @@
 """``ExportRunner``: recorded runs in, a validated dataset directory out (arch §4.15 "流水线").
 
-Not registered — the counterpart of ``EvaluationRunner``. Synchronous (the
+Not registered — the counterpart of ``VerificationRunner``. Synchronous (the
 rendering stage runs in one ``asyncio.run``), with no environment to drive and
 no model to call except the exporter's thought rewriter under
 ``wait_actions: drop_when_capped``. It reaches the export's strategies only

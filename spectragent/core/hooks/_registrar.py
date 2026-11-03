@@ -40,7 +40,7 @@ class HookBase(metaclass=HookRegistrar.Meta):
     """Concrete base for all hook implementations.
 
     A ``@dataclass(eq=False)``; every other registrar base is a dataclass
-    too (actions, capabilities, agents, loaders, evaluators). Before
+    too (actions, capabilities, agents, loaders, verifiers). Before
     this, hooks were the one layer that hand-rolled
     ``__init__(self, **kwargs)``: conscribe reads
     ``inspect.signature(cls.__init__)``, found no named parameter, and

@@ -30,8 +30,9 @@ loader's ``data_dir`` (``<root>/traces/record``), written to
 (``spectragent export --benchmark``). A block missing, or there twice, is a
 :class:`ChainConfigError` naming the stage and the block — before any stage
 runs. Everything else (agent, tier, archivers, selector, branches,
-``verify``, evaluator) is the stage YAML's; a control group's YAML says
-``archive: []`` itself.
+``verify``) is the stage YAML's, and the verifiers are the benchmark
+YAML's (``tasks.benchmark``); a control group's YAML says ``archive: []``
+itself.
 
 **A stage's outcome.** A run stage that exits 0 or 1 (a task with an
 infrastructure failure is data to measure) and wrote at least one run

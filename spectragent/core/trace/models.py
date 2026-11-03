@@ -659,7 +659,7 @@ class TraceConfig(BaseModel):
 
     **Identity** (``agent_id`` … ``task_id``) is what *joins* the trace
     back to the dataset it came from. ``(benchmark, subset, task_id)`` is
-    the key an Evaluator needs to look up ground truth:
+    the key a verifier needs to look up ground truth:
     ``EvalLoaderRegistrar.get(benchmark)(subset=subset)[task_id]``.
     Without all three, a trace directory is an orphan — you cannot even
     say which task it ran.

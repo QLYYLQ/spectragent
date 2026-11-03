@@ -1,6 +1,6 @@
 """The data flywheel's metrics gate: a report over a chain's committed runs (arch §4.16).
 
-An offline consumer of committed data, with the standing of ``evaluator/``
+An offline consumer of committed data, with the standing of ``verifiers/``
 and ``export/``: it reads runs only through ``RunTrace``'s accessors and
 datasets as the files an export published; it sets up no environment, calls
 no LLM and touches no running state, so a report can be recomputed on any

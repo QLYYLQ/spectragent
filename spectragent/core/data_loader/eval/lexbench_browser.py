@@ -42,12 +42,12 @@ class LexBenchBrowserEvalLoader(EvalLoaderBase):
         Upstream records key on ``id`` and put the reference under
         ``reference_answer`` with the pass mark in ``score_threshold``.
 
-        Also derives ``metadata["scoring_type"]``, which the evaluator
+        Also derives ``metadata["scoring_type"]``, which the verifier
         reads to choose between the normal and the reverse rubric. No
         shipped LexBench file carries that key — and ``ScoringRubric``
         has no field for it and is not ``extra="allow"``, so even an
         upstream record that set it would have it discarded before the
-        evaluator looked. The reachable signal is the ``L3-security``
+        verifier looked. The reachable signal is the ``L3-security``
         tag, which sits on exactly the 25 safety-refusal records.
 
         Without this the four ``eval_reverse_*`` templates were
