@@ -420,9 +420,14 @@ def _activity(activity: str) -> str:
 
 
 def _first_line(result: ShellResult) -> str:
-    """The first non-empty line the command wrote, stderr first, for an error message."""
+    """The first non-empty line the command wrote, stderr first, for an error message.
+
+    A system service's command that threw (``am``, ``pm``, ``cmd``) first writes
+    ``Exception occurred while executing '<command>':``, which says only that;
+    the exception's own line after it says why, so the header is skipped.
+    """
     for stream in (result.stderr, result.stdout):
-        for line in stream.decode(errors="replace").splitlines():
-            if line.strip():
-                return line.strip()
+        for line in map(str.strip, stream.decode(errors="replace").splitlines()):
+            if line and not line.startswith("Exception occurred while executing"):
+                return line
     return "no output"
