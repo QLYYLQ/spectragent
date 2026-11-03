@@ -13,7 +13,7 @@ import base64
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -36,7 +36,7 @@ from spectragent.core.trace.encoding import (
     encode_call_metrics,
     encode_llm_call,
 )
-from spectragent.core.trace.models import TraceStatus
+from spectragent.core.trace.models import CommittedFile, CommittedKind, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.secret_patterns import iter_readable
 from spectragent.core.trace.wal import WALWriter
@@ -78,6 +78,7 @@ from spectragent.flywheel.metrics import (
     settle_wait,
     sites,
     storage,
+    storage_category,
 )
 from spectragent.flywheel.report import NO_SPEC_LIMIT, build_report, render_markdown, report_json
 from spectragent.schemas.action import Action, ActionResult
@@ -1357,3 +1358,10 @@ def test_light_branch_metrics_do_not_fabricate_an_empty_trajectory(tmp_path: Pat
     assert report.token_use.roles["branch"].calls == 1
     assert report.token_use.roles["branch"].calls_without_usage
     assert "did not select" in report.metrics.privacy.skipped["traces/branch/light"]
+
+
+def test_every_kind_of_committed_file_has_a_storage_category() -> None:
+    """A kind the storage section cannot place makes every run that commits one unreadable to it."""
+    for kind in get_args(CommittedKind):
+        file = CommittedFile(path=f"{kind}.json", kind=kind, fragment="browser.screenshot")
+        assert storage_category(file), kind
