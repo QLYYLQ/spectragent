@@ -373,8 +373,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             PydanticField(
                 gt=0.0,
                 description=(
-                    "Seconds the UI tree's capture may take before the whole capture fails. "
-                    "Settings' main page took about 0.1 s on the API 33 emulator; the first "
+                    "Seconds the UI tree's capture may take before the whole capture fails; in a "
+                    "run that reads only the screen, where the tree is captured for the archive "
+                    "alone, the archive misses that step's tree instead and the observation goes "
+                    "on. Settings' main page took about 0.1 s on the API 33 emulator; the first "
                     "walk of a long web page after it loaded took up to 8.4 s, later walks "
                     "about 1.1 s at the source's 5000-node limit."
                 ),
