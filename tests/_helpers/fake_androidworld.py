@@ -16,7 +16,9 @@ calls (``/health``, ``/suite/reinitialize``, ``/task/goal``,
 startup is over. What it
 does is read from ``<root>/behaviour.json``, again for every request, so a test
 can change an endpoint's answer while the service runs: per path, ``{"status": 500}``
-answers an error, ``{"hang": true}`` never answers, ``{"text": ...}`` answers
+answers an error and then logs a traceback, as uvicorn logs one after Starlette
+has answered (``"log"`` is the text it logs, ``"log_after_s"`` how long after
+the answer), ``{"hang": true}`` never answers, ``{"text": ...}`` answers
 that text, ``{"json": ...}`` answers that object, ``{"json_in_turn": [...]}``
 answers the path's first request with the first object, its second with the
 second, and every later one with the last (a goal AndroidWorld rewrites at
@@ -50,6 +52,13 @@ if TYPE_CHECKING:  # run as a program, this file imports only the standard libra
     import pytest
     from pydantic import JsonValue
 
+#: What the service logs after it answered a server error, unless the rule says otherwise.
+TRACEBACK = (
+    "ERROR:    Exception in ASGI application\n"
+    "Traceback (most recent call last):\n"
+    '  File "fake_androidworld.py", line 1, in _answer\n'
+    "RuntimeError: the fake service failed\n"
+)
 #: What each endpoint answers when the behaviour file says nothing about it.
 DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
     "/health": {"status": "success"},
@@ -165,6 +174,10 @@ def _serve(argv: list[str]) -> None:
             )
             if "status" in rule:
                 status, body, kind = rule["status"], "Internal Server Error", "text/plain"
+                logged = rule.get("log", TRACEBACK)
+                threading.Timer(
+                    rule.get("log_after_s", 0), lambda: print(logged, end="", flush=True)
+                ).start()
             elif "text" in rule:
                 body, kind = rule["text"], "text/plain"
             elif "json" in rule:

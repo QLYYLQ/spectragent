@@ -665,6 +665,50 @@ async def test_a_dead_service_is_an_ordinary_error_that_says_so(root: Path, tmp_
     assert await _service_is_gone(root)
 
 
+async def test_a_server_error_ends_with_the_traceback_the_service_logs_after_answering(
+    root: Path, tmp_path: Path
+) -> None:
+    """Starlette answers before uvicorn logs why: the message waits for the cause."""
+    cause = "ValueError: Could not extract utterance; something went wrong."
+    traceback = (
+        "ERROR:    Exception in ASGI application\n"
+        "Traceback (most recent call last):\n"
+        '  File "miniwob_base.py", line 47, in _get_episode_utterance\n'
+        f"{cause}\n"
+    )
+    oracle = _oracle(root)
+    await oracle.start(_device(tmp_path), _task())
+    try:
+        write_behaviour(
+            root, {"/task/score": {"status": 500, "log": traceback, "log_after_s": 0.5}}
+        )
+        with pytest.raises(AndroidWorldError, match="GET /task/score answered HTTP 500") as caught:
+            await oracle.read_score(answer=None)
+    finally:
+        await oracle.stop()
+
+    assert str(caught.value).endswith(cause)
+
+
+async def test_a_server_error_whose_cause_is_never_logged_waits_only_its_limit(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(androidworld, "_TRACEBACK_WAIT_S", 0.3)
+    clock = asyncio.get_running_loop().time
+    oracle = _oracle(root)
+    await oracle.start(_device(tmp_path), _task())
+    try:
+        write_behaviour(root, {"/task/score": {"status": 500, "log": ""}})
+        started = clock()
+        with pytest.raises(AndroidWorldError, match="GET /task/score answered HTTP 500"):
+            await oracle.read_score(answer=None)
+        waited = clock() - started
+    finally:
+        await oracle.stop()
+
+    assert 0.3 <= waited < 2.0
+
+
 async def test_a_failed_tear_down_is_logged_and_the_service_is_still_stopped(
     root: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

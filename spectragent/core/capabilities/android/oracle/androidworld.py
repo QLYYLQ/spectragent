@@ -105,6 +105,10 @@ LAUNCHER = Path(__file__).resolve().parent / "androidworld_service" / "serve.py"
 STOP_GRACE_S = 5.0
 _HEALTH_POLL_S = 0.5
 _HEALTH_CALL_S = 2.0
+#: The longest a call that got a server error waits for the service to log why:
+#: Starlette answers before uvicorn logs the handler's traceback.
+_TRACEBACK_WAIT_S = 2.0
+_TRACEBACK_POLL_S = 0.05
 _LOOPBACK = "localhost,127.0.0.1,::1"
 
 
@@ -266,6 +270,36 @@ def goal_after_initialize(task: AndroidWorldTask, goal: object) -> str:
     return goal
 
 
+def _size(log: Path) -> int:
+    """How many bytes *log* holds; 0 when it cannot be read."""
+    try:
+        return log.stat().st_size
+    except OSError:
+        return 0
+
+
+def _logged_a_traceback(log: Path, since: int) -> bool:
+    """Whether *log* holds, past byte *since*, a whole traceback: its last line is the exception."""
+    try:
+        with log.open("rb") as stream:
+            stream.seek(since)
+            written = stream.read().decode(errors="replace")
+    except OSError:
+        return False
+    if "Traceback (most recent call last):" not in written or not written.endswith("\n"):
+        return False
+    last = [line for line in written.splitlines() if line.strip()][-1]
+    return not last.startswith((" ", "\t", "Traceback", "During handling", "The above exception"))
+
+
+async def _until_traceback_logged(log: Path, since: int, limit_s: float) -> None:
+    """Wait, at most *limit_s*, until *log* holds a whole traceback written past byte *since*."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + limit_s
+    while not _logged_a_traceback(log, since) and loop.time() < deadline:
+        await asyncio.sleep(_TRACEBACK_POLL_S)
+
+
 @dataclass
 class _Service:
     """One running AndroidWorld service: its process group, its port and its working directory."""
@@ -405,6 +439,9 @@ class _Service:
         """One call, with *body* as its JSON body when given; the JSON object it replies.
 
         *timeout_s* ``None`` leaves the limit to the caller (the scoring point's).
+        After a server error (5xx) it waits, at most ``_TRACEBACK_WAIT_S``, for
+        the service to log the handler's traceback, which uvicorn writes only
+        after Starlette has answered, so the message ends with the cause.
 
         Raises:
             AndroidWorldError: The service answered an error status or no JSON
@@ -416,6 +453,7 @@ class _Service:
             for name, value in params.items()
         }
         what = f"{method} {path}"
+        logged = _size(self.log)
         limit = asyncio.timeout(timeout_s)
         try:
             async with limit:
@@ -437,6 +475,9 @@ class _Service:
                 f"{exc}; {state}):\n{log_tail(self.log, lines=8)}"
             ) from None
         if response.status_code != 200:
+            if response.status_code >= 500:
+                # Its cause, the handler's traceback, reaches the log after the answer.
+                await _until_traceback_logged(self.log, logged, _TRACEBACK_WAIT_S)
             raise AndroidWorldError(
                 f"{what} answered HTTP {response.status_code} ({response.text[:200]!r}); the end "
                 f"of the service's log:\n{log_tail(self.log, lines=8)}"
