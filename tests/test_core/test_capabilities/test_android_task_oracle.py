@@ -15,6 +15,7 @@ import importlib.util
 import os
 import shutil
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
@@ -490,48 +491,114 @@ def test_the_launcher_refuses_a_reward_that_is_no_number() -> None:
         _launcher().reward_ends_episode("lost")
 
 
-def test_the_launcher_launches_the_app_once_and_looks_until_its_table_is_there() -> None:
-    launches: list[str] = []
-    looks = iter([False, False, True])
+#: What android_env raises when a pull finds a file the directory listing named gone.
+_PULL_LOST_A_FILE = (
+    "Error executing adb command: [adb -P 41000 -s emulator-5556 pull /data/data/net.osmand/"
+    "databases/map_markers_db-journal /tmp/x]\nCaused by: Command 'adb pull' returned non-zero "
+    "exit status 1.\nadb stdout: [b\"adb: error: failed to stat remote object '/data/data/"
+    "net.osmand/databases/map_markers_db-journal': No such file or directory\\n\"]\n"
+    "adb stderr: [None]"
+)
+#: The same words from the ``rm -r`` that empties the directory before the push.
+_RM_LOST_A_FILE = (
+    "Error executing adb command: [adb -P 41000 -s emulator-5556 shell rm -r /data/data/"
+    "net.osmand/databases/*]\nCaused by: Command 'adb shell rm' returned non-zero exit "
+    "status 1.\nadb stdout: [b'rm: /data/data/net.osmand/databases/map_markers_db-journal: "
+    "No such file or directory\\n']\nadb stderr: [None]"
+)
+_TABLE = ("map_markers", "/data/data/net.osmand/databases/map_markers_db")
 
-    took = _launcher().launch_and_wait_for_table(
-        lambda: launches.append("osmand"), lambda: next(looks), wait_s=5.0, poll_s=0.01
-    )
 
-    assert launches == ["osmand"]
-    assert took is not None and 0.02 <= took < 5.0, "a pause after each look that missed"
-    assert next(looks, "no look left") == "no look left", "it stopped once it saw the table"
+@dataclass
+class _Tables:
+    """AndroidWorld's table_exists, launch_app and delete_all_rows_from_table, faked for the launcher's wait."""
+
+    #: What each look answers, in turn; the last one repeats.
+    looks: list[bool | Exception]
+    #: What each clear does, in turn (``None`` deletes the rows); later ones succeed.
+    clears: list[Exception | None] = field(default_factory=list)
+    env: object = field(default_factory=object)
+    launched: list[str] = field(default_factory=list)
+    cleared: list[tuple[object, ...]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def exists(self, table_name: str, remote_db_file_path: str, env: object) -> bool:
+        assert (table_name, remote_db_file_path, env) == (*_TABLE, self.env)
+        answer = self.looks.pop(0) if len(self.looks) > 1 else self.looks[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def launch(self, app_name: str, env: object) -> None:
+        assert env is self.env
+        self.launched.append(app_name)
+
+    def clear(self, *arguments: object) -> None:
+        self.cleared.append(arguments)
+        outcome = self.clears.pop(0) if self.clears else None
+        if outcome is not None:
+            raise outcome
+
+    def clear_once_the_table_is_there(self, wait_s: float = 5.0) -> None:
+        wrapped = _launcher().wait_for_the_table(
+            self.clear,
+            exists=self.exists,
+            launch=self.launch,
+            warn=self.notes.append,
+            wait_s=wait_s,
+            poll_s=0.01,
+        )
+        wrapped(*_TABLE, self.env, "osmand")
 
 
-def test_the_launcher_stops_looking_for_a_table_the_app_never_makes() -> None:
-    launches: list[str] = []
-    looks: list[bool] = []
+def test_the_launcher_clears_a_table_that_is_there_without_launching_the_app() -> None:
+    tables = _Tables(looks=[True])
 
-    def table_made() -> bool:
-        looks.append(False)
-        return False
+    tables.clear_once_the_table_is_there()
+
+    assert tables.launched == [] and tables.notes == []
+    assert tables.cleared == [(*_TABLE, tables.env, "osmand", None)]
+
+
+def test_the_launcher_launches_the_app_once_and_clears_once_its_table_is_there() -> None:
+    tables = _Tables(looks=[False, False, True])
+
+    tables.clear_once_the_table_is_there()
+
+    assert tables.launched == ["osmand"]
+    assert tables.cleared == [(*_TABLE, tables.env, "osmand", None)]
+    assert len(tables.notes) == 1 and tables.notes[0].startswith("osmand made table map_markers")
+
+
+def test_the_launcher_hands_a_table_the_app_never_makes_over_after_its_limit() -> None:
+    """AndroidWorld's own function then launches, sleeps and fails, as it always did."""
+    tables = _Tables(looks=[False])
 
     started = time.monotonic()
-    took = _launcher().launch_and_wait_for_table(
-        lambda: launches.append("osmand"), table_made, wait_s=0.2, poll_s=0.01
-    )
+    tables.clear_once_the_table_is_there(wait_s=0.2)
     waited = time.monotonic() - started
 
-    assert took is None and launches == ["osmand"]
-    assert 0.2 <= waited < 1.0, "it gave up once the limit had passed"
-    assert len(looks) > 2, "it looked again after each pause"
+    assert 0.2 <= waited < 1.0
+    assert tables.launched == ["osmand"] and len(tables.cleared) == 1
+    assert tables.notes[0].startswith("osmand had made no table map_markers")
 
 
-def test_the_launcher_counts_a_listed_file_adb_found_gone_as_no_table_yet() -> None:
-    gone = (
-        "Error executing adb command: [adb pull /data/data/net.osmand/databases/"
-        'map_markers_db-journal /tmp/x]\nadb stdout: [b"adb: error: failed to stat remote '
-        "object '/data/data/net.osmand/databases/map_markers_db-journal': No such file or "
-        'directory\\n"]'
-    )
+def test_the_launcher_counts_a_look_whose_pull_lost_a_file_as_no_table_yet() -> None:
+    tables = _Tables(looks=[RuntimeError(_PULL_LOST_A_FILE), True])
 
-    assert _launcher().lost_a_file(RuntimeError(gone))
-    assert not _launcher().lost_a_file(RuntimeError("adb: device 'emulator-5556' not found"))
+    tables.clear_once_the_table_is_there()
+
+    assert tables.launched == ["osmand"] and len(tables.cleared) == 1
+    with pytest.raises(RuntimeError, match="device 'emulator-5556' not found"):
+        _Tables(
+            looks=[RuntimeError("device 'emulator-5556' not found")]
+        ).clear_once_the_table_is_there()
+
+
+def test_the_launcher_counts_only_a_pull_as_one_that_lost_a_file() -> None:
+    assert _launcher().pull_lost_a_file(RuntimeError(_PULL_LOST_A_FILE))
+    assert not _launcher().pull_lost_a_file(RuntimeError(_RM_LOST_A_FILE))
+    assert not _launcher().pull_lost_a_file(RuntimeError("No such file or directory"))
 
 
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(

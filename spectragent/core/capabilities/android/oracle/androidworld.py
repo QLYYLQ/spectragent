@@ -55,7 +55,7 @@ Timings measured on the spike (Apple M1 Pro, load 6-14, 2026-11-01): start
 reinstalled its accessibility forwarder), score median 0.1 s, p90 6.1 s, max
 18.2 s, tear-down 0.3-2.2 s. OsmAndMarker's initialize took 46 s on a fresh
 boot (2026-11-03), while the launcher waited for OsmAnd to make the table
-AndroidWorld clears (``serve.py``'s ``launch_and_wait_for_table``).
+AndroidWorld clears (``serve.py``'s ``wait_for_the_table``).
 """
 
 from __future__ import annotations
