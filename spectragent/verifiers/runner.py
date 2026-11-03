@@ -117,10 +117,15 @@ class VerificationRunner:
         reference_loader: The benchmark's reference data (its
             ``reference_loader()``); needed only by a verifier that needs a
             reference row.
-        verify_reference_identity: Check that each trace ran the benchmark
-            and subset of *reference_loader* before reading its row
-            (``spectragent eval``, which is given traces it did not produce).
-            A branch run is always checked against its source's.
+        benchmark: The benchmark the traces must have run, its task
+            loader's key (``spectragent eval``, which is given traces it did
+            not produce). A trace of another benchmark — a branch run whose
+            source ran another — is an error for every verifier, whether it
+            reads a reference row or not; and a reference row is read only
+            for a trace of *reference_loader*'s subset. ``None``: not
+            checked (``spectragent bench`` judges the runs its own sweep
+            produced). A branch run's reference row is always checked
+            against its source's benchmark and subset.
 
     Raises:
         ValueError: A verifier is attached live, needs a reference row and
@@ -133,7 +138,7 @@ class VerificationRunner:
         *,
         verifiers: Sequence[OfflineVerifier],
         reference_loader: BaseEvalLoader | None = None,
-        verify_reference_identity: bool = False,
+        benchmark: str | None = None,
     ) -> None:
         for verifier in verifiers:
             if attachment_of(verifier) != "offline":
@@ -157,7 +162,7 @@ class VerificationRunner:
                 f"settings: each would overwrite the other's verdict"
             )
         self._loader = reference_loader
-        self._verify_reference_identity = verify_reference_identity
+        self._benchmark = benchmark
 
     @property
     def identities(self) -> list[VerifierIdentity]:
@@ -195,18 +200,24 @@ class VerificationRunner:
     # ── internals ───────────────────────────────────────────────────
 
     async def _judge(self, trace_dir: Path) -> list[VerificationOutcome]:
-        """Every verifier on one trace; a trace that does not read back fails them all."""
+        """Every verifier on one trace; a trace that does not read back, or ran another benchmark, fails them all."""
         try:
             trace = RunTrace(trace_dir)
             view = TraceView(trace)
             task_id = view.task_id
-            reference = self._reference(trace, view)
+            other = self._other_benchmark(trace, view)
+            reference = self._reference(trace, view) if other is None else _Reference()
         except Exception as exc:
             logger.exception("Verification cannot read %s", trace_dir)
             task_id = _task_id_or_dirname(trace_dir)
             message = f"{type(exc).__name__}: {exc}"
             return [
                 VerificationOutcome(trace_dir, task_id, identity, error=message)
+                for identity in self._identities
+            ]
+        if other is not None:
+            return [
+                VerificationOutcome(trace_dir, task_id, identity, error=other)
                 for identity in self._identities
             ]
         return [
@@ -257,6 +268,23 @@ class VerificationRunner:
             )
         return VerificationOutcome(trace.trace_dir, task_id, identity, verdict=verdict)
 
+    def _other_benchmark(self, trace: RunTrace, view: TraceView) -> str | None:
+        """Why *trace* is no run of the selected benchmark; ``None`` when it is, or none was selected.
+
+        A branch run belongs to its source run's benchmark (``BranchProvenance``).
+        """
+        if self._benchmark is None:
+            return None
+        branch = trace.config.branch
+        ran = branch.source_benchmark if branch is not None else view.benchmark
+        if ran == self._benchmark:
+            return None
+        whose = "its source run ran" if branch is not None else "it ran"
+        return (
+            f"Trace {trace.trace_dir}: {whose} benchmark {ran!r}, not {self._benchmark!r}, "
+            f"whose verifiers judge only its own runs"
+        )
+
     def _reference(self, trace: RunTrace, view: TraceView) -> _Reference:
         """What *trace* is judged against: its task's reference row, or why there is none.
 
@@ -284,7 +312,7 @@ class VerificationRunner:
             task_id = view.task_id
             checks = (
                 (("benchmark_name", view.benchmark), ("subset", view.subset))
-                if self._verify_reference_identity
+                if self._benchmark is not None
                 else ()
             )
             label = "Trace reference"

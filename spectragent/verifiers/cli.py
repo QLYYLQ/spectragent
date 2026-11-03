@@ -195,7 +195,9 @@ async def evaluate(
     runner = VerificationRunner(
         verifiers=verifiers,
         reference_loader=reference_data(chosen, verifiers, benchmark),
-        verify_reference_identity=True,
+        # Only this benchmark's runs: a verifier that reads no reference row
+        # (WebJudge) must not judge another benchmark's run in the same root.
+        benchmark=chosen.task_loader.benchmark_name,
     )
     identities: list[JsonValue] = [
         identity.model_dump(mode="json") for identity in runner.identities

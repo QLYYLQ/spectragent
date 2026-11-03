@@ -233,6 +233,30 @@ async def test_branch_uses_source_reference_without_losing_branch_identity(bench
     }
 
 
+async def test_a_branch_of_another_benchmarks_run_is_not_judged(benchmark, tmp_path):
+    """A branch run belongs to its source run's benchmark, not to ``trace_branches``."""
+    source = write_trace(tmp_path / "traces", task_id="source/s2/b0", benchmark="trace_branches")
+    path = source / "config.json"
+    raw = json.loads(path.read_text())
+    raw["branch"] = {
+        "source_run_id": "source",
+        "source_trace": "source",
+        "source_benchmark": "online_mind2web",
+        "source_subset": "All",
+        "source_task_id": "one",
+        "checkpoint_step": 2,
+        "branch_index": 0,
+        "branch_group_id": "source/s2",
+    }
+    path.write_text(json.dumps(raw))
+
+    evaluation = await evaluate(benchmark=benchmark, traces=[source], output=tmp_path / "eval")
+
+    [row] = _report(evaluation)["outcomes"]
+    assert "its source run ran benchmark 'online_mind2web', not 'browsecomp'" in row["error"]
+    assert RunTrace(source).verdicts() == {}
+
+
 async def test_a_task_variant_branch_is_never_judged_against_its_source_reference(
     benchmark, tmp_path
 ):
@@ -301,4 +325,55 @@ async def test_same_task_id_from_another_benchmark_is_not_judged(benchmark, tmp_
     evaluation = await evaluate(benchmark=benchmark, traces=[source], output=tmp_path / "eval")
 
     assert _report(evaluation)["verifiers"][0]["counts"]["judged"] == 0
-    assert "benchmark_name" in _report(evaluation)["outcomes"][0]["error"]
+    assert "'another_benchmark', not 'browsecomp'" in _report(evaluation)["outcomes"][0]["error"]
+    assert RunTrace(source).verdicts() == {}
+
+
+async def test_a_judge_that_reads_no_reference_judges_no_other_benchmarks_run(
+    tmp_path, monkeypatch
+):
+    """WebJudge never reads a reference row, so only the benchmark check keeps it to its own runs."""
+    from spectragent.core.llm.providers.openai import ChatOpenAI
+    from tests.test_verifiers.conftest import FakeJudge
+
+    judge = FakeJudge(
+        replies=["1. find it", "Thoughts: fine\nStatus: success"], model="judge-model"
+    )
+    monkeypatch.setattr(ChatOpenAI, "ainvoke", lambda self, messages, **kw: judge.ainvoke(messages))
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "data_info.json").write_text(json.dumps({"split": {"All": "all.json"}}))
+    (data / "all.json").write_text(
+        json.dumps([{"task_id": "om2w-1", "task_text": "x", "start_url": "https://a.example"}])
+    )
+    judged = {
+        "verifier_id": "online_mind2web",
+        "llm": {
+            "model_type": "openai",
+            "provider": {"name": "direct"},
+            "model": "judge-model",
+            "api_key": "test",
+        },
+    }
+    block = {
+        "benchmark_id": "online_mind2web",
+        "task_loader": {
+            "benchmark_name": "online_mind2web",
+            "subset": "All",
+            "data_dir": str(data),
+        },
+        "verifiers": [judged],
+    }
+    path = tmp_path / "webjudge.yaml"
+    path.write_text(yaml.safe_dump({"benchmark": [block]}))
+    other = write_trace(
+        tmp_path / "traces", run_id="bc-run", task_id="bc-7", benchmark="browsecomp"
+    )
+
+    evaluation = await evaluate(benchmark=str(path), traces=[other], output=tmp_path / "eval")
+
+    [verifier] = _report(evaluation)["verifiers"]
+    assert verifier["counts"]["judged"] == 0 and verifier["counts"]["errors"] == 1
+    assert "'browsecomp', not 'online_mind2web'" in _report(evaluation)["outcomes"][0]["error"]
+    assert RunTrace(other).verdicts() == {}
+    assert judge.calls == []
