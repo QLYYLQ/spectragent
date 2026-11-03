@@ -4116,7 +4116,7 @@ exporter:
     sources_root: traces             # sources 的根（null：工作目录下的 traces）
     sources: ["recorded/*"]          # 相对根的 glob，按路径排序（默认：["*"]）
     filters:
-      agent_outcome: any             # done | max_steps | error | timeout | vetoed（读 result.json）
+      agent_outcome: any             # done | max_steps | episode_over | error | timeout | vetoed（读 result.json）
       require_eval: null             # 可选：{evaluator_id, label: 1, slug: null}，只留判分通过的 run
       exclude_restoration_diverged: true
       max_document_misses: 0         # unlimited：不按回放日志过滤

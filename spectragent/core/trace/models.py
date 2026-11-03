@@ -61,7 +61,7 @@ TRACE_FORMAT_VERSION = 7
 class TraceStatus(StrEnum):
     """Whether a trace is a complete record of its run — the trace's ledger, not the agent's.
 
-    How the agent ended (done, max_steps, error, timeout, vetoed) is
+    How the agent ended (done, max_steps, episode_over, error, timeout, vetoed) is
     ``result.json``'s ``agent_done``; this says only whether what the run
     did within its declared recording scope is on disk. A run that timed
     out, or whose model call failed, has a complete trace when every

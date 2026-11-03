@@ -97,7 +97,8 @@ class ExportFilters:
         default="any",
         description=(
             "Keep sources whose agent ended this way, as their result.json says (done, "
-            "max_steps, error, timeout, vetoed); 'any' (the default) keeps every outcome."
+            "max_steps, episode_over, error, timeout, vetoed); 'any' (the default) keeps "
+            "every outcome."
         ),
     )
     require_eval: RequireEval | None = Field(
