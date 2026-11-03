@@ -485,8 +485,26 @@ async def test_a_frame_count_that_fails_is_no_count_and_the_wait_goes_on() -> No
         assert settle.waited_ms >= 300
 
 
-async def test_after_an_action_the_screen_is_not_still_before_the_minimum() -> None:
-    """A run that runs M3A as AndroidWorld does waits at least its 2 s after every action."""
+@pytest.mark.parametrize(
+    ("action", "succeeds"),
+    [
+        (
+            Action(name="android.click_coordinate", params={"coordinate_x": 1, "coordinate_y": 2}),
+            True,
+        ),
+        (Action(name="android.open_app", params={"app_name": "nothing"}), False),
+        (Action(name="android.wait", params={"seconds": 0}), True),
+    ],
+    ids=["a tap", "a failed action", "a wait"],
+)
+async def test_after_an_action_the_screen_is_not_still_before_the_minimum(
+    action: Action, succeeds: bool
+) -> None:
+    """A run that runs M3A as AndroidWorld does waits at least its 2 s after every action.
+
+    An action that failed counts, since it may have touched the screen before it failed; so
+    does a wait, which touches nothing.
+    """
     phone = ScriptedPhone(focused="com.android.settings/.Settings")
     async with (
         phone_server(phone) as adb,
@@ -501,14 +519,13 @@ async def test_after_an_action_the_screen_is_not_still_before_the_minimum() -> N
         clock = asyncio.get_running_loop().time
         await capability.begin_observation(1)
         first = await capability.resolve_fragment(SCREENSHOT)
-        await capability.execute_action(
-            Action(name="android.click_coordinate", params={"coordinate_x": 1, "coordinate_y": 2})
-        )
+        result = await capability.execute_action(action)
         acted = clock()
         await capability.begin_observation(2)
         after = await capability.resolve_fragment(SCREENSHOT)
         captured = clock()
 
+    assert result.success is succeeds, result.error
     assert isinstance(first, AndroidScreenshotObs) and first.settle is not None
     assert first.settle.outcome == "settled"
     assert first.settle.waited_ms < 1500, "no action came before the first capture"
