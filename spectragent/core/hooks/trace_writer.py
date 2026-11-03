@@ -542,11 +542,21 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             )
 
     async def _commit_task_text(self) -> None:
-        """Commit the task text setup completed, once; a failure is a ``task_text`` problem on step 0."""
-        record, self._pending_task_text = self._pending_task_text, None
+        """Commit the task text setup completed, once; a failure is a ``task_text`` problem on step 0.
+
+        While the run is not initialized (``init_run`` failed in
+        ``on_run_start``) the record stays pending: the next segment's commit
+        initializes the run, and the next tick, or ``_finalize``, commits it.
+        """
         wal = self.wal
-        if record is None or wal is None or self._stop_writes.is_set():
+        if (
+            self._pending_task_text is None
+            or wal is None
+            or wal.manifest is None
+            or self._stop_writes.is_set()
+        ):
             return
+        record, self._pending_task_text = self._pending_task_text, None
         try:
             await self._offload(wal.commit_task_text, record)
         except Exception as exc:

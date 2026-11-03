@@ -183,6 +183,37 @@ class TestTheTraceWriter:
         assert trace.task_text() == MADE.text
         assert trace.manifest.status.value == "complete"
 
+    async def test_a_run_whose_first_initialization_failed_still_commits_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The text waits while the run is not initialized; the first segment's commit retries it."""
+        real = WALWriter.init_run
+        tries: list[str] = []
+
+        def fails_once(self: WALWriter, *args: Any, **kw: Any) -> None:
+            tries.append("init_run")
+            if len(tries) == 1:
+                raise OSError(errno.EIO, "Input/output error")
+            real(self, *args, **kw)
+
+        monkeypatch.setattr(WALWriter, "init_run", fails_once)
+        writer = await _start(tmp_path)
+        await writer.after_task_text_from_setup(MADE, args=(), kwargs={})
+        await asyncio.sleep(0.1)  # a few of the worker's ticks while the run is not initialized
+
+        async def step() -> None:
+            await writer.around_record_step(proceed=_sink, args=(step_record(0),), kwargs={})
+
+        await writer.around_execute_step(proceed=step, args=(None, 0), kwargs={})
+        await writer.on_run_end(result=agent_result(task=MADE.text))
+
+        assert len(tries) == 2, "initialized again by the first segment's commit"
+        assert writer.run_dir is not None
+        trace = RunTrace(writer.run_dir)
+        assert trace.setup_task_text() == MADE
+        assert trace.task_text() == MADE.text
+        assert (trace.manifest.status.value, trace.manifest.complete_through) == ("complete", 0)
+
     async def test_a_run_closed_right_after_setup_still_commits_it(self, tmp_path: Path) -> None:
         writer = await _start(tmp_path)
         await writer.after_task_text_from_setup(MADE, args=(), kwargs={})
