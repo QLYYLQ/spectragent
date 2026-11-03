@@ -8,8 +8,12 @@ device-side APK. One read-only boot, the archiver bound before setup:
 - on Settings' main page and on its third-party licence page (one WebView, far
   past the source's node limit), each capture's archived tree, decoded, cleans
   offline into the fragment the capture served;
-- the licence page's tree is partial and says so (``omitted_offscreen``); the
-  module prints its size and how long collecting it took, for the design doc.
+- the licence page's tree is partial and says so (``omitted_offscreen``), and
+  collecting it, the largest tree the source returns, fits the per-step
+  archive budget (``ARCHIVE_MAX_P50_OVERHEAD_MS``; a busy machine may raise it
+  with ``SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS``, as the browser's benchmark
+  reads it). The module prints the tree's size and that time, for the design
+  doc.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import pytest
 import pytest_asyncio
 from pydantic import JsonValue
 
+from spectragent.core.archive import ARCHIVE_MAX_P50_OVERHEAD_MS
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.archive.ui_tree_raw import RawUITree, RawUITreeArchiver
 from spectragent.core.capabilities.android.capability import AndroidCapability
@@ -158,4 +163,11 @@ async def test_a_licence_page_past_the_node_limit_cleans_back_and_says_it_is_par
         f"left out, {len(loaded.fragment.elements)} elements; JSON {json_bytes} B, archived "
         f"{loaded.size} B ({json_bytes / loaded.size:.1f}x); collected in "
         f"{loaded.collect_s * 1000:.0f} ms; the device walked it in {loaded.fragment.capture_ms} ms"
+    )
+    bound = float(
+        os.environ.get("SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS") or ARCHIVE_MAX_P50_OVERHEAD_MS
+    )
+    assert loaded.collect_s * 1000 <= bound, (
+        f"collecting the licence page's tree took {loaded.collect_s * 1000:.0f} ms (bound "
+        f"{bound:.0f} ms; override with SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS)"
     )
