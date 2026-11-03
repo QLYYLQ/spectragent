@@ -11,6 +11,8 @@ service's whole process group is gone on every path. The real service runs in
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -106,8 +108,8 @@ def _device(tmp_path: Path) -> AndroidProviderSession:
 
 
 @pytest.fixture
-def root(tmp_path: Path) -> Path:
-    return fake_installation(tmp_path / "androidworld")
+def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return fake_installation(tmp_path / "androidworld", monkeypatch)
 
 
 def _oracle(root: Path) -> AndroidWorldOracle:
@@ -187,11 +189,13 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
     await oracle.start(device, _task())
     try:
         started = service(root)
+        argv, environment = started["argv"], started["env"]
+        assert isinstance(argv, list) and isinstance(environment, dict)
+        workdir = Path(str(environment["TMPDIR"])).parent
+        links = {link.name: os.readlink(link) for link in (workdir / "bin").iterdir()}
     finally:
         await oracle.stop()
 
-    argv, environment = started["argv"], started["env"]
-    assert isinstance(argv, list) and isinstance(environment, dict)
     assert argv[:3] == ["-I", "-u", str(LAUNCHER)], "isolated, unbuffered, the launcher"
     pairs = dict(zip(argv[3::2], argv[4::2], strict=True))
     assert pairs == {
@@ -206,15 +210,16 @@ async def test_the_service_runs_the_launcher_under_androidworlds_interpreter_wit
     }
     env = {name: value for name, value in environment.items() if name not in _PYTHON_ADDS}
     assert env == {
-        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH": f"{workdir / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "en_US.UTF-8",
         "HOME": str(tmp_path / "run-home"),
-        "TMPDIR": env["TMPDIR"],
+        "TMPDIR": str(workdir / "tmp"),
         "GRPC_ENABLE_FORK_SUPPORT": "0",
         "NO_PROXY": "localhost,127.0.0.1,::1",
         "no_proxy": "localhost,127.0.0.1,::1",
     }
-    assert not Path(str(env["TMPDIR"])).exists(), "its working directory is removed with it"
+    assert links == {"ffmpeg": shutil.which("ffmpeg")}, "the host's ffmpeg alone"
+    assert not workdir.exists(), "its working directory is removed with it"
 
 
 #: What the shell and the interpreter add to the environment the oracle hands over.
@@ -585,6 +590,26 @@ def test_an_installation_the_service_cannot_start_from_is_refused(
 
     with pytest.raises(AndroidWorldSetupError, match=message):
         _oracle(root).check_setup(_task())
+
+
+async def test_a_path_without_ffmpeg_is_refused_before_the_service_starts(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    oracle = _oracle(root)
+
+    with pytest.raises(AndroidWorldSetupError) as refused:
+        oracle.check_setup(_task())
+    with pytest.raises(AndroidWorldSetupError, match="there is no ffmpeg on PATH"):
+        await oracle.start(_device(tmp_path), _task())
+
+    assert (
+        "there is no ffmpeg on PATH: AndroidWorld generates its music tasks' mp3 files with "
+        "pydub, which runs ffmpeg"
+    ) in str(refused.value)
+    assert not (root / "record" / "service.json").exists(), "no service was started"
 
 
 @pytest.mark.parametrize(
