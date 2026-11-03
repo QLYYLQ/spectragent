@@ -20,7 +20,9 @@ to require is written here once (it types with ``key_events`` and
 AndroidWorld's own typing), and :func:`androidworld_setup` builds the
 benchmark's setup component for that installation, which a module routes to
 the capability as ``prepare()`` does (``check_setup`` with it, then
-``bind_setups``).
+``bind_setups``). :func:`androidworld_composed` composes the environment and
+the benchmark through the real ``ConfigComposer`` instead, so the benchmark's
+part (the AVD, the ``open_app`` table) is merged as a run merges it.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
 from spectragent.benchmarks.androidworld.service import Installation
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.core.capabilities.android.capability import AndroidCapability
-from spectragent.core.composer import ConfigComposer
+from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.llm.messages import BaseMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
@@ -134,6 +136,50 @@ def androidworld_benchmark(loader: AndroidWorldTaskLoader) -> AndroidWorldBenchm
     benchmark.task_loader = loader
     benchmark.setup = androidworld_setup()
     return benchmark
+
+
+def androidworld_composed(data: Path) -> ComposedRun:
+    """An Android environment and the ``androidworld`` benchmark over *data*, composed as ``run`` composes them.
+
+    Through the real ``ConfigComposer``: the run's Android block writes no
+    AVD and no app table, the benchmark's part gives the test AVD, and its
+    ``open_app`` table comes from ``open_app.json`` beside the task list
+    (``write_task_list`` writes both), merged into the run's block.
+    """
+    root: dict[str, JsonValue] = {
+        "environment": [
+            {
+                "env_type": "android",
+                "capabilities": [
+                    {
+                        "capability_id": "android",
+                        "service_apk": os.environ[APK_VARIABLE],
+                        "tap_injector": {"injector_id": "shell_injection"},
+                        "typing_backend": {"typing_id": "key_events", "fold_accents": True},
+                        "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+                        "ui_tree_serializer": {"serializer_id": "m3a"},
+                    }
+                ],
+            }
+        ],
+        "benchmark": [
+            {
+                "benchmark_id": "androidworld",
+                "task_loader": {"benchmark_name": "androidworld", "data_dir": str(data)},
+                "setup": {"setup_id": "androidworld", "root": str(installation().root)},
+                "capability": [
+                    {
+                        "capability_id": "android",
+                        "backend": {
+                            "provider_id": "local_emulator",
+                            "avd": os.environ["SPECTRAGENT_TEST_AVD"],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    return ConfigComposer.for_config(root).compose(root)
 
 
 def androidworld_capability() -> AndroidCapability:
